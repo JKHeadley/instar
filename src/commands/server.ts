@@ -120,6 +120,7 @@ import { PrHandLease } from '../core/PrHandLease.js';
 import { ConversationRegistry } from '../core/ConversationRegistry.js';
 import { repairSlackReplyRelayIfStale, slackReplyRelayReadiness } from '../core/SlackReplyRelayInstaller.js';
 import { SlackRefusedHold, setActiveSlackRefusedHold } from '../core/SlackRefusedHold.js';
+import { activeUsageLimitWatch, setActiveUsageLimitWatch, UsageLimitWatch } from '../core/UsageLimitWatch.js';
 import { claimSuspensionExcludesPin } from '../core/TopicClaimAnnotationStore.js';
 import { parseProfileTrigger, platformMessageIdFrom } from '../core/topicProfileIngress.js';
 import { NewTopicDefaultStore, evaluateSessionPoolLocalClaim, createSpawnForTopic, createDashboardPoolClaimOps, seedTopicProfileAtCreation } from '../core/dashboardTopicProfile.js';
@@ -17666,6 +17667,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           // usage-wall-rescue: when another account has room, the standby says
           // the session is being moved — never "paused until reset".
           describeQuotaWall: (sessionName) => _usageWallRescue?.describeWall(sessionName) ?? null,
+          // Only a conversation on Claude: one on Codex or another framework is still working.
+          usageLimitNotice: (name) => {
+            const session = sessionManager.listRunningSessions().find((s) => s.tmuxSession === name);
+            return (session?.framework ?? config.sessions.framework ?? 'claude-code') === 'claude-code' ? (activeUsageLimitWatch()?.personNotice() ?? null) : null;
+          },
           // Shared per-topic mutex — coordinates with PromiseBeacon.
           acquireProxyMutex: (topicId, holder) => proxyCoordinator.tryAcquire(topicId, holder),
           releaseProxyMutex: (topicId, holder) => proxyCoordinator.release(topicId, holder),
@@ -22550,8 +22556,10 @@ export async function startServer(options: StartOptions): Promise<void> {
       type KeyConversationLine = import('../core/claudeKeyRecovery.js').ConversationLine;
       const { SESSION_BACK_NOTICE: keyBackNotice } = await import('../messaging/userNotices.js');
       const keyNoticeTexts = [...KEY_NOTICE_TEXTS, keyBackNotice];
-      const { buildClaudeKeyProbe } = await import('../core/claudeKeyProbe.js');
-      const { configuredClaudeOauthKey, setClaudeCallOutcomeListener } = await import('../core/claudeChildAuth.js');
+      const { buildClaudeKeyProbe, buildUsageProbe } = await import('../core/claudeKeyProbe.js');
+      const { configuredClaudeOauthKey, setClaudeCallOutcomeListener, setClaudeUsageLimitedListener } = await import('../core/claudeChildAuth.js');
+      const { currentUsageLimitBanner } = await import('../monitoring/rateLimitDetection.js');
+      const { usableAccounts } = await import('../core/UsageWallRescue.js');
       const keyHealthOn = () => liveConfig.get<unknown>('sessions.claudeKeyHealth.enabled', true) !== false;
       const sendToSlackKey = async (routingKey: string, text: string): Promise<void> => {
         const [channelId, threadTs] = routingKey.split(':');
@@ -22690,7 +22698,105 @@ export async function startServer(options: StartOptions): Promise<void> {
       setActiveClaudeKeyHealth(claudeKeyHealth);
       setClaudeCallOutcomeListener((outcome) => claudeKeyHealth.noteCallOutcome(outcome));
       sessionManager.prependInteractiveLoginExpiredSink((signal) => claudeKeyHealth.handle(signal));
-      void claudeKeyHealth.boot().catch((err) => console.warn(`[ClaudeKeyHealth] boot failed: ${err instanceof Error ? err.message : String(err)}`));
+      void claudeKeyHealth.boot().catch((err) => { /* @silent-fallback-ok: logged, and later signals still reach the monitor */ console.warn(`[ClaudeKeyHealth] boot failed: ${err instanceof Error ? err.message : String(err)}`); });
+
+      // Out of Claude usage with no account to move to: the operator is told, and waiting
+      // conversations pick up when it's back (fb-cab84278-0b4). Beside the key monitor because it
+      // shares the conversation reads and notice routes, and works with or without a key.
+      const usageLimitWatch = new UsageLimitWatch({
+        stateFile: path.join(config.stateDir, 'state', 'usage-limit-watch.json'),
+        confirmSession: (name) => Boolean(sessionManager.confirmSessionUsageLimit(name)),
+        // True while any usable account isn't known to be full, so saying conversations can't reply
+        // would be false. The rescue owns those sessions, and its own soft threshold does not decide this.
+        anotherAccountHasRoom: () => {
+          const rescue = _usageWallRescue;
+          if (!rescue?.status().effective) return false;
+          return usableAccounts(subscriptionPool.list(), 'claude-code').some((a) => !rescue.isKnownWalled(a.id));
+        },
+        accountKnownToHaveRoom: () => { const rescue = _usageWallRescue; return Boolean(rescue?.status().effective && rescue.spawnAccount()); },
+        stillWalled: (name) => Boolean(currentUsageLimitBanner(sessionManager.captureOutput(name, 50) ?? null) && sessionManager.confirmSessionUsageLimit(name)),
+        bannerFor: (name) => currentUsageLimitBanner(sessionManager.captureOutput(name, 50) ?? null),
+        channelFor: (name) => {
+          const topicId = topicForSession(name);
+          if (topicId !== null) return { platform: 'telegram', topicId };
+          const routingKey = _slackAdapter?.getChannelForSession(name) ?? null;
+          if (routingKey === null || !_slackAdapter) return null;
+          const { channelId, threadTs } = _slackAdapter.parseRoutingKey(routingKey);
+          return { platform: 'slack', channelId, ...(threadTs ? { threadTs } : {}) };
+        },
+        probe: buildUsageProbe({
+          claudePath: () => resolveFrameworkBinaryPath({
+            framework: 'claude-code',
+            frameworkBinaryPaths: config.sessions.frameworkBinaryPaths,
+            claudePath: config.sessions.claudePath,
+            configuredFramework: config.sessions.framework,
+          }) ?? detectClaudePath(),
+          key: () => configuredClaudeOauthKey(),
+          baseUrl: () => config.sessions.anthropicBaseUrl,
+        }),
+        keyFingerprint: () => { const k = configuredClaudeOauthKey(); return k ? claudeKeyFingerprint(k) : null; },
+        isKeyAgent: () => Boolean(configuredClaudeOauthKey()),
+        listWalledSessions: async () => {
+          const out: string[] = [];
+          for (const s of sessionManager.listRunningSessions()) {
+            if ((s.framework ?? 'claude-code') !== 'claude-code' || s.jobSlug || config.sessions.protectedSessions.includes(s.tmuxSession)) continue;
+            if (topicForSession(s.tmuxSession) === null && (_slackAdapter?.getChannelForSession(s.tmuxSession) ?? null) === null) continue;
+            if (currentUsageLimitBanner(sessionManager.captureOutput(s.tmuxSession, 50) ?? null) && sessionManager.confirmSessionUsageLimit(s.tmuxSession)) out.push(s.tmuxSession);
+          }
+          return out;
+        },
+        isSessionRunning: (name) => sessionManager.isSessionAlive(name),
+        recoveryPrompt: async (name) => {
+          const convo = await keyConversationLines(name);
+          if (!convo) return null;
+          const held = heldMessages(convo.lines, keyNoticeTexts);
+          return { prompt: buildKeyRecoveryPrompt(convo.channel, held, 'usage'), held: held.length };
+        },
+        refresh: async (name, prompt) => {
+          if (!_sessionRefresh) return { ok: false };
+          const r = await _sessionRefresh.refreshSession({ sessionName: name, followUpPrompt: prompt, reason: 'claude-usage-back' });
+          return r.ok ? { ok: true, newSessionName: r.newSessionName } : { ok: false };
+        },
+        answeredSince: async (name, sinceMs) => {
+          const convo = await keyConversationLines(name);
+          if (!convo) return null;
+          if (answeredSince(convo.lines, sinceMs, keyNoticeTexts)) return true;
+          if (convo.channel.platform !== 'slack') return false;
+          const fresh = await keyConversationLines(name, true);
+          return fresh ? answeredSince(fresh.lines, sinceMs, keyNoticeTexts) : null;
+        },
+        notifyOperator: noticeToOperator,
+        notifySession: async (name, text) => {
+          const topicId = topicForSession(name);
+          if (topicId !== null && telegram) { await withNotificationEnvelope(stampNotification(), async () => telegram!.sendToTopic(topicId, text)); return true; }
+          const routingKey = _slackAdapter?.getChannelForSession(name) ?? null;
+          if (routingKey === null) return false;
+          await sendToSlackKey(routingKey, text);
+          return true;
+        },
+        notifyChannel: async (channel, text) => {
+          if (channel.platform === 'telegram') {
+            if (!telegram) return false;
+            await withNotificationEnvelope(stampNotification(), async () => telegram!.sendToTopic(channel.topicId, text));
+            return true;
+          }
+          if (!_slackAdapter) return false;
+          await _slackAdapter.sendToChannel(channel.channelId, text, channel.threadTs ? { thread_ts: channel.threadTs } : undefined);
+          return true;
+        },
+        report: ({ reason, impact }) => DegradationReporter.getInstance().report({
+          feature: 'UsageLimitWatch',
+          primary: 'the agent has Claude usage to answer with',
+          fallback: 'the operator is told and waiting conversations pick up when usage is back',
+          reason,
+          impact,
+        }),
+        logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+      });
+      setActiveUsageLimitWatch(usageLimitWatch);
+      usageLimitWatch.boot();
+      setClaudeUsageLimitedListener(() => usageLimitWatch.noteCallLimited());
+      if (watchdog) watchdog.on('usage-wall', (name: string) => { void usageLimitWatch.noteWall(name); });
     }
 
     // SessionRefresh — agent-initiated session respawn. Requires a Telegram
@@ -31933,6 +32039,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Only now: a retry must see the session router, spawn admission and the operator routes.
     _slackRefusedHold?.start();
+    activeUsageLimitWatch()?.start();
     const server = new AgentServer({ config, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);    // Resolve the late-bound topic-operator getter (increment 2e): routing was
     const readIdentityProjectionPeerRows = async () => {
       const peers = _resolvePeerUrls?.() ?? [];

@@ -104,11 +104,11 @@ const MAX_HELD_CHARS = 2000;
  * The prompt a restarted conversation gets, with the held messages quoted and the reply command
  * spelled out. A Slack prompt carries the `[slack:<channel>]` tag of an ordinary inbound message.
  */
-export function buildKeyRecoveryPrompt(channel: RecoveryChannel, held: readonly HeldMessage[]): string {
+export function buildKeyRecoveryPrompt(channel: RecoveryChannel, held: readonly HeldMessage[], cause: 'key' | 'usage' = 'key'): string {
   // The Telegram respawn tags the message itself; the Slack respawn passes it through as is.
   const tag = channel.platform === 'slack' ? `[slack:${channel.channelId}] ` : '';
   const lines: string[] = [
-    `${tag}Your sign-in key stopped working for a while and has now been fixed. ` +
+    `${tag}${cause === 'usage' ? 'You ran out of Claude usage for a while and it is back now.' : 'Your sign-in key stopped working for a while and has now been fixed.'} ` +
       'Messages sent during that time were not answered.',
     '',
   ];

@@ -166,6 +166,11 @@ export interface PresenceProxyConfig {
    * Absent → the standard notice, exactly as before.
    */
   describeQuotaWall?: (sessionName: string) => string | false | null;
+  /**
+   * Set while the agent is proven out of Claude usage (UsageLimitWatch): the line to say instead of
+   * "actively working" when the pane hasn't shown the banner yet, say on a session still starting.
+   */
+  usageLimitNotice?: (sessionName: string) => string | null;
 
   /**
    * Honest turn-receipts: when a recovery sentinel (ContextWedgeSentinel,
@@ -1329,6 +1334,22 @@ export class PresenceProxy {
         this.persistState(topicId, state);
         state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
         return; // Don't schedule tier 2/3 — nothing more to assess
+      }
+    }
+
+    // ── Proven out of usage, banner or no banner ──
+    // The summary below needs the model, which is what ran out; its fallback says "actively working".
+    {
+      let limited: string | null = null;
+      try { limited = this.config.usageLimitNotice?.(state.sessionName) ?? null; }
+      catch { /* @silent-fallback-ok: no notice means the ordinary tier flow */ }
+      if (limited) {
+        if (state.cancelled) return;
+        state.tier1FiredAt = Date.now();
+        await this.sendProxyMessage(topicId, `${this.prefix} ${limited}`, 1, originAuthor);
+        this.persistState(topicId, state);
+        state.conversationHistory.push({ role: 'proxy', text: limited, timestamp: Date.now() });
+        return; // nothing more to assess
       }
     }
 
