@@ -13,6 +13,7 @@ import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type Ca
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
 import { recipeFor, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
 import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
+import type { GitHubBackupSurface } from '../recommended/githubBackup.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
@@ -65,6 +66,14 @@ export interface RecommendedServiceRouteDeps {
   readCopyValue?: (name: string) => string | null;
   /** This machine's Bitwarden, scoped to the agent's folder; tests pass a stand-in. */
   bitwarden?: BitwardenSurface;
+  /** GitHub and this agent's state repository, for the private-backup recipe; tests pass a stand-in. */
+  github?: GitHubBackupSurface;
+  /** This agent's name, for things named after it. */
+  agentName?: string;
+  /** Turns the agent's git backup off in its config (a confirmed no to GitHub). */
+  disableGitBackup?: () => void;
+  /** Raises one attention item for the person (a privacy issue a check found). True once it is raised. */
+  raiseAttention?: (id: string, title: string, text: string) => Promise<boolean>;
   /**
    * True when this machine can message the person right now: it has a channel and holds the lease.
    * Setup talks to the person, so a yes is refused here when it can't, and a restart waits.
@@ -91,7 +100,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const starting = new Set<string>();
   const stopping = new Set<string>();
   const reach = (): boolean => deps.canReachOwner?.() ?? true;
-  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden });
+  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName });
   /** How often a copy kept elsewhere is brought up to date by the regular check, and how long a failed refresh waits before another try. */
   const SYNC_EVERY_MS = 24 * 60 * 60_000;
   const SYNC_RETRY_MS = 6 * 60 * 60_000;
@@ -174,6 +183,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         deleteSecret: deps.deleteSecret ?? (() => { throw new Error('this server cannot remove a stored key'); }),
         setUpHere,
         absentBefore: !!(was?.absentBeforeSetup || state?.absentBeforeSetup),
+        disableGitBackup: deps.disableGitBackup,
       });
       if (outcome.stopped) {
         updateSetupState(deps.stateDir, row.id, { stopped: { at: nowIso(), detail: outcome.detail }, stopRequestedAt: undefined, verified: undefined, keyStoredBySetup: undefined, signedInBySetup: undefined, absentBeforeSetup: undefined });
@@ -224,7 +234,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // A no that landed during the check wins: a pass is never written beside it.
     if (outcome.result === 'pass' && !hasGrant(service)) return;
     const recipe = recipeFor(catalog.find((r) => r.id === service) ?? { id: service, setupRecipe: null } as CatalogRow);
-    const { absent: _absent, ...recorded } = outcome;
+    const { absent: _absent, attention, ...recorded } = outcome;
+    // A check that found something only the person can fix (a public backup repository) asks for one attention item.
+    // Raised once per id; a later pass clears the mark so a repeat is raised again if it happens again.
+    if (attention && before?.attentionRaised !== attention.id && deps.raiseAttention) {
+      void deps.raiseAttention(attention.id, attention.title, attention.text).then((raised) => {
+        if (raised) updateSetupState(deps.stateDir, service, { attentionRaised: attention.id });
+      }).catch((err) => report(`Raise the ${service} attention item`, err, 'The person was not told about the privacy issue.'));
+    }
     const state = updateSetupState(deps.stateDir, service, {
       verified: { at: new Date(deps.now?.() ?? Date.now()).toISOString(), ...recorded },
       ...(alreadyHeld ? { alreadyHeld: true } : {}),
@@ -232,7 +249,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       // before setup found nothing here. A recipe with a key has the key route's record for this.
       ...(outcome.result === 'pass' && !alreadyHeld && !before?.alreadyHeld && recipe?.secretName === null && before?.absentBeforeSetup ? { signedInBySetup: true } : {}),
       // A switch-off record is for the service as it was; a new pass with a standing yes starts over.
-      ...(outcome.result === 'pass' ? { held: undefined, stopped: undefined, stopRequestedAt: undefined } : {}),
+      ...(outcome.result === 'pass' ? { held: undefined, stopped: undefined, stopRequestedAt: undefined, attentionRaised: undefined } : {}),
     });
     if (outcome.result !== 'pass' || !state.commitmentId) return;
     try {
@@ -473,7 +490,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // person already had is named as theirs. It also says when a yes can't be taken here.
     const workingHere = state?.verified?.result === 'pass' && !state.stopped;
     // A recipe that keeps a copy elsewhere says on the page which secrets it would copy: names only, never values.
-    const copies = recipeFor(row)?.sync ? (deps.readSecretNames?.() ?? []) : undefined;
+    const copies = recipeFor(row)?.listsCopies ? (deps.readSecretNames?.() ?? []) : undefined;
     res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...minted });
   });
 

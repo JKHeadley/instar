@@ -145,6 +145,20 @@ describe('recommended services: production wiring', () => {
     else expect(page.body.error).toBe('no-owner');
   });
 
+  it('the GitHub backup recipe is dark on a fleet agent and reachable on a proving agent through the real wiring', async () => {
+    const plain = boot(true);
+    const plainList = await request(plain.server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(plainList.body.services.find((row: { service: string }) => row.service === 'github-state-backup').available).toBe(false);
+    const { server } = boot(true, { recommendedServices: { provingRecipes: ['github-v1'] } });
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup']);
+    // The push route is wired and stops at the missing yes.
+    const sync = await request(app).post('/recommended-services/github-state-backup/sync').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(sync.status).toBe(409);
+    expect(sync.body.error).toBe('not-granted-here');
+  });
+
   it('an agent proving a recipe (a throwaway under a temp folder) reaches it through the real wiring, beside the proven ones', async () => {
     const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
     const app = server.getApp();
