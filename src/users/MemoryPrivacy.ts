@@ -22,6 +22,14 @@ export const READER_PROOF_MS = 5 * 60_000;
 /** Stands for the baseline operator on an agent with no profile for them. */
 export const OPERATOR_PERSON_ID = 'operator';
 
+/** A session can leave a link or a file where the server expects a folder: move it out of the way. */
+export function setAsideUnlessRealFolder(dir: string): void {
+  let info: fs.Stats;
+  try { info = fs.lstatSync(dir); } catch { return; } // @silent-fallback-ok — nothing there is the normal first run
+  if (!info.isSymbolicLink() && info.isDirectory()) return;
+  fs.renameSync(dir, `${dir}.set-aside-${randomBytes(8).toString('hex')}`);
+}
+
 export interface MemoryPrivacyConfig {
   enabled?: boolean;
   ownerUserId?: string;
@@ -379,7 +387,10 @@ export class MemoryPrivacy {
       ? path.join(this.deps.instarRoot, 'memory-scopes', encodeURIComponent(this.deps.agentId), `none-${sessionSuffix}`)
       : memoryScopeDir(this.deps.instarRoot, this.deps.agentId, audience);
     if (!dir) return null;
-    for (const sub of ['', 'inbox', 'tmp']) fs.mkdirSync(path.join(dir, sub), { recursive: true, mode: 0o700 });
+    for (const sub of ['', 'inbox', 'tmp']) {
+      if (sub) setAsideUnlessRealFolder(path.join(dir, sub));
+      fs.mkdirSync(path.join(dir, sub), { recursive: true, mode: 0o700 });
+    }
     return dir;
   }
 
