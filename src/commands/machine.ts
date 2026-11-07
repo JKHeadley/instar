@@ -682,6 +682,21 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
       // use a distinct agent-wide bearer conveyed only inside this
       // code-authenticated pairing response, so peers with different local API
       // tokens can still perform the recovery protocol.
+      // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6).
+      if (Array.isArray((result as { ownerIntroducers?: unknown }).ownerIntroducers)) {
+        try {
+          const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+          joinedConfig.mobilePairing ??= {};
+          if (!Array.isArray(joinedConfig.mobilePairing.ownerIntroducers)) {
+            joinedConfig.mobilePairing.ownerIntroducers = (result as { ownerIntroducers: Array<{ name: string; publicKey: string }> }).ownerIntroducers
+              .filter((e) => e && typeof e.name === 'string' && typeof e.publicKey === 'string').slice(0, 8);
+            fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+            config = loadConfig(projectDir);
+          }
+        } catch (err) {
+          console.log(pc.yellow(`  Could not copy the owner introducers: ${err instanceof Error ? err.message : String(err)}. Phones can still pair with the code.`));
+        }
+      }
       if (/^[a-f0-9]{64}$/i.test(result.identityRecoveryBearerToken ?? '')) {
         const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
         joinedConfig.multiMachine ??= {};

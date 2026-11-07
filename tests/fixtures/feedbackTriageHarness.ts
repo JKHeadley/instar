@@ -64,6 +64,7 @@ export interface Harness {
   second: { verdict: boolean | null; framework: string; available: boolean; advanceMs: number };
   /** Simulated duration of each triage-authority call (advances the harness clock). */
   callAdvanceMs: { value: number };
+  ownerEpoch: { value: number };
   approve(action?: 'create' | 'replace' | 'revoke'): void;
   addItem(id: string, opts?: { reports?: number; title?: string; description?: string; createdAt?: number }): Promise<string>;
   cleanup(): void;
@@ -90,6 +91,7 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
     decide: { fn: ((packets: TriagePacket[]) => packets.map((p) => decisionRow(p.clusterId))) as Decide },
     second: { verdict: true as boolean | null, framework: 'claude-code', available: true, advanceMs: 0 },
     callAdvanceMs: { value: 0 },
+    ownerEpoch: { value: 1 },
   } as Harness;
   const intelligence: IntelligenceProvider = {
     evaluate: async (prompt: string, options?: IntelligenceOptions) => {
@@ -117,7 +119,7 @@ export async function createHarness(opts: { config?: Partial<TriageLiveConfig>; 
     initiatives: tracker,
     arbiter: new FeedbackTriageArbiter(intelligence),
     secondOpinion: () => (h.second.available ? secondProvider : null),
-    ownerHost: 'm1', ownerEpoch: () => 1, isCanonicalOwner: () => true,
+    ownerHost: 'm1', ownerEpoch: () => h.ownerEpoch.value, isCanonicalOwner: () => true,
     config: () => h.config,
     quotaUsedPercent: async () => h.quota.value,
     ...(opts.primaryAccountAdmission ? { primaryAccountAdmission: opts.primaryAccountAdmission } : {}),

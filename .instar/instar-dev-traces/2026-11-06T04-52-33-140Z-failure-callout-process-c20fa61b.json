@@ -1,0 +1,106 @@
+{
+  "version": 3,
+  "slug": "failure-callout-process",
+  "sessionId": "6d4ab65a-82fb-4852-bae8-56d6089b15db",
+  "timestamp": "2026-11-06T04:52:33.140Z",
+  "artifactPath": "upgrades/side-effects/failure-callout-process.md",
+  "artifactSha256": "36b5bb6ecd26b7e5c03015103024c4f95d322ca20aa118baf9cb7788b7eb16f9",
+  "specPath": "docs/specs/failure-callout-process.md",
+  "coveredFiles": [
+    "docs/evidence/failure-callout/semantic-replay.json",
+    "docs/specs/failure-callout-process.eli16.md",
+    "docs/specs/failure-callout-process.md",
+    "docs/specs/reports/failure-callout-process-convergence.md",
+    "scripts/replay-failure-callout.mjs",
+    "src/commands/server.ts",
+    "src/core/CoherenceJournal.ts",
+    "src/core/FailureCalloutReplicatedStore.ts",
+    "src/core/JournalSyncApplier.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/core/correctionLearningMode.ts",
+    "src/core/failureCalloutAwareness.ts",
+    "src/core/types.ts",
+    "src/monitoring/CorrectionCaptureLoop.ts",
+    "src/monitoring/CorrectionClassReview.ts",
+    "src/monitoring/CorrectionLedger.ts",
+    "src/monitoring/FailureCallout.ts",
+    "src/monitoring/FailureInvestigationAdmission.ts",
+    "src/scaffold/templates.ts",
+    "src/scaffold/templates/jobs/instar/failure-callout-investigator.md",
+    "src/scaffold/templates/jobs/instar/scripts/failure-callout-admission.mjs",
+    "src/scheduler/JobGateReceipt.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/console-home-lifecycle.test.ts",
+    "tests/e2e/correction-learning-lifecycle.test.ts",
+    "tests/e2e/failure-callout-process-lifecycle.test.ts",
+    "tests/e2e/failure-callout-replication-lifecycle.test.ts",
+    "tests/e2e/ws2-reconciler-alive.test.ts",
+    "tests/e2e/ws2-reconciler-cross-instance.test.ts",
+    "tests/fixtures/failure-callouts/false-review-wait-without-link.json",
+    "tests/fixtures/failure-callouts/locked-screen-false-blocker.json",
+    "tests/fixtures/failure-callouts/telegram-group-handoff.json",
+    "tests/integration/corrections-routes.test.ts",
+    "tests/integration/failure-callout-pool-routes.test.ts",
+    "tests/integration/failure-investigation-admission-routes.test.ts",
+    "tests/integration/state-reconcile-route.test.ts",
+    "tests/unit/CoherenceJournal.test.ts",
+    "tests/unit/JobGateReceipt.test.ts",
+    "tests/unit/JobScheduler.test.ts",
+    "tests/unit/PostUpdateMigrator-failureCallout.test.ts",
+    "tests/unit/correction-class-review.test.ts",
+    "tests/unit/correction-learning-wiring-integrity.test.ts",
+    "tests/unit/correctionLearningMode.test.ts",
+    "tests/unit/failure-callout-capture.test.ts",
+    "tests/unit/failure-callout-job.test.ts",
+    "tests/unit/failure-callout-replication.test.ts",
+    "tests/unit/failure-callout.test.ts",
+    "tests/unit/failure-investigation-admission.test.ts",
+    "tests/unit/replicated-store-reconciler-wiring.test.ts",
+    "upgrades/next/failure-callout-process.md",
+    "upgrades/side-effects/failure-callout-process.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Shared durable forensic evidence, published authenticated case APIs and journal replication require full review; explicit user delegation authorizes nonconstitution approval and merge.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 5
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/failure-callout-process-convergence.md",
+      "iterations": 5,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The failure-callout-investigation registry uses the production decision and durable state: at most three pre-model admissions per occurrence across any pressure horizon and restart, with 30-minute/one-hour backoff and a hard pause. Only new occurrences or previously-unused recorded evidence explicitly rearm it. Real SQLite reconstruction tests and scheduler handoff tests prove no repeated session can reuse a consumed reservation."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [],
+    "notes": "The existing correction sentinel retained a one-line preference-shaped lesson, but no shared serious-failure evidence, diagnosis, repair and verified-closure contract. Echo-local intake could route incidents but could not supply every-agent product follow-through. The founding examples showed both ignored enforcement and false attributions; the fix adds the missing shared lifecycle rather than another reminder."
+  }
+}

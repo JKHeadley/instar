@@ -54,6 +54,7 @@ import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
 import { activeOwnerPhone, mountConsoleTicketDeviceRoutes } from './mobileConsoleTicket.js';
 import { mountPairingApprovalDeviceRoutes } from './mobilePairingApproval.js';
+import { mountIntroducerRoutes, mountIntroductionRedeemRoute, ownerIntroducers, type Introducer } from './mobilePairingIntroducer.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, mirrorMediaToTelegram, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
   type SignedAttachment, type TelegramMediaMirrorTarget,
@@ -123,6 +124,8 @@ export interface MobilePairingDeps {
    * stamps on its events (`meshSelfId ?? coordinator id ?? 'local'`). Absent ⇒ `selfMachineId`.
    */
   peopleMachineId?: () => string;
+  /** This agent's own identity key, for vouching for its owner's phones (mobile-pairing-introducer §3.2). */
+  readIdentity?: () => { publicKey: Buffer; privateKey: Buffer } | null;
 }
 
 /** The default people lookup: the registry on disk (read-only, no writes) plus `config.users`. */
@@ -332,10 +335,34 @@ export class MobilePairingService {
    * dashboard PIN session) when native conversations are on; otherwise null (the old refusal).
    */
   approvalPath(): 'telegram' | 'dashboard' | null {
-    // Native conversations off: exactly the old behaviour (try the Telegram DM whenever an adapter exists).
-    if (!this.nativeOn) return this.deps.ownerDM ? 'telegram' : null;
+    // A Telegram owner chat must really exist: `ownerDM` is wired even with no adapter, so it alone
+    // proves nothing (fb-cceb7986-efa; mobile-pairing-introducer §3.5).
     const owner = this.deps.telegramOwnerPresent ? this.deps.telegramOwnerPresent() : true;
-    return this.deps.ownerDM && owner ? 'telegram' : 'dashboard';
+    if (this.deps.ownerDM && owner) return 'telegram';
+    // No Telegram owner: the code is held for the pairing page when native conversations are on,
+    // or when an owner introducer can finish the pairing (the code stays the fallback).
+    if (this.nativeOn || this.introducers().length > 0) return 'dashboard';
+    return null;
+  }
+
+  /**
+   * The pairing page (or the legacy Phones tab) is open and unlocked right now: it polled the
+   * approvals list with an operator session within the last 25 s (both pages poll every 10 s).
+   * A display signal only (mobile-pairing-introducer §3.4); it grants nothing.
+   */
+  private pairingPageSeenAt = 0;
+  notePairingPageSeen(): void { this.pairingPageSeenAt = this.now(); }
+  pairingPageOpen(): boolean { return this.pairingPageSeenAt > 0 && this.now() - this.pairingPageSeenAt <= 25_000; }
+
+  /** Owner introducers this agent's creator configured (mobile-pairing-introducer §3.1), from the running config: a file edit applies at the next restart. */
+  introducers(): Introducer[] {
+    return ownerIntroducers(this.deps.config, (err) => this.deps.reportDegradation?.('MobileIntroducer.config', err));
+  }
+
+  /** A pairing approved on an introducer's word: the record in the owner's private chat, when there is one. */
+  tellOwnerIntroduced(introducerName: string, d: DeviceRecord): void {
+    const text = `A phone was added to ${this.deps.config.projectName} with Face ID, vouched for by ${introducerName}: ${d.deviceName ?? 'unnamed'} (key ${d.fingerprint ?? 'unknown'}). If that was not you, remove it on the Phones page.`;
+    void Promise.resolve(this.deps.ownerDM?.(text, '')).catch(() => { /* @silent-fallback-ok — a courtesy record; the activation already happened and shows on the Phones page */ });
   }
 
   /** Record a dashboard-path pending device's code (memory only). */
@@ -622,8 +649,22 @@ export class MobilePairingService {
   /** What a waiting phone is told (spec §3.5); nothing when the feature is off. */
   waitingFields(d: DeviceRecord): Record<string, unknown> {
     if (!isPairingApproveEnabled(this.deps.config)) return {};
-    const confirmWith = this.approvable(d) ? [this.isDashboardPending(d.id) ? 'dashboard' : 'telegram', ...(this.ownerPhoneCanApprove() ? ['owner-phone'] : []), 'code'] : ['code'];
-    return { confirmWith, fingerprint: d.fingerprint ?? null, expiresAt: d.expiresAt ?? null };
+    // Only ways that can work now, easiest first (mobile-pairing-introducer §3.4).
+    const introducers = this.introducers();
+    const dashboardPending = this.isDashboardPending(d.id);
+    const live = this.pairingPageOpen();
+    const confirmWith = this.approvable(d) ? [
+      ...(introducers.length > 0 ? ['paired-agent'] : []),
+      ...(this.ownerPhoneCanApprove() ? ['owner-phone'] : []),
+      ...(dashboardPending ? (live ? ['dashboard'] : []) : ['telegram']),
+      'code',
+    ] : ['code'];
+    return {
+      confirmWith, fingerprint: d.fingerprint ?? null, expiresAt: d.expiresAt ?? null,
+      ...(introducers.length > 0 && this.approvable(d) ? { introducers: introducers.map((i) => ({ name: i.name, keyId: i.keyId })) } : {}),
+      // Where the code is, when it is held for the pairing page (the code fallback names it).
+      ...(dashboardPending && d.host ? { codeAt: 'pairing-page', codePageUrl: codePageUrlForDevice(d.host, d.id) } : {}),
+    };
   }
 
   /** One contentless push so an owner phone can answer; only this machine's phones can (spec §6). */
@@ -930,7 +971,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     // any machine can, so refuse here (not after the operator opened the link) when this machine
     // cannot deliver the confirmation code.
     const approval = svc.approvalPath();
-    if (!approval || (approval === 'telegram' && !svc.holdsLease())) {
+    if (!approval) {
+      res.status(409).json({ error: 'approval-unavailable', detail: 'This agent has no way to confirm a new phone yet: it has no Telegram chat with its owner, phone pairing without Telegram is not turned on, and no other agent of the owner is set up to vouch for phones. Connect Telegram, or have the agent that created this one add itself as an introducer, then make a new link.' });
+      return;
+    }
+    if (approval === 'telegram' && !svc.holdsLease()) {
       res.status(409).json({ error: 'approval-unavailable', detail: 'This machine cannot send the confirmation code. Make the link from the machine serving Telegram.' });
       return;
     }
@@ -991,6 +1036,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
   router.get('/mobile/pairing-approvals', (req: Request, res: Response) => {
     if (!operatorOnly(req, res)) return;
+    // A waiting phone may now be told "tap Approve on the pairing page" (mobile-pairing-introducer §3.4).
+    svc.notePairingPageSeen();
     const approvals = svc.dashboardApprovals().map(({ device, code, expiresAt }) => ({
       deviceId: device.id, deviceName: device.deviceName, label: device.label, fingerprint: device.fingerprint ?? null, ...personFields(device, svc),
       // Display form for both formats (mobile-pairing-word-code §3.4): `KITE-4172` or `123 456`.
@@ -1226,6 +1273,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
 
   // Approve a waiting phone from an owner phone, with Face ID (mobile-pairing-approve §3.4).
   mountPairingApprovalDeviceRoutes(router, svc);
+
+  // Add a new agent from a phone you already use (docs/specs/mobile-pairing-introducer.md): this
+  // agent vouching for its owner phone, and this agent taking another agent's word.
+  mountIntroducerRoutes(router, svc, { readIdentity: () => deps.readIdentity?.() ?? null });
+  mountIntroductionRedeemRoute(router, svc);
 
   // Revoke: bearer may revoke any device; a device itself; an ACTIVE OWNER phone any device held on
   // this machine (docs/specs/mobile-native-phones-messages.md §3.3 — what the console's Phones panel
@@ -1741,6 +1793,11 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/pairing-requests$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'pairing-requests-read' },
     { method: 'POST', re: new RegExp(`^/mobile/pairing-requests/${UUID}/(challenge|approve|decline)$`), statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'pairing-approve' },
     { method: 'POST', re: /^\/mobile\/device\/presence-key$/, statuses: active, body: 'json' },
+    // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2-3.3). The
+    // introducer routes re-check owner, local TLS and the switch; the waiting phone hands in its own.
+    { method: 'GET', re: /^\/mobile\/introducer$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'introducer-read' },
+    { method: 'POST', re: /^\/mobile\/introductions(\/challenge)?$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'pairing-approve' },
+    { method: 'POST', re: /^\/mobile\/device\/introduction$/, statuses: new Set(['pending', 'active']), body: 'json', ownBucket: 6, bucket: 'introduction-redeem' },
     { method: 'POST', re: /^\/mobile\/console-ticket\/challenge$/, statuses: active, body: 'json' },
     { method: 'POST', re: /^\/mobile\/console-ticket$/, statuses: active, body: 'json' },
     // Native schedule, promises and machines (mobile-native-ops-screens): read-only trimmed
@@ -1788,6 +1845,8 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     // is enough. Exactly these two paths: the routes machines use with each other are bearer-only.
     { method: 'POST', re: /^\/mobile\/health-issues\/choices$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     { method: 'POST', re: /^\/mobile\/health-issues\/choices\/undo$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
+    // Done and Ignore for a Needs-you item (docs/specs/mobile-attention-choices.md), in the same bucket.
+    { method: 'POST', re: /^\/mobile\/attention\/(?=[a-z0-9._:-]*[a-z0-9])[a-z0-9._:-]{1,200}\/choice$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'health-choices' },
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): read-only
     // trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/proposals$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'proposals-inside-reads' },
@@ -1800,6 +1859,23 @@ export const DEVICE_ALLOWLIST: Array<{ method: string; re: RegExp; statuses: Rea
     { method: 'GET', re: /^\/mobile\/permissions\/slips$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'GET', re: /^\/mobile\/permissions\/features$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'POST', re: /^\/mobile\/permissions\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
+    // their own bucket so retries can't use up the approvals' allowance.
+    { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/desktop-unlock$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/dashboard-pin\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    { method: 'POST', re: /^\/mobile\/dashboard-pin\/reveal$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
+    // The desktop calls the app makes after a Face ID unlock (§2.2): signed by the owner phone instead of the
+    // API token, and still refused by each route without a desktop session. Reads that ask the other machines
+    // share 20/min, the two writes 12/min, and the viewer's polls 240/min.
+    { method: 'GET', re: /^\/desktop\/targets$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'owner-desktop-peers' },
+    { method: 'GET', re: /^\/desktop\/setup$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'owner-desktop-peers' },
+    { method: 'GET', re: /^\/desktop\/setup\/[^/]{1,200}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'POST', re: /^\/desktop\/setup\/[^/]{1,200}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-desktop-writes' },
+    { method: 'POST', re: /^\/desktop\/requests$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-desktop-writes' },
+    { method: 'GET', re: /^\/desktop\/requests\/[^/]{1,200}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'GET', re: /^\/desktop\/requests\/[^/]{1,200}\/(cursor|displays)$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
+    { method: 'POST', re: /^\/desktop\/requests\/[^/]{1,200}\/(ticket|resume|revoke)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 240, bucket: 'owner-desktop' },
     { method: 'POST', re: /^\/mobile\/permissions\/requests\/[a-z0-9._:-]{1,128}\/(approve|decline)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/permissions\/features\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // Ask for a password or key, and cancel a request (docs/specs/mobile-native-secrets-writes.md): the same

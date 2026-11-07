@@ -1,4 +1,5 @@
 // safe-fs-allow: test fixture cleanup uses SafeFsExecutor.
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import type { DiagnosisPeerRequest } from '../../../src/localVerify/failedFileDi
 
 const req: DiagnosisPeerRequest = { repo: 'JKHeadley/instar', pr: 9, headSha: 'a'.repeat(40), baseSha: 'b'.repeat(40),
   baseRefName: 'main', verifierVersion: 'v1', policyHash: 'c'.repeat(64), failedFiles: ['tests/unit/a.test.ts'],
-  attemptId: '1'.repeat(32), coordinatorMachineId: 'studio', leaseEpoch: 7 };
+  attemptId: randomBytes(16).toString('hex'), coordinatorMachineId: 'studio', leaseEpoch: 7 };
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) SafeFsExecutor.safeRmSync(root, { recursive: true, force: true,
   operation: 'FailedFileDiagnosisPeerService.test.ts' }); });
