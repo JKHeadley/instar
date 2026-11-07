@@ -7,6 +7,7 @@ import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
  * and can be monitored/reaped by the server.
  */
 
+import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import type { MemoryPrivacyRecovery } from '../users/MemoryPrivacyRecovery.js';
 import { isCredentialEnvName, CLAUDE_CONFINED_PERMISSION_ARGS } from './credentialEnvNames.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -1905,7 +1906,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   /** Sessions whose output may feed agent-wide digests: never one inside the boundary. */
   sessionsForAgentDigests(): Session[] {
-    return this.listRunningSessions().filter((s) => !s.memoryScopeDir);
+    return this.listRunningSessions().filter((s) => this.feedsAgentDigests(s));
+  }
+
+  /** The same rule for one session, for callers holding a finished one. */
+  feedsAgentDigests(session: Pick<Session, 'memoryScopeDir'>): boolean {
+    return !session.memoryScopeDir;
   }
 
   /** What the status route reports. No people's names beyond the owner's id. */
@@ -3175,6 +3181,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   setClaudeSessionId(instarSessionId: string, claudeSessionId: string): void {
     if (!claudeSessionId) return;
+    // A hook reports this, and a confined session can call that route itself.
+    if (!isSafeSessionRef(claudeSessionId)) { console.warn(`[SessionManager] refused a session id for ${instarSessionId}`); return; }
     const sessions = this.state.listSessions({ status: 'running' });
     const session = sessions.find(s => s.id === instarSessionId);
     if (!session || session.claudeSessionId === claudeSessionId) return;
@@ -4569,7 +4577,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (headlessFramework === 'claude-code') {
       const continuityFlags: string[] = options.sessionId
         ? ['--session-id', options.sessionId]
-        : options.resumeSessionId
+        : isSafeSessionRef(options.resumeSessionId)
           ? ['--resume', options.resumeSessionId]
           : [];
       if (continuityFlags.length > 0) {
@@ -8519,7 +8527,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       tmuxArgs.push('--permission-mode', options.permissionMode);
 
-      if (options.resumeSessionId) {
+      if (isSafeSessionRef(options.resumeSessionId)) {
         tmuxArgs.push('--resume', options.resumeSessionId);
         console.log(`[SessionManager] Resuming triage session: ${options.resumeSessionId}`);
       }
