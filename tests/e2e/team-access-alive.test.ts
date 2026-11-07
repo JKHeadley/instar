@@ -128,6 +128,8 @@ describe('team access — production wiring', () => {
 
     // Her phone is bound in the log, so another machine could tell whose key it is.
     expect(server.mobilePairing!.teamLog()!.allRows().some((r) => r.kind === 'machine' && r.events.some((e) => e.type === 'phone-bind' && e.boundTo === 'mia'))).toBe(true);
+    // A healthy log holds nobody, and the owner's screen says so.
+    expect((await owner('GET', '/mobile/team/context')).body.held).toEqual([]);
     // She sees and talks only in what she was given.
     const list = await mia('GET', '/mobile/conversations');
     expect(list.status).toBe(200);

@@ -9,6 +9,7 @@ import { Router, type Request, type Response } from 'express';
 import { deviceKeyHashOf, type MachineSigner } from '../core/AppRecordSignatures.js';
 import { displayCode } from '../core/MobileDeviceKeys.js';
 import { parseSignedEvents, type RequestEvent } from '../core/TeamAccessEvents.js';
+import { streamKey } from '../core/TeamAccessMerge.js';
 import { TEAM_ACCESS_WRITE_PATHS, eventsFitPath, type ConfinedEntry, type TeamAccessRow } from '../core/TeamAccessLog.js';
 import { ORG_ROLES, type OrgRole } from '../permissions/types.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
@@ -45,6 +46,7 @@ const LOG_UNREADABLE: Refusal = { status: 409, error: 'team-access-unreadable', 
 
 const refuseText: Record<string, string> = {
   'memory-privacy-required': 'Team members need memory privacy on. Turn it on first.',
+  'access-being-checked': 'The access record is being checked across your machines. Team phones and changes wait until that finishes.',
   'team-needs-one-machine': 'Team members work on agents running on one machine for now. Support for several machines is the next step. You can still use owner and MSP phones.',
 };
 
@@ -251,6 +253,17 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     }
     if (log.healthState() === 'unreadable') return { status: 409, body: { error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail } };
     const events = parseSignedEvents(req.body);
+    if (kind === 'team-origin-gone') {
+      const gone = events?.length === 1 && events[0].type === 'origin-gone' ? events[0] : null;
+      if (!gone) return { status: 400, body: { error: 'bad-events' } };
+      // Only a machine this log has rows from can be gone, and a machine cannot settle its own gap.
+      if (gone.machine === deps.signer()?.machineId()) return { status: 409, body: { error: 'origin-is-this-machine', detail: 'This is the machine you are connected to, so it cannot be marked as gone.' } };
+      const held = log.vector()[streamKey(gone.machine, gone.incarnation)];
+      if (held === undefined || gone.throughSeq > held) return { status: 409, body: { error: 'unknown-origin', detail: 'This machine holds no such record to settle.' } };
+      appendRequest(req, deviceId);
+      svc.reconcileTeamPhones();
+      return { status: 200, body: { ok: true } };
+    }
     if (events?.length !== 1 || events[0].type !== 'team-off') return { status: 400, body: { error: 'bad-events' } };
     await underLocks((log.readConfined() ?? []).map((entry) => entry.ref), () => appendRequest(req, deviceId));
     svc.revokePersonPhones(null);
@@ -263,7 +276,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     const log = svc.teamLog();
     res.json({
       ownerPersonKey: log?.state().ownerPersonKey ?? owner.userId, ownerLinks: owner.links, several: owner.several,
-      teamOn: svc.teamOn(), refusal: svc.teamRefusal(),
+      teamOn: svc.teamOn(), refusal: svc.teamRefusal(), held: log?.gaps() ?? [],
       people: [...(log?.state().people.values() ?? [])].map((p) => ({ personKey: p.personKey, name: p.name, role: p.role })),
     });
   });

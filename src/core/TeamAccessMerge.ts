@@ -31,6 +31,9 @@ export interface MergeRow {
   events: ReadonlyArray<MergeEvent>;
 }
 
+/** The stream name of rows written before chains existed. */
+export const UNCHAINED_INCARNATION = 'v1';
+
 export const streamKey = (origin: string, incarnation: string): string => `${origin}/${incarnation}`;
 const streamOf = (r: MergeRow): string => streamKey(r.origin, r.incarnation);
 const rowKey = (r: MergeRow): string => `${streamOf(r)}#${r.seq}#${r.hash}`;
@@ -138,7 +141,9 @@ export function mergeRows(input: ReadonlyArray<MergeRow>): MergedAccess {
 export type Gap =
   | { kind: 'chain-break'; origin: string; incarnation: string; afterSeq: number }
   | { kind: 'fork'; origin: string; incarnation: string; seq: number }
-  | { kind: 'new-incarnation'; origin: string; incarnation: string };
+  | { kind: 'new-incarnation'; origin: string; incarnation: string }
+  /** A row this machine cannot verify yet, because the signer's key has not reached it. */
+  | { kind: 'unplaced'; origin: string; incarnation: string; seq: number };
 
 /**
  * What a machine can actually see is wrong. A row only a sleeping machine holds is none of these: it is
@@ -158,12 +163,16 @@ export function findGaps(input: ReadonlyArray<MergeRow>, firstIncarnation: (orig
     const { origin, incarnation } = list[0];
     const named = gone.some((g) => g.machine === origin);
     const first = firstIncarnation(origin);
-    if (first !== null && first !== incarnation && !named) gaps.push({ kind: 'new-incarnation', origin, incarnation });
+    // Rows from before chains are the start of an origin's history, never a lost tail.
+    if (first !== null && first !== incarnation && incarnation !== UNCHAINED_INCARNATION && !named) gaps.push({ kind: 'new-incarnation', origin, incarnation });
+    // The owner has settled this stream: its rows count only as `mergeRows` allows, and hold nobody.
+    if (gone.some((g) => g.machine === origin && g.incarnation === incarnation)) continue;
     let last: MergeRow | null = null;
     for (const r of list) {
       if (last && r.seq === last.seq) { gaps.push({ kind: 'fork', origin, incarnation, seq: r.seq }); continue; }
-      const accepted = gone.some((g) => g.machine === origin && g.incarnation === incarnation && r.seq <= g.throughSeq + 1);
-      if (last && !accepted && (r.seq !== last.seq + 1 || r.prev !== last.hash)) gaps.push({ kind: 'chain-break', origin, incarnation, afterSeq: last.seq });
+      // Rows from before chains carry no previous hash, so only their numbering can break.
+      const linked = incarnation === UNCHAINED_INCARNATION || r.prev === last?.hash;
+      if (last && (r.seq !== last.seq + 1 || !linked)) gaps.push({ kind: 'chain-break', origin, incarnation, afterSeq: last.seq });
       last = r;
     }
   }

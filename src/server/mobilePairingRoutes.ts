@@ -1,3 +1,4 @@
+import type { TeamActionKind } from './mobilePermissionsRoutes.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/mobilePairingRoutes.ts');
@@ -478,9 +479,11 @@ export class MobilePairingService {
   }
 
   /** Why a team phone is refused right now, or null. Memory privacy is required, and stays required (§3.6). */
-  teamRefusal(): 'memory-privacy-required' | 'team-needs-one-machine' | null {
+  teamRefusal(): 'memory-privacy-required' | 'team-needs-one-machine' | 'access-being-checked' | null {
     const gate = this.deps.teamGate?.() ?? 'memory-privacy-required';
-    return gate === 'ok' ? null : gate;
+    if (gate !== 'ok') return gate;
+    // A lost narrowing could have named anyone, so a gap holds everyone (Step 2b).
+    return this.teamLog()?.gaps().length ? 'access-being-checked' : null;
   }
 
   /** A one-time link for a team person. Their phone's standing comes from the log, never the link. */
@@ -539,7 +542,7 @@ export class MobilePairingService {
   }
 
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
-  teamActionRunner: ((kind: 'team-off' | 'team-restore' | 'team-memory-privacy', req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
+  teamActionRunner: ((kind: TeamActionKind, req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
 
   /** Tell a team phone's readers about a reply in a Telegram topic they hold. */
   teamTopicReply(topicId: number): void {
@@ -1991,7 +1994,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/team\/invites$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/grants$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
-    { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy|origin-gone)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
     { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
     { method: 'POST', re: /^\/mobile\/people\/[^/]{1,128}\/grants$/, statuses: active },

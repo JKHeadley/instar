@@ -7,6 +7,7 @@ import path from 'node:path';
 import { sha256Hex, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { TeamAccessLog, rowPayload, type RequestRow, type TeamAccessRow } from '../../src/core/TeamAccessLog.js';
 import { pullFromPeers, shouldRefuseForStaleness } from '../../src/core/TeamAccessSync.js';
+import { findGaps } from '../../src/core/TeamAccessMerge.js';
 
 const signerFor = (id: string): MachineSigner => ({
   machineId: () => id, signerKeyHash: () => `k-${id}`,
@@ -260,5 +261,140 @@ describe('the confined list across machines', () => {
     a.appendMachineEvents([{ type: 'conversation-own', ref: 'x', personKey: 'p' }]);
     expect(a.backfillConfineRows()).toBe(1);
     expect(a.backfillConfineRows()).toBe(0);
+  });
+});
+
+describe('what holds every team person', () => {
+  const copyOf = (l: TeamAccessLog, id: string): TeamAccessLog => {
+    const c = machine(id);
+    c.ingest(l.allRows() as TeamAccessRow[]);
+    return c;
+  };
+  const forkOf = (row: TeamAccessRow, at: string): TeamAccessRow => {
+    const { machineSig: _s, ...rest } = row as TeamAccessRow & { at?: string };
+    const next = { ...rest, at } as never;
+    return { ...(next as object), machineSig: signerFor((row.origin as string)).sign(rowPayload(next)) } as TeamAccessRow;
+  };
+
+  it('two healthy machines hold nobody', () => {
+    const a = machine('A'); const b = machine('B');
+    start(a); sync(a, b);
+    b.appendMachineEvents([{ type: 'lower', personKey: 'p', role: 'guest' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    sync(a, b);
+    expect(a.gaps()).toEqual([]);
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('a row missing from the middle of a machine\'s rows is a gap', () => {
+    const a = machine('A'); const b = machine('B');
+    start(a);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    b.appendMachineEvents([{ type: 'confine', ref: 'c3' }]);
+    const rows = a.allRows() as TeamAccessRow[];
+    b.ingest(rows.filter((r) => r !== rows[rows.length - 2]));
+    expect(b.gaps().map((g) => g.kind)).toEqual(['chain-break']);
+    b.ingest([rows[rows.length - 2]]);
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('a machine that only has an earlier part of the rows is pending, not held', () => {
+    const a = machine('A'); const b = machine('B');
+    start(a);
+    b.appendMachineEvents([{ type: 'confine', ref: 'c3' }]);
+    b.ingest((a.allRows() as TeamAccessRow[]).slice(0, 1));
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('two rows with one number are found through the hash, though the vectors match', () => {
+    const a = machine('A');
+    start(a);
+    const b = copyOf(a, 'B'); const c = copyOf(a, 'C');
+    b.appendMachineEvents([{ type: 'confine', ref: 'c3' }]);
+    const last = a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    b.ingest([last]);
+    c.ingest([forkOf(last, '2020-01-01T00:00:00.000Z')]);
+    expect(b.vector()).toMatchObject(c.vector());
+    expect(c.rowsBeyond(b.vector())).toHaveLength(0);
+    b.ingest(c.rowsBeyond(b.vector(), b.heads()));
+    expect(b.gaps().map((g) => g.kind)).toContain('fork');
+  });
+
+  it('only the owner\'s phone can settle a gap', () => {
+    const a = machine('A'); const b = machine('B');
+    start(a);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    const [stream] = Object.keys(a.vector());
+    const [origin, incarnation] = stream.split('/');
+    const rows = a.allRows() as TeamAccessRow[];
+    bind(b);
+    b.ingest(rows.filter((r) => r !== rows[1]));
+    expect(b.gaps()).toHaveLength(1);
+    const forged = signed([{ type: 'origin-gone', machine: origin, incarnation, throughSeq: 1 }]);
+    forged.signedOrigin = { ...forged.signedOrigin, keyHash: 'stranger' };
+    b.appendSignedRequest(forged);
+    expect(b.gaps()).toHaveLength(1);
+    b.appendSignedRequest(signed([{ type: 'origin-gone', machine: origin, incarnation, throughSeq: 1 }]));
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('a machine named gone starts a new stream when it hears of it', () => {
+    const a = machine('A'); const b = machine('B');
+    start(a); sync(a, b);
+    const [stream] = Object.keys(a.vector());
+    const [origin, incarnation] = stream.split('/');
+    bind(b);
+    b.appendSignedRequest(signed([{ type: 'origin-gone', machine: origin, incarnation, throughSeq: 1 }]));
+    sync(b, a);
+    const row = a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    expect(row.incarnation).not.toBe(incarnation);
+    sync(a, b);
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('a machine that finds a peer holds more of its own stream moves to a new one, and that holds everyone', () => {
+    const a = machine('A'); const b = machine('B');
+    start(a); sync(a, b);
+    b.appendMachineEvents([{ type: 'confine', ref: 'c0' }]);
+    sync(a, b);
+    const dir = path.resolve((a as unknown as { dir: string }).dir);
+    const before = (a.allRows() as TeamAccessRow[]).slice();
+    const late = a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    sync(a, b);
+    // a backup from before the last row
+    const lastGood = (a as unknown as { lastGoodDir: string }).lastGoodDir;
+    fs.renameSync(lastGood, `${lastGood}.set-aside`);
+    fs.writeFileSync(path.join(dir, 'log.jsonl'), before.map((r) => `${JSON.stringify(r)}\n`).join(''));
+    const back = new TeamAccessLog({ stateDir: path.resolve(dir, '..', '..'), signer: signerFor('A'), verify });
+    back.ingest(b.rowsBeyond(back.vector()));
+    const next = back.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    expect(next.incarnation).not.toBe(late.incarnation);
+    expect(back.gaps().map((g) => g.kind)).toContain('new-incarnation');
+  });
+
+  it('a row that cannot be placed yet holds, on several machines only', () => {
+    let placed = false;
+    const v = (r: TeamAccessRow) => (r.kind === 'machine' && !placed && r.origin === 'A' ? 'unknown' as const : verify(r));
+    const a = machine('A');
+    bind(a);
+    const b = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-gap-')), signer: signerFor('B'), verify: v });
+    expect(b.gaps()).toEqual([]);
+    b.ingest(a.allRows() as TeamAccessRow[]);
+    expect(b.gaps()).toEqual([]);
+    bind(b);
+    expect(b.gaps().map((g) => g.kind)).toEqual(['unplaced']);
+    placed = true;
+    b.ingest([]);
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('rows from before chains are not a gap', () => {
+    const merged = findGaps([
+      { origin: 'A', incarnation: 'v1', seq: 1, prev: null, hash: 'h1', seen: {}, events: [] },
+      { origin: 'A', incarnation: 'v1', seq: 2, prev: null, hash: 'h2', seen: {}, events: [] },
+      { origin: 'A', incarnation: 'x', seq: 3, prev: 'anchor', hash: 'h3', seen: {}, events: [] },
+    ], () => 'x');
+    expect(merged).toEqual([]);
   });
 });

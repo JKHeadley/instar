@@ -11,19 +11,19 @@ import type { TeamAccessLog, TeamAccessRow } from './TeamAccessLog.js';
 
 export interface PeerRows { rows: TeamAccessRow[]; vector: Record<string, number> }
 
-export interface SyncPeer { machineId: string; fetchRows(have: Record<string, number>): Promise<PeerRows> }
+export interface SyncPeer { machineId: string; fetchRows(have: Record<string, number>, heads: Record<string, string>): Promise<PeerRows> }
 
 export interface PeerOutcome { machineId: string; answered: boolean; added: number; refused: number }
 
 export type PullResult = { outcomes: PeerOutcome[]; anyAnswered: boolean; lastAnsweredAt: number | null };
 
 /** Ask each peer for what is missing. A peer that does not answer is not an error: laptops sleep. */
-export async function pullFromPeers(log: Pick<TeamAccessLog, 'vector' | 'ingest'>, peers: ReadonlyArray<SyncPeer>, now: () => number = Date.now): Promise<PullResult> {
+export async function pullFromPeers(log: Pick<TeamAccessLog, 'vector' | 'heads' | 'ingest'>, peers: ReadonlyArray<SyncPeer>, now: () => number = Date.now): Promise<PullResult> {
   const outcomes: PeerOutcome[] = [];
   let lastAnsweredAt: number | null = null;
   for (const peer of peers) {
     try {
-      const { rows } = await peer.fetchRows(log.vector());
+      const { rows } = await peer.fetchRows(log.vector(), log.heads());
       const { added, refused } = log.ingest(rows);
       outcomes.push({ machineId: peer.machineId, answered: true, added, refused });
       lastAnsweredAt = now();

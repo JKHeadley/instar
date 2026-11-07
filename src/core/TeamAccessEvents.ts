@@ -14,7 +14,9 @@ export type RequestEvent =
   | { type: 'person-set'; personKey: string; role: OrgRole }
   | { type: 'person-remove'; personKey: string }
   | { type: 'grant'; personKey: string; ref: string; access: GrantAccess }
-  | { type: 'grant-remove'; personKey: string; ref: string };
+  | { type: 'grant-remove'; personKey: string; ref: string }
+  /** The owner settles a gap: this machine's rows past `throughSeq` count only if they narrow. */
+  | { type: 'origin-gone'; machine: string; incarnation: string; throughSeq: number };
 
 export type MachineEvent =
   | { type: 'phone-bind'; keyHash: string; deviceId: string; boundTo: string }
@@ -70,6 +72,9 @@ export function validateRequestEvent(raw: unknown): RequestEvent | null {
       return { type: 'grant', personKey: e.personKey, ref: e.ref, access: e.access };
     case 'grant-remove':
       return str(e.personKey) && str(e.ref) ? { type: 'grant-remove', personKey: e.personKey, ref: e.ref } : null;
+    case 'origin-gone':
+      if (!str(e.machine) || !str(e.incarnation) || !Number.isSafeInteger(e.throughSeq) || (e.throughSeq as number) < 0) return null;
+      return { type: 'origin-gone', machine: e.machine, incarnation: e.incarnation, throughSeq: e.throughSeq as number };
     default: return null;
   }
 }

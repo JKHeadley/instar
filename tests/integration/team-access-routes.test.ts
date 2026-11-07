@@ -730,3 +730,43 @@ describe('Face ID actions', () => {
     expect((await faceId(e, owner, 'team-restore', '/mobile/team/restore')).status).toBe(200);
   });
 });
+
+describe('when a machine\'s record has a gap', () => {
+  const peerRow = () => ({
+    seq: 1, kind: 'machine', at: new Date().toISOString(), events: [{ type: 'confine', ref: 'telegram:77' }],
+    origin: 'peer-b', incarnation: 'i1', prev: null, seen: {},
+    machineSig: { machineId: 'peer-b', signerKeyHash: 'unknown-key', sig: 'c2ln' },
+  }) as never;
+  const gone = (machine: string, incarnation: string, throughSeq: number) => ({ events: [{ type: 'origin-gone', machine, incarnation, throughSeq }] });
+
+  it('every team phone waits, the owner is told why, and only the owner with Face ID can settle it', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
+
+    expect(e.svc.teamLog()!.ingest([peerRow()]).added).toBe(1);
+    const held = await send(e, member, 'GET', '/mobile/team/people');
+    expect(held.status).toBe(403);
+    expect(held.body.error).toBe('access-being-checked');
+    const context = await send(e, owner, 'GET', '/mobile/team/context');
+    expect(context.body.refusal).toBe('access-being-checked');
+    expect(context.body.held.map((g: { kind: string }) => g.kind)).toEqual(['unplaced']);
+
+    const body = gone('peer-b', 'i1', 0);
+    expect((await send(e, member, 'POST', '/mobile/team/origin-gone', body)).status).toBe(403);
+    expect((await send(e, owner, 'POST', '/mobile/team/origin-gone', body)).status).toBe(401);
+    const self = loadMachineSigner(e.dir)!.machineId();
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone(self, 'i1', 0))).body.error).toBe('origin-is-this-machine');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('peer-c', 'i1', 0))).body.error).toBe('unknown-origin');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('peer-b', 'i1', 9))).body.error).toBe('unknown-origin');
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(403);
+
+    const settled = await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', body);
+    expect(settled.status).toBe(200);
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.gaps()).toEqual([]);
+  });
+});

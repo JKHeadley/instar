@@ -2108,9 +2108,9 @@ export class AgentServer {
         const entries = new TeamConfinement(options.config.stateDir).entries();
         return entries === null || entries.size > 0;
       };
-      machineRouteContext.teamAccessRows = (have) => {
+      machineRouteContext.teamAccessRows = (have, heads) => {
         const log = this.mobilePairing?.teamLog() ?? null;
-        return { rows: log?.rowsBeyond(have) ?? [], vector: log?.vector() ?? {} };
+        return { rows: log?.rowsBeyond(have, heads) ?? [], vector: log?.vector() ?? {} };
       };
       this.machineRouteContext = machineRouteContext;
       const machineRoutes = createMachineRoutes(machineRouteContext);

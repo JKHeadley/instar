@@ -21,3 +21,9 @@ Each conversation locked here is told to peers as a `confine` row, and a peer wr
 
 ## Phones across machines
 A team phone is bound in the log at activation, with a pass at boot for 2a's phones. `reconcileTeamPhones` revokes a phone here when its person was removed elsewhere. A phone whose person the log has never held is left alone, because it can pair before the row arrives.
+
+## The hold
+`gapsIn` finds what a log can see is wrong: a broken chain, two rows with one number, a second stream from one machine, or a row that cannot be verified yet. Any of those refuses every team phone with `access-being-checked`, through the one existing refusal point. A log with rows from one machine holds nobody, so an agent on one machine sees no change. Vectors alone cannot show two rows with one number, so a pull also sends the hash of its last row per stream.
+**Over-block:** a machine that restores from a backup holds every team phone until the owner settles it. Deliberate: a lost row could have been a removal.
+**Settling:** `POST /mobile/team/origin-gone`, owner only, Face ID. A row counts as settling a gap only if the owner's phone signed it. The named machine starts a new stream when it hears.
+**Found by the tests:** a machine's next number came from the snapshot's highest row, which can be a peer's, and that read as a lost row. Own numbers now come from own rows once a peer's rows are held.
