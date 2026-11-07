@@ -93,7 +93,7 @@ export interface PairingSiblingView { machineId: string; name?: string; status?:
 export interface MobilePairingDeps {
   config: InstarConfig;
   /** Whether team phones may work right now (§3.6, §4.1). Absent refuses them. */
-  teamGate?: () => 'ok' | 'memory-privacy-required' | 'team-needs-one-machine';
+  teamGate?: () => 'ok' | 'memory-privacy-required';
   stateDir: string;
   tunnel?: () => PairingTunnelView | undefined;
   selfMachineId?: string | null;
@@ -482,7 +482,7 @@ export class MobilePairingService {
   }
 
   /** Why a team phone is refused right now, or null. Memory privacy is required, and stays required (§3.6). */
-  teamRefusal(): 'memory-privacy-required' | 'team-needs-one-machine' | 'access-being-checked' | null {
+  teamRefusal(): 'memory-privacy-required' | 'access-being-checked' | null {
     const gate = this.deps.teamGate?.() ?? 'memory-privacy-required';
     if (gate !== 'ok') return gate;
     // A lost narrowing could have named anyone, so a gap holds everyone (Step 2b).
@@ -537,6 +537,7 @@ export class MobilePairingService {
   reconcileTeamPhones(): void {
     const log = this.teamLog();
     if (!log || log.healthState() !== 'ok') return;
+    this.teamGrantCheck?.();
     for (const d of this.devices.list()) {
       if (d.role !== 'team' || d.status === 'revoked' || !d.userId) continue;
       // A phone can pair before its person's row arrives here, so only someone the log once held counts.
@@ -579,6 +580,9 @@ export class MobilePairingService {
     return [...readers].filter((key) => !log.mayRead(key, ref, row.accessStamp!, row.senderPerson?.userId ?? null)).map((key) => s.people.get(key)?.name ?? key);
   }
 
+  /** Set by the team router: voids a grant from another machine that this machine would have refused. */
+  teamGrantCheck: (() => void) | null = null;
+
   /** The exchange with peers; absent on an agent with no machine identity. */
   teamPuller: TeamAccessPuller | null = null;
 
@@ -594,7 +598,7 @@ export class MobilePairingService {
     this.push?.onAppReply(ref, `topic-${topicId}-${Date.now()}`);
   }
 
-  /** A second machine has to wait: it would know none of this (§4.1). */
+  /** A machine that does not understand a team must not join one (Step 2b). */
   teamJoinBlocked(): boolean {
     const log = this.teamLog();
     if (log && this.teamOn()) return true;

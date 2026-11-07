@@ -655,3 +655,56 @@ describe('who may read a message', () => {
     expect(again.stampMessage('c', 'agent')!.seq).toBe(two.seq + 1);
   });
 });
+
+describe('what a peer says about itself', () => {
+  const rigFor = (standing: unknown, file?: string, opts: { vector?: Record<string, number> } = {}) => {
+    const local = machine('A');
+    return new TeamAccessPuller({
+      log: () => local, afterIngest: () => undefined, standingFile: file,
+      peers: () => [{ machineId: 'B', fetchRows: async () => ({ rows: [], vector: opts.vector ?? {}, standing: standing as never }) }],
+    });
+  };
+  const good = { enforcement: 1, native: true, privacy: true };
+
+  it('a sound peer blocks nothing', async () => {
+    const p = rigFor(good);
+    await p.tick();
+    expect(p.belowFloor()).toEqual([]);
+  });
+
+  it('an old build, native off and privacy off each block, with the reason', async () => {
+    for (const [standing, reason] of [[{ ...good, enforcement: 0 }, 'old-build'], [{ ...good, native: false }, 'native-off'], [{ ...good, privacy: false }, 'memory-privacy-off']] as const) {
+      const p = rigFor(standing);
+      await p.tick();
+      expect(p.belowFloor()).toEqual([{ machineId: 'B', reason }]);
+    }
+  });
+
+  it('a peer never heard from blocks nothing: a sleeping laptop must not stop a team', () => {
+    expect(rigFor(good).belowFloor()).toEqual([]);
+  });
+
+  it('a build with no log route is below the floor', async () => {
+    const local = machine('A');
+    const p = new TeamAccessPuller({ log: () => local, afterIngest: () => undefined, peers: () => [{ machineId: 'B', fetchRows: async () => { throw new PeerHasNoLog('B'); } }] });
+    await p.tick();
+    expect(p.belowFloor()).toEqual([{ machineId: 'B', reason: 'old-build' }]);
+  });
+
+  it('what a peer last said survives a restart, so a sleeping machine stays known', async () => {
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'team-floor-')), 'peers.json');
+    await rigFor({ ...good, native: false }, file).tick();
+    expect(rigFor(good, file).belowFloor()).toEqual([{ machineId: 'B', reason: 'native-off' }]);
+  });
+
+  it('a machine behind a reachable peer says so until it has caught up', async () => {
+    const p = rigFor(good, undefined, { vector: { 'B/i1': 5 } });
+    await p.tick();
+    expect(p.behind()).toBe(true);
+    expect((await rigAt(p))).toBe(true);
+    const clean = rigFor(good);
+    await clean.tick();
+    expect(clean.behind()).toBe(false);
+  });
+});
+const rigAt = async (p: TeamAccessPuller): Promise<boolean> => { await p.tick(); return p.behind(); };

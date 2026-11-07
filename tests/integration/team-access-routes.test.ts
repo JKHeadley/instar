@@ -41,7 +41,7 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST }, mobilePairing: { multiRoute: { enabled: false } },
     ...overrides,
   };
-  const gate = { now: 'ok' as 'ok' | 'memory-privacy-required' | 'team-needs-one-machine' };
+  const gate = { now: 'ok' as 'ok' | 'memory-privacy-required', jobs: new Set<number>() };
   const deps: MobilePairingDeps = {
     config: config as never, stateDir: dir, holdsLease: () => true, selfMachineId: 'm1',
     tunnel: () => ({ lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' } }),
@@ -70,7 +70,7 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
       spy.held.push(ref);
       try { return await change(); } finally { spy.held.pop(); }
     },
-    isSystemTopic: (id) => id === 1, isJobTopic: (id) => id === 2, isUnconfinableTopic: (id) => id === 3,
+    isSystemTopic: (id) => id === 1, isJobTopic: (id) => id === 2 || gate.jobs.has(id), isUnconfinableTopic: (id) => id === 3,
     ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }),
     logsDir: path.join(dir, 'logs'),
     restoreRefs: () => ({ teamRefs: [], allRefs: () => conversations.map((ref) => ({ ref })) }),
@@ -161,10 +161,6 @@ describe('team invites', () => {
     let r = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
     expect(r.status).toBe(409);
     expect(r.body.detail).toMatch(/memory privacy/i);
-    e.gate.now = 'team-needs-one-machine';
-    r = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
-    expect(r.status).toBe(409);
-    expect(r.body.detail).toMatch(/next step/);
     expect(e.svc.teamOn()).toBe(false);
     e.gate.now = 'ok';
     expect((await send(e, owner, 'POST', '/mobile/team/invites', firstInvite())).status).toBe(200);
@@ -768,5 +764,41 @@ describe('when a machine\'s record has a gap', () => {
     expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
     e.svc.teamLog()!.load();
     expect(e.svc.teamLog()!.gaps()).toEqual([]);
+  });
+});
+
+describe('a machine that cannot keep a team\'s promises', () => {
+  const stuck = { belowFloor: () => [{ machineId: 'laptop', reason: 'old-build' }], waitingOn: () => [], refusing: () => false, behind: () => false };
+
+  it('blocks new invites and grants, says which machine, and leaves existing phones working', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    e.svc.teamPuller = stuck as never;
+    const invite = await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-2', name: 'Bo', role: 'guest' }] });
+    expect(invite.status).toBe(409);
+    expect(invite.body.error).toBe('machine-below-floor');
+    expect(invite.body.machines).toEqual([{ machineId: 'laptop', reason: 'old-build' }]);
+    expect((await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:51')] })).body.error).toBe('machine-below-floor');
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.machinesBelowFloor).toHaveLength(1);
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
+    e.svc.teamPuller = null;
+    expect((await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:51')] })).status).toBe(200);
+  });
+});
+
+describe('a grant this machine would have refused', () => {
+  it('is undone by a row this machine signs, and a grant it would accept stays', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50'), grant('telegram:51')]));
+    e.gate.jobs.add(50); // only this machine knows it is a job's topic
+    e.svc.reconcileTeamPhones();
+    const held = e.svc.teamLog()!.state().grants.get('p-1')!;
+    expect(held.has('telegram:50')).toBe(false);
+    expect(held.has('telegram:51')).toBe(true);
+    const rows = e.svc.teamLog()!.allRows();
+    expect(rows[rows.length - 1]).toMatchObject({ kind: 'machine', events: [{ type: 'lower', personKey: 'p-1', ref: 'telegram:50' }] });
   });
 });

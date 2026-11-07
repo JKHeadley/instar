@@ -9690,8 +9690,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
     }
 
+    // Team access reached several machines: an existing agent's line still says it cannot.
+    if (content.includes('On a one-machine agent the owner can invite')) {
+      content = content.replace('On a one-machine agent the owner can invite', 'The owner can invite').replace('; and an agent that has had team members cannot add a second machine until multi-machine team support lands.', '; and a machine on an older build cannot join an agent that has a team. If the record on one machine shows a gap, every team phone waits until it is filled or the owner settles it on their phone.');
+      patched = true;
+    }
     if (!content.includes('Registry First — team access:')) {
-      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
+      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. The owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and a machine on an older build cannot join an agent that has a team. If the record on one machine shows a gap, every team phone waits until it is filled or the owner settles it on their phone.';
       patched = true;
       result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
     }

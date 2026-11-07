@@ -47,7 +47,6 @@ const LOG_UNREADABLE: Refusal = { status: 409, error: 'team-access-unreadable', 
 const refuseText: Record<string, string> = {
   'memory-privacy-required': 'Team members need memory privacy on. Turn it on first.',
   'access-being-checked': 'The access record is being checked across your machines. Team phones and changes wait until that finishes.',
-  'team-needs-one-machine': 'Team members work on agents running on one machine for now. Support for several machines is the next step. You can still use owner and MSP phones.',
 };
 
 /** Why this conversation cannot be shared, or null. Runs before anything is written. */
@@ -233,6 +232,19 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return null;
   };
 
+  // A peer can sign a grant to a topic it does not know is a job's here. The row that undoes it is
+  // signed by this machine, so every machine reaches the same answer from the log alone.
+  svc.teamGrantCheck = () => {
+    const log = svc.teamLog();
+    if (!log) return;
+    for (const [personKey, refs] of log.state().grants) {
+      for (const ref of [...refs.keys()]) {
+        const why = grantRefusal(svc, deps, ref)?.error;
+        if (why === 'system-topic' || why === 'job-topic' || why === 'topic-cannot-be-confined') log.appendMachineEvents([{ type: 'lower', personKey, ref }]);
+      }
+    }
+  };
+
   svc.teamActionRunner = (kind, req, deviceId) => inTurn(async () => {
     const log = svc.teamLog();
     if (!log) return { status: 503, body: { error: 'team-access-unavailable' } };
@@ -270,6 +282,14 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return { status: 200, body: { ok: true } };
   });
 
+  /** A machine last known unable to keep a team's promises blocks anything new, and existing phones keep working (§3.6). */
+  const floorOk = (res: Response): boolean => {
+    const behind = svc.teamPuller?.belowFloor() ?? [];
+    if (behind.length === 0) return true;
+    res.status(409).json({ error: 'machine-below-floor', machines: behind, detail: `${behind.length === 1 ? 'A machine' : 'Some machines'} on this agent cannot keep team access private yet. Update ${behind.length === 1 ? 'it' : 'them'} or mark ${behind.length === 1 ? 'it' : 'them'} as gone first.` });
+    return false;
+  };
+
   router.get('/mobile/team/context', (req, res) => {
     if (!ownerDevice(req, res)) return;
     const owner = deps.ownerProfile();
@@ -277,6 +297,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     res.json({
       ownerPersonKey: log?.state().ownerPersonKey ?? owner.userId, ownerLinks: owner.links, several: owner.several,
       teamOn: svc.teamOn(), refusal: svc.teamRefusal(), held: log?.gaps() ?? [],
+      machinesBelowFloor: svc.teamPuller?.belowFloor() ?? [], waitingOn: svc.teamPuller?.waitingOn() ?? [],
       people: [...(log?.state().people.values() ?? [])].map((p) => ({ personKey: p.personKey, name: p.name, role: p.role })),
     });
   });
@@ -286,6 +307,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!deviceId) return;
     const stop = svc.teamRefusal();
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
+    if (!floorOk(res)) return;
     // Nobody may invite a person they could not later remove: turning access off takes Face ID.
     if (!svc.devices.get(deviceId)?.presenceKey) { res.status(409).json({ error: 'face-id-required', detail: 'Set up Face ID for this phone in the app first, so you can turn team access off later.' }); return; }
     const log = svc.teamLog();
@@ -334,6 +356,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!deviceId) return;
     const stop = svc.teamRefusal();
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
+    if (!floorOk(res)) return;
     const events = eventsOf(req, res);
     if (!events) return;
     const refused = await applyGrants(events);

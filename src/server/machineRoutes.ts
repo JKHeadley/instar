@@ -68,7 +68,8 @@ export { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryB
 
 export interface MachineRouteContext {
   /** True when this agent has had team members: a second machine would know none of it (team-roles-and-access §4.1). */
-  teamJoinBlocked?: () => boolean;
+  /** A joiner on this version would not understand the team here. */
+  teamJoinBlocked?: (enforcement: number) => boolean;
   /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
   teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number> };
   /** A peer sent rows this machine lacks. */
@@ -600,8 +601,9 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
   const handlePair = async (req: Request, res: Response): Promise<void> => {
     const { pairingCode, machineIdentity, ephemeralPublicKey, advertisedUrl, endpoints } = req.body ?? {};
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
-    if (ctx.teamJoinBlocked?.()) {
-      res.status(409).json({ error: 'team-needs-one-machine', detail: 'This agent has had team members, so a second machine has to wait for support for several machines.' });
+    const joining = (req.body as { teamEnforcement?: unknown } | undefined)?.teamEnforcement;
+    if (ctx.teamJoinBlocked?.(typeof joining === 'number' ? joining : 0)) {
+      res.status(409).json({ error: 'team-needs-newer-build', detail: 'This agent has team members, and this machine is on a build that does not understand them. Update it, then join again.' });
       return;
     }
 

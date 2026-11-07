@@ -42,3 +42,10 @@ Once a team is on, or an agent has peers, each new message carries a stamp: wher
 **Signal vs authority:** this is authority over what a team phone reads. It changes nothing for the owner, an MSP phone or the bearer token.
 
 **Found on the way:** two session contexts written in one millisecond collided on their file name and failed. The name now carries a short random part.
+
+## The version floor replaces the one-machine block
+`teamGate` no longer counts machines. A joiner sends its `teamEnforcement` version and one below the floor is refused while the agent has a team. Each exchange carries what a peer says of itself; a peer last known on an old build, or with native conversations or memory privacy off, blocks new invites and grants, and existing phones keep working. A peer never heard from blocks nothing, because a sleeping laptop must not stop a team.
+With native off a machine still keeps the log and the locks, starts nothing in a confined conversation and takes no lease while a team is on. A machine behind a reachable peer takes no lease until it has caught up. A grant to a topic this machine knows is a job's is undone by a row it signs.
+**Over-block:** a native-off machine that is the only one awake leaves the agent with no serving machine while a team is on. Spec position: that only binds an agent whose owner turned team access on.
+**Under-block:** a machine on an old build that returns after a grant cannot be made to refuse, the stated limit in §3.6. Cutting such a peer from `appConversations` replication is not built yet.
+**Rollback:** this is the step that lets a team reach a second machine; restore the `teamGate` machine count and the join refusal to go back.

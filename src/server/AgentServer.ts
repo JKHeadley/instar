@@ -206,7 +206,8 @@ import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
-import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
+import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
+import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
 import type { TeamAccessRow } from '../core/TeamAccessLog.js';
 import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
@@ -560,7 +561,7 @@ export class AgentServer {
   /** The regular exchange of access rows. Silent with no peers, so a one-machine agent sees nothing. */
   private startTeamPuller(options: {
     config: InstarConfig;
-    coordinator?: { enabled?: boolean; leaseObservedAt?(machineId: string): number | null; identity?: { machineId: string } | null; managers?: { identityManager?: { loadSigningKey(): string } } } | null;
+    coordinator?: { enabled?: boolean; leaseObservedAt?(machineId: string): number | null; setLeaseHold?(hold: () => boolean): void; identity?: { machineId: string } | null; managers?: { identityManager?: { loadSigningKey(): string } } } | null;
     resolvePeerUrls?: () => Array<{ machineId: string; url: string; kind: PeerEndpointKind }>;
     recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
     sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector;
@@ -570,6 +571,7 @@ export class AgentServer {
     const svc = this.mobilePairing;
     const self = options.coordinator?.identity?.machineId;
     if (!svc || svc.teamPuller || !self || !options.resolvePeerUrls) return;
+    fs.mkdirSync(path.join(options.config.stateDir, TEAM_ACCESS_DIR), { recursive: true, mode: 0o700 });
     this.teamConversationChange = (ref, change) => options.sessionManager.applyConversationChange!(ref, change);
     const call = async (peer: { machineId: string; url: string; kind: PeerEndpointKind }, route: string, body: unknown): Promise<globalThis.Response> => {
       const key = options.coordinator!.managers!.identityManager!.loadSigningKey();
@@ -593,9 +595,12 @@ export class AgentServer {
       leaseEvidenceAt: (id) => options.coordinator?.leaseObservedAt?.(id) ?? null,
       afterIngest: (touched) => this.afterTeamRows(touched),
       strictStaleness: () => options.config.mobilePairing?.team?.strictStaleness === true,
+      standingFile: path.join(options.config.stateDir, TEAM_ACCESS_DIR, 'peers.json'),
       reportError: (err) => svc.reportTeamFault('TeamAccess.pull', err),
     });
     options.sleepWakeDetector?.on('wake', () => svc.teamPuller?.noteWake());
+    // With a team on, native off is below the floor, and a machine behind a reachable peer waits to catch up.
+    options.coordinator?.setLeaseHold?.(() => svc.teamOn() && (!isMobileNativeEnabled(options.config) || (svc.teamPuller?.behind() ?? false)));
     if (!(options.mobileRoutes?.start ?? !process.env.VITEST)) return;
     void svc.teamPuller.tick();
     this.teamPullTimer = setInterval(() => { void svc.teamPuller?.tick(); }, PULL_INTERVAL_MS);
@@ -1862,18 +1867,10 @@ export class AgentServer {
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
     this.mobilePairing = new MobilePairingService({
-      // Team phones need the sandbox on, and one machine until multi-machine support lands (§3.6, §4.1).
+      // Team phones need the sandbox on (§3.6).
       teamGate: () => {
         const status = options.sessionManager.memoryPrivacyStatus?.();
         if (!status?.enabled || !status.sandboxReady) return 'memory-privacy-required';
-        try {
-          const identity = options.coordinator?.managers?.identityManager;
-          const self = options.coordinator?.identity?.machineId;
-          if (identity?.getActiveMachines().some((m) => m.machineId !== self)) return 'team-needs-one-machine';
-        } catch {
-          // @silent-fallback-ok — an unreadable registry counts as several machines, the strict direction.
-          return 'team-needs-one-machine';
-        }
         return 'ok';
       },
       config: this.config,
@@ -2166,7 +2163,8 @@ export class AgentServer {
           : undefined,
         resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
       };
-      machineRouteContext.teamJoinBlocked = () => {
+      machineRouteContext.teamJoinBlocked = (enforcement) => {
+        if (enforcement >= TEAM_ENFORCEMENT_VERSION) return false;
         if (this.mobilePairing) return this.mobilePairing.teamJoinBlocked();
         const entries = new TeamConfinement(options.config.stateDir).entries();
         return entries === null || entries.size > 0;
@@ -2174,7 +2172,11 @@ export class AgentServer {
       machineRouteContext.teamAccessRows = (have, heads, senderId) => {
         const log = this.mobilePairing?.teamLog() ?? null;
         this.mobilePairing?.teamPuller?.noteInbound(senderId, false);
-        return { rows: log?.rowsBeyond(have, heads).slice(0, ROWS_PER_CALL) ?? [], vector: log?.vector() ?? {} };
+        const privacy = options.sessionManager.memoryPrivacyStatus?.();
+        return {
+          rows: log?.rowsBeyond(have, heads).slice(0, ROWS_PER_CALL) ?? [], vector: log?.vector() ?? {},
+          standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
+        };
       };
       machineRouteContext.teamAccessPush = async (rows, senderId) => {
         const log = this.mobilePairing?.teamLog() ?? null;
@@ -6126,6 +6128,15 @@ export class AgentServer {
     // Native app conversations (docs/specs/mobile-native-conversations.md, increment 1). The gate
     // is read ONCE here, at boot. The bootstrap-wired service (server.ts) takes precedence; on any
     // other init path it is default-constructed over the same registry and request store.
+    // With native off this machine still keeps the access log and the locks, because a team may exist on its peers.
+    if (this.mobilePairing && !isMobileNativeEnabled(options.config) && options.coordinator?.identity) {
+      const signer = loadMachineSigner(options.config.stateDir);
+      if (signer) {
+        this.mobilePairing.keyLedger = new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup: identityKeyLookup(options.config.stateDir) });
+        this.startTeamPuller(options);
+        options.sessionManager.refuseConfinedSpawns?.();
+      }
+    }
     if (this.mobilePairing && isMobileNativeEnabled(options.config)) {
       this.mobilePairing.nativeOn = true;
       try {

@@ -47,7 +47,7 @@ Existing agents work exactly as they do now. An update neither restricts anyone 
 - Scheduled jobs run for the owner and can read messages in the logs. That's within the owner's access, but the only thing keeping a member's words from steering a job is how the model behaves. Members are told, and it has its own fix on the list.
 - The dashboard stays the owner's. The app is everyone else's way in.
 - A conversation that has ever been shared, or that a member started, stays locked down for good, even after everyone else is removed.
-- An agent that has had team members can't add a second machine until multi-machine support lands.
+- A machine on an older build can't join an agent that has a team. It has to update first.
 - A phone reaches one of the agent's machines, and can send only while that machine is the one serving the agent. Every phone already works this way.
 - An agent that runs only on Codex can't have team members yet, because memory privacy only works with Claude Code.
 
