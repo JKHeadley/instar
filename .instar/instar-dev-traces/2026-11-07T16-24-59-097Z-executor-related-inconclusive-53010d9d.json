@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "executor-related-inconclusive",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T16:24:59.097Z",
+  "artifactPath": "upgrades/side-effects/executor-related-inconclusive.md",
+  "artifactSha256": "411b27d8cf8b7291024801cc8d980b580710d02abe1c540b05e6f77c33480917",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "docs/specs/feedback-triage-and-execution.eli16.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/eli16/executor-related-inconclusive.md",
+    "upgrades/next/executor-related-inconclusive.md",
+    "upgrades/side-effects/executor-related-inconclusive.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes a check before publication; a second pass reviewed the merge floor it relies on.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
