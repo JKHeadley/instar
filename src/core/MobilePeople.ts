@@ -10,9 +10,17 @@
  * satisfies structurally.
  */
 import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
+import { mayDoAsTeam, type ConversationFacts, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
 
-export type AppRole = 'owner' | 'msp';
-export const APP_ROLES: readonly AppRole[] = ['owner', 'msp'];
+export type AppRole = 'owner' | 'msp' | 'team';
+/** The roles a bearer-minted pairing link may name. A `team` phone comes only from a signed invite. */
+export const MINTABLE_ROLES: readonly AppRole[] = ['owner', 'msp'];
+export const APP_ROLES: readonly AppRole[] = ['owner', 'msp', 'team'];
+
+/** A team person's standing from the access log; null means no access. */
+export interface TeamStanding { name: string; tier: Exclude<Tier, 'owner'> }
+/** What a team person holds on a conversation. */
+export type TeamConversationFacts = (personKey: string, ref: string) => ConversationFacts;
 
 /** The registry fields this module reads (UserManager's `UserProfile` satisfies it). */
 export interface PersonProfile {
@@ -43,7 +51,7 @@ export interface OwnerIdentity {
 export interface PersonGrants { ownerConversations: boolean; slack: boolean }
 
 export type DevicePerson =
-  | { ok: true; role: AppRole; userId: string | null; name: string; telegramUserId: number | null; slackUserId?: string | null; grants?: PersonGrants }
+  | { ok: true; role: AppRole; userId: string | null; name: string; telegramUserId: number | null; slackUserId?: string | null; grants?: PersonGrants; tier?: Exclude<Tier, 'owner'> }
   | { ok: false; reason: 'person-unknown'; role: AppRole; userId: string | null };
 
 /** The fields of a device record this module reads. */
@@ -69,11 +77,17 @@ function ownerDisplayName(owner: OwnerIdentity): string {
  * Resolve a device to its person. Absent role ⇒ owner. An MSP phone whose person is no longer in
  * the registry is `person-unknown` — never the owner (spec §3.1).
  */
-export function devicePerson(d: DevicePersonFields, people: PeopleLookup | null, owner: OwnerIdentity, grantsFor?: (userId: string) => PersonGrants): DevicePerson {
+export function devicePerson(d: DevicePersonFields, people: PeopleLookup | null, owner: OwnerIdentity, grantsFor?: (userId: string) => PersonGrants, teamStanding?: (personKey: string) => TeamStanding | null): DevicePerson {
   const userId = typeof d.userId === 'string' && d.userId.length > 0 ? d.userId : null;
   // A role this build does not know (a newer build wrote it) fails closed: never the owner.
   if (d.role !== undefined && !isAppRole(d.role)) return { ok: false, reason: 'person-unknown', role: 'msp', userId };
   const role: AppRole = d.role ?? 'owner';
+  if (role === 'team') {
+    // A team phone's standing comes from the signed log alone (spec §3.1), never the registry.
+    const standing = userId && teamStanding ? teamStanding(userId) : null;
+    if (!standing) return { ok: false, reason: 'person-unknown', role, userId };
+    return { ok: true, role, userId, name: standing.name, telegramUserId: null, tier: standing.tier };
+  }
   if (role === 'owner') {
     const profile = userId && people ? people.getUser(userId) : null;
     return { ok: true, role, userId, name: profile?.name || ownerDisplayName(owner), telegramUserId: owner.telegramOwnerId };
@@ -97,7 +111,7 @@ export type PersonChoice =
  * userId needs that person to be the owner.
  */
 export function choosePerson(userIdRaw: unknown, roleRaw: unknown, people: PeopleLookup | null, owner: OwnerIdentity): PersonChoice {
-  if (roleRaw !== undefined && roleRaw !== null && !isAppRole(roleRaw)) {
+  if (roleRaw !== undefined && roleRaw !== null && !(MINTABLE_ROLES as readonly unknown[]).includes(roleRaw)) {
     return { ok: false, error: 'bad-role', detail: 'role must be "owner" or "msp".' };
   }
   if (userIdRaw !== undefined && userIdRaw !== null && (typeof userIdRaw !== 'string' || userIdRaw.length === 0 || userIdRaw.length > 128)) {
@@ -124,6 +138,11 @@ export function personLabel(name: string, role: AppRole): string {
   return role === 'msp' ? `${name} (MSP)` : name;
 }
 
+/** Is this the agent's owner? Every other role is a non-owner: a new one can never fall through to owner behaviour. */
+export function isOwnerPerson(person: { role: AppRole }): boolean {
+  return person.role === 'owner';
+}
+
 /** A phone whose person resolved (the request principal carries this). */
 export type ResolvedPerson = Extract<DevicePerson, { ok: true }>;
 
@@ -143,7 +162,7 @@ export function validConversationOwner(raw: unknown): ConversationOwner | null {
 
 /** The stored owner of a conversation an MSP phone creates; null for an owner phone. */
 export function conversationOwnerFor(person: ResolvedPerson, machineId: string): ConversationOwner | null {
-  return person.role === 'msp' && person.userId ? { machineId, userId: person.userId } : null;
+  return !isOwnerPerson(person) && person.userId ? { machineId, userId: person.userId } : null;
 }
 
 const APP_KEY = /^(?:app:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
@@ -161,8 +180,21 @@ export function mayUseConversation(
   ref: string,
   machineId: string,
   appOwner: ((key: string) => ConversationOwner | null | undefined) | null,
+  op: ConversationOp = 'read',
+  teamFacts: TeamConversationFacts | null = null,
 ): boolean {
   if (person.role === 'owner') return true;
+  if (person.role === 'team') {
+    if (!person.userId || !person.tier || !teamFacts) return false;
+    // Slack stays out of 2a (spec §4.1).
+    if (ref.startsWith('slack:')) return false;
+    const m = APP_KEY.exec(ref);
+    const canonical = m ? m[1] : ref;
+    const own = m && appOwner ? appOwner(m[1]) : undefined;
+    const facts = teamFacts(person.userId, canonical);
+    const mine = !!own && own.machineId === machineId && own.userId === person.userId;
+    return mayDoAsTeam(person.tier, op, { own: facts.own || mine, grant: facts.grant });
+  }
   if (/^telegram:-?[0-9]{1,20}$/.test(ref)) return true;
   if (ref.startsWith('slack:')) return person.grants?.slack === true;
   const m = APP_KEY.exec(ref);

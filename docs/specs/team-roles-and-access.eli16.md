@@ -30,6 +30,8 @@ For several agents, each agent stays independent, with no central service. Your 
 - **Everyone on the team needs memory privacy on.** Their chats run in a locked-down session. Without that, one person could ask the agent to read files they shouldn't see, and the roles would mean nothing. If privacy goes off, those phones stop working until it's back.
 - **A shared conversation stops using the owner's private memory.** Once someone else can read a conversation, the agent treats it as a shared place, and that person can read it only after this has taken effect. The owner is told before sharing.
 - **Admins maintain, and don't get the keys.** They can fix health problems, pause jobs, close sessions and update the agent. They can't create jobs, type into a session, use Remote Desktop, or see passwords, because each of those reaches everything.
+- **Changing someone's access and ending their sessions happen as one step,** so a new session can't slip in under the old access.
+- **An admin's list of things needing attention follows the conversation an item is about,** not where the alert happened to be posted. If an item is about a conversation they can't read, they don't see it.
 - **Telegram and Slack keep their own rules.** Anyone in the Telegram group can read every topic there, and Instar can't change that. So the app warns about it, and restricted people use the app instead of joining the group.
 - **Everything is logged:** who changed what, and who was refused.
 
@@ -42,13 +44,16 @@ Existing agents work exactly as they do now. An update neither restricts anyone 
 - A conversation shared with someone else loses the owner's private memory while it's shared.
 - A person given a conversation can see its past, not just what comes next.
 - The owner can read everything, including members' chats. Members are told this when they join.
+- Scheduled jobs run for the owner and can read messages in the logs. That's within the owner's access, but the only thing keeping a member's words from steering a job is how the model behaves. Members are told, and it has its own fix on the list.
 - The dashboard stays the owner's. The app is everyone else's way in.
+- A conversation that has ever been shared, or that a member started, stays locked down for good, even after everyone else is removed.
+- An agent that has had team members can't add a second machine until multi-machine support lands.
 - A phone reaches one of the agent's machines, and can send only while that machine is the one serving the agent. Every phone already works this way.
 - An agent that runs only on Codex can't have team members yet, because memory privacy only works with Claude Code.
 
 ## What comes first
 
-The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones, the People screens in the app, admin maintenance, adding people across several agents, and Slack conversations for members.
+The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones on agents that run on one machine, with their People screens in the app. The checks for that step are done and it is being built now. Agents on several machines come straight after that, because most of ours run that way. The multi-machine parts proved hardest, so they get their own review rounds. Then admin maintenance, adding people across several agents, and Slack conversations for members.
 
 ## What you need to decide
 

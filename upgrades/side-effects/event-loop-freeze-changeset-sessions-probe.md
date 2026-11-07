@@ -59,3 +59,7 @@ Captures on the Studio (`.instar/vm-test/tools/freeze-captures/`): 080938 shows 
 Concern raised: no code defect; the artifact's list of remaining sync work omitted `treeBytes`, which walks the tree on every tick for each live attempt. Resolved by making `treeBytes` async in this change, with a both-sides test. Checked clean: error classes and ordering, FileHandle behaviour, the trust model, re-entry, and probe equivalence.
 
 After the fix the reviewer re-checked: Concur with the review. All `treeBytes` and `diskOk` uses are awaited.
+
+## Added: main repair
+
+`tests/unit/app-dispatch-engine.test.ts` failed 4 of 4 runs on main at bfe143d6d6 and blocked this PR and #2921. #2916 added the `wx` flag to the context-file write in `appInboundDispatch.ts`, and the name used only `Date.now()`, so a start and a message in the same millisecond threw EEXIST. In production that same collision would throw in the dispatch path. The name now carries the random suffix the message file beside it already uses. `wx` stays. Over-block: removes a false failure. Under-block: none identified. Rollback: revert. No state or config.

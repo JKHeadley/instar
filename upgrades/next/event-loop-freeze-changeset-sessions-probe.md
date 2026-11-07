@@ -4,6 +4,8 @@
 
 Two jobs could hold the server's event loop until it stopped answering (fb-53f6f120-219). The feedback executor read every file of two whole code trees with blocking calls when an attempt finished; on the Studio that ran past 84 seconds and the supervisor killed the server. `buildChangeSet` now does those reads asynchronously, with the same checks in the same order, and so does `treeBytes`, the disk-cap walk that runs on every tick for each live attempt. `GET /sessions` no longer runs the reaper's full per-session evaluation for its discrepancy probe; it reads the ids through `SessionReaper.trackedSessionIds()`.
 
+Also repairs a break on main: two app conversation writes in the same millisecond could fail on a name collision, because the context file name used only the clock.
+
 ## What to Tell Your User
 
 I should freeze and restart less often now. Two slow background jobs were blocking me from answering anything while they ran, and neither does that any more.

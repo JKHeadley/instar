@@ -374,7 +374,7 @@ describe('SessionManager pending-inject wiring (finding 8d300555)', () => {
   it('preserves Slack durable conversation authority across resume-failure fresh spawn', async () => {
     vi.spyOn(manager as unknown as { waitForClaudeReadyWithRetry(s: string, t: number): Promise<boolean> }, 'waitForClaudeReadyWithRetry')
       .mockResolvedValue(false);
-    const spawn = vi.spyOn(manager, 'spawnInteractiveSession').mockResolvedValue('fresh-slack');
+    const spawn = vi.spyOn(manager, 'spawnInteractiveSessionUnlocked').mockResolvedValue('fresh-slack');
 
     await (manager as unknown as {
       handleReadyAndInject(s: string, n: string, m: string, t: number, o: Record<string, unknown>): Promise<void>;

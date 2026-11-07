@@ -32,7 +32,8 @@ export type MemoryAudience =
   | { kind: 'none' };
 
 export type MemoryPlace =
-  | { kind: 'private'; placeKey: string; personId: string | null }
+  /** `alwaysPerson`: a team person's own place. Never `open`, whatever the people count says. */
+  | { kind: 'private'; placeKey: string; personId: string | null; alwaysPerson?: true }
   /** `soleReaderId` is set only on fresh proof that this person is the one human reader. */
   | { kind: 'shared'; placeKey: string; soleReaderId?: string | null }
   | { kind: 'system' }
@@ -56,6 +57,7 @@ export function resolveMemoryAudience(input: ResolveAudienceInput): MemoryAudien
     if (!place.soleReaderId) return { kind: 'place', placeKey: place.placeKey };
     return privateAudience(multiPerson, ownerUserId, place.placeKey, place.soleReaderId);
   }
+  if (place.alwaysPerson && place.personId) return { kind: 'person', userId: place.personId };
   return privateAudience(multiPerson, ownerUserId, place.placeKey, place.personId);
 }
 
