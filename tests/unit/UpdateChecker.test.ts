@@ -147,20 +147,37 @@ describe('UpdateChecker', () => {
         : 'throw new Error("native binding unavailable")');
     };
 
+    // Only npm is faked. Candidate validation runs through the same async helper since it moved off
+    // the event loop, and it must stay real: these tests prove the real node probes reject a bad install.
+    const fakeNpm = (onNpm: (args: string[]) => void) => {
+      const real = (checker as any).execAsync.bind(checker);
+      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (cmd: string, args: string[], timeoutMs: number) => {
+        if (cmd !== 'npm') return real(cmd, args, timeoutMs);
+        onNpm(args);
+        return '';
+      });
+    };
+    // Real child processes finish on the real clock, so backoff timers can appear after any one
+    // advance: keep advancing until the call settles.
+    const settle = async <T>(pending: Promise<T>): Promise<T> => {
+      let done = false;
+      const mark = () => { done = true; };
+      pending.then(mark, mark);
+      while (!done) await vi.advanceTimersByTimeAsync(1000);
+      return pending;
+    };
+
     it('keeps the runnable install and refuses restart when a native rebuild fails', async () => {
       vi.useFakeTimers();
       const live = path.join(tmpDir, 'shadow-install');
       seedInstall(live, '1.0.0', true);
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', false);
         if (args[0] === 'rebuild') throw new Error('node-gyp failed');
-        return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(false);
       expect(result.restartNeeded).toBe(false);
       expect(result.message).toMatch(/rebuild|native/i);
@@ -171,9 +188,8 @@ describe('UpdateChecker', () => {
       const live = path.join(tmpDir, 'shadow-install');
       seedInstall(live, '1.0.0', true);
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', true);
-        return '';
       });
 
       const result = await checker.applyUpdate();
@@ -187,14 +203,11 @@ describe('UpdateChecker', () => {
       const live = path.join(tmpDir, 'shadow-install');
       seedInstall(live, '1.0.0', true);
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', false);
-        return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(false);
       expect(result.restartNeeded).toBe(false);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
@@ -205,9 +218,8 @@ describe('UpdateChecker', () => {
       const live = path.join(tmpDir, 'shadow-install');
       seedInstall(live, '1.0.0', true);
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', true);
-        return '';
       });
       const rename = fs.renameSync.bind(fs);
       vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
@@ -215,9 +227,7 @@ describe('UpdateChecker', () => {
         return rename(from, to);
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(false);
       expect(result.restartNeeded).toBe(false);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
@@ -231,14 +241,11 @@ describe('UpdateChecker', () => {
       seedInstall(live, '1.0.0', true);
       fs.mkdirSync(path.join(leftover, 'node_modules'), { recursive: true }); // partial: its delete was interrupted
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', true);
-        return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(true);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.1');
       expect(fs.existsSync(leftover)).toBe(false);
@@ -270,14 +277,11 @@ describe('UpdateChecker', () => {
         return realRm(target, opts);
       }) as never);
       vi.spyOn(checker, 'check').mockResolvedValue({ currentVersion: '1.0.0', latestVersion: '1.0.1', updateAvailable: true, checkedAt: new Date().toISOString() });
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.1', true);
-        return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(false);
       expect(result.message).toContain('Previous install backup still exists');
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
@@ -294,9 +298,7 @@ describe('UpdateChecker', () => {
         return '';
       });
 
-      const pending = checker.applyUpdate();
-      await vi.runAllTimersAsync();
-      const result = await pending;
+      const result = await settle(checker.applyUpdate());
       expect(result.success).toBe(false);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
       expect(fs.existsSync(live)).toBe(true);
@@ -310,14 +312,11 @@ describe('UpdateChecker', () => {
       seedInstall(live, '1.0.1', true);
       fs.mkdirSync(path.join(leftover, 'node_modules'), { recursive: true });
       (checker as any).saveRollbackInfo('1.0.0', '1.0.1');
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.0', true);
-        return '';
       });
 
-      const pending = checker.rollback();
-      await vi.runAllTimersAsync();
-      expect((await pending).success).toBe(true);
+      expect((await settle(checker.rollback())).success).toBe(true);
       expect(checker.getShadowInstalledVersion()).toBe('1.0.0');
       expect(fs.existsSync(leftover)).toBe(false);
     });
@@ -326,10 +325,9 @@ describe('UpdateChecker', () => {
       const live = path.join(tmpDir, 'shadow-install');
       seedInstall(live, '1.0.1', true);
       fs.writeFileSync(path.join(tmpDir, 'state', 'update-rollback.json'), JSON.stringify({ previousVersion: '1.0.0', updatedVersion: '1.0.1', updatedAt: new Date().toISOString() }));
-      vi.spyOn(checker as any, 'execAsync').mockImplementation(async (_cmd: string, args: string[]) => {
+      fakeNpm((args) => {
         if (args[0] === 'install') seedInstall(args[args.indexOf('--prefix') + 1], '1.0.0', false);
         if (args[0] === 'rebuild') throw new Error('rollback native compile failed');
-        return '';
       });
 
       const result = await checker.rollback();
