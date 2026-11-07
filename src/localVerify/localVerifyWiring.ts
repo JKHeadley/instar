@@ -247,7 +247,7 @@ export interface LocalVerifyAutoUpdaterView {
     /** This process is installing an update or has installed bytes awaiting its restart. */
     updateActivationPendingSince?: string | null;
     /** The applied-but-not-restarted state: the restart is waiting (holds, sessions, window). */
-    restartDeferral?: { active?: boolean; firstDeferredAt?: string | null } | null;
+    restartDeferral?: { active?: boolean; firstDeferredAt?: string | null; currentBlockers?: string[] } | null;
   };
   /** What would hold a restart right now (sessions, then `hold:<name>` entries). */
   getRestartBlockers?(): string[];
@@ -292,6 +292,7 @@ export function updatePendingFromAutoUpdater(
     // blocker is present: that blocker can disappear before the restart request.
     // Once deferred, the marker clears and the original blocker exception applies.
     otherBlockers: activationPending ? false : blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
+    ...(restartWaiting && deferral?.currentBlockers?.some((b) => b.startsWith('local-verify:peer-')) ? { restartHeldForPeer: true } : {}),
   };
 }
 
