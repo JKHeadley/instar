@@ -41,7 +41,7 @@ Revert the commit. No state or format change.
 Defect class: unbounded-self-action. Closure: n/a. No new trigger or loop; existing work yields more often.
 
 ## Evidence
-Before: three attempts failed in 74 to 97 seconds with the lease lapsed, and the server log recorded a blocked event loop of 33 to 58 seconds. After: the same stuck removal, retried through the dashboard, kept its lease past ten minutes with the agent answering in about 2 seconds. Final completion time is recorded with the next commit. Unit: `tests/unit/graph-durable-file-memo-trees.test.ts`, and a dashboard case for the finish control.
+Before: three attempts failed in 74 to 97 seconds with the lease lapsed, and the server log recorded a blocked event loop of 33 to 58 seconds. After: the same stuck removal, retried through the dashboard on one confirmed server, kept its lease for at least 30 minutes with the agent answering in about 2 seconds. An earlier reading of ten minutes is discarded because old test servers were still running on that home. The per-read check made it very slow; see `conversation-graph-held-read-recheck.md`. Unit: `tests/unit/graph-durable-file-memo-trees.test.ts`, and a dashboard case for the finish control.
 
 ## Second-pass review
 Not required for the yields and memo use; the full removal suite reruns before merge.
