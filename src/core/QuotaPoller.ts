@@ -339,9 +339,10 @@ export function mapUsageResponse(
   const win = (v: unknown): { utilizationPct: number; resetsAt: string } | undefined => {
     if (!v || typeof v !== 'object') return undefined;
     const o = v as Record<string, unknown>;
-    if (o.utilization === undefined && o.resets_at === undefined) return undefined;
+    // A reset timestamp alone cannot establish how much allowance remains.
+    if (o.utilization === undefined || o.utilization === null) return undefined;
     return {
-      utilizationPct: Number(o.utilization ?? 0),
+      utilizationPct: Number(o.utilization),
       resetsAt: String(o.resets_at ?? ''),
     };
   };
@@ -938,7 +939,7 @@ export class QuotaPoller {
   /**
    * Poll every supported claude-code/anthropic or codex-cli/openai account and persist each
    * account's latest snapshot (and a recovered status when a prior needs-reauth
-   * account now reads cleanly).
+   * or rate-limited account now reads cleanly).
    */
   async pollAll(): Promise<{ polled: number; failed: number }> {
     let polled = 0;
@@ -998,7 +999,17 @@ export class QuotaPoller {
     const restores = current.status === 'needs-reauth' && snap.source !== 'codex-rollout'
       && !this.cliLoginExpiredHolds.has(attributedId) && !this.cliLoginExpiredHolds.has(account.id)
       && !this.deviceLimit?.holdsRestore(attributedId) && !this.deviceLimit?.holdsRestore(account.id);
-    if (restores) patch.status = 'active';
+    const windows = [snap.fiveHour, snap.sevenDay, ...(snap.fable ? [snap.fable] : [])];
+    const priorLimitedWindows = [current.lastQuota?.fiveHour, current.lastQuota?.sevenDay, current.lastQuota?.fable]
+      .filter((window) => window && window.utilizationPct >= 100);
+    const rateLimitCleared = current.status === 'rate-limited'
+      && (snap.source === 'oauth-usage-endpoint-fallback' || snap.source === 'codex-app-server')
+      && snap.fiveHour !== undefined && snap.sevenDay !== undefined
+      && windows.every((window) => window && Number.isFinite(window.utilizationPct)
+        && window.utilizationPct >= 0 && window.utilizationPct < 100)
+      && priorLimitedWindows.every((window) => window && Number.isFinite(Date.parse(window.resetsAt))
+        && Date.parse(window.resetsAt) <= this.now());
+    if (restores || rateLimitCleared) patch.status = 'active';
     // Email is provider-attested identity, not quota metadata. Quota polling
     // must never mutate it; drift detection and the identity registrar own
     // that authority.
@@ -1008,7 +1019,7 @@ export class QuotaPoller {
       // @silent-fallback-ok: persistence best-effort; snapshot retained in memory
     }
     if (current.status !== 'needs-reauth' || restores) {
-      this.observe(attributedId, restores ? { kind: 'transition-to-active' } : { kind: 'resolved-clean' });
+      this.observe(attributedId, restores || rateLimitCleared ? { kind: 'transition-to-active' } : { kind: 'resolved-clean' });
     }
     return snap;
   }
