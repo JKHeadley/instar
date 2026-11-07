@@ -804,6 +804,16 @@ export class LocalVerifyService {
     return this.failedFileDiagnosisPeer?.accept(request, ctx) ?? { accepted: false, reason: 'disabled' };
   }
 
+  /**
+   * True while the verifier changed on disk and work is waiting on it: no verify can start until
+   * this server restarts. Other restart holds (the feedback executor's) read this so they do not
+   * defer the very restart the queue is waiting for. A pure read of the open hold — it never
+   * enters one (that stays with the pre-start check and the run child's refusal).
+   */
+  restartNeededForQueuedWork(): boolean {
+    return !this.stopped && !!this.verifierHold && this.queue.length > 0;
+  }
+
   isDiagnosisCapacityBusy(): boolean {
     return !!this.inFlight || !!this.starting || this.queue.length > 0 || !!this.blockedBy || !!this.verifierHold || this.notePause();
   }

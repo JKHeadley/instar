@@ -2051,6 +2051,25 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s.spawned).toHaveLength(1); // still held: only a restart (or the files matching again) resumes
   });
 
+  it('restartNeededForQueuedWork: false with no hold, false while held with nothing queued, true while held with work waiting', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(1);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false); // a run in flight, no hold
+    await s.finish(0, mismatch());
+    expect(s.svc.snapshot().verifierHold).not.toBeNull();
+    expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([1]); // the refused entry waits for the restart
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // The same hold with an empty queue needs no restart on anyone's behalf.
+    (s.svc as unknown as { queue: unknown[] }).queue.length = 0;
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(2);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // A stopped service answers false whatever it held.
+    s.svc.shutdown();
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+  });
+
   it('an ordinary crash is still an error record with one automatic re-run (the mismatch path changed nothing else)', async () => {
     const s = setup({ views: { 1: view() } });
     await s.svc.request(1);
