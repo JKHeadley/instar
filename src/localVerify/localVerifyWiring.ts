@@ -495,9 +495,12 @@ export function wireLocalVerifyPeers(
     agentId: string;
     lease: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null;
     fetchImpl?: typeof fetch;
+    /** Resource-aware placement §4: a peer's fit for a full verify; absent ⇒ no filter. */
+    peerFit?: (machineId: string) => import('./LocalVerifyService.js').PeerFit;
   },
 ): void {
   svc.setPeerWiring({
+    ...(o.peerFit ? { peerFit: o.peerFit } : {}),
     peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,
     peers: () => o.liveConfig.get<unknown>('monitoring.localVerify.peers', []),
     client: makePeerClient(o.authToken, o.agentId, o.fetchImpl),
