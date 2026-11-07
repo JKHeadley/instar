@@ -8560,6 +8560,9 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     if (config.scheduler.enabled && coordinator.isAwake) {
       scheduler = new JobScheduler(config.scheduler, sessionManager, state, config.stateDir);
+      sessionManager.conversationResumeDropper = (ref) => {
+        if (ref.startsWith('telegram:')) _topicResumeMap?.remove(Number(ref.slice('telegram:'.length)));
+      };
       scheduler.confinedTopicCheck = (topicId) => {
         const confinement = _memoryPrivacyWired.confinement;
         return confinement ? confinement.isConfined(`telegram:${topicId}`) : false;

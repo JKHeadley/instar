@@ -22322,7 +22322,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       copied = await app.media.sessionCopy(ref.messageId, attachment);
     }
     if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file is not on this machine yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
-    res.json({ path: app.intoConfinedInbox(key, copied) });
+    try {
+      res.json({ path: app.intoConfinedInbox(key, copied) });
+    } catch (err) {
+      console.warn(`[app-media] copy refused: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(409).json({ error: 'copy-refused', detail: 'This file could not be placed where the session can read it.' });
+    }
   });
 
   router.post('/internal/slack-forward', async (req, res) => {

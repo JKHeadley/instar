@@ -13,6 +13,7 @@
  * appended by the server only on a `verified` origin verdict (increment 2); increment 1 never
  * appends it.
  */
+import { safeInboxTarget } from './memorySessionPolicy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
@@ -207,9 +208,11 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
     const contextData = lines.join('\n');
     const tmpDir = confinedInbox ?? path.join(deps.stateDir, 'state', 'app-dispatch');
     fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
-    const ctxPath = path.join(tmpDir, `ctx-${input.alias}-${Date.now()}.txt`);
-    fs.writeFileSync(ctxPath, contextData, { mode: 0o600 }); /* state-registry: app-conversations */
-    return { ctxPath, contextData, tmpDir };
+    // A confined session can write to its inbox, so a file for it goes through the safe path.
+    const fileFor = (name: string) => (confinedInbox ? safeInboxTarget(confinedInbox, name) : path.join(tmpDir, name));
+    const ctxPath = fileFor(`ctx-${input.alias}-${Date.now()}.txt`);
+    fs.writeFileSync(ctxPath, contextData, { mode: 0o600, flag: 'wx' }); /* state-registry: app-conversations */
+    return { ctxPath, contextData, fileFor };
 }
 
 export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
@@ -224,12 +227,12 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     await waitForStart(deps, `app:${input.conversationKey}`);
     const channelKey = String(input.alias);
     const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
-    const { ctxPath, contextData, tmpDir } = writeContext(deps, input);
+    const { ctxPath, contextData, fileFor } = writeContext(deps, input);
     const full = `${tag} ${input.text} (IMPORTANT: Read ${ctxPath} for conversation history and app relay instructions — you MUST relay your response back.)`;
     let bootstrap = full;
     if (full.length > 500) {
-      const msgPath = path.join(tmpDir, `msg-${input.alias}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
-      fs.writeFileSync(msgPath, `${full}\n\n${contextData}`, { mode: 0o600 }); /* state-registry: app-conversations */
+      const msgPath = fileFor(`msg-${input.alias}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
+      fs.writeFileSync(msgPath, `${full}\n\n${contextData}`, { mode: 0o600, flag: 'wx' }); /* state-registry: app-conversations */
       bootstrap = `${tag} [Long message saved to ${msgPath} — read it to see the full message and conversation history]`;
     }
 

@@ -2,7 +2,12 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { attentionForNonOwner } from '../../src/permissions/TeamAccess.js';
 import { filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone } from '../../src/server/mobilePairingRoutes.js';
-import { eventsFitPath } from '../../src/core/TeamAccessLog.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { eventsFitPath, foldRowInto, foldRows, emptyState } from '../../src/core/TeamAccessLog.js';
+import { safeInboxTarget } from '../../src/core/memorySessionPolicy.js';
+import { AppConversationService } from '../../src/core/AppConversationService.js';
 import { SessionManager } from '../../src/core/SessionManager.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
 import { createTempProject, createMockSessionManager, createSampleJobsFile } from '../helpers/setup.js';
@@ -168,9 +173,93 @@ describe('a job bound to a confined topic', () => {
       expect(job.topicId).toBeUndefined();
     }
   });
+  it('is re-checked before posting, because a run holds its own copy of the job', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/scheduler/JobScheduler.ts'), 'utf8');
+    const notify = src.slice(src.indexOf('const notifyMode = this.getNotifyMode(job);'));
+    const check = notify.indexOf('this.dropConfinedTopic(job);');
+    expect(check).toBeGreaterThan(-1);
+    expect(check).toBeLessThan(notify.indexOf('sendToTopic(job.topicId'));
+  });
   it('does nothing with no check wired', () => {
     const job = { slug: 'j', topicId: 5 };
     drop(job);
     expect(job.topicId).toBe(5);
+  });
+});
+
+describe('a file the server puts in a session inbox', () => {
+  const scope = () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'team-inbox-')));
+    return { dir, inbox: path.join(dir, 'inbox'), outside: path.join(dir, '..', `outside-${path.basename(dir)}.txt`) };
+  };
+  const copyIn = (inbox: string, source: string) => AppConversationService.prototype.intoConfinedInbox.call({ deps: { confinedInbox: () => inbox } } as never, 'k', source);
+
+  it('lands in the inbox, under a name nobody can guess, and repeats do not collide', () => {
+    const { dir, inbox } = scope();
+    const source = path.join(dir, 'a.txt');
+    fs.writeFileSync(source, 'member bytes', { mode: 0o400 });
+    const one = copyIn(inbox, source);
+    const two = copyIn(inbox, source);
+    expect(one).not.toBe(two);
+    expect(path.dirname(one)).toBe(inbox);
+    expect(fs.readFileSync(one, 'utf8')).toBe('member bytes');
+    expect(path.basename(one)).toMatch(/^[0-9a-f-]{36}-a\.txt$/);
+  });
+
+  it('refuses an inbox the session swapped for a link, and writes nothing through it', () => {
+    const { dir, inbox } = scope();
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'team-elsewhere-'));
+    fs.symlinkSync(elsewhere, inbox);
+    const source = path.join(dir, 'a.txt');
+    fs.writeFileSync(source, 'member bytes');
+    expect(() => copyIn(inbox, source)).toThrow();
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
+  });
+
+  it('a link planted at the old predictable name is never followed', () => {
+    const { dir, inbox, outside } = scope();
+    fs.mkdirSync(inbox);
+    fs.writeFileSync(outside, 'owner settings');
+    fs.symlinkSync(outside, path.join(inbox, 'a.txt'));
+    const source = path.join(dir, 'a.txt');
+    fs.writeFileSync(source, 'member bytes');
+    copyIn(inbox, source);
+    expect(fs.readFileSync(outside, 'utf8')).toBe('owner settings');
+  });
+
+  it('with no confinement the file stays where it is', () => {
+    expect(AppConversationService.prototype.intoConfinedInbox.call({ deps: {} } as never, 'k', '/some/file')).toBe('/some/file');
+  });
+
+  it('safeInboxTarget refuses a plain file at the inbox path', () => {
+    const { inbox } = scope();
+    fs.writeFileSync(inbox, 'x');
+    expect(() => safeInboxTarget(inbox, 'a')).toThrow();
+  });
+});
+
+describe('folding one row at a time', () => {
+  it('reaches the same state as folding from the start', () => {
+    const rows = [
+      { seq: 1, kind: 'machine', at: 't', events: [{ type: 'conversation-own', ref: 'r', personKey: 'p' }], machineSig: {} },
+      { seq: 2, kind: 'machine', at: 't', events: [{ type: 'phone-bind', keyHash: 'k', deviceId: 'd', boundTo: 'owner' }], machineSig: {} },
+    ] as never[];
+    const verify = () => 'verified' as const;
+    const step = emptyState();
+    for (const r of rows) foldRowInto(step, r, verify);
+    expect(step).toEqual(foldRows(rows, verify));
+  });
+});
+
+describe('ending a conversation\'s session', () => {
+  it('forgets its resume binding before the change', async () => {
+    const dropped: string[] = [];
+    const self = {
+      conversationLocks: new Map(), listRunningSessions: () => [], retireMemorySession: async () => undefined,
+      withConversationLock: SessionManager.prototype.withConversationLock, conversationResumeDropper: (ref: string) => { dropped.push(ref); },
+    };
+    let seen: string[] = [];
+    await SessionManager.prototype.applyConversationChange.call(self as never, 'telegram:5', () => { seen = [...dropped]; });
+    expect(seen).toEqual(['telegram:5']);
   });
 });

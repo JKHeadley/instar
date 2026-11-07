@@ -203,19 +203,22 @@ function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
  */
 export function foldRows(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAccessRow) => RowVerdict): TeamAccessState {
   const s = emptyState();
-  for (const row of [...rows].sort((a, b) => a.seq - b.seq)) {
-    s.highestSeq = Math.max(s.highestSeq, row.seq);
-    if (verify(row) !== 'verified') continue;
-    if (row.kind === 'machine') {
-      for (const e of row.events) applyMachineEvent(s, e);
-      continue;
-    }
-    if (s.bindings.get(row.signedOrigin.keyHash) !== 'owner') continue;
-    const events = bodyEvents(row);
-    if (!events) continue;
-    for (const e of events) applyRequestEvent(s, e);
-  }
+  for (const row of [...rows].sort((a, b) => a.seq - b.seq)) foldRowInto(s, row, verify);
   return s;
+}
+
+/** One row onto a state. Rows must arrive in `seq` order, as an append does. */
+export function foldRowInto(s: TeamAccessState, row: TeamAccessRow, verify: (row: TeamAccessRow) => RowVerdict): void {
+  s.highestSeq = Math.max(s.highestSeq, row.seq);
+  if (verify(row) !== 'verified') return;
+  if (row.kind === 'machine') {
+    for (const e of row.events) applyMachineEvent(s, e);
+    return;
+  }
+  if (s.bindings.get(row.signedOrigin.keyHash) !== 'owner') return;
+  const events = bodyEvents(row);
+  if (!events) return;
+  for (const e of events) applyRequestEvent(s, e);
 }
 
 export interface TeamAccessLogOptions {
@@ -319,7 +322,7 @@ export class TeamAccessLog {
       fs.closeSync(fd);
     }
     this.rows.push(row);
-    this.folded = foldRows(this.rows, this.opts.verify);
+    foldRowInto(this.folded, row, this.opts.verify);
     this.health = 'ok';
     this.snapshot();
   }

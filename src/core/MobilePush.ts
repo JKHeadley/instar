@@ -78,6 +78,8 @@ export interface MobilePushDeps {
   mayNotify?: (deviceId: string, conversationKey: string) => boolean;
   /** Whether a phone gets anything but reply pushes. A team phone does not (team-roles-and-access §3.7). */
   receivesNotices?: (deviceId: string) => boolean;
+  /** Is this phone's person still here? A held aggregate is dropped if not. */
+  phoneStillCounts?: (deviceId: string) => boolean;
 }
 
 const emptyDevice = (): DeviceState => ({ sendLog: [], urgentLog: [], lastSendAt: null, pending: null, dueAt: null, backoffUntil: null, lastSend: null });
@@ -208,6 +210,7 @@ export class MobilePushService {
     const t0 = this.now();
     for (const [id, ds] of Object.entries(st.devices)) {
       if (!ds.pending || ds.dueAt === null || ds.dueAt > t0) continue;
+      if (this.deps.phoneStillCounts && !this.deps.phoneStillCounts(id)) { ds.pending = null; ds.dueAt = null; this.save(); continue; }
       const held = ds.pending;
       const dueAt = ds.dueAt;
       const urgentBypass = held.hasUrgent && this.throttled(ds);

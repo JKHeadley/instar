@@ -1078,6 +1078,8 @@ export class SessionManager extends EventEmitter {
     slackChannelForSession?: (sessionName: string) => string | null;
   };
   private readonly conversationLocks = new Map<string, Promise<void>>();
+  /** Forgets a conversation's resume binding. Wired at boot, where the binding store lives. */
+  conversationResumeDropper: ((ref: string) => void) | null = null;
   private memoryInboundClaims = new Map<string, { place: string; dev: number; ino: number; size: number; mtimeMs: number; claimedAt: number }>();
 
   /**
@@ -7557,6 +7559,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
           : place?.memoryPlaceKey === input.memoryPlaceKey;
         if (same) await this.retireMemorySession(session);
       }
+      // A failed spawn can record the new audience without launching, so the next one must not be
+      // left to notice the change: the old transcript belongs to the old audience.
+      this.conversationResumeDropper?.(ref);
       return change();
     });
   }

@@ -82,3 +82,8 @@ Nine findings, all confirmed by reading the code, all fixed: non-digit topic pat
 Each fix was removed in turn to confirm its test goes red.
 
 - Added: Review fixes with guard tests from both sides.
+
+## Second independent review, 2026-11-06
+Eight findings, all fixed: a confined session could plant a link in its inbox and make the unsandboxed server overwrite a file the owner can write (now a checked real folder, an unguessable name and an exclusive write, for media, context and long-message files alike); a member's sentinel stop paused the whole queue (scoped, in both handlers); a resume binding could outlive an audience change (dropped under the lock); same-named files failed and a media-path failure was unhandled; job posts to a confined topic (re-checked before posting); held pushes reached removed people; each append refolded the whole log (now one row); a create recovered after a crash skipped confinement (now confined, and retried if the log is not ready). No route sets a job's topic, so the run-time checks are what apply there.
+
+- Added: Second review fixes with tests; each removal checked to turn its test red.

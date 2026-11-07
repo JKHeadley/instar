@@ -2808,8 +2808,7 @@ export class JobScheduler {
 
   /**
    * A job runs with owner reach, so it stays out of a confined topic: its summary is member-steered
-   * text, and its posts would land where members read them. Clearing the binding covers every post
-   * site at once, and its notices fall back to the attention topic.
+   * text, and its posts would land where members read them. Runs at spawn and again before posting.
    */
   private dropConfinedTopic(job: JobDefinition): void {
     if (!job.topicId || !this.confinedTopicCheck) return;
@@ -3378,6 +3377,8 @@ export class JobScheduler {
     if (!this.messenger && !this.telegram) return;
     const notifyMode = this.getNotifyMode(job);
     if (notifyMode === 'never') return;
+    // A topic can become confined after the job was loaded, and a run holds its own copy of the job.
+    this.dropConfinedTopic(job);
 
     // Output was already captured above for run history — reuse it
 

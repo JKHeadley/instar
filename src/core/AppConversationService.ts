@@ -12,6 +12,7 @@
  * non-owner, are later work: a non-owner answers `503 owner-unavailable` AFTER the message is
  * persisted (§4.8's fallback), so nothing typed is lost.
  */
+import { safeInboxTarget } from './memorySessionPolicy.js';
 import type { ConversationRegistry } from './ConversationRegistry.js';
 import type { MobileChatRequestStore } from './MobileChatRequests.js';
 import { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
@@ -60,6 +61,8 @@ export interface AppConversationServiceDeps {
    * session cannot read the agent's state, so its files go here (team-roles-and-access §4.1).
    */
   confinedInbox?: (conversationKey: string) => string | null;
+  /** A create recovered after a crash gets the same confinement as a normal one. */
+  confineStranded?: (conversationKey: string, personKey: string, deviceId: string) => void;
   reportDegradation?: (what: string, detail: string) => void;
   now?: () => number;
   /**
@@ -388,9 +391,8 @@ export class AppConversationService {
   intoConfinedInbox(conversationKey: string, filePath: string): string {
     const inbox = this.deps.confinedInbox?.(conversationKey);
     if (!inbox) return filePath;
-    fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
-    const target = path.join(inbox, path.basename(filePath));
-    fs.copyFileSync(filePath, target);
+    const target = safeInboxTarget(inbox, filePath);
+    fs.copyFileSync(filePath, target, fs.constants.COPYFILE_EXCL);
     return target;
   }
 
@@ -812,6 +814,7 @@ export class AppConversationService {
       }
       if (x.op === 'create') {
         const owner = x.ownerMachine && x.ownerUser ? { machineId: x.ownerMachine, userId: x.ownerUser } : null;
+        if (x.ownerUser) this.deps.confineStranded?.(key, x.ownerUser, rec.deviceId);
         const r = this.applyCreate(rec.deviceId, rec.requestId, key, x.title ?? 'Untitled', owner);
         this.deps.requests.finish(rec.deviceId, rec.requestId, r);
       } else if (x.op === 'rename' && x.title) {

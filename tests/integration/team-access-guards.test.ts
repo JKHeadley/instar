@@ -48,7 +48,7 @@ async function setup() {
     sessions: {}, scheduler: {}, threadline: { ownerName: 'Ann' }, tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     mobilePairing: { multiRoute: { enabled: false } },
   };
-  const spies = { routed: [] as Array<{ content: string; metadata: Record<string, unknown> }>, pushed: [] as string[] };
+  const spies = { routed: [] as Array<{ content: string; metadata: Record<string, unknown> }>, pushed: [] as string[], stops: [] as string[], disposition: 'route-through' };
   const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true });
   const deps = {
     config: config as never, stateDir: dir, holdsLease: () => true, selfMachineId: 'm1', teamGate: () => 'ok',
@@ -62,7 +62,7 @@ async function setup() {
   pairing.push = { onAppReply: (k: string) => { spies.pushed.push(k); } } as never;
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Ann',
-    killSession: () => true, onEmergencyStop: () => undefined,
+    killSession: () => true, onEmergencyStop: (_alias: unknown, scope?: string) => { spies.stops.push(scope ?? 'all'); },
     dispatch: () => async (input) => { svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
   });
   pairing.useAppConversationStore(svc.store);
@@ -96,6 +96,7 @@ async function setup() {
   app.use(createRoutes(ctx));
   app.use(createMobileConversationRouter({
     config: config as never, pairing, service: svc, machineId: () => 'm1',
+    sentinel: { decideInboundDisposition: async () => ({ disposition: spies.disposition, category: 'normal' }) } as never,
     telegramTopics: () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, lastActivity: null, lastPreview: `words in ${topicId}` })),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
@@ -238,6 +239,19 @@ describe('sending while team access is on', () => {
     await vi.waitFor(() => expect(e.spies.routed).toHaveLength(2));
     expect(e.spies.routed[0].metadata.teamPhone).toBe(true);
     expect(e.spies.routed[1].metadata.teamPhone).toBeUndefined();
+  });
+});
+
+describe('a stop word from a phone', () => {
+  it('from a team phone stops only that conversation; from the owner it stops everything, as before', async () => {
+    const { e, mia, owner } = await withMember();
+    e.spies.disposition = 'kill';
+    const key = (await send(e, mia, 'POST', '/mobile/conversations', { title: 'Mine', requestId: rid() })).body.conversationKey as string;
+    await send(e, mia, 'POST', `/mobile/chat/app/${key}`, { text: 'please stop all of it', requestId: rid() });
+    expect(e.spies.stops).toEqual(['conversation']);
+    const own = (await send(e, owner, 'POST', '/mobile/conversations', { title: 'Own', requestId: rid() })).body.conversationKey as string;
+    await send(e, owner, 'POST', `/mobile/chat/app/${own}`, { text: 'please stop all of it', requestId: rid() });
+    expect(e.spies.stops).toEqual(['conversation', 'all']);
   });
 });
 

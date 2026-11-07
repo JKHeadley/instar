@@ -668,7 +668,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       try {
         const d = await deps.sentinel.decideInboundDisposition(classifiedText, alias);
         if (d.disposition === 'kill' || d.disposition === 'pause') {
-          const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
+          const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key, sender?.role === 'team' ? 'conversation' : undefined).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
           s.appendDelivery(key, messageId, 'intercepted', seed);
           featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `intercepted: sentinel ${d.disposition}`, context: { messageId, deviceId, disposition: d.disposition } });
           finish(200, { ok: true, ...out, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });

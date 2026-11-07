@@ -1876,6 +1876,10 @@ export class AgentServer {
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
+        phoneStillCounts: (deviceId) => {
+          const d = mp.devices.get(deviceId);
+          return !!d && mp.personOfDevice(d).ok;
+        },
         credentials: () => {
           const keyPem = pushKeys.get('apns_key_p8');
           const keyId = pushKeys.get('apns_key_id');
@@ -6047,6 +6051,11 @@ export class AgentServer {
           const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
             signer, keyLookup, keyLedger,
+            // Runs at boot, before the log is ready: it throws, and the next recovery pass retries, so
+            // a team person's create never lands unconfined.
+            confineStranded: (key, personKey, deviceId) => {
+              if (this.mobilePairing?.devices.get(deviceId)?.role === 'team') this.mobilePairing.confineOwnConversation(key, personKey);
+            },
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
             registry: routeCtx.conversationRegistry!,
@@ -6056,8 +6065,8 @@ export class AgentServer {
             dispatch: () => dispatch,
             killSession: (name) => sm?.killSessionByTmuxName?.(name) === true,
             pauseSession: (name) => { sm?.sendKey?.(name, 'Escape'); },
-            onEmergencyStop: (alias) => {
-              try { options.resumeQueue?.pause('message-sentinel emergency stop'); options.resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ }
+            onEmergencyStop: (alias, scope) => {
+              try { if (scope !== 'conversation') options.resumeQueue?.pause('message-sentinel emergency stop'); options.resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ }
               try { stopAutonomousTopic(options.config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },

@@ -139,6 +139,21 @@ export function applyMemorySessionLaunch(argv: string[], settingsPath: string, s
 }
 
 /**
+ * Where the unsandboxed server may safely put a file in a session's inbox. The session can write to
+ * its own scope folder, so it can plant links there: the inbox must be a real folder in the scope, and
+ * the name is unguessable, to be written with an exclusive flag so nothing planted can be followed.
+ * Throws when the inbox is not safe.
+ */
+export function safeInboxTarget(inbox: string, name: string): string {
+  fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
+  const info = fs.lstatSync(inbox);
+  if (info.isSymbolicLink() || !info.isDirectory() || fs.realpathSync(inbox) !== path.join(fs.realpathSync(path.dirname(inbox)), path.basename(inbox))) {
+    throw new Error('session-inbox-not-safe');
+  }
+  return path.join(inbox, `${randomUUID()}-${path.basename(name)}`);
+}
+
+/**
  * Copy files named in an inbound message into the session's own inbox and point
  * the text at the copies. A person's long messages and attachments are saved
  * under shared folders the session cannot read; without this the agent would
