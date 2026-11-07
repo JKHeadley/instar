@@ -288,8 +288,8 @@ function reportSpawned(deps: AppInboundDispatchDeps, conversationKey: string, tm
 
 /** What `startApp` needs beyond the dispatch's own deps. */
 export interface AppStartDeps {
-  /** True when this machine serves the conversation. */
-  isOwner: () => boolean;
+  /** True when this machine serves the conversation (app-conversations-in-the-pool §2.1). */
+  serves: (conversationKey: string) => boolean;
   /** The conversation's local alias, or null when it has none here. */
   aliasFor: (conversationKey: string) => number | null;
   /** The conversation's title (null when it is gone). */
@@ -336,7 +336,7 @@ export function createAppSessionStarter(deps: AppInboundDispatchDeps, start: App
     return null;
   };
   return async (conversationKey, resolved, opts) => {
-    if (!start.isOwner()) return refuse(conversationKey, 'not-served', 'not served on this machine');
+    if (!start.serves(conversationKey)) return refuse(conversationKey, 'not-served', 'not served on this machine');
     const alias = start.aliasFor(conversationKey);
     const title = start.titleFor(conversationKey);
     if (alias === null || title === null) return refuse(conversationKey, 'gone', 'the conversation is gone');

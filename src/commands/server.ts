@@ -226,6 +226,12 @@ import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } 
 import { isSlackSessionKey, isSlackConversationKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { tokenMayWriteConversation } from '../core/conversationKeys.js';
 import { createConversationPorts, conversationResumeViews } from '../core/conversationPorts.js';
+import { AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
+import { appPlacement, runAppMove, runBringBack, setAppPoolMoves } from '../core/appConversationMove.js';
+import { DEFAULT_DRAIN_CLAIM_GRACE_MS } from '../core/SessionDrainRunner.js';
+import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
+import type { MachineCapacity } from '../core/types.js';
+import { getAutonomousRunProbe } from '../core/appConversationMove.js';
 import { formatForwardedTopicContext, crossMachineReplyEvidence, INCOMPLETE_TOPIC_HISTORY_WARNING } from '../core/ForwardedTopicContext.js';
 import { CoherenceJournalReader } from '../core/CoherenceJournalReader.js';
 import { createTopicHistoryPullHandler, pullMovedTopicHistory, TOPIC_HISTORY_PULL_MAX_MESSAGES, TOPIC_HISTORY_PULL_TIMEOUT_MS } from '../core/topicHistoryPull.js';
@@ -967,7 +973,7 @@ async function annotatePeerHandoff(
  *  pool dark / no client — the transfer route degrades to today's pin path. */
 let _sendDrain:
   | ((ownerMachineId: string, sessionKey: string, target: string, ownershipEpoch: number) => Promise<
-      { ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean }
+      { ok: boolean; status?: string; reason?: string; noHandler?: boolean; runSuspended?: boolean; claimLanded?: boolean; leftBehind?: { files?: number; notes?: number } }
     >)
   | null = null;
 let _sendInboundDeliveryTransfer:
@@ -1249,6 +1255,30 @@ let _staleOwnerEngine: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerRe
 let _spawnAdmission: import('../core/SpawnAdmission.js').SpawnAdmission | null = null;
 /** Native app conversations (mobile-native-conversations, increment 1) — late-bound for the replication observers. */
 let _appConversationService: import('../core/AppConversationService.js').AppConversationService | null = null;
+/** app-conversations-in-the-pool: the pool as the service sees it. Null until the mesh block wires it, then `active()` decides. */
+let _appPoolHandle: import('../core/appConversationPool.js').AppPoolHandle | null = null;
+/** The app arm of the inbound queue's local tail (app-conversations-in-the-pool §2.4). */
+let _appDrainDeliver: ((msg: { sessionKey: string; messageId: string; payload: string; senderEnvelope?: import('../core/SessionRouter.js').InboundSenderEnvelope | null }, handover: { commitReceipt(): boolean; stopRecheck(): boolean }) => Promise<import('../core/QueueDrainLoop.js').DrainDispatchResult>) | null = null;
+/** app-conversations-in-the-pool §2.6: this machine's own flag, and the rows `session-status` carries. */
+/** A held app message the queue gave up on: its phone request finishes in words. Returns the items that aren't app messages. */
+function settleAppQueueLoss<T extends { sessionKey: string; messageId: string }>(items: T[], reason: string): T[] {
+  for (const it of items) {
+    if (it.sessionKey.startsWith('app:')) _appConversationService?.finishExpiredForward(it.sessionKey.slice('app:'.length), it.messageId, appLossWords(reason));
+  }
+  return items.filter((it) => !it.sessionKey.startsWith('app:'));
+}
+/** A receipt with no `injected` marker (a crash between receipt and dispatch): the message reads `unknown` in the app. */
+function settleAppNotInjected<T extends { sessionKey: string; messageId: string }>(items: T[]): T[] {
+  for (const it of items) {
+    if (!it.sessionKey.startsWith('app:')) continue;
+    try { _appConversationService?.appendDelivery(it.sessionKey.slice('app:'.length), it.messageId, 'unknown', `recovered\u0000${it.messageId}`); }
+    catch { /* @silent-fallback-ok — the receipt stays reported; the message itself is stored */ }
+  }
+  return items.filter((it) => !it.sessionKey.startsWith('app:'));
+}
+let _appPoolAdvertised: () => boolean = () => false;
+let _memoryPrivacyEnforced: () => boolean = () => false;
+let _appPoolStatusRows: () => { appOwned: Array<{ key: string; epoch: number; status: string }>; appRecent: Array<{ key: string; owner: string; epoch: number; status: string }> } = () => ({ appOwned: [], appRecent: [] });
 /** session-swap-any-conversation §3.3: starts an app conversation's session with no new message (null until wired). */
 /** The Slack respawner SessionRefresh uses, shared with the profile orchestrator (spec §3.2; null until wired). */
 let _slackConversationRespawner: ((sessionName: string, routingKey: string, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }) => Promise<string>) | null = null;
@@ -3526,6 +3556,27 @@ export function wireTelegramRouting(
   // through the receipt write, injects with the STORED sender envelope, and
   // paces same-session runs at 1s.
   _drainLocalDeliver = async (dmsg, handover) => {
+    // app-conversations-in-the-pool §2.4: the queue's drain delivers by kind.
+    if (dmsg.sessionKey.startsWith('app:')) {
+      if (!_appDrainDeliver) return { kind: 'un-routable', reason: 'app-tail-not-wired' };
+      return _appDrainDeliver(dmsg, handover);
+    }
+    // Slack through its own local dispatch, closing the acked-then-lost gap.
+    if (isSlackConversationKey(dmsg.sessionKey)) {
+      if (!_slackInboundDispatch) return { kind: 'un-routable', reason: 'slack-not-configured' };
+      if (!handover.commitReceipt()) return { kind: 'handover-refused' };
+      if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
+      const senderId = dmsg.senderEnvelope?.userId;
+      try {
+        const out = await _slackInboundDispatch(reconstructSlackMessage({
+          sessionKey: dmsg.sessionKey, messageId: dmsg.messageId, text: dmsg.payload,
+          ...(senderId != null ? { senderUserId: String(senderId) } : {}),
+        }));
+        return out === 'refused' ? { kind: 'local-delivered', injectError: 'slack-dispatch-refused' } : { kind: 'local-delivered' };
+      } catch (err) { // @silent-fallback-ok — reported by the queue as possibly not injected
+        return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
+      }
+    }
     const topicId = Number(dmsg.sessionKey);
     if (!Number.isFinite(topicId)) return { kind: 'failed', error: new Error(`non-numeric sessionKey ${dmsg.sessionKey}`) };
     // Stage 'dark' (CMT-1117): the queue engine now runs whenever the pool is
@@ -7123,6 +7174,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       telegramOwnerId: () => _memoryTelegramOwner?.() ?? null,
     });
     const _memoryPrivacyWired = _memoryWiring.privacy;
+    // app-conversations-in-the-pool §2.5: memory privacy is on and its sandbox is ready on this machine.
+    _memoryPrivacyEnforced = () => _memoryWiring.privacy.enabled && _memoryWiring.sandboxReady();
     _memoryInbound = _memoryWiring.tracker;
     _memoryUserResolver = {
       // The org permission system's own resolver, so a person registered there is the
@@ -7591,7 +7644,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               const svc = _appConversationService;
               if (!svc) return { known: false, servedHere: false, ownersOwn: false };
               const c = svc.liveConversation(key) as { ownerPerson?: unknown } | null;
-              return { known: !!c, servedHere: svc.isOwner(), ownersOwn: !!c && !c.ownerPerson };
+              return { known: !!c, servedHere: svc.serves(key), ownersOwn: !!c && !c.ownerPerson };
             },
             slack: (routingKey) => ({ connected: !!_slackAdapter, known: _conversationRegistryRef?.resolveByKey(routingKey)?.platform === 'slack' }),
           }),
@@ -9832,6 +9885,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           registry: conversationRegistry,
           requests: new MobileChatRequestStore(config.stateDir),
           holdsLease: () => (coordinator.enabled ? coordinator.holdsLease() : true),
+          pool: () => _appPoolHandle,
           ownerName: () => appOwnerName(config),
           dispatch: () => appDispatch,
           killSession: (name) => sessionManager.killSessionByTmuxName(name),
@@ -9891,7 +9945,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         _appRelayReady = () => appDispatchDeps.relayReady?.() ?? { ready: true };
         // session-swap-any-conversation §3.3: restart a conversation's session on a new engine, no new message.
         _appSessionStarter = createAppSessionStarter(appDispatchDeps, {
-          isOwner: () => appSvc.isOwner(),
+          serves: (key) => appSvc.serves(key),
           aliasFor: (key) => conversationRegistry.appAliasFor(key),
           titleFor: (key) => (appSvc.liveConversation(key) as { title?: string } | null)?.title ?? null,
           ownerName: () => appOwnerName(config),
@@ -12695,11 +12749,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         queueWillRun,
         hasPisRecord: (sk) => pisRecordsForTopic(sk).length > 0,
         clearPisRecord: (sk) => { for (const r of pisRecordsForTopic(sk)) sweepPis.clear(r.tmuxSession); },
-        reportLoss: (items, reason) => {
+        reportLoss: (allItems, reason) => {
+          const items = settleAppQueueLoss(allItems, reason);
+          if (items.length === 0) return;
           notifyInboundLoss(items, 'SUMMARY', (count) =>
             `I didn't get to ${count} of your message(s) (${reason}) — resend anything still needed.`);
         },
-        reportPossiblyNotInjected: (items) => {
+        reportPossiblyNotInjected: (allItems) => {
+          const items = settleAppNotInjected(allItems);
+          if (items.length === 0) return;
           notifyInboundLoss(items, 'SUMMARY', (count) =>
             `${count} of your message(s) may not have been injected before a crash — if a message went unanswered, resend it.`);
         },
@@ -12728,12 +12786,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             const store = _sweptInboundStore;
             const nowIso = new Date().toISOString();
             const rows = store.listNonTerminal();
-            const dropped: string[] = [];
+            const expired: Array<{ sessionKey: string; messageId: string }> = [];
             for (const row of rows) {
               if (store.transition(row.enqueue_seq, row.state as 'queued' | 'claimed', 'expired', { nowIso, terminalReason: 'gate:no-mesh-identity' })) {
-                dropped.push(row.session_key);
+                expired.push({ sessionKey: row.session_key, messageId: row.message_id });
               }
             }
+            const dropped = settleAppQueueLoss(expired, 'gate:no-mesh-identity').map((it) => it.sessionKey);
             if (dropped.length > 0) {
               notifyInboundLoss(dropped.map((sk) => ({ sessionKey: sk })), 'SUMMARY', (count) =>
                 `I didn't get to ${count} of your message(s) (the queue is enabled but this machine has no mesh identity, so the drain never started) — resend anything still needed.`);
@@ -24966,7 +25025,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // WS1.1 capability advertisement (spec invariant 5): a bounded
                 // fixed-size summary, never an inventory. Reported live each
                 // heartbeat so a queue going dark withdraws the capability.
-                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
+                seamlessnessFlags: { ws11DeliverReceive: !!_inboundQueue, ws12DrainReceive: !!_drainRunner, appConversationsPool: _appPoolAdvertised(), memoryPrivacyEnforced: _memoryPrivacyEnforced(), dashboardCreateReceive: _sessionPoolStage() !== 'dark' && !!telegram && !!_topicProfileCtxRef?.spawnForTopic, ws44PoolLinks: !!_poolLink, ws44PoolCache: !!_poolPollCache, ws43JournalLease: JOB_LEASE_POOL_AUTHORITY_READY && resolveDevAgentGate(config.multiMachine?.seamlessness?.ws43JournalLease, config) && (config.multiMachine?.seamlessness?.ws43JournalLeaseDryRun ?? !resolveDevAgentGate(undefined, config)) !== true, stateSyncReceive: selfStateSyncReceive(), undatedActionStateOwnerMachineId: config.evolutionActions?.undatedResurfacer?.stateOwnerMachineId?.trim() || null },
                 // Machine-coherence advert (machine-coherence-guard §3.2).
                 // Emission is UNCONDITIONAL (M3, normative): it ships live with
                 // the code, regardless of the sentinel's dev-gate/enabled/dryRun
@@ -26379,6 +26438,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   .filter((r) => r.status === 'active' && r.ownerMachineId === _meshSelfId)
                   // slack-conversations-stay-with-connection §2.3: a Slack conversation never moves.
                   .filter((r) => !isSlackConversationKey(r.sessionKey))
+                  // app-conversations-in-the-pool §2.2: nothing in the pool places an app conversation.
+                  .filter((r) => !r.sessionKey.startsWith('app:'))
                   .map((r) => ({ sessionKey: r.sessionKey, pinned: shedPinned(r.sessionKey), lastMovedAt: r.timestamp })),
                 poolStage: () => liveConfig.get('multiMachine.sessionPool.stage', 'dark') as string,
                 proofFresh: () => {
@@ -26714,8 +26775,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!coherenceJournal || !r?.ok) return;
             const rec = (r as { record?: { ownerMachineId?: string; ownershipEpoch?: number; status?: string; transferTo?: string; timestamp?: number; drainInFlight?: boolean } }).record;
             const topicNum = Number(sessionKey);
-            if (!Number.isFinite(topicNum) || rec?.ownershipEpoch == null) return;
-            coherenceJournal.emitPlacement(topicNum, {
+            if (rec?.ownershipEpoch == null) return;
+            // app-conversations-in-the-pool §2.7: an app record's row carries its key; it has no numeric topic.
+            const appRow = sessionKey.startsWith('app:');
+            if (!appRow && !Number.isFinite(topicNum)) return;
+            const emitRow = (data: import('../core/CoherenceJournal.js').PlacementData): void => {
+              if (appRow) coherenceJournal.emitAppPlacement(sessionKey, { ...data, ...((rec as { takeover?: boolean }).takeover ? { takeover: true } : {}) });
+              else coherenceJournal.emitPlacement(topicNum, data);
+            };
+            emitRow({
               owner: rec.ownerMachineId ?? '',
               ...(prevOwner ? { prevOwner } : {}),
               epoch: rec.ownershipEpoch,
@@ -26937,6 +27005,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           alert: (level, cause, message) => notify(level === 'HIGH' ? 'IMMEDIATE' : 'SUMMARY', 'sender-validation', `[${cause}] ${message}`),
           log: (line) => console.warn(pc.yellow(line)),
         });
+        const appOwnerReceiver = createAppOwnerReceiver({
+          service: () => _appConversationService,
+          storedEpoch: (rk) => ownReg.read(rk)?.ownershipEpoch ?? null,
+          classify: sentinel ? async (text, alias) => {
+            const d = await sentinel.decideInboundDisposition(text, alias);
+            return d.disposition === 'kill' || d.disposition === 'pause' ? d.disposition : 'deliver';
+          } : undefined,
+          markInjected: (session, messageId) => _inboundQueue?.markRemoteInjected(session, messageId),
+          report: (what, detail) => degradationReporter.report({ feature: what, primary: 'deliver a forwarded app message on the machine that runs its conversation', fallback: 'the message reads "unknown" in the app', reason: detail, impact: 'An app message may not have reached its session.' }),
+        });
         const deliverMessageHandler = deliverMod.createDeliverMessageHandler({
           ownerEpochOf: (s) => ownReg.read(s)?.ownershipEpoch ?? null,
           recordReceipt: (messageId, session) => {
@@ -26948,7 +27026,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // owner restart whenever the optional exactly-once ledger was dark.
             try {
               if (_inboundQueue) return _inboundQueue.recordRemoteReceipt(session, messageId);
-            } catch { /* receipt unavailable — fall through to the next durable tier */ }
+            } catch { /* @silent-fallback-ok — receipt unavailable: fall through to the next durable tier */ }
             if (messageLedger) return messageLedger.record(messageId, { platform: 'mesh', topic: session }).firstSeen;
             if (deliverSeenFallback.has(messageId)) return false;
             deliverSeenFallback.add(messageId);
@@ -26962,7 +27040,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (parseDashboardCreatePayload(cmd.payload) && typeof cmd.messageId === 'string'
                 && cmd.messageId.startsWith(`dashboard-create:${cmd.session}:`)) return true;
               if (_sessionPoolStage() === 'dark') return false;
-              return isSlackSessionKey(cmd.session) ? !!_slackInboundDispatch : !!telegram;
+              // The strict grammar: an `app:` key is never rebuilt as a fake Slack message.
+              return isSlackConversationKey(cmd.session) ? !!_slackInboundDispatch : !!telegram;
             },
             alreadyReceived: (messageId, session) => {
               try {
@@ -26979,7 +27058,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // never-populated / corrupt / operator-unresolvable registry (it fails
           // toward delivery + shouts instead of rejecting everyone, the incident
           // fix). Envelope absent (old peer / live local frame) → not consulted.
-          validateSender: (envelope, session) => {
+          validateSender: (envelope, session, payload) => {
+            // app-conversations-in-the-pool §2.4: an app forward's sender is the event's paired device.
+            if (session.startsWith('app:')) return appForwardSenderValid(envelope, session, payload);
             const uid = Number(envelope.userId);
             return senderValidationGate.decide(uid, session).verdict === 'deliver';
           },
@@ -26994,6 +27075,14 @@ export async function startServer(options: StartOptions): Promise<void> {
               senderUid: meta.senderUid,
             });
           },
+          // app-conversations-in-the-pool §2.4: the owner's receive side. Acknowledged only after the signed
+          // event is durably ingested; a stop or pause acts before the acknowledgement.
+          app: {
+            isApp: (cmd) => cmd.session.startsWith('app:'),
+            urgentAccepted: (cmd) => appOwnerReceiver.urgentAccepted(cmd.session, cmd.payload, cmd.ownershipEpoch),
+            canTake: (cmd) => appOwnerReceiver.canTake(cmd.session),
+            ingest: (cmd) => appOwnerReceiver.ingest(cmd.session, cmd.payload),
+          },
           // Owner-side bridge (§L4 handoff): a forwarded message landed → spawn/resume
           // the local session for the topic so the conversation continues on THIS machine.
           // Only fires for a FIRST-seen forwarded deliverMessage (the ledger dedupes
@@ -27001,6 +27090,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // double-gate on stage!=='dark' to be safe. Fire-and-forget: the durable receipt
           // is already recorded + ACKed before this runs.
           onAccepted: (cmd) => {
+            // app-conversations-in-the-pool §2.4: runs synchronously before the acknowledgement.
+            if (cmd.session.startsWith('app:')) {
+              _topicProfileCarrier?.onTopicAcquired(cmd.session);
+              appOwnerReceiver.accepted(cmd.session, cmd.messageId, cmd.payload);
+              return;
+            }
             // dashboard-new-session-machine-choice §3.4 step 4 — a dashboard
             // create placed on THIS machine. Evaluated FIRST: a brand-new topic has
             // nothing for the working-set / profile-carrier pulls to fetch, and the
@@ -27048,7 +27143,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // inject-into-live-session vs spawn). Fire-and-forget: the durable
             // receipt is already recorded + ACKed before this runs.
             const slackKey = cmd.session;
-            if (isSlackSessionKey(slackKey)) {
+            if (isSlackConversationKey(slackKey)) {
               if (!_slackInboundDispatch) return; // Slack not configured here
               const sText = typeof cmd.payload === 'string'
                 ? cmd.payload
@@ -27219,6 +27314,12 @@ export async function startServer(options: StartOptions): Promise<void> {
         // the heartbeat-advertised ws12DrainReceive capability. All I/O
         // injected; the runner itself is the unit-tested pure sequence.
         try {
+          // Autonomous runs and the working set key on the conversation's local alias.
+          const appAliasString = (sk: string): string => {
+            if (!sk.startsWith('app:')) return sk;
+            const alias = _conversationRegistryRef?.appAliasFor(sk.slice('app:'.length)) ?? null;
+            return alias === null ? sk : String(alias);
+          };
           const drainMod = await import('../core/SessionDrainRunner.js');
           const autoMod = await import('../core/AutonomousSessions.js');
           let drainNonce = 0;
@@ -27244,13 +27345,18 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
             sessionIdleNow: async (sk) => {
               const topicNum = Number(sk);
-              const tmux = Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
+              // app-conversations-in-the-pool §2.5: per-kind through part 1's ports.
+              const tmux = sk.startsWith('app:') ? _conversationPorts?.session(sk) ?? null : Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
               if (!tmux || !sessionManager.isSessionAlive(tmux)) return true; // nothing local to disturb
               return (await sessionManager.checkSessionWorkState(tmux)) === 'idle';
             },
             suspendAutonomousRun: (topic, target) =>
-              autoMod.suspendAutonomousTopicForMove(config.stateDir, topic, target, coherenceJournal ?? undefined),
+              autoMod.suspendAutonomousTopicForMove(config.stateDir, appAliasString(topic), target, coherenceJournal ?? undefined),
             sessionQuiet: (sk) => {
+              if (sk.startsWith('app:')) {
+                const name = _conversationPorts?.session(sk) ?? null;
+                return !name || !sessionManager.isSessionAlive(name) || !sessionManager.isSessionActivelyWorking(name);
+              }
               const topicNum = Number(sk);
               if (!Number.isFinite(topicNum) || !telegram) return true; // nothing local to drain
               const tmux = telegram.getSessionForTopic(topicNum);
@@ -27260,7 +27366,9 @@ export async function startServer(options: StartOptions): Promise<void> {
             // Emergency stop: the durable flag file freshly touched (within the
             // drain window's scale) — a stale flag from an old stop must not
             // permanently veto every future transfer.
-            emergencyStopActive: () => {
+            emergencyStopActive: (sk) => {
+              // app-conversations-in-the-pool §2.4: a stop or pause reaching this owner while its drain runs.
+              if (_appConversationService?.emergencyMarked(sk)) return true;
               try {
                 const flagAt = fs.statSync(path.join(config.projectDir, '.instar', 'autonomous-emergency-stop')).mtimeMs;
                 return Date.now() - flagAt < 120_000;
@@ -27268,8 +27376,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
             terminateSession: async (sk, reason, opts) => {
               const topicNum = Number(sk);
-              const tmux = Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
+              const isApp = sk.startsWith('app:');
+              const tmux = isApp ? _conversationPorts?.session(sk) ?? null : Number.isFinite(topicNum) ? telegram?.getSessionForTopic(topicNum) : null;
               const rec = tmux ? state.findSessionByTmux(tmux) : undefined;
+              // A live app session never reads as "nothing to close": that would land the claim beside it.
+              if (!rec && isApp && tmux) return { terminated: false, skipped: 'app-session-record-missing' };
               if (!rec) return { terminated: false, skipped: 'no-local-session' };
               return terminateWithAuthority(rec.id, reason, {
                 via: 'ws12-drain',
@@ -27278,8 +27389,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                 workEvidence: opts.force ? ['active-build-or-autonomous-run'] : undefined,
               });
             },
-            markInterrupted: (topic) => { autoMod.markAutonomousInterruptedMidTask(config.stateDir, topic); },
+            markInterrupted: (topic) => { autoMod.markAutonomousInterruptedMidTask(config.stateDir, appAliasString(topic)); },
+            onDrainEnded: (sk) => { _appConversationService?.clearEmergency(sk); },
             notifyInterrupted: (topic, target) => {
+              if (topic.startsWith('app:')) {
+                let name: string | null = null;
+                try { name = meshIdMgr.getActiveMachines().find((m) => m.machineId === target)?.entry.nickname ?? null; } catch { /* @silent-fallback-ok — unresolved name is stated plainly ("another machine"), per Rule 7 */ }
+                void _conversationPorts?.disclose(topic, movedMachinesMidStepNotice(name))
+                  .catch(() => { /* @silent-fallback-ok — ONE best-effort notice; the audit row is the durable record */ });
+                return;
+              }
               const topicNum = Number(topic);
               if (!telegram || !Number.isFinite(topicNum)) return;
               // Sent even when the session announced the move itself: that note is
@@ -27443,7 +27562,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // copy on the self beat was stamped up to 30 s ago, which would let a
               // receiver's 60 s freshness check pass a ~90 s-old report.
               const liveLoadReport = _machineLoadSampler?.read() ?? null;
-              return { ...base, ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
+              return { ...base, ..._appPoolStatusRows(), ...(liveLoadReport ? { loadReport: liveLoadReport } : {}), journalAdvert, peerSightings, ...(commitmentsAdvert ? { commitmentsAdvert } : {}), ...(preferencesAdvert ? { preferencesAdvert } : {}) };
             },
             // A2A cross-machine route (docs/specs/a2a-cross-machine-route.md).
             // Both verbs are ALWAYS registered; with the gate off both refuse.
@@ -27754,9 +27873,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 target: c.target,
                 senderObservedEpoch: c.ownershipEpoch,
               });
+              const appKey = c.session.startsWith('app:') ? c.session.slice('app:'.length) : null;
               return {
                 ok: outcome.status === 'drained' || outcome.status === 'drained-interrupted',
                 ...outcome,
+                ...(appKey && _appConversationService ? { leftBehind: _appConversationService.leftBehind(appKey) } : {}),
               };
             },
             // U4.4 — handback-offer (PREFERRED-CAPTAIN side). RBAC already proved
@@ -28183,7 +28304,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 { timeoutMs: 50_000 },
               );
               if (res.ok) {
-                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string; detail?: string; autonomousRunSuspended?: boolean; claimLanded?: boolean };
+                const r = (res.result ?? {}) as { ok?: boolean; status?: string; reason?: string; detail?: string; autonomousRunSuspended?: boolean; claimLanded?: boolean; leftBehind?: { files?: number; notes?: number } };
                 const status = typeof r.status === 'string' ? r.status : undefined;
                 const completed = r.ok === true && (status === 'drained' || status === 'drained-interrupted');
                 // The mesh handler spreads the runner's outcome, whose reason
@@ -28196,6 +28317,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   reason,
                   runSuspended: r.autonomousRunSuspended === true,
                   claimLanded: completed && r.claimLanded === true,
+                  ...(r.leftBehind ? { leftBehind: r.leftBehind } : {}),
                 };
               }
               return { ok: false, reason: res.reason ?? `status-${res.status}`, noHandler: res.status === 501 };
@@ -28502,9 +28624,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // when an acquire seam could not name the previous owner.
                 prevOwnerOf: (topicKey) => {
                   const topicNum = Number(topicKey);
-                  if (!Number.isFinite(topicNum)) return null;
+                  const isAppKey = topicKey.startsWith('app:');
+                  if (!isAppKey && !Number.isFinite(topicNum)) return null;
                   try {
-                    const entries = tpcReader.query({ kind: 'topic-placement', topic: topicNum, limit: 20 }).entries;
+                    const entries = tpcReader.query(isAppKey ? { kind: 'topic-placement', sessionKey: topicKey, limit: 20 } : { kind: 'topic-placement', topic: topicNum, limit: 20 }).entries;
                     for (const e of entries) {
                       const data = e.data as { prevOwner?: string };
                       if (typeof data.prevOwner === 'string' && data.prevOwner !== meshSelfId) return data.prevOwner;
@@ -28617,14 +28740,17 @@ export async function startServer(options: StartOptions): Promise<void> {
               // record pointing at the WRONG machine).
               ownershipEpochFloor = (sk: string): number => {
                 const topicNum = Number(sk);
-                if (!Number.isFinite(topicNum)) return 0;
-                const newest = wsReader2.query({ kind: 'topic-placement', topic: topicNum, limit: 1 }).entries[0];
+                const isApp = sk.startsWith('app:');
+                if (!isApp && !Number.isFinite(topicNum)) return 0;
+                const newest = wsReader2.query(isApp ? { kind: 'topic-placement', sessionKey: sk, limit: 1 } : { kind: 'topic-placement', topic: topicNum, limit: 1 }).entries[0];
                 const e = (newest?.data as { epoch?: unknown } | undefined)?.epoch;
                 return typeof e === 'number' && Number.isFinite(e) ? e : 0;
               };
               const wsSelf = cjOwnMachineId ?? meshSelfId;
               const wsOwnerOf = (topic: number): { owner: string | null; epoch: number | null } => {
-                const rec = sessionOwnershipRegistry?.read(String(topic));
+                // A negative topic is an app conversation's local alias; its record is under the key.
+                const appKeyOfAlias = topic < 0 ? _conversationRegistryRef?.appConversationFor(topic) ?? null : null;
+                const rec = sessionOwnershipRegistry?.read(appKeyOfAlias ? `app:${appKeyOfAlias}` : String(topic));
                 if (rec?.ownerMachineId) {
                   return { owner: rec.ownerMachineId, epoch: rec.ownershipEpoch ?? null };
                 }
@@ -29099,6 +29225,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!cap) return null;
               return cap.seamlessnessFlags?.ws11DeliverReceive === true;
             },
+            appNoRecordServedHere: (sk) => {
+              const key = sk.startsWith('app:') ? sk.slice('app:'.length) : null;
+              return !!key && _appConversationService?.serves(key) === true;
+            },
             liveLocalSession: (sk) => {
               const topic = /^-?\d+$/.test(sk) ? Number(sk) : null;
               const name = topic !== null ? telegram?.getSessionForTopic(topic) : _slackAdapter?.getSessionForChannel(sk);
@@ -29143,7 +29273,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // the extra field (version skew named in the spec).
               const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
-                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' };
+                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
               throw new Error(`deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
             },
@@ -29156,7 +29286,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!url) throw new Error(`no peer url for ${machineId}`);
               const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
-                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' };
+                return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
               throw new Error(`spawn deliverMessage rejected: ${res.status} ${res.reason ?? ''}`);
             },
@@ -29312,7 +29442,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                       queuePis.clear(r.tmuxSession);
                     }
                   },
-                  reportLoss: (items, reason) => {
+                  reportLoss: (allItems, reason) => {
+                    // app-conversations-in-the-pool §2.2: the phone's request is finished as refused, in words.
+                    const items = settleAppQueueLoss(allItems, reason);
+                    if (items.length === 0) return;
                     // silent-loss-refusal-conservation §2.C — a `sender-deauthorized`
                     // loss is a first-class REFUSAL, not a generic "didn't get to it":
                     // route each item through the UNIFIED noticer (same neutral
@@ -29331,7 +29464,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                     notifyInboundLoss(items, 'SUMMARY', (count) =>
                       `I didn't get to ${count} of your message(s) (${reason}) — resend anything still needed.`);
                   },
-                  reportPossiblyNotInjected: (items) => {
+                  reportPossiblyNotInjected: (allItems) => {
+                    // app-conversations-in-the-pool §2.4: a receipt with no injected marker reads `unknown` in the app.
+                    const items = settleAppNotInjected(allItems);
+                    if (items.length === 0) return;
                     notifyInboundLoss(items, 'SUMMARY', (count) =>
                       `${count} of your message(s) may not have been injected — if a message went unanswered, resend it.`);
                   },
@@ -29407,8 +29543,229 @@ export async function startServer(options: StartOptions): Promise<void> {
               _sweptInboundStore.close();
               _sweptInboundStore = null;
             }
-          } catch (err) {
+          } catch (err) { // @silent-fallback-ok — logged loudly; the queue stays off and its capability is withdrawn
             console.error(`[inbound-queue] engine construction failed (queue stays OFF): ${err instanceof Error ? err.message : String(err)}`);
+          }
+
+          // ── App conversations in the pool (docs/specs/app-conversations-in-the-pool.md) ──
+          // The lease gate, the flag, the enforcer and the moves. Every seam is this block's own
+          // registry, journal pairing, drain sender and queue. Dark stage ⇒ `active()` false ⇒ today's rule.
+          {
+            const appHoldsLease = (): boolean => (coordinator.enabled ? coordinator.holdsLease() : true);
+            const appCaps = (): MachineCapacity[] => machinePoolRegistry?.getCapacities() ?? [];
+            const appActive = (): boolean => _sessionPoolStage() !== 'dark' && !!durableOwnershipStore && _placementReplicationOn === true && !!_appConversationService && !!_sessionRouter;
+            _appPoolAdvertised = () => appActive() && !!_drainRunner && !!_inboundQueue;
+            const appFlags = new AppFlagTracker({ now: () => Date.now(), holdsLease: appHoldsLease, selfId: () => meshSelfId });
+            const appGate = new AppLeaseGate({
+              holdsLease: appHoldsLease,
+              // Every registered machine, not only those seen online: at boot no beat has landed yet, and an empty list would open the gate unasked.
+              peers: () => meshIdMgr.getActiveMachines().map((m) => m.machineId).filter((m) => m !== meshSelfId),
+              status: async (m) => {
+                const url = peerUrl(m);
+                if (!url) return null;
+                const res = await meshClient.send({ machineId: m, url }, { type: 'session-status' }, 0, { timeoutMs: LEASE_GATE_BOUND_MS });
+                return res.ok ? (res.result as StatusAnswer) : null;
+              },
+              storedEpoch: (rk) => ownReg.read(rk)?.ownershipEpoch ?? 0,
+              onAnswer: (m, flagged) => appFlags.noteAnswer(m, flagged),
+              log: (line) => console.log(pc.dim(`  [app-pool] ${line}`)),
+            });
+            const appRecords = (): SessionOwnershipRecord[] => ownReg.all().filter((r) => r.sessionKey.startsWith('app:'));
+            _appPoolStatusRows = () => {
+              const all = appRecords();
+              return {
+                appOwned: all.filter((r) => r.ownerMachineId === meshSelfId && (r.status === 'active' || r.status === 'transferring'))
+                  .slice(0, 2000).map((r) => ({ key: r.sessionKey, epoch: r.ownershipEpoch, status: r.status })),
+                // What a lease holder asks a machine about: its copy of each record, newest first (§2.5).
+                appRecent: [...all].sort((x, y) => y.timestamp - x.timestamp).slice(0, 500)
+                  .map((r) => ({ key: r.sessionKey, owner: r.ownerMachineId, epoch: r.ownershipEpoch, status: r.status })),
+              };
+            };
+            let appNonce = 0;
+            const appCas = (rk: string, action: import('../core/SessionOwnership.js').OwnershipAction, why: string): { ok: boolean; record?: SessionOwnershipRecord } => {
+              const prev = ownReg.read(rk)?.ownerMachineId;
+              const r = ownReg.cas(action, { sessionKey: rk, sender: meshSelfId, nonce: `${meshSelfId}:app:${why}:${Date.now()}:${++appNonce}` });
+              emitPlacement(rk, r, action.type === 'release' ? 'released' : action.type === 'force-claim' ? 'failover' : 'user-move', prev);
+              return r.ok ? { ok: true, record: r.record } : { ok: false };
+            };
+            const appMovesInFlight = new Set<string>();
+            const appLastMove = new Map<string, number>();
+            const appDrainRunning = (rk: string): boolean => _drainRunner?.isRunning(rk) === true;
+            const appNick = (m: string): string | null => appCaps().find((c) => c.machineId === m)?.nickname ?? null;
+            const appDrainSender = async (owner: string, rk: string, target: string, epoch: number) => (
+              _sendDrain ? _sendDrain(owner, rk, target, epoch) : { ok: false, reason: 'drain disabled' }
+            );
+            _appPoolHandle = {
+              active: appActive,
+              read: (rk) => ownReg.read(rk),
+              gateOpenFor: (key) => appGate.openFor(key),
+              drainRunning: appDrainRunning,
+              sessionRunning: (name) => sessionManager.isSessionAlive(name),
+              // A close of a conversation this machine no longer serves (§2.1). Not the lease holder, so the
+              // runtime-private exception and a reason beginning "topic moved". A KEEP refusal comes back here.
+              closeLostSession: async (key, tmux) => {
+                const rec = state.findSessionByTmux(tmux);
+                if (!rec) return { closed: true };
+                const res = await terminateWithAuthority(rec.id, `topic moved: this machine no longer serves app conversation ${key}`, { via: 'app-conversation-lost', localPostTransferCloseout: true });
+                return res.terminated ? { closed: true } : { closed: false, detail: res.skipped };
+              },
+              route: (msg) => _sessionRouter!.route(msg),
+              leaseHeldElsewhere: () => { const h = coordinator.getSyncStatus().leaseHolder; return !!h && h !== meshSelfId; },
+              // The rows only: unlike a Telegram stop, later messages to this conversation are still taken.
+              dropHeld: (rk) => { void _inboundQueue?.onOperatorStop(rk); },
+              hasHeld: (rk) => { try { return _inboundQueue?.hasQueued(rk) === true; } catch { return false; } }, // @silent-fallback-ok — an unreadable queue reads as nothing held
+            };
+            // The inbound queue's app tail (§2.4): a held message routes again; here it delivers like the send route.
+            _appDrainDeliver = async (dmsg, handover) => {
+              const svc = _appConversationService;
+              const f = parseAppForward(dmsg.payload);
+              if (!svc || !f || !_sessionRouter) return { kind: 'failed', error: new Error('app forward could not be read') };
+              const key = f.event.conversationKey;
+              const out = await _sessionRouter.route({
+                sessionKey: dmsg.sessionKey, messageId: dmsg.messageId, payload: f,
+                // The envelope stored at the send, so the owner's sender check sees what the phone's request carried.
+                senderEnvelope: dmsg.senderEnvelope,
+                ...(f.urgent ? { appUrgent: f.urgent } : {}),
+              });
+              if (out.action === 'rejected') { svc.appendDelivery(key, dmsg.messageId, 'refused', f.seed); return { kind: 'sender-rejected' }; }
+              if (out.action === 'queued' || out.action === 'placement-blocked') return { kind: 'un-routable', reason: out.detail ?? out.action };
+              if (out.action === 'forwarded') {
+                // The owner appends a message's outcome itself after dispatching. A stop has taken effect by its acknowledgement.
+                if (f.urgent) svc.appendDelivery(key, dmsg.messageId, 'intercepted', f.seed);
+                return { kind: 'remote-delivered' };
+              }
+              if (out.action !== 'handled-locally') return { kind: 'remote-delivered' };
+              const conv = svc.liveConversation(key);
+              const alias = svc.deps.registry.appAliasFor(key);
+              if (!conv || alias === null) { svc.appendDelivery(key, dmsg.messageId, 'refused', f.seed); return { kind: 'local-delivered', injectError: 'conversation-gone' }; }
+              if (!handover.commitReceipt()) return { kind: 'handover-refused' };
+              if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
+              try {
+                if (f.urgent) {
+                  svc.noteEmergency(key);
+                  if (f.urgent === 'pause') svc.pause(key); else svc.emergencyStop(key);
+                  svc.appendDelivery(key, dmsg.messageId, 'intercepted', f.seed);
+                  return { kind: 'local-delivered' };
+                }
+                if (!svc.deps.registry.isAppBound(alias)) svc.deps.registry.bindApp(alias);
+                const r = await dispatchStoredAppMessage(svc, { key, alias, title: conv.title ?? 'Untitled', event: f.event, ownerName: f.ownerName ?? svc.ownerName(), memoryPersonId: f.memoryPersonId });
+                svc.appendDelivery(key, dmsg.messageId, r.outcome, f.seed);
+                return { kind: 'local-delivered' };
+              } catch (err) { // @silent-fallback-ok — the message reads `unknown` in the app, and the queue reports it as possibly not injected
+                svc.appendDelivery(key, dmsg.messageId, 'unknown', f.seed);
+                return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
+              }
+            };
+            const appEnforcer = new AppPoolEnforcer({
+              selfId: () => meshSelfId,
+              active: appActive,
+              selfFlagged: () => _appPoolAdvertised(),
+              holdsLease: appHoldsLease,
+              leaseHolderId: () => coordinator.getSyncStatus().leaseHolder ?? null,
+              capacities: appCaps,
+              records: appRecords,
+              cas: appCas,
+              drainRunning: appDrainRunning,
+              moveInFlight: (rk) => appMovesInFlight.has(rk),
+              restoreDeliveryLedger: (rk, transferEpoch, activeEpoch) => { sessionManager.restoreInboundDeliveryAfterAbortedTransfer(rk, meshSelfId, transferEpoch, activeEpoch); },
+              sendDrain: appDrainSender,
+              raiseAttention: (item) => { void telegram?.createAttentionItem({ id: item.conditionKey, conditionKey: item.conditionKey, title: item.title, summary: item.body, category: 'general', priority: 'NORMAL', sourceContext: 'app-conversations-pool' }); },
+              clearAttention: (conditionKey) => { telegram?.clearAttentionCondition({ conditionKey }, 'cleared: every machine is on the latest Instar'); },
+              nicknameOf: appNick,
+              now: () => Date.now(),
+              transferDeadlineMs: DEFAULT_DRAIN_CLAIM_GRACE_MS,
+              flags: appFlags,
+              log: (line) => console.log(pc.dim(`  [app-pool] ${line}`)),
+            });
+            const appBringBackDeps = {
+              selfId: meshSelfId,
+              holdsLease: appHoldsLease,
+              read: (rk: string) => ownReg.read(rk),
+              // Direct contact, not `online`: a lingering git-synced beat keeps that true for up to an hour on a dead machine.
+              ownerOnline: (m: string) => { const c = appCaps().find((x) => x.machineId === m); return c?.liveness ? c.liveness.state === 'live' : c?.online === true; },
+              nicknameOf: appNick,
+            };
+            setAppPoolMoves({
+              active: appActive,
+              move: (input) => runAppMove({
+                selfId: meshSelfId,
+                capacity: (m) => appCaps().find((c) => c.machineId === m),
+                resolveMachine: (name) => {
+                  const n = name.trim().toLowerCase();
+                  return appCaps().find((c) => c.machineId === name || c.nickname?.toLowerCase() === n)?.machineId ?? null;
+                },
+                validNames: () => appCaps().map((c) => c.nickname).filter((n): n is string => !!n),
+                everyMachineFlagged: () => appFlags.everyOnlineMachineFlagged(appCaps()),
+                selfFlagged: () => _appPoolAdvertised(),
+                selfDrainable: () => !!_drainRunner,
+                conversation: (key) => _appConversationService?.liveConversation(key) ?? null,
+                read: (rk) => ownReg.read(rk),
+                cas: appCas,
+                sendDrain: appDrainSender,
+                awaitTargetRecord: async (target, rk, epoch) => {
+                  if (target === meshSelfId || !sessionManager.inboundDeliveryStatus().activation.active) return true;
+                  const url = peerUrl(target);
+                  if (!url) return false;
+                  sendOwnershipNudges({
+                    selfMachineId: meshSelfId,
+                    activeMachineIds: () => [target],
+                    flush: () => coherenceJournal?.flush(),
+                    send: (machineId, n) => _identityMeshSend?.(machineId, { type: 'ownership-nudge', ...n }, 3000) ?? Promise.resolve(),
+                  }, { sessionKey: rk, epoch, landedAt: Date.now() });
+                  const until = Date.now() + 20_000;
+                  while (Date.now() < until) {
+                    try {
+                      const res = await meshClient.send({ machineId: target, url }, { type: 'session-status' }, 0, { timeoutMs: 3000 });
+                      const rows = res.ok ? (res.result as { appRecent?: Array<{ key?: string; epoch?: number }> }).appRecent ?? [] : [];
+                      if (rows.some((x) => x.key === rk && typeof x.epoch === 'number' && x.epoch >= epoch)) return true;
+                    } catch { /* @silent-fallback-ok — keep polling within the bound; the answer is false at its end */ }
+                    await new Promise((r) => setTimeout(r, 500));
+                  }
+                  return false;
+                },
+                askOwner: async (owner, rk) => {
+                  const url = peerUrl(owner);
+                  if (!url) return null;
+                  const res = await meshClient.send({ machineId: owner, url }, { type: 'session-status' }, 0, { timeoutMs: 5000 });
+                  if (!res.ok) return null;
+                  const rows = (res.result as { appRecent?: Array<{ key?: string; owner?: string; epoch?: number; status?: string }> }).appRecent ?? [];
+                  const row = rows.find((x) => x.key === rk);
+                  return { owner: typeof row?.owner === 'string' ? row.owner : owner, status: typeof row?.status === 'string' ? row.status : 'unknown', epoch: typeof row?.epoch === 'number' ? row.epoch : 0 };
+                },
+                autonomousRun: async (owner, key) => {
+                  const alias = _conversationRegistryRef?.appAliasFor(key) ?? null;
+                  if (alias === null) return null;
+                  if (owner === meshSelfId) {
+                    const job = listAutonomousJobs(config.stateDir).find((j) => j.topic === String(alias) && j.active && !j.paused);
+                    return job ? { goal: job.goal, remainingMinutes: null, runKey: job.startedAt } : null;
+                  }
+                  const probe = getAutonomousRunProbe();
+                  return probe ? probe(owner, String(alias)) : null;
+                },
+                setMoveInFlight: (rk, on) => { if (on) appMovesInFlight.add(rk); else appMovesInFlight.delete(rk); },
+                leftBehindHere: (key) => _appConversationService?.leftBehind(key) ?? { files: 0, notes: 0 },
+                afterMove: (target, rk, prevOwner) => {
+                  if (target === meshSelfId) _topicProfileCarrier?.onTopicAcquired(rk, prevOwner);
+                  try { getMoveAftercare()?.(target, rk); } catch { /* @silent-fallback-ok — the kick has bounded retries; the target can still fetch */ }
+                },
+                lastMoveAt: (rk) => appLastMove.get(rk) ?? null,
+                noteMoved: (rk) => { if (appLastMove.size > 2000) appLastMove.clear(); appLastMove.set(rk, Date.now()); },
+                now: () => Date.now(),
+              }, input),
+              bringBack: (input) => runBringBack({ ...appBringBackDeps, conversation: (key) => _appConversationService?.liveConversation(key) ?? null, cas: appCas }, input),
+              placement: (key) => appPlacement(appBringBackDeps, key),
+            });
+            let appFlagLastSent = _appPoolAdvertised();
+            const appPoolTick = (): void => {
+              // The flag turned on after the boot beat (the stage and queue are wired later): tell peers now, not 30 s from now.
+              const appFlagNow = _appPoolAdvertised();
+              if (appFlagNow !== appFlagLastSent) { appFlagLastSent = appFlagNow; _refreshPoolHeartbeat(); }
+              try { appFlags.observe(appCaps()); if (appActive()) void appGate.tick(); appEnforcer.tick(); }
+              catch (err) { console.warn(`  [app-pool] tick failed: ${err instanceof Error ? err.message : String(err)}`); }
+            };
+            appPoolTick();
+            const appPoolTimer = setInterval(appPoolTick, 5_000);
+            appPoolTimer.unref?.();
           }
 
           // ── Ownership-gated spawn seam (ownership-gated-spawn §3.1, Layer A) ──
@@ -32511,7 +32868,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           if (!svc) return null;
           return {
             sessionFor: (key) => svc.sessionFor(key),
-            isOwner: () => svc.isOwner(),
+            mayReply: (key) => svc.mayReply(key),
             conversationOfSession: (tmux) => {
               const alias = svc.channels.getChannelForSession(tmux);
               if (!alias || !/^-?\d+$/.test(alias)) return null;

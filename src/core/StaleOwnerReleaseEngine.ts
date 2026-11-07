@@ -375,7 +375,9 @@ export class StaleOwnerReleaseEngine {
 
     // ── Candidate owners: peers that own at least one live topic record.
     const records = this.d.listOwnershipRecords().filter(
-      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self,
+      // app-conversations-in-the-pool §2.2: never automatic for an app conversation. Its only takeover is
+      // the operator's "bring it back here".
+      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self && !r.sessionKey.startsWith('app:'),
     );
     const topicsByOwner = new Map<string, SessionOwnershipRecord[]>();
     for (const r of records) {

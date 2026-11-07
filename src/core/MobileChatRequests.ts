@@ -128,6 +128,14 @@ export class MobileChatRequestStore {
     }
   }
 
+  /** The send that carried this message, for finishing it after the fact (app-conversations-in-the-pool §2.2). */
+  findSendByMessage(messageId: string): { deviceId: string; requestId: string } | null {
+    for (const r of this.records.values()) {
+      if (r.extra?.op === 'send' && r.extra.messageId === messageId) return { deviceId: r.deviceId, requestId: r.requestId };
+    }
+    return null;
+  }
+
   /** The core started and its outcome is uncertain. */
   markUnknown(deviceId: string, requestId: string): void {
     const k = key(deviceId, requestId);

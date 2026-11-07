@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
-import { isApplierStatusCorrection, type SessionOwnershipStore } from './SessionOwnershipRegistry.js';
+import { isApplierStatusCorrection, isAppTieAdoption, type SessionOwnershipStore } from './SessionOwnershipRegistry.js';
 
 export interface LocalSessionOwnershipStoreDeps {
   /** Absolute directory holding one JSON file per session ownership record. */
@@ -131,6 +131,13 @@ export class LocalSessionOwnershipStore implements SessionOwnershipStore {
   correctMaterializedStatus(candidate: SessionOwnershipRecord): boolean {
     const current = this.loadOne(candidate.sessionKey);
     if (!isApplierStatusCorrection(current, candidate)) return false;
+    this.persist(candidate);
+    return true;
+  }
+
+  /** See SessionOwnershipStore.adoptAppTieWinner — equal-epoch, `app:` keys only. */
+  adoptAppTieWinner(candidate: SessionOwnershipRecord): boolean {
+    if (!isAppTieAdoption(this.loadOne(candidate.sessionKey), candidate)) return false;
     this.persist(candidate);
     return true;
   }

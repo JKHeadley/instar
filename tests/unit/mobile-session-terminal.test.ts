@@ -94,6 +94,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/sessions/history'],
       ['POST', '/mobile/sessions/door/134088'],
       ['POST', '/mobile/sessions/move/134088'],
+      ['POST', '/mobile/sessions/bring-back/app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f'],
       ['POST', '/mobile/sessions/close/a-session-id'],
       ['POST', '/mobile/sessions/new'],
       ['POST', '/mobile/sessions/default'],
