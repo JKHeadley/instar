@@ -31,6 +31,7 @@ import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } fr
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
 import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
+import { mountMobileAttentionChoiceRoutes } from './mobileAttentionChoiceRoutes.js';
 import { redactDeep, redactForDevice } from './mobileSessionTerminalRoutes.js';
 import { mountMobileConsolePagesRoutes, type SelfRead } from './mobileConsolePagesRoutes.js';
 import { mountMobileHealthRoutes, HEALTH_CHOICES_LOCAL_PATH, HEALTH_CHOICES_MERGE_PATH } from './mobileHealthRoutes.js';
@@ -253,6 +254,7 @@ import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import { mountMobileOpsRoutes, machineKey } from './mobileOpsRoutes.js';
+import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
 import { buildBiasToActionWouldFire } from '../core/bias-to-action-telemetry.js';
@@ -351,6 +353,7 @@ import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine
 import { FailureAnalyzer } from '../monitoring/FailureAnalyzer.js';
 import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
+import { failureInvestigationAdmissionSummary } from '../monitoring/FailureInvestigationAdmission.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
 import { validateTurnEvidence } from '../monitoring/TurnEvidence.js';
 import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
@@ -1158,6 +1161,10 @@ export interface RouteContext {
   config: InstarConfig;
   /** Verifies a short-lived proof minted only after a successful dashboard PIN unlock. */
   verifyDashboardOperatorSession?: (token: string | undefined) => boolean;
+  /** The desktop routes' session check ONLY: a dashboard operator session or a phone desktop session (mobile-owner-presence-pin §2.1). */
+  verifyDesktopOperatorSession?: (token: string | undefined) => boolean;
+  /** Desktop-only sessions the owner's phone mints with Face ID. */
+  phoneDesktopSessions?: import('./PhoneDesktopSessionStore.js').PhoneDesktopSessionStore;
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
@@ -10454,11 +10461,11 @@ export function createRoutes(ctx: RouteContext): Router {
     return true;
   }
 
-  async function readReaperPeerText(response: globalThis.Response): Promise<
+  async function readReaperPeerText(response: globalThis.Response, maxBodyBytes = REAPER_POOL_MAX_BODY_BYTES): Promise<
     { ok: true; text: string } | { ok: false; error: 'response-bound' }
   > {
     const declaredLength = Number(response.headers.get('content-length'));
-    if (Number.isFinite(declaredLength) && declaredLength > REAPER_POOL_MAX_BODY_BYTES) {
+    if (Number.isFinite(declaredLength) && declaredLength > maxBodyBytes) {
       try { await response.body?.cancel(); } catch { /* response is already classified */ }
       return { ok: false, error: 'response-bound' };
     }
@@ -10471,7 +10478,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const { done, value } = await reader.read();
       if (done) break;
       bytes += value.byteLength;
-      if (bytes > REAPER_POOL_MAX_BODY_BYTES) {
+      if (bytes > maxBodyBytes) {
         try { await reader.cancel(); } catch { /* response is already classified */ }
         return { ok: false, error: 'response-bound' };
       }
@@ -13658,6 +13665,12 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   // ── Native operator remote desktop (explicit dev-agent opt-in) ─────────────
+  // The desktop routes' session check (mobile-owner-presence-pin §2.1). A server without phone sessions
+  // (or a test context built before them) checks the dashboard operator session exactly as before.
+  const verifyDesktopSession = (token: string | undefined): boolean =>
+    (ctx.verifyDesktopOperatorSession ?? ctx.verifyDashboardOperatorSession)?.(token) === true;
+  // A phone desktop session is honoured only from the phone that minted it (mobile-owner-presence-pin §2.1).
+  if (ctx.phoneDesktopSessions) mountPhoneSessionBinding(router, ctx.phoneDesktopSessions);
   const desktopOperatorSession = (req: ExpressRequest): string =>
     typeof req.headers['x-instar-operator-session'] === 'string' ? req.headers['x-instar-operator-session'] : '';
   const desktopTransport = (req: ExpressRequest, res: ExpressResponse): boolean => {
@@ -13748,7 +13761,7 @@ export function createRoutes(ctx: RouteContext): Router {
     },
     frontActive: () => !!ctx.desktopMeshBroker,
     targetKey: id => ctx.desktopTargetSigningKey?.(id) ?? null,
-    verifySession: token => ctx.verifyDashboardOperatorSession?.(token) === true,
+    verifySession: token => verifyDesktopSession(token) === true,
     transportAllowed: req => req.secure || isLoopbackPeer(req.socket.remoteAddress),
   }));
   // ── Locked-screen access. Off everywhere by default. The enable refuses any
@@ -13788,6 +13801,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!desktopTransport(req, res) || !desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);
+    // Locked-screen access stays a browser/PIN decision: a phone desktop session never switches it on (spec §2.1).
     if (!ctx.verifyDashboardOperatorSession?.(session)) { res.status(403).json({ error: 'Dashboard operator session required' }); return; }
     const patch = lockedPatch((req.body ?? {}) as Record<string, unknown>);
     if (!patch) { res.status(400).json({ error: 'No valid setting' }); return; }
@@ -13822,7 +13836,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
-    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+    if (!verifyDesktopSession(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     const target = ctx.directDesktopAccess.targetInfo();
@@ -13861,7 +13875,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!desktopTransport(req, res)) return;
     if (!desktopIntent(req, res)) return;
     const session = desktopOperatorSession(req);
-    if (!ctx.verifyDashboardOperatorSession?.(session)) {
+    if (!verifyDesktopSession(session)) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     const topicId = Number(req.body?.topicId);
@@ -13934,7 +13948,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
-    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+    if (!verifyDesktopSession(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
@@ -13949,7 +13963,7 @@ export function createRoutes(ctx: RouteContext): Router {
     res.setHeader('Cache-Control', 'no-store');
     if (!ctx.directDesktopAccess) { res.status(503).json({ error: 'Remote desktop is off on this agent' }); return; }
     if (!desktopTransport(req, res)) return;
-    if (!ctx.verifyDashboardOperatorSession?.(desktopOperatorSession(req))) {
+    if (!verifyDesktopSession(desktopOperatorSession(req))) {
       res.status(403).json({ error: 'Dashboard operator session required' }); return;
     }
     if (ctx.desktopMeshBroker?.hasRequest(req.params.id)) {
@@ -32396,8 +32410,79 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   //
   // 503 when the feature is disabled (null ledger). The /corrections API NEVER
   // serves the raw `learning` text under any condition (CorrectionLedger.toApiView).
-  router.get('/corrections', (req, res) => {
-    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+  // Failure evidence remains on its origin disk; the authenticated read and
+  // mutation proxies keep the case usable after its conversation changes owner.
+  const correctionPoolPeers = () => {
+    const peers = new Map((ctx.resolvePeerUrls?.() ?? []).filter(p => p.machineId !== ctx.meshSelfId).map(p => [p.machineId, p]));
+    for (const machine of ctx.listPoolMachines?.() ?? []) {
+      if (machine.machineId !== ctx.meshSelfId && !peers.has(machine.machineId)) {
+        peers.set(machine.machineId, { machineId: machine.machineId, url: machine.lastKnownUrl ?? '', kind: 'last-known-url' });
+      }
+    }
+    return [...peers.values()];
+  };
+  const correctionPeerUnavailable = (peer: ReturnType<typeof correctionPoolPeers>[number]): string | null => {
+    if (!peer.url) return 'no-known-url';
+    if (ctx.machinePoolRegistry?.getCapacity(peer.machineId)?.online === false) return 'offline';
+    const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+    return isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allowlist).ok ? null : 'url-rejected';
+  };
+  // Whitelist, rather than spread, a peer's summary: an older or malformed peer
+  // must never inject detail-only evidence into a broad pool response.
+  const correctionPoolSummary = (raw: Record<string, unknown>, machineId: string | null) => ({
+    id: raw.id, dedupeKey: raw.dedupeKey, kind: raw.kind,
+    scrubbedSummary: typeof raw.scrubbedSummary === 'string' ? raw.scrubbedSummary.slice(0, 4000) : '',
+    severity: raw.severity, failureState: raw.failureState, investigationAdmission: failureInvestigationAdmissionSummary(raw.investigationAdmission),
+    occurrenceCount: raw.occurrenceCount, detectedAt: raw.detectedAt,
+    topicId: raw.topicId, status: raw.status, updatedAt: raw.updatedAt, version: raw.version,
+    machineId,
+  });
+  const correctionReplicaReply = (req: ExpressRequest, res: ExpressResponse, machineId: string): boolean => {
+    if (req.method !== 'GET' || !ctx.correctionLedger) return false;
+    const replica = ctx.correctionLedger.replicatedFailures().find(row => row.machineId === machineId && row.record.id === req.params.id);
+    if (!replica) return false;
+    const replication = { state: 'stale', readOnly: true, originMachineId: machineId, version: replica.record.version };
+    if (req.path.endsWith('/failure-episodes')) {
+      const before = req.query.beforeVersion === undefined ? undefined : Number(req.query.beforeVersion);
+      const limit = Math.min(3, Math.max(1, Number(req.query.limit) || 3));
+      const episodes = ctx.correctionLedger.replicatedFailureEpisodes(req.params.id, machineId) // bounded-input-reviewed: paged HTTP chronology, not judgment input; nextBeforeVersion exposes remaining history.
+        .filter(row => before === undefined || row.version < before).sort((a, b) => b.version - a.version).slice(0, limit); // bounded-input-reviewed: HTTP history page, not a judgment input; nextBeforeVersion exposes the remaining immutable chronology.
+      res.json({ episodes, nextBeforeVersion: episodes.length === limit ? episodes[episodes.length - 1].version : null, replication });
+    } else res.json({ ...CorrectionLedger.toApiView(replica.record), replication });
+    return true;
+  };
+  const correctionProxy = async (req: ExpressRequest, res: ExpressResponse): Promise<boolean> => {
+    const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
+    if (!machineId || machineId === ctx.meshSelfId) return false;
+    const peer = correctionPoolPeers().find(p => p.machineId === machineId);
+    const unavailable = peer ? correctionPeerUnavailable(peer) : 'peer-unknown';
+    if (!peer || unavailable) { if (correctionReplicaReply(req, res, machineId)) return true; res.status(503).json({ error: unavailable, machineId, state: 'unknown' }); return true; }
+    try {
+      const mutation = req.method !== 'GET';
+      const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer,
+        `/corrections/${encodeURIComponent(req.params.id)}${req.path.endsWith('/check') ? '/failure-investigation/check' : req.path.endsWith('/claim') ? '/failure-investigation/claim' : req.path.endsWith('/resume') ? '/failure-investigation/resume' : req.method === 'PATCH' ? '/failure-case' : req.path.endsWith('/failure-episodes') ? '/failure-episodes?' + new URLSearchParams({ limit: String(req.query.limit ?? 3), ...(req.query.beforeVersion === undefined ? {} : { beforeVersion: String(req.query.beforeVersion) }) }) : ''}`, {
+          method: req.method, headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName,
+            ...(mutation ? { 'Content-Type': 'application/json', 'X-Instar-Request': '1' } : {}) },
+          ...(mutation ? { body: JSON.stringify(req.body) } : {}),
+          signal: AbortSignal.timeout(5000), redirect: 'manual',
+        });
+      if (response.status >= 500 && correctionReplicaReply(req, res, machineId)) return true;
+      const bounded = await readReaperPeerText(response, 16 * 1024 * 1024);
+      if (!bounded.ok) { res.status(502).json({ error: bounded.error, machineId, state: 'unknown' }); return true; }
+      const body: unknown = JSON.parse(bounded.text);
+      if (!body || typeof body !== 'object' || !reaperPeerJsonDepthAllowed(body)) throw new Error('invalid-body');
+      res.status(response.status >= 300 && response.status < 400 ? 502 : response.status).json(body);
+    } catch {
+      // A timed-out mutation may have committed. The caller must reread the
+      // origin version before retrying; never replay writes on another rope.
+      if (correctionReplicaReply(req, res, machineId)) return true;
+      res.status(502).json({ error: 'peer-unreachable-or-invalid', machineId, state: 'unknown', rereadBeforeRetry: req.method !== 'GET' });
+    }
+    return true;
+  };
+  router.get('/corrections', async (req, res) => {
+    const pool = req.query.scope === 'pool';
+    if (!ctx.correctionLedger && !pool) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
     const limit = req.query.limit ? Math.min(Math.max(1, parseInt(req.query.limit as string, 10) || 100), 1000) : 100;
     const before = typeof req.query.before === 'string' ? Date.parse(req.query.before) : NaN;
     const since = typeof req.query.since === 'string' ? Date.parse(req.query.since) : NaN;
@@ -32405,21 +32490,73 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ? (req.query.kind as import('../monitoring/CorrectionLedger.js').CorrectionKind)
       : undefined;
     const status = typeof req.query.status === 'string' ? (req.query.status as import('../monitoring/CorrectionLedger.js').CorrectionStatus) : undefined;
-    const records = ctx.correctionLedger.list({
-      limit,
-      beforeMs: Number.isNaN(before) ? undefined : before,
+    const unresolved = req.query.severity === 'failure-callout' && req.query.unresolved === 'true';
+    if (unresolved && ctx.config.monitoring?.failureCallouts?.enabled === false && !pool) {
+      res.status(503).json({ error: 'failure-callouts disabled' }); return;
+    }
+    const records = ctx.correctionLedger?.list({
+      limit, beforeMs: Number.isNaN(before) ? undefined : before,
       sinceMs: Number.isNaN(since) ? undefined : since,
-      kind,
-      status,
-    });
-    res.json({
-      records: records.map((r) => CorrectionLedger.toApiView(r)),
-      count: records.length,
-      totalRecords: ctx.correctionLedger.countRecords(),
-      // The keyset cursor for the NEXT page (detected_at < nextBefore). Null when
-      // this page wasn't full (no more rows to fetch).
-      nextBefore: records.length === limit ? records[records.length - 1].detectedAt : null,
-    });
+      severity: req.query.severity === 'failure-callout' ? 'failure-callout' : undefined,
+      unresolvedFailures: unresolved, investigableFailures: unresolved && req.query.investigable === 'true', kind, status,
+    }) ?? [];
+    if (!pool) {
+      res.json({ failureCalloutVersion: 1, records: records.map(r => CorrectionLedger.toApiView(r, false)), count: records.length,
+        totalRecords: ctx.correctionLedger!.countRecords(),
+        nextBefore: unresolved ? null : records.length === limit ? records[records.length - 1].detectedAt : null });
+      return;
+    }
+    const localDisabled = unresolved && ctx.config.monitoring?.failureCallouts?.enabled === false;
+    const rows = (localDisabled ? [] : records).map(r => correctionPoolSummary(CorrectionLedger.toApiView(r, false) as unknown as Record<string, unknown>, ctx.meshSelfId ?? null));
+    const failed: Array<{ machineId: string | null; error: string; state: 'unknown' }> = [];
+    if (localDisabled) failed.push({ machineId: ctx.meshSelfId ?? null, error: 'failure-callouts disabled', state: 'unknown' });
+    if (!ctx.correctionLedger) failed.push({ machineId: ctx.meshSelfId ?? null, error: 'correction-learning disabled', state: 'unknown' });
+    const peers = correctionPoolPeers();
+    const query = new URLSearchParams({ limit: String(limit) });
+    for (const key of ['before', 'since', 'severity', 'unresolved', 'kind', 'status', 'investigable']) {
+      if (typeof req.query[key] === 'string') query.set(key, req.query[key] as string);
+    }
+    await Promise.all(peers.map(async (peer, index) => {
+      const unavailable = index >= 16 ? 'pool-bound' : correctionPeerUnavailable(peer);
+      if (unavailable) { failed.push({ machineId: peer.machineId, error: unavailable, state: 'unknown' }); return; }
+      try {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/corrections?${query}`, {
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-AgentId': ctx.config.projectName },
+          signal: AbortSignal.timeout(5000), redirect: 'manual',
+        });
+        if (!response.ok) { failed.push({ machineId: peer.machineId, error: `HTTP ${response.status}`, state: 'unknown' }); return; }
+        const bounded = await readReaperPeerText(response);
+        if (!bounded.ok) throw new Error(bounded.error);
+        const body = JSON.parse(bounded.text);
+        if (!body || !Array.isArray(body.records) || !reaperPeerJsonDepthAllowed(body)) throw new Error('invalid-body');
+        if (req.query.severity === 'failure-callout' && body.failureCalloutVersion !== 1) {
+          failed.push({ machineId: peer.machineId, error: 'failure-callouts-unsupported', state: 'unknown' }); return;
+        }
+        for (const raw of body.records.slice(0, limit)) {
+          if (!raw || typeof raw !== 'object' || typeof raw.id !== 'string') continue;
+          // Older peers can ignore filters. They cannot turn ordinary records or
+          // closed failures into work for the investigation job.
+          if (req.query.severity === 'failure-callout' && raw.severity !== 'failure-callout') continue;
+          if (unresolved && raw.failureState === 'verified') continue;
+          if (req.query.investigable === 'true' && (raw.investigationAdmission?.paused || (raw.investigationAdmission?.nextAttemptAt && Date.parse(raw.investigationAdmission.nextAttemptAt) > Date.now()))) continue;
+          rows.push(correctionPoolSummary(raw, peer.machineId));
+        }
+      } catch { failed.push({ machineId: peer.machineId, error: 'peer-unreachable-or-invalid', state: 'unknown' }); }
+    }));
+    // Cached complete snapshots survive an offline origin. They are never
+    // presented as current and never receive mutation authority on this reader.
+    for (const replica of ctx.correctionLedger?.replicatedFailures() ?? []) {
+      if (req.query.investigable === 'true') continue; // stale replicas never grant new work admission
+      if (replica.machineId === ctx.meshSelfId || rows.some(row => row.machineId === replica.machineId && row.id === replica.record.id)) continue;
+      if (!failed.some(row => row.machineId === replica.machineId)) continue;
+      if (unresolved && replica.record.failureCase?.state === 'verified') continue;
+      rows.push({ ...correctionPoolSummary(CorrectionLedger.toApiView(replica.record, false) as unknown as Record<string, unknown>, replica.machineId),
+        replication: { state: 'stale', readOnly: true } } as typeof rows[number]);
+    }
+    rows.sort((a, b) => String(unresolved ? a.updatedAt : b.detectedAt).localeCompare(String(unresolved ? b.updatedAt : a.detectedAt)));
+    const selected = rows.slice(0, limit);
+    res.json({ failureCalloutVersion: 1, scope: 'pool', records: selected, count: selected.length, totalRecords: rows.length, nextBefore: null,
+      pool: { selfMachineId: ctx.meshSelfId ?? null, failed, machines: [ctx.meshSelfId ?? null, ...peers.map(p => p.machineId)] } });
   });
 
   // Current same-kind groups of open correction records, as the analyzer
@@ -32447,11 +32584,90 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
-  router.get('/corrections/:id', (req, res) => {
+  router.post('/corrections/:id/failure-investigation/check', async (req, res) => {
+    if (ctx.config.monitoring?.failureCallouts?.enabled === false) { res.status(503).json({ error: 'failure-callouts disabled' }); return; }
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['token'])) return;
+    if (typeof req.body?.token !== 'string' || req.body.token.length > 100) { res.status(400).json({ error: 'bounded claim token required' }); return; }
+    if (await correctionProxy(req, res)) return;
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'failure-callouts disabled' }); return; }
+    res.json({ valid: ctx.correctionLedger.validateFailureInvestigationClaim(req.params.id, req.body.token) });
+  });
+  /* @self-action-controller: failure-callout-investigation */
+  router.post('/corrections/:id/failure-investigation/claim', async (req, res) => {
+    if (ctx.config.monitoring?.failureCallouts?.enabled === false) { res.status(503).json({ error: 'failure-callouts disabled' }); return; }
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (refuseUnsupportedFields(res, req.body ?? {}, [])) return;
+    if (await correctionProxy(req, res)) return;
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'failure-callouts disabled' }); return; }
+    const claim = ctx.correctionLedger.claimFailureInvestigation(req.params.id);
+    if (claim.admitted && claim.admission.paused) {
+      const record = ctx.correctionLedger.get(req.params.id)!;
+      // This admission is unique for an occurrence/resume epoch. The adapter's
+      // stable condition key persists/dedupes the one stalled-work notice.
+      const key = `failure-investigation:${record.id}:${claim.admission.occurrenceCount}:${claim.token}`;
+      const title = 'A failure investigation has reached its last automatic attempt';
+      const summary = 'The case stays open. This attempt will record the remaining blocker and repair action; further automatic attempts pause until new evidence or another occurrence.';
+      if (ctx.telegram) void ctx.telegram.createAttentionItem({ id: key, conditionKey: key, title, summary,
+        category: 'system', priority: 'HIGH', sourceContext: record.id, lane: 'agent-health', healthKey: key,
+      }).catch(error => console.warn('[failure-callout] stalled attention unavailable:', error instanceof Error ? error.message : 'unknown'));
+      try { ctx.state.appendEvent?.({ type: 'failure_investigation_paused', summary: title,
+        timestamp: new Date().toISOString(), metadata: { correctionId: record.id, occurrenceCount: claim.admission.occurrenceCount } }); }
+      catch { /* @silent-fallback-ok — durable admission remains visible; observation cannot undo a reserved attempt */ }
+    }
+    res.status(claim.admitted ? 200 : claim.reason === 'not-found' ? 404 : 409).json(claim);
+  });
+  router.post('/corrections/:id/failure-investigation/resume', async (req, res) => {
+    if (ctx.config.monitoring?.failureCallouts?.enabled === false) { res.status(503).json({ error: 'failure-callouts disabled' }); return; }
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (refuseUnsupportedFields(res, req.body ?? {}, ['evidenceRef'])) return;
+    if (await correctionProxy(req, res)) return;
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'failure-callouts disabled' }); return; }
+    try { res.json({ admission: ctx.correctionLedger.resumeFailureInvestigation(req.params.id, req.body?.evidenceRef) }); }
+    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'invalid resume evidence' }); }
+  });
+
+  router.get('/corrections/:id/failure-episodes', async (req, res) => {
+    const before = req.query.beforeVersion === undefined ? undefined : Number(req.query.beforeVersion);
+    const requestedLimit = req.query.limit === undefined ? 3 : Number(req.query.limit);
+    if ((before !== undefined && (!Number.isSafeInteger(before) || before < 1)) || !Number.isSafeInteger(requestedLimit) || requestedLimit < 1) {
+      res.status(400).json({ error: 'beforeVersion and limit must be positive whole numbers' }); return;
+    }
+    if (await correctionProxy(req, res)) return;
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    if (!ctx.correctionLedger.get(req.params.id)) { res.status(404).json({ error: 'not found' }); return; }
+    const limit = Math.min(3, requestedLimit);
+    const episodes = ctx.correctionLedger.listFailureEpisodes(req.params.id, before, limit);
+    res.json({ episodes, nextBeforeVersion: episodes.length === limit ? episodes[episodes.length - 1].version : null });
+  });
+
+  router.get('/corrections/:id', async (req, res) => {
+    if (await correctionProxy(req, res)) return;
     if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
     const rec = ctx.correctionLedger.get(req.params.id);
     if (!rec) { res.status(404).json({ error: 'not found' }); return; }
     res.json(CorrectionLedger.toApiView(rec));
+  });
+
+  router.patch('/corrections/:id/failure-case', async (req, res) => {
+    if (req.headers['x-instar-request'] !== '1') { res.status(403).json({ error: 'X-Instar-Request: 1 required' }); return; }
+    if (refuseUnsupportedFields(res, req.body, ['version', 'context', 'investigation', 'verification'])) return;
+    if (!Number.isSafeInteger(req.body?.version)) { res.status(400).json({ error: 'version required' }); return; }
+    if (await correctionProxy(req, res)) return;
+    if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
+    if (ctx.config.monitoring?.failureCallouts?.enabled === false && req.body?.context !== undefined) {
+      res.status(503).json({ error: 'failure-callouts disabled' }); return;
+    }
+    try {
+      const result = ctx.correctionLedger.updateFailureCase(req.params.id, req.body, req.body.version);
+      if (!result.ok) {
+        res.status(result.conflict ? 409 : 404).json(result.conflict
+          ? { ok: false, conflict: true, ...(result.current ? { current: CorrectionLedger.toApiView(result.current) } : {}) }
+          : result);
+        return;
+      }
+      res.json(CorrectionLedger.toApiView(result.record));
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'invalid failure-case update' }); }
   });
 
   router.post('/corrections', (req, res) => {
@@ -32469,6 +32685,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'kind must be one of infra-gap | user-preference | noise' });
       return;
     }
+    if (body.severity !== undefined && !['correction', 'failure-callout'].includes(body.severity)) {
+      res.status(400).json({ error: 'severity must be correction or failure-callout' }); return;
+    }
+    if (body.severity === 'failure-callout' && ctx.config.monitoring?.failureCallouts?.enabled === false) {
+      res.status(503).json({ error: 'failure-callouts disabled' }); return;
+    }
     const kind = kindRaw as import('../monitoring/CorrectionLedger.js').CorrectionKind;
     const summary = typeof body.scrubbedSummary === 'string' && body.scrubbedSummary.trim()
       ? body.scrubbedSummary.trim()
@@ -32476,6 +32698,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // POST-SCRUB at the boundary (defense in depth — the writer scrubs again).
     const rec = ctx.correctionLedger.record({
       kind,
+      severity: body.severity === 'failure-callout' ? 'failure-callout' : 'correction',
+      failureContext: ctx.config.monitoring?.failureCallouts?.enabled === false ? undefined : body.failureContext,
       learning: scrubCorrectionSecrets(learning),
       scrubbedSummary: scrubCorrectionSecrets(summary),
       deterministicWeight: typeof body.deterministicWeight === 'number' ? body.deterministicWeight : 3,
@@ -32807,6 +33031,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // …then opens a verify window. BY-CONSTRUCTION authority guard: the loop's
   // injected deps carry NO proposal-minting and NO direct memory-file write.
   router.post('/corrections/analyze', async (req, res) => {
+    if (ctx.config.monitoring?.correctionLearning?.enabled !== true) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
     if (!ctx.correctionLedger) { res.status(503).json({ error: 'correction-learning disabled' }); return; }
     try {
       const cl = ctx.config.monitoring?.correctionLearning;
@@ -38390,7 +38615,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       corrections: (limit) => {
         if (!ctx.correctionLedger) return { ok: false, off: true };
         const records = ctx.correctionLedger.list({ limit });
-        return { ok: true, data: { records: records.map((x) => CorrectionLedger.toApiView(x)), totalRecords: ctx.correctionLedger.countRecords() } };
+        return { ok: true, data: { records: records.map((x) => CorrectionLedger.toApiView(x, false)), totalRecords: ctx.correctionLedger.countRecords() } };
       },
       peerCorrections: (limit) => Promise.all(onlinePeers().map((p) => peerList(p, `/corrections?limit=${limit}`, (b) => b.records, 'correction-learning disabled'))),
       pairings: async () => {
@@ -38607,7 +38832,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // owner phone's Face ID-confirmed approve, decline and switch, which run the console's own paths.
     // The session screen's controls (docs/specs/mobile-native-session-controls.md): every control calls the
     // dashboard's own route, here or on the machine holding the session, so its rules stay in force.
-    const sessionControlCall = async (method: 'GET' | 'POST' | 'DELETE', p: string, body?: unknown, machine?: string | null): Promise<RouteAnswer> => {
+    const sessionControlCall = async (method: 'GET' | 'POST' | 'DELETE' | 'PATCH', p: string, body?: unknown, machine?: string | null): Promise<RouteAnswer> => {
       const init = {
         method,
         headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'X-Instar-Request': '1', 'X-Instar-Close-Via': 'mobile-app', ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
@@ -38627,6 +38852,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body has no usable shape, and each control words that as a failed read
       } catch { return { status: 0, body: null }; } // @silent-fallback-ok — status 0 is worded as "couldn't be reached" by each control
     };
+    // Done and Ignore for a Needs-you item from the owner's phone (docs/specs/mobile-attention-choices.md):
+    // the dashboard's own PATCH /attention/:id, over loopback.
+    mountMobileAttentionChoiceRoutes(router, { call: (m, p, b) => sessionControlCall(m, p, b), bearerOk: (req) => bearerMatches(req, ctx.config.authToken) });
     mountMobileSessionControlsRoutes(router, {
       call: sessionControlCall,
       actions: (req) => mobileActionsState(req, { pairing: () => ctx.mobilePairingService ?? null, config: () => ctx.config }),
@@ -38635,6 +38863,19 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       secrets: () => [ctx.config.authToken, ctx.config.dashboardPin],
     });
+    // Remote Desktop with Face ID and the PIN page (docs/specs/mobile-owner-presence-pin.md). Its sessions
+    // live in AgentServer, beside the dashboard's, so a PIN change ends both.
+    if (ctx.phoneDesktopSessions) {
+      mountOwnerPresenceRoutes(router, {
+        pairing: () => ctx.mobilePairingService ?? null,
+        config: () => ctx.config,
+        phoneSessions: ctx.phoneDesktopSessions,
+        // A PIN change since the last check must clear old sessions BEFORE this one is issued, not after.
+        syncPinVersion: () => { ctx.verifyDashboardOperatorSession?.(undefined); },
+        machineName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null)
+          ?? verifiedEntityName('self', os.hostname().replace(/\.local$/i, '').replace(/[-_]+/g, ' ').trim()),
+      });
+    }
     mountMobilePermissionsRoutes(router, {
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {

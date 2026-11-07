@@ -28,6 +28,7 @@ import { createHash, createHmac, timingSafeEqual, createPrivateKey, createPublic
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { JobCostReport } from '../scheduler/JobCostReport.js';
 import { mountJobCostRoutes } from './jobCostRoutes.js';
 import { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
@@ -300,6 +301,9 @@ import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/Telegra
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
 import { isRegistryEntryActive, MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
 import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionStore.js';
+import { activeOwnerPhone } from './mobileConsoleTicket.js';
+import { isOwnerPresenceEnabled } from './mobileOwnerPresenceRoutes.js';
+import { PhoneDesktopSessionStore } from './PhoneDesktopSessionStore.js';
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
 import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
 import { signRequest } from './machineAuth.js';
@@ -363,6 +367,7 @@ import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/Me
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
+import { failureReplicationEmitter, type FailureReplicaReader } from '../core/FailureCalloutReplicatedStore.js';
 import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { DarkFlagMaturationRegistry } from '../monitoring/DarkFlagMaturationRegistry.js';
@@ -466,6 +471,8 @@ export class AgentServer {
   private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
+  /** Desktop-only sessions the owner's phone mints with Face ID (docs/specs/mobile-owner-presence-pin.md §2.1). */
+  private readonly phoneDesktopSessions = new PhoneDesktopSessionStore();
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
   private dashboardPinVersion: string | null = null;
 
@@ -473,6 +480,8 @@ export class AgentServer {
     const version = createHash('sha256').update(this.config.dashboardPin ?? '').digest('hex');
     if (this.dashboardPinVersion !== null && this.dashboardPinVersion !== version) {
       this.dashboardOperatorSessions.clear();
+      // A new PIN ends every "a human is here" proof, the phone's desktop sessions included.
+      this.phoneDesktopSessions.clear();
     }
     this.dashboardPinVersion = version;
   }
@@ -480,6 +489,18 @@ export class AgentServer {
   private verifyDashboardOperatorSession(token: string | undefined): boolean {
     this.syncDashboardPinVersion();
     return this.dashboardOperatorSessions.verify(token);
+  }
+
+  /**
+   * The desktop routes' check, and ONLY theirs (mobile-owner-presence-pin §2.1): a dashboard operator
+   * session, or a live phone desktop session whose phone is still an active owner phone right now.
+   */
+  private verifyDesktopOperatorSession(token: string | undefined): boolean {
+    if (this.verifyDashboardOperatorSession(token)) return true;
+    const svc = this.mobilePairing;
+    // Turning the switch off ends phone sessions at once, not after their 15 minutes.
+    if (!svc || !isOwnerPresenceEnabled(this.config)) return false;
+    return this.phoneDesktopSessions.verify(token, (deviceId) => activeOwnerPhone(svc, deviceId)) !== null;
   }
   /** multi-transport-mesh-comms (Layer 0.5) — see the bind site in start(). */
   private meshBindActive: boolean;
@@ -828,6 +849,8 @@ export class AgentServer {
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
+  setFailureReplicaReader(reader: FailureReplicaReader | null): void { this.correctionLedger?.setFailureReplicaReader(reader); }
+
   setClassReviewRemoteReader(reader: import('../monitoring/ClassReviewStore.js').ClassReviewRemoteReader | null): void {
     this.classReviewStore?.setRemoteReader(reader);
   }
@@ -3109,7 +3132,7 @@ export class AgentServer {
           { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
             sign: payload => Buffer.from(signMachinePayload(payload, privateKey), 'base64') },
           (topicId, uid) => this.topicOperatorStore?.getOperator(topicId)?.uid === uid,
-          (token, browserPublicKey) => this.verifyDashboardOperatorSession(token)
+          (token, browserPublicKey) => this.verifyDesktopOperatorSession(token)
             || this.desktopDelegatedSessions.verify(token, browserPublicKey),
           async (topicId, text) => {
             const uid = this.topicOperatorStore?.getOperator(topicId)?.uid;
@@ -3176,7 +3199,7 @@ export class AgentServer {
           signingKeyPem: options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey(),
           peers: options.resolvePeerUrls,
           recordRopeResult: options.recordRopeResult,
-          verifyFrontSession: token => this.verifyDashboardOperatorSession(token),
+          verifyFrontSession: token => this.verifyDesktopOperatorSession(token),
           onForget: requestId => this.wsManager?.closeDesktopMeshRequest(requestId),
         });
       } catch (error) {
@@ -4063,16 +4086,15 @@ export class AgentServer {
       this.revertDetector = null;
     }
 
-    // Correction & Preference Learning Sentinel (docs/specs/CORRECTION-PREFERENCE-
-    // LEARNING-SENTINEL-SPEC.md) — Slice 1b ledger. Ships OFF; constructed only
-    // when enabled (else the inline /corrections routes 503-stub via the null
-    // ledger). SIGNAL-ONLY — never blocks/rewrites an outbound message. Own
-    // try/catch so a failure here can never cascade into other init.
+    // Shared correction ledger: serious-failure forensics are default-on;
+    // preference learning/promotion remains separately opt-in. Turning off
+    // both leaves /corrections unavailable. SIGNAL-ONLY: never blocks messages.
     try {
-      if (options.config.monitoring?.correctionLearning?.enabled === true && options.config.stateDir) {
+      if (options.config.stateDir && (resolveCorrectionLearningMode(options.config).captureEnabled || fs.existsSync(path.join(options.config.stateDir, 'correction-ledger.db')))) {
         this.correctionLedger = new CorrectionLedger({
           dbPath: path.join(options.config.stateDir, 'correction-ledger.db'),
         });
+        if (options.replicatedRecordEmitter) this.correctionLedger.setFailureReplicationEmitter(failureReplicationEmitter(options.replicatedRecordEmitter));
       }
     } catch (err) {
       console.warn('[instar] correction-learning ledger init failed (non-fatal):', err);
@@ -5408,6 +5430,8 @@ export class AgentServer {
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionRelogin: options.subscriptionRelogin ?? null,
       verifyDashboardOperatorSession: (token: string | undefined) => this.verifyDashboardOperatorSession(token),
+      verifyDesktopOperatorSession: (token: string | undefined) => this.verifyDesktopOperatorSession(token),
+      phoneDesktopSessions: this.phoneDesktopSessions,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,

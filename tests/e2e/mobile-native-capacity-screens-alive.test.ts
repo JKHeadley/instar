@@ -90,6 +90,7 @@ describe('native capacity screens — production wiring', () => {
     expect(accounts.status).toBe(200);
     expect(accounts.body.schemaVersion).toBe(1);
     expect(typeof accounts.body.headline).toBe('string');
+    expect(Array.isArray(accounts.body.notices)).toBe(true);
     expect(Array.isArray(accounts.body.accounts)).toBe(true);
 
     const spend = await send('GET', '/mobile/spend?window=today');

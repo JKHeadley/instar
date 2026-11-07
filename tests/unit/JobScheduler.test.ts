@@ -241,6 +241,24 @@ describe('JobScheduler', () => {
   });
 
   describe('gate auth context injection', () => {
+    it('binds canonical agent home, state dir and configured port instead of inherited routing', async () => {
+      const capturePath = path.join(project.stateDir, 'gate-routing-context.json');
+      fs.writeFileSync(path.join(project.stateDir, 'config.json'), JSON.stringify({ port: 48765 }));
+      const oldPort = process.env.INSTAR_PORT, oldHome = process.env.INSTAR_AGENT_HOME, oldState = process.env.INSTAR_STATE_DIR;
+      process.env.INSTAR_PORT = '49999'; process.env.INSTAR_AGENT_HOME = '/wrong-agent'; process.env.INSTAR_STATE_DIR = '/wrong-state';
+      try {
+        createScheduler();
+        const passed = await (scheduler as any).runGateAsync({ slug: 'canonical-context',
+          gate: `node -e 'require("fs").writeFileSync(process.argv[1],JSON.stringify({port:process.env.INSTAR_PORT,home:process.env.INSTAR_AGENT_HOME,state:process.env.INSTAR_STATE_DIR}))' '${capturePath}'` });
+        expect(passed).toBe(true);
+        expect(JSON.parse(fs.readFileSync(capturePath, 'utf8'))).toEqual({ port: '48765', home: path.dirname(project.stateDir), state: project.stateDir });
+      } finally {
+        for (const [key, value] of [['INSTAR_PORT', oldPort], ['INSTAR_AGENT_HOME', oldHome], ['INSTAR_STATE_DIR', oldState]]) {
+          if (value === undefined) delete process.env[key!]; else process.env[key!] = value;
+        }
+      }
+    });
+
     it('exposes authToken and projectName to gate shell', async () => {
       const fs = await import('node:fs');
       const path = await import('node:path');

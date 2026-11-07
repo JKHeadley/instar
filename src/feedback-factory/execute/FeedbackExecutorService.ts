@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
+  GITHUB_OUTAGE_NOTICE_MS, CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -375,7 +375,7 @@ export class FeedbackExecutorService {
       this.opts.audit.append('execute:tick-error', { runId, reason: out.reason });
     } finally {
       this.running = false;
-      try { this.setMeta(epoch, 'exec:last_tick', { ...out, startedAt, finishedAt: this.now() }); } catch { /* @silent-fallback-ok: a stale-epoch writer must not record a tick */ }
+      try { this.setMeta(this.opts.isCanonicalOwner() ? this.opts.ownerEpoch() : epoch, 'exec:last_tick', { ...out, startedAt, finishedAt: this.now() }); } catch { /* @silent-fallback-ok: a stale-epoch writer must not record a tick */ }
     }
     return out;
   }
@@ -481,6 +481,7 @@ export class FeedbackExecutorService {
     this.pruneScratch();
     const avail = await this.refreshAvailability();
     if (avail.reason === 'not-canonical-owner') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    if (avail.reason !== 'github-unavailable' && this.metaJson('exec:github_outage')) this.setMeta(epoch, 'exec:github_outage', null);
     // Stop paths first: no refusal below may skip them.
     const acted = await this.runStopPaths(epoch, avail.slug);
     if (AUTHORITY_WITHDRAWN_REASONS.has(avail.reason)) await this.disarmAll(avail.reason === 'disabled' ? 'executor-disabled' : `executor-${avail.reason}`);
@@ -488,7 +489,10 @@ export class FeedbackExecutorService {
       out.reason = avail.reason;
       return;
     }
-    if (avail.reason === 'github-unavailable') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    if (avail.reason === 'github-unavailable') {
+      await this.noteGithubOutage(epoch);
+      out.result = 'degraded'; out.reason = avail.reason; return;
+    }
     const slug = avail.slug!;
     const approver = avail.approver!;
     // Live attempts: lease, disk cap, finished sessions.
@@ -583,6 +587,8 @@ export class FeedbackExecutorService {
       // the next candidate would fail the same way and spend another start and another item's attempt.
       if (!ok) break;
       if (!this.availability?.available) break;
+      // Preparation may have carried the attempt to a newer epoch; the next tick claims under it.
+      if (this.opts.ownerEpoch() !== epoch) break;
     }
     return started;
   }
@@ -644,10 +650,25 @@ export class FeedbackExecutorService {
     return inUse;
   }
 
-  private async prepareAndSpawn(row: ExecutionRow, triage: TriageRow, epoch: number): Promise<boolean> {
+  /**
+   * Preparation runs for minutes, and a busy machine can lapse and re-acquire its own lease in that
+   * time. That raises the epoch without any change of owner, so the attempt moves to the new epoch
+   * instead of being stopped as stale. A machine that is no longer the owner keeps the old epoch, and
+   * the check before the spawn stops it.
+   */
+  private carryPreparationEpoch(row: ExecutionRow, epoch: number): number {
+    const current = this.opts.ownerEpoch();
+    if (current <= epoch || !this.opts.isCanonicalOwner()) return epoch;
+    this.opts.store.adopt(current, row.attemptId);
+    this.opts.audit.append('execute:preparation-epoch-carried', { attemptId: row.attemptId, from: epoch, to: current });
+    return current;
+  }
+
+  private async prepareAndSpawn(row: ExecutionRow, triage: TriageRow, claimedEpoch: number): Promise<boolean> {
     const cfg = this.opts.config();
     const p = this.attemptPaths(row);
     let spawned: { sessionName: string; sessionId: string } | null = null;
+    let epoch = claimedEpoch;
     try {
       // Stop any earlier attempt's session first (remote-close when it ran on a previous owner).
       for (const prior of this.opts.store.attemptsFor(row.initiativeId)) {
@@ -656,6 +677,7 @@ export class FeedbackExecutorService {
       }
       const baseSha = await this.opts.git.fetchBase(cfg.sourceRepoPath!);
       const deps = await this.opts.deps.ensure(cfg.sourceRepoPath!, baseSha);
+      epoch = this.carryPreparationEpoch(row, epoch);
       if (!deps.ok) { await this.depsUnavailable(epoch, deps.reason); this.endAttempt(row, epoch, 'stopped', 'deps-unavailable'); return false; }
       this.setMeta(epoch, 'exec:deps', { failures: 0, nextRetryAt: 0, hash: deps.hash });
       this.setMeta(epoch, `exec:attempt-deps:${row.attemptId}`, { hash: deps.hash });
@@ -667,11 +689,13 @@ export class FeedbackExecutorService {
       fs.symlinkSync(path.join(deps.dir, 'node_modules'), path.join(p.workspace, 'node_modules'), 'dir');
       this.writeEvidence(p.workspace, triage);
       const previousReviewFile = this.writePreviousReview(p.workspace, row);
+      epoch = this.carryPreparationEpoch(row, epoch);
       this.opts.store.patch(epoch, row.attemptId, { baseSha, workspace: p.workspace, publishClone: p.publishClone, tmpDir: p.tmpDir });
       const paths = this.confinementPaths(p.workspace, p.publishClone, p.tmpDir, deps.dir);
 
       // Confinement canary, both application paths, before every attempt.
       const canary = await this.runCanary(row, paths, deps.hash, cfg);
+      epoch = this.carryPreparationEpoch(row, epoch);
       if (!canary.ok) { await this.profileUnenforceable(epoch, canary.probes); this.endAttempt(row, epoch, 'stopped', 'profile-unenforceable'); return false; }
 
       const settingsPath = this.writeClaudeSettings(row.attemptId, paths);
@@ -684,15 +708,19 @@ export class FeedbackExecutorService {
       const sessionBase = `feedback-${pathSlug(row.initiativeId)}-a${row.attempt}`;
       // Record the session's name BEFORE spawning it (fenced): a lost ownership refuses here, and a
       // crash after the spawn leaves a row whose session the next owner can find and stop.
+      if (!this.opts.isCanonicalOwner()) throw new DrainConflictError('lost feedback queue ownership during preparation');
       this.opts.store.patch(epoch, row.attemptId, { sessionName: this.opts.sessions.plannedSessionName?.(sessionBase) ?? sessionBase, sessionMachine: this.opts.selfMachineId });
       spawned = await this.opts.sessions.spawnConfined({ name: sessionBase, prompt, cwd: p.workspace, settingsPath, tmpDir: p.tmpDir,
         maxDurationMinutes: Math.min(cfg.maxDurationMinutes, EXECUTION_LEASE_MS / 60_000) });
+      epoch = this.carryPreparationEpoch(row, epoch);
       // transcriptRef = the session's uuid (its transcript and the remote-close key).
       this.opts.store.patch(epoch, row.attemptId, { state: 'running', sessionName: spawned.sessionName, sessionMachine: this.opts.selfMachineId, transcriptRef: spawned.sessionId });
       this.opts.audit.append('execute:spawned', { attemptId: row.attemptId, session: spawned.sessionName });
       await this.markBuildPhase(row.initiativeId, 'in-progress');
       return true;
     } catch (error) {
+      // A long step can throw after the lease moved; refunds and latches below need the current epoch.
+      try { epoch = this.carryPreparationEpoch(row, epoch); } catch { /* @silent-fallback-ok: an uncarried epoch is refused below and the owner's next tick stops the row */ }
       // A session that started but could not be recorded (e.g. ownership moved mid-preparation)
       // must not keep running unrecorded: stop it now.
       if (spawned) {
@@ -869,6 +897,21 @@ export class FeedbackExecutorService {
       summary: 'The sandbox check before a feedback fix attempt did not hold, so no attempts will start.',
       description: `Failed checks: ${probes.filter((p) => !p.ok).map((p) => p.probe).join(', ') || 'unknown'}. The executor runs the check again in ${Math.round(retryInMs / HOUR_MS)} hour(s), then waits longer after each further failure (up to a day); a pass resumes fix attempts. Triage is unaffected.`,
       category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:profile-unenforceable',
+    });
+  }
+
+  /** Fixes stop without any failed attempt during a GitHub outage, so the outage itself must be reported. */
+  private async noteGithubOutage(epoch: number): Promise<void> {
+    const outage = this.metaJson<{ since: number; notified?: boolean }>('exec:github_outage') ?? { since: this.now() };
+    const due = !outage.notified && this.now() - outage.since >= GITHUB_OUTAGE_NOTICE_MS;
+    this.setMeta(epoch, 'exec:github_outage', { since: outage.since, notified: outage.notified === true || due });
+    if (!due) return;
+    await this.attention({
+      id: `feedback-execute:github-unavailable:${outage.since}`,
+      title: 'Feedback fixes have stopped: no GitHub access',
+      summary: `Feedback fix attempts have been unable to reach GitHub for about ${Math.round((this.now() - outage.since) / HOUR_MS)} hours, so no new fixes are starting. Reports are still being collected and sorted. It resumes by itself when access returns.`,
+      description: `The executor last had working GitHub access before ${new Date(outage.since).toISOString()} and rechecks on every run. Check the agent's saved GitHub credential first: a replaced token is the usual cause. The executor status shows this as github-unavailable.`,
+      category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:github-unavailable',
     });
   }
 
@@ -1160,6 +1203,12 @@ export class FeedbackExecutorService {
       reason,
       ...(r ? { detail: `${reason}${commandFailureTail(r, { perStream: PROBE_TAIL_CHARS })}` } : {}),
     });
+    /** A run stopped by a limit keeps the same reason and also names which check it stopped. */
+    const limited = (stage: string, r: { timedOut: boolean; outputCapped: boolean; stdout: string; stderr: string }) => ({
+      ok: false as const,
+      reason: limit(r)!,
+      detail: `${limit(r)!} during the ${stage} check${commandFailureTail(r, { perStream: PROBE_TAIL_CHARS })}`,
+    });
     /** A fresh trusted clone at the base SHA with `entries` applied and node_modules linked by trusted code. */
     const freshClone = async (dir: string, entries: ChangeEntry[]) => {
       removeAttemptTree(dir, this.trashRoot(), 'feedback-execute stale check clone');
@@ -1172,7 +1221,7 @@ export class FeedbackExecutorService {
       // (a) base check: a throwaway clone at the base SHA with only the tests/ changes copied in.
       await freshClone(p.baseClone, testEntries(changeSet));
       const base = await run(p.baseClone, 'base', testCmd);
-      if (limit(base)) return { ok: false, reason: limit(base)! };
+      if (limit(base)) return limited('base', base);
       const imports = relativeImports(testEntries(changeSet).map((e) => ({ path: e.path, text: e.bytes?.toString('utf8') ?? '' })));
       const verdict = classifyBaseFailure(`${base.stdout}\n${base.stderr}`, base.exitCode, sourcePaths(changeSet), imports);
       if (!verdict.ok) return failed(`base-check:${verdict.reason}`, base);
@@ -1180,7 +1229,7 @@ export class FeedbackExecutorService {
       // own workspace, whose node_modules link and files the session controlled).
       await freshClone(p.headClone, changeSet.entries);
       const head = await run(p.headClone, 'head', testCmd);
-      if (limit(head)) return { ok: false, reason: limit(head)! };
+      if (limit(head)) return limited('head', head);
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
       if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
@@ -1189,13 +1238,13 @@ export class FeedbackExecutorService {
       // runs only the base tooling), then the unit tests related to the changed sources.
       await freshClone(p.gateClone, changeSet.entries);
       const lint = await run(p.gateClone, 'lint', cfg.lintCommand);
-      if (limit(lint)) return { ok: false, reason: limit(lint)! };
+      if (limit(lint)) return limited('lint', lint);
       if (lint.exitCode !== 0) return failed('gate:lint', lint);
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
         const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
-        if (limit(related)) return { ok: false, reason: limit(related)! };
+        if (limit(related)) return limited('related-tests', related);
         if (related.exitCode !== 0) return failed('gate:related-tests', related);
       }
     } finally {
