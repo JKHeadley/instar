@@ -19,6 +19,20 @@ afterEach(() => {
 });
 
 describe('feedback runtime authentication over HTTP', () => {
+  it('the real executor registers its restart hold with the updater', async () => {
+    const f = feedbackGitHubRuntimeHarness(); roots.push(f.root); edge.ghPath = f.ghPath;
+    f.vault.set('github_token', 'fixture-vault-identity');
+    const holds = new Map<string, () => unknown[]>();
+    const server = f.createServer({ autoUpdater: {
+      getStatus: () => null,
+      setRestartHold: (key: string, provider: () => unknown[]) => { holds.set(key, provider); },
+    } });
+    try {
+      await server.start();
+      expect(holds.get('feedback-executor')?.()).toEqual([]);
+    } finally { await server.stop(); }
+  });
+
   it.each([true, false])('vault identity present=%s: the real executor reports the matching availability', async (present) => {
     const f = feedbackGitHubRuntimeHarness(); roots.push(f.root); edge.ghPath = f.ghPath;
     vi.stubEnv('GH_TOKEN', 'fixture-stale-ambient'); vi.stubEnv('GITHUB_TOKEN', '');

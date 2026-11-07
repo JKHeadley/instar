@@ -16,6 +16,8 @@ import { CLAUDE_CONFINED_PERMISSION_ARGS, isCredentialEnvName } from '../../core
 export { CLAUDE_CONFINED_PERMISSION_ARGS, isCredentialEnvName };
 
 export const HOUR_MS = 60 * 60_000;
+/** Longest an update restart waits on one attempt in setup or verification: its checks can take 105 minutes in all. */
+export const ATTEMPT_RESTART_HOLD_MS = 2 * HOUR_MS;
 /** How long GitHub may stay unreachable before the stopped fixes are reported. */
 export const GITHUB_OUTAGE_NOTICE_MS = 2 * HOUR_MS;
 export const DAY_MS = 24 * HOUR_MS;

@@ -58,7 +58,8 @@ describe('thread→session: the live message path consults the routing key', () 
   });
 
   it('the resume map is consulted + cleared on the routing key', () => {
-    expect(handlerBlock).toContain('getChannelResume(routingKey)');
+    // session-swap-any-conversation §3.1: the lookup also names the engine it may resume.
+    expect(handlerBlock).toContain('getChannelResume(routingKey,');
     expect(handlerBlock).toContain('removeChannelResume(routingKey)');
   });
 

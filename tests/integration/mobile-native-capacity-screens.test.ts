@@ -119,7 +119,9 @@ describe('owner phone: served, trimmed', () => {
     expect(r.status).toBe(200);
     expect(r.headers['cache-control']).toBe('no-store');
     expect(r.body).toMatchObject({ schemaVersion: 1, enabled: true, needsSignIn: 1, usable: 1, unread: { count: 1, names: ['Laptop'] } });
-    expect(r.body.headline).toBe('1 account needs signing in (on the machines that answered).');
+    // Adriana is the only account on Mac Mini: one machine notice that signs it in, not a second sign-in notice.
+    expect(r.body.notices).toEqual([expect.objectContaining({ tone: 'bad', title: 'Mac Mini has no signed-in account, so nothing can run there.', action: { kind: 'sign-in', accounts: [r.body.accounts[0].key] } })]);
+    expect(r.body.headline).toBe(r.body.notices[0].title);
     expect(r.body.accounts.map((a: { name: string }) => a.name)).toEqual(['Adriana Pro', 'Justin Max']);
     expect(r.body.accounts[0]).toMatchObject({ signIn: 'needs-sign-in', email: 'adriana@example.com', machines: [{ name: 'Mac Mini', isSelf: false, state: 'attn', label: 'needs sign-in' }] });
     expect(r.body.accounts[1]).toMatchObject({ signIn: 'signed-in', inUse: true, kind: 'Claude', usageLine: '62% of 5-hour', windows: [{ label: '5-hour', pct: 62, resetsAt: '2026-11-04T04:10:00.000Z' }, { label: 'weekly', pct: 30 }] });

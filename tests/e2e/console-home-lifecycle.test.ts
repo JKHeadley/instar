@@ -80,7 +80,7 @@ describe('Console Home E2E (feature is alive)', () => {
       sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, protectedSessions: [], monitorIntervalMs: 5_000 },
       scheduler: { enabled: false, jobsFile, maxParallelJobs: 1 }, messaging: [], updates: {},
       // The blocker ledger is dev-gated; enabling it here makes GET /blockers a real 200 for the Plans page.
-      monitoring: { blockerLedger: { enabled: true } } } as unknown as InstarConfig;
+      monitoring: { blockerLedger: { enabled: true }, failureCallouts: { enabled: false } } } as unknown as InstarConfig;
     features = new FeatureRegistry(stateDir, { hmacKey: AUTH });
     await features.open();
     for (const def of BUILTIN_FEATURES) features.register(def);

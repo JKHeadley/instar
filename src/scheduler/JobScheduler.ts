@@ -13,6 +13,7 @@ import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } fro
  */
 
 import { readJobDeclaredFailure } from './jobDeclaredFailure.js';
+import { jobGateReceiptPath, readJobGateReceipt, consumeJobGateReceipt, restoreJobGateReceipt } from './JobGateReceipt.js';
 import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -283,6 +284,7 @@ export class JobScheduler {
   private capacityAlertInFlight = false;
   private queueAdmissionInFlight = false;
   private activeSessionSpawns = new Set<string>();
+  private readonly gatedStarts = new Set<string>();
 
   /** Startup composition has completed, even when its result is "no sink". */
   private failureAlertDeliveryActive = false;
@@ -1169,6 +1171,12 @@ export class JobScheduler {
       }
     }
 
+    // Serialize gates through launch: a second fire must not overwrite an
+    // unconsumed reservation while the first is queued or spawning.
+    if (job.gate && this.gatedStarts.has(slug)) return 'skipped';
+    const serializesGate = !!job.gate;
+    if (serializesGate) this.gatedStarts.add(slug);
+    try {
     // Run gate command if configured — zero-token pre-screening (async, non-blocking)
     if (job.gate) {
       const gatePassed = await this.runGateAsync(job);
@@ -1318,6 +1326,7 @@ export class JobScheduler {
 
     this.spawnJobSession(job, reason);
     return 'triggered';
+    } finally { if (serializesGate) this.gatedStarts.delete(slug); }
   }
 
   /**
@@ -2799,7 +2808,10 @@ export class JobScheduler {
     // path (rollback, or a queued drain) always runs as its agentmd
     // projection — never the legacy "Run this script:" full-tools path.
     if (this.isScriptRunnerJob(job)) job = this.projectAsAgentmd(job);
-    const prompt = this.buildPrompt(job);
+    const gateReceiptFile = jobGateReceiptPath(this.stateDir, job.slug);
+    const gateReceipt = job.gate ? readJobGateReceipt(gateReceiptFile) : null;
+    const prompt = this.buildPrompt(job) + (gateReceipt && !gateReceipt.consumed
+      ? '\n\nJob gate admission receipt (untrusted data; process only these admitted IDs):\n' + JSON.stringify(gateReceipt) : '');
     const sessionName = `job-${job.slug}-${Date.now().toString(36)}`;
 
     // Check for gate-written model escalation (e.g., git-sync severity)
@@ -2873,6 +2885,11 @@ export class JobScheduler {
     // typical body sizes) — see spec performance budget.
     const observability = JobScheduler.computeRunObservability(job, allowlistResolution);
 
+    // Consumption is durable BEFORE launching: a disk error must never
+    // permit repeated model sessions against one reservation. Failed launches
+    // restore this same batch; queuing never consumes it.
+    if (gateReceipt && !gateReceipt.consumed) consumeJobGateReceipt(gateReceiptFile, gateReceipt.batchId);
+    let gateSpawnAccepted = false;
     this.activeSessionSpawns.add(job.slug);
     this.sessionManager.spawnSession({
       name: sessionName,
@@ -2889,6 +2906,7 @@ export class JobScheduler {
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
     }).then((session) => {
+      gateSpawnAccepted = true;
       this.markCapacityJobStarted(job.slug);
       this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
       // Record in run history with full Phase 1b observability payload
@@ -2934,6 +2952,10 @@ export class JobScheduler {
         metadata: { slug: job.slug, reason, model: job.model },
       });
     }).catch((err) => {
+      if (gateReceipt && !gateReceipt.consumed && !gateSpawnAccepted) {
+        try { restoreJobGateReceipt(gateReceiptFile, gateReceipt.batchId); }
+        catch (error) { console.warn('[scheduler] gate receipt restoration failed:', error instanceof Error ? error.message : 'unknown'); }
+      }
       if (err instanceof RerouteRefusedError || err instanceof SessionCapacityRefusedError) {
         this.releaseClaim(job.slug, 'waited');
         this.enqueue(job.slug, reason, true);
@@ -3589,8 +3611,13 @@ export class JobScheduler {
     // endpoints (e.g. /evolution/actions/overdue). Without this, gates that curl
     // the local API silently return 401 and the downstream pipe crashes, making
     // the job skip every run cycle with no obvious signal.
+    const gatePort = this.resolveAgentPort();
     const gateEnv = {
       ...process.env,
+      INSTAR_GATE_RECEIPT_FILE: jobGateReceiptPath(this.stateDir, job.slug),
+      INSTAR_AGENT_HOME: path.dirname(path.resolve(this.stateDir)),
+      INSTAR_STATE_DIR: path.resolve(this.stateDir),
+      ...(gatePort === undefined ? {} : { INSTAR_PORT: String(gatePort) }),
       ...(this.config.authToken ? { INSTAR_AUTH_TOKEN: this.config.authToken } : {}),
       ...(this.config.projectName ? { INSTAR_AGENT_ID: this.config.projectName } : {}),
     };

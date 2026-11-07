@@ -190,8 +190,24 @@ describe('the menu', () => {
     const c = summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined }, options: null, profile: null }), {}, 0);
     expect(c.door).toMatchObject({ state: 'not-this-chat' });
     expect(c.move).toMatchObject({ state: 'not-this-chat' });
-    expect((c.door as { reason: string }).reason).toContain('Telegram');
+    expect((c.door as { reason: string }).reason).toContain('has none');
+    expect((c.door as { reason: string }).reason).not.toContain('Telegram');
     expect(c.typing).toEqual({ can: true, reason: null });
+  });
+  it('an app or Slack conversation gets the engine switch; moving it waits for the pool (part 3), said plainly', () => {
+    const app = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
+    const c = summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined, conversationRef: app } }), {}, 0);
+    expect(c.door).toMatchObject({ state: 'ok', topic: app });
+    expect(c.move).toMatchObject({ state: 'not-yet' });
+    expect((c.move as { reason: string }).reason).toContain('App and Slack conversations get it next');
+    const slack = summarizeControls(parts({ row: { ...ROW, platform: 'slack', platformId: 'C0ABC', conversationRef: 'slack:T0XYZ:C0ABC' } }), {}, 0);
+    expect(slack.door).toMatchObject({ state: 'ok', topic: 'slack:T0XYZ:C0ABC' });
+    // A Telegram door keeps the bare topic id, so an older app signs the same line.
+    expect(summarizeControls(parts(), {}, 0).door).toMatchObject({ topic: '7' });
+    // Topic 1 (the General topic) stays as before: no switch.
+    expect(summarizeControls(parts({ row: { ...ROW, platformId: 1, conversationRef: 'telegram:1' } }), {}, 0).door).toMatchObject({ state: 'not-this-chat' });
+    // A reference that doesn't parse is no conversation at all.
+    expect(summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined, conversationRef: 'app:nope' } }), {}, 0).door).toMatchObject({ state: 'not-this-chat' });
   });
   it('a failed read says it cannot read, never that there are none', () => {
     const c = summarizeControls(parts({ options: { status: 503, body: null }, pool: { status: 0, body: null } }), {}, 0);
@@ -287,6 +303,15 @@ describe('running an action', () => {
     },
   });
   const door = (over = {}) => ({ kind: 'session-door', target: '7', framework: 'codex', model: 'gpt-6', machine: null, ...over }) as SessionAction;
+
+  it('a door switch posts to the conversation\'s profile key, never the reference itself', async () => {
+    calls.length = 0;
+    const answers = { 'GET /topic-profile/options': ok(OPTIONS), 'POST /topic-profile/slack%3AC0ABC%3A1730000000.000100': ok({ ok: true }), 'POST /topic-profile/app%3A0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f': ok({ ok: true }), 'POST /topic-profile/7': ok({ ok: true }) };
+    await runSessionAction({ kind: 'session-door', target: 'slack:T0XYZ:C0ABC:1730000000.000100', framework: 'codex', model: null, machine: null } as SessionAction, deps(answers));
+    await runSessionAction({ kind: 'session-door', target: 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', framework: 'codex', model: null, machine: null } as SessionAction, deps(answers));
+    await runSessionAction({ kind: 'session-door', target: 'telegram:7', framework: 'codex', model: null, machine: null } as SessionAction, deps(answers));
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.path)).toEqual(['/topic-profile/slack%3AC0ABC%3A1730000000.000100', '/topic-profile/app%3A0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f', '/topic-profile/7']);
+  });
 
   it('a door runs the dashboard route, and the route refusal reaches the phone in its own words', async () => {
     const yes = await runSessionAction(door(), deps({ 'GET /topic-profile/options': ok(OPTIONS), 'POST /topic-profile/7': ok({ ok: true, message: 'Switching to Codex.' }) }));

@@ -14,7 +14,7 @@ import { JSDOM } from 'jsdom';
 import {
   spanWords, modelWords, sessionKey, sessionTitle, activity, mergeSessions, buildSessions, sessionsHeadline, sessionsFacts,
   partialWords, titleLine, closeRequest, closeConfirmWords, closeResultWords, doorChoices, modelChoices, doorModelWords,
-  regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor,
+  regimeWords, machineChoices, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded, canSwitchDoor, profileKeyOf,
   KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, HISTORY_MAX,
   isInternalSession, attachmentMessage, OPERATOR_CREATED,
   historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry,
@@ -267,14 +267,25 @@ describe('doors, models, machines, create', () => {
     expect(createResultWords(400, { error: 'Name taken' }, 'B')).toEqual({ ok: false, text: 'Name taken' });
     expect(createResultWords(0, {}, 'B').text).toBe('Not created: the server could not be reached.');
   });
-  it('door switch: only a local Telegram session; landed only when the launched model shows', () => {
+  it('door switch: any local session with a conversation; landed only when the launched model shows', () => {
+    const app = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
     expect(canSwitchDoor({ platform: 'telegram', platformId: 5, remote: false })).toBe(true);
     expect(canSwitchDoor({ platform: 'telegram', platformId: 5, remote: true })).toBe(false);
+    // session-swap-any-conversation: app and Slack conversations switch too; no conversation, no switch.
+    expect(canSwitchDoor({ platform: 'headless', conversationRef: app })).toBe(true);
+    expect(canSwitchDoor({ platform: 'slack', platformId: 'C0ABC', conversationRef: 'slack:T0XYZ:C0ABC:1730000000.000100' })).toBe(true);
     expect(canSwitchDoor({ platform: 'slack', platformId: 5 })).toBe(false);
+    expect(canSwitchDoor({ platform: 'headless' })).toBe(false);
+    expect(profileKeyOf({ conversationRef: 'telegram:5' })).toBe('5');
+    expect(profileKeyOf({ conversationRef: app })).toBe(app);
+    expect(profileKeyOf({ conversationRef: 'slack:T0XYZ:C0ABC:1730000000.000100' })).toBe('slack:C0ABC:1730000000.000100');
+    expect(profileKeyOf({ conversationRef: 'slack:_:D0ABC' })).toBe('slack:D0ABC');
+    expect(profileKeyOf({ conversationRef: 'app:nope' })).toBeNull();
     const job = { topicId: '5', model: 'claude-fable-5', since: NOW };
-    expect(switchLanded([{ platformId: 5, startedAt: iso(NOW - 60_000), model: 'claude-fable-5' }], job)).toBeNull();
-    expect(switchLanded([{ platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-opus-5-5' }], job)).toBeNull();
-    expect(switchLanded([{ platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-fable-5' }], job)).toMatchObject({ model: 'claude-fable-5' });
+    expect(switchLanded([{ platform: 'telegram', platformId: 5, startedAt: iso(NOW - 60_000), model: 'claude-fable-5' }], job)).toBeNull();
+    expect(switchLanded([{ platform: 'telegram', platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-opus-5-5' }], job)).toBeNull();
+    expect(switchLanded([{ platform: 'telegram', platformId: 5, startedAt: iso(NOW + 1000), model: 'claude-fable-5' }], job)).toMatchObject({ model: 'claude-fable-5' });
+    expect(switchLanded([{ conversationRef: app, startedAt: iso(NOW + 1000), model: null }], { topicId: app, model: null, since: NOW })).toMatchObject({ conversationRef: app });
     expect(profileSourceWords({ resolved: { sources: { framework: 'profile-pin' } }, pin: { updatedBy: 'api-token' } })).toBe('pinned by you');
     expect(profileSourceWords({ resolved: { sources: { framework: 'profile-pin' } }, pin: { updatedBy: 'system:dashboard-create' } })).toBe('set when it was created');
     expect(profileSourceWords({ resolved: { sources: { framework: 'config' } } })).toBe('the default');
