@@ -245,3 +245,5 @@ Remaining, none blocking:
 **Concur with the review.**
 
 **Follow-up (2026-11-06, ratchet):** slice 0's fail-safe catches are marked (cherry-picked); the two slice-1 catches the no-silent-fallbacks scanner flagged (`SkillLearningSentinel.start` bound-start failure, logged; the per-phase guard that records `phaseFailures` + a degradation row) now carry in-window `@silent-fallback-ok` reasons. No behaviour change.
+
+**Follow-up (CI, 2026-11-07):** `tests/unit/SqliteRegistry-wiring.test.ts` requires every long-lived better-sqlite3 store to be allowlisted and to register its handle; the ledger cache now keeps the unregister fn and calls it in `close()` (the registry contract), and is allowlisted. No behaviour change.
