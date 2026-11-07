@@ -78,3 +78,6 @@ A last reader found that some fixes above went too far, and each is corrected wi
 **Stated limit:** the first row of a stream is not checked against the stream before it on a one-machine agent that has moved stream.
 
 **Found later:** operator and contributor ranked below guest when machines settled on the narrowest role, so a contributor beat a guest. Roles now rank by tier.
+
+## Release note
+`upgrades/next/team-access-machines.md`.
