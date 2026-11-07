@@ -92,6 +92,8 @@ import { execFileSync } from 'node:child_process';
 import { activeUsageLimitWatch } from '../core/UsageLimitWatch.js';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
+import { isSlackConversationKey } from '../core/SlackForwardBridge.js';
+import { conversationKeys } from '../core/conversationKeys.js';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
 import { classifyActionClaim, classifyApprovalRequest, excerptAround } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
@@ -354,6 +356,7 @@ import { FailureLoopDriver } from '../monitoring/FailureLoopDriver.js';
 import { CorrectionLedger } from '../monitoring/CorrectionLedger.js';
 import { failureInvestigationAdmissionSummary } from '../monitoring/FailureInvestigationAdmission.js';
 import { scrubSecrets as scrubCorrectionSecrets } from '../monitoring/scrubSecrets.js';
+import { redactSpawnError } from '../core/redactSpawnError.js';
 import { validateTurnEvidence } from '../monitoring/TurnEvidence.js';
 import { evaluateCorrectionInstanceFix } from '../monitoring/CorrectionInstanceFixGate.js';
 import { routeActionClaim, type ClaimClauseArbitration } from '../monitoring/ClaimClauseArbiter.js';
@@ -1646,6 +1649,8 @@ export interface RouteContext {
   ecosystemIdeas?: () => import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null;
   /** docs/specs/recommended-services.md. Null when this machine has no identity; the routes answer 503. */
   recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null;
+  /** Who can reach the agent (team-roles-and-access §3.10). */
+  reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople | null;
   /** Only tests set this, because no real service has a proven setup yet. */
   recommendedServicesCatalog?: readonly import('../recommended/catalog.js').CatalogRow[];
   /**
@@ -6849,7 +6854,11 @@ export function createRoutes(ctx: RouteContext): Router {
 
     // The ONE shared side-effect function (docs/specs/native-hook-events.md D1):
     // both this route and /hooks/native-events go through it.
-    const instarSid = typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '';
+    // A scoped session speaks only for itself, whatever the query names.
+    const scopedSession = (res.locals.memorySession as { sessionId?: string } | undefined)?.sessionId;
+    const instarSid = scopedSession ?? (typeof req.query.instar_sid === 'string' ? req.query.instar_sid : '');
+    // Consumers read these as paths on the unsandboxed server. A scoped session supplies none of them.
+    if (scopedSession) for (const field of ['transcript_path', 'agent_transcript_path', 'cwd']) delete (payload as Record<string, unknown>)[field];
     const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
     if (!stored) {
       res.status(500).json({ error: 'Failed to store event' });
@@ -12384,6 +12393,20 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json(ctx.sessionManager.memoryPrivacyStatus());
   });
 
+  // Who can reach this agent and what they can see (team-roles-and-access §3.10). Agent token only:
+  // a phone or a scoped session has no route here. Read-only.
+  router.get('/team/people', async (req, res) => {
+    const people = ctx.reachablePeople;
+    if (!people) { res.status(503).json({ error: 'team-people-unavailable' }); return; }
+    const { readTeamPeople } = await import('./teamPeople.js');
+    const answer = await readTeamPeople({
+      people, selfMachineId: ctx.meshSelfId ?? null, authToken: () => ctx.config.authToken,
+      peers: () => ctx.resolvePeerUrls?.() ?? [],
+      peerUrlAllowlist: () => (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+    }, req.query.scope === 'pool' ? 'pool' : 'local');
+    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true });
+  });
+
   // The owner's one-time repair (spec: "Owner recovery"). The token is the auth, the
   // same posture as Secret Drop. GET changes nothing, because apps fetch links to build
   // previews; only the page's POST spends the token. The body is ignored on purpose.
@@ -12600,7 +12623,8 @@ export function createRoutes(ctx: RouteContext): Router {
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      // #2184: never echo credential-bearing spawn argv back to the caller.
+      res.status(500).json({ error: redactSpawnError(err) });
     }
   });
 
@@ -12666,7 +12690,7 @@ export function createRoutes(ctx: RouteContext): Router {
       try {
         result = await ctx.sessionRefresh.respawnDeadBound({ sessionName, followUpPrompt, reason, fresh: fresh === true });
       } catch (err) {
-        res.status(500).json({ code: 'respawn_failed', error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ code: 'respawn_failed', error: redactSpawnError(err) });
         return;
       }
       if (result.ok) {
@@ -25046,6 +25070,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(400).json({ error: 'topic and to are required, e.g. {"topic":13481,"to":"Laptop"}' });
       return;
     }
+    // slack-conversations-stay-with-connection §2.2: a Slack conversation stays with its Slack
+    // connection. Refused before proxying or planning; the drain runner refuses it too, for every mover.
+    {
+      const slackRaw = topicId.startsWith('slack:') ? topicId.slice('slack:'.length) : topicId;
+      const slackKey = isSlackConversationKey(topicId) ? slackRaw : (() => {
+        const k = conversationKeys(topicId);
+        return k && k.kind === 'slack' ? k.id : null;
+      })();
+      if (slackKey) {
+        const ownerId = ctx.sessionOwnershipRegistry?.ownerOf(slackKey) ?? null;
+        const nick = ownerId ? (ctx.machinePoolRegistry?.getCapacities().find((c) => c.machineId === ownerId)?.nickname ?? null) : null;
+        res.status(409).json({
+          ok: false,
+          code: 'slack-stays-with-connection',
+          error: nick
+            ? `This Slack conversation stays on ${nick}, which holds your Slack connection.`
+            : 'This Slack conversation stays on the machine that holds your Slack connection.',
+        });
+        return;
+      }
+    }
     if (!ctx.sessionOwnershipRegistry || !ctx.topicPinStore) {
       res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
       return;
@@ -25280,6 +25325,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // not un-suspended on abort (same as the emergency-stop abort).
             autonomousRunSuspended: drainRunSuspended,
           });
+          return;
+        }
+        // slack-conversations-stay-with-connection §2.1: the owner refused a Slack conversation. Never
+        // fall through to the pin — that is the split this refusal exists to prevent.
+        if (r.status === 'refused-slack-stays') {
+          res.status(409).json({ ok: false, code: 'slack-stays-with-connection', error: 'This Slack conversation stays on the machine that holds your Slack connection.', drain: drainLeg });
           return;
         }
       }

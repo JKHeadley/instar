@@ -13,6 +13,7 @@
  * forces a compile error if a case is missed.
  */
 
+import { isSafeSessionRef } from './claudeResumeTranscript.js';
 import { CODEX_TOOL_TIMEOUT_SEC } from './threadlineMcpSpawn.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -352,7 +353,9 @@ const claudeCodeBuilder: Builder = (options) => {
   if (directEffort) {
     argv.push('--effort', directEffort);
   }
-  if (options.resumeSessionId) {
+  if (options.resumeSessionId && !isSafeSessionRef(options.resumeSessionId)) {
+    console.warn('[session-launch] ignored a resume id that is not a plain session id');
+  } else if (options.resumeSessionId) {
     argv.push('--resume', options.resumeSessionId);
   } else if (options.sessionId) {
     // Warm-session A2A: pin a deterministic conversation id (claude-only) so an
@@ -459,7 +462,7 @@ const codexCliBuilder: Builder = (options) => {
   // the stale resume id (per existing PR #248 framework-swap pattern).
   // We don't pre-validate filesystem presence here to avoid coupling the
   // launch helper to Codex's on-disk session layout.
-  const resumePrefix: string[] = options.resumeSessionId
+  const resumePrefix: string[] = options.resumeSessionId && isSafeSessionRef(options.resumeSessionId)
     ? ['resume', options.resumeSessionId]
     : [];
 
@@ -520,7 +523,7 @@ const geminiCliBuilder: Builder = (options) => {
   // the analog of `codex exec --sandbox read-only`), never here.
   const resolvedModel = resolveInteractiveLaunchModel('gemini-cli', options.defaultModel)!;
   const argv: string[] = [options.binaryPath, '-m', resolvedModel, '--yolo'];
-  if (options.resumeSessionId) {
+  if (options.resumeSessionId && isSafeSessionRef(options.resumeSessionId)) {
     // Gemini resumes by `latest` or a numeric index. The tracked resume id is
     // passed through verbatim (callers store whatever --list-sessions surfaced).
     argv.push('--resume', options.resumeSessionId);

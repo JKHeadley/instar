@@ -21,6 +21,7 @@ import type { SessionHandle } from '../../../types.js';
 import { sessionHandle } from '../../../types.js';
 import { CapabilityFlag } from '../../../capabilities.js';
 import { UnexpectedError } from '../../../errors.js';
+import { redactSpawnError } from '../../../../core/redactSpawnError.js';
 import { ANTHROPIC_HEADLESS_ID } from '../errors.js';
 import { resolveCliModelFlag } from '../models.js';
 import type { AnthropicHeadlessConfig } from '../config.js';
@@ -91,10 +92,11 @@ class AnthropicHeadlessAgenticSession implements AgenticSessionHeadless {
         /* nice-to-have */
       }
     } catch (err) {
+      // #2184: the raw error quotes the tmux argv, credentials included, so
+      // neither its message nor the error itself travels on as the cause.
       throw new UnexpectedError(
-        `Failed to spawn tmux session: ${(err as Error).message}`,
+        `Failed to spawn tmux session: ${redactSpawnError(err)}`,
         ANTHROPIC_HEADLESS_ID,
-        err,
       );
     }
 
