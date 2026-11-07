@@ -4,11 +4,11 @@
 
 ## What Changed
 
-Feedback fix checks on macOS can now read the local DNS configuration that Node needs to start some tests. Previously, those checks could hang before a worker-produced fix reached review. The sandbox still blocks outbound network access and access to other agents' files.
+Feedback fix checks on macOS can now read the local DNS configuration that Node needs when a test run starts. Previously, those checks could hang before a worker-produced fix reached review. The sandbox still blocks outbound network access and access to other agents' files.
 
 ## What to Tell Your User
 
-No action is needed. Feedback fixes that use Node's DNS module can proceed through their normal tests and independent review on macOS.
+No action is needed. Feedback fix checks on macOS no longer freeze at random before their tests start.
 
 ## Summary of New Capabilities
 
@@ -18,4 +18,4 @@ No action is needed. Feedback fixes that use Node's DNS module can proceed throu
 
 ## Evidence
 
-The exact confined Node DNS import hung before this change and completed after allowing only the local DNS configuration service. Unit, integration and end-to-end tests pin the permission and the remaining network block.
+Measured on Echo, 2026-11-07, under the generated sandbox settings: Node's DNS import hung in 18 of 157 runs without this permission and 0 of 127 with it; the real check command hung in 5 of 172 without it and 0 of 74 with it, each hang with no output. The hang is intermittent per process. Unit, integration and end-to-end tests pin the permission and the remaining network block.

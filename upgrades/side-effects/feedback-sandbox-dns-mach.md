@@ -7,7 +7,7 @@
 
 ## Summary of the change
 
-`buildSandboxRuntimeSettings()` now permits one macOS Mach lookup, `com.apple.SystemConfiguration.DNSConfiguration`, in the feedback executor's confined commands. `buildClaudeSandboxSettings()` uses that same network policy for worker Bash commands. Node's `dns` module needs this local resolver configuration service during initialization; without it, the executor's base test hangs before the worker-produced fix can be reviewed. The network domain allowlist remains empty, local binding remains false, and all filesystem restrictions remain as before. The canary version advances so cached full-gate results cannot mask the policy change. Unit, real macOS integration, and production-path E2E tests cover the new boundary.
+`buildSandboxRuntimeSettings()` now permits one macOS Mach lookup, `com.apple.SystemConfiguration.DNSConfiguration`, in the feedback executor's confined commands. `buildClaudeSandboxSettings()` uses that same network policy for worker Bash commands. Node's `dns` module needs this local resolver configuration service during initialization; without it, a confined test run can hang at startup, intermittently, before the worker-produced fix can be reviewed. The network domain allowlist remains empty, local binding remains false, and all filesystem restrictions remain as before. The canary version advances so cached full-gate results cannot mask the policy change. Unit, real macOS integration, and production-path E2E tests cover the new boundary.
 
 ## Decision-point inventory
 
@@ -30,7 +30,7 @@ The executor builds runner settings in one helper used by the canary and all con
 
 ## 4. Signal vs authority compliance
 
-The observed timeout is evidence of a missing local permission, not authority to turn network access on. A discriminating probe ran the same Node DNS import outside the sandbox, inside the current settings, and inside settings with only the exact Mach service added. Only the last confined probe returned promptly. The production network and filesystem authority remains unchanged.
+The observed timeout is evidence of a missing local permission, not authority to turn network access on. A discriminating probe ran the same Node DNS import outside the sandbox, inside the current settings, and inside settings with only the exact Mach service added. The last confined probe returned promptly, but most no-grant probes do too, because the hang is intermittent; repeated runs are what discriminate. The production network and filesystem authority remains unchanged.
 
 ## 4b. Judgment-point check (Judgment Within Floors standard)
 
@@ -62,6 +62,10 @@ This is the narrowest observed repair for the macOS confined verification hang. 
 
 ## Second-pass review (if required)
 
+**Reviewer:** independent Claude subagent, fresh review against main on 2026-11-07
+Concur. It probed both generated profiles: TCP, the mDNSResponder socket, DNS resolution and a home-directory read all stayed blocked, and the name renders as one exact rule. It measured the hang as intermittent: `require('node:dns')` 18 of 157 without the grant, 0 of 127 with it; the real check command 5 of 172 without, 0 of 74 with. It corrected the claims that the hang always happened. It noted that the live integration check usually passes without the grant, so the deterministic settings assertion is what catches removal, and that attempts a2 and a3 were not sampled directly. Test counts below are from the earlier base; exact-head Local Verify reran them.
+
+Earlier review, 2026-11-04:
 The reviewer found that the first draft applied the service to runner commands but omitted Claude Code's worker Bash profile. The revised change derives Claude's network policy from the same runtime settings and advances the canary version. On the exact revised diff, the reviewer concurred: sandbox-runtime 0.0.77 renders the literal service as an exact Mach lookup, with the network and filesystem limits intact. The integration test runs Claude's generated profile through sandbox-runtime; it does not launch Claude Code. The live canary remains the final worker-path check after deployment.
 
 ## Evidence pointers
