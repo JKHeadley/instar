@@ -13,7 +13,7 @@ import { SessionChannelRegistry } from '../../src/messaging/shared/SessionChanne
 
 const KEY = '0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
 let dir: string;
-let spawns: Array<{ msg: string; opts: Record<string, unknown> }>;
+let spawns: Array<{ msg: string; opts: Record<string, unknown>; name?: string }>;
 let running: Array<{ id: string; tmuxSession: string }>;
 let recorded: Array<{ key: string; applied: AppProfile }>;
 let admits: string[];
@@ -24,7 +24,7 @@ function deps(over: Partial<AppInboundDispatchDeps> = {}): AppInboundDispatchDep
     sessions: {
       listRunningSessions: () => running,
       injectMessage: () => true,
-      spawnInteractiveSession: async (msg, _n, opts) => { spawns.push({ msg: msg ?? '', opts: (opts ?? {}) as Record<string, unknown> }); const name = `s${spawns.length}`; running.push({ id: name, tmuxSession: name }); return name; },
+      spawnInteractiveSession: async (msg, n, opts) => { spawns.push({ msg: msg ?? '', opts: (opts ?? {}) as Record<string, unknown>, name: n }); const name = `s${spawns.length}`; running.push({ id: name, tmuxSession: name }); return name; },
     },
     channels,
     store: { browseMessages: () => ({ messages: [] }) } as unknown as AppInboundDispatchDeps['store'],
@@ -129,5 +129,51 @@ describe('restarting an app conversation on a new engine (startApp)', () => {
     expect(await createAppSessionStarter(d, start())(KEY, { framework: 'codex', model: null })).toEqual({ framework: 'codex', model: null });
     expect(await createAppSessionStarter(d, start())(KEY, { framework: 'claude-code', model: null })).toBeNull();
     expect(spawns).toHaveLength(0);
+  });
+});
+
+describe('a new session with its own app conversation (session-conversation-for-every-session §2.1)', () => {
+  it('starts as the operator\'s, never under the person\'s name, admitted as app-new-session, with the new-conversation opening', async () => {
+    const d = deps();
+    const landed = await createAppSessionStarter(d, startDeps())(KEY, { framework: 'codex', model: null }, { reason: 'new' });
+    // A taken name would make SessionManager reuse that running session.
+    expect(spawns[0].name).toBeUndefined();
+    expect(landed).toEqual({ framework: 'codex', model: null });
+    expect(admits).toEqual(['app-new-session']);
+    expect(spawns[0].opts).toMatchObject({ triggeredBy: 'dashboard-operator', framework: 'codex' });
+    expect(spawns[0].msg).toContain('just started for a new app conversation, "Plans"');
+    expect(spawns[0].msg).not.toContain('restarted on a new engine');
+    // No orchestrator start records this one, so the starter tells it what launched.
+    expect(recorded).toEqual([{ key: `app:${KEY}`, applied: { framework: 'codex', model: null } }]);
+  });
+  it('an engine-switch restart keeps its own opening and callsite, and is never marked the operator\'s', async () => {
+    const d = deps();
+    await createAppSessionStarter(d, startDeps())(KEY, { framework: 'codex', model: null });
+    expect(admits).toEqual(['app-respawn']);
+    expect(recorded).toEqual([]);
+    expect(spawns[0].opts.triggeredBy).toBeUndefined();
+    expect(spawns[0].msg).toContain('restarted on a new engine');
+  });
+  it('records the memory place before spawning; when private memory isn\'t available it starts nothing and says why', async () => {
+    const order: string[] = [];
+    const refusals: string[] = [];
+    const d = deps();
+    const real = d.sessions.spawnInteractiveSession;
+    d.sessions.spawnInteractiveSession = async (m, n, o) => { order.push('spawn'); return real(m, n, o); };
+    await createAppSessionStarter(d, startDeps({ memoryPlace: async () => { order.push('memory'); return true; } }))(KEY, { framework: 'claude-code', model: null }, { reason: 'new' });
+    expect(order).toEqual(['memory', 'spawn']);
+    const no = await createAppSessionStarter(deps(), startDeps({ aliasFor: () => -9, memoryPlace: async () => false, onRefused: (_k, why) => refusals.push(why) }))(KEY, { framework: 'codex', model: null }, { reason: 'new' });
+    expect(no).toBeNull();
+    expect(refusals).toEqual(['memory']);
+    expect(spawns).toHaveLength(1);
+  });
+  it('every refusal is reported', async () => {
+    const seen: string[] = [];
+    const on = { onRefused: (_k: string, why: string) => seen.push(why) };
+    await createAppSessionStarter(deps(), startDeps({ ...on, isOwner: () => false }))(KEY, { framework: null, model: null }, { reason: 'new' });
+    await createAppSessionStarter(deps(), startDeps({ ...on, titleFor: () => null }))(KEY, { framework: null, model: null }, { reason: 'new' });
+    await createAppSessionStarter(deps({ relayReady: () => ({ ready: false, reason: 'old' }) }), startDeps(on))(KEY, { framework: null, model: null }, { reason: 'new' });
+    await createAppSessionStarter(deps({ spawnAdmission: () => ({ admit: () => ({ allow: false, reason: 'cap' }) }) }), startDeps(on))(KEY, { framework: null, model: null }, { reason: 'new' });
+    expect(seen).toEqual(['not-served', 'gone', 'relay', 'admission']);
   });
 });
