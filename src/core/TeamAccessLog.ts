@@ -111,6 +111,14 @@ export function toMergeRow(row: TeamAccessRow, events: ReadonlyArray<MergeEvent>
   };
 }
 
+/** What a row locks: its `confine` events, and any conversation it grants. */
+function confinesIn(row: TeamAccessRow): ConfinedEntry[] {
+  if (row.kind === 'machine') {
+    return row.events.flatMap((e) => (e.type === 'confine' ? [{ ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey } : {}), ...(e.personKey ? { personKey: e.personKey } : {}) }] : []));
+  }
+  return (bodyEvents(row) ?? []).flatMap((e) => (e.type === 'grant' ? [{ ref: e.ref, ...(e.ref.startsWith('telegram:') ? {} : { placeKey: `app:${e.ref}` }) }] : []));
+}
+
 const originOf = (r: TeamAccessRow): string => r.origin ?? r.machineSig.machineId;
 const streamOf = (r: TeamAccessRow): string => streamKey(originOf(r), r.incarnation ?? UNCHAINED_INCARNATION);
 
@@ -269,6 +277,7 @@ function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
     case 'phone-bind': s.bindings.set(e.keyHash, e.boundTo); return;
     case 'conversation-own': s.owned.set(e.ref, e.personKey); return;
     case 'restored': return;
+    case 'confine': return;
     case 'lower': {
       if (e.ref) { s.grants.get(e.personKey)?.delete(e.ref); return; }
       if (e.remove) { s.people.delete(e.personKey); s.grants.delete(e.personKey); return; }
@@ -516,6 +525,9 @@ export class TeamAccessLog {
       const id = `${streamOf(row)}#${row.seq}#${rowHash(row)}`;
       if (held.has(id)) continue;
       if (this.opts.verify(row) === 'failed') { refused += 1; continue; }
+      // Before folding, and for a row that cannot be placed yet too: confining is the safe direction.
+      this.ensureConfinedFile();
+      for (const entry of confinesIn(row)) this.confineHere(entry);
       this.writeLine(row);
       this.rows.push(row);
       held.add(id);
@@ -627,11 +639,37 @@ export class TeamAccessLog {
 
   /** Add a conversation, keeping its first audience: it is fixed for good. Throws if the list cannot be read. */
   confine(entry: ConfinedEntry): void {
+    if (!this.confineHere(entry)) return;
+    // Told to every machine. A restore's sweep writes the file directly and stays local.
+    if (this.opts.signer && this.health !== 'unreadable') {
+      this.appendMachineEvents([{ type: 'confine', ref: entry.ref, ...(entry.placeKey ? { placeKey: entry.placeKey } : {}), ...(entry.personKey ? { personKey: entry.personKey } : {}) }]);
+    }
+  }
+
+  /**
+   * Add to this machine's list. Confining is always the safe direction, so this happens before a row
+   * is folded. If an owned and a shared entry meet for one conversation, the owned one wins, whichever
+   * arrived first, so every machine ends with the same audience. Returns whether anything changed.
+   */
+  private confineHere(entry: ConfinedEntry): boolean {
     const entries = this.readConfined();
     if (!entries) throw new Error('team-access-confined-unreadable');
-    if (entries.some((e) => e.ref === entry.ref)) return;
-    this.writeConfined([...entries, entry]);
+    const held = entries.find((e) => e.ref === entry.ref);
+    if (held && (held.personKey || !entry.personKey)) return false;
+    this.writeConfined([...entries.filter((e) => e.ref !== entry.ref), entry]);
     this.snapshot();
+    return true;
+  }
+
+  /** Writes a `confine` row for every entry a 2a build confined, once. */
+  backfillConfineRows(): number {
+    if (!this.opts.signer || this.health !== 'ok') return 0;
+    const told = new Set(this.rows.flatMap((r) => (r.kind === 'machine' ? r.events.flatMap((e) => (e.type === 'confine' ? [e.ref] : [])) : [])));
+    const missing = (this.readConfined() ?? []).filter((e) => !told.has(e.ref));
+    for (const e of missing) {
+      this.appendMachineEvents([{ type: 'confine', ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey } : {}), ...(e.personKey ? { personKey: e.personKey } : {}) }]);
+    }
+    return missing.length;
   }
 
   isConfined(ref: string): boolean | null {

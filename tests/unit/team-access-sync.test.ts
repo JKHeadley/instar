@@ -202,3 +202,63 @@ describe('when a machine must refuse its team phones', () => {
     expect(shouldRefuseForStaleness([], t)).toBe(false);
   });
 });
+
+describe('the confined list across machines', () => {
+  const ready = (l: TeamAccessLog) => { l.ensureConfinedFile(); return l; };
+
+  it('a conversation locked on one machine is locked on the other', () => {
+    const a = ready(machine('A')); const b = machine('B');
+    start(a);
+    a.confine({ ref: 'telegram:50' });
+    b.ingest(a.rowsBeyond({}));
+    expect(b.isConfined('telegram:50')).toBe(true);
+  });
+
+  it('a grant locks its conversation even if the confine row has not arrived', () => {
+    const a = ready(machine('A')); const b = machine('B');
+    start(a);
+    a.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'telegram:50', access: 'read' }]));
+    b.ingest(a.rowsBeyond({}));
+    expect(b.isConfined('telegram:50')).toBe(true);
+  });
+
+  it('a grant locks even when its row cannot be placed yet', () => {
+    const a = ready(machine('A'));
+    start(a);
+    a.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'telegram:50', access: 'read' }]));
+    const b = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-lock-')), signer: signerFor('B'), verify: (r) => (r.kind === 'request' ? 'unknown' : verify(r)) });
+    b.ingest(a.rowsBeyond({}));
+    expect(b.state().on).toBe(false);
+    expect(b.isConfined('telegram:50')).toBe(true);
+  });
+
+  it('owned beats shared for one conversation, in either order of arrival', () => {
+    const a = ready(machine('A')); const b = ready(machine('B'));
+    a.confine({ ref: 'r', placeKey: 'app:r' });
+    b.confine({ ref: 'r', placeKey: 'app:r', personKey: 'mia' });
+    const x = ready(machine('X')); const y = ready(machine('Y'));
+    x.ingest(a.rowsBeyond({})); x.ingest(b.rowsBeyond({}));
+    y.ingest(b.rowsBeyond({})); y.ingest(a.rowsBeyond({}));
+    expect(x.readConfined()).toEqual(y.readConfined());
+    expect(x.readConfined()?.[0].personKey).toBe('mia');
+  });
+
+  it('a restore sweep stays on its own machine', () => {
+    const a = ready(machine('A')); const b = machine('B');
+    start(a);
+    const dir = (a as unknown as { dir: string }).dir;
+    fs.writeFileSync(path.join(dir, 'confined.json'), 'not json');
+    a.restore({ teamRefs: [], allRefs: () => [{ ref: 'telegram:9' }] });
+    b.ingest(a.rowsBeyond({}));
+    expect(b.isConfined('telegram:9')).toBe(false);
+  });
+
+  it('2a entries are told to peers once', () => {
+    const a = ready(machine('A'));
+    const dir = (a as unknown as { dir: string }).dir;
+    fs.writeFileSync(path.join(dir, 'confined.json'), JSON.stringify({ entries: [{ ref: 'telegram:50' }] }));
+    a.appendMachineEvents([{ type: 'conversation-own', ref: 'x', personKey: 'p' }]);
+    expect(a.backfillConfineRows()).toBe(1);
+    expect(a.backfillConfineRows()).toBe(0);
+  });
+});

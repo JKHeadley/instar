@@ -460,6 +460,7 @@ export class MobilePairingService {
       stateDir, signer: loadMachineSigner(stateDir),
       verify: (row) => verifyTeamAccessRow(row, ledger.view(), lookup),
     });
+    try { this.teamLogInstance.backfillConfineRows(); } catch (err) { this.deps.reportDegradation?.('TeamAccess.backfill', err); } // @silent-fallback-ok — reported; retried at the next boot
     return this.teamLogInstance;
   }
 

@@ -15,3 +15,6 @@ New rows carry origin, incarnation, a hash of the row before and a signed seen-v
 
 ## Row exchange
 `POST /api/team-access/rows` serves the rows a peer lacks, to authenticated machines only. `pullFromPeers` asks each peer and treats silence as normal. `shouldRefuseForStaleness` refuses only for a peer known awake, so a closed lid disturbs nobody. A peer's row whose key has not arrived waits; this machine's own unplaced row still reads as damage. Still refused at the join, so no peer exists yet.
+
+## Confined list across machines
+Each conversation locked here is told to peers as a `confine` row, and a peer writes its file before folding. A grant locks its conversation on arrival even if its row cannot be placed yet, since locking is the safe direction. Owned beats shared for one conversation, in any order. A restore's sweep stays local. 2a's entries are told once at boot.

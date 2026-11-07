@@ -21,7 +21,9 @@ export type MachineEvent =
   | { type: 'conversation-own'; ref: string; personKey: string }
   | { type: 'lower'; personKey: string; ref?: string; role?: OrgRole; remove?: boolean }
   /** The owner accepted the log as it stood after a restore, gaps included, through this row. */
-  | { type: 'restored'; throughSeq: number };
+  | { type: 'restored'; throughSeq: number }
+  /** A conversation is locked to its audience, on every machine. A restore's sweep is never one of these. */
+  | { type: 'confine'; ref: string; placeKey?: string; personKey?: string };
 
 const MAX_EVENTS = 50;
 const str = (v: unknown, max = 256): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -93,6 +95,9 @@ export function validateMachineEvent(raw: unknown): MachineEvent | null {
       return str(e.keyHash) && str(e.deviceId) && str(e.boundTo) ? { type: 'phone-bind', keyHash: e.keyHash, deviceId: e.deviceId, boundTo: e.boundTo } : null;
     case 'conversation-own':
       return str(e.ref) && str(e.personKey) ? { type: 'conversation-own', ref: e.ref, personKey: e.personKey } : null;
+    case 'confine':
+      if (!str(e.ref) || (e.placeKey !== undefined && !str(e.placeKey)) || (e.personKey !== undefined && !str(e.personKey))) return null;
+      return { type: 'confine', ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey as string } : {}), ...(e.personKey ? { personKey: e.personKey as string } : {}) };
     case 'restored':
       return Number.isInteger(e.throughSeq) && (e.throughSeq as number) >= 0 ? { type: 'restored', throughSeq: e.throughSeq as number } : null;
     case 'lower':
