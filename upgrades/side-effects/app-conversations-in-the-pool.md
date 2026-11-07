@@ -140,3 +140,9 @@ Not closed: a forward attempt already on the wire when a stop arrives can still 
 ## Full suite
 
 Run on the M5 Pro at `2beabdb2c`, one suite at a time. Integration 6,172 passed, e2e 3,897 passed. Unit 60,463 passed, 50 failed in 5 files. Two files were this change's, fixed in the next commit: the new route's write domain and the flag's feature-ladder entry. Three desktop files (`MacDesktopHostCapture`, `MacDesktopHostIdentity`, `desktop-displays`) fail with `SourceTreeGuardError` on a clean checkout of `origin/main` too, so they aren't from this change.
+
+## Merging main after parts 2 and 3a landed (2026-11-07)
+
+Main had squashed #2894 and #2895, so 13 files conflicted. Twelve kept this branch's side: main's side there was either empty or the older `isOwner` call this change replaces. `src/users/wireMemoryPrivacy.ts` kept both sides, because `reachablePeople` from main and `sandboxReady` from this branch are separate additions. The already-released note `upgrades/next/slack-conversations-stay-with-connection.md` came back in the merge and was removed. No behaviour changed beyond what this artifact already covers.
+
+Checked after the merge: the lines removed relative to main are this change's own replacements, none of main's newer work was undone, and the type check is clean. Affected set on this machine: 15,527 unit tests (430 files), 111 integration and 25 e2e all passed. The full suite was not run at this head, by agreement with Echo; Local Verify is the full run. `reviewerConcurred` stays false, for the reason recorded above.

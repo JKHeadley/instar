@@ -70,6 +70,12 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({ configured: true, endpoints: ['GET /memory-privacy', 'GET /memory-privacy/fix/:token', 'POST /memory-privacy/fix/:token'] }),
   },
   {
+    key: 'teamPeople',
+    prefixes: ['/team'],
+    description: 'Who can reach this agent, how, and what each person can see. Read-only.',
+    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool'] }),
+  },
+  {
     key: 'capabilityRegistry',
     prefixes: ['/capability-registry'],
     description: 'Local capability registry read surface; dark until explicitly enabled.',

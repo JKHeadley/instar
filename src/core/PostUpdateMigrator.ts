@@ -3472,7 +3472,8 @@ export class PostUpdateMigrator {
     const files: Array<{ rel: string[]; marker: string; fingerprint: string; label: string }> = [
       {
         rel: ['skills', 'spec-converge', 'SKILL.md'],
-        marker: 'Decision-point classification (Judgment Within Floors',
+        // Refresh even copies that already carry the original classification question.
+        marker: 'FIXED_LIMIT_CONTEST',
         fingerprint: '# /spec-converge',
         label: 'spec-converge SKILL (decision-point classification question)',
       },
@@ -9328,6 +9329,12 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n- **Registry First — channel registry:** before reporting that a peer agent is unreachable, consult `GET /channels`; it lists every peer channel with purpose, when-preferred, cost and a live verdict. A channel that failed to start still gets a row, and `unknown` means undetermined — never healthy.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — people:')) {
+      content += '\n- **Registry First — people:** before answering who can reach this agent or what someone can see, read `GET /team/people` (add `?scope=pool` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set `memoryPrivacy.enabled: true` in the config on every machine and restart.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added people Registry First awareness');
     }
 
     if (!content.includes('Decision journal — principle is required:')) {
@@ -15694,6 +15701,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // before reporting a peer unreachable, or it will improvise the same weaker
       // workaround I did — stop, and tell the operator the peer cannot be reached.
       '**Registry First — channel registry:',
+      // team-roles-and-access: the question "who has access?" is framework-agnostic.
+      '**Registry First — people:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is
