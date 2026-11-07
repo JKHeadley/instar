@@ -380,7 +380,7 @@ describe('what a confined session feeds agent-wide', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf8');
     expect(src).toContain('entry.fromUser && entry.text && !entry.teamPhone');
     const routes = fs.readFileSync(path.join(process.cwd(), 'src/server/routes.ts'), 'utf8');
-    expect(routes).toContain("...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),\n        ");
+    expect(routes).toContain("trust?.sender?.role === 'team' ? { teamPhone: true,");
   });
 });
 
