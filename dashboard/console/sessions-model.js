@@ -421,15 +421,33 @@ export function profileSourceWords(profile) {
   return 'the default';
 }
 
+/**
+ * Where a session's conversation keeps its engine and model (session-swap-any-conversation §2):
+ * `telegram:N` → `N`, `app:<key>` → itself, `slack:<team>:<channel>[:<thread>]` → `slack:<channel>[:<thread>]`.
+ * A row without a reference falls back to its Telegram topic. Null: no conversation.
+ */
+export function profileKeyOf(s) {
+  const ref = s && typeof s.conversationRef === 'string' ? s.conversationRef : null;
+  if (ref) {
+    let m = /^telegram:([1-9][0-9]{0,15})$/.exec(ref);
+    if (m) return m[1];
+    if (/^app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(ref)) return ref;
+    m = /^slack:(?:_|T[A-Z0-9]+):([CDG][A-Z0-9]+)(?::(\d{10}\.\d{6}))?$/.exec(ref);
+    if (m) return m[2] ? `slack:${m[1]}:${m[2]}` : `slack:${m[1]}`;
+    return null;
+  }
+  return s && s.platform === 'telegram' && s.platformId != null && /^[1-9][0-9]{0,15}$/.test(String(s.platformId)) ? String(s.platformId) : null;
+}
+
 /** A door switch has landed only when the session list shows the LAUNCHED model. */
 export function switchLanded(sessions, job) {
   if (!Array.isArray(sessions) || !job) return null;
-  return sessions.find((x) => String(x.platformId) === String(job.topicId) && Date.parse(x.startedAt) >= job.since - 1000 && (job.model === null || x.model === job.model)) || null;
+  return sessions.find((x) => profileKeyOf(x) === String(job.topicId) && Date.parse(x.startedAt) >= job.since - 1000 && (job.model === null || x.model === job.model)) || null;
 }
 
-/** A Telegram session on this machine can switch its door; others keep the label. */
+/** A session on this machine that serves a conversation (Telegram, app or Slack) can switch its engine. */
 export function canSwitchDoor(s) {
-  return Boolean(s && !s.remote && s.platform === 'telegram' && s.platformId != null);
+  return Boolean(s && !s.remote && profileKeyOf(s) !== null);
 }
 
 // ── Terminal ─────────────────────────────────────────────────────────────

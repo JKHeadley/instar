@@ -132,6 +132,25 @@ function finiteNonNegative(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
+/** One Slack resume record (session-swap-any-conversation §3.1 adds framework, provenance, parked). */
+export interface SlackResumeEntry {
+  uuid: string;
+  savedAt: string;
+  sessionName: string;
+  /** The engine the session ran on; absent on records from before this was stored. */
+  framework?: string;
+  /** Where the id came from: the session's own hook, or the newest transcript. */
+  provenance?: 'hook' | 'mtime';
+  /** Set aside for a fresh restart by the profile orchestrator. */
+  parked?: { at: string; reason: string };
+}
+
+/** What the resume record's save consults (wired by the server). */
+export interface SlackResumeGuards {
+  sessionFacts(sessionName: string): { framework: string | null; hookId: string | null } | null;
+  writeGate(profileKey: string, framework: string | null): { allowed: boolean; reason?: string };
+}
+
 export class SlackAdapter implements MessagingAdapter {
   readonly platform = 'slack';
 
@@ -195,7 +214,8 @@ export class SlackAdapter implements MessagingAdapter {
   private channelRegistryPath: string;
 
   // Channel Resume Map (persisted — maps channel IDs to Claude session UUIDs for resume)
-  private channelResumeMap: Map<string, { uuid: string; savedAt: string; sessionName: string }> = new Map();
+  private channelResumeMap: Map<string, SlackResumeEntry> = new Map();
+  private resumeGuards: SlackResumeGuards | null = null;
   private channelResumeMapPath: string;
 
   // Disconnect tracking for missed message recovery
@@ -1013,20 +1033,69 @@ export class SlackAdapter implements MessagingAdapter {
 
   // ── Channel Resume Map ──
 
-  /** Save a session UUID for resume when a channel goes idle. */
+  /** session-swap-any-conversation §3.1: what the resume record's single save consults. */
+  setResumeGuards(guards: SlackResumeGuards | null): void { this.resumeGuards = guards; }
+
+  /**
+   * Save a session UUID for resume when a channel goes idle. All three writers (kill hook, resume
+   * heartbeat, shutdown save) come here, so the guards apply to each: the record stores the engine
+   * it was made under and where its id came from, and nothing is saved while the profile
+   * orchestrator's write gate refuses (mid-switch). A save the gate allows replaces a parked entry,
+   * as Telegram's resume map does: after a switch lands, the new session's id is the one to keep.
+   */
   saveChannelResume(channelId: string, uuid: string, sessionName: string): void {
+    const facts = this.resumeGuards?.sessionFacts(sessionName) ?? null;
+    if (this.resumeGuards) {
+      let gate: { allowed: boolean; reason?: string };
+      try { gate = this.resumeGuards.writeGate(`slack:${channelId}`, facts?.framework ?? null); }
+      catch { gate = { allowed: true }; } // @silent-fallback-ok — a gate fault keeps today's save; the spawn still checks the engine before resuming
+      if (!gate.allowed) return;
+    }
     this.channelResumeMap.set(channelId, {
       uuid,
       savedAt: new Date().toISOString(),
       sessionName,
+      ...(facts ? { framework: facts.framework ?? undefined, provenance: facts.hookId === uuid ? 'hook' as const : 'mtime' as const } : {}),
     });
     this._saveChannelResumeMap();
   }
 
-  /** Get the resume UUID for a channel (returns null if none or expired). */
-  getChannelResume(channelId: string): { uuid: string; sessionName: string } | null {
+  /**
+   * Set a record aside for a fresh restart (the orchestrator's park). Idempotent. The record stays
+   * on disk, so `unparkChannelResume` restores it after a failed kill or a breaker revert.
+   */
+  parkChannelResume(channelId: string, reason: string): void {
+    const e = this.channelResumeMap.get(channelId);
+    if (!e || e.parked) return;
+    e.parked = { at: new Date().toISOString(), reason };
+    this._saveChannelResumeMap();
+  }
+
+  /** Restore a parked record. True when one was restored. Idempotent. */
+  unparkChannelResume(channelId: string): boolean {
+    const e = this.channelResumeMap.get(channelId);
+    if (!e?.parked) return false;
+    delete e.parked;
+    this._saveChannelResumeMap();
+    return true;
+  }
+
+  /** The unparked record's id and engine, without consuming it (the orchestrator's resume views). */
+  peekChannelResume(channelId: string): { uuid: string; framework: string | null; provenance: 'hook' | 'mtime' | null } | null {
+    const e = this.channelResumeMap.get(channelId);
+    if (!e || this._expireResume(channelId, e) || e.parked) return null;
+    return { uuid: e.uuid, framework: e.framework ?? null, provenance: e.provenance ?? null };
+  }
+
+  /**
+   * Get the resume UUID for a channel (returns null if none, parked or expired). With `forFramework`
+   * (spec §3.1), only a record made under that engine is returned; a record from before engines were
+   * stored is returned only when `legacyOk` (the spawn is on the agent default).
+   */
+  getChannelResume(channelId: string, forFramework?: { framework: string; legacyOk: boolean }): { uuid: string; sessionName: string } | null {
     const entry = this.channelResumeMap.get(channelId);
-    if (!entry) return null;
+    if (!entry || this._expireResume(channelId, entry) || entry.parked) return null;
+    if (forFramework && (entry.framework ? entry.framework !== forFramework.framework : !forFramework.legacyOk)) return null;
     // Expire entries older than 24 hours
     const age = Date.now() - new Date(entry.savedAt).getTime();
     if (age > 24 * 60 * 60 * 1000) {
@@ -1035,6 +1104,14 @@ export class SlackAdapter implements MessagingAdapter {
       return null;
     }
     return { uuid: entry.uuid, sessionName: entry.sessionName };
+  }
+
+  /** Drop an entry older than 24 hours, parked or not. True when it was dropped. */
+  private _expireResume(channelId: string, e: SlackResumeEntry): boolean {
+    if (Date.now() - new Date(e.savedAt).getTime() <= 24 * 60 * 60 * 1000) return false;
+    this.channelResumeMap.delete(channelId);
+    this._saveChannelResumeMap();
+    return true;
   }
 
   /** Remove a resume entry (consumed after resume). */
@@ -1276,7 +1353,7 @@ export class SlackAdapter implements MessagingAdapter {
       if (fs.existsSync(this.channelResumeMapPath)) {
         const data = JSON.parse(fs.readFileSync(this.channelResumeMapPath, 'utf-8'));
         for (const [k, v] of Object.entries(data)) {
-          this.channelResumeMap.set(k, v as { uuid: string; savedAt: string; sessionName: string });
+          this.channelResumeMap.set(k, v as SlackResumeEntry);
         }
       }
     } catch { /* non-fatal */ }

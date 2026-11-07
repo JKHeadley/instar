@@ -222,6 +222,8 @@ import { isRemotelyHandled } from '../core/SessionRouter.js';
 import { confirmLocalPlacementAfterDelivery } from '../core/SessionPoolLocalClaim.js';
 import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } from '../core/leaseGatedSpawn.js';
 import { isSlackSessionKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
+import { tokenMayWriteConversation } from '../core/conversationKeys.js';
+import { createConversationPorts, conversationResumeViews } from '../core/conversationPorts.js';
 import { formatForwardedTopicContext, crossMachineReplyEvidence, INCOMPLETE_TOPIC_HISTORY_WARNING } from '../core/ForwardedTopicContext.js';
 import { CoherenceJournalReader } from '../core/CoherenceJournalReader.js';
 import { createTopicHistoryPullHandler, pullMovedTopicHistory, TOPIC_HISTORY_PULL_MAX_MESSAGES, TOPIC_HISTORY_PULL_TIMEOUT_MS } from '../core/topicHistoryPull.js';
@@ -1048,6 +1050,8 @@ let _topicProfileConfirmSlots: import('../core/topicProfileIngress.js').ProfileC
 let _profileLegacyRespawn: ((topicKey: string) => Promise<{ respawned: boolean; error?: string }>) | null = null;
 /** §8 disclosure hook — bound in wireTelegramCallbacks (platform adapter send). */
 let _profileDisclose: ((topicKey: string, text: string) => Promise<void>) | null = null;
+/** session-swap-any-conversation §3.2: the per-kind ports for app and Slack conversations (null until built at boot). */
+let _conversationPorts: import('../core/conversationPorts.js').ConversationPorts | null = null;
 /**
  * WS5.3 (escalation-rides-topic) — the destination re-admit driver. Given a
  * topic key whose resumed session just spawned, RE-ADMIT through the LOCAL
@@ -1099,6 +1103,52 @@ let _defaultFramework: IntelligenceFramework = 'claude-code';
  * and a chain of five is the same defect one framework later. Membership is
  * tested against the canonical union so a sixth framework needs no edit here.
  */
+/**
+ * session-swap-any-conversation §3.1: what an app or Slack spawn passes for its conversation's
+ * profile, read the same way the Telegram spawn reads it. A resolver fault or no resolver ⇒ no
+ * options: the agent default, exactly as before this change.
+ */
+function conversationSpawnProfile(profileKey: string): {
+  resolved: ResolvedTopicProfile | null;
+  options: { framework?: IntelligenceFramework; defaultModel?: string; thinkingMode?: import('../core/topicProfileValidation.js').ThinkingMode; effort?: import('../core/topicProfileValidation.js').EffortLevel };
+} {
+  let resolved: ResolvedTopicProfile | null = null;
+  try { resolved = _topicProfileResolver?.resolve(profileKey) ?? null; } catch { resolved = null; } // @silent-fallback-ok — an unreadable profile spawns on the agent default, as before
+  if (!resolved) return { resolved: null, options: {} };
+  const model = resolved.model && resolved.sources.model !== 'local-model-binding' ? resolved.model : undefined;
+  return {
+    resolved,
+    options: {
+      framework: resolved.framework,
+      ...(model ? { defaultModel: model } : {}),
+      ...(resolved.thinkingMode ? { thinkingMode: resolved.thinkingMode } : {}),
+      ...(resolved.effort ? { effort: resolved.effort } : {}),
+    },
+  };
+}
+
+/** What a running session launched on, from its record (null when it isn't running). */
+function sessionLaunchedOn(sessionManager: SessionManager, tmuxSession: string): { framework: string | null; model: string | null } | null {
+  const s = sessionManager.listRunningSessions().find((x) => x.tmuxSession === tmuxSession);
+  return s ? { framework: s.framework ?? null, model: s.model ? String(s.model) : null } : null;
+}
+
+/**
+ * Tell the orchestrator an app or Slack spawn landed (spec §3.1) — skipped while the orchestrator's
+ * own start for the key is in flight, as the Telegram spawn does.
+ */
+function recordConversationSpawn(profileKey: string, resolved: ResolvedTopicProfile | null, landed: { framework: string | null; model: string | null } | null): void {
+  if (!_topicProfileOrchestrator || !resolved || _orchestratorSpawnInFlight.has(profileKey)) return;
+  try {
+    const applied = resolvedToApplied(resolved);
+    _topicProfileOrchestrator.recordSpawnSuccess(profileKey, {
+      ...applied,
+      ...(landed?.framework ? { framework: landed.framework as IntelligenceFramework } : {}),
+      model: applied.modelTier ? null : (landed?.model ?? applied.model),
+    }, { cwd: _projectDir });
+  } catch { /* @silent-fallback-ok: breaker-reset bookkeeping, as for the Telegram spawn — never fails the spawn */ }
+}
+
 function resolveTopicFramework(topicId: number | undefined): IntelligenceFramework {
   const known = (fw: unknown): fw is IntelligenceFramework =>
     typeof fw === 'string' && (SUPPORTED_FRAMEWORKS as readonly string[]).includes(fw);
@@ -1156,6 +1206,8 @@ let _projectDir: string = process.cwd();
 let _sharedIntelligence: import('../core/types.js').IntelligenceProvider | null = null;
 let _selfKnowledgeTree: SelfKnowledgeTree | null = null;
 let _slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
+/** The conversation registry, for lookups that run before its block (late-bound; null until built). */
+let _conversationRegistryRef: import('../core/ConversationRegistry.js').ConversationRegistry | null = null;
 // WS1.1 dispatch-to-owner (Slack arm): the owner-side bridge reconstructs a Slack
 // inbound Message from a forwarded mesh deliverMessage and replays it through the
 // SAME local dispatch the live inbound path uses. Set once in startServer's Slack
@@ -1195,6 +1247,10 @@ let _staleOwnerEngine: import('../core/StaleOwnerReleaseEngine.js').StaleOwnerRe
 let _spawnAdmission: import('../core/SpawnAdmission.js').SpawnAdmission | null = null;
 /** Native app conversations (mobile-native-conversations, increment 1) — late-bound for the replication observers. */
 let _appConversationService: import('../core/AppConversationService.js').AppConversationService | null = null;
+/** session-swap-any-conversation §3.3: starts an app conversation's session with no new message (null until wired). */
+/** The Slack respawner SessionRefresh uses, shared with the profile orchestrator (spec §3.2; null until wired). */
+let _slackConversationRespawner: ((sessionName: string, routingKey: string, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }) => Promise<string>) | null = null;
+let _appSessionStarter: ((conversationKey: string, resolved: { framework: string | null; model: string | null }) => Promise<{ framework: string | null; model: string | null } | null>) | null = null;
 let _ecosystemLedger: import('../ecosystem/EcosystemLedger.js').EcosystemLedger | null = null;
 let _recommendedServicesLedger: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null = null;
 // trustworthy-machine-load C5: one fixed holding notice per topic per overload
@@ -7519,14 +7575,32 @@ export async function startServer(options: StartOptions): Promise<void> {
             const op = _agentServerRef?.getTopicOperatorStore()?.getOperator(topicKey) ?? null;
             return op ? { platform: op.platform, uid: op.uid } : null;
           },
+          // session-swap-any-conversation §3.4: a token write to an app or Slack conversation.
+          tokenMayWrite: (topicKey) => tokenMayWriteConversation(topicKey, {
+            app: (key) => {
+              const svc = _appConversationService;
+              if (!svc) return { known: false, servedHere: false, ownersOwn: false };
+              const c = svc.liveConversation(key) as { ownerPerson?: unknown } | null;
+              return { known: !!c, servedHere: svc.isOwner(), ownersOwn: !!c && !c.ownerPerson };
+            },
+            slack: (routingKey) => ({ connected: !!_slackAdapter, known: _conversationRegistryRef?.resolveByKey(routingKey)?.platform === 'slack' }),
+          }),
           localModelBinding: (topicKey) =>
             /^\d+$/.test(topicKey) ? (_topicLocalModelStore?.get(Number(topicKey)) ?? null) : null,
           // Late-bound (wireTelegramCallbacks owns the adapter): §5.2(d)
           // legacy immediate respawn + the §8 disclosure send.
-          legacyFrameworkRespawn: async (topicKey) =>
-            _profileLegacyRespawn
-              ? _profileLegacyRespawn(topicKey)
-              : { respawned: false },
+          legacyFrameworkRespawn: async (topicKey) => {
+            // session-swap-any-conversation §3.2: an app or Slack conversation restarts through its ports.
+            if (!/^\d+$/.test(topicKey)) {
+              try {
+                const resolved = _topicProfileResolver?.resolve(topicKey);
+                return _conversationPorts && resolved ? await _conversationPorts.restart(topicKey, resolved) : { respawned: false };
+              } catch (err) {
+                return { respawned: false, error: err instanceof Error ? err.message : String(err) };
+              }
+            }
+            return _profileLegacyRespawn ? _profileLegacyRespawn(topicKey) : { respawned: false };
+          },
           // §8 orchestration seam — late-bound: the TopicProfileOrchestrator is
           // constructed AFTER the AgentServer exists (it late-binds the
           // EscalationGovernor + ModelSwapService off the server). This thin
@@ -7543,6 +7617,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           onLocalWriteDurable: (topicKey, origin) =>
             _topicProfileCarrier?.onLocalWriteDurable(topicKey, origin),
           disclose: async (topicKey, text) => {
+            if (!/^\d+$/.test(topicKey)) { await _conversationPorts?.disclose(topicKey, text); return; }
             if (_profileDisclose) await _profileDisclose(topicKey, text);
           },
           audit: (event) => appendTopicProfileAudit(config.stateDir, event),
@@ -9698,6 +9773,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     });
     try {
       conversationRegistry.load();
+      _conversationRegistryRef = conversationRegistry;
     } catch (err) {
       // @silent-fallback-ok — fail toward delivery (§3.6): a broken registry boot
       // must never take the server down; mints degrade to in-memory candidates
@@ -9712,7 +9788,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // its request store with the Telegram chat route).
     if (_appNativeOn) {
       try {
-        const [{ AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }, { createAppInboundDispatch }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
+        const [{ AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS }, { createAppInboundDispatch, createAppSessionStarter }, { MobileChatRequestStore }, { appOwnerName }, relayMod, replMod] = await Promise.all([
           import('../core/AppConversationService.js'), import('../core/appInboundDispatch.js'), import('../core/MobileChatRequests.js'),
           import('../server/mobileConversationRoutes.js'), import('../core/AppReplyRelayInstaller.js'), import('../core/AppConversationsReplicatedStore.js'),
         ]);
@@ -9770,7 +9846,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             reason: detail, impact: 'An app conversation step needs attention.',
           }),
         });
-        appDispatch = createAppInboundDispatch({
+        const appDispatchDeps: Parameters<typeof createAppInboundDispatch>[0] = {
           // Memory privacy: an app conversation belongs to one phone's person. The owner's
           // own phone carries no person id, so it resolves to the owner.
           memoryInbound: async (input) => {
@@ -9787,11 +9863,27 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           sessions: sessionManager, channels: appSvc.channels, store: appSvc.store, stateDir: config.stateDir,
           spawnAdmission: () => _spawnAdmission,
+          // session-swap-any-conversation §3.1: spawn on the conversation's own engine and model.
+          profile: (key) => {
+            const r = conversationSpawnProfile(`app:${key}`);
+            return r.resolved ? { framework: r.options.framework ?? null, model: r.options.defaultModel ?? null } : null;
+          },
+          startInFlight: (profileKey) => _orchestratorSpawnInFlight.has(profileKey),
+          spawned: (profileKey, applied) => recordConversationSpawn(profileKey, conversationSpawnProfile(profileKey).resolved, applied),
+          launchedOn: (name) => sessionLaunchedOn(sessionManager, name),
           relayReady: () => {
             const t = relayMod.packagedAppReplyRelayTemplate();
             return t ? relayMod.appReplyRelayReadiness(config.stateDir, t) : { ready: false, reason: 'packaged app reply relay template is unavailable' };
           },
           log: (line) => console.log(pc.dim(`  ${line}`)),
+        };
+        appDispatch = createAppInboundDispatch(appDispatchDeps);
+        // session-swap-any-conversation §3.3: restart a conversation's session on a new engine, no new message.
+        _appSessionStarter = createAppSessionStarter(appDispatchDeps, {
+          isOwner: () => appSvc.isOwner(),
+          aliasFor: (key) => conversationRegistry.appAliasFor(key),
+          titleFor: (key) => (appSvc.liveConversation(key) as { title?: string } | null)?.title ?? null,
+          ownerName: () => appOwnerName(config),
         });
         // Replication (§4.8): emit every local event; land peers' events already on disk.
         if (replicatedRecordEmitter) {
@@ -10609,9 +10701,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               `[slack→session] Context-exhaustion latch active for conversation ${conversationId} — forcing fresh spawn`,
             );
           }
+          // session-swap-any-conversation §3.1: spawn on the conversation's profile, and resume only
+          // a record made under the same engine (an old record only on the agent default).
+          const slackProfile = conversationSpawnProfile(`slack:${routingKey}`);
+          const slackFramework = slackProfile.options.framework;
           const resumeInfo = contextWallForcesFresh
             ? null
-            : slackAdapter!.getChannelResume(routingKey);
+            : slackAdapter!.getChannelResume(routingKey, slackFramework
+              ? { framework: slackFramework, legacyOk: slackProfile.resolved?.sources.framework === 'global-default' }
+              : undefined);
           const resumeSessionId = resumeInfo?.uuid ?? undefined;
           if (resumeInfo) {
             slackAdapter!.removeChannelResume(routingKey);
@@ -10695,9 +10793,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 // durable-conversation-identity §7: scope this session's bind
                 // token to the minted conversation it may open durable state on.
                 ...(conversationId !== null ? { bootstrapConversationIds: [conversationId] } : {}),
+                ...slackProfile.options,
               },
             );
             if (newSessionName) {
+              recordConversationSpawn(`slack:${routingKey}`, slackProfile.resolved, sessionLaunchedOn(sessionManager, newSessionName));
               // Register on the routing key (channelId for a channel session,
               // `<channelId>:<thread_ts>` for a thread session). channelName carries
               // a thread hint so the registry stays human-readable.
@@ -13611,12 +13711,16 @@ export async function startServer(options: StartOptions): Promise<void> {
                   return;
                 }
                 // Spawn with the RAW channel (+ thread_ts) but register on the routing key.
+                // session-swap-any-conversation §3.1: the conversation's own engine and model.
+                const recoveryProfile = conversationSpawnProfile(`slack:${slackChId}`);
                 const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, undefined, {
                   slackChannelId: slackApiChannel,
                   slackThreadTs: slackReplyThread,
                   bootstrapConversationIds: [recoveryConversationId],
+                  ...recoveryProfile.options,
                 });
                 if (newSessionName) {
+                  recordConversationSpawn(`slack:${slackChId}`, recoveryProfile.resolved, sessionLaunchedOn(sessionManager, newSessionName));
                   _slackAdapter.registerChannelSession(slackChId, newSessionName);
                   console.log(`[slack→recovery] Fresh session "${newSessionName}" spawned for ${slackReplyThread ? `thread ${slackChId}` : `channel ${slackApiChannel}`} (context exhaustion recovery)`);
                 }
@@ -22533,9 +22637,15 @@ export async function startServer(options: StartOptions): Promise<void> {
         // (getChannelResume → removeChannelResume → spawnInteractiveSession with
         // the parsed channel/thread → registerChannelSession). SessionRefresh
         // kills first; for a fresh respawn it already removed the resume entry.
-        slackRespawner: slackRef
+        slackRespawner: (_slackConversationRespawner = slackRef
           ? async (sessionName: string, routingKey: string, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }): Promise<string> => {
-              const resumeInfo = slackRef.getChannelResume(routingKey);
+              // session-swap-any-conversation §3.1: the conversation's profile, and a resume record
+              // only from the same engine (an old record only on the agent default).
+              const respawnProfile = conversationSpawnProfile(`slack:${routingKey}`);
+              const respawnFw = respawnProfile.options.framework;
+              const resumeInfo = slackRef.getChannelResume(routingKey, respawnFw
+                ? { framework: respawnFw, legacyOk: respawnProfile.resolved?.sources.framework === 'global-default' }
+                : undefined);
               const resumeSessionId = resumeInfo?.uuid ?? undefined;
               if (resumeInfo) slackRef.removeChannelResume(routingKey);
               // routingKey = `<channelId>[:<thread_ts>]`.
@@ -22570,9 +22680,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                   ...(bootstrapIds ? { bootstrapConversationIds: bootstrapIds } : {}),
                   ...(accountSwap?.configHome ? { configHome: accountSwap.configHome } : {}),
                   ...(accountSwap?.accountId ? { subscriptionAccountId: accountSwap.accountId } : {}),
+                  ...respawnProfile.options,
                 },
               );
               if (newSessionName) {
+                recordConversationSpawn(`slack:${routingKey}`, respawnProfile.resolved, sessionLaunchedOn(sessionManager, newSessionName));
                 slackRef.registerChannelSession(
                   routingKey,
                   newSessionName,
@@ -22581,7 +22693,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               }
               return newSessionName || sessionName;
             }
-          : null,
+          : null),
         respawner: async (sessionName: string, topicId: number, followUpPrompt: string | undefined, accountSwap?: { configHome?: string; accountId?: string }): Promise<string> => {
           // killSession (called inside SessionRefresh) has already fired
           // beforeSessionKill (UUID persisted) and destroyed the tmux
@@ -32336,6 +32448,62 @@ export async function startServer(options: StartOptions): Promise<void> {
     // gates, the §10.4 breaker, and the §14 dry-run regime. Ships dark behind the
     // dev-agent gate (the `enabled` knob is resolved LIVE per write — never a
     // literal). Attached onto the shared _topicProfileCtx so the routes see it.
+    // ── session-swap-any-conversation §3.2: per-kind ports for app and Slack conversations ──
+    {
+      const ports = createConversationPorts({
+        runningNames: () => sessionManager.listRunningSessions().map((x) => x.tmuxSession),
+        killByTmuxName: (name) => sessionManager.killSessionByTmuxName(name),
+        inFlight: _orchestratorSpawnInFlight,
+        app: () => {
+          const svc = _appConversationService;
+          if (!svc) return null;
+          return {
+            sessionFor: (key) => svc.sessionFor(key),
+            isOwner: () => svc.isOwner(),
+            conversationOfSession: (tmux) => {
+              const alias = svc.channels.getChannelForSession(tmux);
+              if (!alias || !/^-?\d+$/.test(alias)) return null;
+              const d = _conversationRegistryRef?.resolve(Number(alias));
+              return d && d.platform === 'app' ? d.conversationKey : null;
+            },
+            start: async (key, want) => (_appSessionStarter ? _appSessionStarter(key, want) : null),
+            disclose: async (key, text) => {
+              if (!svc.liveConversation(key)) return;
+              const at = new Date().toISOString();
+              const { derivedEventId } = await import('../core/appConversationText.js');
+              const messageId = derivedEventId('am', key, 'profile-disclose', text, at);
+              try {
+                svc.store.append({ eventId: derivedEventId('ae', key, 'profile-disclose', text, at), conversationKey: key, messageId, role: 'agent', text, at, machineId: svc.deps.machineId(), kind: 'message' } as Parameters<typeof svc.store.append>[0]);
+                svc.onAgentReplyAppended(key, messageId);
+              } catch { /* @silent-fallback-ok — the notice is best-effort; the switch itself is recorded in the profile audit */ }
+            },
+          };
+        },
+        slack: () => {
+          const sl = _slackAdapter;
+          if (!sl) return null;
+          return {
+            sessionFor: (rk) => sl.getSessionForChannel(rk),
+            routingKeyOfSession: (tmux) => sl.getChannelForSession(tmux),
+            respawn: async (rk, prompt) => (_slackConversationRespawner ? _slackConversationRespawner('', rk, prompt) : ''),
+            launchedOn: (name) => sessionLaunchedOn(sessionManager, name),
+            send: async (rk, text) => {
+              await withNotificationEnvelope(stampNotification(), async () => { await sl.sendToChannel(rk, text); }).catch(() => {});
+            },
+          };
+        },
+      });
+      _conversationPorts = ports;
+      // §3.1: the Slack resume record's single save stores the session's engine and id source, and
+      // asks the orchestrator's gate (late-bound: no orchestrator ⇒ today's save).
+      _slackAdapter?.setResumeGuards({
+        sessionFacts: (sessionName) => {
+          const x = sessionManager.listRunningSessions().find((r) => r.tmuxSession === sessionName);
+          return x ? { framework: x.framework ?? null, hookId: x.claudeSessionId ?? null } : null;
+        },
+        writeGate: (profileKey, framework) => _topicProfileOrchestrator ? _topicProfileOrchestrator.resumeWriteGateFor(profileKey, framework) : { allowed: true },
+      });
+    }
     if (_topicProfileCtx && _topicProfileStore && _topicProfileResolver) {
       try {
         const tpStore = _topicProfileStore;
@@ -32358,10 +32526,27 @@ export async function startServer(options: StartOptions): Promise<void> {
         };
         // topic → live tmux session name (or null).
         const sessionNameForTopic = (topicKey: string): string | null => {
+          // session-swap-any-conversation §3.2: app and Slack keys find their session through their ports.
+          if (!/^\d+$/.test(topicKey)) return _conversationPorts?.session(topicKey) ?? null;
           const n = Number(topicKey);
           if (!Number.isFinite(n)) return null;
           return telegram?.getSessionForTopic(n) ?? null;
         };
+        // Every running conversation session with its profile key: Telegram, app and Slack.
+        const listConversationSessions = (): Array<{ topicKey: string; sessionName: string }> => {
+          const out: Array<{ topicKey: string; sessionName: string }> = [];
+          for (const s of sessionManager.listRunningSessions()) {
+            const topic = telegram?.getTopicForSession?.(s.tmuxSession);
+            if (topic != null && Number.isFinite(Number(topic))) out.push({ topicKey: String(topic), sessionName: s.tmuxSession });
+          }
+          const seen = new Set(out.map((o) => o.sessionName));
+          for (const o of _conversationPorts?.listSessions() ?? []) if (!seen.has(o.sessionName)) out.push(o);
+          return out;
+        };
+        // App and Slack resume views over their own records (spec §3.1): app keeps no resume id.
+        const convResume = conversationResumeViews(() => _slackAdapter
+          ? { peek: (rk) => _slackAdapter!.peekChannelResume(rk), park: (rk, why) => _slackAdapter!.parkChannelResume(rk, why), unpark: (rk) => _slackAdapter!.unparkChannelResume(rk) }
+          : null);
 
         const orchDeps: TopicProfileOrchestratorDeps = {
           store: tpStore,
@@ -32372,17 +32557,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (!name) return null;
               return { sessionName: name, cwd: tpProjectDir };
             },
-            listTopicSessions: () => {
-              // Every running session that is bound to a numeric (telegram) topic.
-              const out: Array<{ topicKey: string; sessionName: string }> = [];
-              for (const s of sessionManager.listRunningSessions()) {
-                const topic = telegram?.getTopicForSession?.(s.tmuxSession);
-                if (topic != null && Number.isFinite(Number(topic))) {
-                  out.push({ topicKey: String(topic), sessionName: s.tmuxSession });
-                }
-              }
-              return out;
-            },
+            listTopicSessions: () => listConversationSessions(),
             readIdle: (sessionName) => {
               // FABLE three-valued idle read off the live pane (the §8 kill-time
               // re-confirm). null tail ⇒ unconfirmed; idle+empty-input ⇒
@@ -32420,6 +32595,26 @@ export async function startServer(options: StartOptions): Promise<void> {
               // updated) pin via spawnSessionForTopic and picks up the resume id
               // from the resume map. We mark the spawn in-flight so the spawn-path
               // chokepoint does not double-report a failure to the §10.4 breaker.
+              // session-swap-any-conversation §3.2: app and Slack conversations start through their ports.
+              if (!/^\d+$/.test(topicKey)) {
+                _orchestratorSpawnInFlight.add(topicKey);
+                try {
+                  const landed = await _conversationPorts?.start(topicKey, _resolved);
+                  if (!landed) return { ok: false, failureClass: 'unknown' };
+                  return {
+                    ok: true,
+                    applied: {
+                      ...resolvedToApplied(_resolved),
+                      framework: (landed.framework ?? _resolved.framework) as IntelligenceFramework,
+                      model: _resolved.modelTier ? null : (landed.model ?? _resolved.model ?? null),
+                    },
+                  };
+                } catch { /* @silent-fallback-ok: an unexpected start fault is reported as a failed spawn; the breaker and disclosure handle it */
+                  return { ok: false, failureClass: 'unknown' };
+                } finally {
+                  _orchestratorSpawnInFlight.delete(topicKey);
+                }
+              }
               const n = Number(topicKey);
               if (!Number.isFinite(n) || !telegram) return { ok: false, failureClass: 'unknown' };
               const topicName = telegram.getTopicName(n) || `topic-${n}`;
@@ -32480,23 +32675,47 @@ export async function startServer(options: StartOptions): Promise<void> {
           claudeResume: {
             // hook-provenance resume = none-loss readiness (§8 pre-kill predicate).
             ready: (topicKey) => {
+              if (convResume.handles(topicKey)) return convResume.claude.ready(topicKey);
+              if (!/^\d+$/.test(topicKey)) return false;
               const n = Number(topicKey);
               return Number.isFinite(n) ? _topicResumeMap?.getProvenance(n) === 'hook' : false;
             },
             resumeId: (topicKey) => {
+              if (convResume.handles(topicKey)) return convResume.claude.resumeId(topicKey);
+              if (!/^\d+$/.test(topicKey)) return null;
               const n = Number(topicKey);
               return Number.isFinite(n) ? (_topicResumeMap?.get(n) ?? null) : null;
             },
             park: (topicKey, reason) => {
+              if (convResume.handles(topicKey)) { convResume.claude.park(topicKey, reason); return; }
+              if (!/^\d+$/.test(topicKey)) return;
               const n = Number(topicKey);
               if (Number.isFinite(n)) _topicResumeMap?.park(n, reason);
             },
             unpark: (topicKey) => {
+              if (convResume.handles(topicKey)) return convResume.claude.unpark(topicKey);
+              if (!/^\d+$/.test(topicKey)) return false;
               const n = Number(topicKey);
               return Number.isFinite(n) ? (_topicResumeMap?.unpark(n) ?? false) : false;
             },
           },
-          codexResume: tpCodexResume,
+          // Slack's Codex view acts on the same single record as its Claude view; app keeps none.
+          codexResume: {
+            get: (topicKey) => {
+              if (convResume.handles(topicKey)) return convResume.codex.get(topicKey);
+              return /^\d+$/.test(topicKey) ? tpCodexResume.get(topicKey) : null;
+            },
+            captureAtKill: (topicKey, sessionName, fence) =>
+              /^\d+$/.test(topicKey) ? tpCodexResume.captureAtKill(topicKey, sessionName, fence) : convResume.codex.captureAtKill(),
+            park: (topicKey, reason) => {
+              if (convResume.handles(topicKey)) { convResume.codex.park(topicKey, reason); return; }
+              if (/^\d+$/.test(topicKey)) tpCodexResume.park(topicKey, reason);
+            },
+            unpark: (topicKey) => {
+              if (convResume.handles(topicKey)) return convResume.codex.unpark(topicKey);
+              return /^\d+$/.test(topicKey) ? tpCodexResume.unpark(topicKey) : false;
+            },
+          },
           escalation: {
             // §9 FABLE marker = the live escalated model id on the topic's session.
             activeMarker: (topicKey) => {
@@ -32509,14 +32728,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             },
             listMarkerTopics: () => {
               const ids = escIds();
-              const out: string[] = [];
-              for (const s of sessionManager.listRunningSessions()) {
-                if (s.model && ids.has(String(s.model))) {
-                  const topic = telegram?.getTopicForSession?.(s.tmuxSession);
-                  if (topic != null) out.push(String(topic));
-                }
-              }
-              return out;
+              const escalated = new Set(sessionManager.listRunningSessions().filter((s) => s.model && ids.has(String(s.model))).map((s) => s.tmuxSession));
+              return listConversationSessions().filter((c) => escalated.has(c.sessionName)).map((c) => c.topicKey);
             },
             clearMarkerAndReleaseLease: (topicKey) => {
               const name = sessionNameForTopic(topicKey);
@@ -32550,7 +32763,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             try { return sessionManager.getProtectedSessions().includes(sessionName); }
             catch { /* @silent-fallback-ok: fail-closed to protected — see comment above (TOPIC-PROFILE-SPEC §8) */ return true; }
           },
-          codexFence: (topicKey) => _codexSpawnFences.get(String(topicKey)) ?? null,
+          codexFence: (topicKey) => /^\d+$/.test(String(topicKey)) ? (_codexSpawnFences.get(String(topicKey)) ?? null) : null,
           verification: () => ({
             inFlightSwapConfirmedRecently: false,
             thinkingOffOnResumeVerified: false,
@@ -32572,7 +32785,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               switchNowConfirmTtlMs: cfg?.switchNowConfirmTtlMs ?? 300_000,
             };
           },
-          canDiscloseReconciliation: (topicKey) => speakerElection.decide(Number(topicKey)).speak,
+          canDiscloseReconciliation: (topicKey) => /^\d+$/.test(topicKey) ? speakerElection.decide(Number(topicKey)).speak : (_conversationPorts?.canDisclose(topicKey) ?? false),
           disclose: (topicKey, text, meta) => {
             // §8 disclosure-of-record. The orchestrator stamps each notice with
             // an audit sequence ([#N]) so consecutive notices are never byte-
@@ -32580,6 +32793,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             // exact-duplicate window anyway, so a delta-carrying notice can never
             // be swallowed. meta.allowDuplicate is forwarded as kind metadata for
             // any relayed (cross-machine) hop that DOES consult the window.
+            if (!/^\d+$/.test(topicKey)) { void _conversationPorts?.disclose(topicKey, text).catch(() => {}); return; }
             const n = Number(topicKey);
             if (Number.isFinite(n) && telegram) {
               void withNotificationEnvelope(stampNotification(), async () => (telegram)!

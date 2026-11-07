@@ -48,12 +48,15 @@ export interface AppDispatchSessions {
   waitForClaudeReady?(tmuxSession: string, timeoutMs?: number): Promise<boolean>;
   injectMessage(tmuxSession: string, text: string, opts?: { conversationId?: string }): boolean;
   killSession?(sessionId: string): boolean;
-  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[] }): Promise<string>;
+  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[]; framework?: string; defaultModel?: string }): Promise<string>;
 }
 
 export interface AppDispatchAdmission {
-  admit(input: { sessionKey: string; callsite: 'app-inbound-spawn' }): { allow: boolean; reason: string };
+  admit(input: { sessionKey: string; callsite: 'app-inbound-spawn' | 'app-respawn' }): { allow: boolean; reason: string };
 }
+
+/** The engine and model a conversation is set to (session-swap-any-conversation §3.1); null fields mean the agent default. */
+export interface AppProfile { framework: string | null; model: string | null }
 
 export interface AppInboundDispatchDeps {
   sessions: AppDispatchSessions;
@@ -68,6 +71,57 @@ export interface AppInboundDispatchDeps {
   readyTimeoutMs?: number;
   /** Memory privacy: runs before routing. False means this message was refused. */
   memoryInbound?: (input: AppDispatchInput) => Promise<boolean>;
+  /** The conversation's engine and model (its `app:<key>` profile). Absent ⇒ the agent default. */
+  profile?: (conversationKey: string) => AppProfile | null;
+  /** True while the profile orchestrator is starting this conversation's session (a switch under way). */
+  startInFlight?: (profileKey: string) => boolean;
+  /** Tell the profile orchestrator a spawn landed, with what it launched on (its `recordSpawnSuccess`). */
+  spawned?: (profileKey: string, applied: AppProfile) => void;
+  /** What a running session launched on (its record), for reporting what a start actually landed on. */
+  launchedOn?: (tmuxSession: string) => AppProfile | null;
+  /** How long a new message waits for a switch under way before dispatching anyway (ms). */
+  startWaitMs?: number;
+}
+
+/**
+ * One start at a time per conversation (review finding): the inbound spawn and the message-free
+ * start share this lock through their deps object, and each re-checks for a live session inside it,
+ * so a message spawning during a switch and the switch's own start can't both launch a session.
+ */
+const startLocks = new WeakMap<AppInboundDispatchDeps, Map<string, Promise<unknown>>>();
+async function withStartLock<T>(deps: AppInboundDispatchDeps, conversationKey: string, fn: () => Promise<T>): Promise<T> {
+  let locks = startLocks.get(deps);
+  if (!locks) { locks = new Map(); startLocks.set(deps, locks); }
+  const prev = locks.get(conversationKey) ?? Promise.resolve();
+  const run = prev.catch(() => undefined).then(fn);
+  const tail = run.catch(() => undefined);
+  locks.set(conversationKey, tail);
+  try { return await run; } finally { if (locks.get(conversationKey) === tail) locks.delete(conversationKey); }
+}
+
+/** The conversation's live session (registered and running), or null. */
+function liveSession(deps: AppInboundDispatchDeps, alias: number): string | null {
+  const name = deps.channels.getSessionForChannel(String(alias));
+  return name && deps.sessions.listRunningSessions().some((x) => x.tmuxSession === name) ? name : null;
+}
+
+/** Wait for a switch under way to finish, so a message never starts a second session beside it. */
+async function waitForStart(deps: AppInboundDispatchDeps, profileKey: string): Promise<void> {
+  if (!deps.startInFlight) return;
+  const until = Date.now() + (deps.startWaitMs ?? 60_000);
+  while (deps.startInFlight(profileKey) && Date.now() < until) await new Promise((r) => setTimeout(r, 250));
+}
+
+/** The spawn options carrying the conversation's engine and model. */
+function engineOptions(deps: AppInboundDispatchDeps, conversationKey: string): { framework?: string; defaultModel?: string } {
+  let p: AppProfile | null = null;
+  try { p = deps.profile?.(conversationKey) ?? null; } catch { p = null; } // @silent-fallback-ok — an unreadable profile starts on the agent default, as before this change
+  return toSpawnOptions(p);
+}
+
+/** A profile as spawn options (the session manager's names: `framework`, `defaultModel`). */
+function toSpawnOptions(p: AppProfile | null): { framework?: string; defaultModel?: string } {
+  return { ...(p?.framework ? { framework: p.framework } : {}), ...(p?.model ? { defaultModel: p.model } : {}) };
 }
 
 const HISTORY = 30;
@@ -92,16 +146,8 @@ export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSess
   };
 }
 
-export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
-  const log = deps.log ?? (() => undefined);
-  return async (input) => {
-    if (deps.memoryInbound && !(await deps.memoryInbound(input))) {
-      log('[app→session] refused: this conversation needs private memory, which is not available here');
-      return 'refused';
-    }
-    const channelKey = String(input.alias);
-    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
-
+/** The session context: recent history and the relay instructions, written to a private file. */
+function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; tmpDir: string } {
     // Context: recent history from the conversation store (never a platform API).
     const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
       .filter((m) => m.messageId !== input.messageId);
@@ -143,6 +189,22 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
     const ctxPath = path.join(tmpDir, `ctx-${input.alias}-${Date.now()}.txt`);
     fs.writeFileSync(ctxPath, contextData, { mode: 0o600 }); /* state-registry: app-conversations */
+    return { ctxPath, contextData, tmpDir };
+}
+
+export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
+  const log = deps.log ?? (() => undefined);
+  return async (input) => {
+    if (deps.memoryInbound && !(await deps.memoryInbound(input))) {
+      log('[app→session] refused: this conversation needs private memory, which is not available here');
+      return 'refused';
+    }
+    // A switch under way restarts this conversation's session: wait for it rather than start a
+    // second one beside it (spec §3.1). If it was refused, this message starts the session below.
+    await waitForStart(deps, `app:${input.conversationKey}`);
+    const channelKey = String(input.alias);
+    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
+    const { ctxPath, contextData, tmpDir } = writeContext(deps, input);
     const full = `${tag} ${input.text} (IMPORTANT: Read ${ctxPath} for conversation history and app relay instructions — you MUST relay your response back.)`;
     let bootstrap = full;
     if (full.length > 500) {
@@ -180,10 +242,92 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
         log(`[app→session] admission error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias], memoryPlaceKey: `app:${input.conversationKey}` });
-    if (!name) return 'refused';
-    deps.channels.register(channelKey, name, input.title);
-    log(`[app→session] spawned ${name} for app conversation ${input.alias}`);
-    return 'delivered';
+    return withStartLock(deps, input.conversationKey, async () => {
+      // A start that finished while this message waited: hand the message to that session.
+      const started = liveSession(deps, input.alias);
+      if (started) {
+        const ready = deps.sessions.waitForClaudeReady ? await deps.sessions.waitForClaudeReady(started, deps.readyTimeoutMs ?? 15_000) : true;
+        if (ready && deps.sessions.injectMessage(started, bootstrap, { conversationId: String(input.alias) })) {
+          log(`[app→session] injected into ${started} (started while this message waited)`);
+          return 'delivered' as const;
+        }
+      }
+      const engine = engineOptions(deps, input.conversationKey);
+      const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias], memoryPlaceKey: `app:${input.conversationKey}`, ...engine });
+      if (!name) return 'refused' as const;
+      deps.channels.register(channelKey, name, input.title);
+      reportSpawned(deps, input.conversationKey, name, engine);
+      log(`[app→session] spawned ${name} for app conversation ${input.alias}`);
+      return 'delivered' as const;
+    });
   };
+}
+
+/** Tell the orchestrator what landed, except while its own start is under way (it records that one). */
+function reportSpawned(deps: AppInboundDispatchDeps, conversationKey: string, tmuxSession: string, engine: { framework?: string; defaultModel?: string }): AppProfile {
+  const applied = deps.launchedOn?.(tmuxSession) ?? { framework: engine.framework ?? null, model: engine.defaultModel ?? null };
+  const key = `app:${conversationKey}`;
+  if (!deps.startInFlight?.(key)) {
+    try { deps.spawned?.(key, applied); } catch { /* @silent-fallback-ok — bookkeeping only; the session is running */ }
+  }
+  return applied;
+}
+
+/** What `startApp` needs beyond the dispatch's own deps. */
+export interface AppStartDeps {
+  /** True when this machine serves the conversation. */
+  isOwner: () => boolean;
+  /** The conversation's local alias, or null when it has none here. */
+  aliasFor: (conversationKey: string) => number | null;
+  /** The conversation's title (null when it is gone). */
+  titleFor: (conversationKey: string) => string | null;
+  ownerName: () => string;
+}
+
+/**
+ * Start an app conversation's session with no new message (spec §3.3): after an engine switch the
+ * orchestrator kills the old session and calls this. It answers what the session landed on, or null
+ * when nothing was started (not served here, admission or relay refused, a session that isn't on the
+ * requested profile already running).
+ */
+export function createAppSessionStarter(deps: AppInboundDispatchDeps, start: AppStartDeps): (conversationKey: string, resolved: AppProfile) => Promise<AppProfile | null> {
+  const log = deps.log ?? (() => undefined);
+  return async (conversationKey, resolved) => {
+    if (!start.isOwner()) { log(`[app→session] start for ${conversationKey} skipped: not served on this machine`); return null; }
+    const alias = start.aliasFor(conversationKey);
+    const title = start.titleFor(conversationKey);
+    if (alias === null || title === null) return null;
+    return withStartLock(deps, conversationKey, () => startLocked(conversationKey, alias, title, resolved));
+  };
+  async function startLocked(conversationKey: string, alias: number, title: string, resolved: AppProfile): Promise<AppProfile | null> {
+    const channelKey = String(alias);
+    const live = liveSession(deps, alias);
+    if (live) {
+      // A message that arrived in the kill window may already have started it on the new profile.
+      const on = deps.launchedOn?.(live) ?? null;
+      const same = !!on && (on.framework ?? null) === (resolved.framework ?? null) && (resolved.model == null || on.model === resolved.model);
+      return same ? on : null;
+    }
+    const relay = deps.relayReady?.() ?? { ready: true as const };
+    if (!relay.ready) { log(`[app→session] start refused: app reply relay not ready (${relay.reason})`); return null; }
+    const admission = deps.spawnAdmission?.();
+    if (admission) {
+      try {
+        const d = admission.admit({ sessionKey: `app:${conversationKey}`, callsite: 'app-respawn' });
+        if (!d.allow) { log(`[app→session] start refused by admission: ${d.reason}`); return null; }
+      } catch (err) { // @silent-fallback-ok — admission errors fail open toward reachability, as the inbound spawn does
+        log(`[app→session] admission error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    const ownerName = start.ownerName();
+    const { ctxPath } = writeContext(deps, { conversationKey, alias, ownerName, messageId: null });
+    const tag = appInjectionTag(alias, title, ownerName, 'none');
+    const bootstrap = `${tag} [Your session restarted on a new ${'engine'}. There is no new message to answer. Read ${ctxPath} for the conversation so far and the app relay instructions, then wait for the next message.]`;
+    const engine = toSpawnOptions(resolved);
+    const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [alias], memoryPlaceKey: `app:${conversationKey}`, ...engine });
+    if (!name) return null;
+    deps.channels.register(channelKey, name, title);
+    log(`[app→session] started ${name} for app conversation ${alias} on ${resolved.framework ?? 'the agent default'}`);
+    return deps.launchedOn?.(name) ?? { framework: resolved.framework ?? null, model: resolved.model ?? null };
+  }
 }
