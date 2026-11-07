@@ -142,5 +142,8 @@ describe('team access — production wiring', () => {
     expect(lowered.status).toBe(200);
     expect((await mia('GET', '/mobile/conversations')).status).toBe(403);
     expect(server.mobilePairing!.teamLog()!.isConfined(shared)).toBe(true);
+    // The history still reads by name after the person has gone.
+    const history = await owner('GET', '/mobile/team/activity');
+    expect(history.body.lines.map((l: { text: string }) => l.text)).toContain('Mia was removed');
   });
 });

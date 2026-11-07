@@ -70,3 +70,9 @@ Foundation only.
 - Added: Team routes: owner-only invites, grants and people changes store the phone's signed request; the agent token can only lower; attention and session filters, join refusal, conversation lock and reshape are in.
 
 - Added: Tests: status table across all allowlist routes, route tests with both sides of each role check, full journey on a real AgentServer. Added team access awareness to the template and migrator, and the scheduled-jobs disclosure to the invite and first-use answers.
+
+- Added: Live run on a test agent found Activity showing 'Someone was removed' after a removal; names now come from the log.
+
+- Added: Spec wording: attention filtering reads contextTopicIds only; the journey test now checks the history by name.
+
+- Added: Spec wording: attention filtering reads contextTopicIds only; the journey test now checks the history by name.

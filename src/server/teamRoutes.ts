@@ -90,16 +90,24 @@ export class TeamRefusalLog {
 }
 
 /** Plain lines for Activity, from the signed log. */
-export function activityLines(rows: ReadonlyArray<TeamAccessRow>, nameOf: (personKey: string) => string): Array<{ seq: number; text: string }> {
+export function activityLines(rows: ReadonlyArray<TeamAccessRow>): Array<{ seq: number; text: string }> {
   const out: Array<{ seq: number; text: string }> = [];
+  const eventsOfRow = (row: Extract<TeamAccessRow, { kind: 'request' }>): RequestEvent[] | null => {
+    try { return parseSignedEvents(JSON.parse(Buffer.from(row.signedOrigin.bodyB64, 'base64').toString('utf8'))); } catch { return null; } // @silent-fallback-ok — an unreadable row shows no line
+  };
+  // Names come from the log, so a person removed since still reads by name in the history.
+  const names = new Map<string, string>();
+  for (const row of rows) {
+    if (row.kind !== 'request') continue;
+    for (const e of eventsOfRow(row) ?? []) if (e.type === 'person-add') names.set(e.personKey, e.name);
+  }
+  const nameOf = (personKey: string) => names.get(personKey) ?? 'Someone';
   for (const row of rows) {
     if (row.kind === 'machine') {
       for (const e of row.events) if (e.type === 'lower') out.push({ seq: row.seq, text: e.remove ? `${nameOf(e.personKey)} was removed` : `Access was lowered for ${nameOf(e.personKey)}` });
       continue;
     }
-    let events: RequestEvent[] | null = null;
-    try { events = parseSignedEvents(JSON.parse(Buffer.from(row.signedOrigin.bodyB64, 'base64').toString('utf8'))); } catch { events = null; } // @silent-fallback-ok — an unreadable row shows no line
-    for (const e of events ?? []) {
+    for (const e of eventsOfRow(row) ?? []) {
       if (e.type === 'person-add') out.push({ seq: row.seq, text: `${e.name} was invited` });
       else if (e.type === 'person-remove') out.push({ seq: row.seq, text: `${nameOf(e.personKey)} was removed` });
       else if (e.type === 'grant') out.push({ seq: row.seq, text: `${nameOf(e.personKey)} was given ${e.access === 'use' ? 'use of' : 'read access to'} a conversation` });
@@ -294,9 +302,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   router.get('/mobile/team/activity', (req, res) => {
     if (!ownerDevice(req, res)) return;
-    const log = svc.teamLog();
-    const state = log?.state();
-    res.json({ lines: activityLines(log?.allRows() ?? [], (key) => state?.people.get(key)?.name ?? 'Someone').slice(-200) });
+    res.json({ lines: activityLines(svc.teamLog()?.allRows() ?? []).slice(-200) });
   });
 
   // The agent can take access away, and never give it (§3.3).

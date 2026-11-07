@@ -251,6 +251,17 @@ describe('reading people', () => {
   });
 });
 
+describe('the activity history', () => {
+  it('keeps a removed person\'s name, because the log still holds it', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    await bearer(e, '/team/people/p-1/lower', { remove: true });
+    const lines = (await send(e, owner, 'GET', '/mobile/team/activity')).body.lines.map((l: { text: string }) => l.text);
+    expect(lines).toEqual(['Mia was invited', 'Mia was given use of a conversation', 'Mia was removed']);
+  });
+});
+
 describe('changing access', () => {
   it('the owner changes grants and roles; a member cannot, even on themselves', async () => {
     const e = await setup();
