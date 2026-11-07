@@ -208,7 +208,7 @@ Multi-machine: enforcement is per machine and needs no replication. An older pee
 
 A confined session is sandboxed, and the server that serves it is not. Anything the session can write or report is untrusted input to the server:
 
-- On the hook route a scoped session speaks only for itself, whatever the address names.
+- On the hook route a scoped session speaks only for itself, whatever the address names, and its events carry no file paths: consumers read those on the unsandboxed server.
 - A session id must be a plain id before it is stored or passed to a launch. It reaches a command line and a file path, so a leading dash, a slash or a dot is refused at each point.
 - The server never writes through a link in a scope folder. `.curlrc` is staged and renamed over, and a link or file where `inbox`, `tmp` or `.curl` should be is moved aside.
 - A confined session never feeds agent-wide digests, on the periodic scan or at session completion.

@@ -102,4 +102,8 @@ describe('a scoped session on the hook route', () => {
     const src = fs.readFileSync(path.join(process.cwd(), 'src/server/routes.ts'), 'utf8');
     expect(src).toContain("const instarSid = scopedSession ?? (typeof req.query.instar_sid === 'string'");
   });
+  it('supplies no file paths', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/server/routes.ts'), 'utf8');
+    expect(src).toContain("if (scopedSession) for (const field of ['transcript_path', 'agent_transcript_path', 'cwd'])");
+  });
 });

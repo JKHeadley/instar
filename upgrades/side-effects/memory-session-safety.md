@@ -9,3 +9,6 @@
 
 ## Framework generality
 The resume id check sits in the launch abstraction and applies to every framework that resumes: claude-code, codex-cli and gemini-cli. Claude and Codex ids are UUIDs, and Gemini resumes by `latest` or a number, all of which pass. It rejects only a leading dash, a slash, a dot, a space or an overlong value.
+
+## Hook payload paths
+A scoped session's hook events lose `transcript_path`, `agent_transcript_path` and `cwd` before any consumer sees them. Two optional consumers read those on the server: pre-compaction flush, and the green-PR stop gate. Neither needs them for a scoped session. Over-block: pre-compaction flush does not run for a scoped session, which is right, since its text should not reach owner memory.

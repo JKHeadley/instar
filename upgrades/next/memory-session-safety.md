@@ -2,7 +2,7 @@
 
 ## What Changed
 
-On an agent with memory privacy on, a sandboxed session could trick the server, which is not sandboxed. It could report a made-up session id that became a launch flag at the next start, and on Linux it could plant a link so the server overwrote one of the owner's files. Both are closed. A session id must now be a plain id wherever it is stored or launched, a scoped session can report hook events only for itself, and the server no longer writes through links in a session's folder. A sandboxed session's output also no longer reaches agent-wide digests through the session-completion path.
+On an agent with memory privacy on, a sandboxed session could trick the server, which is not sandboxed. It could report a made-up session id that became a launch flag at the next start, and on Linux it could plant a link so the server overwrote one of the owner's files. Both are closed. A session id must now be a plain id wherever it is stored or launched, a scoped session can report hook events only for itself and without file paths, and the server no longer writes through links in a session's folder. A sandboxed session's output also no longer reaches agent-wide digests through the session-completion path.
 
 ## What to Tell Your User
 
