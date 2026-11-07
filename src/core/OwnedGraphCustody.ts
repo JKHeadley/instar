@@ -43,7 +43,6 @@ export function ownedGraphInstalledRoster(identity:MachineIdentityManager,identi
 export function openPublishedOwnedGraphCustody(options:{stateDir:string;agentId:string;identity:MachineIdentityManager;identities:IdentityStore;ownerPublicKey:string;rolePrivateKey:crypto.KeyLike;publication:GraphCustodyBootstrapPublication;membership?:GraphMembershipEpoch;historicalWitnessPublicKeys?:Record<string,string>}):OwnedGraphCustody {
  const {stateDir,agentId,identity,identities,ownerPublicKey,publication}=options,genesis=publication.membership,membership=options.membership??genesis,profile=membership.custodyProfile,local=identity.loadIdentity(),installed=ownedGraphInstalledRoster(identity,identities);
  if(genesis.agentId!==agentId||!verifyGraphCustodyBootstrapPublication(publication,genesis.members,ownerPublicKey)||!verifyMembershipEpoch(membership,ownerPublicKey)||membership.agentId!==agentId||!profile||profile.mode!=='owned-machine'||profile.hostMachineId!==local.machineId)throw new Error('owned-custody-publication-invalid');
- const ordered=(rows:readonly GraphMembershipMember[])=>[...rows].sort((a,b)=>a.machineId<b.machineId?-1:a.machineId>b.machineId?1:0);
  // Every signed member must still be installed under its signed keys. A machine paired later holds no signed place.
  const installedById=new Map(installed.map(row=>[row.machineId,canonicalHash(row)]));if(!membership.members.every(row=>installedById.get(row.machineId)===canonicalHash(row)))throw new Error('owned-custody-installed-roster-mismatch');
  syncOwnedGraphIdentityDurably(identity,identities);
@@ -55,7 +54,8 @@ export function openPublishedOwnedGraphCustody(options:{stateDir:string;agentId:
  const databasePath=path.join(stateDir,'conversation-graph','custody.sqlite'),bearerToken=crypto.randomBytes(32).toString('base64url');let opened:GraphWitnessService|undefined;
  try{
   return store.openDatabase(genesis.members,local.machineId,databasePath,fresh=>{
-   if(fresh&&(canonicalHash(membership)!==canonicalHash(genesis)||canonicalHash(ordered(installed))!==canonicalHash(ordered(genesis.members))))throw new Error('owned-custody-genesis-roster-mismatch');
+   // Genesis may name fewer machines than are paired, because the owner chose them. Each one it names must be installed under its signed keys, which is checked above.
+   if(fresh&&canonicalHash(membership)!==canonicalHash(genesis))throw new Error('owned-custody-genesis-roster-mismatch');
    const service=new DurableGraphWitnessService({databasePath,witnessId:membership.witnessId,failureDomain:membership.failureDomain,signingPrivateKey:options.rolePrivateKey,ownedHost:{machineId:local.machineId,signingPublicKey:identity.getSigningPublicKeyPem(local.machineId)!},installedFailureDomains:[profile.failureDomain],enrollments:{[agentId]:{ownerPublicKey,bearerToken}},historicalWitnessPublicKeys:options.historicalWitnessPublicKeys});opened=service;
    if(fresh)service.registerMembership(genesis);
    else if(canonicalHash(service.membershipProof(agentId,1))!==canonicalHash(genesis)||canonicalHash(service.membershipProof(agentId,membership.epoch))!==canonicalHash(membership))throw new Error('owned-custody-database-profile-mismatch');

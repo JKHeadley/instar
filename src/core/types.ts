@@ -2786,6 +2786,8 @@ export interface MultiMachineConfig {
      * enablement alone does not expose even an opt-in read API. */
     readEnabled?: boolean;
     correctionsEnabled?: boolean;
+    /** Machine ids to sign when the graph is first created. Absent means every paired machine. Has no effect afterwards. */
+    genesisMembers?: string[];
     storage?: { enabled: boolean; /** Resource budget only; per-record/proof wire caps remain fixed. Default 32 MiB. */ stagingDiskQuotaBytes?: number };
     agentId?: string;
     membership?: import('./GraphMembershipTypes.js').GraphMembershipEpoch;

@@ -39,7 +39,7 @@ import {canonicalHash,canonicalJson,signGraphRecord} from '../../src/core/GraphW
 import {signGraphAuthorizationReceipt} from '../../src/core/ConversationGraphReplicationProof.js';
 const managers:ConversationGraphDefault[]=[],servers:Server[]=[],journals:CoherenceJournal[]=[];
 afterEach(async()=>{for(const server of servers.splice(0)){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}for(const manager of managers.splice(0))await manager.close();for(const journal of journals.splice(0))journal.close();});
-async function fixture(){return setupGraphDefaultNativePeers({track:{managers,servers,journals}});}
+async function fixture(genesisMembers?:()=>readonly string[]|undefined){return setupGraphDefaultNativePeers({track:{managers,servers,journals},genesisMembers});}
 describe('owned default across actual registered native peers',()=>{
  it('blocks encoded raw signing through both actual peer and local custody dispatch after negative role evidence',async()=>{
   const f=await fixture(),[host,follower]=f.defaults;await host.ensureOwner({principalKey:'owner:echo',authenticationMethod:'owner-dashboard',requestId:'raw-custody-owner-visit',isCurrent:()=>true});await follower.ensureOwner({principalKey:'owner:echo',authenticationMethod:'owner-dashboard',requestId:'raw-custody-peer-visit',isCurrent:()=>true});
@@ -59,6 +59,32 @@ describe('owned default across actual registered native peers',()=>{
   const runtime=host.runtime!,actuation=runtime.actuation(),eventId='default-owned-placement',operationKey='graph-event:'+eventId,core={schemaVersion:1,eventId,op:'set-primary-placement',subject:{kind:'conversation',platform:'telegram',chatId:'-1001',topicId:42},parent:null,relation:null,replacesPlacementEventIds:[],authority:'owner',principal:'owner:echo',receipt:{kind:'owner-proof',id:'default-owner-accepted-request'},machineId:runtime.machineId,createdAt:new Date().toISOString()},receipt=signGraphAuthorizationReceipt({v:1,agentId:'echo',eventId:operationKey,coreHash:canonicalHash(core),actorPrincipal:'owner:echo',authenticationMethod:'owner-dashboard',receiptId:core.receipt.id,membershipEpoch:membership.epoch,leaseEpoch:actuation.lease.leaseEpoch,idempotencyKey:'default-owned-placement-request',writerId:runtime.machineId,fencedLeaseHash:canonicalHash(actuation.originalLease),acceptedAt:core.createdAt},hostIdentity.loadSigningKey());
   const result=await runtime.withSourceMutation(token=>runtime.submitPrepared({coreType:'graph-event',idempotencyKey:receipt.idempotencyKey,requestHash:canonicalHash({ownerRequest:'placement'}),core,authorizationProof:{receipt,membership,...actuation},plaintextSource:Buffer.from('owner application source')},token));expect(result.state).toBe('committed');expect(peer.source.status(operationKey).state).toBe('committed');expect(runtime.source.allCommitProofDelivered(operationKey)).toBe(true);expect(peer.source.allCommitProofDelivered(operationKey)).toBe(true);
   expect(f.native.service.inventory('echo','z'.repeat(43)).manifest.entries).toHaveLength(0); // Legacy external fixture was never a dependency.
+ });
+ it('signs only the chosen machines at genesis, and the rest neither stop them nor start a graph of their own',async()=>{
+  let chosen:readonly string[]|undefined;const f=await fixture(()=>chosen),ids=f.native.managers.map(manager=>manager.loadIdentity().machineId);
+  const owner=(requestId:string)=>({principalKey:'owner:echo',authenticationMethod:'owner-dashboard' as const,requestId,isCurrent:()=>true});
+  // A machine left out refuses to start a graph, and says why through the existing not-joined signal.
+  chosen=[ids[1]];await expect(f.defaults[0].ensureOwner(owner('left-out-genesis'))).rejects.toThrow();expect(f.defaults[0].awaitingJoin).toBe(true);expect(f.defaults[0].runtime).toBeNull();
+  // A chosen machine that is not actually paired is refused rather than silently dropped.
+  chosen=[ids[0],ids[1],'m_not_paired'];await expect(f.defaults[0].ensureOwner(owner('unknown-genesis'))).rejects.toThrow();expect(f.defaults[0].runtime).toBeNull();
+  const newcomerDir=fs.mkdtempSync(path.join(os.tmpdir(),'graph-left-out-')),newcomer=new MachineIdentityManager(newcomerDir);await newcomer.generateIdentity({role:'standby'});const identity=newcomer.loadIdentity();
+  try{
+   for(const options of f.native.options){const manager=new MachineIdentityManager(options.stateDir);new IdentityStore({stateDir:manager.baseDir}).apply({identity,scope:'remote',actor:'pairing-trust',path:'pair'});manager.registerMachine(identity,'standby');}
+   chosen=[ids[0],ids[1]];
+   for(let i=0;i<2;i++){f.apps[i].use(express.json({limit:'64kb'}));f.apps[i].use(createConversationGraphDefaultSurface({manager:f.defaults[i],stateDir:f.native.options[i].stateDir,readEnabled:true,correctionsEnabled:true,scope:f.native.options[i].scopeVerifier!,telegramChatId:'-1001',pairing:null,verifyDashboardOwner:token=>token==='actual-fixture-owner',dashboardPolicy:()=>({pin:'fixture-owner-policy',generation:'11111111-1111-4111-8111-111111111111'}),forceFileKey:true}));}
+   const ownerHeaders={'X-Instar-Operator-Session':'actual-fixture-owner','content-type':'application/json'},requestId='chosen-genesis-create',response=await fetch(f.origins[1]+'/conversation-graph/changes',{method:'POST',headers:ownerHeaders,body:JSON.stringify({requestId,change:{kind:'create-effort',projectScope:['instar']}})}),first=await response.json();expect([200,202],JSON.stringify(first)).toContain(response.status);
+   await f.defaults[0].runtime!.reconcilePending();await f.defaults[1].runtime!.reconcilePending();
+   const status=await (await fetch(f.origins[1]+'/conversation-graph/changes/'+requestId,{headers:ownerHeaders})).json();expect(status.state,JSON.stringify(status)).toBe('committed');
+   expect(f.defaults[1].runtime!.installedMembership.members.map(member=>member.machineId).sort()).toEqual([...ids].sort());expect(f.defaults[1].unjoinedMachines()).toEqual([identity.machineId]);
+   // After genesis the choice no longer matters: signed membership decides.
+   chosen=undefined;expect(f.defaults[1].unjoinedMachines()).toEqual([identity.machineId]);expect(f.defaults[1].runtime!.installedMembership.members).toHaveLength(2);
+  }finally{SafeFsExecutor.safeRmSync(newcomerDir,{recursive:true,force:true,operation:'tests/integration/graph-default-peers:left-out'});}
+ });
+ it('never starts a second graph when two machines disagree about the chosen list',async()=>{
+  let chosen:readonly string[]|undefined;const f=await fixture(()=>chosen),ids=f.native.managers.map(manager=>manager.loadIdentity().machineId),owner=(requestId:string)=>({principalKey:'owner:echo',authenticationMethod:'owner-dashboard' as const,requestId,isCurrent:()=>true});
+  chosen=[ids[0]];const first=await f.defaults[0].ensureOwner(owner('first-root'));expect(first.installedMembership.members.map(member=>member.machineId)).toEqual([ids[0]]);
+  chosen=[ids[1]];await expect(f.defaults[1].ensureOwner(owner('second-root'))).rejects.toThrow();expect(f.defaults[1].runtime).toBeNull();
+  expect(fs.existsSync(path.join(f.native.options[1].stateDir,'conversation-graph','custody.sqlite'))).toBe(false);
  });
  it('keeps the signed members working when a new machine is paired after genesis, and does not wait on it',async()=>{
   const f=await fixture();for(let i=0;i<2;i++){f.apps[i].use(express.json({limit:'64kb'}));f.apps[i].use(createConversationGraphDefaultSurface({manager:f.defaults[i],stateDir:f.native.options[i].stateDir,readEnabled:true,correctionsEnabled:true,scope:f.native.options[i].scopeVerifier!,telegramChatId:'-1001',pairing:null,verifyDashboardOwner:token=>token==='actual-fixture-owner',dashboardPolicy:()=>({pin:'fixture-owner-policy',generation:'11111111-1111-4111-8111-111111111111'}),forceFileKey:true}));}
