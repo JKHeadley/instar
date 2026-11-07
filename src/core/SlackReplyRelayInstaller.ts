@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
+  // Before JSON encoding avoided Bash here-string temporary files (owner live proof).
+  'f16111eb9d39140c59199608fb040e9638033675e7029abf35cba559a9723dde',
   // Every historical repository-shipped template before the session-bound
   // neutral relay (PR #1518). Append-only: hashes are overwrite authority.
   '1813442032e435e4ecbf01467510e39a33c3feb3acb1407307c5569a65f30305',
@@ -25,6 +27,8 @@ export const PRIOR_SHIPPED_SLACK_RELAY_SHA256 = new Set([
   '973691e6e54b7c0426d53679493b530ac72ed50364c526bff4fb1e44a1ba3342',
   // Shipped by cloud-key recovery (#2762) after this PR's earlier main merge.
   '4b3d610d88e7566dd6390721f97c697dcc533bf9e9b6d3731750d225f8c2986f',
+  // Before the tone-reaction flags (attribution live test, 2026-11-06).
+  '6321bf5ffd90842a05056e754c4b93c580a9f02a5f176bd0641fdbf6d7a2c23c',
 ]);
 
 export interface SlackRelayInstallResult {

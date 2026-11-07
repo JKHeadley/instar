@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "maturation-quality-bars",
+  "sessionId": "68ef8ff5-cdce-439a-831c-8d5caddcc7e3",
+  "timestamp": "2026-11-06T00:25:14.425Z",
+  "artifactPath": "upgrades/side-effects/maturation-quality-bars.md",
+  "artifactSha256": "bf1bf87911bf39a6e9ad8bf31299eb3f1ee88c2b08a0b28c60c54c7992962ae8",
+  "coveredFiles": [
+    "docs/specs/maturation-quality-bars.eli16.md",
+    "src/data/feature-ladders.json",
+    "src/monitoring/MaturationLadder.ts",
+    "tests/unit/MaturationLadder.test.ts",
+    "upgrades/next/maturation-quality-bars.md",
+    "upgrades/side-effects/maturation-quality-bars.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Registry data plus one read-only rung derivation; a revert fully undoes it; no blocking authority added",
+  "eli16Path": "docs/specs/maturation-quality-bars.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/maturation-quality-bars.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

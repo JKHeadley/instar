@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "lifecycle-e2e-lastrun",
+  "sessionId": "782160d7-9201-47d5-82b4-002d7130a32d",
+  "timestamp": "2026-11-05T23:45:37.873Z",
+  "artifactPath": "upgrades/side-effects/lifecycle-e2e-lastrun.md",
+  "artifactSha256": "0ef2b72407d738c888d6df07fdecbee221b8bf76cd84e9fcb782a4ce5ffa10c3",
+  "coveredFiles": [
+    "docs/specs/lifecycle-e2e-lastrun.eli16.md",
+    "tests/e2e/lifecycle.test.ts",
+    "upgrades/next/lifecycle-e2e-lastrun.md",
+    "upgrades/side-effects/lifecycle-e2e-lastrun.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only fixture isolation fix in one e2e file; a revert fully undoes it",
+  "eli16Path": "docs/specs/lifecycle-e2e-lastrun.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lifecycle-e2e-lastrun.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

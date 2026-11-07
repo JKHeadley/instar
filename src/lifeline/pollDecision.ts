@@ -71,6 +71,23 @@ export function decidePollAction(i: PollDecisionInputs): PollAction {
   return 'hold';
 }
 
+/**
+ * How long a 409 still counts as evidence that another machine is polling. A 409 only
+ * arrives while this machine polls, so once it stops the count is memory, not evidence.
+ * Two minutes is twice the longest 409 backoff (60s), so a live conflict always lands a
+ * fresh 409 inside the window.
+ */
+export const RECENT_409_WINDOW_MS = 120_000;
+
+/**
+ * Is there fresh 409 evidence of another poller? A count with no recent 409 is stale: a
+ * machine that got 409s, then stood by, would otherwise never start polling again when it
+ * regains the lease, because only a successful poll resets the count (2026-11-06 drill).
+ */
+export function hasRecent409(i: { consecutive409s: number; last409AtMs: number; nowMs: number }): boolean {
+  return i.consecutive409s > 0 && i.nowMs - i.last409AtMs < RECENT_409_WINDOW_MS;
+}
+
 /** How long a held boot waits for the lease's opinion before polling as it always did. */
 export const BOOT_POLL_HOLD_MAX_MS = 180_000;
 

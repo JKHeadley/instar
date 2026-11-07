@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "mobile-native-session-controls",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T04:03:24.871Z",
+  "artifactPath": "upgrades/side-effects/mobile-native-session-controls.md",
+  "artifactSha256": "7eefe1d153d6b09c2356dc22b92ff1b711c8f306f020b52eece488d1900dbc9b",
+  "specPath": "docs/specs/mobile-native-session-controls.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-06T04-00-49-364Z-mobile-native-session-controls.json",
+    ".instar/instar-dev-traces/2026-11-06T04-00-17-264Z-mobile-native-session-controls-bbdacdd3.json",
+    "src/core/PostUpdateMigrator.ts",
+    "tests/unit/mobile-session-controls-claudemd.test.ts",
+    "upgrades/side-effects/mobile-native-session-controls.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Same Tier 2 change: moves its CLAUDE.md bullet so the console pages bullet keeps its place",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -61,6 +61,54 @@ async function unlock(h: Harness, pin = '123456') {
 }
 const text = (h: Harness) => h.doc.body.textContent ?? '';
 
+describe('Approve on the code page (mobile-pairing-approve §3.3)', () => {
+  const approvals = (canApprove: boolean, row = WAITING) => () => json(200, { approval: 'dashboard', approvals: [{ ...row, canApprove }] });
+  const buttons = (h: Harness) => [...h.doc.querySelectorAll('button')];
+
+  it('no new PIN prompt: the one unlock shows Approve, the key condition and the code', async () => {
+    const h = boot();
+    h.answers['GET /mobile/pairing-approvals'] = approvals(true);
+    await unlock(h);
+    expect(h.calls.filter((c) => c.url === '/dashboard/unlock')).toHaveLength(1);
+    expect(buttons(h).some((b) => b.textContent === 'Approve this phone')).toBe(true);
+    expect(text(h)).toContain('the key matches the one the app shows');
+    expect(text(h)).toContain('KITE-4172');
+  });
+
+  it('a tap posts with the session, draws the phone no more, and leaves the code for an older app', async () => {
+    const h = boot();
+    h.answers['GET /mobile/pairing-approvals'] = approvals(true);
+    h.answers['POST /mobile/pairing-approvals/dev-1/approve'] = () => json(200, { status: 'active', deviceId: 'dev-1' });
+    await unlock(h);
+    buttons(h).find((b) => b.textContent === 'Approve this phone')!.click();
+    await flush();
+    const call = h.calls.find((c) => c.url === '/mobile/pairing-approvals/dev-1/approve')!;
+    expect(call.method).toBe('POST');
+    expect(call.headers['X-Instar-Operator-Session']).toBe('ops');
+    // The card is gone; the code stays readable for a shipped app's code box.
+    expect(text(h)).toContain('Approved. That phone is paired. If the app still shows a code box, type KITE-4172 to finish.');
+    expect(h.doc.querySelector('.pair-card')).toBeNull();
+  });
+
+  it('a refusal shows its own reason and the session stays', async () => {
+    const h = boot();
+    h.answers['GET /mobile/pairing-approvals'] = approvals(true);
+    h.answers['POST /mobile/pairing-approvals/dev-1/approve'] = () => json(409, { error: 'another-phone-waiting', detail: 'Another phone is also waiting to pair, so nothing was approved.' });
+    await unlock(h);
+    buttons(h).find((b) => b.textContent === 'Approve this phone')!.click();
+    await flush();
+    expect(text(h)).toContain('Another phone is also waiting to pair');
+    expect(h.doc.getElementById('pair-pin-input')).toBeNull();
+  });
+
+  it('no Approve button when the agent cannot use it: the page reads as it did', async () => {
+    const h = boot();
+    await unlock(h);
+    expect(buttons(h).some((b) => b.textContent === 'Approve this phone')).toBe(false);
+    expect(text(h)).toContain('The app shows the same key');
+  });
+});
+
 describe('pair-model', () => {
   it('reads the device only from a well-formed fragment', () => {
     expect(deviceFromHash('#d=dev-1')).toBe('dev-1');

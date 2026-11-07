@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "mobile-pairing-approve",
+  "sessionId": "ae0d2305-6c8f-443a-a23d-9c020ecac27c",
+  "timestamp": "2026-11-05T20:17:54.382Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-approve.md",
+  "artifactSha256": "c5dff783989fe1b221b236351b384369da14e2a41e6e3726fca090f3db1f3239",
+  "specPath": "docs/specs/mobile-pairing-approve.md",
+  "coveredFiles": [
+    "dashboard-pair/pair.js",
+    "dashboard/phones.js",
+    "docs/specs/mobile-pairing-approve.eli16.md",
+    "docs/specs/mobile-pairing-approve.md",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/integration/mobile-pairing-approve.test.ts",
+    "tests/unit/dashboard-pair-page.test.ts",
+    "tests/unit/mobile-pairing-approve.test.ts",
+    "upgrades/next/mobile-pairing-approve.md",
+    "upgrades/side-effects/mobile-pairing-approve.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Keeps the code readable after Approve so shipped apps finish; same Tier 2 change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

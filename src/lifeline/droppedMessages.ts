@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/lifeline/droppedMessages.ts');
 /**
  * droppedMessages — persistence + user-visible notification for messages
  * the lifeline could not deliver to the server.
@@ -205,7 +207,7 @@ export async function notifyMessageDropped(args: NotifyMessageDroppedArgs): Prom
 
   try {
     await withTimeout(
-      Promise.resolve(args.sendToTopic(args.topicId, buildNotice(textPreview))),
+      Promise.resolve(withNotificationEnvelope(stampNotification(), async () => (args)!.sendToTopic(args.topicId, buildNotice(textPreview)))),
       NOTICE_SEND_TIMEOUT_MS,
       'sendToTopic notice',
     );

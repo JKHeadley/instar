@@ -26,7 +26,7 @@
  *                here can only cause a refusal, never an unintended merge.
  */
 
-import { extractRulesetReviewPolicy, parseCodeowners, codeOwnedFiles } from '../../scripts/local-verify-floor.mjs';
+import { extractRulesetReviewPolicy, parseCodeowners, codeOwnedFiles, codeOwnerApprovedAtHead } from '../../scripts/local-verify-floor.mjs';
 import { independentReviewProblem, isTracePath } from '../../scripts/lib/instar-dev-trace.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -399,7 +399,19 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       if (r.code !== 0) return unverifiable;
       const changed = r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
       const files = codeOwnedFiles(changed, rules);
-      return { touches: files.length > 0, files, protectedFiles: changed.filter((f) => diffTouchesProtected([f])), unverifiable: false };
+      // GitHub leaves reviewDecision empty for a ruleset's code-owner review, so an empty
+      // decision is answered from the reviews. A read failure leaves the PR waiting.
+      let ownerApproved = false;
+      if (files.length > 0 && !pr.reviewDecision) {
+        const rv = await exec(['api', `repos/${opts.repo}/pulls/${pr.number}/reviews`, '--paginate', '--jq', '.[] | {login: .user.login, state, commitId: .commit_id, submittedAt: .submitted_at}']);
+        if (rv.code === 0) {
+          try {
+            const reviews = rv.stdout.split('\n').map((s) => s.trim()).filter(Boolean).map((l) => JSON.parse(l));
+            ownerApproved = codeOwnerApprovedAtHead({ reviewDecision: pr.reviewDecision, files: changed, rules, reviews, headSha: pr.headRefOid });
+          } catch { /* @silent-fallback-ok: unparseable reviews count as no approval; the PR keeps waiting and GitHub enforces the rule */ ownerApproved = false; }
+        }
+      }
+      return { touches: files.length > 0, files, protectedFiles: changed.filter((f) => diffTouchesProtected([f])), unverifiable: false, ...(ownerApproved ? { ownerApproved: true } : {}) };
     },
     independentReviewAtHead: async (pr: PrSummary, flaggedPaths: string[]): Promise<IndependentReviewVerdict> => {
       // The changed files that are trace files (added or modified), read AT THE HEAD, so a

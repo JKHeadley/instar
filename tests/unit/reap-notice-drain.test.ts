@@ -82,6 +82,16 @@ describe('ReapNoticeDrain — delivery + hold release', () => {
     expect(again.sent).toBe(0);
   });
 
+  it('retires a quiet receipt without claiming Telegram delivery or retrying', async () => {
+    enqueueNotice('quiet', 42);
+    const records: unknown[] = []; const send = vi.fn().mockResolvedValue({ delivered: false, recorded: true, quietId: 'quiet-id', topicId: 42 });
+    const drain = new ReapNoticeDrain({ store, sendToTopic: send, recordNotify: row => records.push(row), bootId: 'boot-test' });
+    expect((await drain.tick()).sent).toBe(0);
+    expect(records).toEqual([{ noticeId: 'quiet', topicId: 42, outcome: 'quiet-recorded', detail: 'quiet-id' }]);
+    expect(store.findByDeliveryId(buildReapNotifyDeliveryId('quiet'))?.state).toBe('quiet-recorded');
+    await drain.tick(); expect(send).toHaveBeenCalledOnce();
+  });
+
   it('honors the release hold: a held notice is not sent until next_attempt_at passes', async () => {
     const { drain, sent, advance, nowAt } = makeDrain();
     enqueueNotice('held', 7, new Date(nowAt() + 3600_000).toISOString());

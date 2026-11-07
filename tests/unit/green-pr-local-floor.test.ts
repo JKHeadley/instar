@@ -630,4 +630,14 @@ describe('merge line hand-off (CMT-980): tick({ handoff })', () => {
     expect(h.runCalls).toHaveLength(0);
     expect(h.audits.some((a) => a.event === 'waiting' && a.class === 'code-owner-review' && a.pr === 100)).toBe(true);
   });
+
+  it('a code-owned PR the owner approved at this head goes on to merge, though GitHub gave no decision', async () => {
+    const h = harness(two());
+    h.deps.codeOwnedPaths = async (p) => (p.number === 100 ? { touches: true, files: ['docs/STANDARDS-REGISTRY.md'], unverifiable: false, ownerApproved: true } : { touches: false, files: [], unverifiable: false });
+    const w = new GreenPrAutoMerger(h.deps, cfg);
+    w.attachLocalVerify(hook({ records: both }).lv);
+    await w.tick({ handoff: { pr: 100, head: 'sha100' } });
+    expect(h.runCalls).toHaveLength(1);
+    expect(h.audits.some((a) => a.class === 'code-owner-review' && a.pr === 100)).toBe(false);
+  });
 });

@@ -29,6 +29,17 @@ export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
 
 /** Fields shared across ALL agent types and contexts (init + migration) */
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  notifications: {
+    selectivity: {
+      dryRun: true,
+      push: { categories: {} },
+      digest: {
+        enabled: false,
+        cadence: 'daily',
+      },
+      quietStore: { retentionDays: 30, maxEntries: 20000 },
+    },
+  },
   // Native operator desktop access is a privileged full-machine capability.
   // Every new and existing agent stays dark until a deliberate local opt-in;
   // production also requires the developmentAgent role and live host checks.
@@ -257,18 +268,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     missingLoginSession: {
       dryRun: true,
     },
-    // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
-    // for an autonomous run gone silent-to-user while its output is still moving.
-    // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
-    // developmentAgent (dogfood), DARK on the fleet (GET /autonomous-heartbeat
-    // 503s). NEVER hardcode `enabled: false` here (it would dark dev agents too).
-    // `dryRun: true` holds it to "would emit" logging (same cooldown/budget gates
-    // as live, no per-tick flood) until the dev soak proves it quiet. The
-    // threshold/tick/backoff defaults live in the component; persisting only
-    // dryRun keeps applyDefaults() add-missing-only. Spec:
-    // docs/specs/autonomous-progress-heartbeat.md.
+    // Legacy heartbeat settings retained for existing config compatibility.
+    // server.ts now makes autonomous-run reporting live on every machine and
+    // ignores the old enabled/dryRun/cap switches. The tick and recent-output
+    // window remain tuning inputs; output only changes truthful wording.
     autonomousHeartbeat: {
-      dryRun: true,
+      tickIntervalMs: 60_000,
+      recentOutputChangeWindowMs: 300_000,
     },
     // Periodic Goal Re-Alignment Phase 1 ("see it"). DEV-GATED: enabled is
     // deliberately omitted so it runs on the development agent and stays dark
@@ -2061,6 +2067,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       sweepIntervalMs: 21_600_000,
       dryRun: true,
     },
+    // promise-review-and-priority: the agent reviews its own open promises.
+    // `enabled` DELIBERATELY OMITTED — resolved by the developmentAgent gate
+    // (live on dev, dark on the fleet). Closures ship in shadow
+    // (closureDryRun) until the maturation ladder graduates them.
+    promiseReview: {
+      closureDryRun: true,
+      batchSize: 30,
+      maxClosuresPerRun: 15,
+      maxClosuresPerDay: 60,
+      rereviewAfterDays: 7,
+      highRereviewAfterDays: 1,
+      reopenWindowDays: 30,
+    },
     agentOwnedFollowthrough: {
       dryRun: true,
       // externalBlockWindowMs / externalBlockCeilingMs / externalBlockSweepMs:
@@ -2168,6 +2187,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     spawnFailureBreakerThreshold: 3,      // §10.4 N (attributable failures)
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
+  },
+  // Attribution paper trail (docs/specs/attribution-paper-trail.md). `enabled` is deliberately
+  // OMITTED so resolveDevAgentGate decides at runtime: live on a dev agent, dark on the fleet.
+  // Registered in DEV_GATED_FEATURES. `record` refuses nothing and the hook does not wait;
+  // `enforce` stays opt-in, because an update never adds a restriction to an existing agent.
+  attribution: {
+    mode: 'record',
   },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
   // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is

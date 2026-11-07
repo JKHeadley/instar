@@ -43,7 +43,7 @@ function ctx(): RouteContext {
       // the full downstream user-routing/spawn path in this wiring test.
       dispatchAgentMessageHook: async () => true,
       getSessionForTopic: () => null,
-      sendToTopic: async () => {},
+      sendToTopic: async () => { return { messageId: 1, topicId: 1 }; },
     } as any,
     scheduler: null, relationships: null, feedback: null, dispatches: null,
     updateChecker: null, autoUpdater: null, autoDispatcher: null, quotaTracker: null,

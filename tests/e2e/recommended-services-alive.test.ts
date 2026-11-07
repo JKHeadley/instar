@@ -28,7 +28,7 @@ const signer: MachineSigner = {
 const AUTH = 'e2e-token';
 const PIN = '123456';
 
-function boot(withLedger: boolean) {
+function boot(withLedger: boolean, extra: Record<string, unknown> = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'rec-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -37,7 +37,7 @@ function boot(withLedger: boolean) {
   const config = {
     projectName: 'rec-e2e', projectDir: dir, stateDir, port: 0, host: '127.0.0.1', version: '0.0.0', authToken: AUTH, dashboardPin: PIN,
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5000 },
-    scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {},
+    scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, ...extra,
   } as unknown as InstarConfig;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
@@ -111,6 +111,22 @@ describe('recommended services: production wiring', () => {
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('no-recipe');
+  });
+
+  it('an agent proving the Tailscale recipe (a throwaway under a temp folder) reaches it through the real wiring, and only it', async () => {
+    const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.status).toBe(200);
+    expect(list.body.offersLive).toBe(false);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale']);
+    // The recipe is wired: verify gets past "no-recipe" and stops at the missing yes.
+    const verify = await request(app).post('/recommended-services/tailscale/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(verify.status).toBe(409);
+    expect(verify.body.error).toBe('not-granted-here');
+    const key = await request(app).post('/recommended-services/tailscale/key')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('tskey-auth-example');
+    expect(key.status).toBe(409);
   });
 
   it('refuses to surface a retired offer', async () => {

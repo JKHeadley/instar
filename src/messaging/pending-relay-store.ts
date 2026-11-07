@@ -52,6 +52,7 @@ const FAR_FUTURE_HOLD_CLAMP_MS = 7 * 24 * 60 * 60 * 1000;
 export type DeliveryState =
   | 'queued'
   | 'claimed'
+  | 'quiet-recorded'
   | 'delivered-recovered'
   | 'delivered-tone-gated'
   | 'delivered-ambiguous'

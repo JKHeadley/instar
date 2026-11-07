@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-06T10:48:35.183Z",
+  "slug": "promise-review-and-priority",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 21,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/WriteDomainRegistry.ts",
+      "src/monitoring/PromiseReview.ts",
+      "src/scaffold/templates/jobs/instar/promise-review.md"
+    ],
+    "addedLines": 16,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

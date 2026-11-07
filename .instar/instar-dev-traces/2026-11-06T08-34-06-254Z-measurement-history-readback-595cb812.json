@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "measurement-history-readback",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T08:34:06.254Z",
+  "artifactPath": "upgrades/side-effects/measurement-history-readback.md",
+  "artifactSha256": "49db3a2774fcdba1ff2735dcc469b4388d3f493fec2d6751d341570f875306a1",
+  "coveredFiles": [
+    "docs/specs/measurement-history-readback.eli16.md",
+    "docs/specs/measurement-history-readback.md",
+    "src/monitoring/BlockerLifecycleService.ts",
+    "src/server/routes.ts",
+    "tests/e2e/blocker-throughput-count-alive.test.ts",
+    "tests/integration/blocker-throughput-pool-routes.test.ts",
+    "tests/unit/BlockerLifecycleService-ladderHooks.test.ts",
+    "upgrades/next/measurement-history-readback.md",
+    "upgrades/side-effects/measurement-history-readback.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible existing read-only projection and optional peer schema precision; no new state owner, promotion or ordinary-service blocking authority. Larger diff consists mainly of meaningful regression/lifecycle tests and release documentation.",
+  "eli16Path": "docs/specs/measurement-history-readback.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-history-readback.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-06T16:41:36.653Z",
+  "slug": "delivery-notice-scan-quiet",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2819
+    ],
+    "notes": "The durable exception scanner used a shared callback that initiated one topic notice for each historical reply without new conversational authority. PR2819 quiets this producer only in enforcing mode; it does not change the scanner and was absent from the reported running version. The fix removes egress from scan reconciliation while preserving live failure reporting."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The only remaining notice send is the existing one-shot live failure callback for an original conversational send. The historical self-triggered scan is changed to a strictly record-only operation with zero notify actions, including repeated scans and restart; no controller, retry, spawn or recovery loop is added. Live reporting also requires the existing local session producer capability, so historical holder submissions remain record-only."
+  },
+  "verdict": "pass"
+}

@@ -1,3 +1,9 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/server/AgentServer.ts');
+const stampSpendNotification = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
+import { requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
+import { decisionQualityMachineSegment } from '../core/decisionQualityTypes.js';
+import { readMeasurementTargets } from './measurementCoverageRead.js';
 /**
  * Agent Server — HTTP server wrapping Express.
  *
@@ -8,6 +14,7 @@
  * WebSocket connections for real-time terminal streaming.
  */
 
+import { computeOwnLastingEndpoints } from '../core/MeshUrlAdvertiser.js';
 import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
@@ -21,6 +28,7 @@ import { createHash, createHmac, timingSafeEqual, createPrivateKey, createPublic
 import { ApprovalLedger } from '../core/ApprovalLedger.js';
 import { resolveMeshBindHost } from '../core/MeshUrlAdvertiser.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { JobCostReport } from '../scheduler/JobCostReport.js';
 import { mountJobCostRoutes } from './jobCostRoutes.js';
 import { JobTriageStateStore } from '../scheduler/JobTriageStateStore.js';
@@ -137,6 +145,7 @@ import { createWorktreeRoutes, createOidcWorktreeRoutes } from './worktreeRoutes
 import { registerRemediationProposalsRoutes } from './routes/remediation-proposals.js';
 import { registerProvenanceRoutes } from './routes/provenance.js';
 import { CanonicalIdentityManager } from '../identity/IdentityManager.js';
+import { IdentityManager as ThreadlineIdentityManager } from '../threadline/client/IdentityManager.js';
 import { FileSeenNonceStore } from '../core/aspNonceStore.js';
 import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
@@ -189,14 +198,17 @@ import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, reso
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
+import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
+import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { createMobileMediaRouter } from './mobileMediaRoutes.js';
 import { createMobileSessionRouter } from './mobileSessionRoutes.js';
 import { createMobileSessionTerminalRouter, peerRowsMatch, PEER_LOOKUP_MAX, PEER_LOOKUP_TIMEOUT_MS, type PeerLookup } from './mobileSessionTerminalRoutes.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
+import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
@@ -287,8 +299,11 @@ import { SpendAlertResolver, buildStalePriceAlert } from '../core/SpendAlertReso
 import { SpendAlertDispatcher } from '../core/SpendAlertDispatcher.js';
 import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/TelegramSpendTopicChannel.js';
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
-import { MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
+import { isRegistryEntryActive, MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
 import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionStore.js';
+import { activeOwnerPhone } from './mobileConsoleTicket.js';
+import { isOwnerPresenceEnabled } from './mobileOwnerPresenceRoutes.js';
+import { PhoneDesktopSessionStore } from './PhoneDesktopSessionStore.js';
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
 import { verifyDesktopOperatorAssertion, type DesktopOperatorAssertion } from '../core/DesktopOperatorAssertion.js';
 import { signRequest } from './machineAuth.js';
@@ -352,6 +367,7 @@ import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/Me
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
 import { bridgeNativeHealToDegradation } from '../monitoring/NativeHealDegradationBridge.js';
+import { failureReplicationEmitter, type FailureReplicaReader } from '../core/FailureCalloutReplicatedStore.js';
 import { CLASS_REVIEW_STORE_KEY, buildClassReviewRecordData } from '../core/ClassReviewReplicatedStore.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { DarkFlagMaturationRegistry } from '../monitoring/DarkFlagMaturationRegistry.js';
@@ -452,8 +468,11 @@ export class AgentServer {
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
+  /** Desktop-only sessions the owner's phone mints with Face ID (docs/specs/mobile-owner-presence-pin.md §2.1). */
+  private readonly phoneDesktopSessions = new PhoneDesktopSessionStore();
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
   private dashboardPinVersion: string | null = null;
 
@@ -461,6 +480,8 @@ export class AgentServer {
     const version = createHash('sha256').update(this.config.dashboardPin ?? '').digest('hex');
     if (this.dashboardPinVersion !== null && this.dashboardPinVersion !== version) {
       this.dashboardOperatorSessions.clear();
+      // A new PIN ends every "a human is here" proof, the phone's desktop sessions included.
+      this.phoneDesktopSessions.clear();
     }
     this.dashboardPinVersion = version;
   }
@@ -468,6 +489,18 @@ export class AgentServer {
   private verifyDashboardOperatorSession(token: string | undefined): boolean {
     this.syncDashboardPinVersion();
     return this.dashboardOperatorSessions.verify(token);
+  }
+
+  /**
+   * The desktop routes' check, and ONLY theirs (mobile-owner-presence-pin §2.1): a dashboard operator
+   * session, or a live phone desktop session whose phone is still an active owner phone right now.
+   */
+  private verifyDesktopOperatorSession(token: string | undefined): boolean {
+    if (this.verifyDashboardOperatorSession(token)) return true;
+    const svc = this.mobilePairing;
+    // Turning the switch off ends phone sessions at once, not after their 15 minutes.
+    if (!svc || !isOwnerPresenceEnabled(this.config)) return false;
+    return this.phoneDesktopSessions.verify(token, (deviceId) => activeOwnerPhone(svc, deviceId)) !== null;
   }
   /** multi-transport-mesh-comms (Layer 0.5) — see the bind site in start(). */
   private meshBindActive: boolean;
@@ -816,6 +849,8 @@ export class AgentServer {
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
+  setFailureReplicaReader(reader: FailureReplicaReader | null): void { this.correctionLedger?.setFailureReplicaReader(reader); }
+
   setClassReviewRemoteReader(reader: import('../monitoring/ClassReviewStore.js').ClassReviewRemoteReader | null): void {
     this.classReviewStore?.setRemoteReader(reader);
   }
@@ -1722,12 +1757,17 @@ export class AgentServer {
           feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
         }),
-      ownerDM: async (text, declineData) => {
+      ownerDM: async (text, declineData, approveData) => {
         if (!options.telegram) return null;
-        return options.telegram.sendOwnerDMWithButton(text, declineData ? { text: 'Decline', data: declineData } : null);
+        return options.telegram.sendOwnerDMWithButton(text, [
+          ...(approveData ? [{ text: 'Approve', data: approveData }] : []),
+          ...(declineData ? [{ text: 'Decline', data: declineData }] : []),
+        ]);
       },
       // Without a Telegram owner, pairing codes are confirmed on the dashboard (mobile-native-conversations §4.4).
       telegramOwnerPresent: () => !!options.telegram?.getOwnerUserId?.(),
+      // mobile-pairing-introducer §3.2: this agent's own identity, read fresh per signing.
+      readIdentity: () => { const id = new ThreadlineIdentityManager(options.config.stateDir).get(); return id ? { publicKey: id.publicKey, privateKey: id.privateKey } : null; },
       // People and roles: the Telegram owner id decides which registry profile is the owner.
       telegramOwnerId: () => { const id = options.telegram?.getOwnerUserId?.(); return typeof id === 'number' ? id : null; },
       // The same namespace the app conversation store stamps (people and roles §5).
@@ -1785,6 +1825,11 @@ export class AgentServer {
       mp.push.start();
       if (options.telegram) {
         options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+        options.telegram.mobileApproveHandler = (nonce) => {
+          const outcome = mp.approveByNonce(nonce);
+          return outcome === 'approved' ? { outcome, text: '' }
+            : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? 'This pairing has already ended.' : APPROVE_REFUSAL[outcome].detail };
+        };
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
       }
@@ -1957,12 +2002,16 @@ export class AgentServer {
         onReplyMarker: options.onReplyMarker,
         peerEndpointRecorder: options.peerEndpointRecorder,
         getSelfMeshEndpoints: options.getSelfMeshEndpoints,
+        getFreshLastingEndpoints: () => computeOwnLastingEndpoints(options.config),
         identityReannounce: options.identityReannounce,
         getTelegramHandoverSource: () => {
           const entry = options.config.messaging?.find((m) => m.type === 'telegram' && m.enabled !== false);
-          const { token, chatId } = (entry?.config ?? {}) as { token?: unknown; chatId?: unknown };
+          const { token, chatId, authorizedUserIds, ownerUserId, promptGate } = (entry?.config ?? {}) as {
+            token?: unknown; chatId?: unknown; authorizedUserIds?: Array<number | string>; ownerUserId?: number | string;
+            promptGate?: { ownerId?: number | string };
+          };
           return typeof token === 'string' && token && chatId !== undefined && chatId !== null
-            ? { botToken: token, chatId: String(chatId) }
+            ? { botToken: token, chatId: String(chatId), authorizedUserIds, ownerUserId: ownerUserId ?? promptGate?.ownerId }
             : null;
         },
         getIdentityRecoveryBearerToken: () => resolveDevAgentGate(options.config.multiMachine?.identityReannounce?.enabled, options.config)
@@ -2021,6 +2070,7 @@ export class AgentServer {
       },
       this.mobilePairing ? deviceAuthenticator(this.mobilePairing) : undefined,
       options.memoryPrivacy ? (token) => options.memoryPrivacy!.sessionForToken(token) : undefined,
+      options.memoryPrivacy ? (session) => options.memoryPrivacy!.noteSessionReply(session.sessionId) : undefined,
     ));
     // Per-path request-timeout overrides for LLM-backed / third-party routes
     // (outbound messaging + the standards-conformance gate). The map and its
@@ -2049,7 +2099,7 @@ export class AgentServer {
     }).multiMachine?.accountFollowMe?.remoteScrapeTimeoutMs;
     this.app.use(requestTimeout(
       options.config.requestTimeoutMs,
-      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs }),
+      buildRequestTimeoutOverrides({ paritySourceTotalTimeoutMs, followMeRemoteScrapeTimeoutMs, defaultTimeoutMs: options.config.requestTimeoutMs }),
     ));
 
     // ── Token Ledger ──────────────────────────────────────────────────
@@ -2545,8 +2595,8 @@ export class AgentServer {
             const channel = new TelegramSpendTopicChannel({
               resolver: this.spendAlertResolver,
               sendToTopic: async (topicId, text) => {
-                await tgC.sendToTopic(topicId, text);
-                return true;
+                const result = await withNotificationEnvelope(stampSpendNotification(), async () => (tgC)!.sendToTopic(topicId, text));
+                return 'recorded' in result && result.recorded ? result : true;
               },
               lifelineTopicId: () => tgC.getLifelineTopicId(),
               // Money-critical kinds ride the durable relay when the store opens
@@ -2554,6 +2604,8 @@ export class AgentServer {
               // DeliveryFailureSentinel drains this store). Opened lazily,
               // per-agent-id isolated, degrade-to-direct-send on ANY failure.
               enqueueDurable: (topicId, text) => {
+                // The mandatory origin outbox owns durable gated delivery; preserve its typed receipt.
+                if (tgC.selectivity?.isEnforcing()) return false;
                 try {
                   this.spendAlertRelayStore ??= SpendAlertRelayStore.open(options.config.projectName, options.config.stateDir);
                   const store = this.spendAlertRelayStore;
@@ -2562,6 +2614,7 @@ export class AgentServer {
                     delivery_id: id,
                     topic_id: topicId,
                     text_hash: id,
+                    message_metadata: JSON.stringify({ messageKind: 'automated', senderClass: 'script' }),
                     text,
                     http_code: 0,
                     attempted_port: options.config.port ?? 0,
@@ -3079,7 +3132,7 @@ export class AgentServer {
           { publicKey: Buffer.from(identity.signingPublicKey, 'base64'),
             sign: payload => Buffer.from(signMachinePayload(payload, privateKey), 'base64') },
           (topicId, uid) => this.topicOperatorStore?.getOperator(topicId)?.uid === uid,
-          (token, browserPublicKey) => this.verifyDashboardOperatorSession(token)
+          (token, browserPublicKey) => this.verifyDesktopOperatorSession(token)
             || this.desktopDelegatedSessions.verify(token, browserPublicKey),
           async (topicId, text) => {
             const uid = this.topicOperatorStore?.getOperator(topicId)?.uid;
@@ -3146,7 +3199,7 @@ export class AgentServer {
           signingKeyPem: options.localSigningKeyPem || options.coordinator.managers.identityManager.loadSigningKey(),
           peers: options.resolvePeerUrls,
           recordRopeResult: options.recordRopeResult,
-          verifyFrontSession: token => this.verifyDashboardOperatorSession(token),
+          verifyFrontSession: token => this.verifyDesktopOperatorSession(token),
           onForget: requestId => this.wsManager?.closeDesktopMeshRequest(requestId),
         });
       } catch (error) {
@@ -3597,7 +3650,7 @@ export class AgentServer {
               raiseAttention: async (item) => {
                 const enqueue = this.telegramAdapter?.createAttentionItem;
                 if (!enqueue) throw new Error('durable attention enqueue unavailable');
-                await enqueue.call(this.telegramAdapter, item);
+                return enqueue.call(this.telegramAdapter, item);
               },
               tunnelUrl: () => options.tunnel?.url ?? null,
               paceTicks: this.queuePaceTickLog(options.config),
@@ -4033,16 +4086,15 @@ export class AgentServer {
       this.revertDetector = null;
     }
 
-    // Correction & Preference Learning Sentinel (docs/specs/CORRECTION-PREFERENCE-
-    // LEARNING-SENTINEL-SPEC.md) — Slice 1b ledger. Ships OFF; constructed only
-    // when enabled (else the inline /corrections routes 503-stub via the null
-    // ledger). SIGNAL-ONLY — never blocks/rewrites an outbound message. Own
-    // try/catch so a failure here can never cascade into other init.
+    // Shared correction ledger: serious-failure forensics are default-on;
+    // preference learning/promotion remains separately opt-in. Turning off
+    // both leaves /corrections unavailable. SIGNAL-ONLY: never blocks messages.
     try {
-      if (options.config.monitoring?.correctionLearning?.enabled === true && options.config.stateDir) {
+      if (options.config.stateDir && (resolveCorrectionLearningMode(options.config).captureEnabled || fs.existsSync(path.join(options.config.stateDir, 'correction-ledger.db')))) {
         this.correctionLedger = new CorrectionLedger({
           dbPath: path.join(options.config.stateDir, 'correction-ledger.db'),
         });
+        if (options.replicatedRecordEmitter) this.correctionLedger.setFailureReplicationEmitter(failureReplicationEmitter(options.replicatedRecordEmitter));
       }
     } catch (err) {
       console.warn('[instar] correction-learning ledger init failed (non-fatal):', err);
@@ -5244,8 +5296,8 @@ export class AgentServer {
           },
           notifyFailure: async (state, message) => {
             if (!options.telegram) return false;
-            await options.telegram.sendToTopic(state.topicId, message, { provenance: 'automation' });
-            return true;
+            const sent = await withNotificationEnvelope(stampNotification(), async () => (options.telegram)!.sendToTopic(state.topicId, message, { provenance: 'automation' }));
+            return 'recorded' in sent && sent.recorded ? sent : true;
           },
           notificationAlreadyDelivered: (state, marker) => {
             if (!options.telegram) return false;
@@ -5304,13 +5356,13 @@ export class AgentServer {
           },
           deliverSynthesis: async ({ state, text, reportId, dueAt }) => {
             if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
-            const result = await options.telegram.sendToTopic(state.topicId, text, { provenance: 'automation' });
-            return { messageId: result.messageId };
+            const result = await withNotificationEnvelope(stampNotification(), async () => (options.telegram)!.sendToTopic(state.topicId, text, { provenance: 'automation' }));
+            return 'recorded' in result && result.recorded ? result : { messageId: requireTelegramDelivery(result).messageId };
           },
           notifyFailure: async (state, message) => {
             if (!options.telegram) throw new Error('window-run-cadence-telegram-unavailable');
-            const result = await options.telegram.sendToTopic(state.topicId, message, { provenance: 'automation' });
-            return { messageId: result.messageId };
+            const result = await withNotificationEnvelope(stampNotification(), async () => (options.telegram)!.sendToTopic(state.topicId, message, { provenance: 'automation' }));
+            return 'recorded' in result && result.recorded ? result : { messageId: requireTelegramDelivery(result).messageId };
           },
           findDeliveredFailureNotification: (topicId, notificationId) => {
             const marker = `W32 cadence failure receipt: ${notificationId}`;
@@ -5378,6 +5430,8 @@ export class AgentServer {
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionRelogin: options.subscriptionRelogin ?? null,
       verifyDashboardOperatorSession: (token: string | undefined) => this.verifyDashboardOperatorSession(token),
+      verifyDesktopOperatorSession: (token: string | undefined) => this.verifyDesktopOperatorSession(token),
+      phoneDesktopSessions: this.phoneDesktopSessions,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
       subscriptionEmailBinding: options.subscriptionEmailBinding,
       subscriptionEmailBarrier: options.subscriptionEmailBarrier,
@@ -5831,6 +5885,10 @@ export class AgentServer {
       startTime: this.startTime,
     };
     this.routeContext = routeCtx;
+    routeCtx.blockerLifecycleService?.setMeasurementReaders({
+      targets:()=>readMeasurementTargets(routeCtx),
+      decisionCohorts:requests=>this.featureMetricsLedger?.decisionMeasurementCohorts(requests.map(r=>({...r,machineSegment:decisionQualityMachineSegment(this.meshSelfId)})))??null,
+    });
     if (this.blockerLifecycleService) {
       this.blockerLifecycleService.registerMaturationProjection('feedback-factory.completed-runs', () => {
         const run = this.feedbackDrain?.service.stats().lastRun;
@@ -6027,7 +6085,10 @@ export class AgentServer {
       },
     });
     routeCtx.desktopSetupTarget = this.desktopSetupTarget;
+    this.attribution = this.createAttribution(options, routeCtx);
+    routeCtx.attribution = this.attribution;
     const routes = createRoutes(routeCtx);
+    this.attribution?.start();
     // Runs the LLM-free check-in reminder pass with no session. The first tick
     // waits one interval: Telegram may not be up yet at this point in boot.
     const checkInReminderTicker = routeCtx.checkInReminderTicker;
@@ -6046,6 +6107,22 @@ export class AgentServer {
         listSessions: () => options.state.listSessions(),
         captureOutputAsync: (tmux, lines) => options.sessionManager.captureOutputAsync(tmux, lines),
         sendInput: (tmux, text) => options.sessionManager.sendInput(tmux, text),
+        sendKey: (tmux, key) => options.sessionManager.sendKey(tmux, key),
+        allowRemoteInput: () => this.poolStreamAllowRemoteInput,
+        // The hop to another machine (docs/specs/mobile-native-session-controls.md). Only a listed peer, with the pool token.
+        relayToPeer: async (machineId, method, path, body) => {
+          const peer = (routeCtx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+          if (!peer) return null;
+          try {
+            const r = await poolPeerFetch(routeCtx.recordRopeResult ?? undefined, peer, path, {
+              method,
+              headers: { Authorization: `Bearer ${options.config.authToken}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+              ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+              signal: AbortSignal.timeout(method === 'GET' ? 8000 : 30_000),
+            });
+            return { status: r.status, body: await r.json().catch(() => null) }; // @silent-fallback-ok — an unreadable body is what an older machine's unknown route gives, handled by the caller
+          } catch { return null; } // @silent-fallback-ok — not answering is the caller's plain reason
+        },
         lookupPeers: async (name) => {
           const peers = routeCtx.resolvePeerUrls?.() ?? [];
           const asked = peers.slice(0, PEER_LOOKUP_MAX);
@@ -6184,7 +6261,7 @@ export class AgentServer {
         raiseAttention: item => telegram.createAttentionItem(item),
         clearAttention: (conditionKey, resolution) => telegram.clearAttentionCondition({ conditionKey }, resolution),
         sendAutomationReply: options.jobAnomalySendAutomationReply,
-        sendDeterministicTopic: (topicId, message) => telegram.sendToTopic(topicId, message, { provenance: 'automation' }),
+        sendDeterministicTopic: (topicId, message) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, message, { provenance: 'automation' })),
         createPrivateView: options.viewer ? (title, markdown) => ({ id: options.viewer!.create(title, markdown).id }) : undefined,
         viewTunnelUrl: viewId => buildViewTunnelUrl(options.tunnel, options.config.authToken, viewId),
         ensureJobTopic: job => scheduler.ensureJobTopic(job),
@@ -6393,7 +6470,7 @@ export class AgentServer {
       const telegram = options.telegram;
       const watchdog = new PreparingRunWatchdog({
         store: new AutonomousRunStore(options.config.stateDir),
-        notify: telegramTopicNotifier((topic, text) => telegram.sendToTopic(topic, text, { provenance: 'automation' })),
+        notify: telegramTopicNotifier((topic, text) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topic, text, { provenance: 'automation' }))),
         boundRuns: () => (windowRunLivenessAuthority?.status().states ?? [])
           .filter(state => !['stalled', 'failed', 'closed'].includes(state.status))
           .map(state => ({ topicId: String(state.topicId), runId: state.autonomousRunId, boundAt: state.registeredAt })),
@@ -6465,6 +6542,17 @@ export class AgentServer {
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        // The owner's phone opens a Slack file from the machine that holds it (mobile-remote-media).
+        ownerAdmission: (req) => mobileOwnerDeviceAdmission(this.mobilePairing!, req),
+        bearerOk: (req) => holderBearerOk(req, options.config.authToken),
+        holderMedia: buildMediaHolderStream({
+          peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+          allowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+          token: () => options.config.authToken,
+          selfMachineId: () => this.appConversations?.deps.machineId() ?? 'local',
+          record: routeCtx.recordRopeResult ?? undefined,
+        }),
         // A Slack file downloads only through the machine whose registry minted the conversation (§4.9).
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
@@ -7711,13 +7799,13 @@ export class AgentServer {
               fromBotId: cfg.botToken ? cfg.botToken.split(':')[0] : undefined,
               toBotId: cfg.menteeBotId,
               telegramBot: telegramBot
-                ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
+                ? { sendToTopic: async (t, txt) => requireTelegramDelivery(await withNotificationEnvelope(stampNotification(), async () => (telegramBot)!.sendToTopic(t, txt))) }
                 : undefined,
               botToken: cfg.botToken,
               visibleEcho: {
                 enabled: cfg.visibleEcho !== false,
                 bot: telegramBot
-                  ? { sendToTopic: (t, txt) => telegramBot.sendToTopic(t, txt) }
+                  ? { sendToTopic: async (t, txt) => withNotificationEnvelope(stampNotification(), async () => (telegramBot)!.sendToTopic(t, txt)) }
                   : undefined,
                 topicId: resolveMentorDeliveryTopic(cfg),
                 roleTag: '[mentor]',
@@ -7959,6 +8047,7 @@ export class AgentServer {
           poolStreamAllowRemoteInput: this.poolStreamAllowRemoteInput,
           poolStreamConnector: this.poolStreamConnector,
           selfMachineId: this.meshSelfId,
+          sessionPresentationSources: () => ({ ...this.routeContext!, stateDir: this.config.stateDir }),
           resolveSessionPlatform: (tmuxSession) =>
             resolveSessionPlatform(tmuxSession, this.telegramAdapter, this.slackAdapter),
         });
@@ -8041,7 +8130,7 @@ export class AgentServer {
               const burnAlertDelivery = telegram && typeof (telegram as { sendToTopic?: unknown }).sendToTopic === 'function'
                 && typeof (telegram as { createAttentionItem?: unknown }).createAttentionItem === 'function'
                 ? new BurnAlertDelivery({
-                    sendToTopic: (topicId, text) => telegram.sendToTopic(topicId, text),
+                    sendToTopic: (topicId, text) => withNotificationEnvelope(stampSpendNotification(), async () => (telegram)!.sendToTopic(topicId, text)),
                     raiseAttention: (item) => telegram.createAttentionItem(item),
                     hasAttentionItem: (id) => telegram.getAttentionItem(id) !== undefined,
                     stateFile: this.config.stateDir
@@ -8396,7 +8485,49 @@ export class AgentServer {
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
+  /** Attribution paper trail: built only when the dev-agent gate resolves it on. Null means every route 503s. */
+  private createAttribution(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): AttributionRuntime | null {
+    const config = options.config;
+    if (!config.stateDir || !resolveDevAgentGate(config.attribution?.enabled, config)) return null;
+    const readLive = (): AttributionConfig | undefined => options.liveConfig?.get?.<AttributionConfig | undefined>('attribution', undefined) ?? config.attribution;
+    let users: UserManager | null = null;
+    return new AttributionRuntime({
+      stateDir: config.stateDir,
+      projectDir: config.projectDir,
+      machineId: options.meshSelfId ?? 'local',
+      machineName: options.meshSelfId ?? 'local',
+      intelligence: options.intelligence,
+      config: readLive,
+      isEnabled: () => resolveDevAgentGate(readLive()?.enabled, config),
+      users: () => {
+        try { return users ??= new UserManager(config.stateDir, config.users); } catch { /* @silent-fallback-ok — no users file names nobody, which reads identity-unverified */ return null; }
+      },
+      topicMemory: () => routeCtx.topicMemory ?? null,
+      threadLog: () => routeCtx.threadLog ?? null,
+      appStore: () => routeCtx.appConversations?.store ?? null,
+      configuredOwnerUid: () => routeCtx.telegram?.getOwnerUserId?.() ?? config.monitoring?.promptGate?.ownerId,
+      slackOwnerUserId: () => config.mobilePairing?.slackOwnerUserId ?? null,
+      peers: () => (options.resolvePeerUrls?.() ?? []).filter((peer) => !!peer.url),
+      registeredMachines: () => {
+        try {
+          const identity = new MachineIdentityManager(config.stateDir);
+          const self = identity.loadIdentity().machineId;
+          return Object.entries(identity.loadRegistry().machines ?? {})
+            .filter(([id, entry]) => id !== self && isRegistryEntryActive(entry))
+            .map(([id]) => id);
+        } catch {
+          // @silent-fallback-ok — a machine with no identity has no registered siblings to ask.
+          return [];
+        }
+      },
+      authToken: () => config.authToken,
+      recordRope: options.recordRopeResult,
+      holdsLease: () => { try { return options.coordinator?.enabled ? options.coordinator.holdsLease() : true; } catch { /* @silent-fallback-ok — unsure of the lease means the audit waits for the next look */ return false; } },
+    });
+  }
+
   async stop(): Promise<void> {
+    this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
@@ -8992,8 +9123,8 @@ export class AgentServer {
         return t.topicId;
       },
       sendToTopic: async (topicId, text) => {
-        await tg.sendToTopic(topicId, text);
-        return true;
+        const sent = await withNotificationEnvelope(stampSpendNotification(), async () => (tg)!.sendToTopic(topicId, text));
+        return 'recorded' in sent && sent.recorded ? sent : true;
       },
       lifelineTopicId: () => tg.getLifelineTopicId(),
     });

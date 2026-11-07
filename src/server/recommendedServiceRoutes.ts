@@ -9,7 +9,7 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
-import { recipeFor, type VerifyResult } from '../recommended/recipes.js';
+import { recipeFor, type RecipeDeps, type VerifyResult } from '../recommended/recipes.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
@@ -50,6 +50,8 @@ export interface RecommendedServiceRouteDeps {
   readSecret: (name: string) => string | null;
   port: number;
   fetch?: typeof fetch;
+  /** Tests supply Tailscale's answer; real servers let the recipe ask the program on this machine. */
+  tailscaleStatus?: RecipeDeps['tailscaleStatus'];
   /** Hands over the check to run once sessions can start, and on a timer after that. */
   onReady?: (reconcile: () => Promise<void>) => void;
   /** Tests supply a row with a recipe, since no real service has one yet. */
@@ -136,7 +138,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (before?.sessionName && deps.isSetupRunning(before.sessionName)) return;
     starting.add(row.id);
     try {
-      const preflight = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch });
+      const preflight = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus });
       if (!hasGrant(row.id) || preflight.result === 'unknown') return;
       // The check takes a moment, and a stop can land in it.
       if (readSetupStates(deps.stateDir)[row.id]?.held) return;
@@ -431,7 +433,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     try {
-      const outcome = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch });
+      const outcome = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus });
       // A no can land during the call. It wins, and nothing is recorded.
       if (!ledger.activeGrant(row.id, ledger.machineId())) {
         res.status(409).json({ error: 'not-granted-here' });
@@ -463,6 +465,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(409).json({ error: 'not-granted-here' });
       return;
     }
+    const secretName = recipe.secretName;
+    if (!secretName) {
+      // Tailscale's sign-in is the person's own tap. A recipe that keeps no secret accepts none.
+      res.status(409).json({ error: 'no-secret-for-this-service' });
+      return;
+    }
     // Plain text, parsed by its own route-level parser: a JSON slip here would put part of the key in a parse-error log.
     const value = typeof req.body === 'string' ? req.body.trim() : '';
     if (!value || value.length > 4096 || /[\s\p{Cc}]/u.test(value)) {
@@ -473,11 +481,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       // Live features may read a key that was already here, so a setup session never replaces one. It
       // may correct its own, until that key has passed.
       const state = readSetupStates(deps.stateDir)[row.id];
-      if (deps.readSecret(recipe.secretName) && (!state?.keyStoredBySetup || state.verified?.result === 'pass')) {
+      if (deps.readSecret(secretName) && (!state?.keyStoredBySetup || state.verified?.result === 'pass')) {
         res.status(409).json({ error: 'already-held' });
         return;
       }
-      deps.writeSecret(recipe.secretName, value);
+      deps.writeSecret(secretName, value);
       updateSetupState(deps.stateDir, row.id, { keyStoredBySetup: true });
     } catch (err) {
       report(`Store the key for ${row.id}`, err, 'The key was not saved.');

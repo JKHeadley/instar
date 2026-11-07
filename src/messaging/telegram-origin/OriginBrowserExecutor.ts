@@ -1,3 +1,4 @@
+import { notificationContext } from '../NotificationSelectivityGate.js';
 import { sealOriginAdmission } from './OriginAdmissionSeal.js';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { assertOutgoingPayloadVisible } from '../invisible-payload.js';
@@ -111,7 +112,7 @@ export class OriginBrowserExecutor {
     });
     children[0].request.policy = service.currentSendPolicyInput(original.text);
     children[0].requestDigest = wireDigest(canonicalOrigin(children[0].request));
-    const unsigned = { ...producer, schemaVersion: 'instar-telegram-origin-v1' as const,
+    const unsigned = { ...producer, notification: service.notificationForCurrentProducer(), schemaVersion: 'instar-telegram-origin-v1' as const,
       executionOwnerMachineId: service.options.identity.originMachineId,
       originId, operationId, deliveryId: operationId, createdAt: now, operationKind: method,
       destination, contentDigest, planDigest: originDigest(children), display };
@@ -130,7 +131,18 @@ export class OriginBrowserExecutor {
     return operation;
   }
   async send(input: OriginBrowserInput): Promise<{ originId: string; receipts: BrowserReceipt[] }> {
-    const operation = this.prepare(input);
+    const notification = this.options.service.notificationForCurrentProducer();
+    const target = input.messageId === undefined ? this.options.service.notificationGate?.destination?.(notification) : null;
+    let operation: OriginPreparedBotOperation;
+    if (target) {
+      const destination: BrowserDestination = target.chatId.startsWith('-100') ? { kind: 'channel', id: target.chatId.slice(4), topicId: target.topicId }
+        : target.chatId.startsWith('-') ? { kind: 'chat', id: target.chatId.slice(1), topicId: target.topicId }
+        : { kind: 'user', id: target.chatId, topicId: target.topicId };
+      const peer = await this.broker.resolvePeer(destination);
+      const originalChat = input.destination.kind === 'channel' ? '-100' + input.destination.id : input.destination.kind === 'chat' ? '-' + input.destination.id : input.destination.id;
+      const contextTopicId = this.options.service.notificationTopicId(originalChat, input.destination.topicId === undefined ? null : String(input.destination.topicId));
+      operation = notificationContext.run({ ...notification, contextTopicId }, () => this.prepare({ ...input, destination, peer }));
+    } else operation = this.prepare(input);
     await this.options.service.bindRevision(operation);
     await this.options.service.admit(operation);
     return this.execute(operation);
@@ -148,6 +160,7 @@ export class OriginBrowserExecutor {
       stored.operation?.operationId !== operation.record.operationId || operation.record.destination.accountId !== this.options.accountId) {
       throw new TelegramOriginHoldError('sealed-browser-plan-mismatch', operation.record.operationId);
     }
+    await this.options.service.classifyPreparedNotification(operation, stored);
     if (stored.children.some(child => child.state !== 'accepted')) await this.options.service.reviewPreparedSendPolicy(operation);
     const receipts: BrowserReceipt[] = [];
     let platformAccepted = stored.children.some(child => child.state === 'accepted');
@@ -212,6 +225,7 @@ export class OriginBrowserExecutor {
       throw error;
     }
     await this.options.service.completePreparedContent(operation);
+    this.options.service.completeNotification(operation.record);
     return { originId: operation.record.originId, receipts };
   }
   close(): Promise<void> { return this.broker.close(); }

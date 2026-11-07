@@ -68,6 +68,8 @@ describe('owner phone Slack holder read — production wiring', () => {
 
     const pairing = server.mobilePairing!;
     expect(pairing.nativeOn).toBe(true);
+    // Production boot must supply the real revocation authority the shared admission requires.
+    expect(pairing.keyLedger).not.toBeNull();
     const dev = makeDevice();
     const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
     if (!c.ok) throw new Error('setup');

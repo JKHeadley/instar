@@ -882,6 +882,16 @@ export interface JobSchedulerConfig {
 
 // ── User Management ─────────────────────────────────────────────────
 
+/** Attribution paper trail settings (docs/specs/attribution-paper-trail.md section 6). */
+export interface AttributionConfig {
+  enabled?: boolean;
+  mode?: 'record' | 'enforce';
+  /** Extra notes in scope, confined to roots under the agent home. Lanes are opt-in here. */
+  paths?: string[];
+  /** Date ranges whose records are known to be missing. A ref inside one is `unverifiable`. */
+  recordGaps?: Array<{ from: string; to: string }>;
+}
+
 export interface UserProfile {
   id: string;
   name: string;
@@ -1474,6 +1484,7 @@ export type SkipReason =
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
   | 'script-cap'      // job-cost-reduction F8: 3 scripts already running on this server (retried in 1 min)
+  | 'definition-changed' // The job's definition changed while its gate ran; the next fire uses the new one
   | 'gate';           // Gate command returned non-zero (nothing to do)
 
 /**
@@ -2655,7 +2666,12 @@ export interface LeaseSelfHealConfig {
    * self-fence stays armed otherwise. DARK + opt-in; no-op when no preferred
    * machine is set. Spec: docs/specs/multi-transport-mesh-comms.md.
    */
-  soloCaptainHold?: { enabled?: boolean };
+  /**
+   * `requireLastingLink`, `pairRole` and `pairedWith` are written only at a first pairing. Until a machine has
+   * proved a connection to its peer that survives a restart, the inviter serves as it always did
+   * and the joiner never takes the lease (session-pool-takeover-at-pairing).
+   */
+  soloCaptainHold?: { enabled?: boolean; requireLastingLink?: boolean; pairRole?: 'inviter' | 'joiner'; pairedWith?: string };
   /**
    * U4.4 (docs/specs/u4-4-lease-handback.md) — the reconciler for the F4
    * preference: after a failover, the serving lease is handed BACK to the
@@ -3634,6 +3650,12 @@ export interface InstarConfig {
   /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
   memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
+   * Attribution paper trail (docs/specs/attribution-paper-trail.md). `enabled` is omitted so
+   * resolveDevAgentGate decides: live on a development agent, dark on the fleet. `mode` defaults to
+   * `record`, which never refuses anything; `enforce` is opt-in for every existing agent.
+   */
+  attribution?: AttributionConfig;
+  /**
    * message-origin-all-platforms §5: the agent-wide origin display bits for an agent with no
    * enabled Telegram entry (with one, the Telegram entry's messageOrigin.display is the setting),
    * and the operator exception for the Slack recording refusal (§3). Absent ⇒ shown, fail-closed.
@@ -3774,6 +3796,17 @@ export interface InstarConfig {
       enabled?: boolean;
       maxAgeDays?: number;
       dryRun?: boolean;
+    };
+    /** promise-review-and-priority — `enabled` omitted ⇒ developmentAgent gate. */
+    promiseReview?: {
+      enabled?: boolean;
+      closureDryRun?: boolean;
+      batchSize?: number;
+      maxClosuresPerRun?: number;
+      maxClosuresPerDay?: number;
+      rereviewAfterDays?: number;
+      highRereviewAfterDays?: number;
+      reopenWindowDays?: number;
     };
     agentOwnedFollowthrough?: {
       enabled?: boolean;
@@ -4022,6 +4055,8 @@ export interface InstarConfig {
      * `enabled` omitted ⇒ on wherever mobile pairing is on. Read live.
      */
     consoleTicket?: { enabled?: boolean };
+    /** Approve a waiting phone without a code (docs/specs/mobile-pairing-approve.md). Omitted ⇒ on wherever pairing is on; `false` keeps only the code. Read live. */
+    approve?: { enabled?: boolean };
     /**
      * Face ID-confirmed permission writes from the owner's phone (docs/specs/mobile-native-permissions.md).
      * `enabled` omitted ⇒ live on a development agent, dark on the fleet (DEV_GATED_FEATURES). Read live.
@@ -6276,6 +6311,7 @@ export interface ResolvedAutonomyState {
 }
 
 export interface NotificationPreferences {
+  selectivity?: import('../messaging/NotificationSelectivityGate.js').SelectivityConfig;
   /** How evolution notifications are batched */
   evolutionDigest?: 'immediate' | 'hourly' | 'daily';
   /** Whether to surface trust elevation suggestions */
@@ -6711,31 +6747,20 @@ export interface MonitoringConfig {
      */
     wakeGraceMaxMs?: number;
   };
-  /**
-   * AutonomousProgressHeartbeat — a hedged, change-gated, sparse liveness
-   * BACKSTOP that posts ONE purely-observational line when an autonomous run
-   * has gone silent on the user for a long stretch while its terminal output is
-   * STILL changing. NOT the suppressed PromiseBeacon §B1 filler — it fires only
-   * on a LONG user-silence gate AND a corroborated recent output change (read
-   * from ActiveWorkSilenceSentinel's already-computed snapshot), with a
-   * per-topic cooldown + a widening per-run backoff + hard cap + the shared
-   * one-voice lease. Signal-only; never gates.
-   *
-   * `enabled` is DELIBERATELY OPTIONAL (dev-gate convention): omitted from
-   * ConfigDefaults so resolveDevAgentGate decides — LIVE on a development agent,
-   * DARK on the fleet (GET /autonomous-heartbeat 503s). `dryRun` defaults true.
-   * Spec: docs/specs/autonomous-progress-heartbeat.md.
-   */
+  /** Autonomous-run reporting on every machine. Legacy switches are kept in
+   * the type for config compatibility; server.ts ignores enabled, dryRun,
+   * silenceThresholdMinutes and maxHeartbeatsPerRun so old fleet-dark config
+   * cannot silence the reporting invariant. */
   autonomousHeartbeat?: {
-    /** Dev-gate convention: omit to let resolveDevAgentGate decide. */
+    /** Legacy switch; ignored for autonomous-run reporting. */
     enabled?: boolean;
-    /** Log the intended heartbeat instead of sending (default: true). */
+    /** Legacy switch; ignored for autonomous-run reporting. */
     dryRun?: boolean;
     /** User-silence gate, minutes (default 25; floor-clamped to ~5). */
     silenceThresholdMinutes?: number;
     /** Check cadence, ms (default 60_000; floor-clamped to ~30_000). */
     tickIntervalMs?: number;
-    /** Hard per-run heartbeat cap (default 6). */
+    /** Legacy cap; ignored for autonomous-run reporting. */
     maxHeartbeatsPerRun?: number;
     /** How recently the shared snapshot's lastOutputAt must have advanced (default 300_000). */
     recentOutputChangeWindowMs?: number;
@@ -7671,6 +7696,12 @@ export interface MonitoringConfig {
       ciMaxRunsPerTick?: number;
     };
   };
+  /** Serious user-called-out failures retain scrubbed context and receive
+   * bounded investigation by default. Independent of preference promotion. */
+  failureCallouts?: {
+    /** Default true. False disables failure-context retention and investigation. */
+    enabled?: boolean;
+  };
   /**
    * Correction & Preference Learning Sentinel
    * (docs/specs/CORRECTION-PREFERENCE-LEARNING-SENTINEL-SPEC.md). Ships OFF.
@@ -7681,7 +7712,7 @@ export interface MonitoringConfig {
    * distill → ledger → recurrence-gate loop that writes via `recordPreference()`.
    */
   correctionLearning?: {
-    /** Master kill switch (default: false). Gates the loop AND the read route. */
+    /** Preference-learning switch (default false). Failure callouts use their own switch. */
     enabled: boolean;
     /**
      * Self-Violation Signal extension (default: false). Ships DARK behind BOTH

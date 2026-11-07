@@ -1,3 +1,4 @@
+import { isQuietReceipt, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 /**
  * claudeKeyRecovery — what a conversation restarted after a dead sign-in key is told, and how we
  * check it answered (follow-up to spec cloud-key-internal-calls, Part 2; upgrades/side-effects/cloud-key-recovery-reply.md).
@@ -135,7 +136,7 @@ export function buildKeyRecoveryPrompt(channel: RecoveryChannel, held: readonly 
 
 export interface OperatorNoticeRoutes {
   /** Telegram attention topic send, when there is one. Throws on failure. */
-  telegram?: (text: string) => Promise<void>;
+  telegram?: (text: string) => Promise<unknown>;
   slack?: {
     attentionChannel: string | null;
     /** The operators who are members of the channel. Throws when it can't be read. */
@@ -155,16 +156,17 @@ export interface OperatorNoticeRoutes {
  * (2026-11-04 drill: the notice went to an empty channel and the person text said "My operator
  * has been told").
  */
-export async function deliverOperatorNotice(routes: OperatorNoticeRoutes, text: string): Promise<boolean> {
+export async function deliverOperatorNotice(routes: OperatorNoticeRoutes, text: string): Promise<boolean | QuietReceipt> {
   const warn = routes.warn ?? (() => {});
   const why = (err: unknown) => (err instanceof Error ? err.message : String(err));
   let delivered = false;
+  let quiet: QuietReceipt | undefined;
   if (routes.telegram) {
-    try { await routes.telegram(text); delivered = true; }
+    try { const receipt = await routes.telegram(text); if (isQuietReceipt(receipt)) quiet = receipt; else delivered = true; }
     catch (err) { /* @silent-fallback-ok: `delivered` stays false, which drives the retry and its capped report */ warn(`Telegram notice failed: ${why(err)}`); }
   }
   const slack = routes.slack;
-  if (!slack) return delivered;
+  if (!slack) return delivered ? true : quiet ?? false;
   let channelRead = false;
   if (slack.attentionChannel) {
     let readers: string[] | null = null;
@@ -185,7 +187,7 @@ export async function deliverOperatorNotice(routes: OperatorNoticeRoutes, text: 
     try { await slack.directMessage(userId, text); delivered = true; }
     catch (err) { /* @silent-fallback-ok: `delivered` stays false unless another person was reached */ warn(`direct message failed: ${why(err)}`); }
   }
-  return delivered;
+  return delivered ? true : quiet ?? false;
 }
 
 /** Above this many authorized people with no owner or admin among them, nobody is messaged directly. */

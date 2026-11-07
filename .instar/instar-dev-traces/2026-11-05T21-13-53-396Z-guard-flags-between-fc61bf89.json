@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "guard-flags-between",
+  "sessionId": "ae0d2305-6c8f-443a-a23d-9c020ecac27c",
+  "timestamp": "2026-11-05T21:13:53.396Z",
+  "artifactPath": "upgrades/side-effects/guard-flags-between.md",
+  "artifactSha256": "ee8319bc19379443645d66bd6a457b826b81796a36a39736e04d9896e7b76382",
+  "specPath": "docs/specs/guard-flags-between.md",
+  "coveredFiles": [
+    "docs/specs/guard-flags-between.eli16.md",
+    "docs/specs/guard-flags-between.md",
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/templates/hooks/dangerous-command-guard.sh",
+    "tests/unit/dangerous-command-guard-flags-between.test.ts",
+    "upgrades/next/guard-flags-between.md",
+    "upgrades/side-effects/guard-flags-between.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches PostUpdateMigrator hook text, so the risk floor is Tier 2",
+  "secondPass": "Self re-read; behaviour tests on both sides of each form; no outside reviewer",
+  "reviewerConcurred": false,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A guard pattern; no self-action."
+  }
+}

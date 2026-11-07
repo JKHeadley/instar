@@ -1,3 +1,4 @@
+import { assertBrowserMcpProfilesSafe } from './BrowserMcpProfileGuard.js';
 /**
  * Session Manager — spawn and monitor Claude Code sessions via tmux.
  *
@@ -28,6 +29,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
+import { confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -1937,7 +1939,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** Clean up after a session that ran inside the boundary. */
   releaseMemorySession(session: Pick<Session, 'id' | 'memoryScopeDir' | 'memorySettingsPath' | 'memoryAudience'>): void {
     if (!session.memoryScopeDir) return;
-    this.memoryPrivacyWiring?.privacy.revokeSessionTokens(session.id);
+    const privacy = this.memoryPrivacyWiring?.privacy;
+    if (privacy && !privacy.sessionReplied(session.id)) {
+      featureEvidence.record('memoryPrivacy', { kind: 'error', reason: 'session ended with no reply', context: { audience: session.memoryAudience ?? null } });
+    }
+    privacy?.revokeSessionTokens(session.id);
     const op = 'SessionManager.releaseMemorySession';
     if (session.memorySettingsPath) SafeFsExecutor.safeRmSync(session.memorySettingsPath, { force: true, operation: op });
     if (session.memoryAudience === 'none') SafeFsExecutor.safeRmSync(session.memoryScopeDir, { recursive: true, force: true, operation: op });
@@ -4601,6 +4607,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         this.ensurePinnedHomeInteractiveReady(pinnedHome, 'headless pin');
       }
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, headlessFramework, this.originConfigHome(headlessFramework, headlessSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(headlessSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -5044,6 +5051,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       this.defaultHomeFirstRunChecked = true;
       this.ensurePinnedHomeInteractiveReady(process.env.CLAUDE_CONFIG_DIR || null, 'default login');
     }
+    assertBrowserMcpProfilesSafe(resolvedCwd, 'claude-code', this.originConfigHome('claude-code', launchSpec.envOverrides), this.config.projectDir);
     const frameworkEnvFlags: string[] = [];
     for (const [k, v] of Object.entries(launchSpec.envOverrides)) {
       frameworkEnvFlags.push('-e', `${k}=${v}`);
@@ -6323,6 +6331,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
    */
   /** Frameworks whose closed-headless-lane fallback has already been disclosed. */
   private readonly closedHeadlessLaneDisclosed = new Set<string>();
+
+  /** A helper's limit is never evidence that the session serving the topic is
+   * unable to reply. Corroborate the exact main transcript and account home. */
+  confirmSessionUsageLimit(tmuxSession: string): string | false {
+    const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+    if (!session?.claudeSessionId || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
+    if (!configHome) return false;
+    return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
+      framework: 'claude-code', sessionId: session.claudeSessionId,
+      projectDir: session.cwd ?? this.config.projectDir, configHome,
+    }), session.claudeSessionId) ? session.claudeSessionId : false;
+  }
 
   /**
    * Last-modified time of the session's framework transcript, in ms, or null when
@@ -7742,6 +7763,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (resumeReopenFailed && effectiveInitialMessage) {
       effectiveInitialMessage = `${RESUME_REOPEN_FAILED_NOTE}\n\n${effectiveInitialMessage}`;
     }
+    assertBrowserMcpProfilesSafe(options?.cwd ?? this.config.projectDir, framework, effectiveConfigHome, this.config.projectDir);
     const { plan: interactiveThreadline, mcpFlags: interactiveMcpFlags, tag: interactiveTransportTag } =
       this.planInteractiveThreadlineMcp(framework, binaryPath, options); // threadline-mcp-local-http D3
     const launchSpec = buildInteractiveLaunch(framework, {
@@ -9463,7 +9485,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           if (recoveryFiredOnce || recoveryRefusedOnce) {
             console.warn(`[SessionManager] Injection recovery FAILED in "${tmuxSession}" — marker "${marker.slice(0, 30)}…" is still at an idle prompt after the full ladder. The message is NOT delivered; handing off to StuckInputSentinel.`);
             DegradationReporter.getInstance().report({
-              feature: 'SessionManager.verifyInjection',
+              feature: 'SessionManager.verifyInjection.unsubmitted',
               primary: 'Bracketed paste + Enter submits injected message',
               fallback: 'Persistent StuckInputSentinel continues recovery across server restarts',
               reason: 'Marker still at an idle prompt after every in-process recovery rung',
@@ -9484,7 +9506,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
             recoveryRefusedOnce = true;
             console.warn(`[SessionManager] Injection stuck in "${tmuxSession}" and recovery was REFUSED (${fired.reason ?? 'no reason given'}) — marker "${marker.slice(0, 30)}…" is still at the prompt and no key was sent. The message is NOT delivered.`);
             DegradationReporter.getInstance().report({
-              feature: 'SessionManager.verifyInjection',
+              feature: 'SessionManager.verifyInjection.unsubmitted',
               primary: 'Bracketed paste + Enter submits injected message',
               fallback: 'None — the recovery keypress was refused before it was sent',
               reason: `Recovery refused: ${fired.reason ?? 'unknown'}`,

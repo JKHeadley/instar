@@ -43,13 +43,13 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     expect(inp!.bucket).toBe('session-input');
   });
   it('matches only the exact shapes: no other method, no other session route, no traversal', () => {
-    for (const p of ['/sessions/a/output/x', '/sessions/../output', '/sessions//output', '/sessions/a%2fb/output', '/sessions/a/attachments', '/sessions/a/kill', `/sessions/${'a'.repeat(201)}/output`]) {
+    for (const p of ['/sessions/a/output/x', '/sessions/../output', '/sessions//output', '/sessions/a%2fb/output', '/sessions/a/kill', '/mobile/sessions/relay/a/output', '/mobile/sessions/relay/a/input', '/mobile/sessions/relay/a/key', '/mobile/sessions/relay/a/state', `/sessions/${'a'.repeat(201)}/output`]) {
       expect(DEVICE_ALLOWLIST.some((r) => r.re.test(p)), p).toBe(false);
     }
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'GET' && r.re.test('/sessions/a/output'))).toBe(false);
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'POST' && r.re.test('/sessions/a/input'))).toBe(false);
   });
-  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, and permissions screens)', () => {
+  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, permissions screens, and Remote Desktop with Face ID)', () => {
     // Each owner-only rule, named by one request it admits. A new owner-only route adds its line here.
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
@@ -66,6 +66,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/messages'],
       ['GET', '/mobile/insights'],
       ['GET', '/mobile/secrets'],
+      ['GET', '/mobile/health-issues'],
       ['GET', '/mobile/ideas'],
       ['GET', '/mobile/pace'],
       ['GET', '/mobile/development'],
@@ -81,6 +82,40 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/permissions/features/git-backup'],
       ['POST', '/mobile/secrets/requests'],
       ['POST', '/mobile/secrets/requests/abcdef0123456789/cancel'],
+      ['POST', '/mobile/health-issues/choices'],
+      ['POST', '/mobile/health-issues/choices/undo'],
+      // Approve a waiting phone with Face ID (mobile-pairing-approve §3.4).
+      ['GET', '/mobile/pairing-requests'],
+      ['POST', '/mobile/pairing-requests/00000000-0000-4000-8000-000000000000/approve'],
+      ['POST', '/sessions/a/key'],
+      ['POST', '/sessions/a/attachments'],
+      ['GET', '/mobile/sessions/controls'],
+      ['GET', '/mobile/sessions/new-options'],
+      ['GET', '/mobile/sessions/history'],
+      ['POST', '/mobile/sessions/door/134088'],
+      ['POST', '/mobile/sessions/move/134088'],
+      ['POST', '/mobile/sessions/close/a-session-id'],
+      ['POST', '/mobile/sessions/new'],
+      ['POST', '/mobile/sessions/default'],
+      ['POST', '/mobile/attention/tg-1/choice'],
+      // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2).
+      ['GET', '/mobile/introducer'],
+      ['POST', '/mobile/introductions/challenge'],
+      ['POST', '/mobile/introductions'],
+      // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4).
+      ['POST', '/mobile/desktop-unlock/challenge'],
+      ['POST', '/mobile/desktop-unlock'],
+      ['POST', '/mobile/dashboard-pin/challenge'],
+      ['POST', '/mobile/dashboard-pin/reveal'],
+      // The desktop calls the app makes after a Face ID unlock (§2.2).
+      ['GET', '/desktop/targets'],
+      ['GET', '/desktop/setup'],
+      ['GET', '/desktop/setup/m_0123abcd'],
+      ['POST', '/desktop/setup/m_0123abcd'],
+      ['POST', '/desktop/requests'],
+      ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000'],
+      ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000/cursor'],
+      ['POST', '/desktop/requests/00000000-0000-4000-8000-000000000000/ticket'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);

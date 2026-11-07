@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-store-stall",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T01:13:57.733Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-store-stall.md",
+  "artifactSha256": "63d3b07b8025476fc2eaa21df659d0efd0082fef89975be1cfce21014da1ef6b",
+  "coveredFiles": [
+    "docs/specs/telegram-origin-store-stall.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Spec wording only: ladder line uses the accepted not-applicable form",
+  "eli16Path": "docs/specs/telegram-origin-store-stall.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-origin-store-stall.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

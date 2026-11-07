@@ -35,7 +35,9 @@ import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, launchdSe
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The viewer is ready when it offers a request or has already opened the stream. */
-export const VIEWER_READY = '#requestButton:not([disabled]), #control:not([hidden])';
+// Playwright waits on the FIRST element a selector list resolves to. An auto-opened page keeps an
+// enabled but hidden #requestButton ahead of #control, so every alternative must be :visible.
+export const VIEWER_READY = '#requestButton:not([disabled]):visible, #control:visible';
 const LOCK_PY = 'import ctypes; ctypes.CDLL("/System/Library/PrivateFrameworks/login.framework/Versions/Current/login").SACLockScreenImmediate()';
 
 function opt(name, fallback) {
@@ -87,6 +89,20 @@ export function recordPersonStep(o, text, send) {
 }
 
 /** The proof Mac, the proof user, its two agents and the real viewer page. */
+/**
+ * Splits `ps -o pid=,stat=,lstart=,command=` output into live processes and zombies.
+ * A zombie (stat Z) has exited and holds nothing; it lingers only because its parent
+ * has not collected it. With the proof server frozen on purpose (cases 12.1, 12.9) its
+ * typist and guard both became zombies after they finished, and a leftover check that
+ * matched them by pid called them "still running" (live, 2026-11-05 20:43 PST).
+ */
+export function parseProcessList(text) {
+  const rows = text.split('\n')
+    .map(line => line.match(/^\s*(\d+)\s+(\S+)\s+(\w{3} \w{3} +\d+ [\d:]+ \d{4})\s+(.*)$/)).filter(Boolean)
+    .map(m => ({ pid: Number(m[1]), stat: m[2], start: m[3], command: m[4] }));
+  return { live: rows.filter(p => !p.stat.startsWith('Z')), zombies: rows.filter(p => p.stat.startsWith('Z')).map(p => p.pid) };
+}
+
 export class RealTarget {
   constructor(o) {
     this.o = o;
@@ -165,10 +181,9 @@ export class RealTarget {
 
   consoleOwner() { return sh('stat', ['-f', '%Su', '/dev/console']).trim(); }
 
+  /** The proof user's live processes. Zombies are left out: see parseProcessList. */
   processes() {
-    return sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,lstart=,command='], { allowFail: true }).split('\n')
-      .map(line => line.match(/^\s*(\d+)\s+(\w{3} \w{3} +\d+ [\d:]+ \d{4})\s+(.*)$/)).filter(Boolean)
-      .map(m => ({ pid: Number(m[1]), start: m[2], command: m[3] }));
+    return parseProcessList(sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,stat=,lstart=,command='], { allowFail: true })).live;
   }
 
   async snapshot() {
@@ -179,6 +194,7 @@ export class RealTarget {
     const guard = helper.find(p => p.command.includes('relock-guard'));
     const typist = helper.find(p => p.command.includes('input-stream'));
     const lockState = await this.readLockState();
+    const serverLockState = await this.serverLockState();
     const now = this.now();
     for (const [key, m] of Object.entries(markers)) {
       if (spawnSync('sudo', ['-n', 'test', '-e', path.join(this.store, `lease-${key}`)]).status === 0) this.events.add('lease-written');
@@ -189,19 +205,46 @@ export class RealTarget {
     if (guard) { this.events.add('guard-spawned'); this.pids.firstGuard ??= guard.pid; this.pids.guard = guard.pid; }
     if (typist) this.pids.typist = typist.pid;
     if (this.consoleOwner() === PROOF_USER) this.events.add('proof-user-console');
-    return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
-      processesGone: !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined : !guard && !typist, procs };
+    return { now, markers, dirty: state.dirty !== undefined && state.dirty !== null, lockState, serverLockState, typistRunning: !!typist, guardPid: guard?.pid, events: [...this.events],
+      // Judged only once a duty exists and has closed, and only against the processes that duty
+      // recorded. An input helper that refused the password before reserving belongs to no duty:
+      // with its server frozen it stays up, holds no password, and is not a leftover typist.
+      processesGone: !Object.keys(markers).length || !Object.values(markers).every(m => TERMINAL.includes(m.state)) ? undefined
+        : !Object.values(markers).some(m => procs.some(p => p.pid === m.guardPid || p.pid === m.typistPid)), procs };
   }
 
   /** Agent A's lock reading; while A is down or suspended, agent B's (same user, same Mac). */
-  async readLockState() {
+  /**
+   * The Mac's own lock flag for the proof user's console session, read from IORegistry. It does
+   * not pass through the servers under test, whose reading is a cache that only refreshes while
+   * a viewer is connected. 'none' when the proof user holds no console session.
+   */
+  consoleLock() {
+    const py = "import plistlib,sys,subprocess\nd=plistlib.loads(subprocess.run(['ioreg','-n','Root','-d1','-a'],capture_output=True).stdout)\n"
+      + "u=[x for x in d.get('IOConsoleUsers',[]) if x.get('kCGSSessionUserNameKey')==sys.argv[1] and x.get('kCGSSessionOnConsoleKey')]\n"
+      + "print(('locked' if u[0].get('CGSSessionScreenIsLocked') else 'open') if u else 'none')";
+    return sh('python3', ['-c', py, PROOF_USER], { allowFail: true }).trim() || 'none';
+  }
+
+  /** What the servers report, for the record only: it can be stale, so no verdict rests on it. */
+  async serverLockState() {
     for (const agent of [this.a, this.b]) {
       try {
         const st = await this.api(agent, 'GET', '/desktop/locked/status');
-        if (typeof st.lockState === 'string') return st.lockState;
+        // A server reads 'unknown' until something samples the lock; one that does not know
+        // yet is skipped like one that is down.
+        if (typeof st.lockState === 'string' && st.lockState !== 'unknown') return st.lockState;
       } catch { /* this agent is down or stopped; try the other */ }
     }
     return 'unknown';
+  }
+
+  async readLockState() {
+    const own = this.consoleLock();
+    if (own === 'locked') return 'locked-in-session';
+    if (own === 'open') return 'unlocked';
+    // No console session for the proof user (logged out, or switched away): only a server can say which.
+    return this.serverLockState();
   }
 
   settled(snap, c) {
@@ -213,6 +256,14 @@ export class RealTarget {
   }
 
   calibration() { return this.cal; }
+
+  /**
+   * What a person touching the mouse does: declares user activity for a moment, which wakes a
+   * sleeping display. Used only ahead of deadline typing, where ten idle minutes is also this
+   * Mac's display-sleep time. It is NOT used before a grant opens: measured live, that made the
+   * "lock screen is not ready" refusal more frequent, not less.
+   */
+  wakeDisplay(seconds = 1) { return this.asProof(['caffeinate', '-u', '-t', String(seconds)]); }
 
   async prepare(c) {
     await this.closeViewers();
@@ -234,13 +285,25 @@ export class RealTarget {
   async viewer(agent) {
     const context = await this.browser.newContext();
     const page = await context.newPage();
+    const v = { agent, context, page, session: null };
+    // The operator session this page is given. A request can only be revoked by the session that
+    // opened it, so an out-of-band revoke has to use the page's session, not one of the driver's own.
+    page.on('response', async r => {
+      const url = r.url();
+      if (url.includes('/dashboard/unlock')) {
+        try { v.session = (await r.json()).operatorSessionToken ?? v.session; } catch { /* not this page's unlock answer */ }
+      } else if (url.includes('/desktop/')) {
+        // The server states when this grant ends. The deadline cases aim from that, because the
+        // moment the driver sees the grant open trails the server's start by about half a second.
+        try { const j = await r.json(); if (Number.isSafeInteger(j?.expiresAt)) v.expiresAt = j.expiresAt; } catch { /* not JSON */ }
+      }
+    });
     await page.goto(`http://127.0.0.1:${agent.port}/dashboard/desktop.html`);
     await page.fill('#pin', agent.pin);
     await page.click('#unlockButton');
     // desktop.js opens the stream by itself when exactly one machine is ready,
     // keeping #request hidden; either outcome means the page is ready.
     await page.waitForSelector(VIEWER_READY, { timeout: 20_000 });
-    const v = { agent, context, page };
     this.viewers.push(v);
     return v;
   }
@@ -268,8 +331,19 @@ export class RealTarget {
     if (c.timing === 'deadline' && this.cal) {
       // Land Enter just after (before-enter case) or just before (after-enter case) the 10-minute ceiling.
       const opened = this.mainOpenedAt ?? this.now();
-      const enterAt = opened + 600_000 + (c.inject[0].at === 'before-enter' ? 1_500 : -1_500);
-      const startAt = enterAt - this.cal.reserveMs - this.cal.perCharMs * this.password.length;
+      // The ceiling is the server's own expiry for this grant when the page was told it; the
+      // driver's view of "opened + 10 minutes" runs about 0.6 s late (measured over 33 duties).
+      // "Deadline before Enter": start 0.8 s ahead. Measured live, the duty is created about 0.4 s
+      // after the start and Enter follows about 0.65 s later, so the ceiling lands mid-typing. At
+      // 0.6 s the duty was created 0.2 s before the ceiling and no character had been typed yet.
+      // The window is a few tenths of a second wide: a miss shows as "the password was never
+      // typed" and the case is run again. "Deadline after Enter": finish typing 1.5 s ahead.
+      const typingMs = this.cal.reserveMs + this.cal.perCharMs * this.password.length;
+      const ceiling = this.main?.expiresAt ?? (opened + 600_000);
+      const startAt = ceiling - (c.inject[0].at === 'before-enter' ? 800 : 1_500 + typingMs);
+      // Ten idle minutes is also this Mac's display-sleep time: wake it a few seconds ahead.
+      await this.sleep(Math.max(0, startAt - 6_000 - this.now()));
+      this.wakeDisplay(2);
       await this.sleep(Math.max(0, startAt - this.now()));
     }
     // Delayed-completion cases need an open duty with the Mac still locked: a refused password
@@ -277,14 +351,39 @@ export class RealTarget {
     await page.fill('#lockedPasswordInput', c.wrongPassword ? `${this.password}x` : this.password);
     await page.press('#lockedPasswordInput', 'Enter');
     const until = this.now() + 60_000;
+    // What the page said while we waited, in order. When nothing is recognised as an answer,
+    // this is the only record of what the person would have seen.
+    const said = [];
+    // Measured live: a few seconds after the Mac locks or its display wakes, loginwindow lets go
+    // of secure input for about half a second and takes it back. A password that arrives in that
+    // moment is refused "lock screen is not ready", before any attempt is spent. The page tells
+    // the person to try again; so does this, at most twice, and the row says how often.
+    let notReadyRetries = 0;
     while (this.now() < until) {
-      if (await page.isVisible('#leaveUnlockedButton')) return { sent: true };
-      const text = (await page.textContent('#status').catch(() => '')) ?? '';
+      if (await page.isVisible('#leaveUnlockedButton')) return { sent: true, ...(notReadyRetries ? { notReadyRetries } : {}) };
+      const text = ((await page.textContent('#status').catch(() => '')) ?? '').trim();
+      if (text && said[said.length - 1] !== text) said.push(text);
       const refused = refusalFromStatus(text);
-      if (refused) return { refused };
+      if (refused === 'shield-not-confirmed' && notReadyRetries < 2 && c.timing !== 'deadline') {
+        notReadyRetries++;
+        await this.sleep(1_500);
+        await page.fill('#lockedPasswordInput', c.wrongPassword ? `${this.password}x` : this.password);
+        await page.press('#lockedPasswordInput', 'Enter');
+        // The old refusal stays on the page until the new attempt answers. Wait for the page to
+        // say something else (or for the unlock) before judging again, so one retry is one try.
+        const answered = this.now() + 6_000;
+        while (this.now() < answered) {
+          if (await page.isVisible('#leaveUnlockedButton')) return { sent: true, notReadyRetries };
+          const next = ((await page.textContent('#status').catch(() => '')) ?? '').trim();
+          if (next !== text) break;
+          await this.sleep(200);
+        }
+        continue;
+      }
+      if (refused) return { refused, ...(notReadyRetries ? { notReadyRetries } : {}) };
       await this.sleep(200);
     }
-    return { sent: false, refused: 'no-result-within-60s' };
+    return { sent: false, refused: 'no-result-within-60s', pageSaid: said.slice(-6), ...(notReadyRetries ? { notReadyRetries } : {}) };
   }
 
   /** The proof user's listening process on the port, and only that user's (lsof -a ANDs the filters). */
@@ -297,6 +396,8 @@ export class RealTarget {
   kill(pid, sig) {
     if (!pid) return { pid: null, sig, skipped: 'no-pid' };
     const owner = ownerOf(pid);
+    // Resuming a process that has already exited is not an error; stopping or killing nothing is.
+    if (!owner && sig === 'CONT') { this.stopped.delete(pid); return { pid, sig, skipped: 'gone' }; }
     if (owner !== PROOF_USER) throw new Error(`refusing to signal pid ${pid}: owned by "${owner || 'nobody'}", not ${PROOF_USER}`);
     sudo(['kill', `-${sig}`, String(pid)], { allowFail: true });
     if (sig === 'STOP') this.stopped.add(pid);
@@ -344,7 +445,7 @@ export class RealTarget {
     sudo(['install', '-o', PROOF_USER, '-m', '644', staged, plist]);
     sudo(['launchctl', 'bootstrap', `gui/${this.uid}`, plist]);
     const pid = await this.waitForServer(true, 90_000);
-    return { label, pid };
+    return { label, pid, lockStateKnown: await this.waitLockStateKnown() };
   }
 
   /**
@@ -377,6 +478,23 @@ export class RealTarget {
     return { removed: label };
   }
 
+  /** `ps` state letters for one pid: a stopped process starts with T. Empty when it is gone. */
+  procStat(pid) { return sh('ps', ['-o', 'stat=', '-p', String(pid)], { allowFail: true }).trim(); }
+
+  /**
+   * Listening is not ready: a freshly started server reads 'unknown' for about a minute, and the
+   * viewer page has no machine to offer until it knows. False after the wait is evidence, not an error.
+   */
+  async waitLockStateKnown(ms = 120_000) {
+    const until = this.now() + ms;
+    while (this.now() < until) {
+      const st = await this.api(this.a, 'GET', '/desktop/locked/status').catch(() => null);
+      if (typeof st?.lockState === 'string' && st.lockState !== 'unknown') return true;
+      await this.sleep(1_000);
+    }
+    return false;
+  }
+
   async waitForServer(up, ms) {
     const until = this.now() + ms;
     while (this.now() < until) {
@@ -392,15 +510,32 @@ export class RealTarget {
   async act(action, { step } = {}) {
     const helper = () => this.processes().filter(p => p.command.includes('instar-desktop-host'));
     switch (action) {
-      case 'stop-server': return this.kill(this.pids.server = this.serverPid(this.a), 'STOP');
+      case 'stop-server': {
+        const r = this.kill(this.pids.server = this.serverPid(this.a), 'STOP');
+        // tmux resumes a stopped pane process at once, so a case that believes it froze the
+        // server would be judging a server that never stopped. Prove the stop held.
+        await this.sleep(500);
+        const stat = r.pid ? this.procStat(r.pid) : '';
+        if (!stat.startsWith('T')) throw new Error(`stop-server: pid ${r.pid} did not stay stopped (state "${stat}"); serve it under launchd first`);
+        return { ...r, stat };
+      }
       case 'cont-server': return this.kill(this.pids.server, 'CONT');
       case 'kill-server': return this.kill(this.serverPid(this.a), 'KILL');
       case 'start-server': {
-        this.asProof([path.join(this.o.proofInstall, 'node_modules/.bin/instar'), 'server', 'start', '--dir', this.a.dir]);
-        const until = this.now() + 60_000;
-        while (this.now() < until && !this.serverPid(this.a)) await this.sleep(1_000);
-        if (!this.serverPid(this.a)) throw new Error(`start-server: nothing listening on port ${this.a.port} after 60 s`);
-        return { started: true };
+        // Both agents share the proof user's tmux server, so kill-tmux takes agent B down too,
+        // and with B down nothing answers while A is down. Every start leaves both listening.
+        const started = [];
+        for (const agent of [this.a, this.b]) {
+          // Agent A is always started: this step follows a kill or a launchd bootout, and a server
+          // that is still shutting down can hold the port for a moment and look alive.
+          if (agent !== this.a && this.serverPid(agent)) continue;
+          this.asProof([path.join(this.o.proofInstall, 'node_modules/.bin/instar'), 'server', 'start', '--dir', agent.dir]);
+          const until = this.now() + 60_000;
+          while (this.now() < until && !this.serverPid(agent)) await this.sleep(1_000);
+          if (!this.serverPid(agent)) throw new Error(`start-server: nothing listening on port ${agent.port} after 60 s`);
+          started.push(agent.port);
+        }
+        return { started: true, ports: started, lockStateKnown: await this.waitLockStateKnown() };
       }
       case 'kill-tmux': return { out: this.asProof(['tmux', 'kill-server']) };
       case 'serve-under-launchd': return this.serveUnderLaunchd();
@@ -425,8 +560,11 @@ export class RealTarget {
       case 'revoke': {
         const requestId = Object.values(this.caseMarkers()).find(m => m.requestId)?.requestId;
         if (!requestId) throw new Error('revoke: this case has no open request to revoke');
-        const session = await this.operatorSession(this.a);
-        return this.api(this.a, 'POST', `/desktop/requests/${encodeURIComponent(requestId)}/revoke`, {}, { 'X-Instar-Operator-Session': session });
+        const session = this.main?.session ?? await this.operatorSession(this.a);
+        const r = await this.api(this.a, 'POST', `/desktop/requests/${encodeURIComponent(requestId)}/revoke`, {}, { 'X-Instar-Operator-Session': session });
+        // A refused revoke ended nothing, so the case would judge a grant that is still open.
+        if (r.status >= 400) throw new Error(`revoke: refused with ${r.status} ${r.error ?? ''}`.trim());
+        return r;
       }
       case 'stop-viewer': await this.main.page.click('#stopButton'); return { clicked: 'stop' };
       case 'leave-unlocked': await this.main.page.click('#leaveUnlockedButton'); return { clicked: 'leave-unlocked' };
@@ -441,6 +579,32 @@ export class RealTarget {
         const opened = await v.page.isVisible('#control');
         this.events.add('other-grant-tried');
         return { opened, refused: /relock/i.test(text) ? 'relock-pending' : refusalFromStatus(text) ?? null, status: text.slice(0, 200) };
+      }
+      case 'next-helper-clears-field': {
+        // The half-typed-field marker outlives its request by design: the NEXT input helper clears
+        // the field before any password can be typed. So open a next grant and watch the marker go.
+        const before = this.readStore().dirty !== undefined && this.readStore().dirty !== null;
+        const v = await this.viewer(this.a);
+        await this.requestGrant(v);
+        await v.page.waitForSelector('#control:not([hidden])', { timeout: 30_000 }).catch(() => {});
+        const t0 = this.now();
+        let dirty = true;
+        while (dirty && this.now() - t0 < 15_000) {
+          const d = this.readStore().dirty;
+          dirty = d !== undefined && d !== null;
+          if (dirty) await this.sleep(250);
+        }
+        const ms = this.now() - t0;
+        // End the extra grant and wait for its helper to go, so the case's own leftover checks see a quiet Mac.
+        // First the way a person would stop it, with a short wait, and say whether that worked: in
+        // the first live run of this step an ordinary click on Stop did not go through within 30 s
+        // while the locked-screen password box was showing. Then stop it for certain.
+        const stopClick = await v.page.click('#stopButton', { timeout: 3_000 }).then(() => 'clicked', err => String(err?.message ?? err).split('\n').slice(0, 6).join(' | ').slice(0, 400));
+        if (stopClick !== 'clicked') await v.page.evaluate(() => document.getElementById('stopButton')?.click()).catch(() => {});
+        const until = this.now() + 15_000;
+        while (this.now() < until && this.processes().some(p => p.command.includes('input-stream'))) await this.sleep(250);
+        const helperGone = !this.processes().some(p => p.command.includes('input-stream'));
+        return { dirtyBefore: before, cleared: !dirty, ms, stopClick, helperGone };
       }
       case 'open-next-grant': {
         await this.main.page.click('#stopButton').catch(() => {});
@@ -483,6 +647,8 @@ export class RealTarget {
     const finalMarkers = Object.values(ev.final.markers ?? {});
     const procs = this.processes();
     const out = {
+      // Exited children a frozen server has not collected: not running, but visible in the evidence.
+      zombies: parseProcessList(sudo(['ps', '-U', PROOF_USER, '-o', 'pid=,stat=,lstart=,command='], { allowFail: true })).zombies,
       submissions: enters.size,
       submissionsAfterClose: closedAt === null ? 0 : [...enters.values()].filter(t => t > closedAt).length,
       guardReplaced: finalMarkers.some(m => (m.guardReplacements ?? 0) > 0),
@@ -495,9 +661,12 @@ export class RealTarget {
         '--predicate', 'process == "loginwindow"'], { allowFail: true }).split('\n').filter(l => /authenticat/i.test(l)).length,
     };
     try {
-      const list = await this.api(this.a, 'GET', '/attention');
-      const item = (list.items ?? []).find(i => String(i.id).startsWith('agent:desktop-relock') && Date.parse(i.createdAt) >= ev.startedAt);
       const failedAt = ev.samples.find(s => Object.values(s.markers ?? {}).some(m => m.state === 'relock-failed'))?.t;
+      const find = async () => ((await this.api(this.a, 'GET', '/attention')).items ?? [])
+        .find(i => String(i.id).startsWith('agent:desktop-relock') && Date.parse(i.createdAt) >= ev.startedAt);
+      let item = await find();
+      // The owner is told by a 10 s sweep, so a single look right after a failed relock is too early.
+      for (const until = this.now() + 15_000; !item && failedAt && this.now() < until;) { await this.sleep(1_000); item = await find(); }
       out.securityItemRaised = !!item;
       if (item && failedAt) out.securityItemMs = Date.parse(item.createdAt) - failedAt;
     } catch { out.securityItemRaised = false; }
@@ -530,6 +699,7 @@ const STATUS_REASONS = [
   ['Stopped before the password finished', 'aborted'], ['Clearing the password field', 'field-dirty'],
   ['secure tunnel is up', 'tunnel-not-active'], ['kept desktop helper', 'retained-helper-required'],
   ['Password entry from a browser is off', 'browser-box-off'], ['backup connection', 'tunnel-not-first-tier'],
+  ['lock screen is not ready for a password', 'shield-not-confirmed'],
   ['did not accept that', 'refused-other'],
 ];
 export function refusalFromStatus(text) {

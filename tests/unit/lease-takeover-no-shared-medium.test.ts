@@ -49,7 +49,7 @@ function noRemoteStore(self: string, opts: { final: boolean; registry?: MachineR
   return { store, box };
 }
 
-function rig(opts: { self?: string; final?: boolean; solo?: boolean; named?: boolean; preferred?: boolean; gone?: boolean; noPeers?: boolean }) {
+function rig(opts: { heldBack?: () => boolean; self?: string; final?: boolean; solo?: boolean; named?: boolean; preferred?: boolean; gone?: boolean; noPeers?: boolean }) {
   const self = opts.self ?? 'B';
   const clock = { mono: 1_000, wall: 1_000_000 };
   const { store, box } = noRemoteStore(self, { final: opts.final ?? true });
@@ -67,6 +67,7 @@ function rig(opts: { self?: string; final?: boolean; solo?: boolean; named?: boo
     isPreferredAwakeAgreed: () => opts.preferred ?? false,
     survivorMayHold: () => !(opts.named ?? false) && !(opts.noPeers ?? false),
     allPeersPresumedGone: () => opts.gone ?? false,
+    acquireHeldBack: () => opts.heldBack?.() ?? false,
   });
   const advance = (ms: number) => { clock.mono += ms; clock.wall += ms; };
   return { lc, store, box, tunnel, suspends, advance };
@@ -248,5 +249,19 @@ describe('taking back an own lapsed lease after a restart', () => {
     const r = restarted({ solo: false });
     await r.lc.acquireIfEligible();
     expect(r.pulls()).toBe(0);
+  });
+});
+
+describe('a joined machine with no proved link', () => {
+  it('does not take an expired lease, and takes it the moment proof exists', async () => {
+    let proved = false;
+    const r = rig({ heldBack: () => !proved });
+    r.box.reg = { ...r.box.reg, lease: expiredLeaseFromA(4, 1_000_000) } as unknown as MachineRegistry;
+    expect(await r.lc.acquireIfEligible()).toBe(false);
+    expect(r.lc.holdsLease()).toBe(false);
+    expect(r.suspends).toEqual([]);
+    proved = true;
+    expect(await r.lc.acquireIfEligible()).toBe(true);
+    expect(r.lc.holdsLease()).toBe(true);
   });
 });

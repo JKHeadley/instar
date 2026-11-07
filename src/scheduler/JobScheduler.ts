@@ -1,3 +1,6 @@
+import { isQuietReceipt, verifiedJobEnvelope } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/scheduler/JobScheduler.ts');
 import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } from '../core/JobPortableIntegrity.js';
 /**
  * Job Scheduler — cron-based job execution engine.
@@ -10,6 +13,7 @@ import { verifyImportedPortableJob, recordImportedPortableIntegrityFailure } fro
  */
 
 import { readJobDeclaredFailure } from './jobDeclaredFailure.js';
+import { jobGateReceiptPath, readJobGateReceipt, consumeJobGateReceipt, restoreJobGateReceipt } from './JobGateReceipt.js';
 import { Cron } from 'croner';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -82,6 +86,7 @@ interface JobCapacityEpisode {
   jobs: string[];
   blockedAtByJob?: Record<string, string>;
   alertedAt?: string;
+  recordedAt?: string;
 }
 
 const CAPACITY_POLL_MS = 15_000;
@@ -113,6 +118,8 @@ interface JobFailureAlertState {
   nextEligibleAt: string;
   lastAttemptAt?: string;
   lastDeliveredAt?: string;
+  recordedAt?: string;
+  quietId?: string;
   activeAttemptId?: string;
 }
 
@@ -277,6 +284,7 @@ export class JobScheduler {
   private capacityAlertInFlight = false;
   private queueAdmissionInFlight = false;
   private activeSessionSpawns = new Set<string>();
+  private readonly gatedStarts = new Set<string>();
 
   /** Startup composition has completed, even when its result is "no sink". */
   private failureAlertDeliveryActive = false;
@@ -398,6 +406,17 @@ export class JobScheduler {
    * Used to avoid rebuilding cron tasks when the on-disk jobs snapshot
    * has not actually changed.
    */
+  /**
+   * A job's definition for the post-gate comparison. `topicId` is left out: the
+   * scheduler writes it onto the live job at runtime and a reload drops that
+   * write, so it moves without anyone editing the job. A topic-only edit made
+   * during a gate therefore runs this one fire with the previous topic's notices
+   * and prompt context; the next fire uses the new topic.
+   */
+  private static gatedDefinition(job: JobDefinition): string {
+    return JSON.stringify({ ...job, topicId: undefined });
+  }
+
   private static signatureForJobs(jobs: JobDefinition[]): string {
     return crypto.createHash('sha256').update(JSON.stringify(jobs)).digest('hex');
   }
@@ -953,6 +972,11 @@ export class JobScheduler {
 
     this.refreshAgentMdBodyIfChanged(job);
 
+    // The definition this fire was admitted on, taken BEFORE the rollback
+    // projection below. The post-gate check compares the live set against this:
+    // the projection is a per-fire view of the same definition, never a change.
+    const admittedDefinition = job.gate ? JobScheduler.gatedDefinition(job) : undefined;
+
     // job-cost-reduction §5.1 / §8.4: an instar-origin `runner: script` job
     // runs its shipped script — unless the rollback switch (read LIVE here)
     // turns script runners off globally or for this slug, in which case the
@@ -1147,6 +1171,12 @@ export class JobScheduler {
       }
     }
 
+    // Serialize gates through launch: a second fire must not overwrite an
+    // unconsumed reservation while the first is queued or spawning.
+    if (job.gate && this.gatedStarts.has(slug)) return 'skipped';
+    const serializesGate = !!job.gate;
+    if (serializesGate) this.gatedStarts.add(slug);
+    try {
     // Run gate command if configured — zero-token pre-screening (async, non-blocking)
     if (job.gate) {
       const gatePassed = await this.runGateAsync(job);
@@ -1165,12 +1195,30 @@ export class JobScheduler {
     if (job.gate) {
       try { this.refreshJobs(); } catch { return 'skipped'; }
       const live = this.jobs.find(candidate => candidate.slug === slug);
-      if (!live || !live.enabled || this.paused || JSON.stringify(live) !== JSON.stringify(job)
-        || !verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
+      // Each refusal names its own cause. A local job has no portable integrity
+      // to fail, so only a failed portable check may write that record: it feeds
+      // the coverage alert for imported jobs.
+      if (!verifyImportedPortableJob(this.stateDir, path.dirname(this.stateDir), slug)) {
         recordImportedPortableIntegrityFailure(this.stateDir, slug);
         this.skipLedger.recordSkip(slug, 'disabled');
         this.state.appendEvent({ type: 'job_skipped',
-          summary: `Job "${slug}" refused — definition or approval changed during its gate`,
+          summary: `Job "${slug}" refused — imported files no longer match local approval`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'portable-integrity' },
+        });
+        return 'skipped';
+      }
+      if (!live || !live.enabled) {
+        this.skipLedger.recordSkip(slug, 'disabled');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — ${live ? 'disabled' : 'removed from the live job set'} during its gate`,
+          timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: live ? 'disabled' : 'job-missing' },
+        });
+        return 'skipped';
+      }
+      if (JobScheduler.gatedDefinition(live) !== admittedDefinition) {
+        this.skipLedger.recordSkip(slug, 'definition-changed');
+        this.state.appendEvent({ type: 'job_skipped',
+          summary: `Job "${slug}" refused — definition changed during its gate`,
           timestamp: new Date().toISOString(), metadata: { slug, reason, gateReason: 'post-gate-definition-changed' },
         });
         return 'skipped';
@@ -1278,6 +1326,7 @@ export class JobScheduler {
 
     this.spawnJobSession(job, reason);
     return 'triggered';
+    } finally { if (serializesGate) this.gatedStarts.delete(slug); }
   }
 
   /**
@@ -1786,7 +1835,7 @@ export class JobScheduler {
 
   private async maybeAlertCapacityEpisode(): Promise<void> {
     const episode = this.state.get<JobCapacityEpisode>('job-capacity-episode');
-    if (!episode || episode.alertedAt || this.capacityAlertInFlight || !episode.jobs.length) return;
+    if (!episode || episode.alertedAt || episode.recordedAt || this.capacityAlertInFlight || !episode.jobs.length) return;
     const waiting = episode.jobs.map(s => this.jobs.find(j => j.slug === s)).filter((j): j is JobDefinition => Boolean(j));
     if (!waiting.length) {
       for (const slug of episode.jobs) this.markCapacityJobStarted(slug);
@@ -1812,12 +1861,13 @@ export class JobScheduler {
       const names = waiting.sort((a, b) => PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]).map(j => j.name);
       const notice = jobCapacityNotice(names, ageMs);
       const hub = this.state.get<number>('agent-attention-topic');
-      if (this.telegram && hub) await this.telegram.sendToTopic(hub, notice);
+      let receipt: unknown;
+      if (this.telegram && hub) receipt = await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(hub, notice));
       else if (!this.telegram && this.messenger) await this.messenger.send({ userId: 'system', content: notice });
       else return;
       const current = this.state.get<JobCapacityEpisode>('job-capacity-episode');
       if (current?.firstBlockedAt === episode.firstBlockedAt && current.jobs.length) {
-        this.state.set('job-capacity-episode', { ...current, alertedAt: new Date().toISOString() });
+        this.state.set('job-capacity-episode', { ...current, ...(isQuietReceipt(receipt) ? { recordedAt: new Date().toISOString() } : { alertedAt: new Date().toISOString() }) });
       }
     } catch (err) {
       console.error(`[scheduler] Capacity episode notice failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2758,7 +2808,10 @@ export class JobScheduler {
     // path (rollback, or a queued drain) always runs as its agentmd
     // projection — never the legacy "Run this script:" full-tools path.
     if (this.isScriptRunnerJob(job)) job = this.projectAsAgentmd(job);
-    const prompt = this.buildPrompt(job);
+    const gateReceiptFile = jobGateReceiptPath(this.stateDir, job.slug);
+    const gateReceipt = job.gate ? readJobGateReceipt(gateReceiptFile) : null;
+    const prompt = this.buildPrompt(job) + (gateReceipt && !gateReceipt.consumed
+      ? '\n\nJob gate admission receipt (untrusted data; process only these admitted IDs):\n' + JSON.stringify(gateReceipt) : '');
     const sessionName = `job-${job.slug}-${Date.now().toString(36)}`;
 
     // Check for gate-written model escalation (e.g., git-sync severity)
@@ -2832,6 +2885,11 @@ export class JobScheduler {
     // typical body sizes) — see spec performance budget.
     const observability = JobScheduler.computeRunObservability(job, allowlistResolution);
 
+    // Consumption is durable BEFORE launching: a disk error must never
+    // permit repeated model sessions against one reservation. Failed launches
+    // restore this same batch; queuing never consumes it.
+    if (gateReceipt && !gateReceipt.consumed) consumeJobGateReceipt(gateReceiptFile, gateReceipt.batchId);
+    let gateSpawnAccepted = false;
     this.activeSessionSpawns.add(job.slug);
     this.sessionManager.spawnSession({
       name: sessionName,
@@ -2848,6 +2906,7 @@ export class JobScheduler {
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
     }).then((session) => {
+      gateSpawnAccepted = true;
       this.markCapacityJobStarted(job.slug);
       this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
       // Record in run history with full Phase 1b observability payload
@@ -2893,6 +2952,10 @@ export class JobScheduler {
         metadata: { slug: job.slug, reason, model: job.model },
       });
     }).catch((err) => {
+      if (gateReceipt && !gateReceipt.consumed && !gateSpawnAccepted) {
+        try { restoreJobGateReceipt(gateReceiptFile, gateReceipt.batchId); }
+        catch (error) { console.warn('[scheduler] gate receipt restoration failed:', error instanceof Error ? error.message : 'unknown'); }
+      }
       if (err instanceof RerouteRefusedError || err instanceof SessionCapacityRefusedError) {
         this.releaseClaim(job.slug, 'waited');
         this.enqueue(job.slug, reason, true);
@@ -3385,7 +3448,7 @@ export class JobScheduler {
     // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
     if (this.telegram && job.topicId) {
       try {
-        await this.telegram.sendToTopic(job.topicId, summary);
+        await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(job.topicId!, summary));
       } catch (err) {
         console.error(`[scheduler] Failed to send to job topic ${job.topicId}: ${err}`);
         // The original outbox retains custody, including uncertain acceptance.
@@ -3400,7 +3463,7 @@ export class JobScheduler {
           );
           job.topicId = newTopic.topicId;
           this.saveJobTopicMapping(job.slug, newTopic.topicId);
-          await this.telegram.sendToTopic(newTopic.topicId, summary);
+          await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(newTopic.topicId, summary));
         } catch (recreateErr) {
           console.error(`[scheduler] Failed to recreate topic for ${job.slug}: ${recreateErr}`);
         }
@@ -3481,9 +3544,9 @@ export class JobScheduler {
         job.topicId = topic.topicId;
         mappings[job.slug] = topic.topicId;
 
-        await this.telegram.sendToTopic(topic.topicId,
+        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topic.topicId,
           `*${job.name}*\n${job.description}\n\nSchedule: \`${job.schedule}\`\nPriority: ${job.priority}\n\nThis topic is the home for this job. Reports, status updates, and errors will appear here.`
-        );
+        ));
       } catch (err) {
         console.error(`[scheduler] Failed to create topic for job ${job.slug}: ${err}`);
       }
@@ -3548,8 +3611,13 @@ export class JobScheduler {
     // endpoints (e.g. /evolution/actions/overdue). Without this, gates that curl
     // the local API silently return 401 and the downstream pipe crashes, making
     // the job skip every run cycle with no obvious signal.
+    const gatePort = this.resolveAgentPort();
     const gateEnv = {
       ...process.env,
+      INSTAR_GATE_RECEIPT_FILE: jobGateReceiptPath(this.stateDir, job.slug),
+      INSTAR_AGENT_HOME: path.dirname(path.resolve(this.stateDir)),
+      INSTAR_STATE_DIR: path.resolve(this.stateDir),
+      ...(gatePort === undefined ? {} : { INSTAR_PORT: String(gatePort) }),
       ...(this.config.authToken ? { INSTAR_AUTH_TOKEN: this.config.authToken } : {}),
       ...(this.config.projectName ? { INSTAR_AGENT_ID: this.config.projectName } : {}),
     };
@@ -3702,9 +3770,9 @@ export class JobScheduler {
 
       const noticeTopic = job.topicId ?? this.state.get<number>('agent-attention-topic');
       const send = this.telegram && noticeTopic
-        ? () => this.telegram!.sendToTopic(noticeTopic, alertText).then(() => undefined)
+        ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(noticeTopic, alertText))
         : !this.telegram && this.messenger
-          ? () => this.messenger!.send({ userId: 'system', content: alertText }).then(() => undefined)
+          ? () => this.messenger!.send({ userId: 'system', content: alertText })
           : null;
 
       if (!send) {
@@ -3713,8 +3781,16 @@ export class JobScheduler {
       }
 
       try {
-        await send();
+        const receipt = await send();
         if (!this.isCurrentFailureAlertAttempt(stateKey, attemptId)) return;
+        if (isQuietReceipt(receipt)) {
+          alertState.deliveryAttempts = 0; alertState.recordedAt = new Date(now).toISOString(); alertState.quietId = receipt.quietId;
+          delete alertState.activeAttemptId;
+          alertState.nextEligibleAt = new Date(now + 24 * 60 * 60_000).toISOString();
+          this.state.set(stateKey, alertState); this.scheduleFailureAlert(job, alertState);
+          this.state.appendEvent({ type: 'job_alert_recorded', summary: `Failure alert recorded for ${job.slug}`, timestamp: new Date(now).toISOString(), metadata: { slug: job.slug, quietId: receipt.quietId } });
+          return;
+        }
         alertState.deliveryAttempts = 0;
         alertState.deliveredCount += 1;
         alertState.lastDeliveredAt = new Date(now).toISOString();
@@ -3745,14 +3821,14 @@ export class JobScheduler {
 
   /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
   private observeContinuitySkip(slug: string, reason: SkipReason): void {
-    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope')) return;
+    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'definition-changed')) return;
     const job = this.jobs.find((candidate) => candidate.slug === slug);
     if (!job?.enabled) return;
     const key = `job-silence-${slug}`;
-    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; recordedAt?: string; lastAttemptAt?: string }>(key);
     const now = new Date().toISOString();
     const count = (previous?.count ?? 0) + 1;
-    const next = { count, lastSkip: now, lastNotified: previous?.lastNotified, lastAttemptAt: previous?.lastAttemptAt };
+    const next = { count, lastSkip: now, lastNotified: previous?.lastNotified, recordedAt: previous?.recordedAt, lastAttemptAt: previous?.lastAttemptAt };
     this.state.set(key, next);
     if (count >= 3) this.raiseContinuityAlert(job, `${count} scheduled attempts were skipped (${reason})`, key);
   }
@@ -3773,15 +3849,16 @@ export class JobScheduler {
 
   private raiseContinuityAlert(job: JobDefinition, detail: string, key: string): void {
     if (this.state.readOnly) return;
-    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+    const previous = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; recordedAt?: string; lastAttemptAt?: string }>(key);
     const now = Date.now();
-    if (previous?.lastNotified && now - Date.parse(previous.lastNotified) < 24 * 60 * 60_000) return;
+    const lastVisibleOrRecorded = Math.max(...[previous?.lastNotified, previous?.recordedAt].map(at => at ? Date.parse(at) : 0).filter(Number.isFinite), 0);
+    if (lastVisibleOrRecorded && now - lastVisibleOrRecorded < 24 * 60 * 60_000) return;
     if (previous?.lastAttemptAt && now - Date.parse(previous.lastAttemptAt) < 60 * 60_000) return;
     if (this.silenceAlertsInFlight.has(key)) return;
     const topicId = job.topicId ?? this.state.get<number>('agent-attention-topic');
     const message = `Scheduled job ${job.name} is not running as expected: ${detail}. Check its gate, machine scope and last successful run.`;
     const send = this.telegram && topicId
-      ? () => this.telegram!.sendToTopic(topicId, message)
+      ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(topicId!, message))
       : !this.telegram && this.messenger
         ? () => this.messenger!.send({ userId: 'system', content: message })
         : null;
@@ -3789,14 +3866,15 @@ export class JobScheduler {
     this.silenceAlertsInFlight.add(key);
     const epoch = this.silenceAlertEpoch.get(key) ?? 0;
     const attemptedAt = new Date(now).toISOString();
-    this.state.set(key, { count: previous?.count ?? 0, lastSkip: previous?.lastSkip ?? attemptedAt, lastNotified: previous?.lastNotified, lastAttemptAt: attemptedAt });
+    this.state.set(key, { count: previous?.count ?? 0, lastSkip: previous?.lastSkip ?? attemptedAt, lastNotified: previous?.lastNotified, recordedAt: previous?.recordedAt, lastAttemptAt: attemptedAt });
     void Promise.resolve().then(async () => {
       if (this.state.readOnly || this.paused) return false;
-      await send();
-      return true;
+      const receipt = await send();
+      return isQuietReceipt(receipt) ? receipt : true;
     }).then((delivered) => {
       if (!delivered || this.state.readOnly || (this.silenceAlertEpoch.get(key) ?? 0) !== epoch) return;
-      const current = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; lastAttemptAt?: string }>(key);
+      const current = this.state.get<{ count: number; lastSkip: string; lastNotified?: string; recordedAt?: string; lastAttemptAt?: string }>(key);
+      if (isQuietReceipt(delivered)) { this.state.set(key, { ...current, count: current?.count ?? 0, lastSkip: current?.lastSkip ?? attemptedAt, lastAttemptAt: attemptedAt, recordedAt: new Date().toISOString(), quietId: delivered.quietId }); return; }
       this.state.set(key, { count: current?.count ?? 0, lastSkip: current?.lastSkip ?? attemptedAt, lastAttemptAt: attemptedAt, lastNotified: new Date().toISOString() });
       this.state.appendEvent({ type: 'job_alert_delivered', summary: `Continuity alert delivered for ${job.slug}`,
         timestamp: new Date().toISOString(), metadata: { slug: job.slug, kind: 'silence' } });
@@ -3925,9 +4003,9 @@ export class JobScheduler {
     const job = this.jobs.find(row => row.slug === slug);
     if (!job) return;
     const key = `promotion-catch-up-alert-${slug}`;
-    const prior = this.state.get<{ promotionId: string; attemptAt: number; deliveredAt?: number }>(key);
+    const prior = this.state.get<{ promotionId: string; attemptAt: number; deliveredAt?: number; recordedAt?: number }>(key);
     const now = Date.now();
-    if (prior?.promotionId === promotionId && now - prior.attemptAt < (prior.deliveredAt ? 24 * 60 * 60_000 : 60 * 60_000)) return;
+    if (prior?.promotionId === promotionId && now - prior.attemptAt < (prior.deliveredAt || prior.recordedAt ? 24 * 60 * 60_000 : 60 * 60_000)) return;
     if (this.catchUpAlertsInFlight.has(key)) return;
     const summary = `Job ${slug} has a missed or uncertain occurrence after a lease takeover. Review it before choosing a manual run.`;
     const send = this.telegram
@@ -3942,15 +4020,15 @@ export class JobScheduler {
     this.catchUpAlertsInFlight.add(key);
     void Promise.resolve().then(async () => {
       if (this.state.readOnly || this.paused) return false;
-      await send();
-      return true;
+      const outcome = await send();
+      return outcome && typeof outcome === 'object' && 'hubHeld' in outcome && outcome.hubHeld === true ? 'recorded' : 'delivered';
     }).then(delivered => {
       if (!delivered || this.state.readOnly || this.paused) return;
       const current = this.state.get<{ promotionId: string; attemptAt: number }>(key);
       const jobState = this.state.getJobState(slug);
       if (current?.promotionId === promotionId && this.promotionCatchUpStore.hasUnresolved(slug,
         jobState?.lastResult === 'success' ? jobState.lastRun ?? undefined : undefined)) {
-        this.state.set(key, { ...current, deliveredAt: Date.now() });
+        this.state.set(key, { ...current, ...(delivered === 'recorded' ? { recordedAt: Date.now() } : { deliveredAt: Date.now() }) });
       }
     }).catch(error => console.warn(`[scheduler] Catch-up attention failed for ${slug}:`, error))
       .finally(() => this.catchUpAlertsInFlight.delete(key));
@@ -4144,7 +4222,7 @@ export class JobScheduler {
     if (this.telegram && topicId) {
       const formatted = reflector.formatInsight(insight);
       try {
-        await this.telegram.sendToTopic(topicId, formatted);
+        await withNotificationEnvelope(stampNotification(), async () => (this.telegram)!.sendToTopic(topicId!, formatted));
       } catch {
         // Topic may not exist — not critical
       }

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-06T10:30:05.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:codex-cli-gpt-6-astra"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 2
+  },
+  "convergenceReport": "docs/specs/reports/amendment6-owned-custody-review-2026-11-06.md",
+  "convergenceSha256": "6e9a316f42a20309c17545042d1947ca017d08688d6ac31cb0ca0f72afda9c0a",
+  "areas": {
+    "Building": {
+      "areaSha256": "7c0d39dc287468565d87fef193034b7f1f6f5abadb8dff5ad25a74923df2a50a",
+      "verdict": "accepted"
+    }
+  }
+}

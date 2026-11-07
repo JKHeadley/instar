@@ -9,6 +9,12 @@
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 import { sessionTopicName } from './topic-names.js';
 
+/**
+ * What a person reads for a "door" (an AI tool a session runs on: Claude Code, Codex...). One place,
+ * so the word can change without touching the API or config, which keep `framework`.
+ */
+export const DOOR = { word: 'engine', Word: 'Engine', words: 'engines' };
+
 export const WORKING_MS = 2 * 60_000;   // activity under 2 min reads "working"
 export const QUIET_MS = 10 * 60_000;    // 10+ min without activity reads "quiet" (never "stuck")
 export const HISTORY_FIRST = 2000;      // lines the server sends on subscribe
@@ -187,6 +193,7 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicN
     const sub = [machine, running && running !== 'now' ? running : running ? 'just started' : null, duplicate ? 'running on two machines at once' : a.state === 'no-reading' ? null : a.words].filter(Boolean).join(' · ');
     return {
       key: sessionKey(s), title: sessionTitle(s, topicNames), sub, end: a.end, activity: a.state, duplicate, internal: isInternalSession(s),
+      // warning-path: row
       tone: duplicate ? 'bad' : a.state === 'quiet' ? 'attn' : a.state === 'no-reading' ? 'unknown' : null,
       machine, remote: s.remote === true, model: modelWords(s.model),
       session: { tmuxSession: s.tmuxSession, id: s.id, name: s.name, machineId: s.machineId || null, machineNickname: machine, remote: s.remote === true, protected: s.protected, platform: s.platform || 'headless', platformId: s.platformId ?? null, model: s.model || null, type: s.type || (s.jobSlug ? 'job' : 'interactive'), internal: isInternalSession(s), telemetry: s.telemetry || null, startedAt: s.startedAt || null, status: s.status },
@@ -232,14 +239,18 @@ export function sessionsHeadline(m) {
     tail = ` One has been quiet for ${q ? q.end.replace(' min', ' minutes') : 'a while'}.`;
   } else if (quiet > 1) tail = ` ${quiet} have been quiet for 10+ minutes.`;
   else if (running === 0 && m.unanswered.length === 0) tail = m.multi ? ' Machines: all answering.' : '';
+  // warning-path: pageHead
   return { text: lead + tail, tone: duplicate ? 'bad' : quiet ? 'attn' : 'ok' };
 }
 
 /** At most four facts. "Waiting on you" is omitted: sessions do not report it yet. */
 export function sessionsFacts(m) {
   if (!m || !m.ok) return [];
+  // warning-path: pageHead
   const f = [{ n: m.counts.running, label: 'running', tone: null }, { n: m.counts.quiet, label: 'quiet 10+ min', tone: m.counts.quiet ? 'attn' : null }];
+  // warning-path: pageHead
   if (m.counts.duplicate) f.push({ n: m.counts.duplicate, label: 'on two machines', tone: 'bad' });
+  // warning-path: pageHead
   if (m.multi) f.push({ n: `${m.counts.answering} of ${m.counts.machines}`, label: 'machines answering', tone: m.unanswered.length ? 'attn' : null });
   return f;
 }
@@ -326,8 +337,8 @@ export function doorModelWords(options, framework, model) {
 /** The regime note: what a model choice actually does on this agent. */
 export function regimeWords(options) {
   const r = options && options.regime;
-  if (r === 'dry-run') return 'On this agent a chosen model is recorded as intent, not applied; the door still switches.';
-  if (r === 'disabled') return 'On this agent the door switch works, but model choice is turned off; a model will be refused.';
+  if (r === 'dry-run') return `On this agent a chosen model is recorded as intent, not applied; the ${DOOR.word} still switches.`;
+  if (r === 'disabled') return `On this agent the ${DOOR.word} switch works, but model choice is turned off; a model will be refused.`;
   return null;
 }
 
@@ -410,15 +421,33 @@ export function profileSourceWords(profile) {
   return 'the default';
 }
 
+/**
+ * Where a session's conversation keeps its engine and model (session-swap-any-conversation §2):
+ * `telegram:N` → `N`, `app:<key>` → itself, `slack:<team>:<channel>[:<thread>]` → `slack:<channel>[:<thread>]`.
+ * A row without a reference falls back to its Telegram topic. Null: no conversation.
+ */
+export function profileKeyOf(s) {
+  const ref = s && typeof s.conversationRef === 'string' ? s.conversationRef : null;
+  if (ref) {
+    let m = /^telegram:([1-9][0-9]{0,15})$/.exec(ref);
+    if (m) return m[1];
+    if (/^app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(ref)) return ref;
+    m = /^slack:(?:_|T[A-Z0-9]+):([CDG][A-Z0-9]+)(?::(\d{10}\.\d{6}))?$/.exec(ref);
+    if (m) return m[2] ? `slack:${m[1]}:${m[2]}` : `slack:${m[1]}`;
+    return null;
+  }
+  return s && s.platform === 'telegram' && s.platformId != null && /^[1-9][0-9]{0,15}$/.test(String(s.platformId)) ? String(s.platformId) : null;
+}
+
 /** A door switch has landed only when the session list shows the LAUNCHED model. */
 export function switchLanded(sessions, job) {
   if (!Array.isArray(sessions) || !job) return null;
-  return sessions.find((x) => String(x.platformId) === String(job.topicId) && Date.parse(x.startedAt) >= job.since - 1000 && (job.model === null || x.model === job.model)) || null;
+  return sessions.find((x) => profileKeyOf(x) === String(job.topicId) && Date.parse(x.startedAt) >= job.since - 1000 && (job.model === null || x.model === job.model)) || null;
 }
 
-/** A Telegram session on this machine can switch its door; others keep the label. */
+/** A session on this machine that serves a conversation (Telegram, app or Slack) can switch its engine. */
 export function canSwitchDoor(s) {
-  return Boolean(s && !s.remote && s.platform === 'telegram' && s.platformId != null);
+  return Boolean(s && !s.remote && profileKeyOf(s) !== null);
 }
 
 // ── Terminal ─────────────────────────────────────────────────────────────

@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "slug": "model-settings-notices",
+  "sessionId": "aeea05e9-9a54-4a61-b023-0265492eba2e",
+  "timestamp": "2026-11-05T12:32:31.411Z",
+  "artifactPath": "upgrades/side-effects/model-settings-notices.md",
+  "artifactSha256": "772594331db15f3f961a5e8d223b009d44628352db45f28e9b71efeef68db23a",
+  "coveredFiles": [
+    "docs/specs/model-settings-notices.eli16.md",
+    "src/commands/server.ts",
+    "src/core/TopicProfileOrchestrator.ts",
+    "src/server/routes.ts",
+    "src/server/sessionSpawnTopicBinding.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/topic-profile-direct-spawn-lifecycle.test.ts",
+    "tests/unit/TopicProfileOrchestrator.test.ts",
+    "upgrades/next/model-settings-notices.md",
+    "upgrades/side-effects/model-settings-notices.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible correction to profile comparison and duplicate notices; no new lifecycle permissions or migration.",
+  "eli16Path": "docs/specs/model-settings-notices.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/model-settings-notices.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Repeated server boot re-enters the same profile mismatch notification edge. The durable fingerprint claim settles at one notification under sustained busy pressure, including reconstruction before every tick; production claimReconciliationNotice is exercised by the registry and the real disk/HTTP lifecycle proves restart persistence."
+    },
+    "component": "TopicProfileOrchestrator"
+  },
+  "causalAutopsy": {
+    "origin": "unknown",
+    "notes": "Boot sweep treated accepted direct-spawn choice/default drift as failed pin application and stored no durable notice episode."
+  }
+}

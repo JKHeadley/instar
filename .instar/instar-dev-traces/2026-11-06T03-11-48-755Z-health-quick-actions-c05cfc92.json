@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "health-quick-actions",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T03:11:48.755Z",
+  "artifactPath": "upgrades/side-effects/health-quick-actions.md",
+  "artifactSha256": "df3d73d154494e5725c1ca9dc07e0162e716f44dd9c61c9daaee73cb3e5cf14b",
+  "specPath": "docs/specs/health-quick-actions.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-06T03-11-43-125Z-health-quick-actions.json",
+    ".instar/instar-dev-traces/2026-11-06T03-11-08-877Z-health-quick-actions-909efe55.json",
+    "src/monitoring/healthChoices.ts",
+    "upgrades/side-effects/health-quick-actions.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Part of the same Tier 2 change: marks two catch blocks that already report through the store's error callback.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

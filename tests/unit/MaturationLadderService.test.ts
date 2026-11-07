@@ -62,6 +62,24 @@ const readyRows = (now: number, days = 10) => Array.from({ length: days * 4 + 1 
 const fired = (now: number, n = 3) => Array.from({ length: n }, (_, i) => ({ at: new Date(now - (i + 1) * DAY).toISOString(), kind: 'fired' }));
 const auditLines = (dir: string) => fs.readFileSync(path.join(dir, 'logs/maturation-advances.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l));
 
+it('never reclassifies retained generic metadata as a feature owner on an id collision',()=>{
+  const {svc}=make();const initiative={id:'monitoring-x',measurement:{subject:{kind:'effort',key:'monitoring-x'}}} as unknown as Initiative;
+  // Even malformed retained generic metadata must stay visibly invalid instead
+  // of acquiring a different feature's valid contract and readiness.
+  expect(svc.subjects([initiative])).toEqual([initiative]);expect(svc.subjects([initiative])[0].rollout).toBeUndefined();
+});
+
+it('clears stale scanner errors when the validated ladder becomes the contract owner', () => {
+  const { svc } = make();
+  const base = { id: 'monitoring-x', title: 'X', rollout: { flagPath: 'monitoring.x', stage: 'dry-run', maturationContractError: 'invalid-shape' },
+    rolloutAccounting: { disposition: 'active', sourcePrNumber: 7, rung: 'test-agent-live', maturationContractError: 'invalid-shape' } } as Initiative;
+  const subject = svc.subjects([base]).find(i => i.id === base.id)!;
+  expect(subject.rollout?.maturationEvaluation).toEqual(contractForRung(devRung as LadderRung));
+  expect(subject.rollout?.maturationContractError).toBeUndefined();
+  expect(subject.rolloutAccounting?.maturationContractError).toBeUndefined();
+  expect(base.rollout?.maturationContractError).toBe('invalid-shape');
+});
+
 async function readyService(over: Parameters<typeof make>[0] = {}) {
   const now = 100 * DAY;
   const ctx = make({ now, d7Rows: readyRows(now), ...over });
@@ -70,6 +88,16 @@ async function readyService(over: Parameters<typeof make>[0] = {}) {
   return { ...ctx, now };
 }
 const moveBody = (over: Record<string, unknown> = {}) => ({ id: 'monitoring.x', target: 'dev-agent-live' as const, reason: 'numbers held and both readers agree', from: { 'monitoring.x.dryRun': true }, opinions: [{ family: 'claude', verdict: 'promote' }], ...over });
+
+it('measurement contracts use fresh live rung selection rather than the UI cache', () => {
+  const { svc, state } = make();
+  expect(svc.features()[0].next).toBe('dev-agent-live');
+  state.config = { developmentAgent: true, monitoring: { x: { dryRun: false } } };
+  expect(svc.features()[0].next).toBe('dev-agent-live');
+  expect(svc.measurementContracts()?.get('monitoring-x')).toEqual({ contract: contractForRung(fleetRung as LadderRung), overridesInitiative: true });
+  state.config = { developmentAgent: false };
+  expect(svc.measurementContracts()?.get('monitoring-x')?.overridesInitiative).toBe(false);
+});
 
 describe('the registry', () => {
   it('a bad file is reported, and nothing is raised or moved', () => {
@@ -257,6 +285,48 @@ describe('POST /maturation/moves floors', () => {
     expect(ok.ok).toBe(true);
     expect((dev.state.config.monitoring as Record<string, unknown>).x).toEqual({ enabled: true, dryRun: true });
     expect(dev.state.writes).not.toContain('monitoring.x.fleet');
+  });
+});
+
+describe('the ladder view offers only the move the floors accept', () => {
+  const noStart = { ...xEntry, flag: { path: 'monitoring.x', on: true }, rungs: { 'dev-agent-live': { ...devRung, advance: { kind: 'config', set: { 'monitoring.x.enabled': true } } }, fleet: fleetRung } };
+  const offConfig = { developmentAgent: true, monitoring: {} };
+
+  it('a dark feature with no start reads as a code move, and the floor refuses the same way', async () => {
+    const { svc, state } = make({ entries: [noStart], config: offConfig });
+    await svc.refresh();
+    const [view] = svc.features();
+    expect(view.state).toBe('not-started');
+    expect(view.move).toEqual({ kind: 'code' });
+    const r = svc.applyMove({ id: 'monitoring.x', target: 'dev-agent-live', reason: 'r', from: {}, opinions: [{}] });
+    expect(r).toMatchObject({ refused: 'not-a-config-move', detail: 'code' });
+    expect(state.writes).toEqual([]);
+  });
+
+  it('a dark feature with a start still offers that start as a config move', async () => {
+    const withStart = { ...noStart, start: { set: { 'monitoring.x.enabled': true, 'monitoring.x.dryRun': true } } };
+    const { svc } = make({ entries: [withStart], config: offConfig });
+    await svc.refresh();
+    expect(svc.features()[0].move).toMatchObject({ kind: 'config', set: withStart.start.set });
+  });
+
+  it('a feature past dark keeps its rung move', async () => {
+    const { svc } = make();
+    await svc.refresh();
+    expect(svc.features()[0].move).toMatchObject({ kind: 'config', set: { 'monitoring.x.dryRun': false } });
+  });
+
+  it('no shipped entry advertises a config move the floor would call not-a-config-move', async () => {
+    const shipped = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'src/data/feature-ladders.json'), 'utf-8')) as { entries: unknown[] };
+    const { svc } = make({ entries: shipped.entries, config: { developmentAgent: true } });
+    await svc.refresh();
+    const offered = svc.features().filter(f => f.state === 'not-started' && f.move?.kind === 'config');
+    const refused = offered.filter(f => {
+      const move = f.move as { from: Record<string, unknown> };
+      const r = svc.applyMove({ id: f.id, target: f.next as 'dev-agent-live', reason: 'r', from: move.from, opinions: [{}] });
+      return !r.ok && r.refused === 'not-a-config-move';
+    }).map(f => f.id);
+    expect(refused).toEqual([]);
   });
 });
 

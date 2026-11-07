@@ -21,6 +21,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+import { featureEvidence } from '../FeatureEvidenceLog.js';
+
 import {
   claimSharedState,
   getAnchor,
@@ -671,7 +673,7 @@ export class SelfActionGovernorCore {
     if (cls.mode !== 'enforce') {
       // OBSERVE / DEMOTED: record the would-deny, always allow (FD1).
       cls.counters.wouldDeny += 1;
-      this.recordAdmit(cls, target, nowMs);
+      this.recordAdmit(cls, target, nowMs, true);
       const carry = cls.window.rehydratedCarry > 0 ? ' (rehydrated-window)' : '';
       return this.allow(cls.policy.controllerId, target, nowMs, 'observe-would-deny', `${sub}: ${detail}${carry}`);
     }
@@ -1036,8 +1038,15 @@ export class SelfActionGovernorCore {
     return total;
   }
 
-  private recordAdmit(cls: ClassState, target: DerivedTarget, nowMs: number): void {
+  private recordAdmit(cls: ClassState, target: DerivedTarget, nowMs: number, wouldDeny = false): void {
     cls.counters.admits += 1;
+    // The FD12 would-deny rate on the maturation ladder: one row per admit, capped at one
+    // a second per class and verdict so a storm cannot push other features' rows out.
+    featureEvidence.recordAtMostEvery('intelligence.selfActionGovernor', `${cls.policy.controllerId}|${wouldDeny}`, 1_000, {
+      kind: wouldDeny ? 'held' : 'fired',
+      reason: wouldDeny ? 'would deny' : 'admitted',
+      context: { controllerId: cls.policy.controllerId, mode: cls.mode },
+    });
     cls.window.buckets[cls.window.head] += 1;
     cls.windowTotal += 1;
     const key = target.keyIsVolatile ? `class:${target.classId}` : target.key;

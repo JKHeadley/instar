@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "pair-handover-allowlist",
+  "sessionId": "19937d24-2794-449e-8016-b60274729e6e",
+  "timestamp": "2026-11-05T19:14:27.676Z",
+  "artifactPath": "upgrades/side-effects/pair-handover-allowlist.md",
+  "artifactSha256": "ad5c48a2652acac7abe2915cd951d12416dd67b52c7d4b755c0369953145fe20",
+  "specPath": "docs/specs/session-pool-activation-at-pairing.md",
+  "coveredFiles": [
+    "docs/specs/session-pool-activation-at-pairing.eli16.md",
+    "docs/specs/session-pool-activation-at-pairing.md",
+    "src/commands/init.ts",
+    "src/commands/machine.ts",
+    "src/core/sessionPoolPairActivation.ts",
+    "src/core/telegramPairHandover.ts",
+    "src/server/AgentServer.ts",
+    "src/server/machineRoutes.ts",
+    "tests/e2e/session-pool-pair-activation-alive.test.ts",
+    "tests/integration/session-pool-pair-activation.test.ts",
+    "tests/unit/session-pool-pair-activation.test.ts",
+    "upgrades/next/pair-handover-allowlist.md",
+    "upgrades/side-effects/pair-handover-allowlist.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Decides who can reach the agent on a joined machine; small and revert-safe, on an already converged and approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A guard pattern; no self-action."
+  }
+}

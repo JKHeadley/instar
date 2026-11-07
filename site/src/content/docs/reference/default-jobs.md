@@ -15,7 +15,9 @@ path until its script is enabled.
 |-----|------|-------|---------|
 | `health-check` | `*/5 * * * *` (every 5 min) | Haiku | Verify infrastructure health |
 | `commitment-detection` | `*/5 * * * *` (every 5 min) | Haiku | Detect new commitments in the recent conversation flow |
+| `promise-review` | `23 */6 * * *` (every 6h at minute 23) | Sonnet | Review up to 30 due promises, retain or prioritize uncertain work, and propose evidence-backed closures through the server. Gated by `commitments.promiseReview`; closures use shadow mode until graduation. Never sends messages. |
 | `commitment-checkin-reminder` | `*/5 * * * *` (every 5 min) | — (no LLM) | Post one reminder for each commitment whose check-in date has arrived. Ships disabled. |
+| `promise-review` | `23 */6 * * *` (every 6h, at :23) | Sonnet | Review up to 30 due open promises; keep them, adjust priority, or propose evidence-backed completion/archive. Never sends messages. Gated by `commitments.promiseReview` (live on development agents, dark on the fleet); closures stay in shadow until graduation, and the server enforces evidence and per-run/day closure caps. |
 | `reflection-trigger` | `0 */4 * * *` (every 4h) | Opus | Reflect on recent work and surface insights |
 | `evolution-overdue-check` | `0 */4 * * *` (every 4h) | Haiku | Surface overdue commitments and stalled action items |
 | `evolution-proposal-evaluate` | `0 */6 * * *` (every 6h) | Sonnet | Evaluate evolution proposals against current goals |
@@ -101,3 +103,22 @@ These older jobs still exist in some agent installations for backward compatibil
 | `dispatch-check` | AutoDispatcher (built-in server component — no session needed) |
 
 Both replacements are server-side components that don't spawn Claude sessions, saving quota.
+
+
+## Failure investigation and promise review
+
+The `failure-callout-investigator` job investigates serious agent failures using
+the correction ledger. It runs at minutes 11 and 41, reserves a bounded batch
+before starting a model session, and retains the reservation during capacity
+queuing. Three unchanged attempts exhaust the automatic budget; a timer cannot
+reset it. The agent must provide diagnosis, class repair and current verification
+before closure. New occurrences reopen the case. Read the
+[correction learning guide](/features/correction-preference-learning/) for evidence,
+origin ownership and opt-out behavior.
+
+The separate `promise-review` job reviews tracked commitments against their
+actual state and records progress or evidence through the commitment system.
+It is not a substitute for investigating the root cause of a failure and does
+not authorize closing a failure case without its replay and legitimate-behavior
+checks. Both jobs keep unfinished work visible without asking the user to manage
+a second task list.
