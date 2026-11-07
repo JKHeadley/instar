@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-07T22:35:23.913Z",
+  "slug": "recommended-services-bitwarden-recipe",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 421,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/BitwardenProvider.ts",
+      "src/recommended/bitwardenVault.ts",
+      "src/recommended/recipes.ts",
+      "src/recommended/setupState.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 404,
+    "deletedLines": 17
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

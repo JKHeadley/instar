@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "recommended-services-bitwarden-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-07T22:35:07.822Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-bitwarden-recipe.md",
+  "artifactSha256": "4c786b25a4c7695c8301256e58d9f315f90e35b449fcd94ecacdc503084b021b",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "dashboard-pair/service-yes.js",
+    "docs/specs/recommended-services-bitwarden-recipe.eli16.md",
+    "src/core/BitwardenProvider.ts",
+    "src/recommended/bitwardenVault.ts",
+    "src/recommended/recipes.ts",
+    "src/recommended/setupState.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-bitwarden.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "tests/unit/bitwarden-provider.test.ts",
+    "tests/unit/recommended-services-bitwarden-recipe.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-bitwarden-recipe.md",
+    "upgrades/side-effects/recommended-services-bitwarden-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Credentials: a vault master password is stored and used, and every agent secret is copied to an outside service; the full chain with three reviewer reads.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
