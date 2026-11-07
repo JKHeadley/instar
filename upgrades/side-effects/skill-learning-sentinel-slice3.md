@@ -310,3 +310,5 @@ No raw `rmSync`/`unlinkSync`/`rmdirSync` was introduced by the fixes. No remaini
 **Concur with the review.**
 
 **Follow-up (CI, 2026-11-07):** the ledger cache registers/unregisters its better-sqlite3 handle per the SqliteRegistry contract and is allowlisted in the wiring test (same fix as slices 1 and 2). No behaviour change.
+
+**Docs-site addition (2026-11-07):** `site/src/content/docs/reference/cli.md` and `site/src/content/docs/guides/test-as-self.md` document `instar test-as-self` (docs-coverage command floor). Documentation only.
