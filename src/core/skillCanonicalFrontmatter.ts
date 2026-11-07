@@ -42,7 +42,7 @@ function parsesAsMapping(frontmatter: string): boolean {
   try {
     const fm = yaml.load(frontmatter, { schema: yaml.FAILSAFE_SCHEMA, json: false });
     return fm !== null && typeof fm === 'object' && !Array.isArray(fm);
-  } catch {
+  } catch { // @silent-fallback-ok — a frontmatter that will not parse is re-quoted on the next pass; the caller logs canonical-backfill-unparseable and skips (nothing is written on a guess)
     return false;
   }
 }
@@ -61,7 +61,7 @@ function scalarContent(value: string): string | null {
     try {
       yaml.load(value, { schema: yaml.FAILSAFE_SCHEMA, json: false });
       return null; // a well-formed flow collection — keep the line as written
-    } catch {
+    } catch { // @silent-fallback-ok — same: unparseable after re-quoting ⇒ no canonical, logged by the caller
       return value; // an unterminated bracket is plain text to a human; quote it
     }
   }
@@ -69,7 +69,7 @@ function scalarContent(value: string): string | null {
     try {
       const v = yaml.load(value, { schema: yaml.FAILSAFE_SCHEMA, json: false });
       return typeof v === 'string' ? v : value;
-    } catch {
+    } catch { // @silent-fallback-ok — same: the final parse attempt failing means "no canonical" — the safe direction
       return value;
     }
   }

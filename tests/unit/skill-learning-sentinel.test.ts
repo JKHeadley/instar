@@ -7,6 +7,7 @@
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -17,6 +18,7 @@ import { Ledger } from '../../src/monitoring/skillLearning/Ledger.js';
 import { Outcomes } from '../../src/monitoring/skillLearning/Outcomes.js';
 import type { FamilyProvider } from '../../src/monitoring/skillLearning/Drafter.js';
 import { SKILL_LEARNING_DEFAULTS } from '../../src/config/ConfigDefaults.js';
+import { FakeCommitProtocol, FakeVersionStore } from '../helpers/skillLearningLiveFixtures.js';
 import type {
   EventRow, LedgerReader, LedgerRow, LedgerWriter, OutcomeRow, RequestRow, SkillLearningConfig, VerdictRow,
 } from '../../src/monitoring/skillLearning/types.js';
@@ -601,5 +603,185 @@ describe('SkillLearningSentinel.create — one-expression wiring (Testing Integr
     sentinel.stop();
     const none = created({ provenanceLog: null });
     expect((none.sentinel as unknown as { deps: SkillLearningSentinelDeps }).deps.provenance.isRecordingLive()).toBe(false);
+  });
+});
+
+describe('SkillLearningSentinel — slice 2 read side (operator-edited exclusion, the "new" label, pending vs skills)', () => {
+  function canonical(home: Home, name: string, metadata: Record<string, string>): void {
+    const dir = path.join(home.root, '.instar', 'skills', name);
+    fs.mkdirSync(dir, { recursive: true });
+    const meta = Object.entries({ 'instar-learned-origin': 'skill-learning-sentinel', 'instar-learned-key': KEY, 'instar-learned-version': '2', ...metadata }).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n');
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: "Use when x. Not for y."\nmetadata:\n${meta}\n---\nbody\n`);
+  }
+  function use(ledger: FakeLedger, i: number, label: OutcomeRow['label'], extra: Partial<NonNullable<OutcomeRow['skillUsed']>> = {}): void {
+    const at = NOW - (i + 1) * 3600_000;
+    ledger.append({ kind: 'request', eventId: `r${i}`, source: { channel: 'telegram', chatId: '-100', messageId: `u${i}` }, topicId: '42', at: new Date(at).toISOString(), channel: 'telegram', identity: 'verified', state: 'classified', procedureKey: KEY, runId: `u-run-${i}`, machineId: 'm1' });
+    ledger.append({ kind: 'outcome', eventId: `o${i}`, runId: `u-run-${i}`, revision: 1, procedureKey: KEY, topicId: '42', label, provisional: false, windowStart: new Date(at).toISOString(), at: new Date(at + 60_000).toISOString(), machineId: 'm1',
+      skillUsed: { skill: 'ci-health-report', contentHash: 'h', corroborated: true, versionUncertain: false, ...extra } });
+  }
+
+  it('a use whose rendering the operator had edited is excluded from every score and counted in operatorEdited; shadow never calls a protocol it is not given', () => {
+    const home = mkHome(); const ledger = new FakeLedger();
+    canonical(home, 'ci-health-report', { 'instar-learned-state': 'active', 'instar-learned-created': new Date(NOW - 30 * DAY).toISOString() });
+    use(ledger, 0, 'accepted');
+    use(ledger, 1, 'accepted');
+    use(ledger, 2, 'corrected', { operatorEdited: true });     // the edited rendering ran — not the version's fault
+    use(ledger, 3, 'corrected', { operatorEdited: true });
+    use(ledger, 4, 'unknown', { operatorEdited: true });
+    const h = harness(home, ledger, []);
+    const [s] = h.sentinel.status().skills;
+    expect(s).toMatchObject({ name: 'ci-health-report', state: 'learned', uses: 2, accepted: 2, corrected: 0, unknown: 0, operatorEdited: 3, version: 2, isNew: false });
+    expect(s.score).toBeCloseTo((2 + 1) / (2 + 2));
+    expect(s.measurableRate).toBe(1);
+    expect(s.lastUsedAt).toBe(new Date(NOW - 3600_000 + 60_000).toISOString()); // the newest use, edited or not
+    expect(h.sentinel.status().pending).toEqual([]);
+  });
+
+  it('the 7-day "new" label: active + created/activated inside 7 days ⇒ isNew; older, pending or locked-but-old ⇒ not; pending canonicals are listed under pending, not skills', () => {
+    const home = mkHome(); const ledger = new FakeLedger();
+    canonical(home, 'fresh', { 'instar-learned-state': 'active', 'instar-learned-created': new Date(NOW - 2 * DAY).toISOString() });
+    canonical(home, 'activated', { 'instar-learned-state': 'active', 'instar-learned-created': new Date(NOW - 40 * DAY).toISOString(), 'instar-learned-activated': new Date(NOW - 6 * DAY).toISOString() });
+    canonical(home, 'old', { 'instar-learned-state': 'active', 'instar-learned-created': new Date(NOW - 8 * DAY).toISOString() });
+    canonical(home, 'legacy', { 'instar-learned-created': new Date(NOW - DAY).toISOString() });   // no state key = active (slice-0 canonicals)
+    canonical(home, 'waiting', { 'instar-learned-state': 'pending', 'instar-learned-created': new Date(NOW - DAY).toISOString() });
+    const h = harness(home, ledger, []);
+    const st = h.sentinel.status();
+    expect(Object.fromEntries(st.skills.map((s) => [s.name, s.isNew]))).toEqual({ fresh: true, activated: true, old: false, legacy: true });
+    expect(st.counts.skills).toBe(4);
+    expect(st.pending).toEqual([expect.objectContaining({ name: 'waiting', pendingReason: 'rung-unproven', paraphrases: [], version: 2, createdAt: new Date(NOW - DAY).toISOString() })]);
+    expect(st.pending[0].fileHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(h.sentinel.skill('waiting')).toMatchObject({ name: 'waiting', state: 'proposal', isNew: false });
+    expect(h.sentinel.skill('fresh')).toMatchObject({ name: 'fresh', isNew: true });
+  });
+});
+
+describe('SkillLearningSentinel — slice 2 `versions` phase: post-sync epoch reconciliation on EVERY machine (settles)', () => {
+  const sha = (t: string) => crypto.createHash('sha256').update(t, 'utf-8').digest('hex');
+  function canonical(home: Home, name: string, state = 'active', body = 'body\n'): { raw: string; fileHash: string } {
+    const dir = path.join(home.root, '.instar', 'skills', name);
+    fs.mkdirSync(dir, { recursive: true });
+    const raw = `---\nname: ${name}\ndescription: "Use when x. Not for y."\nmetadata:\n  instar-learned-origin: "skill-learning-sentinel"\n  instar-learned-key: "${KEY}"\n  instar-learned-version: "1"\n  instar-learned-state: "${state}"\n  instar-learned-locked: "false"\n---\n${body}`;
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), raw);
+    return { raw, fileHash: sha(raw) };
+  }
+  const row = (machineId: string, epoch: number, fileHash: string, version = 1) => ({ txId: `tx-${machineId}-${version}`, version, fileHash, bodyHash: 'b', epoch, machineId, at: new Date(NOW - epoch * 1000).toISOString() });
+  function rig(home: Home, over: Partial<SkillLearningSentinelDeps> = {}) {
+    const versions = new FakeVersionStore();
+    const protocol = new FakeCommitProtocol(home.root, versions);
+    const h = harness(home, new FakeLedger(), [], { commitProtocol: protocol, versionStore: versions, holdsLease: () => false, ...over });
+    return { ...h, versions, protocol };
+  }
+  const stateOf = (home: Home, name: string) => fs.readFileSync(path.join(home.root, '.instar', 'skills', name, 'SKILL.md'), 'utf-8').match(/instar-learned-state: "?([a-z-]+)"?/)![1];
+
+  it('superseded: the lower-epoch body on disk becomes a proposal (pendingReason superseded), the canonical is locked operator-owned, logged + counted — on a non-holder too; a second tick emits nothing', async () => {
+    const home = mkHome();
+    const { fileHash } = canonical(home, 'ci-health-report');
+    const r = rig(home);
+    r.versions.append('ci-health-report', row('m1', 1, fileHash));          // this machine's row — the chain
+    r.versions.scripted.set('ci-health-report', (h) => ({ kind: 'superseded', winner: row('m2', 3, 'w'.repeat(64), 2), loser: row('m1', 1, h!), tombstoned: 1 }));
+    const first = await r.sentinel.tick();
+    expect(first.observeOnly).toBe(true);                                      // the phase ran on a standby
+    expect(first.phaseFailures).toEqual([]);
+    expect(r.protocol.calls.map((c) => [c.op, c.name, c.ctx.expectedPrevHash])).toEqual([['lock', 'ci-health-report', fileHash]]);
+    expect(stateOf(home, 'ci-health-report')).toBe('operator-owned');
+    const proposalName = `ci-health-report-superseded-${fileHash.slice(0, 8)}`;
+    expect(proposalDirs(home)).toEqual([proposalName]);
+    const pdir = path.join(home.stateDir, 'skill-learning', 'proposals', proposalName);
+    expect(fs.readFileSync(path.join(pdir, 'SKILL.md'), 'utf-8')).toMatch(new RegExp(`^---\\nname: ${proposalName}\\n`));
+    expect(fs.readFileSync(path.join(pdir, 'SKILL.md'), 'utf-8')).toContain('instar-learned-state: proposal');
+    expect(JSON.parse(fs.readFileSync(path.join(pdir, 'proposal.json'), 'utf-8'))).toMatchObject({ name: proposalName, key: KEY, pendingReason: 'superseded', disagreement: null, arbiterOnly: false });
+    const log = readLog(home);
+    expect(log.find((x) => x.kind === 'epoch-superseded')).toMatchObject({ name: 'ci-health-report', onDiskFileHash: fileHash, loser: { epoch: 1, machineId: 'm1' }, winner: { epoch: 3, machineId: 'm2' }, tombstoned: 1, proposal: proposalName });
+    expect(log.find((x) => x.kind === 'lock')).toMatchObject({ name: 'ci-health-report', by: 'sentinel', chain: 'version-row' });
+    const st = r.sentinel.status();
+    expect(st.epochSuperseded).toBe(1);
+    expect(st.splitBrain).toBe(0);
+    expect(st.skills[0]).toMatchObject({ name: 'ci-health-report', state: 'locked', locked: true });
+    expect(st.proposals[0]).toMatchObject({ name: proposalName, pendingReason: 'superseded' });
+    // Settling: the locked body is a new hash the chain now carries; a second (and third) tick emits NOTHING.
+    const rows = log.length;
+    await r.sentinel.tick();
+    await r.sentinel.tick();
+    expect(r.protocol.calls).toHaveLength(1);
+    expect(readLog(home)).toHaveLength(rows);
+    expect(r.sentinel.status().epochSuperseded).toBe(1);
+    // And a restart (fresh sentinel over the same state file) still emits nothing.
+    const again = rig(home);
+    again.versions.byName.set('ci-health-report', r.versions.byName.get('ci-health-report')!);
+    await again.sentinel.tick();
+    expect(again.protocol.calls).toEqual([]);
+    expect(again.sentinel.status().epochSuperseded).toBe(1);
+  });
+
+  it('split-brain: the on-disk body becomes a proposal, the absent candidate is named (no body fabricated), the canonical is locked; settles', async () => {
+    const home = mkHome();
+    const { fileHash } = canonical(home, 'ci-health-report');
+    const r = rig(home);
+    r.versions.append('ci-health-report', row('m1', 2, fileHash));
+    const other = row('m2', 2, 'o'.repeat(64));
+    r.versions.scripted.set('ci-health-report', (h) => ({ kind: 'split-brain', epoch: 2, candidates: [row('m1', 2, h!), other] }));
+    await r.sentinel.tick();
+    expect(r.protocol.calls.map((c) => c.op)).toEqual(['lock']);
+    expect(stateOf(home, 'ci-health-report')).toBe('operator-owned');
+    const mine = `ci-health-report-split-brain-${fileHash.slice(0, 8)}`;
+    const theirs = `ci-health-report-split-brain-${'o'.repeat(8)}`;
+    expect(proposalDirs(home).sort()).toEqual([mine, theirs].sort());
+    expect(fs.existsSync(path.join(home.stateDir, 'skill-learning', 'proposals', mine, 'SKILL.md'))).toBe(true);
+    expect(fs.existsSync(path.join(home.stateDir, 'skill-learning', 'proposals', theirs, 'SKILL.md'))).toBe(false);   // not on this machine
+    expect(JSON.parse(fs.readFileSync(path.join(home.stateDir, 'skill-learning', 'proposals', theirs, 'proposal.json'), 'utf-8'))).toMatchObject({ pendingReason: 'split-brain', description: expect.stringContaining('written by m2') });
+    expect(readLog(home).find((x) => x.kind === 'split-brain')).toMatchObject({ name: 'ci-health-report', epoch: 2, onDiskCandidate: { machineId: 'm1' }, proposal: mine, bodiesNotOnThisMachine: [{ machineId: 'm2', fileHash: 'o'.repeat(64), proposal: theirs }] });
+    expect(r.sentinel.status().splitBrain).toBe(1);
+    const rows = readLog(home).length;
+    await r.sentinel.tick();
+    expect(r.protocol.calls).toHaveLength(1);
+    expect(readLog(home)).toHaveLength(rows);
+  });
+
+  it('unknown-hash (a merged or edited body no row carries): the chain mismatch is the protocol\'s own operator-owned lock (user-edit-conflict), logged as a lock; in-sync / no-rows / no store ⇒ nothing', async () => {
+    const home = mkHome();
+    const { fileHash } = canonical(home, 'ci-health-report');
+    const r = rig(home);
+    r.versions.append('ci-health-report', row('m1', 1, 'v'.repeat(64)));     // the chain knows a different body
+    await r.sentinel.tick();
+    expect(r.protocol.calls.map((c) => [c.op, c.ctx.expectedPrevHash])).toEqual([['lock', 'v'.repeat(64)]]);
+    expect(stateOf(home, 'ci-health-report')).toBe('operator-owned');
+    expect(readLog(home).find((x) => x.kind === 'unknown-hash')).toMatchObject({ name: 'ci-health-report', onDiskFileHash: fileHash });
+    expect(readLog(home).find((x) => x.kind === 'lock')).toMatchObject({ by: 'protocol-conflict' });
+    expect(proposalDirs(home)).toEqual([]);
+    await r.sentinel.tick();
+    expect(r.protocol.calls).toHaveLength(1);
+
+    const quiet = mkHome();
+    const c2 = canonical(quiet, 'in-sync-skill');
+    canonical(quiet, 'no-rows-skill');
+    const q = rig(quiet);
+    q.versions.append('in-sync-skill', row('m1', 1, c2.fileHash));
+    await q.sentinel.tick();
+    expect(q.versions.reconcileCalls.map((c) => c.name).sort()).toEqual(['in-sync-skill', 'no-rows-skill']);
+    expect(q.protocol.calls).toEqual([]);
+    expect(proposalDirs(quiet)).toEqual([]);
+    expect(readLog(quiet).filter((x) => ['lock', 'unknown-hash', 'epoch-superseded', 'split-brain'].includes(String(x.kind)))).toEqual([]);
+
+    const none = mkHome();
+    canonical(none, 'ci-health-report');
+    const n = rig(none, { versionStore: null });
+    const s = await n.sentinel.tick();
+    expect(s.phaseFailures).toEqual([]);
+    expect(n.protocol.calls).toEqual([]);
+  });
+
+  it('a lock the protocol refuses (fence) is logged lock-refused and attempted once per (name, hash) on this machine', async () => {
+    const home = mkHome();
+    const { fileHash } = canonical(home, 'ci-health-report');
+    const r = rig(home);
+    r.versions.append('ci-health-report', row('m1', 1, 'v'.repeat(64)));
+    r.protocol.refuse = 'not-holder';
+    await r.sentinel.tick();
+    await r.sentinel.tick();
+    expect(r.protocol.calls).toHaveLength(1);
+    expect(readLog(home).filter((x) => x.kind === 'lock-refused')).toHaveLength(1);
+    expect(readLog(home).find((x) => x.kind === 'lock-refused')).toMatchObject({ name: 'ci-health-report', reason: 'not-holder' });
+    expect(stateOf(home, 'ci-health-report')).toBe('active');
+    expect(readLog(home).find((x) => x.kind === 'unknown-hash')).toMatchObject({ onDiskFileHash: fileHash });
   });
 });

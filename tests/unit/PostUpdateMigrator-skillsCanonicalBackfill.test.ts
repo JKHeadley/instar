@@ -296,6 +296,39 @@ describe('PostUpdateMigrator.migrateBuiltinSkillRenderings', () => {
     expect(again.skipped).toContain('skill-renderings: every canonical skill already rendered for the enabled frameworks');
   });
 
+  it('skips every LEARNED canonical (pending stays unrendered; an active learned one is the reconciler\'s) and still renders the hand-written one', async () => {
+    const learned = (name: string, state: string): string => `---\nname: ${name}\ndescription: Learned ${name}\nmetadata:\n  instar-learned-origin: "skill-learning-sentinel"\n  instar-learned-state: "${state}"\n---\n# ${name}\n`;
+    write(path.join(home, '.instar/skills/pending-one/SKILL.md'), learned('pending-one', 'pending'));
+    write(path.join(home, '.instar/skills/active-one/SKILL.md'), learned('active-one', 'active'));
+    const result = emptyResult();
+    await newMigrator(home).migrateBuiltinSkillRenderings(result);
+    expect(fs.existsSync(path.join(home, '.claude/skills/pending-one'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.agents/skills/pending-one'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.claude/skills/active-one'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.agents/skills/gamma/SKILL.md'))).toBe(true); // hand-written: rendered as before
+    expect(result.skipped).toContain('skill-renderings: pending-one is a learned canonical — the learned-skill reconciler renders it by state');
+    expect(result.skipped).toContain('skill-renderings: active-one is a learned canonical — the learned-skill reconciler renders it by state');
+    expect(result.upgraded).toEqual(['skill-renderings: gamma → codex-cli']);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('migrateParityRenderings (the generic parity pass) skips learned canonicals too, and a render-held refusal from the rule is a skip, not an error', async () => {
+    const learned = (name: string, state: string): string => `---\nname: ${name}\ndescription: Learned ${name}\nmetadata:\n  instar-learned-origin: "skill-learning-sentinel"\n  instar-learned-state: "${state}"\n---\n# ${name}\n`;
+    write(path.join(home, '.instar/skills/pending-two/SKILL.md'), learned('pending-two', 'pending'));
+    write(path.join(home, '.instar/skills/owned-two/SKILL.md'), learned('owned-two', 'operator-owned'));
+    const result = emptyResult();
+    await (newMigrator(home) as unknown as { migrateParityRenderings(r: MigrationResult): Promise<void> }).migrateParityRenderings(result);
+    expect(fs.existsSync(path.join(home, '.claude/skills/pending-two'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.agents/skills/pending-two'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.claude/skills/owned-two'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.agents/skills/gamma/SKILL.md'))).toBe(true); // the hand-written one still renders
+    expect(result.skipped).toContain('parity-renderings: skill/pending-two is a learned canonical — the learned-skill reconciler renders it by state');
+    expect(result.skipped).toContain('parity-renderings: skill/owned-two is a learned canonical — the learned-skill reconciler renders it by state');
+    expect(result.errors.filter((e) => e.includes('pending-two') || e.includes('owned-two'))).toEqual([]);
+    // The rule itself refuses a held canonical when reached directly — and the migrator files that as a skip.
+    await expect(skillParityRule.remediate(home, 'pending-two', 'claude-code')).rejects.toThrow(/render-held:pending/);
+  });
+
   it('a canonical the rule cannot read is a skip, not an error, and its rendering is untouched', async () => {
     write(path.join(home, '.instar/skills/delta/SKILL.md'), 'no frontmatter here\n');
     const result = emptyResult();

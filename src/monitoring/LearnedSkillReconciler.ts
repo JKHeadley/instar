@@ -38,6 +38,17 @@
  *
  * It never calls `removeOrphans()`.
  *
+ * Slice 2 (commit protocol, deviations (dd)/(ff)): the reconciler is the ONE
+ * writer of the baseline shard, so the commit protocol renders THROUGH it —
+ * `renderSkill(name, txId)` and `preflight(name)` run under the same async
+ * mutex as `reconcileAll` (they WAIT for a running pass; only `reconcileAll`
+ * itself answers `already-running`). A canonical whose frontmatter state is
+ * `pending`, `retired` or `operator-owned`, or whose text carries git merge
+ * markers, is never rendered (it is skipped by `listLearnedCanonicals` AND by
+ * `renderSkill`). With `holdUntilReleased`, every `reconcileAll` waits for
+ * `releaseBootGate()` — the server releases it after the commit journal's own
+ * recovery has run, so recovery always precedes the boot pass.
+ *
  * Self-action posture: the tick is a self-triggered controller. Its convergence
  * argument is registered as `learned-skill-reconciler` in
  * src/testing/selfActionRegistry.ts: one render per learned skill per canonical
@@ -52,7 +63,11 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import yaml from 'js-yaml';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
-import { skillParityRule } from '../providers/parity/rules/skillParityRule.js';
+import { skillParityRule, isLearnedCanonical, learnedStateOf, hasMergeMarkers, renderHold } from '../providers/parity/rules/skillParityRule.js';
+
+// The learned-state helpers live in the parity rule (the leaf every renderer shares, so `remediate`
+// itself refuses a held canonical); re-exported here for the sentinel, the protocol and the tests.
+export { isLearnedCanonical, learnedStateOf, hasMergeMarkers, renderHold };
 import type { ParityMismatch } from '../providers/parity/types.js';
 
 export type ReconcileReason = 'boot' | 'pull' | 'tick';
@@ -73,9 +88,29 @@ export interface LearnedSkillReconcilerDeps {
   reconcileEnabled?: () => boolean;
   /** Tick cadence (`monitoring.skillLearning.tickMinutes`), default 10. */
   tickMinutes?: number;
+  /**
+   * Hold EVERY `reconcileAll` until `releaseBootGate()` is called (the server releases it after the
+   * commit-protocol journal recovery). `renderSkill`/`preflight` are never held — recovery uses them.
+   */
+  holdUntilReleased?: boolean;
   logger?: (message: string) => void;
   now?: () => number;
 }
+
+/** What `renderSkill` answers the commit protocol. */
+export interface RenderSkillOutcome {
+  rendered: number;
+  skipped: number;
+  conflicts: number;
+  failed: number;
+  errors: number;
+  /** Set when the canonical was deliberately not rendered (state/marker rule), with the rule that applied. */
+  notRendered?: 'pending' | 'proposal' | 'retired' | 'operator-owned' | 'merge-markers' | 'not-learned' | 'disabled';
+}
+
+export type PreflightResult =
+  | { ok: true }
+  | { ok: false; reason: 'user-edit-conflict' | 'unknown-provenance'; target: RenderTarget; detail: string };
 
 interface BaselineEntry {
   /** sha256 of the rendered SKILL.md as this machine last wrote it. */
@@ -161,7 +196,6 @@ export interface LearnedSkillReconcilerStatus {
 
 const CANONICAL_ROOT = '.instar/skills';
 const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const LEARNED_ORIGIN_KEY = 'instar-learned-origin';
 const STAMP_LINE_RE = /^x-instar-stamp:\s*([a-f0-9]{64})\s*$/m;
 const DEFAULT_TICK_MINUTES = 10;
 
@@ -179,21 +213,11 @@ function splitFrontmatter(raw: string): { fm: Record<string, unknown>; body: str
   let fm: unknown;
   try {
     fm = yaml.load(match[1], { schema: yaml.FAILSAFE_SCHEMA, json: false });
-  } catch {
+  } catch { // @silent-fallback-ok — a learned-origin probe reads frontmatter best-effort; an unreadable or unparseable canonical is simply not learned (safe: nothing renders)
     return null;
   }
   if (fm === null || typeof fm !== 'object' || Array.isArray(fm)) return null;
   return { fm: fm as Record<string, unknown>, body: match[2] };
-}
-
-/** Is this canonical SKILL.md owned by the skill-learning sentinel? */
-export function isLearnedCanonical(raw: string): boolean {
-  const parsed = splitFrontmatter(raw);
-  if (!parsed) return false;
-  const md = parsed.fm.metadata;
-  if (!md || typeof md !== 'object' || Array.isArray(md)) return false;
-  const origin = (md as Record<string, unknown>)[LEARNED_ORIGIN_KEY];
-  return typeof origin === 'string' && origin.trim().length > 0;
 }
 
 function renderTargetFor(framework: IntelligenceFramework): RenderTarget {
@@ -235,6 +259,9 @@ export class LearnedSkillReconciler {
   private shard: BaselineShard;
   private recovered = false;
   private running = false;
+  /** The shared async mutex: reconcileAll, renderSkill and preflight serialize on it. */
+  private lock: Promise<void> = Promise.resolve();
+  private bootGate: { promise: Promise<void>; release: () => void } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
 
   private lastRun: ReconcileRunSummary | null = null;
@@ -251,6 +278,31 @@ export class LearnedSkillReconciler {
     const tm = deps.tickMinutes;
     this.tickMinutes = typeof tm === 'number' && Number.isFinite(tm) && tm > 0 ? tm : DEFAULT_TICK_MINUTES;
     this.shard = emptyShard(this.machineId);
+    if (deps.holdUntilReleased) {
+      let release: () => void = () => {};
+      const promise = new Promise<void>((resolve) => { release = resolve; });
+      this.bootGate = { promise, release };
+    }
+  }
+
+  /** Release the boot gate (idempotent). The server calls this after the commit journal recovered. */
+  releaseBootGate(): void {
+    this.bootGate?.release();
+  }
+
+  /** Run `fn` under the shared mutex, waiting for whatever holds it. */
+  private async withLock<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = this.lock;
+    let release: () => void = () => {};
+    this.lock = new Promise<void>((resolve) => { release = resolve; });
+    await prev;
+    this.running = true;
+    try {
+      return await fn();
+    } finally {
+      this.running = false;
+      release();
+    }
   }
 
   // ─── Paths ───────────────────────────────────────────────────────────
@@ -308,7 +360,7 @@ export class LearnedSkillReconciler {
     let parsed: unknown = null;
     try {
       parsed = JSON.parse(fs.readFileSync(this.shardPath, 'utf-8'));
-    } catch {
+    } catch { // @silent-fallback-ok — a corrupt baseline shard is treated as missing; every rendering then reads as unknown-provenance and LOCKS rather than overwrites (safe direction)
       parsed = null;
     }
     const fresh = emptyShard(this.machineId);
@@ -337,7 +389,7 @@ export class LearnedSkillReconciler {
     let raw: string;
     try {
       raw = fs.readFileSync(this.journalPath, 'utf-8');
-    } catch {
+    } catch { // @silent-fallback-ok — journal rows are best-effort audit; a failed append is logged by the caller and never blocks the render
       return [];
     }
     const rows: JournalRow[] = [];
@@ -374,7 +426,7 @@ export class LearnedSkillReconciler {
     for (const p of dangling) {
       const abs = path.join(this.projectDir, p.renderingPath);
       let content: string | null = null;
-      try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; }
+      try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; } // @silent-fallback-ok — an absent rendering is the normal first-render case; null means "not present"
       const stamp = content ? (content.match(STAMP_LINE_RE)?.[1] ?? null) : null;
       if (content !== null && stamp === p.bodyHash) {
         const contentHash = sha256(content);
@@ -388,7 +440,7 @@ export class LearnedSkillReconciler {
       }
     }
     if (shardDirty) {
-      try { this.saveShard(); } catch (err) { this.log(`[LearnedSkillReconciler] baseline shard write failed during recovery: ${(err as Error).message}`); }
+      try { this.saveShard(); } catch (err) { this.log(`[LearnedSkillReconciler] baseline shard write failed during recovery: ${(err as Error).message}`); } // @silent-fallback-ok — the shard save failure is logged on this line; the in-memory shard stays authoritative for this run
     }
   }
 
@@ -398,7 +450,7 @@ export class LearnedSkillReconciler {
     let entries: fs.Dirent[];
     try {
       entries = fs.readdirSync(this.canonicalDir, { withFileTypes: true });
-    } catch {
+    } catch { // @silent-fallback-ok — an unreadable journal yields no recovery work; nothing is rendered on a guess (safe direction)
       return [];
     }
     const out: string[] = [];
@@ -410,7 +462,7 @@ export class LearnedSkillReconciler {
       } catch {
         continue;
       }
-      if (isLearnedCanonical(raw)) out.push(e.name);
+      if (isLearnedCanonical(raw) && renderHold(raw) === null) out.push(e.name);
     }
     return out.sort();
   }
@@ -444,12 +496,12 @@ export class LearnedSkillReconciler {
       return summary;
     };
 
+    if (this.bootGate) await this.bootGate.promise;
     if (this.running) return finish('already-running');
     if (this.deps.reconcileEnabled && this.deps.reconcileEnabled() === false) return finish('disabled');
     if (!fs.existsSync(this.canonicalDir)) return finish('no-canonical-dir');
 
-    this.running = true;
-    try {
+    return this.withLock(async () => {
       // The baseline is loaded synchronously before any reconcile, and a
       // dangling prepare is recovered before any edit detection.
       this.loadShard();
@@ -483,14 +535,114 @@ export class LearnedSkillReconciler {
         this.log(`[LearnedSkillReconciler] ${reason}: ${summary.rendered} rendered, ${summary.skipped} in sync, ${summary.conflicts} conflict(s), ${summary.failed} failed`);
       }
       return finish();
-    } finally {
-      this.running = false;
-    }
+    });
+  }
+
+  // ─── Commit-protocol seams (slice 2) ─────────────────────────────────
+
+  /**
+   * Step 4 of the commit protocol: the rendering preflight against the OLD canonical, run BEFORE the
+   * canonical is replaced. The parity rule's `remediate` guard only fires when the stamp equals the
+   * CURRENT canonical hash, so after a canonical write it would overwrite an operator edit; this check
+   * compares each enabled rendering against this machine's baseline shard instead. A difference is an
+   * operator edit on this machine (`user-edit-conflict`); a rendering whose body differs from canonical
+   * with no baseline is `unknown-provenance`. Either is recorded in the shard (the lock the reconciler
+   * honors) and returned. Waits for the mutex; never answers `already-running`.
+   */
+  async preflight(name: string): Promise<PreflightResult> {
+    if (!SLUG_RE.test(name)) return { ok: false, reason: 'unknown-provenance', target: 'claude-code', detail: `invalid skill name "${name}"` };
+    return this.withLock(async () => {
+      this.loadShard();
+      this.recoverJournal();
+      let canonicalRaw: string | null = null;
+      try { canonicalRaw = fs.readFileSync(path.join(this.canonicalDir, name, 'SKILL.md'), 'utf-8'); } catch { canonicalRaw = null; } // @silent-fallback-ok — an absent canonical means "not learned here"; the caller skips it, never renders a guess
+      // No canonical yet (a create): there is nothing a rendering could have been rendered from, so a
+      // rendering already on disk is of unknown provenance and must never be rendered over.
+      let shardDirty = false;
+      let result: PreflightResult = { ok: true };
+      const nowIso = new Date(this.now()).toISOString();
+      for (const target of this.targets()) {
+        const rel = renderingSkillMdRel(target, name);
+        const abs = path.join(this.projectDir, rel);
+        let content: string | null = null;
+        try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; } // @silent-fallback-ok — an absent rendering is the normal case for a new machine; null means "not present"
+        if (content === null) continue;
+        const contentHash = sha256(content);
+        const existing = this.shard.conflicts[rel];
+        if (existing && existing.contentHash === contentHash) {
+          result = { ok: false, reason: existing.reason, target, detail: existing.detail };
+          break;
+        }
+        const baseline = this.shard.baselines[rel];
+        let conflict: ConflictEntry | null = null;
+        if (baseline) {
+          if (baseline.contentHash !== contentHash) {
+            conflict = { skill: name, target, reason: 'user-edit-conflict', contentHash, detail: 'rendering differs from what this machine last rendered — operator edit on this machine (preflight)', at: nowIso };
+          }
+        } else {
+          const parsed = canonicalRaw === null ? null : splitFrontmatter(canonicalRaw);
+          const renderedBody = splitFrontmatter(content)?.body ?? null;
+          if (parsed === null || renderedBody === null || renderedBody !== parsed.body) {
+            conflict = { skill: name, target, reason: 'unknown-provenance', contentHash, detail: canonicalRaw === null ? 'a rendering exists for a skill with no canonical — never rendered over' : 'no baseline for a rendering whose body differs from canonical — never rendered over (preflight)', at: nowIso };
+          }
+        }
+        if (conflict) {
+          this.shard.conflicts[rel] = conflict;
+          shardDirty = true;
+          this.log(`[LearnedSkillReconciler] preflight ${name} (${target}) locked: ${conflict.reason} — ${conflict.detail}`);
+          result = { ok: false, reason: conflict.reason, target, detail: conflict.detail };
+          break;
+        }
+      }
+      if (shardDirty) {
+        try { this.saveShard(); } catch (err) { this.log(`[LearnedSkillReconciler] baseline shard write failed after preflight: ${(err as Error).message}`); }
+      }
+      return result;
+    });
+  }
+
+  /**
+   * Step 5 of the commit protocol: render ONE learned canonical into every enabled layout, through the
+   * same per-target path a reconcile pass uses (verify-then-render, baseline, journal). Runs under the
+   * shared mutex and WAITS for a running pass. The reconcile kill switch applies. A canonical held by
+   * the state/marker rule (`pending`, `retired`, `operator-owned`, merge markers) is not rendered and
+   * says why; the `txId` is carried into the journal rows as `detail` so the commit and its renders read
+   * as one transaction.
+   */
+  async renderSkill(name: string, txId: string): Promise<RenderSkillOutcome> {
+    const out: RenderSkillOutcome = { rendered: 0, skipped: 0, conflicts: 0, failed: 0, errors: 0 };
+    if (!SLUG_RE.test(name)) { out.errors = 1; return out; }
+    if (this.deps.reconcileEnabled && this.deps.reconcileEnabled() === false) { out.notRendered = 'disabled'; return out; }
+    return this.withLock(async () => {
+      this.loadShard();
+      this.recoverJournal();
+      let raw: string;
+      try { raw = fs.readFileSync(path.join(this.canonicalDir, name, 'SKILL.md'), 'utf-8'); } catch { out.errors = 1; return out; }
+      if (!isLearnedCanonical(raw)) { out.notRendered = 'not-learned'; return out; }
+      const hold = renderHold(raw);
+      if (hold) { out.notRendered = hold; return out; }
+      let shardDirty = false;
+      for (const target of this.targets()) {
+        try {
+          const outcome = await this.reconcileOne(name, target, txId);
+          if (outcome.shardDirty) shardDirty = true;
+          out[outcome.kind] += 1;
+        } catch (err) {
+          out.errors += 1;
+          this.log(`[LearnedSkillReconciler] renderSkill ${name} (${target}): ${(err as Error).message}`);
+        }
+      }
+      if (shardDirty) {
+        try { this.saveShard(); } catch (err) { out.errors += 1; this.log(`[LearnedSkillReconciler] baseline shard write failed: ${(err as Error).message}`); }
+      }
+      return out;
+    });
   }
 
   private async reconcileOne(
     name: string,
     target: RenderTarget,
+    commitTxId?: string,
   ): Promise<{ kind: 'rendered' | 'skipped' | 'conflicts' | 'failed'; shardDirty: boolean }> {
     const rel = renderingSkillMdRel(target, name);
     const abs = path.join(this.projectDir, rel);
@@ -508,7 +660,7 @@ export class LearnedSkillReconciler {
     if (canonicalIssue) throw new Error(canonicalIssue.detail);
 
     let content: string | null = null;
-    try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; }
+    try { content = fs.readFileSync(abs, 'utf-8'); } catch { content = null; } // @silent-fallback-ok — an absent rendering is the normal case for a new machine; null means "not present"
     const contentHash = content === null ? null : sha256(content);
     const baseline = this.shard.baselines[rel];
     let shardDirty = false;
@@ -555,7 +707,7 @@ export class LearnedSkillReconciler {
 
     // ── Render (journaled) ─────────────────────────────────────────────
     const txId = crypto.randomBytes(8).toString('hex');
-    this.journal({ op: 'render-prepare', txId, skill: name, target, renderingPath: rel, bodyHash, prevContentHash: contentHash });
+    this.journal({ op: 'render-prepare', txId, skill: name, target, renderingPath: rel, bodyHash, prevContentHash: contentHash, ...(commitTxId ? { detail: `commit:${commitTxId}` } : {}) });
     try {
       await skillParityRule.remediate(this.projectDir, name, target);
     } catch (err) {

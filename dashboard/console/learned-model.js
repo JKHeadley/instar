@@ -310,3 +310,52 @@ export function proposalsNeedingVerdict(data) {
   if (!data || typeof data !== 'object' || !Array.isArray(data.proposals)) return null;
   return data.proposals.filter(proposalPending).map(proposalCardText);
 }
+
+// ── Waiting for your OK (GET /skills/learned → pending) ───────────────────
+// A skill the sentinel wrote in live mode but has NOT rendered (spec §3.5: `instar-learned-state:
+// pending`): during rung 2 every new skill waits for one tap, and a draft only one reviewer family
+// could look at waits at any rung. The card shows what the skill does, the requests that led to
+// it, and the reason it is waiting — all as text — with Confirm (primary) and Reject. The PIN goes
+// in that one request's body and is zeroed after (as the proposal taps do).
+
+export const PENDING_OK_EMPTY = 'Nothing is waiting for your OK.';
+/** Why a skill is waiting, in plain words; unknown reasons still say it waits for the tap. */
+export function pendingReasonWords(reason) {
+  if (reason === 'one-family') return 'Only one reviewer family could look at this; your OK stands in for the second.';
+  if (reason === 'rung-unproven') return 'Until my automatic gate has proven itself, each new skill waits for your OK.';
+  return 'Waiting for your OK before I use it.';
+}
+
+/** What a pending card shows. Every string the drafter wrote is cleaned and shown as text by the page. */
+export function pendingCardText(p) {
+  const name = clean(p && p.name, 80) || 'unnamed';
+  const body = clean(p && p.description, 600) || `A skill I have written but not switched on yet (${name}).`;
+  const paraphrases = (Array.isArray(p && p.paraphrases) ? p.paraphrases : []).map((t) => clean(t, 200)).filter(Boolean).slice(0, MAX_PARAPHRASES);
+  const reviewerFamily = clean(p && p.reviewerFamily, 40) || null;
+  const pendingReason = p && (p.pendingReason === 'one-family' || p.pendingReason === 'rung-unproven') ? p.pendingReason : null;
+  const version = Number.isFinite(p && p.version) ? p.version : null;
+  return {
+    name, body, paraphrases, reviewerFamily, pendingReason, version,
+    reasonWords: pendingReasonWords(pendingReason),
+    reviewedWords: reviewerFamily ? `reviewed by ${reviewerFamily}` : null,
+    createdWords: p && p.createdAt ? `Written ${ago(p.createdAt) || 'earlier'}` : '',
+  };
+}
+
+/**
+ * GET /skills/learned → the pending rows. 503 = not switched on here; a failure = can't tell; a 200
+ * without a `pending` list is unreadable — never "nothing waiting". Rows without a name are dropped.
+ */
+export function buildPending(res) {
+  if (!res || !res.ok) {
+    const off = (res && res.status === 503) || /switched off/.test((res && res.reason) || '');
+    if (off) return { ok: false, off: true, reason: LEARNED_SKILLS_OFF, rows: [] };
+    return { ok: false, off: false, reason: `Can’t tell what is waiting for your OK: ${(res && res.reason) || 'no answer'}.`, rows: [] };
+  }
+  const d = res.data;
+  if (!d || typeof d !== 'object' || !Array.isArray(d.pending)) {
+    return { ok: false, off: false, reason: 'Can’t tell what is waiting for your OK: the answer had no list.', rows: [] };
+  }
+  const rows = d.pending.filter((p) => p && typeof p.name === 'string').map(pendingCardText);
+  return { ok: true, off: false, reason: null, rows, empty: rows.length ? null : PENDING_OK_EMPTY };
+}

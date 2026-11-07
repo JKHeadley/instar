@@ -2306,7 +2306,7 @@ export function stampSkillRendering(raw: string, hash: string): string | null {
 function readUtf8OrNull(p: string): string | null {
   try {
     return fs.readFileSync(p, 'utf-8');
-  } catch {
+  } catch { // @silent-fallback-ok — "absent or unreadable" is the normal answer this probe exists to give; the caller logs canonical-backfill-unparseable / skips, never writes on a guess
     return null;
   }
 }
@@ -5575,6 +5575,7 @@ export class PostUpdateMigrator {
     // Lazy-import registry so PostUpdateMigrator doesn't pull the entire
     // parity graph at startup for agents that never invoke migrate().
     const { listParityRules } = await import('../providers/parity/registry.js');
+    const { isLearnedCanonical } = await import('../providers/parity/rules/skillParityRule.js');
 
     const rules = listParityRules();
     let renderedCount = 0;
@@ -5588,6 +5589,18 @@ export class PostUpdateMigrator {
         continue;
       }
       for (const instance of instances) {
+        // A LEARNED skill canonical belongs to the skill-learning sentinel's reconciler, which renders
+        // it by frontmatter state (pending/operator-owned stay unrendered); never render it here
+        // (skill-learning-sentinel §3.5; the parity rule's own funnel refuses `render-held` too).
+        if (rule.primitive === 'skill') {
+          let canonicalRaw: string | null = null;
+          try { canonicalRaw = fs.readFileSync(path.join(this.config.projectDir, '.instar', 'skills', instance, 'SKILL.md'), 'utf-8'); } catch { canonicalRaw = null; } // @silent-fallback-ok — an unreadable canonical is the rule's own read error below, not a learned skip
+          if (canonicalRaw !== null && isLearnedCanonical(canonicalRaw)) {
+            skippedCount += 1;
+            result.skipped.push(`parity-renderings: skill/${instance} is a learned canonical — the learned-skill reconciler renders it by state`);
+            continue;
+          }
+        }
         for (const framework of frameworks) {
           if (!rule.frameworks.includes(framework)) continue;
           try {
@@ -5605,7 +5618,7 @@ export class PostUpdateMigrator {
             //   - 'refused to remediate' (memory rule — never auto-regenerates
             //     identity/learning artifacts; see specs/instar-concepts/memory.md)
             // Both are skips, not errors. Operator resolves manually.
-            const isRefuse = msg.includes('user-edit-conflict') || msg.includes('refused to remediate');
+            const isRefuse = msg.includes('user-edit-conflict') || msg.includes('refused to remediate') || msg.includes('render-held:');
             if (isRefuse) {
               skippedCount += 1;
               result.skipped.push(`parity-renderings: ${rule.primitive}/${instance} on ${framework} — ${msg}`);
@@ -5752,15 +5765,24 @@ export class PostUpdateMigrator {
         .filter(e => e.isDirectory() && SKILL_SLUG_RE.test(e.name))
         .map(e => e.name)
         .sort();
-    } catch {
+    } catch { // @silent-fallback-ok — no canonical skills directory yet is the normal first-boot state; nothing to render, nothing to skip
       return; // no canonical skills yet
     }
     if (names.length === 0) return;
     // Lazy import: keep the parity graph out of the migrator's startup path.
-    const { skillParityRule } = await import('../providers/parity/rules/skillParityRule.js');
+    const { skillParityRule, isLearnedCanonical } = await import('../providers/parity/rules/skillParityRule.js');
     const frameworks = this.getEnabledFrameworks().filter(f => skillParityRule.frameworks.includes(f));
     let rendered = 0;
     for (const name of names) {
+      // A LEARNED canonical (metadata.instar-learned-origin) belongs to the skill-learning
+      // sentinel's reconciler, which honours its frontmatter state: a `pending` skill awaiting the
+      // operator's confirm tap must never be rendered here (skill-learning-sentinel §3.5; deviation dd).
+      let canonicalRaw: string | null = null;
+      try { canonicalRaw = fs.readFileSync(path.join(canonicalRoot, name, 'SKILL.md'), 'utf-8'); } catch { canonicalRaw = null; } // @silent-fallback-ok — an unreadable learned canonical is skipped here (never rendered on a guess); the reconciler owns learned canonicals and reports its own failures
+      if (canonicalRaw !== null && isLearnedCanonical(canonicalRaw)) {
+        result.skipped.push(`skill-renderings: ${name} is a learned canonical — the learned-skill reconciler renders it by state`);
+        continue;
+      }
       for (const framework of frameworks) {
         const renderedMd = path.join(projectDir, framework === 'claude-code' ? '.claude/skills' : '.agents/skills', name, 'SKILL.md');
         if (fs.existsSync(renderedMd)) continue;

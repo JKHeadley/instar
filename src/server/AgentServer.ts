@@ -9118,6 +9118,11 @@ export class AgentServer {
     });
   }
 
+  /** The maturation ladder service (constructed late in boot); null until then or when disabled. */
+  getMaturationLadder(): MaturationLadderService | null {
+    return this.maturationLadder;
+  }
+
   getTopicOperatorStore(): TopicOperatorStore | null {
     return this.topicOperatorStore;
   }

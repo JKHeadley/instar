@@ -5,13 +5,15 @@
 // corrections (collapsed, paged with the ledger's own cursor), and the quiet line
 // "To change one, tell me in chat." Plus "What I've learned to do" (the Skill Learning
 // Sentinel, docs/specs/skill-learning-sentinel.md §3.10): proposals first, each with Agree /
-// Disagree (the one write here, operator PIN in that request's body), then learned skills.
-// Drafter text (descriptions, paraphrases) is rendered as text, never as markup.
+// Disagree (operator PIN in that request's body), then learned skills. "Waiting for your OK"
+// (slice 2, spec §3.5): a skill written in live mode but not switched on until the Confirm /
+// Reject tap, above the proposals, with its description, paraphrases and the reason it waits on
+// the first screen. Drafter text (descriptions, paraphrases) is rendered as text, never as markup.
 
 import {
   buildPreferences, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
-  buildLearnedSkillsView, DISAGREE_REASONS,
+  buildLearnedSkillsView, DISAGREE_REASONS, buildPending,
 } from './learned-model.js';
 import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, askLink, askPin, markNeed } from './ui.js';
 
@@ -30,6 +32,7 @@ export async function renderLearned(main, ctx) {
     get('/preferences/session-context'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'), get('/skills/learned'),
   ]);
   const learnedSkills = buildLearnedSkillsView(skillsRes);
+  const pendingSkills = buildPending(skillsRes);
   const now = Date.now();
   const prefs = buildPreferences(prefsRes, { lastGood, now });
   if (prefs.ok && !prefs.stale) lastGood = { prefs, at: now };
@@ -39,9 +42,13 @@ export async function renderLearned(main, ctx) {
   const h = learnedHeadline({ prefs, corrections });
 
   const parts = [pageHead({ eyebrow: 'Settings · What I’ve learned about you', headline: h.text, tone: h.tone, facts: learnedFacts({ prefs, corrections, conflicts }) })];
-  // A proposal waiting for a verdict leads the page (first screen, Home counts it); otherwise the section follows the preferences.
+  // A skill waiting for your OK leads the page, then a proposal waiting for a verdict (first screen, Home counts both);
+  // otherwise the skills section follows the preferences. An off / failed answer is said once, in the skills section; an
+  // answer that lists skills but no pending list is said here (unreadable is never "nothing waiting").
   const skillsSection = skillsBlock(learnedSkills, { post, refresh });
-  const sections = learnedSkills.pendingCount ? [skillsSection, prefsBlock(prefs)] : [prefsBlock(prefs), skillsSection];
+  const sections = pendingSkills.ok && pendingSkills.rows.length ? [pendingBlock(pendingSkills, { post, refresh })]
+    : !pendingSkills.ok && !pendingSkills.off && learnedSkills.ok ? [el('section', { class: 'list-section', id: 'sec-pending' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Waiting for your OK' })), cantTell(pendingSkills.reason))] : [];
+  sections.push(...(learnedSkills.pendingCount ? [skillsSection, prefsBlock(prefs)] : [prefsBlock(prefs), skillsSection]));
   if (!conflicts.hidden) sections.push(conflictsBlock(conflicts));
   sections.push(...correctionsBlocks(corrections, { get, refresh }));
   sections.push(el('p', { class: 'card-note learned-change', text: 'To change one, tell me in chat.' }));
@@ -85,6 +92,45 @@ function prefCard(p, prefs) {
     sheet({ title: 'A preference I picked up' }, story(lines), note(ADVISORY_LINE), note('To change or drop it, tell me in chat.'), details({ line: p.raw }, ['line']));
   });
   return b;
+}
+
+// ── Waiting for your OK (pending learned skills) ──────────────────────────
+function pendingBlock(view, deps) {
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Waiting for your OK' }), el('span', { class: 'list-count', text: String(view.rows.length) }));
+  // No preamble: the card itself says why it waits, so the description and Confirm stay on a phone's first screen.
+  const wrap = el('section', { class: 'list-section', id: 'sec-pending' }, head,
+    el('div', { class: 'skill-pending-list' }, view.rows.map((p) => pendingCard(p, deps))));
+  return markNeed(wrap, 'learned-pending');
+}
+
+function pendingCard(p, deps) {
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const card = el('div', { class: 'need-card skill-pending', 'data-pending': p.name },
+    el('span', { class: 'need-title', text: p.body }),
+    p.paraphrases.length ? el('ul', { class: 'skill-paraphrases' }, p.paraphrases.map((t) => el('li', { class: 'need-sub', text: `“${t}”` }))) : null,
+    el('span', { class: 'need-sub', text: [p.name, p.createdWords, p.reviewedWords].filter(Boolean).join(' · ') }),
+    el('span', { class: 'need-sub skill-pending-why', text: p.reasonWords }));
+  const path = (verb) => `/skills/learned/pending/${encodeURIComponent(p.name)}/${verb}`;
+  const confirm = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Confirm', 'data-confirm': p.name });
+  const reject = el('button', { class: 'btn-quiet', type: 'button', text: 'Reject', 'data-reject': p.name });
+  const tap = async (verb, ask, done) => {
+    const pin = await askPin({ ...ask, adapter: 'body' });
+    if (!pin) return;
+    confirm.disabled = true; reject.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin }; pin.pin = '';
+    const r = await deps.post(path(verb), body);
+    body.pin = '';
+    status.textContent = r.ok ? done : (r.reason || 'That did not work.');
+    if (r.ok) setTimeout(deps.refresh, 900); else { confirm.disabled = false; reject.disabled = false; }
+  };
+  confirm.addEventListener('click', () => tap('confirm',
+    { title: 'Switch this skill on?', explain: 'Confirming needs your PIN so an agent can never confirm for you. It goes in this one request and is not kept.' },
+    'Confirmed. I will use it from the next conversation.'));
+  reject.addEventListener('click', () => tap('reject',
+    { title: 'Reject this skill?', explain: 'Rejecting needs your PIN too, so an agent can never answer for you. The skill goes back to being a proposal; it goes in this one request and is not kept.' },
+    'Rejected. It is a proposal again and I will not use it.'));
+  card.append(el('div', { class: 'sheet-actions' }, confirm, reject), status);
+  return card;
 }
 
 // ── What I've learned to do ───────────────────────────────────────────────

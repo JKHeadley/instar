@@ -4212,8 +4212,117 @@ const skillLearningTick: SelfActionController = {
   makeUnderPressure: makeSkillLearningTickPressure,
 };
 
+/**
+ * skill-learning-commit-recovery — the commit protocol's boot recovery of its
+ * own journal (docs/specs/skill-learning-sentinel.md §3.5 step 6;
+ * src/monitoring/skillLearning/CommitProtocol.ts `recoverOwnJournal`). Runs
+ * once per boot, BEFORE the reconciler's boot pass. The emit is ONE recovery
+ * decision per dangling `commit-prepare`/`move-prepare` row (finish, void, or
+ * lock operator-owned).
+ *
+ * Convergence argument: every decision appends the CLOSING row (`commit`,
+ * `commit-void`, `move-commit`, `move-void`) to the same journal, fsync'd, so
+ * the next pass finds the prepare closed and does nothing — one action per
+ * dangling prepare, then zero, horizon-independent. Foreign prepares (another
+ * machine's, pulled by sync) are counted and never acted on. The one case that
+ * does NOT close is a fence re-check that answers `aborted-unreachable`
+ * (`targetAlwaysRejects()`): the prepare is DEFERRED, untouched, and re-read
+ * next boot — no row is written, so repeated boots under an unreachable remote
+ * emit zero actions. Pinned pressure: D dangling own prepares + F foreign.
+ * boundK = D, perTarget 1 (one txId is decided once).
+ */
+const COMMIT_RECOVERY_DANGLING = 6;
+const COMMIT_RECOVERY_FOREIGN = 3;
+function makeCommitRecoveryPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // Durable (the journal on disk): which prepares are closed.
+  const closed = (f.durableState.get('skill-learning-commit-recovery:closed') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-commit-recovery:closed', closed);
+  const own = Array.from({ length: COMMIT_RECOVERY_DANGLING }, (_, i) => `tx-own-${i}`);
+  const foreign = Array.from({ length: COMMIT_RECOVERY_FOREIGN }, (_, i) => `tx-foreign-${i}`);
+  return {
+    tick() {
+      sink.considered += 1;
+      for (const _tx of foreign) { /* reported, never acted on */ }
+      for (const tx of own) {
+        if (closed.has(tx)) continue;              // the closing row is on disk → nothing to do
+        if (f.targetAlwaysRejects()) continue;     // fence unreachable → deferred, no row written
+        sink.emit({ verb: 'converge-commit-recovery', target: tx });
+        closed.add(tx);
+      }
+    },
+  };
+}
+const skillLearningCommitRecovery: SelfActionController = {
+  id: 'skill-learning-commit-recovery',
+  actionVerb: 'converge-commit-recovery',
+  models: 'src/monitoring/skillLearning/CommitProtocol.ts (recoverOwnJournal — three-way finish/void/lock per dangling own prepare; foreign prepares reported only)',
+  modelsPath: 'src/monitoring/skillLearning/CommitProtocol.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeCommitRecoveryPressure(f, sink),
+  },
+  boundK: COMMIT_RECOVERY_DANGLING,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 60 * 60_000, // one boot per virtual hour
+  eternalSentinel: undefined,
+  makeUnderPressure: makeCommitRecoveryPressure,
+};
+
+/**
+ * skill-learning-live-write — the Skill Learning Sentinel's live write
+ * (docs/specs/skill-learning-sentinel.md §3.5 tail; slice 2;
+ * src/monitoring/SkillLearningSentinel.ts `liveCreate`). In `mode: live` a
+ * validated draft is ONE `CommitProtocol.write('create')` per procedure key.
+ *
+ * Convergence argument: the write is keyed by the procedure key the classifier
+ * yields. A successful write leaves a canonical (`pending` or `active`) under
+ * the key, and the key is skipped while that skill exists; a REFUSED write
+ * (fence aborted, preflight conflict, protocol unreachable — the pinned
+ * pressure: `targetAlwaysRejects`) holds the key with a durable VerdictRow
+ * until the re-ask horizon (`shadow.verdictReaskDays`, longer than the test
+ * horizon). Either way ONE emit per key per horizon: with the fixture's
+ * classifier always yielding the same key, boundK = perTargetBoundK = 1,
+ * horizon-independent. The hold lives in the append-only ledger, so a restart
+ * cannot re-arm it. Shadow mode never reaches this controller at all.
+ */
+function makeSkillLearningLiveWritePressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const written = (f.durableState.get('skill-learning-live-write:written') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-live-write:written', written);
+  const KEY = 'procedure-key-recurring';                      // the classifier always yields the same key
+  return {
+    tick() {
+      sink.considered += 1;
+      if (written.has(KEY)) return;                             // canonical exists OR the key is held ⇒ zero calls
+      sink.emit({ verb: 'converge-learned-write', target: KEY });
+      // Success ⇒ canonical under the key; refusal (the fence/protocol rejects under pressure) ⇒ durable hold.
+      // Both are durable rows: the key is never re-written inside the horizon.
+      written.add(KEY);
+      void f.targetAlwaysRejects();
+    },
+  };
+}
+const skillLearningLiveWrite: SelfActionController = {
+  id: 'skill-learning-live-write',
+  actionVerb: 'converge-learned-write',
+  models: 'src/monitoring/SkillLearningSentinel.ts (liveCreate — one CommitProtocol.write per procedure key; a refused write holds the key with a durable VerdictRow until the re-ask horizon)',
+  modelsPath: 'src/monitoring/SkillLearningSentinel.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSkillLearningLiveWritePressure(f, sink),
+  },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillLearningLiveWritePressure,
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   skillLearningTick,
+  skillLearningLiveWrite,
+  skillLearningCommitRecovery,
   attributionAuditRetry,
   presenceUsageNotice,
   learnedSkillReconciler,

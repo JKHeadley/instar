@@ -8,6 +8,22 @@
  * discovers — and NOTHING is written under `.instar/skills`, `.claude/skills`
  * or `.agents/skills`.
  *
+ * Slice 2 — `mode: live` (read LIVE from config each tick): a validated draft
+ * goes through the injected commit protocol (`CommitProtocolLike.write('create')`,
+ * §3.5 tail — fence, version row, canonical temp+rename, preflight, render via
+ * the reconciler, journal commit; the sentinel never touches a skills directory
+ * itself). While rung 2 of the ladder is unproven the canonical is written
+ * `instar-learned-state: pending` (unrendered) until the operator's one tap
+ * (`confirmPending` / `rejectPending`); once rung 2 has held, `active` with a
+ * 7-day "new" label computed at read time. A one-family draft is `pending` at
+ * every rung. The arbiter ACTS (its dissent governs) only after its shadow pair
+ * beat the default rung on ≥ `shadow.minDisagreementsSampled` operator-sampled
+ * disagreements; before that the default rung acts and arbiter-only drafts stay
+ * shadow proposals so the sample keeps growing. Shadow mode never calls the
+ * protocol (the only call site is behind the live branch). The §3.9 index cost
+ * is measured each tick (IndexCost) and handed to the drafter and reviewer; a
+ * reviewer cost strike is LOGGED (`kind: 'index-cost'`) and accepted.
+ *
  * Tick (every `tickMinutes`): ledger ingest → classifier tick (1A's, through
  * an injected `{tick()}`) → outcome windows close → per key: floor (§3.3) →
  * default rung + arbiter (§3.4, both logged) → RunSlice evidence → drafter →
@@ -28,10 +44,12 @@
  * per 7-day window — never a refusal (§3.3 "growth signal, not a wall").
  */
 /* @self-action-controller: skill-learning-tick */
+/* @self-action-controller: skill-learning-live-write */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import yaml from 'js-yaml';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { featureEvidence as sharedFeatureEvidence, type FeatureEvidenceInput } from './FeatureEvidenceLog.js';
 import { buildIntelligenceProvider, type IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
@@ -55,11 +73,12 @@ import {
   type CleanRunEvidence, type ExistingSkill, type FamilyProvider, type ParsedSkillDoc,
 } from './skillLearning/Drafter.js';
 import { lintDraft, DRAFT_BODY_MAX_CHARS } from './skillLearning/Lint.js';
+import { measureIndexCost, renderIndexCostLine, type IndexCostReading } from './skillLearning/IndexCost.js';
 import {
   SKILL_LEARNING_PATHS,
-  type EventRow, type LearnedSkillSummary, type LedgerReader, type LedgerWriter, type OutcomeRow, type ProposalSidecar,
-  type ProposalSummary, type RequestRow, type RowSource, type SkillLearningConfig, type SkillLearningSentinelLike,
-  type SkillLearningStatus, type VerdictRow,
+  type CommitProtocolLike, type EventRow, type LearnedCanonicalState, type LearnedSkillSummary, type LedgerReader, type LedgerWriter,
+  type OutcomeRow, type PendingSummary, type ProposalSidecar, type ProposalSummary, type RequestRow, type RowSource,
+  type SkillLearningConfig, type SkillLearningMode, type SkillLearningSentinelLike, type SkillLearningStatus, type VerdictRow,
 } from './skillLearning/types.js';
 
 export const SKILL_LEARNING_FEATURE = 'monitoring.skillLearning';
@@ -67,6 +86,12 @@ const COMPONENT_DRAFTER = 'skillLearning.drafter';
 const COMPONENT_REVIEWER = 'skillLearning.reviewer';
 const WEEK_MS = 7 * 86_400_000;
 const LEARNED_ORIGIN_KEY = 'instar-learned-origin';
+const LEARNED_STATE_KEY = 'instar-learned-state';
+const LEARNED_ACTIVATED_KEY = 'instar-learned-activated';
+/** Display sidecars for `pending` canonicals (paraphrases, reviewer family, evidence) — the durable record is the frontmatter state. */
+const PENDING_SIDECAR_DIR = 'skill-learning/pending';
+/** The 7-day "new" label window (§3.5). */
+const NEW_LABEL_MS = 7 * 86_400_000;
 
 /** The attention-item shape the sentinel raises (TelegramAdapter.createAttentionItem's observation subset). */
 export interface SkillLearningAttentionItem {
@@ -117,8 +142,28 @@ export interface SkillLearningSentinelDeps {
   createAttentionItem?: (item: SkillLearningAttentionItem) => Promise<unknown> | unknown;
   degradation?: { report(event: SkillLearningDegradationEvent): void } | null;
   provenance: JudgmentRecorder;
-  /** Measured skill-index bytes (§3.9), when the server measures it. */
+  /** Measured skill-index bytes (§3.9), when the server measures it (superseded by `indexCost`; kept for callers that only know bytes). */
   indexBytes?: () => number | null;
+  /** The §3.9 measurement for this tick; default: the real rendered index under `projectDir` (IndexCost). */
+  indexCost?: () => IndexCostReading | null;
+  /**
+   * Slice 2: the six-step commit protocol (§3.5 tail). Null = no live writes are possible: a `live` tick reports a
+   * degradation and falls back to a shadow proposal. NEVER called in shadow mode.
+   */
+  commitProtocol?: CommitProtocolLike | null;
+  /** The acting mode, read LIVE (the ladder flips it in config without a restart being the only path). Default: the construction config. */
+  mode?: () => SkillLearningMode;
+  /**
+   * Has rung 2 (live with pending/confirm) held on the ladder? While false every new skill is written `pending`.
+   * Default: false — an unreadable ladder is treated as unproven (the conservative side).
+   */
+  rungTwoProven?: () => boolean;
+  /**
+   * Slice 2: the version store — the hash chain confirm/reject fence against (§3.5 step 3) and the post-sync
+   * epoch reconciliation the `versions` tick phase runs on EVERY machine. Null: taps fence against the on-disk
+   * hash (reported in the log row) and the phase is skipped.
+   */
+  versionStore?: VersionStoreLike | null;
   /** Injectable queue (tests); default: the sentinel's own. */
   queue?: LlmQueue;
   /** Feature-evidence sink; default: the process-wide `featureEvidence`. */
@@ -171,6 +216,20 @@ export interface SkillLearningCreateInput {
   preferencesBlock?: () => string | null;
   /** Test seam: per-framework provider builder (default `buildIntelligenceProvider({ framework })`). */
   buildProvider?: (framework: DrafterFramework) => IntelligenceProvider | null;
+  /** Slice 2: the commit protocol (CommitProtocol.ts, built by the server/wire). Null ⇒ live mode cannot write (degradation + shadow fallback). */
+  commitProtocol?: CommitProtocolLike | null;
+  /** Slice 2: the maturation ladder's feature views — the default `rungTwoProven` reader (`monitoring.skillLearning` at `fleet`, or `ready-to-advance` towards it). */
+  ladder?: { features(): ReadonlyArray<{ id: string; rung: string; next: string | null; state: string }> } | null;
+  /** Slice 2: override of the rung-2 reader (tests / an operator-pinned answer). */
+  rungTwoProven?: () => boolean;
+  /** Slice 2: live `mode` reader; default reads `<stateDir>/config.json` → `monitoring.skillLearning.mode` on every tick. */
+  readMode?: () => SkillLearningMode | null;
+  /** Slice 2: §3.9 join hardening — the version row a rendering stamp (body hash) belongs to (VersionStore.rows across machines). */
+  versionLookup?: ((skill: string, bodyHash: string) => { version: number } | null) | null;
+  /** Slice 2: the VersionStore itself (what wire.ts hands over); `versionLookup` is derived from it, and the hash chain + epoch reconciliation read it. */
+  versionStore?: VersionStoreLike | null;
+  /** Slice 2: §3.9 index-cost measurement override (tests); default measures the real rendered index. */
+  indexCost?: () => IndexCostReading | null;
   logger?: (message: string) => void;
   now?: () => number;
 }
@@ -191,9 +250,49 @@ export interface TickSummary {
 
 type RefusalReason =
   | 'evidence-cut' | 'no-family' | 'unrecorded' | 'unparseable' | 'review' | 'admission'
-  | `lint:${string}` | `action:${string}` | 'provider-error' | 'invalid-name';
+  | `lint:${string}` | `action:${string}` | 'provider-error' | 'invalid-name' | `commit:${string}`;
 
-interface SentinelState { growthNoticeAt?: string }
+/** Where a validated draft lands: the shadow proposals directory, or the canonical layout through the commit protocol. */
+type DraftTarget = 'proposal' | 'canonical';
+
+/** One effective version row as the sentinel reads it (2A's VersionStore `EffectiveVersionRow` subset). */
+export interface VersionRowLike { txId: string; version: number; fileHash: string; bodyHash: string; epoch: number; machineId: string; at: string; void?: boolean; superseded?: boolean }
+
+/** `VersionStore.reconcileAfterSync` outcome (deviation (t)); the sentinel performs the body-level consequence. */
+export type SyncReconcileOutcomeLike =
+  | { kind: 'no-rows' }
+  | { kind: 'in-sync'; winner: VersionRowLike }
+  | { kind: 'superseded'; winner: VersionRowLike; loser: VersionRowLike; tombstoned: number }
+  | { kind: 'split-brain'; epoch: number; candidates: VersionRowLike[] }
+  | { kind: 'unknown-hash'; winner: VersionRowLike; onDiskFileHash: string };
+
+/** The version store as the sentinel consumes it (2A's VersionStore implements; tests use an in-memory fake). */
+export interface VersionStoreLike {
+  rows(name: string): ReadonlyArray<VersionRowLike>;
+  /** The hash every confirm/reject/lock fences against: the last live version row's fileHash (spec §3.5 step 3). */
+  expectedPrevHash(name: string): string | null;
+  reconcileAfterSync(name: string, onDiskFileHash: string | null): SyncReconcileOutcomeLike;
+}
+
+/** The display sidecar beside a `pending` canonical (`<stateDir>/skill-learning/pending/<name>.json`). */
+interface PendingSidecar {
+  name: string;
+  key: string;
+  description: string;
+  paraphrases: string[];
+  reviewerFamily?: string;
+  pendingReason: 'one-family' | 'rung-unproven';
+  createdAt: string;
+  evidence: { sources: RowSource[]; runIds: string[] };
+  disagreement?: 'arbiter-only' | 'default-only' | null;
+  arbiterOnly: boolean;
+}
+
+interface SentinelState {
+  growthNoticeAt?: string;
+  /** Post-sync epoch reconciliation (durable per machine): one consequence per `(name, on-disk fileHash)`, and the counts status() shows. */
+  versions?: { handled: Record<string, string>; epochSuperseded: number; splitBrain: number; locked: number };
+}
 
 interface LoadedProposal { sidecar: ProposalSidecar; dir: string }
 
@@ -221,6 +320,41 @@ function skillMeta(text: string): { doc: ParsedSkillDoc; learned: boolean } | nu
   return { doc, learned: typeof origin === 'string' && origin.trim().length > 0 };
 }
 
+function sha256(s: string): string {
+  return crypto.createHash('sha256').update(s, 'utf-8').digest('hex');
+}
+
+/** The §3.9 stamp → version resolver over a VersionStore: the newest non-void row carrying that body hash. */
+export function versionLookupFromStore(store: Pick<VersionStoreLike, 'rows'> | null | undefined): ((skill: string, bodyHash: string) => { version: number } | null) | null {
+  if (!store) return null;
+  return (skill, bodyHash) => {
+    const rows = store.rows(skill);
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      if (!r.void && r.bodyHash === bodyHash) return { version: r.version };
+    }
+    return null;
+  };
+}
+
+/**
+ * Re-emit a canonical SKILL.md with its flat metadata patched (state flips, activation stamp) and everything
+ * else — name, description, the other metadata keys, the body — preserved byte-for-byte where YAML allows.
+ */
+function withLearnedMetadata(raw: string, patch: Record<string, string>): string | null {
+  const m = String(raw ?? '').replace(/^\uFEFF/, '').match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!m) return null;
+  let fm: unknown;
+  try { fm = yaml.load(m[1], { schema: yaml.FAILSAFE_SCHEMA, json: false }); } catch { return null; } // @silent-fallback-ok — a malformed frontmatter cannot be patched; the caller refuses
+  if (!fm || typeof fm !== 'object' || Array.isArray(fm)) return null;
+  const f = { ...(fm as Record<string, unknown>) };
+  const metadata = (f.metadata && typeof f.metadata === 'object' && !Array.isArray(f.metadata)) ? { ...(f.metadata as Record<string, unknown>) } : {};
+  for (const [k, v] of Object.entries(patch)) metadata[k] = v;
+  f.metadata = metadata;
+  const dumped = yaml.dump(f, { lineWidth: -1, noRefs: true, quotingType: '"', forceQuotes: false });
+  return `---\n${dumped}---\n${m[2]}`;
+}
+
 export class SkillLearningSentinel implements SkillLearningSentinelLike {
   private readonly deps: SkillLearningSentinelDeps;
   private readonly cfg: SkillLearningConfig;
@@ -235,9 +369,18 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
   private readonly counters = {
     ticks: 0, tickFailures: 0, admissionRefusals: 0, arbiterOutages: 0, draftsWritten: 0, draftsRefused: 0,
     reviewsPassed: 0, reviewsFailed: 0, oneFamilyHolds: 0, coveredByHandwritten: 0, improveEvents: 0, growthNotices: 0,
+    // Slice 2 (live mode).
+    liveCreates: 0, pendingCreates: 0, confirms: 0, rejects: 0, commitRefusals: 0, arbiterGoverned: 0, costStrikes: 0, liveFallbacks: 0,
+    epochSuperseded: 0, splitBrain: 0, versionLocks: 0,
   };
   /** In-process dedupe of once-per-key notices (covered-by-handwritten); the log row is the durable record. */
   private readonly notedCovered = new Set<string>();
+  /** Last logged arbiter-promotion verdict (the row is written when it changes, not every tick). */
+  private lastPromoted: boolean | null = null;
+  /** This tick's §3.9 measurement (taken once per tick, handed to the arbiter, drafter and reviewer). */
+  private tickIndexCost: IndexCostReading | null = null;
+  /** Per-name serialization of confirm/reject taps: a double tap sees the first tap's result, never a stale-hash conflict. */
+  private readonly pendingOps = new Map<string, Promise<unknown>>();
 
   constructor(deps: SkillLearningSentinelDeps) {
     this.deps = deps;
@@ -252,6 +395,18 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
 
   get proposalsDir(): string { return path.join(this.deps.stateDir, SKILL_LEARNING_PATHS.proposalsDir); }
   get logPath(): string { return path.join(this.deps.stateDir, SKILL_LEARNING_PATHS.log); }
+  get pendingSidecarDir(): string { return path.join(this.deps.stateDir, PENDING_SIDECAR_DIR); }
+  private get canonicalRoot(): string { return path.join(this.deps.projectDir, '.instar', 'skills'); }
+
+  /** The acting mode, read live. An unreadable reader falls back to the construction config. */
+  mode(): SkillLearningMode {
+    try { return this.deps.mode?.() === 'live' ? 'live' : (this.deps.mode ? 'shadow' : this.cfg.mode); } catch { return this.cfg.mode; } // @silent-fallback-ok — an unreadable mode reads as configured at construction
+  }
+
+  /** Rung 2 held on the ladder? Unreadable ⇒ false (pending is the conservative side). */
+  rungTwoProven(): boolean {
+    try { return this.deps.rungTwoProven?.() === true; } catch { return false; } // @silent-fallback-ok — an unreadable ladder reads as unproven
+  }
   /** Per-machine (the directory is git-synced; a shared name would conflict between machines). */
   private get statePath(): string { return path.join(this.deps.stateDir, 'skill-learning', `sentinel-state.${this.deps.machineId}.json`); }
 
@@ -263,7 +418,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
 
   start(): void {
     if (this.timer) return;
-    try { this.deps.bound?.start(); } catch (err) {
+    try { this.deps.bound?.start(); } catch (err) { // @silent-fallback-ok — logged on the next line; the sentinel still starts its tick so the backlog stays visible, never silently dark
       this.log(`[SkillLearningSentinel] bound start failed: ${err instanceof Error ? err.message : String(err)}`);
     }
     const minutes = Number.isFinite(this.cfg.tickMinutes) && this.cfg.tickMinutes > 0 ? this.cfg.tickMinutes : 10;
@@ -287,8 +442,12 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     this.counters.ticks++;
     try {
       await this.phase('ingest', summary, async () => { await this.deps.ingest?.ingestNew(); });
+      // Every machine, not lease-gated: a read of the synced version shards plus tombstones/locks of bodies
+      // this machine holds (idempotent per (name, on-disk hash); see reconcileVersions).
+      await this.phase('versions', summary, async () => { await this.reconcileVersions(); });
       await this.phase('classifier', summary, async () => { await this.deps.classifier?.tick(); });
       await this.phase('outcomes', summary, async () => { await this.deps.outcomes?.close(); });
+      await this.phase('index-cost', summary, async () => { this.tickIndexCost = this.measureIndexCost(); });
       if (this.holdsLease()) {
         await this.phase('keys', summary, async () => { await this.evaluateKeys(summary); });
         await this.phase('growth', summary, async () => { await this.checkGrowthSignal(); });
@@ -306,7 +465,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
   private async phase(name: string, summary: TickSummary, fn: () => Promise<void>): Promise<void> {
     try {
       await fn();
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — recorded in summary.phaseFailures + logged + DegradationReporter below; a failed phase never aborts the tick (each phase is independent and retried next tick)
       const message = err instanceof Error ? err.message : String(err);
       summary.phaseFailures.push(name);
       this.counters.tickFailures++;
@@ -332,6 +491,12 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     const learnedNames = new Set(existing.filter((s) => s.learned).map((s) => s.name));
     const batch = Math.max(1, Math.floor(this.cfg.llm.batchSize));
     let llmBudgetThisTick = batch;
+    const mode = this.mode();
+    const promotion = mode === 'live' ? this.arbiterPromotion(proposals) : null;
+    if (promotion && promotion.promoted !== this.lastPromoted) {
+      this.lastPromoted = promotion.promoted;
+      this.appendLog({ kind: 'arbiter-promotion', ...promotion, minDisagreementsSampled: this.cfg.shadow.minDisagreementsSampled });
+    }
 
     for (const k of this.deps.ledger.keys()) {
       summary.keysSeen++;
@@ -372,7 +537,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
           paraphrases: this.paraphrasesOf(requests),
           cleanRunOutlines: cleanOutlines,
           libraryDescriptions: existing.map((s) => `${s.name}${s.learned ? ' [learned]' : ''}: ${s.description}`),
-          indexBytes: this.deps.indexBytes?.() ?? null,
+          indexBytes: this.tickIndexCost?.totalBytes ?? this.deps.indexBytes?.() ?? null,
           operatorVerdicts,
         },
       });
@@ -380,13 +545,50 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       this.onDecision(key, decision);
       if (decision.action !== 'draft') { summary.held++; continue; }
 
+      // Live mode (§3.4 → §3.5): who acts. The static default rung acts until the arbiter's shadow pair has beaten
+      // it on enough operator-sampled disagreements; after that the arbiter's dissent GOVERNS (a default-only
+      // draft waits). Before promotion an arbiter-only draft stays a shadow proposal so the sample keeps growing.
+      let target: DraftTarget = 'proposal';
+      if (mode === 'live') {
+        if (decision.disagreement === 'default-only' && promotion?.promoted) {
+          this.counters.arbiterGoverned++;
+          this.hold(key, `arbiter-governs: ${decision.arbiter}`);
+          this.appendLog({ kind: 'arbiter-governs', key, arbiter: decision.arbiter, default: decision.default.verdict, sampled: promotion.sampled });
+          this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'held', reason: 'arbiter-governs', context: { key, arbiter: decision.arbiter } });
+          summary.held++;
+          continue;
+        }
+        target = decision.disagreement === 'arbiter-only' && !promotion?.promoted ? 'proposal' : 'canonical';
+      }
+
       if (llmBudgetThisTick <= 0) { summary.held++; continue; }
       llmBudgetThisTick--;
-      const outcome = await this.draft(key, requests, outcomes, floor, decision, existing, proposals);
+      const outcome = await this.draft(key, requests, outcomes, floor, decision, existing, proposals, target);
       if (outcome === 'written') { summary.drafted++; proposedKeys.add(key); }
       else if (outcome === 'admission') { summary.admissionRefusals++; this.counters.admissionRefusals++; break; }
       else summary.refused++;
     }
+  }
+
+  /**
+   * The §3.4 shadow comparison, read from the recorded operator verdicts on labelled-disagreement proposals: on an
+   * `arbiter-only` proposal an `agree` credits the arbiter (the default would have waited), a `disagree` the
+   * default; on a `default-only` proposal the reverse. Promoted = at least `shadow.minDisagreementsSampled`
+   * sampled disagreements AND the arbiter's operator-agreement rate strictly above the default's. A smaller
+   * sample is "not measured": the static rung keeps acting.
+   */
+  arbiterPromotion(proposals: LoadedProposal[] = this.loadProposals()): { sampled: number; arbiterRight: number; defaultRight: number; promoted: boolean } {
+    let sampled = 0; let arbiterRight = 0; let defaultRight = 0;
+    for (const p of proposals) {
+      const d = p.sidecar.disagreement ?? (p.sidecar.arbiterOnly ? 'arbiter-only' : null);
+      const v = p.sidecar.verdict?.verdict;
+      if (!d || (v !== 'agree' && v !== 'disagree')) continue;
+      sampled++;
+      const arbiterWasRight = d === 'arbiter-only' ? v === 'agree' : v === 'disagree';
+      if (arbiterWasRight) arbiterRight++; else defaultRight++;
+    }
+    const min = Math.max(1, Math.floor(this.cfg.shadow.minDisagreementsSampled));
+    return { sampled, arbiterRight, defaultRight, promoted: sampled >= min && arbiterRight > defaultRight };
   }
 
   /** A key held by an unexpired default-rung `wait` (a refusal / covered-by hold) or an unexpired arbiter `never`/`wait`. */
@@ -500,7 +702,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
 
   private async draft(
     key: string, requests: RequestRow[], outcomes: OutcomeRow[], floor: FloorResult, decision: ArbiterDecision,
-    existing: ExistingSkill[], proposals: LoadedProposal[],
+    existing: ExistingSkill[], proposals: LoadedProposal[], target: DraftTarget = 'proposal',
   ): Promise<'written' | 'refused' | 'admission'> {
     const families = this.deps.families();
     const drafter = families[0];
@@ -531,6 +733,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       correctedMessages: corrected,
       preferencesBlock: this.deps.preferencesBlock?.() ?? null,
       existingSkills: existing,
+      indexCostLine: renderIndexCostLine(this.tickIndexCost),
     }, this.cfg.evidence.promptBudgetBytes);
 
     let raw: string | 'admission';
@@ -597,6 +800,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       const reviewPrompt = buildReviewPrompt({
         skillMd, flags: lint.flags, operatorMessages: built.operatorMessages,
         outlines: cleanRuns.map((r, i) => renderOutline(r.slice, String(i + 1))), drafterFamily: drafter.family,
+        indexCostLine: renderIndexCostLine(this.tickIndexCost),
       });
       let reviewRaw: string | 'admission';
       try { reviewRaw = await this.callFamily(reviewer, COMPONENT_REVIEWER, reviewPrompt); } catch (err) {
@@ -634,6 +838,21 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       }
       this.counters.reviewsPassed++;
       reviewerFamily = reviewer.family;
+      // §3.9 cost strike: a SIGNAL in this slice — logged with the measurement, the draft is accepted (default accept;
+      // struck drafts join the operator sample so the strike has a positive control).
+      if (verdict.costStrike) {
+        this.counters.costStrikes++;
+        this.appendLog({
+          kind: 'index-cost', key, name: doc.name, verdict: 'strike', accepted: true, reason: verdict.costReason ?? null, reviewerFamily: reviewer.family,
+          indexBytes: this.tickIndexCost?.totalBytes ?? null, claudeHeadroomChars: this.tickIndexCost?.claudeHeadroomChars ?? null,
+          descriptionBytes: Buffer.byteLength(doc.description, 'utf-8'),
+        });
+        this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'index-cost-strike', context: { key, name: doc.name, accepted: true, indexBytes: this.tickIndexCost?.totalBytes ?? null } });
+      }
+    }
+
+    if (target === 'canonical') {
+      return this.liveCreate({ key, doc, skillMd, createdAt, evidence, sources, runIds: cleanRuns.map((r) => r.runId), reviewerFamily, pendingReason, decision, requests, draftKind: action.action, flags: lint.flags.length });
     }
 
     const sidecar: ProposalSidecar = {
@@ -646,6 +865,101 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     this.appendLog({ kind: 'would-create', key, name: doc.name, draftKind: action.action, arbiterOnly: decision.arbiterOnly, disagreement: decision.disagreement, reviewerFamily: reviewerFamily ?? null, pendingReason: pendingReason ?? null, evidence, flags: lint.flags.length });
     this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'would-create', context: { key, name: doc.name, draftKind: action.action, arbiterOnly: decision.arbiterOnly, reviewerFamily: reviewerFamily ?? null, pendingReason: pendingReason ?? null } });
     return 'written';
+  }
+
+  /**
+   * Live write (§3.5): the canonical goes through the commit protocol — `pending` (unrendered) while rung 2 is
+   * unproven or only one family reviewed, `active` after. The sentinel never writes a skills directory itself.
+   * A refused commit holds the key like any refusal (`draft-refused: commit:<reason>`); nothing is half-written
+   * (the protocol journals its own recovery).
+   */
+  private async liveCreate(input: {
+    key: string; doc: ParsedSkillDoc; skillMd: string; createdAt: string; evidence: string; sources: RowSource[]; runIds: string[];
+    reviewerFamily?: string; pendingReason?: 'one-family'; decision: ArbiterDecision; requests: RequestRow[]; draftKind: 'new' | 'patch'; flags: number;
+  }): Promise<'written' | 'refused'> {
+    const { key, doc } = input;
+    const protocol = this.deps.commitProtocol;
+    if (!protocol) {
+      // Misconfiguration, not a reason to lose the draft: report it once per tick and keep the shadow proposal.
+      this.counters.liveFallbacks++;
+      this.deps.degradation?.report({
+        feature: 'SkillLearningSentinel', primary: 'mode: live (commit protocol)', fallback: 'shadow proposal written instead',
+        reason: 'no commit protocol was wired', impact: 'Learned skills are not written to the canonical layout until the protocol is wired; proposals accumulate.',
+      });
+      const sidecar: ProposalSidecar = {
+        name: doc.name, key, arbiterOnly: input.decision.arbiterOnly, disagreement: input.decision.disagreement, reviewerFamily: input.reviewerFamily, pendingReason: input.pendingReason, createdAt: input.createdAt,
+        evidence: { sources: input.sources, runIds: input.runIds }, draftKind: input.draftKind, description: doc.description, paraphrases: this.paraphrasesOf(input.requests),
+      };
+      this.writeProposal(sidecar, input.skillMd);
+      this.counters.draftsWritten++;
+      this.appendLog({ kind: 'would-create', key, name: doc.name, draftKind: input.draftKind, arbiterOnly: input.decision.arbiterOnly, disagreement: input.decision.disagreement, reviewerFamily: input.reviewerFamily ?? null, pendingReason: input.pendingReason ?? null, evidence: input.evidence, flags: input.flags, liveFallback: 'no-commit-protocol' });
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'held', reason: 'live-no-commit-protocol', context: { key, name: doc.name } });
+      return 'written';
+    }
+    const rungProven = this.rungTwoProven();
+    const pendingReason: PendingSidecar['pendingReason'] | undefined = input.pendingReason ?? (rungProven ? undefined : 'rung-unproven');
+    const state: Extract<LearnedCanonicalState, 'pending' | 'active'> = pendingReason ? 'pending' : 'active';
+    const raw = renderProposalSkillMd(doc, { key, createdAt: input.createdAt, evidence: input.evidence, state });
+    let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
+    try {
+      res = await protocol.write('create', doc.name, raw, { expectedPrevHash: null, reason: `skill-learning create (${state}${pendingReason ? `: ${pendingReason}` : ''})` });
+    } catch (err) {
+      res = { ok: false, reason: 'invalid', detail: (err instanceof Error ? err.message : String(err)).slice(0, 200) };
+    }
+    if (!res.ok) {
+      this.counters.commitRefusals++;
+      this.refuse(key, `commit:${res.reason}`, { name: doc.name, detail: (res.detail ?? '').slice(0, 200) });
+      return 'refused';
+    }
+    if (state === 'pending') {
+      this.counters.pendingCreates++;
+      this.writePendingSidecar({
+        name: doc.name, key, description: doc.description, paraphrases: this.paraphrasesOf(input.requests), reviewerFamily: input.reviewerFamily,
+        pendingReason: pendingReason!, createdAt: input.createdAt, evidence: { sources: input.sources, runIds: input.runIds },
+        disagreement: input.decision.disagreement, arbiterOnly: input.decision.arbiterOnly,
+      });
+    } else {
+      this.counters.liveCreates++;
+    }
+    this.counters.draftsWritten++;
+    this.appendLog({
+      kind: 'create', state, key, name: doc.name, draftKind: input.draftKind, arbiterOnly: input.decision.arbiterOnly, disagreement: input.decision.disagreement,
+      reviewerFamily: input.reviewerFamily ?? null, pendingReason: pendingReason ?? null, evidence: input.evidence, flags: input.flags,
+      txId: res.txId, fileHash: res.fileHash, version: res.version, epoch: res.epoch, fence: res.fence,
+    });
+    this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: state === 'pending' ? 'pending' : 'create', context: { key, name: doc.name, draftKind: input.draftKind, reviewerFamily: input.reviewerFamily ?? null, pendingReason: pendingReason ?? null, version: res.version, fence: res.fence } });
+    return 'written';
+  }
+
+  private writePendingSidecar(sidecar: PendingSidecar): void {
+    writeFileAtomic(path.join(this.pendingSidecarDir, `${sidecar.name}.json`), `${JSON.stringify(sidecar, null, 2)}\n`);
+  }
+
+  private readPendingSidecar(name: string): PendingSidecar | null {
+    const s = readJson<PendingSidecar>(path.join(this.pendingSidecarDir, `${name}.json`));
+    return s && typeof s.name === 'string' && typeof s.key === 'string' ? s : null;
+  }
+
+  private removePendingSidecar(name: string): void {
+    try { SafeFsExecutor.safeRmSync(path.join(this.pendingSidecarDir, `${name}.json`), { force: true, operation: 'skill-learning-sentinel:pending-sidecar' }); } catch (err) {
+      this.log(`[SkillLearningSentinel] pending sidecar removal failed for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** The canonical SKILL.md of a learned skill, parsed, with its whole-file hash; null when absent or not learned. */
+  private readCanonical(name: string): { raw: string; fileHash: string; doc: ParsedSkillDoc; state: string } | null {
+    let raw: string;
+    try { raw = fs.readFileSync(path.join(this.canonicalRoot, name, 'SKILL.md'), 'utf-8'); } catch { return null; } // @silent-fallback-ok — absent canonical reads as none
+    const meta = skillMeta(raw);
+    if (!meta?.learned) return null;
+    return { raw, fileHash: sha256(raw), doc: meta.doc, state: meta.doc.metadata[LEARNED_STATE_KEY] ?? 'active' };
+  }
+
+  private measureIndexCost(): IndexCostReading | null {
+    try { return this.deps.indexCost ? this.deps.indexCost() : measureIndexCost({ projectDir: this.deps.projectDir, now: this.now }); } catch (err) { // @silent-fallback-ok — logged below; an unmeasurable index cost is reported as unknown to the prompts (never a fabricated number), per the spec's unmeasurable rule
+      this.log(`[SkillLearningSentinel] index-cost measurement failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
   }
 
   private async sliceFor(o: OutcomeRow, r: RequestRow): Promise<RunSlice> {
@@ -775,7 +1089,22 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     const ledger = new Ledger({ stateDir: input.stateDir, machineId: input.machineId, windowDays: cfg.defaultGate.windowDays, now, logger: log });
     const outcomes = new Outcomes({
       ledger, machineId: input.machineId, stateDir: input.stateDir, projectDir: input.projectDir, windowDays: cfg.defaultGate.windowDays,
-      transcriptScanBytes: cfg.evidence.transcriptScanBytes, findSession: input.findSession, sessionClockEnd: input.sessionClockEnd, holdsLease: input.holdsLease, now, logger: log,
+      transcriptScanBytes: cfg.evidence.transcriptScanBytes, findSession: input.findSession, sessionClockEnd: input.sessionClockEnd, holdsLease: input.holdsLease,
+      versionLookup: input.versionLookup ?? versionLookupFromStore(input.versionStore), now, logger: log,
+    });
+    // Slice 2 readers. Mode is read LIVE from the agent's config file (the ladder's advance writes it there); an
+    // unreadable file keeps the construction value. Rung 2 is read from the ladder's feature view: proven when the
+    // feature sits at `fleet`, or is `ready-to-advance` towards it from `dev-agent-live`; anything else (or no
+    // ladder) is unproven — pending is the conservative side.
+    const readMode = input.readMode ?? ((): SkillLearningMode | null => {
+      const raw = readJson<{ monitoring?: { skillLearning?: { mode?: unknown } } }>(path.join(input.stateDir, 'config.json'));
+      const m = raw?.monitoring?.skillLearning?.mode;
+      return m === 'live' ? 'live' : m === 'shadow' ? 'shadow' : null;
+    });
+    const rungTwoProven = input.rungTwoProven ?? ((): boolean => {
+      const f = input.ladder?.features().find((x) => x.id === SKILL_LEARNING_FEATURE);
+      if (!f) return false;
+      return f.rung === 'fleet' || (f.rung === 'dev-agent-live' && f.next === 'fleet' && f.state === 'ready-to-advance');
     });
     const admins = (): Array<{ permissions: string[]; channels: Array<{ type: string; identifier: string }> }> => {
       try { return input.userManager?.listUsers() ?? []; } catch { return []; } // @silent-fallback-ok — an unreadable user list means no Slack admin resolves (rows stay not-operator)
@@ -866,6 +1195,11 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       },
       unlinkedMessages: skillLearningUnlinkedMessages,
       holdsLease: input.holdsLease,
+      commitProtocol: input.commitProtocol ?? null,
+      versionStore: input.versionStore ?? null,
+      mode: () => readMode() ?? cfg.mode,
+      rungTwoProven,
+      indexCost: input.indexCost,
       now, logger: log,
     });
     return sentinel;
@@ -878,10 +1212,11 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     const proposals = this.loadProposals();
     const skills = this.learnedSkillSummaries(keys.map((k) => k.procedureKey));
     const ext = this.deps.counters?.() ?? {};
+    const versions = this.readVersionsState();
     return {
       machine: this.deps.machineId,
       enabled: this.cfg.enabled,
-      mode: this.cfg.mode,
+      mode: this.mode(),
       counts: {
         requests: keys.reduce((n, k) => n + k.requests, 0),
         verified: keys.reduce((n, k) => n + k.verifiedRequests, 0),
@@ -896,12 +1231,14 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       filtered: ext.filtered ?? { 'not-user': 0, forwarded: 0, 'not-operator': 0, 'confirmation-reply': 0, 'slack-asserted': 0 },
       skills,
       proposals: proposals.map((p) => this.proposalSummary(p.sidecar)),
-      pending: [],
+      pending: this.pendingSummaries(),
       retired: [],
       lastTickAt: this.lastTickAt,
       llmSpendCentsToday: this.queue.getDailySpendCents(),
       unlinkedMessages: this.deps.unlinkedMessages?.() ?? 0,
       observeOnly: !this.holdsLease(),
+      epochSuperseded: versions.epochSuperseded,
+      splitBrain: versions.splitBrain,
     };
   }
 
@@ -912,7 +1249,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
 
   skill(name: string): LearnedSkillSummary | ProposalSummary | null {
     if (!validSkillName(name)) return null;
-    const learned = this.learnedSkillSummaries(this.deps.ledger.keys().map((k) => k.procedureKey)).find((s) => s.name === name);
+    const learned = this.learnedSkillSummaries(this.deps.ledger.keys().map((k) => k.procedureKey), { includePending: true }).find((s) => s.name === name);
     if (learned) return learned;
     const p = this.loadProposals().find((x) => x.sidecar.name === name);
     return p ? this.proposalSummary(p.sidecar) : null;
@@ -939,13 +1276,287 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     }
   }
 
+  // ─── Slice 2: pending → confirm / reject (§3.5 one-tap confirmation) ──
+
+  /** Every canonical in state `pending`, as the console lists it (body + paraphrases on the first screen). */
+  pendingSummaries(): PendingSummary[] {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(this.canonicalRoot, { withFileTypes: true }); } catch { return []; } // @silent-fallback-ok — no canonical layout yet
+    const out: PendingSummary[] = [];
+    for (const e of entries) {
+      if (!e.isDirectory() || !validSkillName(e.name)) continue;
+      const c = this.readCanonical(e.name);
+      if (!c || c.state !== 'pending') continue;
+      const side = this.readPendingSidecar(e.name);
+      const version = Number.parseInt(c.doc.metadata['instar-learned-version'] ?? '1', 10);
+      out.push({
+        name: e.name, description: c.doc.description, paraphrases: side?.paraphrases ?? [],
+        ...(side?.reviewerFamily ? { reviewerFamily: side.reviewerFamily } : {}),
+        pendingReason: side?.pendingReason ?? 'rung-unproven',
+        fileHash: c.fileHash, createdAt: c.doc.metadata['instar-learned-created'] ?? side?.createdAt ?? '', version: Number.isFinite(version) ? version : 1,
+      });
+    }
+    return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /** Serialize taps per name so a double tap observes the first tap's outcome (idempotent on `(name, fileHash)`). */
+  private serialized<T>(name: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.pendingOps.get(name) ?? Promise.resolve();
+    const next = prev.then(fn, fn);
+    this.pendingOps.set(name, next.catch(() => undefined));
+    void next.finally(() => { if (this.pendingOps.get(name) === next) this.pendingOps.delete(name); }).catch(() => undefined);
+    return next;
+  }
+
+  /**
+   * The operator's confirm tap: `pending` → `active` through `write('confirm')` (expectedPrevHash = the pending
+   * file's hash), the activation stamp starts the 7-day "new" label. Already active ⇒ ok (idempotent); absent or
+   * not learned ⇒ `pending-not-found`; any other state ⇒ `not-pending`.
+   */
+  confirmPending(name: string, opts: { forwardedFromMachine?: string } = {}): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!validSkillName(name)) return Promise.resolve({ ok: false, error: 'invalid-name' });
+    return this.serialized(name, async () => {
+      const c = this.readCanonical(name);
+      if (!c) return { ok: false, error: 'pending-not-found' };
+      if (c.state === 'active') { this.removePendingSidecar(name); return { ok: true }; }
+      if (c.state !== 'pending') return { ok: false, error: 'not-pending' };
+      const protocol = this.deps.commitProtocol;
+      if (!protocol) return { ok: false, error: 'no-commit-protocol' };
+      const at = new Date(this.now()).toISOString();
+      const next = withLearnedMetadata(c.raw, { [LEARNED_STATE_KEY]: 'active', [LEARNED_ACTIVATED_KEY]: at });
+      if (!next) return { ok: false, error: 'unparseable-canonical' };
+      // §3.5 step 3: the fence is the version-row chain, never the file we just read — a hand edit of a pending
+      // canonical is a conflict the protocol locks `operator-owned`, surfaced as such.
+      const expectedPrevHash = this.chainHash(name, c.fileHash);
+      let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
+      try { res = await protocol.write('confirm', name, next, { expectedPrevHash: expectedPrevHash.hash, reason: 'operator confirm tap' }); } catch (err) {
+        return { ok: false, error: `commit-failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (!res.ok) return this.tapRefused('confirm', name, res, expectedPrevHash, c.fileHash, opts);
+      this.counters.confirms++;
+      this.removePendingSidecar(name);
+      this.appendLog({ kind: 'confirm', name, prevFileHash: expectedPrevHash.hash, chain: expectedPrevHash.source, fileHash: res.fileHash, version: res.version, txId: res.txId, forwardedFromMachine: opts.forwardedFromMachine ?? null });
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'confirm', context: { name, version: res.version, forwardedFromMachine: opts.forwardedFromMachine ?? null } });
+      return { ok: true };
+    });
+  }
+
+  /**
+   * The operator's reject tap: the body becomes a shadow proposal (state `proposal`, an operator `disagree`
+   * verdict recorded so the §3.4 sample sees it), then `write('reject')` retires the pending canonical so nothing
+   * stays rendered. A name with no pending canonical but a proposal already holding it ⇒ ok (idempotent).
+   */
+  rejectPending(name: string, opts: { forwardedFromMachine?: string } = {}): Promise<{ ok: true } | { ok: false; error: string }> {
+    if (!validSkillName(name)) return Promise.resolve({ ok: false, error: 'invalid-name' });
+    return this.serialized(name, async () => {
+      const c = this.readCanonical(name);
+      if (!c) {
+        const already = this.loadProposals().find((p) => p.sidecar.name === name && p.sidecar.verdict?.reason === 'rejected pending skill');
+        return already ? { ok: true } : { ok: false, error: 'pending-not-found' };
+      }
+      if (c.state !== 'pending') return { ok: false, error: 'not-pending' };
+      const protocol = this.deps.commitProtocol;
+      if (!protocol) return { ok: false, error: 'no-commit-protocol' };
+      const at = new Date(this.now()).toISOString();
+      const side = this.readPendingSidecar(name);
+      const key = c.doc.metadata['instar-learned-key'] ?? side?.key ?? '';
+      const proposalMd = withLearnedMetadata(c.raw, { [LEARNED_STATE_KEY]: 'proposal' });
+      if (!proposalMd) return { ok: false, error: 'unparseable-canonical' };
+      const sidecar: ProposalSidecar = {
+        name, key, arbiterOnly: side?.arbiterOnly ?? false, disagreement: side?.disagreement ?? null, reviewerFamily: side?.reviewerFamily,
+        pendingReason: side?.pendingReason === 'one-family' ? 'one-family' : undefined, createdAt: c.doc.metadata['instar-learned-created'] ?? side?.createdAt ?? at,
+        evidence: side?.evidence ?? { sources: [], runIds: [] }, draftKind: 'new', description: c.doc.description, paraphrases: side?.paraphrases ?? [],
+        verdict: { by: 'operator', verdict: 'disagree', reason: 'rejected pending skill', at },
+      };
+      // The proposal first (nothing is lost if the commit aborts), then the canonical leaves the layout.
+      try { this.writeProposal(sidecar, proposalMd); } catch (err) {
+        return { ok: false, error: `proposal-write-failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      const expectedPrevHash = this.chainHash(name, c.fileHash);
+      let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
+      try { res = await protocol.write('reject', name, proposalMd, { expectedPrevHash: expectedPrevHash.hash, reason: 'operator reject tap' }); } catch (err) {
+        return { ok: false, error: `commit-failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (!res.ok) return this.tapRefused('reject', name, res, expectedPrevHash, c.fileHash, opts);
+      this.counters.rejects++;
+      this.removePendingSidecar(name);
+      if (key) {
+        this.deps.ledger.append({ kind: 'verdict', eventId: crypto.randomUUID(), procedureKey: key, by: 'operator', verdict: 'disagree', reason: 'rejected pending skill', at, machineId: this.deps.machineId });
+      }
+      this.appendLog({ kind: 'reject', name, key, prevFileHash: expectedPrevHash.hash, chain: expectedPrevHash.source, txId: res.txId, forwardedFromMachine: opts.forwardedFromMachine ?? null });
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'reject', context: { name, key, forwardedFromMachine: opts.forwardedFromMachine ?? null } });
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'outcome', reason: 'operator-reject-pending', outcome: 'wrong', gradedBy: 'operator', context: { name, key } });
+      return { ok: true };
+    });
+  }
+
+  /** The hash a write fences against: the version chain's last live row; the on-disk hash only when no store is wired (said so in the log). */
+  private chainHash(name: string, onDisk: string): { hash: string; source: 'version-row' | 'on-disk' } {
+    const store = this.deps.versionStore;
+    if (!store) return { hash: onDisk, source: 'on-disk' };
+    let fromChain: string | null = null;
+    try { fromChain = store.expectedPrevHash(name); } catch (err) {
+      this.log(`[SkillLearningSentinel] version chain unreadable for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // No row at all (a canonical that predates the store): the on-disk hash is the only fence there is.
+    return fromChain === null ? { hash: onDisk, source: 'on-disk' } : { hash: fromChain, source: 'version-row' };
+  }
+
+  private tapRefused(tap: 'confirm' | 'reject', name: string, res: Extract<Awaited<ReturnType<CommitProtocolLike['write']>>, { ok: false }>, expected: { hash: string; source: string }, onDisk: string, opts: { forwardedFromMachine?: string }): { ok: false; error: string } {
+    this.appendLog({ kind: `${tap}-refused`, name, reason: res.reason, detail: (res.detail ?? '').slice(0, 200), expectedPrevHash: expected.hash, chain: expected.source, onDiskFileHash: onDisk, forwardedFromMachine: opts.forwardedFromMachine ?? null });
+    if (res.reason === 'user-edit-conflict') {
+      this.removePendingSidecar(name);   // the canonical is operator-owned now; it is no longer a pending skill
+      return { ok: false, error: 'user-edit-conflict' };
+    }
+    return { ok: false, error: `commit:${res.reason}${res.detail ? ` (${res.detail.slice(0, 160)})` : ''}` };
+  }
+
+  // ─── Slice 2: post-sync epoch reconciliation (deviation (t)) ───────────
+
+  private readVersionsState(): NonNullable<SentinelState['versions']> {
+    const state = readJson<SentinelState>(this.statePath) ?? {};
+    return state.versions ?? { handled: {}, epochSuperseded: 0, splitBrain: 0, locked: 0 };
+  }
+
+  private writeVersionsState(versions: NonNullable<SentinelState['versions']>): void {
+    const state = readJson<SentinelState>(this.statePath) ?? {};
+    writeFileAtomic(this.statePath, `${JSON.stringify({ ...state, versions }, null, 2)}\n`);
+  }
+
+  /**
+   * For every learned canonical on disk, classify its whole-file hash against the synced version shards
+   * (`VersionStore.reconcileAfterSync`) and perform the body-level consequence ONCE per (name, hash):
+   *   - `superseded`  — a lower-epoch body lost to a newer holder: its body becomes a proposal
+   *     (`pendingReason: 'superseded'`) and the canonical is locked `operator-owned` so the stale body never
+   *     renders (the winner's body is not held here; a later sync or the operator restores it);
+   *   - `split-brain` — equal epochs, different bodies: the on-disk body becomes a proposal, every other candidate
+   *     is named in the log (its body is not on this machine), the canonical is locked;
+   *   - `unknown-hash` — a body no row carries (an LLM merge or an edit): locked `operator-owned`.
+   * Locks go through the protocol (`write('lock')`, fenced on the chain; a chain mismatch is the protocol's own
+   * operator-owned lock, reported as such). A canonical already `operator-owned` is left alone, so the phase
+   * settles: a second tick over the same tree emits nothing.
+   */
+  async reconcileVersions(): Promise<{ examined: number; superseded: number; splitBrain: number; unknownHash: number; locks: number }> {
+    const out = { examined: 0, superseded: 0, splitBrain: 0, unknownHash: 0, locks: 0 };
+    const store = this.deps.versionStore;
+    if (!store) return out;
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(this.canonicalRoot, { withFileTypes: true }); } catch { return out; } // @silent-fallback-ok — no canonical layout yet ⇒ nothing to reconcile
+    const versions = this.readVersionsState();
+    let dirty = false;
+    for (const e of entries) {
+      if (!e.isDirectory() || !validSkillName(e.name)) continue;
+      const c = this.readCanonical(e.name);
+      if (!c) continue;
+      out.examined++;
+      if (versions.handled[e.name] === c.fileHash) continue;                 // this exact body was already judged here
+      let outcome: SyncReconcileOutcomeLike;
+      try { outcome = store.reconcileAfterSync(e.name, c.fileHash); } catch (err) {
+        this.log(`[SkillLearningSentinel] reconcileAfterSync failed for ${e.name}: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (outcome.kind === 'no-rows' || outcome.kind === 'in-sync') continue;
+      versions.handled[e.name] = c.fileHash;
+      dirty = true;
+      // Already operator-owned: the consequence was performed (by this phase or by the protocol's own conflict lock);
+      // the lock is the durable marker, so the phase settles here — nothing is re-logged or re-written.
+      const alreadyLocked = c.state === 'operator-owned' || c.doc.metadata['instar-learned-locked'] === 'true';
+      if (alreadyLocked) continue;
+      if (outcome.kind === 'superseded') {
+        out.superseded++; versions.epochSuperseded++; this.counters.epochSuperseded++;
+        const proposal = this.demoteToProposal(e.name, c, 'superseded', `epoch ${outcome.loser.epoch} (${outcome.loser.machineId}) lost to epoch ${outcome.winner.epoch} (${outcome.winner.machineId})`);
+        this.appendLog({ kind: 'epoch-superseded', name: e.name, onDiskFileHash: c.fileHash, loser: { epoch: outcome.loser.epoch, machineId: outcome.loser.machineId, version: outcome.loser.version }, winner: { epoch: outcome.winner.epoch, machineId: outcome.winner.machineId, version: outcome.winner.version, fileHash: outcome.winner.fileHash }, tombstoned: outcome.tombstoned, proposal });
+        this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'epoch-superseded', context: { name: e.name, loserEpoch: outcome.loser.epoch, winnerEpoch: outcome.winner.epoch } });
+        if (await this.lockOperatorOwned(e.name, c, `epoch-superseded: the winner's body (epoch ${outcome.winner.epoch}) is not on this machine; the stale body must not render`)) { out.locks++; versions.locked++; }
+      } else if (outcome.kind === 'split-brain') {
+        out.splitBrain++; versions.splitBrain++; this.counters.splitBrain++;
+        const here = outcome.candidates.find((r) => r.fileHash === c.fileHash) ?? null;
+        const elsewhere = outcome.candidates.filter((r) => r.fileHash !== c.fileHash);
+        const proposal = this.demoteToProposal(e.name, c, 'split-brain', `epoch ${outcome.epoch} split: ${outcome.candidates.map((r) => `${r.machineId}@${r.fileHash.slice(0, 12)}`).join(' vs ')}`);
+        const absent = elsewhere.map((r) => this.recordAbsentCandidate(e.name, r, outcome.epoch));
+        this.appendLog({ kind: 'split-brain', name: e.name, epoch: outcome.epoch, onDiskFileHash: c.fileHash, onDiskCandidate: here ? { machineId: here.machineId, version: here.version } : null, candidates: outcome.candidates.map((r) => ({ machineId: r.machineId, version: r.version, fileHash: r.fileHash, at: r.at })), proposal, bodiesNotOnThisMachine: absent });
+        this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'split-brain', context: { name: e.name, epoch: outcome.epoch, candidates: outcome.candidates.length } });
+        if (await this.lockOperatorOwned(e.name, c, `split-brain at epoch ${outcome.epoch}: ${outcome.candidates.length} bodies; nothing renders until the operator chooses`)) { out.locks++; versions.locked++; }
+      } else {
+        out.unknownHash++;
+        this.appendLog({ kind: 'unknown-hash', name: e.name, onDiskFileHash: c.fileHash, winner: { epoch: outcome.winner.epoch, machineId: outcome.winner.machineId, version: outcome.winner.version, fileHash: outcome.winner.fileHash } });
+        this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'unknown-hash', context: { name: e.name, winnerEpoch: outcome.winner.epoch } });
+        if (await this.lockOperatorOwned(e.name, c, 'unknown-hash: the on-disk body matches no version row (a merge or an edit)')) { out.locks++; versions.locked++; }
+      }
+    }
+    if (dirty) this.writeVersionsState(versions);
+    return out;
+  }
+
+  /** The on-disk body as a shadow proposal (`<name>-<reason>-<hash8>`), with the reason on the sidecar. Returns the proposal name, or null when it could not be written. */
+  private demoteToProposal(name: string, c: { raw: string; fileHash: string; doc: ParsedSkillDoc }, reason: 'superseded' | 'split-brain', detail: string): string | null {
+    const proposalName = `${name}-${reason}-${c.fileHash.slice(0, 8)}`;
+    const md = withLearnedMetadata(c.raw, { [LEARNED_STATE_KEY]: 'proposal', 'instar-learned-locked': 'false' })?.replace(/^(---\r?\nname:)[^\n]*/, `$1 ${proposalName}`) ?? null;
+    if (!md || !validSkillName(proposalName)) return null;
+    const sidecar: ProposalSidecar = {
+      name: proposalName, key: c.doc.metadata['instar-learned-key'] ?? '', arbiterOnly: false, disagreement: null, pendingReason: reason,
+      createdAt: new Date(this.now()).toISOString(), evidence: { sources: [], runIds: [] }, draftKind: 'new',
+      description: `${c.doc.description} [${reason}: ${detail}; body of ${name} at ${c.fileHash.slice(0, 12)}]`.slice(0, 512), paraphrases: [],
+    };
+    try { this.writeProposal(sidecar, md); return proposalName; } catch (err) { // @silent-fallback-ok — the failure is named in the epoch-superseded/split-brain log row (`proposal: null`) and the canonical is still locked; nothing renders
+      this.log(`[SkillLearningSentinel] could not write ${reason} proposal for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /** A split-brain candidate whose body is NOT on this machine: a proposal sidecar naming where it is (no body is fabricated). */
+  private recordAbsentCandidate(name: string, r: VersionRowLike, epoch: number): { machineId: string; fileHash: string; proposal: string | null } {
+    const proposalName = `${name}-split-brain-${r.fileHash.slice(0, 8)}`;
+    if (!validSkillName(proposalName)) return { machineId: r.machineId, fileHash: r.fileHash, proposal: null };
+    const sidecar: ProposalSidecar = {
+      name: proposalName, key: '', arbiterOnly: false, disagreement: null, pendingReason: 'split-brain', createdAt: new Date(this.now()).toISOString(),
+      evidence: { sources: [], runIds: [] }, draftKind: 'new', paraphrases: [],
+      description: `[split-brain at epoch ${epoch}] body of ${name} written by ${r.machineId} (version ${r.version}, ${r.fileHash.slice(0, 12)}) — not on this machine; it is on ${r.machineId}'s canonical before the sync`,
+    };
+    try { writeFileAtomic(path.join(this.proposalsDir, proposalName, 'proposal.json'), `${JSON.stringify(sidecar, null, 2)}\n`); return { machineId: r.machineId, fileHash: r.fileHash, proposal: proposalName }; } catch (err) { // @silent-fallback-ok — the candidate is still named in the split-brain log row (`proposal: null`); the lock below is what protects the tree
+      this.log(`[SkillLearningSentinel] could not record split-brain candidate for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      return { machineId: r.machineId, fileHash: r.fileHash, proposal: null };
+    }
+  }
+
+  /**
+   * Lock a canonical `operator-owned` through the protocol, fenced on the version chain. A chain mismatch is the
+   * protocol's own operator-owned lock (`user-edit-conflict`): also a lock. Anything else (fence refused on a
+   * standby, invalid) is logged; the (name, hash) is still marked handled here — one attempt per body per machine.
+   */
+  private async lockOperatorOwned(name: string, c: { raw: string; fileHash: string }, reason: string): Promise<boolean> {
+    const protocol = this.deps.commitProtocol;
+    if (!protocol) { this.appendLog({ kind: 'lock-refused', name, reason: 'no-commit-protocol', detail: reason }); return false; }
+    const locked = withLearnedMetadata(c.raw, { [LEARNED_STATE_KEY]: 'operator-owned', 'instar-learned-locked': 'true' });
+    if (!locked) { this.appendLog({ kind: 'lock-refused', name, reason: 'unparseable-canonical', detail: reason }); return false; }
+    const expected = this.chainHash(name, c.fileHash);
+    let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
+    try { res = await protocol.write('lock', name, locked, { expectedPrevHash: expected.hash, reason }); } catch (err) { // @silent-fallback-ok — a thrown write becomes a refused result: logged as `lock-refused` below with the error text, attempted once per (name, hash)
+      res = { ok: false, reason: 'invalid', detail: (err instanceof Error ? err.message : String(err)).slice(0, 200) };
+    }
+    const lockedByProtocol = !res.ok && res.reason === 'user-edit-conflict';
+    if (res.ok || lockedByProtocol) {
+      this.counters.versionLocks++;
+      this.appendLog({ kind: 'lock', name, by: res.ok ? 'sentinel' : 'protocol-conflict', expectedPrevHash: expected.hash, chain: expected.source, onDiskFileHash: c.fileHash, detail: reason, ...(res.ok ? { txId: res.txId, version: res.version, fileHash: res.fileHash } : { protocolDetail: (res.detail ?? '').slice(0, 200) }) });
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'lock', context: { name, by: res.ok ? 'sentinel' : 'protocol-conflict' } });
+      return true;
+    }
+    this.appendLog({ kind: 'lock-refused', name, reason: res.reason, detail: `${reason}; ${(res.detail ?? '').slice(0, 160)}`, expectedPrevHash: expected.hash, chain: expected.source });
+    return false;
+  }
+
   private proposalSummary(s: ProposalSidecar): ProposalSummary {
     return { name: s.name, key: s.key, arbiterOnly: s.arbiterOnly, disagreement: s.disagreement ?? (s.arbiterOnly ? 'arbiter-only' : null), createdAt: s.createdAt, reviewerFamily: s.reviewerFamily, pendingReason: s.pendingReason, verdict: s.verdict, paraphrases: s.paraphrases, description: s.description };
   }
 
-  /** Learned canonicals under `.instar/skills` with their §3.6 counts from the ledger (read-only; slice 1 has no versions yet). */
-  private learnedSkillSummaries(keys: string[]): LearnedSkillSummary[] {
-    const root = path.join(this.deps.projectDir, '.instar', 'skills');
+  /**
+   * Learned canonicals under `.instar/skills` with their §3.6 counts from the ledger. `pending` canonicals are
+   * listed by `status().pending`, not here (unless `includePending`, for a by-name read). A use whose rendering
+   * the operator had edited (`skillUsed.operatorEdited`) is EXCLUDED from every score and counted in
+   * `operatorEdited` (§3.9 join hardening).
+   */
+  private learnedSkillSummaries(keys: string[], opts: { includePending?: boolean } = {}): LearnedSkillSummary[] {
+    const root = this.canonicalRoot;
     let entries: fs.Dirent[] = [];
     try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return []; } // @silent-fallback-ok — no canonical layout yet
     const learned: Array<{ name: string; doc: ParsedSkillDoc }> = [];
@@ -954,14 +1565,23 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       let text: string;
       try { text = fs.readFileSync(path.join(root, e.name, 'SKILL.md'), 'utf-8'); } catch { continue; } // @silent-fallback-ok — not a skill dir
       const meta = skillMeta(text);
-      if (meta?.learned) learned.push({ name: e.name, doc: meta.doc });
+      if (!meta?.learned) continue;
+      if (meta.doc.metadata[LEARNED_STATE_KEY] === 'pending' && !opts.includePending) continue;
+      learned.push({ name: e.name, doc: meta.doc });
     }
     if (learned.length === 0) return [];
-    const uses = new Map<string, { uses: number; accepted: number; inferred: number; corrected: number; unknown: number; weak: number; corroborated: number; misfires: number; lastUsedAt?: string }>();
+    const uses = new Map<string, { uses: number; accepted: number; inferred: number; corrected: number; unknown: number; weak: number; corroborated: number; misfires: number; operatorEdited: number; lastUsedAt?: string }>();
     for (const key of keys) {
       for (const o of this.deps.ledger.outcomesForKey(key)) {
         if (!o.skillUsed) continue;
-        const u = uses.get(o.skillUsed.skill) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0 };
+        const u = uses.get(o.skillUsed.skill) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0, operatorEdited: 0 };
+        if (o.skillUsed.operatorEdited) {
+          // The operator's edited rendering ran, not the version: reported, never scored.
+          u.operatorEdited++;
+          if (!u.lastUsedAt || o.at > u.lastUsedAt) u.lastUsedAt = o.at;
+          uses.set(o.skillUsed.skill, u);
+          continue;
+        }
         u.uses++;
         if (o.skillUsed.corroborated) u.corroborated++;
         if (o.misfire) u.misfires++;
@@ -974,12 +1594,16 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
         uses.set(o.skillUsed.skill, u);
       }
     }
+    const nowMs = this.now();
     return learned.map(({ name, doc }) => {
-      const u = uses.get(name) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0 };
+      const u = uses.get(name) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0, operatorEdited: 0 };
       const measured = u.accepted + u.inferred + u.corrected;
       const score = measured > 0 ? (u.accepted + 0.5 * u.inferred + 1) / (u.accepted + 0.5 * u.inferred + u.corrected + 2) : null;
-      const state = doc.metadata['instar-learned-state'];
+      const state = doc.metadata[LEARNED_STATE_KEY];
       const version = Number.parseInt(doc.metadata['instar-learned-version'] ?? '1', 10);
+      // The 7-day "new" label counts from activation (the confirm tap) or, for a skill written active, creation.
+      const since = Date.parse(doc.metadata[LEARNED_ACTIVATED_KEY] ?? doc.metadata['instar-learned-created'] ?? '');
+      const isNew = (state === undefined || state === 'active') && Number.isFinite(since) && nowMs - since >= 0 && nowMs - since < NEW_LABEL_MS;
       return {
         name,
         state: state === 'retired' ? 'retired' : state === 'proposal' || state === 'pending' ? 'proposal' : doc.metadata['instar-learned-locked'] === 'true' ? 'locked' : 'learned',
@@ -987,6 +1611,8 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
         measurableRate: u.uses > 0 ? u.corroborated / u.uses : null, misfires: u.misfires,
         version: Number.isFinite(version) ? version : 1, lastUsedAt: u.lastUsedAt,
         locked: doc.metadata['instar-learned-locked'] === 'true',
+        operatorEdited: u.operatorEdited,
+        isNew,
       } satisfies LearnedSkillSummary;
     });
   }

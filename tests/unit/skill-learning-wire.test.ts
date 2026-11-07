@@ -131,7 +131,7 @@ describe('server.ts production wiring (source-level integrity)', () => {
     expect(calls).toHaveLength(1);
     const at = src.indexOf('startSkillLearning({');
     const stmt = src.slice(at, src.indexOf('\n', at));
-    for (const seam of ['reconciler: learnedSkillReconciler', 'provenance: () => _judgmentProvenance', 'operatorStore: () => _agentServerRef?.getTopicOperatorStore()', 'sharedIntelligence:', 'topicMemory:', 'holdsLease:', 'featureEvidence', 'degradationReporter: DegradationReporter.getInstance()']) {
+    for (const seam of ['reconciler: learnedSkillReconciler', 'provenance: () => _judgmentProvenance', 'operatorStore: () => _agentServerRef?.getTopicOperatorStore()', 'sharedIntelligence:', 'topicMemory:', 'holdsLease:', 'featureEvidence', 'degradationReporter: DegradationReporter.getInstance()', 'ladder: () => _agentServerRef?.getMaturationLadder() ?? null']) {
       expect(stmt, seam).toContain(seam);
     }
     expect(stmt).toContain('SkillLearningSentinel.create(deps)');

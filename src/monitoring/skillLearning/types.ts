@@ -67,7 +67,18 @@ export interface OutcomeRow {
   label: OutcomeLabel;
   provisional: boolean;
   /** Join to slice-0 telemetry (§3.9). */
-  skillUsed?: { skill: string; contentHash: string; corroborated: boolean; versionUncertain: boolean };
+  skillUsed?: {
+    skill: string;
+    contentHash: string;
+    corroborated: boolean;
+    versionUncertain: boolean;
+    /** Slice 2 (§3.9 join hardening): the version row the stamp resolved to, when the VersionStore knows it. */
+    version?: number;
+    /** `unknown` = no stamp on the rendering; `unmatched` = a stamp no version row carries (an edited or foreign body). */
+    stamp?: 'version' | 'unknown' | 'unmatched';
+    /** The telemetry machine's baseline shard held a `conflicts[renderingRel]` for this skill: the operator edited the rendering. Excluded from every version score, reported separately. */
+    operatorEdited?: boolean;
+  };
   misfire?: boolean;
   windowStart: string;
   windowEnd?: string;
@@ -143,7 +154,7 @@ export interface SkillLearningStatus {
   filtered: Record<DropReason | 'slack-asserted', number>;
   skills: LearnedSkillSummary[];
   proposals: ProposalSummary[];
-  pending: unknown[];   // slice 2 (commit protocol)
+  pending: PendingSummary[];   // slice 2 (commit protocol)
   retired: unknown[];   // slice 3
   lastTickAt?: string;
   llmSpendCentsToday?: number;
@@ -151,6 +162,9 @@ export interface SkillLearningStatus {
   observeOnly?: boolean;
   /** Messages that reached a seam link while no filter was installed (SeamFilter.skillLearningUnlinkedMessages) — visible, never silent. */
   unlinkedMessages?: number;
+  /** Slice 2, post-sync epoch reconciliation on this machine (durable counts): lower-epoch bodies demoted to proposals, and equal-epoch splits locked. */
+  epochSuperseded?: number;
+  splitBrain?: number;
 }
 
 export interface LearnedSkillSummary {
@@ -169,6 +183,10 @@ export interface LearnedSkillSummary {
   reviewerFamily?: string;
   lastUsedAt?: string;
   locked: boolean;
+  /** Uses whose rendering the operator had edited (baseline conflict): counted here, EXCLUDED from every score above (slice 2, §3.9). */
+  operatorEdited: number;
+  /** The 7-day "new" label (§3.5): an `active` skill created/confirmed inside the last 7 days, computed at read time. */
+  isNew: boolean;
 }
 
 export interface ProposalSummary {
@@ -177,7 +195,8 @@ export interface ProposalSummary {
   arbiterOnly: boolean;
   createdAt: string;
   reviewerFamily?: string;
-  pendingReason?: 'one-family';
+  /** `superseded` / `split-brain`: a body the post-sync epoch reconciliation (deviation (t)) demoted to a proposal (slice 2). */
+  pendingReason?: 'one-family' | 'superseded' | 'split-brain';
   /** Shadow comparison label (§3.4): which rung alone would have drafted; null = both agreed. */
   disagreement?: 'arbiter-only' | 'default-only' | null;
   verdict?: { by: 'operator'; verdict: 'agree' | 'disagree'; reason?: string; at: string };
@@ -191,7 +210,7 @@ export interface ProposalSidecar {
   key: string;
   arbiterOnly: boolean;
   reviewerFamily?: string;
-  pendingReason?: 'one-family';
+  pendingReason?: 'one-family' | 'superseded' | 'split-brain';
   createdAt: string;
   evidence: { sources: RowSource[]; runIds: string[] };
   draftKind: 'new' | 'patch' | 'covered-by';
@@ -203,11 +222,54 @@ export interface ProposalSidecar {
   verdict?: { by: 'operator'; verdict: 'agree' | 'disagree'; reason?: string; at: string };
 }
 
+/** A skill waiting for the operator's confirm/reject tap (§3.5 `pending` canonical state; slice 2). */
+export interface PendingSummary {
+  name: string;
+  description: string;
+  paraphrases: string[];
+  reviewerFamily?: string;
+  pendingReason?: 'one-family' | 'rung-unproven';
+  /** sha256 of the canonical SKILL.md raw bytes at the time of the snapshot. */
+  fileHash: string;
+  createdAt: string;
+  version: number;
+}
+
+/** Operations the six-step commit protocol (§3.5 tail) journals. */
+export type CommitOp = 'create' | 'patch' | 'revert' | 'confirm' | 'reject' | 'lock' | 'unlock';
+
+export type CommitResult =
+  | { ok: true; txId: string; fileHash: string; version: number; epoch: number; fence: 'git' | 'local'; /** Non-blocking notes, e.g. `reject-left-rendering:<layout>` when a rendering of the rejected name survives. */ detail?: string }
+  | {
+      ok: false;
+      reason:
+        | 'aborted'
+        | 'aborted-unreachable'
+        | 'not-holder'
+        | 'user-edit-conflict'
+        | 'unknown-provenance'
+        | 'preflight-conflict'
+        | 'render-failed'
+        | 'invalid';
+      detail?: string;
+    };
+
+/** The commit protocol as the sentinel (2B) and the routes (2A/2C) consume it; CommitProtocol.ts implements. */
+export interface CommitProtocolLike {
+  write(op: CommitOp, name: string, newRaw: string, ctx: { expectedPrevHash: string | null; reason?: string }): Promise<CommitResult>;
+  move(op: 'retire' | 'restore', name: string, fromAbs: string, toAbs: string): Promise<CommitResult>;
+  recoverOwnJournal(): Promise<{ finished: number; voided: number; locked: number; foreignDangling: number }>;
+}
+
 /** Minimal interface the routes need from the running sentinel (1C depends on this, 1B implements it). */
 export interface SkillLearningSentinelLike {
   status(): SkillLearningStatus;
   skill(name: string): LearnedSkillSummary | ProposalSummary | null;
   recordOperatorVerdict(name: string, verdict: 'agree' | 'disagree', reason?: string): { ok: true } | { ok: false; error: string };
+  /** Slice 2: the operator's confirm tap on a `pending` skill. `forwardedFromMachine` is set when a standby proxied the tap (deviation (w)). */
+  confirmPending(name: string, opts?: { forwardedFromMachine?: string }): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Slice 2: the operator's reject tap on a `pending` skill (mirror of confirmPending). */
+  rejectPending(name: string, opts?: { forwardedFromMachine?: string }): Promise<{ ok: true } | { ok: false; error: string }>;
 }
 
 /** Directory layout (§4). All under config.stateDir. */
@@ -218,6 +280,7 @@ export const SKILL_LEARNING_PATHS = {
   renderedBaselinesDir: 'skill-learning/rendered-baselines',
   versionsDir: 'skill-learning/versions',           // slice 2/3
   retiredDir: 'skill-learning/retired',             // slice 3
+  rejectedDir: 'skill-learning/rejected',           // slice 2: archived canonicals of rejected pending skills (`<name>/<txId>/`)
   cacheDb: 'state/skill-learning.db',
   log: 'logs/skill-learning.jsonl',
 } as const;

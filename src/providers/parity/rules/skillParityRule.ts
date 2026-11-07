@@ -66,6 +66,8 @@ interface CanonicalSkill {
   bundledSubdirs: ReadonlyArray<'scripts' | 'references' | 'assets'>;
   /** sha256 of body — used for stamp tracking */
   bodyHash: string;
+  /** The canonical file as read (frontmatter + body) — the render hold reads its learned state. */
+  raw: string;
 }
 
 interface FrameworkRenderer {
@@ -110,6 +112,64 @@ function sanitizeDescription(raw: string): string {
 
 function sha256(s: string): string {
   return crypto.createHash('sha256').update(s, 'utf-8').digest('hex');
+}
+
+// ─── Learned-skill state (skill-learning-sentinel §3.5) ────────────────
+//
+// These live HERE (the leaf every renderer shares) so `remediate` — the ONE
+// funnel every render passes — can refuse a canonical the sentinel holds
+// unrendered, without a cycle through the reconciler.
+
+const LEARNED_ORIGIN_KEY = 'instar-learned-origin';
+const LEARNED_STATE_KEY = 'instar-learned-state';
+const MERGE_MARKER_RE = /^<{7} |^={7}$|^>{7} /m;
+
+function learnedMetadataOf(raw: string): Record<string, unknown> | null {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!match) return null;
+  let fm: unknown;
+  try {
+    fm = yaml.load(match[1], { schema: yaml.FAILSAFE_SCHEMA, json: false });
+  } catch { // @silent-fallback-ok — an unparseable frontmatter is "not learned": the parity read fails loud on its own path
+    return null;
+  }
+  if (fm === null || typeof fm !== 'object' || Array.isArray(fm)) return null;
+  const md = (fm as Record<string, unknown>).metadata;
+  if (!md || typeof md !== 'object' || Array.isArray(md)) return null;
+  return md as Record<string, unknown>;
+}
+
+/** Is this canonical SKILL.md owned by the skill-learning sentinel (`metadata.instar-learned-origin`)? */
+export function isLearnedCanonical(raw: string): boolean {
+  const origin = learnedMetadataOf(raw)?.[LEARNED_ORIGIN_KEY];
+  return typeof origin === 'string' && origin.trim().length > 0;
+}
+
+/** The frontmatter `metadata.instar-learned-state` of a canonical (null when absent or unparseable). */
+export function learnedStateOf(raw: string): string | null {
+  const state = learnedMetadataOf(raw)?.[LEARNED_STATE_KEY];
+  return typeof state === 'string' ? state.trim() : null;
+}
+
+/** Unresolved git merge-conflict markers — never rendered. */
+export function hasMergeMarkers(raw: string): boolean {
+  return MERGE_MARKER_RE.test(raw);
+}
+
+export type RenderHold = 'pending' | 'proposal' | 'retired' | 'operator-owned' | 'merge-markers';
+
+/**
+ * Why a learned canonical must NOT be rendered right now, or null when it may be. `pending` (awaiting
+ * the operator's confirm tap), `proposal` (a shadow draft or a rejected pending skill), `retired`, and
+ * `operator-owned` (locked after a conflict: fail-safe, unrendered, surfaced) stay unrendered; a file
+ * with merge markers is never rendered. A hand-written canonical (no learned origin) is never held.
+ */
+export function renderHold(raw: string): RenderHold | null {
+  if (hasMergeMarkers(raw)) return 'merge-markers';
+  if (!isLearnedCanonical(raw)) return null;
+  const state = learnedStateOf(raw);
+  if (state === 'pending' || state === 'proposal' || state === 'retired' || state === 'operator-owned') return state;
+  return null;
 }
 
 // ─── Canonical loader ──────────────────────────────────────────────────
@@ -207,6 +267,7 @@ async function readCanonicalSkill(projectRoot: string, dirName: string): Promise
     body,
     bundledSubdirs,
     bodyHash: sha256(body),
+    raw,
   };
 }
 
@@ -710,6 +771,15 @@ export const skillParityRule: ParityRule = {
 
   async remediate(projectRoot, instanceName, framework) {
     const skill = await readCanonicalSkill(projectRoot, instanceName);
+    // skill-learning-sentinel §3.5: a learned canonical the sentinel holds unrendered (pending until
+    // the operator's confirm tap, a proposal, retired, operator-owned) never renders through ANY
+    // caller of this funnel — the migrator, the parity sentinel or the reconciler.
+    const held = renderHold(skill.raw);
+    if (held) {
+      throw new CanonicalSkillError(
+        `render-held:${held}: refused to render ${instanceName} on ${framework} — the learned canonical is ${held}; the skill-learning sentinel releases it`,
+      );
+    }
     const renderer = FRAMEWORK_RENDERERS[framework];
     // C7: refuse to overwrite if the current rendering is a user-edit-conflict.
     // Sentinel/operator must explicitly resolve before remediation proceeds.

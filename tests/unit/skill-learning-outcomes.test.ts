@@ -260,7 +260,7 @@ describe('Outcomes — §3.9 skillUsed join', () => {
     o.observe(requestEvent(ack));
     await o.settle();
     const out = ledger.latestOutcome(run.runId!);
-    expect(out?.skillUsed).toEqual({ skill: 'ci-health-report', contentHash: 'a'.repeat(64), corroborated: true, versionUncertain: true });
+    expect(out?.skillUsed).toEqual({ skill: 'ci-health-report', contentHash: 'a'.repeat(64), corroborated: true, versionUncertain: true, stamp: 'unmatched' });
     expect(out?.misfire).toBe(true); // request keyed deploy-summary, skill keyed ci-health-report
     expect(o.counters()).toMatchObject({ joins: 1, corroborated: 1, versionUncertain: 1, misfires: 1 });
     expect(o.measurableRates()).toEqual({ 'ci-health-report': { uses: 1, corroborated: 1, rate: 1 } });
@@ -325,5 +325,121 @@ describe('Outcomes — §3.9 skillUsed join', () => {
     o2.tick();
     await o2.settle();
     expect(ledger.latestOutcome(run2.runId!)?.skillUsed?.corroborated).toBe(false);
+  });
+});
+
+describe('Outcomes — §3.9 join hardening (slice 2): version, edges, operator edits, absent stamp', () => {
+  const STAMP = 'c'.repeat(64);
+  function telemetryAt(ts: number, machine: string, over: Partial<Record<string, string>> = {}): void {
+    const dir = path.join(stateDir, 'skill-telemetry');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, `${machine}.jsonl`), JSON.stringify({ ts: new Date(ts).toISOString(), skill: 'ci-health-report', session_id: 'uuid-1', session_name: 'echo-7', topic_id: '7', machine_id: machine, content_hash: STAMP, ...over }) + '\n');
+  }
+  function renderCommitAt(ts: number, machine: string, skill = 'ci-health-report'): void {
+    const dir = path.join(stateDir, 'skill-learning', 'journal');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, `${machine}.jsonl`), JSON.stringify({ ts: new Date(ts).toISOString(), machineId: machine, op: 'render-commit', txId: `tx-${ts}`, skill, target: 'claude-code', renderingPath: `.claude/skills/${skill}/SKILL.md`, bodyHash: STAMP, contentHash: 'r' }) + '\n');
+  }
+  function conflictShard(machine: string, rel: string, at: number): void {
+    const dir = path.join(stateDir, 'skill-learning', 'rendered-baselines');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${machine}.json`), JSON.stringify({ version: 1, machineId: machine, baselines: {}, failed: {}, conflicts: { [rel]: { skill: 'ci-health-report', target: 'claude-code', reason: 'user-edit-conflict', contentHash: 'e', detail: 'edited', at: new Date(at).toISOString() } } }));
+  }
+  /** One run opened at T0 and closed by the 2 h timeout; returns its latest outcome. */
+  async function runAndClose(o: Outcomes) {
+    const run = requestRow(T0);
+    o.observe(requestEvent(run));
+    now = T0 + RUN_WINDOW_MS;
+    o.tick();
+    await o.settle();
+    return ledger.latestOutcome(run.runId!)!;
+  }
+  const session = () => ({ claudeSessionId: 'uuid-1', framework: 'claude-code' as const });
+
+  it('content_hash resolves to a version row through the injected lookup; no lookup ⇒ unmatched; a lookup that throws ⇒ unmatched; a stamp no row carries ⇒ unmatched', async () => {
+    telemetryAt(T0 + 5_000, 'm_beta');
+    const seen: Array<[string, string]> = [];
+    const o = makeOutcomes({ findSession: session, transcriptPath: () => '', versionLookup: (skill, hash) => { seen.push([skill, hash]); return hash === STAMP ? { version: 3 } : null; } });
+    expect((await runAndClose(o)).skillUsed).toMatchObject({ skill: 'ci-health-report', contentHash: STAMP, stamp: 'version', version: 3, versionUncertain: false });
+    expect(seen).toEqual([['ci-health-report', STAMP]]);
+
+    const none = makeOutcomes({ findSession: session, transcriptPath: () => '' });
+    const out = (await runAndClose(none)).skillUsed!;
+    expect(out.stamp).toBe('unmatched');
+    expect(out.version).toBeUndefined();
+
+    const throws = makeOutcomes({ findSession: session, transcriptPath: () => '', versionLookup: () => { throw new Error('store gone'); } });
+    expect((await runAndClose(throws)).skillUsed?.stamp).toBe('unmatched');
+
+    const miss = makeOutcomes({ findSession: session, transcriptPath: () => '', versionLookup: () => null });
+    expect((await runAndClose(miss)).skillUsed?.stamp).toBe('unmatched');
+  });
+
+  it('an absent stamp (content_hash "unknown" or not a sha256) is stamp: unknown — no version claim, counted', async () => {
+    telemetryAt(T0 + 5_000, 'm_beta', { content_hash: 'unknown' });
+    const o = makeOutcomes({ findSession: session, transcriptPath: () => '', versionLookup: () => { throw new Error('must not be asked for an absent stamp'); } });
+    const out = (await runAndClose(o)).skillUsed!;
+    expect(out).toMatchObject({ stamp: 'unknown', contentHash: 'unknown' });
+    expect(out.version).toBeUndefined();
+    expect(o.counters().stampUnknown).toBe(1);
+    const dir = path.join(stateDir, 'skill-telemetry');
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/skill-learning-outcomes.test.ts' });
+    telemetryAt(T0 + 5_000, 'm_beta', { content_hash: 'abc' });
+    const o2 = makeOutcomes({ findSession: session, transcriptPath: () => '' });
+    expect((await runAndClose(o2)).skillUsed?.stamp).toBe('unknown');
+  });
+
+  it('version-uncertain edges ±1 ms: a render-commit in the TELEMETRY ROW\'S machine journal from the run start to the row\'s ts, both inclusive', async () => {
+    const ts = T0 + 30_000;
+    const cases: Array<[number, boolean]> = [[ts, true], [ts + 1, false], [T0, true], [T0 - 1, false], [T0 + 15_000, true]];
+    for (const [commitAt, expected] of cases) {
+      SafeFsExecutor.safeRmSync(path.join(stateDir, 'skill-learning'), { recursive: true, force: true, operation: 'tests/unit/skill-learning-outcomes.test.ts' });
+      SafeFsExecutor.safeRmSync(path.join(stateDir, 'skill-telemetry'), { recursive: true, force: true, operation: 'tests/unit/skill-learning-outcomes.test.ts' });
+      telemetryAt(ts, 'm_beta');
+      renderCommitAt(commitAt, 'm_beta');
+      const o = makeOutcomes({ findSession: session, transcriptPath: () => '' });
+      expect((await runAndClose(o)).skillUsed?.versionUncertain, `render-commit at ts${commitAt - ts >= 0 ? '+' : ''}${commitAt - ts} ms`).toBe(expected);
+    }
+    // Inside the window but AFTER the row's ts (the session had already loaded the skill) ⇒ certain.
+    SafeFsExecutor.safeRmSync(path.join(stateDir, 'skill-learning'), { recursive: true, force: true, operation: 'tests/unit/skill-learning-outcomes.test.ts' });
+    renderCommitAt(ts + 60_000, 'm_beta');
+    expect((await runAndClose(makeOutcomes({ findSession: session, transcriptPath: () => '' }))).skillUsed?.versionUncertain).toBe(false);
+  });
+
+  it('another machine\'s render-commit never makes this row uncertain (its renderings are not what this session loaded); a row with no machine id is never uncertain', async () => {
+    telemetryAt(T0 + 30_000, 'm_beta');
+    renderCommitAt(T0 + 10_000, 'm_alpha');                       // this machine rendered, but the row is m_beta's
+    renderCommitAt(T0 + 10_000, 'm_beta', 'other-skill');         // same machine, another skill
+    const o = makeOutcomes({ findSession: session, transcriptPath: () => '' });
+    expect((await runAndClose(o)).skillUsed?.versionUncertain).toBe(false);
+    expect(o.counters().versionUncertain).toBe(0);
+    SafeFsExecutor.safeRmSync(path.join(stateDir, 'skill-telemetry'), { recursive: true, force: true, operation: 'tests/unit/skill-learning-outcomes.test.ts' });
+    telemetryAt(T0 + 30_000, 'm_beta', { machine_id: '' });
+    renderCommitAt(T0 + 10_000, 'm_beta');
+    expect((await runAndClose(makeOutcomes({ findSession: session, transcriptPath: () => '' }))).skillUsed?.versionUncertain).toBe(false);
+  });
+
+  it('operator-edited: the telemetry machine\'s baseline conflict for the rendering the session\'s framework loads, recorded at or before ts ⇒ operatorEdited (counted); later, other rel, other machine ⇒ not', async () => {
+    const ts = T0 + 30_000;
+    const claudeRel = '.claude/skills/ci-health-report/SKILL.md';
+    const agentsRel = '.agents/skills/ci-health-report/SKILL.md';
+    const run = async (framework: 'claude-code' | 'codex-cli') => {
+      const o = makeOutcomes({ findSession: () => ({ claudeSessionId: 'uuid-1', framework }), transcriptPath: () => '' });
+      const out = await runAndClose(o);
+      return { edited: out.skillUsed?.operatorEdited === true, counter: o.counters().operatorEdited };
+    };
+    telemetryAt(ts, 'm_beta');
+    conflictShard('m_beta', claudeRel, ts);
+    expect(await run('claude-code')).toEqual({ edited: true, counter: 1 });
+    conflictShard('m_beta', claudeRel, ts + 1);                   // recorded after the load
+    expect(await run('claude-code')).toEqual({ edited: false, counter: 0 });
+    conflictShard('m_beta', agentsRel, ts - 1);                   // the other layout's rendering
+    expect(await run('claude-code')).toEqual({ edited: false, counter: 0 });
+    expect(await run('codex-cli')).toEqual({ edited: true, counter: 1 });   // a codex session loads .agents
+    conflictShard('m_alpha', claudeRel, ts - 1);                  // another machine's shard
+    SafeFsExecutor.safeRmSync(path.join(stateDir, 'skill-learning', 'rendered-baselines', 'm_beta.json'), { force: true, operation: 'tests/unit/skill-learning-outcomes.test.ts' });
+    expect(await run('claude-code')).toEqual({ edited: false, counter: 0 });
+    fs.writeFileSync(path.join(stateDir, 'skill-learning', 'rendered-baselines', 'm_beta.json'), '{ torn');
+    expect(await run('claude-code')).toEqual({ edited: false, counter: 0 });
   });
 });

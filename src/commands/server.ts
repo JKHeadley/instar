@@ -6016,6 +6016,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // honesty observer that STOPS attempting goes BLIND if the registry recovers.
     const MAX_BACKOFF_TICKS = 20;
     let leaseCoordinatorRef: LeaseCoordinator | undefined;
+    // Hoisted (skill-learning slice 2): the commit protocol's WriterFence pulls through it at write time.
+    let gitSyncRef: GitSyncManager | undefined;
     // U4.3/U4.5 — hoisted rope-health seams. The resolver + prober are closure-locals
     // of the mesh-init block; U4.5's RopeHealthMonitor (constructed far below) reads the
     // REAL resolver snapshot through `_ropeSnapshotSource` (never a copy), and the
@@ -6081,6 +6083,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       enabledFrameworks: () => config.enabledFrameworks ?? config.sessions?.enabledFrameworks,
       reconcileEnabled: () => liveConfig.get<boolean>('monitoring.skillLearning.reconcile.enabled', true) !== false,
       tickMinutes: liveConfig.get<number>('monitoring.skillLearning.tickMinutes', 10),
+      // Every reconcile pass waits until startSkillLearning (below) has run the commit journal's own
+      // recovery and released the gate: recovery always precedes the boot pass (slice 2).
+      holdUntilReleased: true,
       logger: (m) => console.log(pc.dim(`  ${m}`)),
     });
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
@@ -6100,7 +6105,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       // handoff/live-tail transports below. (2026-05-31 bug, found live: the
       // lease block was nested in the git-gated try, so a gitSync throw left the
       // standby with leaseHolder=null → MeshRpc 'not-router' → transfer dead.)
-      let gitSyncRef: GitSyncManager | undefined;
       let leaseMedium = selectLeaseMedium({
         projectDir: config.projectDir,
         registryAbsPath: idMgr.registryPath,
@@ -15361,8 +15365,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     };
 
 
-    // Learned-skill rendering reconcile — the boot pass (after the post-update
-    // migrations and the boot pull above) and the 10-minute tick.
+    // Skill Learning Sentinel (skill-learning-sentinel §3, slice 1) — ONE expression (startServer sits at
+    // TS2563's limit): starts the reconciler above, then builds + starts the sentinel when
+    // monitoring.skillLearning.enabled is true. Provenance and the topic-operator store are constructed later
+    // in boot and are read lazily; a missing provenance log fails CLOSED (no verdict is recorded).
+    const skillLearningSentinel = startSkillLearning({ reconciler: learnedSkillReconciler, fence: { hasCoordinator: () => leaseCoordinatorRef !== undefined, holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true), currentEpoch: () => (leaseCoordinatorRef ? leaseCoordinatorRef.currentEpoch() : 0), leaseMediumLocal: () => coordinator.getSyncStatus().leaseMedium?.medium === 'local', pullRebase: () => (gitSyncRef ? gitSyncRef.pullRebase() : null), hasRemote: () => { const none = gitLeaseHasNoRemote(config.projectDir); return none === null ? null : !none; }, isGitRepo: () => isGitRepo }, rawConfig: config, projectDir: config.projectDir, stateDir: config.stateDir, machineId: coordinator.identity?.machineId ?? os.hostname(), frameworks: { enabled: config.enabledFrameworks ?? config.sessions?.enabledFrameworks, default: config.sessions?.framework, overrides: config.sessions?.componentFrameworks?.overrides }, sharedIntelligence: sharedIntelligence ?? null, topicMemory: topicMemory ?? null, createAttentionItem: telegram ? ((item) => telegram!.createAttentionItem(item as unknown as Parameters<TelegramAdapter['createAttentionItem']>[0])) : undefined, slack: slackAdapter ?? null, operatorStore: () => _agentServerRef?.getTopicOperatorStore() ?? null, provenance: () => _judgmentProvenance, userManager: new UserManager(config.stateDir, config.users), slackTopicId: (channelId) => String(slackChannelToSyntheticId(channelId)), findSession: (name) => state.findSessionByTmux(name), degradationReporter: DegradationReporter.getInstance(), featureEvidence, holdsLease: () => leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true, ladder: () => _agentServerRef?.getMaturationLadder() ?? null, logger: (m) => console.log(pc.dim(`  ${m}`)) }, (deps) => SkillLearningSentinel.create(deps));
+    // Learned-skill rendering reconcile — the boot pass (after the post-update migrations, the boot
+    // pull above, and the commit journal recovery startSkillLearning started: the reconciler's gate
+    // releases when that recovery finishes) and the 10-minute tick.
     try {
       const bootReconcile = await learnedSkillReconciler.reconcileAll('boot');
       if (bootReconcile.rendered > 0 || bootReconcile.conflicts > 0) {
@@ -15372,11 +15382,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       // @silent-fallback-ok — the reconcile counts its own errors; boot continues.
       console.log(pc.yellow(`  Learned-skill reconcile at boot: ${err instanceof Error ? err.message : String(err)}`));
     }
-    // Skill Learning Sentinel (skill-learning-sentinel §3, slice 1) — ONE expression (startServer sits at
-    // TS2563's limit): starts the reconciler above, then builds + starts the sentinel when
-    // monitoring.skillLearning.enabled is true. Provenance and the topic-operator store are constructed later
-    // in boot and are read lazily; a missing provenance log fails CLOSED (no verdict is recorded).
-    const skillLearningSentinel = startSkillLearning({ reconciler: learnedSkillReconciler, rawConfig: config, projectDir: config.projectDir, stateDir: config.stateDir, machineId: coordinator.identity?.machineId ?? os.hostname(), frameworks: { enabled: config.enabledFrameworks ?? config.sessions?.enabledFrameworks, default: config.sessions?.framework, overrides: config.sessions?.componentFrameworks?.overrides }, sharedIntelligence: sharedIntelligence ?? null, topicMemory: topicMemory ?? null, createAttentionItem: telegram ? ((item) => telegram!.createAttentionItem(item as unknown as Parameters<TelegramAdapter['createAttentionItem']>[0])) : undefined, slack: slackAdapter ?? null, operatorStore: () => _agentServerRef?.getTopicOperatorStore() ?? null, provenance: () => _judgmentProvenance, userManager: new UserManager(config.stateDir, config.users), slackTopicId: (channelId) => String(slackChannelToSyntheticId(channelId)), findSession: (name) => state.findSessionByTmux(name), degradationReporter: DegradationReporter.getInstance(), featureEvidence, holdsLease: () => leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true, logger: (m) => console.log(pc.dim(`  ${m}`)) }, (deps) => SkillLearningSentinel.create(deps));
 
     // Helper Watchdog — detects subagent stalls and rate-limit failures,
     // surfacing them back into the parent session's stdin so the agent

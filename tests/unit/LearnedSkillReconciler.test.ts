@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { LearnedSkillReconciler, isLearnedCanonical } from '../../src/monitoring/LearnedSkillReconciler.js';
+import { LearnedSkillReconciler, isLearnedCanonical, learnedStateOf, renderHold } from '../../src/monitoring/LearnedSkillReconciler.js';
 import { skillParityRule } from '../../src/providers/parity/rules/skillParityRule.js';
 
 const MACHINE = 'm_test_alpha';
@@ -345,5 +345,148 @@ describe('LearnedSkillReconciler', () => {
     r.start();
     r.stop();
     expect(r.status().running).toBe(false);
+  });
+});
+
+/** A learned canonical carrying an explicit `instar-learned-state` (slice 2). */
+function learnedWithState(body: string, state: string, name = 'ci-health-report'): string {
+  return [
+    '---',
+    `name: ${name}`,
+    'description: "Use when the operator asks for the weekly CI health of the repo."',
+    'metadata:',
+    '  instar-learned-origin: "skill-learning-sentinel"',
+    `  instar-learned-state: "${state}"`,
+    '---',
+    body,
+  ].join('\n');
+}
+
+describe('LearnedSkillReconciler — commit-protocol seams (slice 2)', () => {
+  let h: Home;
+  beforeEach(() => { h = makeHome(); });
+  afterEach(() => {
+    SafeFsExecutor.safeRmSync(h.projectDir, { recursive: true, force: true, operation: 'tests/unit/LearnedSkillReconciler.test.ts' });
+  });
+
+  it('a pending / retired / operator-owned canonical, or one with merge markers, is never rendered by reconcileAll', async () => {
+    writeCanonical(h, 'pend', learnedWithState('# p', 'pending', 'pend'));
+    writeCanonical(h, 'gone', learnedWithState('# r', 'retired', 'gone'));
+    writeCanonical(h, 'owned', learnedWithState('# o', 'operator-owned', 'owned'));
+    writeCanonical(h, 'merged', learnedWithState('<<<<<<< HEAD\n# a\n=======\n# b\n>>>>>>> theirs', 'active', 'merged'));
+    writeCanonical(h, 'prop', learnedWithState('# q', 'proposal', 'prop'));
+    writeCanonical(h, 'live', learnedWithState('# live', 'active', 'live'));
+    writeCanonical(h, 'nostate', learnedSkillMd('# no state key', 'nostate'));
+    const run = await makeReconciler(h, { frameworks: ['claude-code'] }).reconcileAll('boot');
+    expect(run.learned).toBe(2);
+    expect(run.rendered).toBe(2);
+    for (const n of ['pend', 'gone', 'owned', 'merged', 'prop']) expect(fs.existsSync(h.claudeRendering(n))).toBe(false);
+    expect(renderHold(learnedWithState('# q', 'proposal'))).toBe('proposal');
+    expect(fs.existsSync(h.claudeRendering('live'))).toBe(true);
+    expect(fs.existsSync(h.claudeRendering('nostate'))).toBe(true);
+    expect(learnedStateOf(learnedWithState('# p', 'pending'))).toBe('pending');
+    expect(renderHold(learnedWithState('# p', 'pending'))).toBe('pending');
+    expect(renderHold(learnedWithState('<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> z', 'active'))).toBe('merge-markers');
+    expect(renderHold(learnedSkillMd('# x'))).toBeNull();
+  });
+
+  it('the parity rule\'s remediate — the ONE render funnel — refuses a held learned canonical with render-held:<state>, and still renders hand-written and active learned ones', async () => {
+    writeCanonical(h, 'pend', learnedWithState('# p', 'pending', 'pend'));
+    writeCanonical(h, 'owned', learnedWithState('# o', 'operator-owned', 'owned'));
+    writeCanonical(h, 'live', learnedWithState('# live', 'active', 'live'));
+    writeCanonical(h, 'hand-made', handWrittenSkillMd('# mine'));
+    await expect(skillParityRule.remediate(h.projectDir, 'pend', 'claude-code')).rejects.toThrow(/render-held:pending/);
+    await expect(skillParityRule.remediate(h.projectDir, 'owned', 'codex-cli')).rejects.toThrow(/render-held:operator-owned/);
+    expect(fs.existsSync(h.claudeRendering('pend'))).toBe(false);
+    expect(fs.existsSync(h.agentsRendering('owned'))).toBe(false);
+    await skillParityRule.remediate(h.projectDir, 'live', 'claude-code');
+    await skillParityRule.remediate(h.projectDir, 'hand-made', 'claude-code');
+    expect(fs.existsSync(h.claudeRendering('live'))).toBe(true);
+    expect(fs.existsSync(h.claudeRendering('hand-made'))).toBe(true);
+  });
+
+  it('renderSkill renders one learned canonical into every enabled layout, says why when it is held, and tags its journal rows with the commit txId', async () => {
+    writeCanonical(h, 'ci-health-report', learnedSkillMd('# v1'));
+    writeCanonical(h, 'pend', learnedWithState('# p', 'pending', 'pend'));
+    writeCanonical(h, 'hand-made', handWrittenSkillMd('# mine'));
+    const r = makeReconciler(h);
+    const out = await r.renderSkill('ci-health-report', 'tx-123');
+    expect(out).toMatchObject({ rendered: 2, conflicts: 0, failed: 0, errors: 0 });
+    expect(out.notRendered).toBeUndefined();
+    expect(fs.existsSync(h.claudeRendering('ci-health-report'))).toBe(true);
+    expect(fs.existsSync(h.agentsRendering('ci-health-report'))).toBe(true);
+    const rows = fs.readFileSync(h.journalPath, 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { op: string; detail?: string });
+    expect(rows.filter((x) => x.op === 'render-prepare' && x.detail === 'commit:tx-123')).toHaveLength(2);
+    expect((await r.renderSkill('pend', 'tx-2')).notRendered).toBe('pending');
+    expect(fs.existsSync(h.claudeRendering('pend'))).toBe(false);
+    expect((await r.renderSkill('hand-made', 'tx-3')).notRendered).toBe('not-learned');
+    expect((await r.renderSkill('missing', 'tx-4')).errors).toBe(1);
+    expect((await r.renderSkill('Bad Name', 'tx-5')).errors).toBe(1);
+    expect((await makeReconciler(h, { enabled: false }).renderSkill('ci-health-report', 'tx-6')).notRendered).toBe('disabled');
+    // A second render of an in-sync skill performs zero writes.
+    const again = await r.renderSkill('ci-health-report', 'tx-7');
+    expect(again).toMatchObject({ rendered: 0, skipped: 2 });
+  });
+
+  it('renderSkill WAITS for a running reconcile pass (shared mutex) instead of answering already-running', async () => {
+    writeCanonical(h, 'ci-health-report', learnedSkillMd('# v1'));
+    const r = makeReconciler(h, { frameworks: ['claude-code'] });
+    const [run, out] = await Promise.all([r.reconcileAll('boot'), r.renderSkill('ci-health-report', 'tx-w')]);
+    expect(run.inert).toBeUndefined();
+    expect(out.notRendered).toBeUndefined();
+    // Exactly one of them rendered; the other found the rendering in sync — never two concurrent renders.
+    expect(run.rendered + out.rendered).toBe(1);
+    expect(out.rendered + out.skipped).toBe(1);
+    expect(fs.readFileSync(h.claudeRendering('ci-health-report'), 'utf-8')).toContain('# v1');
+    // And reconcileAll still answers already-running while renderSkill holds the mutex.
+    const slow = r.renderSkill('ci-health-report', 'tx-x');
+    const second = await r.reconcileAll('tick');
+    await slow;
+    expect(['already-running', undefined]).toContain(second.inert);
+  });
+
+  it('preflight sees an operator edit of the rendering (cross-machine canonical update case) and locks it in the shard', async () => {
+    writeCanonical(h, 'ci-health-report', learnedSkillMd('# v1'));
+    const r = makeReconciler(h, { frameworks: ['claude-code'] });
+    await r.reconcileAll('boot');
+    expect(await r.preflight('ci-health-report')).toEqual({ ok: true });
+    const edited = fs.readFileSync(h.claudeRendering('ci-health-report'), 'utf-8') + '\n## my note\n';
+    fs.writeFileSync(h.claudeRendering('ci-health-report'), edited);
+    // The canonical moves on another machine (pulled): the stamp is now STALE, so the parity rule's own
+    // guard would read the file as overwritable. Preflight compares with the baseline instead.
+    writeCanonical(h, 'ci-health-report', learnedSkillMd('# v2'));
+    const pf = await r.preflight('ci-health-report');
+    expect(pf.ok).toBe(false);
+    if (!pf.ok) { expect(pf.reason).toBe('user-edit-conflict'); expect(pf.target).toBe('claude-code'); }
+    expect(readShard(h).conflicts['.claude/skills/ci-health-report/SKILL.md'].reason).toBe('user-edit-conflict');
+    expect(fs.readFileSync(h.claudeRendering('ci-health-report'), 'utf-8')).toBe(edited);
+    // A rendering with NO canonical (a create over a stray rendering) is unknown provenance.
+    const stray = path.join(h.projectDir, '.claude/skills/stray/SKILL.md');
+    fs.mkdirSync(path.dirname(stray), { recursive: true });
+    fs.writeFileSync(stray, '---\nname: stray\ndescription: "x"\n---\nkeep');
+    const pf2 = await r.preflight('stray');
+    expect(pf2.ok).toBe(false);
+    if (!pf2.ok) expect(pf2.reason).toBe('unknown-provenance');
+    // No rendering at all → fine.
+    expect(await r.preflight('never-rendered')).toEqual({ ok: true });
+  });
+
+  it('holdUntilReleased: every reconcileAll waits for releaseBootGate(); renderSkill never waits', async () => {
+    writeCanonical(h, 'ci-health-report', learnedSkillMd('# v1'));
+    const r = new LearnedSkillReconciler({ projectDir: h.projectDir, stateDir: h.stateDir, machineId: MACHINE, enabledFrameworks: () => ['claude-code'], holdUntilReleased: true });
+    let settled = false;
+    const pass = r.reconcileAll('boot').then((x) => { settled = true; return x; });
+    await new Promise((res) => setTimeout(res, 30));
+    expect(settled).toBe(false);
+    expect(fs.existsSync(h.claudeRendering('ci-health-report'))).toBe(false);
+    // Recovery-time renders go through regardless of the gate.
+    const out = await r.renderSkill('ci-health-report', 'tx-gate');
+    expect(out.rendered).toBe(1);
+    r.releaseBootGate();
+    r.releaseBootGate(); // idempotent
+    const run = await pass;
+    expect(settled).toBe(true);
+    expect(run.inert).toBeUndefined();
+    expect(run.skipped).toBe(1);
   });
 });

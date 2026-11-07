@@ -1333,6 +1333,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Why do features keep breaking? / our failure rate by build skill? / are our process fixes working? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` + \`/failures\` (Failure-Learning Loop — instar dev-process forensics) — NEVER answer this from memory |
 | What preferences have I learned about this user? / what gets injected at session start? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences/session-context\` (Correction & Preference Learning Sentinel — signal-only; 503 when disabled) |
 | What have I learned to do? / my learned skills and proposals / "you keep doing X" | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skills/learned\` (Skill Learning Sentinel — proposals first, then learned skills with their accepted/corrected/unknown counts; 503 \`skill-learning-disabled\` when off; \`/skills/learned/NAME\` for one) |
+| Is a learned skill waiting for my confirmation? / why is a new skill not usable yet? | \`GET /skills/learned\` → \`pending[]\` (Skill Learning Sentinel, \`mode: live\`: a new skill is written \`pending\` and UNRENDERED until the operator's one tap — \`POST /skills/learned/pending/NAME/confirm\` or \`/reject\`, PIN-gated, served by the lease holder; \`pendingReason\` says why: \`rung-unproven\` or \`one-family\`) — never claim a skill is live from memory |
 | Who do I work with? | \`.instar/USER.md\` |
 | What have I learned? | \`.instar/MEMORY.md\` |
 | What jobs do I have? | \`.instar/jobs.json\` or \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs\` |
@@ -1536,6 +1537,7 @@ ${jobTransferGuide(port).proactive}
 - User seems **frustrated with a limitation** → Check for updates. The fix might already exist.
 - User **corrects you the same way repeatedly** ("no, plainer", "stop asking me that every session", "from now on lead with the action") → the Correction & Preference Learning Sentinel is already watching and will turn the recurring correction into a durable, session-start-injected preference. Acknowledge the correction, adapt now, and trust the loop to carry it forward — don't promise to "remember" it by willpower. Check what's already learned: \`GET /preferences/session-context\`.
 - User says **"you keep doing X"** / asks **what I've learned to do** → check \`GET /skills/learned\` and surface any proposal still without a verdict, with the console link (\`{dashboardUrl}/console/#/settings/learned?s=skills\`) where they agree or disagree — never claim a learned skill from memory.
+- A learned skill sits in **\`pending[]\`** (live mode: written but unrendered until confirmed) → tell the operator in plain words what it does and the requests that triggered it, and hand them the console link (\`{dashboardUrl}/console/#/settings/learned?s=pending\`) where ONE tap confirms or rejects it — the tap is theirs (PIN-gated), never mine; a rejected skill becomes a proposal, a confirmed one renders with a 7-day "new" label.
 - User asks me to **remember something** → Write it to MEMORY.md and explain it persists across sessions.
 - User asks **"didn't we talk about X?"** or **"where did I put that?"** → Use memory search (\`GET /memory/search?q=...\`). The full-text index covers everything I've written.
 - Before any **risky operation** (config changes, updates, experiments) → Create a backup snapshot first (\`POST /backups\`). Mention that you did it — the user should know their state is protected.
@@ -1873,6 +1875,14 @@ instar playbook doctor     # Verify everything is healthy
 ### Self-Evolution
 
 Record what I learn. Build infrastructure, not one-offs. Grow to meet the user's needs. Every session should leave things slightly better than I found them.
+
+### Learned skills waiting for confirmation (Skill Learning Sentinel, live mode)
+
+In \`monitoring.skillLearning.mode: live\` a validated draft is written through the commit protocol into \`.instar/skills/NAME/SKILL.md\` with \`instar-learned-state: pending\` — present in the canonical layout, rendered into NO framework's skills directory — until the operator taps once. Once the ladder has proven rung 2, new skills render immediately as \`active\` with a 7-day "new" label; a draft only one model family could review stays \`pending\` at every rung.
+- List them: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skills/learned\` → \`pending: [{ name, description, paraphrases, pendingReason: "rung-unproven" | "one-family", reviewerFamily?, fileHash, createdAt, version }]\` (503 \`skill-learning-disabled\` when the feature is off).
+- Confirm (renders it): \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/skills/learned/pending/NAME/confirm -d '{"pin":"<dashboard PIN>"}'\`; reject (body becomes a shadow proposal, nothing rendered): the same with \`/reject\`. Both are idempotent on \`(name, fileHash)\`; a standby machine forwards the tap unchanged to the lease holder (\`handledBy: holder-proxy\`), 503 when the holder is unreachable.
+- Every live write is a \`kind: create\` / \`confirm\` / \`reject\` row in \`logs/skill-learning.jsonl\` (content-free) and a feature-evidence row; the measured skill-index cost (\`kind: index-cost\`) is logged beside it — a cost strike is a signal in this slice, never a refusal.
+- **When to use** (PROACTIVE): the operator asks why a skill they expected is not being used, or \`pending[]\` is non-empty when they ask what I've learned → describe the pending skill and hand them the console tap; I never enter the PIN on their behalf.
 
 ### Outbound Message Gate
 

@@ -12,6 +12,12 @@
  *    boot; both are read through thin proxies so a missing log fails CLOSED — `recordDecision` → null — and a
  *    missing store answers "not operator");
  *  - never throws: a construction failure is logged + reported as a degradation and the feature stays dark.
+ *
+ * Slice 2 (commit protocol): ALWAYS builds the WriterFence + VersionStore + CommitProtocol (recovery of a
+ * dangling prepare must run even when the sentinel is off) and starts `recoverOwnJournal()` BEFORE the
+ * reconciler's tick; the reconciler's boot gate (`holdUntilReleased`) is released when that recovery
+ * settles, so the server's boot pass — which now sits AFTER this expression — always runs after recovery.
+ * The protocol, the version store and the fence are handed to the sentinel through `create()`.
  */
 import { SKILL_LEARNING_DEFAULTS } from '../../config/ConfigDefaults.js';
 import type { IntelligenceProvider } from '../../core/types.js';
@@ -20,12 +26,62 @@ import type { SessionFramework } from '../../core/FrameworkSessionStore.js';
 import type { DecisionRowInput } from '../../core/JudgmentProvenanceLog.js';
 import type { SkillLearningConfig } from './types.js';
 import type { SkillLearningSentinel, SkillLearningAttentionItem } from '../SkillLearningSentinel.js';
+import type { PreflightResult, RenderSkillOutcome } from '../LearnedSkillReconciler.js';
+import { WriterFence, type WriterFenceDeps } from './WriterFence.js';
+import { VersionStore } from './VersionStore.js';
+import { CommitProtocol } from './CommitProtocol.js';
+
+/** What the commit protocol needs from the reconciler (LearnedSkillReconciler satisfies it). */
+export interface ReconcilerForCommit {
+  start(): void;
+  preflight(name: string): Promise<PreflightResult>;
+  renderSkill(name: string, txId: string): Promise<RenderSkillOutcome>;
+  /** Idempotent; releases the boot gate when the reconciler was constructed with `holdUntilReleased`. */
+  releaseBootGate?(): void;
+}
+
+export type FenceInput = Pick<WriterFenceDeps, 'hasCoordinator' | 'holdsLease' | 'currentEpoch' | 'leaseMediumLocal' | 'pullRebase' | 'hasRemote' | 'isGitRepo'>;
+
+/** A non-mesh agent: sole writer, `fence: local`, epoch 0 (deviation (v)). */
+export const SOLE_WRITER_FENCE: FenceInput = {
+  hasCoordinator: () => false,
+  holdsLease: () => true,
+  currentEpoch: () => 0,
+  pullRebase: () => null,
+  hasRemote: () => null,
+  isGitRepo: () => false,
+};
+
+export interface CommitStack {
+  fence: WriterFence;
+  versions: VersionStore;
+  protocol: CommitProtocol;
+}
+
+/** Build the commit stack over a reconciler (production and tests share this). */
+export function buildCommitStack(input: {
+  projectDir: string;
+  stateDir: string;
+  machineId: string;
+  reconciler: Pick<ReconcilerForCommit, 'preflight' | 'renderSkill'>;
+  fence?: FenceInput;
+  degradationReporter?: WriterFenceDeps['degradation'];
+  logger?: (message: string) => void;
+  now?: () => number;
+}): CommitStack {
+  const fence = new WriterFence({ ...(input.fence ?? SOLE_WRITER_FENCE), degradation: input.degradationReporter ?? null, logger: input.logger, now: input.now });
+  const versions = new VersionStore({ stateDir: input.stateDir, machineId: input.machineId, now: input.now });
+  const protocol = new CommitProtocol({ projectDir: input.projectDir, stateDir: input.stateDir, machineId: input.machineId, fence, versions, reconciler: input.reconciler, logger: input.logger, now: input.now });
+  return { fence, versions, protocol };
+}
 
 type ProvenanceLike = { recordDecision(input: DecisionRowInput): string | null; status(): { counters: Record<string, number> } };
 type OperatorStoreLike = { asVerifiedOperator(topicId: number | string): { uid: string } | null };
 
 export interface StartSkillLearningInput {
-  reconciler: { start(): void };
+  reconciler: ReconcilerForCommit;
+  /** WriterFence inputs from the server (lease coordinator, git-sync, remote check). Absent = sole writer. */
+  fence?: FenceInput;
   rawConfig: unknown;
   projectDir: string;
   stateDir: string;
@@ -46,6 +102,8 @@ export interface StartSkillLearningInput {
   degradationReporter?: { report(event: { feature: string; primary: string; fallback: string; reason: string; impact: string }): void } | null;
   featureEvidence?: { record(featureId: string, input: never): string | null } | null;
   holdsLease?: () => boolean;
+  /** Lazy: the MaturationLadderService lives on the AgentServer, constructed after this runs. The sentinel reads rung 2 of `monitoring.skillLearning` from it. */
+  ladder?: () => { features(): ReadonlyArray<{ id: string; rung: string; next: string | null; state: string }> } | null | undefined;
   logger?: (message: string) => void;
 }
 
@@ -75,11 +133,31 @@ export function startSkillLearning(
   create: (deps: Parameters<typeof SkillLearningSentinel.create>[0]) => SkillLearningSentinel,
 ): SkillLearningSentinel | null {
   const log = input.logger ?? (() => {});
+  // The commit stack exists on every machine (recovery and reads run everywhere; the fence decides writes).
+  let stack: CommitStack | null = null;
+  try {
+    stack = buildCommitStack({ projectDir: input.projectDir, stateDir: input.stateDir, machineId: input.machineId, reconciler: input.reconciler, fence: input.fence, degradationReporter: input.degradationReporter ?? null, logger: log });
+  } catch (err) {
+    log(`[skill-learning] commit protocol NOT built: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  // Recovery of this machine's own journal precedes every reconcile pass: the reconciler's boot gate
+  // releases only when it settles (success or failure — a stuck gate would silence every render).
+  const recovery = stack
+    ? stack.protocol.recoverOwnJournal().then(
+        (r) => { if (r.finished || r.voided || r.locked || r.foreignDangling || r.deferred) log(`[skill-learning] commit journal recovered: ${r.finished} finished, ${r.voided} voided, ${r.locked} locked, ${r.deferred} deferred, ${r.foreignDangling} foreign`); },
+        (err: unknown) => { log(`[skill-learning] commit journal recovery failed: ${err instanceof Error ? err.message : String(err)}`); },
+      )
+    : Promise.resolve();
+  void recovery.finally(() => { try { input.reconciler.releaseBootGate?.(); } catch { /* @silent-fallback-ok — a reconciler without a gate has nothing to release */ } });
   try { input.reconciler.start(); } catch (err) { log(`[skill-learning] reconciler start failed: ${err instanceof Error ? err.message : String(err)}`); }
   const config = resolveSkillLearningConfig(input.rawConfig);
   if (!config.enabled) return null;
   try {
     const sentinel = create({
+      commitProtocol: stack?.protocol ?? null,
+      versionStore: stack?.versions ?? null,
+      writerFence: stack?.fence ?? null,
+      reconciler: input.reconciler,
       projectDir: input.projectDir,
       stateDir: input.stateDir,
       machineId: input.machineId,
@@ -105,6 +183,8 @@ export function startSkillLearning(
       featureEvidence: input.featureEvidence as never,
       createAttentionItem: input.createAttentionItem,
       holdsLease: input.holdsLease,
+      // Read through a thin proxy: a ladder not constructed yet answers no features ⇒ rung 2 unproven (pending, the conservative side).
+      ladder: input.ladder ? { features: () => { try { return input.ladder?.()?.features() ?? []; } catch { return []; } } } : null, // @silent-fallback-ok — an unreadable ladder reads as unproven
       logger: log,
     } as Parameters<typeof SkillLearningSentinel.create>[0]);
     sentinel.start();

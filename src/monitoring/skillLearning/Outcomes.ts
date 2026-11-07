@@ -16,8 +16,17 @@
  * `session_name` is the run's session (or whose `session_id` is the session's Claude UUID), whose
  * `topic_id` is the run's topic and whose `ts` lies inside the window ⇒ `skillUsed`, corroborated only
  * when a bounded read of the session transcript shows the Skill tool call; `misfire` when the request's
- * key ≠ the skill's key; `versionUncertain` when the reconciler journal holds a `render-commit` for that
- * skill inside the window. No telemetry row ⇒ no claim (never "not used").
+ * key ≠ the skill's key. No telemetry row ⇒ no claim (never "not used").
+ *
+ * Join hardening (slice 2, §3.9): the row's `content_hash` (the rendering's `x-instar-stamp` = the canonical
+ * body hash) resolves to a VERSION through the injected `versionLookup` (the VersionStore) — `stamp: 'version'`
+ * with its number; an absent stamp is `stamp: 'unknown'` (the loader read an unstamped rendering: no version
+ * claim), a stamp no row carries is `'unmatched'`. `versionUncertain` = a `render-commit` for that skill in the
+ * TELEMETRY ROW'S OWN machine journal between the run start and the row's `ts` (inclusive at both edges: a
+ * render that landed at the same millisecond the skill loaded is uncertain, never "certain"). `operatorEdited`
+ * = that machine's baseline shard carries `conflicts[<rendering rel>]` for the skill recorded at or before the
+ * row's `ts` — the operator had edited the rendering the session loaded, so the use is EXCLUDED from every
+ * version score and reported separately (`LearnedSkillSummary.operatorEdited`).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -63,6 +72,12 @@ export interface OutcomesDeps {
   holdsLease?: () => boolean;
   /** The learned skill's procedure key (canonical frontmatter `metadata.instar-learned-key`); default reads `.instar/skills/<skill>/SKILL.md`. */
   skillKeyFor?: (skill: string) => string | null;
+  /**
+   * Slice 2 (§3.9 join hardening): the version row a rendering stamp (the canonical body hash) belongs to, across
+   * every machine's version shard (the VersionStore provides it; null = no row carries that hash). Absent dep ⇒
+   * every stamped use is `stamp: 'unmatched'` — an honest "no version store", never a fabricated version.
+   */
+  versionLookup?: ((skill: string, bodyHash: string) => { version: number } | null) | null;
   /** Test seam for the transcript path. */
   transcriptPath?: (opts: { framework: SessionFramework; sessionId: string; projectDir: string }) => string;
   now?: () => number;
@@ -92,6 +107,9 @@ export interface OutcomesCounters {
   corroborated: number;
   misfires: number;
   versionUncertain: number;
+  /** Slice 2: uses whose rendering the operator had edited (excluded from scores), and uses with no stamp at all. */
+  operatorEdited: number;
+  stampUnknown: number;
   appendErrors: number;
 }
 
@@ -102,7 +120,7 @@ export class Outcomes {
   private readonly inflight = new Set<Promise<void>>();
   private readonly c: OutcomesCounters = {
     opened: 0, closedByMessage: 0, closedByNewRequest: 0, closedByTimeout: 0, closedBySessionClock: 0, attributed: 0,
-    lateFlips: 0, finalized: 0, joins: 0, corroborated: 0, misfires: 0, versionUncertain: 0, appendErrors: 0,
+    lateFlips: 0, finalized: 0, joins: 0, corroborated: 0, misfires: 0, versionUncertain: 0, operatorEdited: 0, stampUnknown: 0, appendErrors: 0,
   };
 
   constructor(deps: OutcomesDeps) {
@@ -322,11 +340,34 @@ export class Outcomes {
     if (rows.length === 0) return undefined;
     this.c.joins++;
     const first = rows[0];
-    const corroborated = await this.transcriptShowsSkill(session?.framework ?? 'claude-code', sessionId, startMs, endMs);
+    const framework = session?.framework ?? 'claude-code';
+    const corroborated = await this.transcriptShowsSkill(framework, sessionId, startMs, endMs);
     if (corroborated) this.c.corroborated++;
-    const versionUncertain = this.renderCommitInside(first.skill, startMs, endMs);
+    // The hardening edges are the TELEMETRY row's own: its machine's journal, from the run start to its ts.
+    const tsMs = Date.parse(first.ts);
+    const runStartMs = Date.parse(run.windowStart);
+    const versionUncertain = this.renderCommitBetween(first.skill, first.machine_id, runStartMs, tsMs);
     if (versionUncertain) this.c.versionUncertain++;
-    return { skill: first.skill, contentHash: first.content_hash, corroborated, versionUncertain };
+    const stamped = /^[a-f0-9]{64}$/.test(first.content_hash);
+    let stamp: 'version' | 'unknown' | 'unmatched' = 'unknown';
+    let version: number | undefined;
+    if (stamped) {
+      const row = this.safeVersionLookup(first.skill, first.content_hash);
+      if (row) { stamp = 'version'; version = row.version; } else stamp = 'unmatched';
+    } else {
+      this.c.stampUnknown++;
+    }
+    const operatorEdited = this.baselineConflictAt(first.skill, first.machine_id, framework, tsMs);
+    if (operatorEdited) this.c.operatorEdited++;
+    return {
+      skill: first.skill, contentHash: first.content_hash, corroborated, versionUncertain, stamp,
+      ...(version === undefined ? {} : { version }), ...(operatorEdited ? { operatorEdited: true } : {}),
+    };
+  }
+
+  private safeVersionLookup(skill: string, bodyHash: string): { version: number } | null {
+    if (!this.deps.versionLookup) return null;
+    try { return this.deps.versionLookup(skill, bodyHash); } catch { return null; } // @silent-fallback-ok — an unreadable version store reads as "unmatched", never a fabricated version
   }
 
   private safeFindSession(name: string): { claudeSessionId?: string; framework?: SessionFramework } | undefined {
@@ -410,24 +451,46 @@ export class Outcomes {
     return false;
   }
 
-  private renderCommitInside(skill: string, startMs: number, endMs: number): boolean {
-    const dir = path.join(this.deps.stateDir, 'skill-learning', 'journal');
-    let names: string[] = [];
-    try { names = fs.readdirSync(dir).filter((n) => n.endsWith('.jsonl')); } catch { return false; }
-    for (const n of names) {
-      let raw: string;
-      try { raw = fs.readFileSync(path.join(dir, n), 'utf-8'); } catch { continue; }
-      for (const line of raw.split('\n')) {
-        if (!line.includes('render-commit')) continue;
-        try {
-          const r = JSON.parse(line) as { op?: string; skill?: string; ts?: string };
-          if (r.op !== 'render-commit' || r.skill !== skill || typeof r.ts !== 'string') continue;
-          const ts = Date.parse(r.ts);
-          if (Number.isFinite(ts) && ts >= startMs && ts <= endMs) return true;
-        } catch { /* torn line */ }
-      }
+  /**
+   * A `render-commit` for `skill` in `machineId`'s OWN reconciler journal with `startMs <= ts <= endMs`
+   * (both edges inclusive). A row without a machine id, or a machine with no journal, is never uncertain by
+   * another machine's renders: that machine's renderings are not the ones this session loaded.
+   */
+  private renderCommitBetween(skill: string, machineId: string, startMs: number, endMs: number): boolean {
+    if (!machineId || !Number.isFinite(startMs) || !Number.isFinite(endMs)) return false;
+    const file = path.join(this.deps.stateDir, 'skill-learning', 'journal', `${machineId}.jsonl`);
+    let raw: string;
+    try { raw = fs.readFileSync(file, 'utf-8'); } catch { return false; } // @silent-fallback-ok — no journal for that machine ⇒ no render is known
+    for (const line of raw.split('\n')) {
+      if (!line.includes('render-commit')) continue;
+      try {
+        const r = JSON.parse(line) as { op?: string; skill?: string; ts?: string };
+        if (r.op !== 'render-commit' || r.skill !== skill || typeof r.ts !== 'string') continue;
+        const ts = Date.parse(r.ts);
+        if (Number.isFinite(ts) && ts >= startMs && ts <= endMs) return true;
+      } catch { /* torn line */ }
     }
     return false;
+  }
+
+  /**
+   * The telemetry machine's baseline shard holds a conflict for the rendering the session's framework loads
+   * (`.claude/skills/<skill>/SKILL.md` for claude-code, `.agents/skills/<skill>/SKILL.md` otherwise),
+   * recorded at or before the telemetry `ts`: the operator had edited that rendering.
+   */
+  private baselineConflictAt(skill: string, machineId: string, framework: SessionFramework, tsMs: number): boolean {
+    if (!machineId) return false;
+    const file = path.join(this.deps.stateDir, 'skill-learning', 'rendered-baselines', `${machineId}.json`);
+    type Shard = { conflicts?: Record<string, { skill?: string; at?: string }> };
+    let shard: Shard | null = null;
+    try { shard = JSON.parse(fs.readFileSync(file, 'utf-8')) as Shard; } catch { return false; } // @silent-fallback-ok — no shard ⇒ no recorded edit
+    const conflicts = shard?.conflicts;
+    if (!conflicts || typeof conflicts !== 'object') return false;
+    const rel = framework === 'claude-code' ? `.claude/skills/${skill}/SKILL.md` : `.agents/skills/${skill}/SKILL.md`;
+    const c = conflicts[rel];
+    if (!c || typeof c !== 'object') return false;
+    const at = typeof c.at === 'string' ? Date.parse(c.at) : NaN;
+    return !Number.isFinite(at) || !Number.isFinite(tsMs) || at <= tsMs;
   }
 }
 

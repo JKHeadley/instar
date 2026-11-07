@@ -11,7 +11,7 @@ import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
-import { proposalsNeedingVerdict } from './learned-model.js';
+import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -69,6 +69,13 @@ export const NEED_SOURCES = [
       const pending = proposalsNeedingVerdict(status.data);
       if (pending === null) return UNREADABLE;
       return pending.map((p) => row(`skill-proposal:${p.name}`, `I think I’ve learned to: ${p.description}`, 'Agree, or disagree with a reason, on the Learned page', '#/settings/learned?s=skills', [p.name]));
+    } },
+  // A learned skill written but not switched on until the operator's confirm/reject tap (skill-learning-sentinel.md §3.5, rung 2); 503 = the sentinel is off here.
+  { id: 'learned-pending', page: 'settings/learned', reads: { status: '/skills/learned' },
+    rows: ({ status }) => {
+      const p = buildPending(status);
+      if (!p.ok) return p.off ? [] : UNREADABLE;
+      return p.rows.map((r) => row(`learned-pending:${r.name}`, `A new skill waits for your OK: ${r.body}`, 'Confirm or reject it on the Learned page', '#/settings/learned?s=pending', [r.name]));
     } },
 ];
 
