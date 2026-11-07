@@ -23,13 +23,27 @@ import {
   type LedgerView, type MachineKeyLookup, type MachineSignature, type MachineSigner,
 } from './AppRecordSignatures.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
+import { streamKey, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
 import type { GrantAccess } from '../permissions/TeamAccess.js';
 import type { OrgRole } from '../permissions/types.js';
 
 export const TEAM_ACCESS_DIR = path.join('state', 'team-access');
 export const TEAM_ACCESS_LAST_GOOD_DIR = path.join('state', 'team-access-last-good');
 
-export interface RequestRow {
+/**
+ * Carried by every row a 2b build writes. Rows from a 2a build have none of it and stay valid: their
+ * origin comes from `machineSig.machineId`, and the first chained row anchors a hash of that prefix.
+ */
+export interface RowChain {
+  origin?: string;
+  incarnation?: string;
+  /** The hash of this origin's previous row, or of the unchained rows before the first chained one. */
+  prev?: string | null;
+  /** What this machine had seen when it wrote the row: origin/incarnation to highest seq. */
+  seen?: Record<string, number>;
+}
+
+export interface RequestRow extends RowChain {
   seq: number;
   kind: 'request';
   receivedAt: string;
@@ -42,7 +56,7 @@ export interface RequestRow {
   machineSig: MachineSignature;
 }
 
-export interface MachineRow {
+export interface MachineRow extends RowChain {
   seq: number;
   kind: 'machine';
   at: string;
@@ -80,7 +94,32 @@ export function emptyState(): TeamAccessState {
 /** The bytes a machine signs for a row. */
 export function rowPayload(row: Omit<RequestRow, 'machineSig'> | Omit<MachineRow, 'machineSig'>): string {
   const content = row.kind === 'request' ? `${row.receivedAt}\n${row.signedOrigin.bodySha256}\n${row.signedOrigin.keyHash}` : `${row.at}\n${sha256Hex(JSON.stringify(row.events))}`;
-  return `instar-team-access-row-v1\n${row.seq}\n${row.kind}\n${content}`;
+  if (row.origin === undefined) return `instar-team-access-row-v1\n${row.seq}\n${row.kind}\n${content}`;
+  const seen = Object.entries(row.seen ?? {}).sort(([a], [b]) => (a < b ? -1 : 1));
+  return `instar-team-access-row-v2\n${row.origin}\n${row.incarnation}\n${row.prev ?? ''}\n${JSON.stringify(seen)}\n${row.seq}\n${row.kind}\n${content}`;
+}
+
+/** The stream name of rows written before chains existed. */
+export const UNCHAINED_INCARNATION = 'v1';
+
+/** One row as the merge rules see it (`TeamAccessMerge`). */
+export function toMergeRow(row: TeamAccessRow, events: ReadonlyArray<MergeEvent>): MergeRow {
+  return {
+    origin: row.origin ?? row.machineSig.machineId,
+    incarnation: row.incarnation ?? UNCHAINED_INCARNATION,
+    seq: row.seq, prev: row.prev ?? null, hash: rowHash(row), seen: row.seen ?? {}, events,
+  };
+}
+
+/** A row's place in its origin's chain. */
+export function rowHash(row: TeamAccessRow): string {
+  const { machineSig: _sig, ...rest } = row;
+  return sha256Hex(rowPayload(rest as Omit<RequestRow, 'machineSig'> | Omit<MachineRow, 'machineSig'>));
+}
+
+/** The anchor for the first chained row: a hash of everything written before chains existed. */
+export function prefixHash(rows: ReadonlyArray<TeamAccessRow>): string {
+  return sha256Hex(rows.map((r) => r.machineSig.sig).join('\n'));
 }
 
 /** The routes whose signed requests may carry access events. */
@@ -258,6 +297,7 @@ export class TeamAccessLog {
   private health: LogHealth = 'absent';
   private seedSeq = 0;
   private refoldPending = false;
+  private incarnationCache: string | null = null;
 
   constructor(private readonly opts: TeamAccessLogOptions) {
     this.dir = path.join(opts.stateDir, TEAM_ACCESS_DIR);
@@ -265,6 +305,41 @@ export class TeamAccessLog {
     this.logFile = path.join(this.dir, 'log.jsonl');
     this.confinedFile = path.join(this.dir, 'confined.json');
     this.load();
+  }
+
+  /** This machine's current stream. A machine that lost its log starts a new one (Step 2b). */
+  private incarnation(): string {
+    if (this.incarnationCache) return this.incarnationCache;
+    const file = path.join(this.dir, 'incarnation.json');
+    try {
+      const v = (JSON.parse(fs.readFileSync(file, 'utf8')) as { incarnation?: unknown }).incarnation;
+      if (typeof v === 'string' && v.length > 0) { this.incarnationCache = v; return v; }
+    } catch {
+      // @silent-fallback-ok — no record yet: a new one is minted below.
+    }
+    return this.mintIncarnation();
+  }
+
+  private mintIncarnation(): string {
+    const value = crypto.randomBytes(8).toString('hex');
+    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(this.dir, 'incarnation.json'), JSON.stringify({ incarnation: value }), { mode: 0o600 });
+    this.incarnationCache = value;
+    return value;
+  }
+
+  /** The chain fields for the next row this machine writes. */
+  private chainFor(signer: MachineSigner): Required<RowChain> {
+    const origin = signer.machineId();
+    const incarnation = this.incarnation();
+    const mine = this.rows.filter((r) => r.origin === origin && r.incarnation === incarnation);
+    const last = mine[mine.length - 1];
+    const seen: Record<string, number> = {};
+    for (const r of this.rows) {
+      const key = streamKey(r.origin ?? r.machineSig.machineId, r.incarnation ?? UNCHAINED_INCARNATION);
+      seen[key] = Math.max(seen[key] ?? 0, r.seq);
+    }
+    return { origin, incarnation, prev: last ? rowHash(last) : (this.rows.length > 0 ? prefixHash(this.rows) : null), seen };
   }
 
   private lastGoodLog(): string { return path.join(this.lastGoodDir, 'log.jsonl'); }
@@ -332,6 +407,12 @@ export class TeamAccessLog {
       if (r.seq <= from) continue;
       if (r.seq !== expected || this.opts.verify(r) === 'failed') return false;
       expected += 1;
+      // A chained row names its predecessor, so a replaced row shows even where the numbers still run.
+      if (r.origin === undefined) continue;
+      const earlier = sorted.filter((x) => x.seq < r.seq);
+      const before = [...earlier].reverse().find((x) => x.origin === r.origin && x.incarnation === r.incarnation);
+      const want = before ? rowHash(before) : (earlier.length > 0 ? prefixHash(earlier) : null);
+      if ((r.prev ?? null) !== want) return false;
     }
     return true;
   }
@@ -390,7 +471,7 @@ export class TeamAccessLog {
   appendMachineEvents(events: MachineEvent[]): MachineRow {
     const signer = this.requireSigner();
     if (this.health === 'unreadable') throw new Error('team-access-unreadable');
-    const base = { seq: this.nextSeq(), kind: 'machine' as const, at: new Date((this.opts.now ?? Date.now)()).toISOString(), events };
+    const base = { seq: this.nextSeq(), kind: 'machine' as const, at: new Date((this.opts.now ?? Date.now)()).toISOString(), events, ...this.chainFor(signer) };
     const row: MachineRow = { ...base, machineSig: signer.sign(rowPayload(base)) };
     this.appendLine(row);
     return row;
@@ -398,7 +479,7 @@ export class TeamAccessLog {
 
   appendSignedRequest(req: Pick<RequestRow, 'receivedAt' | 'signedOrigin' | 'receipt'>): RequestRow {
     const signer = this.requireSigner();
-    const base = { seq: this.nextSeq(), kind: 'request' as const, ...req };
+    const base = { seq: this.nextSeq(), kind: 'request' as const, ...req, ...this.chainFor(signer) };
     const row: RequestRow = { ...base, machineSig: signer.sign(rowPayload(base)) };
     if (this.health === 'unreadable') throw new Error('team-access-unreadable');
     // A row the fold would ignore must never answer ok: the change would not have happened.
@@ -551,6 +632,8 @@ export class TeamAccessLog {
     this.folded = foldRows(merged, this.opts.verify);
     this.seedSeq = Math.max(this.seedSeq, this.folded.highestSeq);
     this.health = 'ok';
+    // A repaired log is a new stream, so a row written here cannot collide with one a peer holds.
+    this.mintIncarnation();
     // Recorded, or the gap a repair accepted would read as damage again at the next boot.
     if (this.opts.signer) this.appendMachineEvents([{ type: 'restored', throughSeq: this.folded.highestSeq }]);
     return { logLost, listLost };
