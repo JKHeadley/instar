@@ -118,3 +118,6 @@ An invite carries exactly one person, so a used key cannot hide behind a new one
 
 ## Outside-family code review, second pass, 2026-11-07
 Confirmed the earlier fixes on the real code. Fixed: with no list left at all, restore now confines every conversation, because a log cannot prove it lost nothing (a lost last row leaves no gap); access changes now run one at a time, so a check is still true when its row is written; restore ends every session first, under the locks. Over-block, accepted: a restore with no list locks every conversation to its audience and ends every session. It is a rare repair and fails in the strict direction.
+
+## Final internal review, 2026-11-07
+No path to more access. Fixed: restore could lock an owner out of everything on an agent with nothing to restore (it now runs only when the log or list is damaged, sweeps only when the log is visibly damaged, and leaves system and job topics alone); a failed link after an invite was saved blocked a retry (the link is made first); a session that would not end let the change through (the change now stops). Stated limit: if the list, its snapshot and the final row of the log are all lost, that grant cannot be seen and is not restored.

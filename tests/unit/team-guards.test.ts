@@ -140,7 +140,7 @@ describe('the conversation lock', () => {
     ];
     const self = {
       conversationLocks: new Map(), listRunningSessions: () => sessions,
-      retireMemorySession: async (s: { id: string }) => { retired.push(s.id); },
+      retireMemorySession: async (s: { id: string }) => { retired.push(s.id); return true; },
       withConversationLock: SessionManager.prototype.withConversationLock,
     };
     let seen: string[] = [];
@@ -149,6 +149,18 @@ describe('the conversation lock', () => {
     retired.length = 0;
     await SessionManager.prototype.applyConversationChange.call(self as never, 'k', () => undefined);
     expect(retired).toEqual(['d']);
+  });
+});
+
+describe('a session that will not end', () => {
+  it('stops the change', async () => {
+    const self = {
+      conversationLocks: new Map(), listRunningSessions: () => [{ id: 'a', telegramTopicId: 5 }],
+      retireMemorySession: async () => false, withConversationLock: SessionManager.prototype.withConversationLock,
+    };
+    let changed = false;
+    await expect(SessionManager.prototype.applyConversationChange.call(self as never, 'telegram:5', () => { changed = true; })).rejects.toThrow('still-running');
+    expect(changed).toBe(false);
   });
 });
 

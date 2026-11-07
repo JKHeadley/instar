@@ -246,6 +246,10 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       return { status: restarting ? 200 : 503, body: restarting ? { ok: true, restarting: true } : { error: 'restart-unavailable', detail: 'Memory privacy is set, but this machine could not restart itself.' } };
     }
     if (kind === 'team-restore') {
+      // Confinement has no undo, so a restore runs only when something is actually damaged.
+      if (log.healthState() !== 'unreadable' && log.readConfined() !== null) {
+        return { status: 409, body: { error: 'nothing-to-restore', detail: 'The team access record is fine, so there is nothing to restore.' } };
+      }
       // Restoring can confine any conversation, so every session ends first: a rare repair, and strict.
       const refs = deps.restoreRefs();
       let result: ReturnType<typeof log.restore> | null = null;
@@ -304,9 +308,11 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (keysEverAdded(log.allRows()).has(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
     const refused = await applyGrants(events);
     if (refused) { send(res, refused); return; }
-    await underLocks(grantRefs(events), () => appendRequest(req, deviceId));
+    // The link first: its code means nothing until the person is in the log, and a mint that fails here
+    // leaves nothing saved, so a plain retry works.
     const link = svc.mintTeamLink(add.personKey, typeof body.label === 'string' ? body.label : null);
     if (!link.ok) { res.status(link.status).json({ error: link.error }); return; }
+    await underLocks(grantRefs(events), () => appendRequest(req, deviceId));
     res.json({ personKey: add.personKey, link: link.link, expiresAt: link.expiresAt, disclosure: TEAM_DISCLOSURE });
   }));
 

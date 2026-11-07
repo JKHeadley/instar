@@ -468,10 +468,11 @@ export class TeamAccessLog {
   /**
    * The owner's restore: every parseable row of the log and last-good, merged, and the confined list
    * rebuilt from what remains, what the log shows, and `teamRefs` (conversations with stored team-phone
-   * messages). With no list left at all, `allRefs` is confined too: a read-only grantee leaves no
-   * message behind, and a log cannot prove it lost nothing.
+   * messages). With no list left and a visibly damaged log, `allRefs` is confined too: a read-only
+   * grantee leaves no message behind. A lost final row leaves no gap, so that one case cannot be seen.
    */
   restore(input: { teamRefs: ConfinedEntry[]; allRefs: () => ConfinedEntry[] }): { logLost: boolean; listLost: boolean } {
+    const wasUnreadable = this.health === 'unreadable';
     const readRows = (file: string): TeamAccessRow[] => {
       let raw = '';
       try { raw = fs.readFileSync(file, 'utf8'); } catch {
@@ -508,10 +509,11 @@ export class TeamAccessLog {
     // The log says what was ever shared or owned, even where nothing was said there: a read-only grant
     // leaves no message, so a list rebuilt from messages alone would drop it.
     const fromLog = confinedFromRows(merged, this.opts.verify);
-    // With no list left, nothing may be released. A log cannot prove it is whole, because a lost last
-    // row leaves no gap in the numbering, so every conversation is confined.
+    // With no list left and a log visibly damaged, nothing may be released: every conversation is
+    // confined. A surviving log with no gap is taken at its word, since it holds every grant.
+    const damaged = logLost || wasUnreadable || merged.some((r, i) => r.seq !== i + 1 || this.opts.verify(r) !== 'verified');
     const noList = listLost && lastGood.length === 0;
-    const sources = [...(current ?? []), ...lastGood, ...fromLog, ...input.teamRefs, ...(noList ? input.allRefs() : [])];
+    const sources = [...(current ?? []), ...lastGood, ...fromLog, ...input.teamRefs, ...(noList && damaged ? input.allRefs() : [])];
     for (const e of sources) if (!byRef.has(e.ref)) byRef.set(e.ref, e);
 
     fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });

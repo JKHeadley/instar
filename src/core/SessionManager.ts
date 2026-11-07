@@ -7565,7 +7565,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
         const same = input.telegramTopicId !== undefined
           ? (session.telegramTopicId === input.telegramTopicId || place?.telegramTopicId === input.telegramTopicId)
           : place?.memoryPlaceKey === input.memoryPlaceKey;
-        if (same) await this.retireMemorySession(session);
+        // A session that will not end means the change must not go through under it.
+        if (same && !(await this.retireMemorySession(session))) throw new Error('team-access-session-still-running');
       }
       // A failed spawn can record the new audience without launching, so the next one must not be
       // left to notice the change: the old transcript belongs to the old audience.

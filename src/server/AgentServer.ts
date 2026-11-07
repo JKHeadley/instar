@@ -6726,11 +6726,13 @@ export class AgentServer {
       const pairingSvc = this.mobilePairing;
       const appStore = this.appConversations?.store ?? null;
       const topicNumber = (key: string) => options.state.get<number>(key) ?? null;
+      const isSystemTopicHere = (id: number) => id === topicNumber('agent-attention-topic') || id === topicNumber('agent-updates-topic') || id === options.telegram?.getLifelineTopicId();
+      const isJobTopicHere = (id: number) => Object.values(options.state.get<Record<string, number>>('job-topic-mappings') ?? {}).includes(id);
       this.app.use(createTeamRouter(pairingSvc, {
         signer: () => loadMachineSigner(options.config.stateDir),
         applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),
-        isSystemTopic: (id) => id === topicNumber('agent-attention-topic') || id === topicNumber('agent-updates-topic') || id === options.telegram?.getLifelineTopicId(),
-        isJobTopic: (id) => Object.values(options.state.get<Record<string, number>>('job-topic-mappings') ?? {}).includes(id),
+        isSystemTopic: isSystemTopicHere,
+        isJobTopic: isJobTopicHere,
         isUnconfinableTopic: (id) => {
           const framework = options.topicProfile?.store.resolve(id)?.framework;
           return !!framework && framework !== 'claude-code';
@@ -6757,7 +6759,8 @@ export class AgentServer {
           };
           return {
             teamRefs: keys.filter(holdsTeamWords).map(confinedEntryFor),
-            allRefs: () => [...keys, ...(options.telegram?.getAllTopicMappings() ?? []).map((m) => `telegram:${m.topicId}`)].map(confinedEntryFor),
+            // System and job topics are never shared, so a sweep leaves them alone (§3.3).
+            allRefs: () => [...keys, ...(options.telegram?.getAllTopicMappings() ?? []).filter((m) => !isSystemTopicHere(m.topicId) && !isJobTopicHere(m.topicId)).map((m) => `telegram:${m.topicId}`)].map(confinedEntryFor),
           };
         },
         requireMemoryPrivacy: () => {
