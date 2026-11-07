@@ -769,7 +769,7 @@ export class JobScheduler {
    * Resource-aware placement §5: this machine's own heavy-work profile (null = unknown
    * ⇒ the gate does not apply, today's behaviour). Read at trigger time.
    */
-  private selfHeavyProfile: (() => { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null) | null = null;
+  private selfHeavyProfile?: (() => { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null) | null;
   setSelfHeavyProfile(fn: (() => { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null) | null): void {
     this.selfHeavyProfile = fn;
   }

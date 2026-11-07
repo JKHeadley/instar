@@ -106,6 +106,8 @@ Concur with the review. (Independent second-pass reviewer, read-only audit of th
 
 **Follow-on commit.** `PendingHeavyWork.clear()` was added for test isolation only (the integration routes share one process-wide reservation list); no runtime code calls it.
 
+**Local Verify fix (2026-11-07).** The first full verify failed 4 unit tests in 3 files, reproduced locally: (1) the CLAUDE.md line contained `sessions?scope=pool`, an older migration's marker, so the pool-visibility idempotence tests counted it twice — reworded; (2) the no-silent-fallbacks scanner's 20-line window around an existing `.catch` (JobScheduler.ts ~758) reached the new `selfHeavyProfile` field's `= null;` — the field is now optional; (3) the write-domain ratchet needs every mutating route declared — `POST /pool/heavy-work/spawn` is annotated `@write-domain:none` (in-memory reservation; the target's `/sessions/spawn` owns the write).
+
 ## Evidence pointers
 
 - Unit: `tests/unit/machine-resource-profile.test.ts`, `tests/unit/placement-resource-aware.test.ts`, `tests/unit/heavy-work-placement.test.ts`, `tests/unit/job-heavy-weight-gate.test.ts`, `tests/unit/localVerify/peerVerifier.test.ts` (peer fit block); existing `PlacementExecutor`, `placement-overload-admission`, `signed-out-machine-placement`, `SessionRouter`, `RebalancePlanner`, `overload-shed`, `start-failure-placement` suites green.

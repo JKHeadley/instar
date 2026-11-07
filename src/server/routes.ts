@@ -25102,6 +25102,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // that machine's own POST /sessions/spawn (this machine too, over loopback), so the
   // target's validation, rate limit, caps and admission always apply. Outcomes:
   // started (201) / refused (502) / unconfirmed (504, never auto-retried) / queued (409).
+  // @write-domain:none — dispatch only: an in-memory reservation, then the target's own
+  // POST /sessions/spawn performs (and owns) the write.
   router.post('/pool/heavy-work/spawn', spawnLimiter, async (req, res) => {
     if (req.headers['x-instar-request'] !== '1') {
       res.status(403).json({ error: 'Starting a placed helper requires the X-Instar-Request: 1 intent header' });
