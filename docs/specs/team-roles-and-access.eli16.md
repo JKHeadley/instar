@@ -42,13 +42,16 @@ Existing agents work exactly as they do now. An update neither restricts anyone 
 - A conversation shared with someone else loses the owner's private memory while it's shared.
 - A person given a conversation can see its past, not just what comes next.
 - The owner can read everything, including members' chats. Members are told this when they join.
+- Scheduled jobs run for the owner and can read messages in the logs. That's within the owner's access, but the only thing keeping a member's words from steering a job is how the model behaves. Members are told, and it has its own fix on the list.
 - The dashboard stays the owner's. The app is everyone else's way in.
+- A conversation that has ever been shared, or that a member started, stays locked down for good, even after everyone else is removed.
+- An agent that has had team members can't add a second machine until multi-machine support lands.
 - A phone reaches one of the agent's machines, and can send only while that machine is the one serving the agent. Every phone already works this way.
 - An agent that runs only on Codex can't have team members yet, because memory privacy only works with Claude Code.
 
 ## What comes first
 
-The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones, the People screens in the app, admin maintenance, adding people across several agents, and Slack conversations for members.
+The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones on agents that run on one machine, with their People screens in the app. Agents on several machines come straight after that, because most of ours run that way. The multi-machine parts proved hardest, so they get their own review rounds. Then admin maintenance, adding people across several agents, and Slack conversations for members.
 
 ## What you need to decide
 

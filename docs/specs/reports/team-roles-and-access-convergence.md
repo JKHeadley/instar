@@ -73,3 +73,22 @@ Tier 2. Spec about 300 lines, 6 of 6 rounds used. Each round's outside findings 
 Stopped at the round cap, round 6 of 6. **The last round was not quiet.** Every design finding raised so far is resolved in the spec, but the fixes from rounds 5 and 6 did not get a further review round, and the outside reviewer's verdict on round 6 was still SERIOUS ISSUES, with three findings since fixed.
 
 None of the open risk touches the first slice, which is read-only and restricts nobody. Everything from rounds 2 to 6 concerns build step 2 onward. Step 2 is the security-sensitive step, so it gets its own side-effects review and an independent second pass, and it re-reads the §3.3 and §3.5 text against the code before building. Findings left: see Left behind.
+
+## Addendum: rounds 7 to 37 (2026-11-06)
+
+The tag above was stamped at the round cap with no quiet round, so the overseer held build step 2 and asked for fresh rounds until one found nothing new. Rounds 7 to 12 covered all of step 2 and kept finding items, the hardest multi-machine, so the overseer split it: 2a (one-machine agents) and 2b (multi-machine).
+
+**2a went quiet at round 37** on the text hashed `32ca33bfeffd5740`: the internal pass reported no design finding, and Codex reported MINOR ISSUES with no design finding, its second such round running. Only wording followed.
+
+Limits on that claim:
+
+- The last internal reviewer traced the two latest changes and spot-checked the rest. It did not trace every bullet.
+- Codex read the specs, not the code.
+- Several internal rounds ran under a brief that said the scheduled-jobs limit was decided and not to re-raise it. One round's bar treated a double file corruption as long-tail. Round 9 briefly used a narrower bar and was not counted.
+- From round 2 the internal lenses ran as one combined pass.
+
+**2b, the team admin steps and the rest are not converged.** §4.1 lists what is known for them.
+
+**Disclosed limit, not fixed:** owner-reach scheduled jobs can read member words from message logs, and nothing but model behaviour stops those words steering a job. The overseer ruled it not blocking 2a (it sits inside the owner role) with its own fix tracked as fb-27cc594b-a49.
+
+Most valuable finds in 2a: slash commands and intercept words reaching agent-wide controls from a team phone; confined sessions unable to read their own context; a Slack stop killing every session; member text loading into owner-reach sessions after a revoke; backup restore rolling back revocations; a clock moving backward undoing a removal.
