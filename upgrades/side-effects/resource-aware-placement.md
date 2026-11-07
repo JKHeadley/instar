@@ -104,6 +104,8 @@ Concur with the review. (Independent second-pass reviewer, read-only audit of th
 
 **Author response.** Notes 1 and 2 fixed before commit: the peer forward now dials through `poolPeerFetch` (rope health recorded; a POST never falls through) with `X-Instar-AgentId`; the self forward uses this server's configured bind host when it is a specific address; and a refused connection (nothing reached the target) is classed `refused` (`connection-refused`), not unconfirmed — tests in `tests/unit/heavy-work-placement.test.ts`. Notes 3–5 are accepted over-blocks already listed in §1/§2.
 
+**Follow-on commit.** `PendingHeavyWork.clear()` was added for test isolation only (the integration routes share one process-wide reservation list); no runtime code calls it.
+
 ## Evidence pointers
 
 - Unit: `tests/unit/machine-resource-profile.test.ts`, `tests/unit/placement-resource-aware.test.ts`, `tests/unit/heavy-work-placement.test.ts`, `tests/unit/job-heavy-weight-gate.test.ts`, `tests/unit/localVerify/peerVerifier.test.ts` (peer fit block); existing `PlacementExecutor`, `placement-overload-admission`, `signed-out-machine-placement`, `SessionRouter`, `RebalancePlanner`, `overload-shed`, `start-failure-placement` suites green.
