@@ -1299,10 +1299,11 @@ export class FeedbackDrainStore {
     return this.db.transaction(() => {
       const current = this.getAuthority(authority.authorityId, authority.generation);
       const tenure = this.drainOwnerContinuity();
+      const storedEpoch = this.ownerAuthorityEpoch();
       if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation ||
         current.provider !== authority.provider || current.modelFamily !== authority.modelFamily ||
         !tenure || tenure.host !== ownerHost || ownerEpoch < tenure.sinceEpoch ||
-        this.ownerAuthorityEpoch() !== ownerEpoch ||
+        (storedEpoch === null || ownerEpoch < storedEpoch) ||
         !this.authorityOwnerCurrent(current, ownerHost, ownerEpoch)) return null;
       const used = this.authorityCallsToday(authority, now);
       if (used >= maxCallsPerDay) return null;
@@ -1311,6 +1312,9 @@ export class FeedbackDrainStore {
           .get(day, subcap.kind) as { calls: number } | undefined;
         if (Number(row?.calls ?? 0) >= subcap.maxCallsPerDay) return null;
       }
+      // The lease moves on every restart while this durable copy waits for its next writer.
+      // A current owner with unbroken tenure carries it forward, as starting a drain run does.
+      this.advanceOwnerAuthorityEpoch(ownerEpoch);
       const token = randomUUID();
       const attemptId = randomUUID();
       this.db.prepare(`INSERT INTO authority_daily_usage(authority_id,generation,utc_day,committed_usd,decisions,updated_at)
