@@ -41,6 +41,10 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('readSecretNames: () => copySourceNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), ctx.config as unknown as Record<string, unknown>)');
     expect(routes).toContain("const held = name.startsWith('config.') ? configHeldSecrets(ctx.config as unknown as Record<string, unknown>)[name] : undefined;");
     expect(routes).toContain('bitwarden: realBitwardenSurface(');
+    // The GitHub recipe's surface, the agent's name, the config switch a no turns off, and the attention item for a public repository.
+    expect(routes).toContain('github: realGitHubBackupSurface(ctx.config.stateDir,');
+    expect(routes).toContain("disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },");
+    expect(routes).toContain('raiseAttention: async (id, title, text) => {');
   });
 
   it('a lone machine backs its choices up', () => {

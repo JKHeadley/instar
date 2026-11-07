@@ -37,6 +37,8 @@ export interface ServiceSetupState {
   /** The last time a refresh was tried, and how many refreshes in a row have failed (a failed refresh waits before trying again). */
   lastSyncAttemptAt?: string;
   syncFailures?: number;
+  /** The attention item a failing check asked for (a public backup repository), raised once; cleared when the check passes again. */
+  attentionRaised?: string;
 }
 
 export function setupStateFile(stateDir: string): string {
