@@ -3,13 +3,13 @@
 **Version / slug:** `app-conversations-in-the-pool`
 **Date:** `2026-11-06`
 **Author:** `echo (builder on the M5 Pro)`
-**Second-pass reviewer:** `two independent subagents (see below)`
+**Second-pass reviewer:** `six independent subagent rounds (see below)`
 
 ## Summary of the change
 
 An app conversation, and its session, can now move between machines through a completed drain or the operator's "Bring it back here". Per-conversation fenced ownership (`app:<uuid>` records) replaces the all-or-nothing lease rule; a conversation that never moved has no record and behaves exactly as before. Adds `serves`/`mayReply`/`currentOwner`, a lease gate, close-on-loss, a capability flag enforced from the flagged side, router and receive-side app arms, key-typed journal rows, per-kind drain seams, the move and bring-back flows, and the phone's controls. Tier 2. Spec converged in 7 rounds; approved under the standing grant for Justin's 2026-11-06 14:11 message in topic 134088.
 
-**Proportion:** Tier 2, about 55 files and 4,500 lines (roughly half tests), 7 spec rounds, 3 second-pass rounds. In line with the size: this is the pool's largest single arm.
+**Proportion:** Tier 2, about 55 files and 4,500 lines (roughly half tests), 7 spec rounds, 6 second-pass rounds. In line with the size: this is the pool's largest single arm.
 
 ## Decision-point inventory
 
@@ -109,7 +109,15 @@ Minor: a retried request now reports `unknown`, and a queue loss's words follow 
 
 **A narrow third check of those fixes** raised two more, both fixed: a send on its last attempt when a stop landed could queue and run after the stop (the router's queue step now checks the stop generation), and the orphan-store backstop skipped the app settlement (it now settles too). Everything else in that check held: flag reports on real beats, the placement route, `appRecent`, urgent outcomes, drained rows never looping, and `appBehindHeld` not deadlocking.
 
-Reviewer outcome: three independent rounds. The last round's two concerns are fixed with direct, tested changes and were not re-reviewed by a fourth round; the fixes are stated here so a reader can weigh that. The trace records `reviewerConcurred` as false for the same reason.
+**A fourth check of those two fixes** confirmed both close their failures and raised two low-severity defects, both fixed: a stop after a failed attempt told the phone "not delivered" though the owner may have taken it with only the answer lost (it now reads `unknown`, which yields to the owner's own outcome), and the settle helpers dropped `app:` rows silently when the app service wasn't running (those rows now keep today's notice).
+
+**A narrow fifth check** confirmed those fixes and raised two low-severity defects, both fixed: a retried send kept the old `unknown` words after the state settled, and a stop dropping a held message recorded a definite `refused`, though an earlier attempt may have reached the owner (it now reads `unknown`). Named limit: a held message that runs out at the queue's limits is still `refused`, as the spec says, even if an unanswered attempt did reach the owner; that takes 30 minutes of no answer.
+
+**A sixth check of those two changes** raised three low-severity defects in the retry answer, fixed in one place: a retry now replays its record, words and status intact, while the state is unchanged, and drops the old words once the state moves on. A stop-dropped message records `outcome-unknown`, not `not-delivered`, which the spec treats as safe to resend.
+
+**A closing check of the retry answer** confirmed it and raised one blocking defect, fixed: a queue loss from a restart or a nap (`stale-custody`, `nap-stale` and others) told the phone flatly to send again, for a message the owner may have taken. Now only `sender-deauthorized` and the queue's own limits record `refused`; every other loss reads `unknown`. It also raised a smaller gap, not fixed: a routed 503 `owner-unavailable` record can't be told apart from a plain send's, so if the owner's outcome arrives later, a retry answers with that state plus the old words. This needs a refused enqueue on top of lost answers, and the state itself is right.
+
+Reviewer outcome: six independent rounds. Each found something, later rounds mostly smaller. The closing round raised a concern; its fix has not had a further round, so the trace records `reviewerConcurred: false`. Stopping here is a judgment, stated for the reader: nothing was found in placement, epochs, dark behaviour or security across any round, and what remained was in how an uncertain send is worded and recorded.
 
 Not closed: a forward attempt already on the wire when a stop arrives can still be accepted. The owner may then run that message before the stop reaches it, or just after. That is ordinary send-then-stop ordering; it is named, not fenced.
 

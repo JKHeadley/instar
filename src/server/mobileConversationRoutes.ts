@@ -47,7 +47,7 @@ import {
 } from '../core/appMediaTypes.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
-import { APP_STOPPED_BEFORE_DELIVERY, STOP_NOT_CONFIRMED, buildAppForward, dispatchStoredAppMessage, type AppUrgent } from '../core/appConversationPool.js';
+import { APP_STOPPED_BEFORE_DELIVERY, STOP_NOT_CONFIRMED, STOPPED_MAYBE_DELIVERED, buildAppForward, dispatchStoredAppMessage, type AppUrgent } from '../core/appConversationPool.js';
 import type { RouteOutcome } from '../core/SessionRouter.js';
 import { getAppPoolMoves } from '../core/appConversationMove.js';
 import { cleanText } from '../core/MobilePairing.js';
@@ -301,6 +301,11 @@ export function answerRouted(s: Pick<AppConversationService, 'appendDelivery' | 
   if (out.detail === 'app-stopped') {
     s.appendDelivery(m.key, m.messageId, 'refused', m.seed);
     return { status: 200, body: { ok: true, outcome: 'refused', deliveryState: 'refused', detail: APP_STOPPED_BEFORE_DELIVERY } };
+  }
+  // The attempt failed with no answer, so the owner may have it. `unknown` yields to the owner's own outcome.
+  if (out.detail === 'app-stopped-unknown') {
+    s.appendDelivery(m.key, m.messageId, 'unknown', m.seed);
+    return { status: 200, body: { ok: true, outcome: 'unknown', deliveryState: 'unknown', detail: STOPPED_MAYBE_DELIVERED } };
   }
   const state = s.store.deliveryState(m.messageId);
   if (out.action === 'duplicate' && (state === 'delivered' || state === 'refused' || state === 'intercepted')) {
@@ -567,10 +572,14 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `duplicate send answered from record: ${prior.kind}`, context: { messageId, deviceId, priorKind: prior.kind } });
       const state = s.store.deliveryState(messageId);
       const recorded = prior.kind === 'done' ? prior.body : {};
-      const wasRouted = recorded.outcome === 'waiting' || recorded.outcome === 'forwarded';
-      if (state === 'delivered' || state === 'refused' || state === 'intercepted' || (state === 'unknown' && wasRouted)) {
-        // A send that was held or forwarded has since settled: answer with where it ended up.
-        const settled = wasRouted ? { outcome: state } : {};
+      // Routed, or finished by the queue: the record was written before the outcome was known.
+      const wasRouted = recorded.outcome === 'waiting' || recorded.outcome === 'forwarded' || recorded.outcome === 'unknown' || recorded.expiredForward === true;
+      const definite = state === 'delivered' || state === 'refused' || state === 'intercepted';
+      // Unchanged since the record was written: replay it below, words and status intact.
+      const unchanged = wasRouted && state === recorded.deliveryState;
+      if (!unchanged && (definite || (state === 'unknown' && wasRouted))) {
+        // It has moved on from the record, so the record's words no longer hold.
+        const settled = wasRouted ? { outcome: state, error: undefined, detail: undefined, expiredForward: undefined } : {};
         res.json({ ...recorded, ...settled, ok: true, conversationKey: key, eventId, messageId, deliveryState: state });
         return;
       }

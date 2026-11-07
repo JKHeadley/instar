@@ -22,7 +22,7 @@ import { SessionDrainRunner } from '../../src/core/SessionDrainRunner.js';
 import { isSlackConversationKey } from '../../src/core/SlackForwardBridge.js';
 import {
   AppFlagTracker, AppLeaseGate, AppPoolEnforcer, BRING_BACK_EPOCH_MARGIN, BROUGHT_HOME_CONDITION, NEEDS_UPDATE, NO_PRIVATE_MEMORY,
-  appForwardSenderValid, appLossWords, buildAppForward, parseAppForward, parseAppOwned, type AppPoolHandle,
+  appForwardSenderValid, appLossState, appLossWords, buildAppForward, parseAppForward, parseAppOwned, type AppPoolHandle,
 } from '../../src/core/appConversationPool.js';
 import { appPlacement, bringBackWarning, runAppMove, runBringBack, type AppMoveDeps } from '../../src/core/appConversationMove.js';
 import { summarizeControls, moveAnswer } from '../../src/server/mobileSessionControlsRoutes.js';
@@ -341,7 +341,7 @@ describe('messages reach the owner (§2.4)', () => {
     expect((await router.route(msg({ messageId: 'stop', appUrgent: 'stop' }))).action).toBe('forwarded');
     const after = router.route(msg({ messageId: 'after' }));
     release();
-    expect(await first).toMatchObject({ detail: 'app-stopped' });
+    expect(await first).toMatchObject({ detail: 'app-stopped-unknown' }); // its first attempt threw
     expect(await waiting).toMatchObject({ detail: 'app-stopped' });
     expect((await after).action).toBe('forwarded');
     expect(sent).toEqual(['first', 'stop', 'after']);
@@ -360,7 +360,8 @@ describe('messages reach the owner (§2.4)', () => {
     await new Promise((res) => setImmediate(res));
     await router.route(msg({ messageId: 'stop', appUrgent: 'stop' }));
     failSlow(new Error('timed out'));
-    expect(await live).toMatchObject({ detail: 'app-stopped', acked: true });
+    // The attempt threw: the owner may have it with only the answer lost, so nothing says it never arrived.
+    expect(await live).toMatchObject({ detail: 'app-stopped-unknown', acked: true });
     expect(r.queued).toEqual([]);
   });
 
@@ -433,11 +434,14 @@ describe('messages reach the owner (§2.4)', () => {
   });
 
   it('the words for a queue loss follow its reason', () => {
-    expect(appLossWords('operator-stop')).toContain('You sent a stop');
+    expect(appLossWords('operator-stop')).toContain('may not have been delivered');
     expect(appLossWords('ttl-expired')).toContain('Bring it back here');
     expect(appLossWords('attempts-exhausted')).toContain('Bring it back here');
     expect(appLossWords('sender-deauthorized')).toContain('refused');
-    expect(appLossWords('poisoned')).toBe('This message was not delivered. Send it again.');
+    expect(appLossWords('stale-custody-reboot')).toContain('may not have been delivered');
+    // Definite only where known or where the spec asks; a restart can't know, so it never says "send it again" flatly.
+    for (const r of ['sender-deauthorized', 'ttl-expired', 'attempts-exhausted']) expect(appLossState(r)).toBe('refused');
+    for (const r of ['operator-stop', 'stale-custody-reboot', 'stale-custody-tenure', 'nap-stale', 'pause-expired', 'poisoned', 'gate:no-mesh-identity']) expect(appLossState(r)).toBe('unknown');
   });
 
   it('the forward survives a queue row\'s JSON; anything else is not a forward', () => {
@@ -459,6 +463,7 @@ describe('messages reach the owner (§2.4)', () => {
     expect(answerRouted(s, { action: 'duplicate', acked: true }, m)).toMatchObject({ status: 202, body: { outcome: 'waiting' } });
     expect(answerRouted(s, { action: 'queued', acked: true }, m)).toMatchObject({ status: 202 });
     expect(answerRouted(s, { action: 'queued', detail: 'app-stopped', acked: true }, m)).toMatchObject({ status: 200, body: { deliveryState: 'refused' } });
+    expect(answerRouted(s, { action: 'queued', detail: 'app-stopped-unknown', acked: true }, m)).toMatchObject({ status: 200, body: { outcome: 'unknown', deliveryState: 'unknown' } });
     appended.length = 0;
     expect(answerRouted(s, { action: 'queued', acked: false }, m)).toMatchObject({ status: 503, body: { error: 'owner-unavailable' } });
     expect(answerRouted(s, { action: 'rejected', acked: true }, m)).toMatchObject({ body: { deliveryState: 'refused' } });

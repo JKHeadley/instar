@@ -226,7 +226,7 @@ import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } 
 import { isSlackSessionKey, isSlackConversationKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { tokenMayWriteConversation } from '../core/conversationKeys.js';
 import { createConversationPorts, conversationResumeViews } from '../core/conversationPorts.js';
-import { AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
+import { AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossState, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
 import { appPlacement, runAppMove, runBringBack, setAppPoolMoves } from '../core/appConversationMove.js';
 import { DEFAULT_DRAIN_CLAIM_GRACE_MS } from '../core/SessionDrainRunner.js';
 import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
@@ -1262,13 +1262,16 @@ let _appDrainDeliver: ((msg: { sessionKey: string; messageId: string; payload: s
 /** app-conversations-in-the-pool §2.6: this machine's own flag, and the rows `session-status` carries. */
 /** A held app message the queue gave up on: its phone request finishes in words. Returns the items that aren't app messages. */
 function settleAppQueueLoss<T extends { sessionKey: string; messageId: string }>(items: T[], reason: string): T[] {
+  // No service here (app conversations off, or its wiring failed): today's notice, so the loss isn't silent.
+  if (!_appConversationService) return items;
   for (const it of items) {
-    if (it.sessionKey.startsWith('app:')) _appConversationService?.finishExpiredForward(it.sessionKey.slice('app:'.length), it.messageId, appLossWords(reason));
+    if (it.sessionKey.startsWith('app:')) _appConversationService?.finishExpiredForward(it.sessionKey.slice('app:'.length), it.messageId, appLossWords(reason), appLossState(reason));
   }
   return items.filter((it) => !it.sessionKey.startsWith('app:'));
 }
 /** A receipt with no `injected` marker (a crash between receipt and dispatch): the message reads `unknown` in the app. */
 function settleAppNotInjected<T extends { sessionKey: string; messageId: string }>(items: T[]): T[] {
+  if (!_appConversationService) return items;
   for (const it of items) {
     if (!it.sessionKey.startsWith('app:')) continue;
     try { _appConversationService?.appendDelivery(it.sessionKey.slice('app:'.length), it.messageId, 'unknown', `recovered\u0000${it.messageId}`); }

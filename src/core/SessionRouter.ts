@@ -361,18 +361,21 @@ export class SessionRouter {
 
   /** Forward to the app conversation's owner. Any answer but acceptance keeps it queued; nothing re-places. */
   private async forwardApp(msg: InboundMessage, owner: string, epoch: number, stopGeneration: number): Promise<RouteOutcome> {
+    const stoppedOutcome = (): RouteOutcome => ({ action: 'queued', detail: attemptThrew ? 'app-stopped-unknown' : 'app-stopped', owner, acked: true });
     const queue = (detail: string): RouteOutcome => {
       if (msg.appUrgent) return { action: 'queued', detail, owner, acked: false };
       // A stop landed during this attempt: queued now, it would run after the stop.
-      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return { action: 'queued', detail: 'app-stopped', owner, acked: true };
+      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return stoppedOutcome();
       const q = this.deps.queueMessage(msg, detail);
       return { action: 'queued', detail, owner, acked: q === 'queued' || q === 'already-queued' };
     };
     let target = owner;
     let targetEpoch = epoch;
     let reForwarded = false;
+    // A thrown attempt may have reached the owner with only its answer lost, so a stop after one can't say it never arrived.
+    let attemptThrew = false;
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
-      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return { action: 'queued', detail: 'app-stopped', owner, acked: true };
+      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return stoppedOutcome();
       try {
         const ack = await this.deps.deliverMessage(target, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: targetEpoch, senderEnvelope: msg.senderEnvelope ?? null });
         this.deps.onOwnerResponsive?.(target);
@@ -392,6 +395,7 @@ export class SessionRouter {
         }
         return queue('app-owner-stale');
       } catch (err) { // @silent-fallback-ok — logged and retried; exhausted retries mark the owner suspect and keep the message queued
+        attemptThrew = true;
         this.deps.log?.(`deliverMessage attempt ${attempt} to ${target} failed: ${String((err as Error)?.message ?? err)}`);
         if (attempt < this.cfg.deliverMessageMaxRetries) await this.deps.sleep(this.backoff(attempt));
       }

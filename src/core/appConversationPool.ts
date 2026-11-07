@@ -27,15 +27,27 @@ import type { MachineCapacity } from './types.js';
 export const STOP_NOT_CONFIRMED = "Couldn't reach the machine running this conversation; the stop hasn't taken effect yet.";
 export const OWNER_DID_NOT_ANSWER = "The machine running this conversation didn't answer. Bring it back here, or try again when it's back.";
 export const APP_STOPPED_BEFORE_DELIVERY = 'You sent a stop, so this message was not delivered. Send it again if you still want it.';
+/** A held message a stop dropped: an earlier attempt may have reached the owner with only its answer lost. */
+export const APP_STOPPED_WHILE_HELD = 'You sent a stop, so this message may not have been delivered. Check the conversation, and send it again if you still want it.';
+export const STOPPED_MAYBE_DELIVERED = 'You sent a stop while this message was on its way, so it may or may not have reached the agent. Check the conversation.';
 export const OWNER_REFUSED_SENDER = 'The machine running this conversation refused this message. Send it again from a phone that is still paired.';
-export const NOT_DELIVERED = 'This message was not delivered. Send it again.';
+export const MAY_NOT_BE_DELIVERED = 'This message may not have been delivered. Check the conversation, and send it again if you still want it.';
 
 /** The words for a held message the queue gave up on, by its reason. */
 export function appLossWords(reason: string): string {
-  if (reason === 'operator-stop') return APP_STOPPED_BEFORE_DELIVERY;
+  if (reason === 'operator-stop') return APP_STOPPED_WHILE_HELD;
   if (reason === 'sender-deauthorized') return OWNER_REFUSED_SENDER;
   if (reason === 'ttl-expired' || reason === 'attempts-exhausted') return OWNER_DID_NOT_ANSWER;
-  return NOT_DELIVERED;
+  return MAY_NOT_BE_DELIVERED;
+}
+
+/**
+ * What a queue loss records. `refused` only where that is known (the owner answered and refused) or the
+ * spec asks for it (the queue's own limits, §2.2). Anything else may follow an attempt that reached the
+ * owner with only its answer lost, so it reads `unknown`, which yields to the owner's own outcome.
+ */
+export function appLossState(reason: string): 'refused' | 'unknown' {
+  return reason === 'sender-deauthorized' || reason === 'ttl-expired' || reason === 'attempts-exhausted' ? 'refused' : 'unknown';
 }
 
 export const NEEDS_UPDATE = 'Your machines need the latest Instar update before app conversations can move.';

@@ -139,12 +139,49 @@ describe('the phone\'s send (§2.4)', () => {
   it('held (mid-move, or the gate closed): the phone hears waiting, and a later delivery wins', async () => {
     const e = setup({ route: async () => ({ action: 'queued', detail: 'transferring', acked: true }) });
     const key = await create(e);
-    const r = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'wait', requestId: rid() });
+    const heldId = rid();
+    const r = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'wait', requestId: heldId });
     expect(r.status).toBe(202);
     expect(r.body).toMatchObject({ ok: true, outcome: 'waiting', deliveryState: 'pending' });
     expect(e.dispatched).toEqual([]);
     e.svc.finishExpiredForward(key, r.body.messageId, 'The machine running this conversation didn\'t answer.');
     expect(e.svc.store.deliveryState(r.body.messageId)).toBe('refused');
+    const retried = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'wait', requestId: heldId });
+    expect(retried.status).toBe(409);
+    expect(retried.body).toMatchObject({ error: 'not-delivered', deliveryState: 'refused', detail: 'The machine running this conversation didn\'t answer.' });
+  });
+
+  it('a stop drops a held message: a retry hears outcome-unknown with the words, never safe-to-resend; the owner\'s outcome settles it', async () => {
+    const e = setup({ route: async () => ({ action: 'queued', detail: 'app-owner-unreachable', acked: true }) });
+    const key = await create(e);
+    const id = rid();
+    const r = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'held', requestId: id });
+    e.svc.finishExpiredForward(key, r.body.messageId, 'may not have been delivered', 'unknown');
+    expect(e.svc.store.deliveryState(r.body.messageId)).toBe('unknown');
+    const still = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'held', requestId: id });
+    expect(still.status).toBe(409);
+    expect(still.body).toMatchObject({ error: 'outcome-unknown', deliveryState: 'unknown', detail: 'may not have been delivered' });
+    e.svc.appendDelivery(key, r.body.messageId, 'delivered', 'owner-seed');
+    const settled = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'held', requestId: id });
+    expect(settled.status).toBe(200);
+    expect(settled.body).toMatchObject({ ok: true, outcome: 'delivered', deliveryState: 'delivered' });
+    expect(settled.body.error).toBeUndefined();
+    expect(settled.body.detail).toBeUndefined();
+  });
+
+  it('a retry after an unknown answers where it ended up, without the old words', async () => {
+    const e = setup({ route: async () => ({ action: 'queued', detail: 'app-stopped-unknown', acked: true }) });
+    const key = await create(e);
+    const id = rid();
+    const first = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'on its way', requestId: id });
+    expect(first.body).toMatchObject({ outcome: 'unknown', deliveryState: 'unknown' });
+    // Lost the answer, retries while it's still unknown: the words come again.
+    const lost = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'on its way', requestId: id });
+    expect(lost.body).toMatchObject({ outcome: 'unknown', deliveryState: 'unknown', detail: first.body.detail });
+    e.svc.appendDelivery(key, first.body.messageId, 'delivered', 'owner-seed');
+    const again = await signed(e, 'POST', `/mobile/chat/app/${key}`, { text: 'on its way', requestId: id });
+    expect(again.body).toMatchObject({ outcome: 'delivered', deliveryState: 'delivered' });
+    expect(again.body.detail).toBeUndefined();
   });
 
   it('the owner refused the sender: refused, not forwarded', async () => {

@@ -114,7 +114,10 @@ describe('every other reader (§2.2, §2.7)', () => {
     expect(server).toContain("settleAppQueueLoss(expired, 'gate:no-mesh-identity')"); // the orphan-store backstop
     expect(server.split('settleAppNotInjected(allItems)').length - 1).toBe(2);
     const at = server.indexOf('function settleAppQueueLoss');
-    expect(server.slice(at, at + 400)).toContain('finishExpiredForward');
+    const body = server.slice(at, at + 500);
+    expect(body).toContain('finishExpiredForward');
+    // With no service the row keeps today's notice: it must never vanish silently.
+    expect(body.indexOf('if (!_appConversationService) return items;')).toBeLessThan(body.indexOf('finishExpiredForward'));
   });
 
   it('the drain closes an app session through terminateWithAuthority, found by tmux name', () => {

@@ -872,11 +872,11 @@ export class AppConversationService {
    * A held send ran out at the queue's limits (app-conversations-in-the-pool §2.2): the phone's request
    * record is finished as refused, in words. Nothing re-places the conversation.
    */
-  finishExpiredForward(conversationKey: string, messageId: string, words: string): void {
+  finishExpiredForward(conversationKey: string, messageId: string, words: string, state: 'refused' | 'unknown' = 'refused'): void {
     try {
       const rec = this.deps.requests.findSendByMessage(messageId);
-      this.appendDelivery(conversationKey, messageId, 'refused', rec ? `${rec.deviceId}\u0000${rec.requestId}` : `expired\u0000${messageId}`);
-      if (rec) this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 409, body: { error: 'not-delivered', conversationKey, messageId, deliveryState: 'refused', detail: words } });
+      this.appendDelivery(conversationKey, messageId, state, rec ? `${rec.deviceId}\u0000${rec.requestId}` : `expired\u0000${messageId}`);
+      if (rec) this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 409, body: { error: state === 'unknown' ? 'outcome-unknown' : 'not-delivered', outcome: state, expiredForward: true, conversationKey, messageId, deliveryState: state, detail: words } });
     } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the message stays stored and reads pending until the phone asks again
   }
 
