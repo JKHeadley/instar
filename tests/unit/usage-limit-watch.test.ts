@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { isUsageLimitOutput, interpretProbe } from '../../src/core/claudeKeyProbe.js';
-import { classifyClaudeAuthFailure } from '../../src/core/claudeChildAuth.js';
+import { interpretProbe } from '../../src/core/claudeKeyProbe.js';
+import { classifyClaudeAuthFailure, isUsageLimitOutput } from '../../src/core/claudeChildAuth.js';
 import { buildKeyRecoveryPrompt } from '../../src/core/claudeKeyRecovery.js';
 import { PresenceProxy } from '../../src/monitoring/PresenceProxy.js';
 import {
@@ -391,6 +391,10 @@ describe('reading a call refused for usage', () => {
     expect(isUsageLimitOutput(JSON.stringify({ is_error: true, api_error_status: 429, result: 'Server is temporarily limiting requests (not your usage limit) · Rate limited' }))).toBe(false);
     expect(isUsageLimitOutput(JSON.stringify({ is_error: false, result: "You've hit your weekly limit" }))).toBe(false);
     expect(isUsageLimitOutput('not json')).toBe(false);
+    for (const banner of ['Usage limit reached · limit resets 8am', 'Session limit reached ∙ resets 10:30pm', "You've hit your opus limit · resets Nov 6", "You've hit your limit"]) {
+      expect(isUsageLimitOutput(JSON.stringify({ is_error: true, result: banner }))).toBe(true);
+    }
+    expect(isUsageLimitOutput(JSON.stringify({ is_error: true, result: 'I read that a usage limit reached someone' }))).toBe(false);
   });
 
   it('a limit never reads as a dead key, so nobody is told to replace a good one', () => {

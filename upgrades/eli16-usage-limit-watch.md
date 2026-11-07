@@ -33,3 +33,5 @@ A small watcher takes the case the rescue can't: one account, or no account with
 ## What this does not do
 
 Scheduled jobs still start during the limit and fail in seconds. That wastes little, since they are refused, and the job record marking them successful is already filed separately. The test call uses the fast model, so a limit on one model alone reads as back too soon; the session hits it again and the caps above bound that. The exact error text a background call returns is taken from field notes, and the live run on a cloud test agent will confirm it.
+
+One detail for maintainers: the check for the limit wording in a background call's output lives beside the sign-in handling, as a small copy of the banner pattern, so the model call path doesn't take on new modules.

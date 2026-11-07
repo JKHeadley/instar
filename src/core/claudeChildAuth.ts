@@ -93,6 +93,21 @@ export function reportClaudeCallOutcome(outcome: ClaudeCallOutcome): void {
   try { outcomeListener?.(outcome); } catch { /* @silent-fallback-ok: a signal must never break the model call */ }
 }
 
+/**
+ * The CLI's limit wording, at the start of its result. A 429 alone can be a server throttle, whose
+ * text reads "not your usage limit". Kept here, not imported from rateLimitDetection, so the model
+ * call path does not take on that module.
+ */
+const USAGE_LIMIT_RESULT = /^\s*(?:api error:\s*)?(?:you['’]ve hit your (?:session |weekly |opus |sonnet |usage )?limit|usage limit reached\b|(?:session|weekly|opus|sonnet) limit reached\b)/i;
+
+/** Whether a `claude -p` stdout says the account is out of usage. */
+export function isUsageLimitOutput(stdout: string): boolean {
+  try {
+    const parsed = JSON.parse(stdout) as { is_error?: unknown; result?: unknown };
+    return parsed?.is_error === true && typeof parsed.result === 'string' && USAGE_LIMIT_RESULT.test(parsed.result);
+  } catch { return false; } // @silent-fallback-ok: unreadable output says nothing about usage
+}
+
 /** Heard by UsageLimitWatch: an internal call was refused for usage. A signal only. */
 let usageLimitedListener: (() => void) | null = null;
 

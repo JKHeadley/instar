@@ -55,3 +55,7 @@ Revert and release. A leftover state file is ignored. The CLAUDE.md bullet stays
 ## Second-pass review
 
 Round 1: concern raised, 6 issues (false limit claim on multi-account agents, notice loop, recovery killing a working session, standby repeats, rescue failure reading as room, boot gap). Round 2: 3 more (a skipped send recorded as told, an expiring memory reading as usage back, false claim to Codex conversations) plus wording. All fixed. Round 3: concur.
+
+## Later change: certified path
+
+The limit check moved into `claudeChildAuth.ts` with its own small pattern, because importing it through the probe pulled five modules into the certified model call path (pre-push fingerprint check). Behaviour is unchanged; the wording is a second copy of the banner patterns, covered by tests against the real banners.

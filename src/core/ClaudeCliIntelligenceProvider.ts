@@ -17,8 +17,7 @@ import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
 import { guardChildStdin } from './pipeErrorGuard.js';
-import { applyClaudeChildAuth, classifyClaudeAuthFailure, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
-import { isUsageLimitOutput } from './claudeKeyProbe.js';
+import { applyClaudeChildAuth, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;

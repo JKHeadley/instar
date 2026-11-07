@@ -15,8 +15,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { classifyClaudeAuthFailure } from './claudeChildAuth.js';
-import { USAGE_WALL_PATTERNS } from '../monitoring/rateLimitDetection.js';
+import { classifyClaudeAuthFailure, isUsageLimitOutput } from './claudeChildAuth.js';
 import type { UsageProbeResult } from './UsageLimitWatch.js';
 import type { ClaudeKeyProbeResult } from './ClaudeKeyHealth.js';
 import { resolveCliFlag } from './models.js';
@@ -32,17 +31,6 @@ export function interpretProbe(failed: boolean, stdout: string): ClaudeKeyProbeR
   try {
     return (JSON.parse(stdout) as { is_error?: unknown }).is_error === false ? 'ok' : 'inconclusive';
   } catch { return 'inconclusive'; } // @silent-fallback-ok: unreadable output concludes nothing, by design
-}
-
-/**
- * Whether this call's stdout says the account is out of usage. A 429 alone can be a server throttle,
- * so it also needs the banner's own wording (USAGE_WALL_PATTERNS, real panes and real CLI output).
- */
-export function isUsageLimitOutput(stdout: string): boolean {
-  try {
-    const parsed = JSON.parse(stdout) as { is_error?: unknown; result?: unknown };
-    return parsed?.is_error === true && typeof parsed.result === 'string' && USAGE_WALL_PATTERNS.some((p) => p.test(parsed.result as string));
-  } catch { return false; } // @silent-fallback-ok: unreadable output says nothing about usage
 }
 
 function runProbe(claudePath: string, key: string, baseUrl: string | undefined): Promise<ClaudeKeyProbeResult> {
