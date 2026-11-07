@@ -323,6 +323,7 @@ export const PENDING_OK_EMPTY = 'Nothing is waiting for your OK.';
 export function pendingReasonWords(reason) {
   if (reason === 'one-family') return 'Only one reviewer family could look at this; your OK stands in for the second.';
   if (reason === 'rung-unproven') return 'Until my automatic gate has proven itself, each new skill waits for your OK.';
+  if (reason === 'restored') return 'Restored from retirement: checked again and re-reviewed; it waits for your OK.';
   return 'Waiting for your OK before I use it.';
 }
 
@@ -332,11 +333,13 @@ export function pendingCardText(p) {
   const body = clean(p && p.description, 600) || `A skill I have written but not switched on yet (${name}).`;
   const paraphrases = (Array.isArray(p && p.paraphrases) ? p.paraphrases : []).map((t) => clean(t, 200)).filter(Boolean).slice(0, MAX_PARAPHRASES);
   const reviewerFamily = clean(p && p.reviewerFamily, 40) || null;
-  const pendingReason = p && (p.pendingReason === 'one-family' || p.pendingReason === 'rung-unproven') ? p.pendingReason : null;
+  const pendingReason = p && (p.pendingReason === 'one-family' || p.pendingReason === 'rung-unproven' || p.pendingReason === 'restored') ? p.pendingReason : null;
   const version = Number.isFinite(p && p.version) ? p.version : null;
+  const harmReason = clean(p && p.harmReason, 300) || null;
   return {
     name, body, paraphrases, reviewerFamily, pendingReason, version,
     reasonWords: pendingReasonWords(pendingReason),
+    harmWords: harmReason ? `Before it was retired it was doing harm: ${harmReason}` : null,
     reviewedWords: reviewerFamily ? `reviewed by ${reviewerFamily}` : null,
     createdWords: p && p.createdAt ? `Written ${ago(p.createdAt) || 'earlier'}` : '',
   };
@@ -358,4 +361,116 @@ export function buildPending(res) {
   }
   const rows = d.pending.filter((p) => p && typeof p.name === 'string').map(pendingCardText);
   return { ok: true, off: false, reason: null, rows, empty: rows.length ? null : PENDING_OK_EMPTY };
+}
+
+// ── Retired, locked, retire-all (GET /skills/learned → retired, skills[locked], lockLeftRendering, retireBlocked, retireAll) ──
+// Spec §3.8 / §3.10 (slice 3): a retired skill is archived, never deleted — the card says why in plain words,
+// where the bytes are, and offers Restore (PIN in that one request). A locked skill says the conflict in
+// words: I will not patch it, it still counts, it can still be retired for harm; while a machine still
+// renders it, the card says so until the tick archives the rendering. Retire-all is a de-emphasised control
+// that shows the re-arm date once used.
+
+export const RETIRED_EMPTY = 'Nothing retired.';
+const RETIRE_KIND_WORDS = {
+  score: 'its runs kept getting corrected',
+  misfire: 'it kept loading for the wrong requests',
+  unused: 'it was not being used',
+  operator: 'you retired it',
+  'retire-all': 'you retired every learned skill',
+};
+
+/** "Studio (claude, agents), Laptop (claude)" — where the archived renderings are, per machine. */
+export function archivedWords(renderingsArchived) {
+  const r = renderingsArchived && typeof renderingsArchived === 'object' ? renderingsArchived : {};
+  const parts = Object.keys(r).sort().map((m) => {
+    const layouts = (Array.isArray(r[m]) ? r[m] : []).map((l) => clean(l, 40)).filter(Boolean);
+    return `${clean(m, 60)}${layouts.length ? ` (${layouts.join(', ')})` : ''}`;
+  });
+  return parts.length ? `Rendering copies kept from: ${parts.join(', ')}.` : 'No machine has archived a rendering copy yet.';
+}
+
+/** What a retired card shows, all as text. */
+export function retiredCardText(r, blocked = [], now = Date.now()) {
+  const name = clean(r && r.name, 80) || 'unnamed';
+  const reason = clean(r && r.reason, 300) || 'no reason recorded';
+  const kind = r && RETIRE_KIND_WORDS[r.kind] ? r.kind : null;
+  const whyWords = `${kind ? `Retired because ${RETIRE_KIND_WORDS[kind]}` : 'Retired'}${r && r.retiredAt ? ` ${ago(r.retiredAt, now) || 'earlier'}` : ''}: ${reason}`;
+  const harm = r && r.harm === true;
+  const byWords = r && r.by === 'reviewer' ? `Judged by my reviewer${r.reviewerFamily ? ` (${clean(r.reviewerFamily, 40)})` : ''}.` : r && r.by === 'default-rung' ? 'Judged by the fixed rule (my reviewer was not available).' : null;
+  const where = clean(r && r.archiveDir, 200) || `.instar/skill-learning/retired/${name}`;
+  const stillActive = blocked.filter((b) => b && b.name === name).map((b) => `${clean(b.layout, 20)}: ${clean(b.reason, 160)}`);
+  return {
+    name, whyWords, harm, harmWords: harm ? 'This one was doing harm — I posted a learning about it. Restore shows the reason again before you confirm.' : null,
+    byWords, whereWords: `Its files are kept under ${where}. ${archivedWords(r && r.renderingsArchived)}`,
+    stillActiveWords: stillActive.length ? `Still active on this machine: I could not archive its rendering (${stillActive.join('; ')}). I will keep trying; nothing was deleted.` : null,
+    version: Number.isFinite(r && r.version) ? r.version : null,
+  };
+}
+
+/**
+ * GET /skills/learned → the retired rows. 503 = not switched on here; a failure = can't tell; a 200 without a
+ * `retired` list is unreadable — never "nothing retired". Rows without a name are dropped.
+ */
+export function buildRetired(res, now = Date.now()) {
+  if (!res || !res.ok) {
+    const off = (res && res.status === 503) || /switched off/.test((res && res.reason) || '');
+    if (off) return { ok: false, off: true, reason: LEARNED_SKILLS_OFF, rows: [] };
+    return { ok: false, off: false, reason: `Can’t tell what I’ve retired: ${(res && res.reason) || 'no answer'}.`, rows: [] };
+  }
+  const d = res.data;
+  if (!d || typeof d !== 'object' || !Array.isArray(d.retired)) {
+    return { ok: false, off: false, reason: 'Can’t tell what I’ve retired: the answer had no list.', rows: [] };
+  }
+  const blocked = Array.isArray(d.retireBlocked) ? d.retireBlocked : [];
+  const rows = d.retired.filter((r) => r && typeof r.name === 'string').map((r) => retiredCardText(r, blocked, now));
+  // A retire interrupted mid-way (archives set aside, canonical not yet moved): visible as its own card, nothing to restore yet.
+  for (const b of blocked.filter((x) => x && x.layout === 'aside' && typeof x.name === 'string' && !rows.some((r) => r.name === x.name))) {
+    const name = clean(b.name, 80);
+    rows.push({ name, aside: true, whyWords: `Retire interrupted: ${clean(b.reason, 300)}`, harm: false, harmWords: null, byWords: null, whereWords: `Nothing was deleted; its files are under .instar/skill-learning/retired/${name}… and the next check puts them in order.`, stillActiveWords: null, version: null });
+  }
+  return { ok: true, off: false, reason: null, rows, empty: rows.length ? null : RETIRED_EMPTY };
+}
+
+/** What a locked card shows: the conflict in words, and whether a rendering is still live here. */
+export function lockedCardText(s, lockLeft = [], machine = null) {
+  const name = clean(s && s.name, 80) || 'unnamed';
+  const left = lockLeft.find((l) => l && l.name === name);
+  const layouts = left && Array.isArray(left.layouts) ? left.layouts.map((l) => clean(l, 20)).filter(Boolean) : [];
+  const where = `.instar/skill-learning/retired/${name}/renderings/`;
+  return {
+    name,
+    line: skillLine(s).text,
+    conflictWords: 'Locked: you own this one. I will not patch it; it still counts its runs, and I can still retire it if it does harm.',
+    renderedWords: layouts.length
+      ? `Still rendered on ${clean(machine, 60) || 'this machine'} (${layouts.join(', ')}) — it comes off at the next check, and the copy goes under ${where}.`
+      : `Its rendering is archived under ${where} — the coding tools no longer see it.`,
+    stillRendered: layouts.length > 0,
+  };
+}
+
+/** GET /skills/learned → the locked rows (skills with state `locked`), with the leftover-rendering state. */
+export function buildLocked(res) {
+  if (!res || !res.ok) {
+    const off = (res && res.status === 503) || /switched off/.test((res && res.reason) || '');
+    if (off) return { ok: false, off: true, reason: LEARNED_SKILLS_OFF, rows: [] };
+    return { ok: false, off: false, reason: `Can’t tell what is locked: ${(res && res.reason) || 'no answer'}.`, rows: [] };
+  }
+  const d = res.data;
+  if (!d || typeof d !== 'object' || !Array.isArray(d.skills)) return { ok: false, off: false, reason: 'Can’t tell what is locked: the answer had no list.', rows: [] };
+  const left = Array.isArray(d.lockLeftRendering) ? d.lockLeftRendering : [];
+  const machine = clean(d.machine, 60) || null;
+  const rows = d.skills.filter((s) => s && typeof s.name === 'string' && (s.state === 'locked' || s.locked === true)).map((s) => lockedCardText(s, left, machine));
+  return { ok: true, off: false, reason: null, rows, machine };
+}
+
+/** The retire-all state in words: null when never used or the hold has passed. */
+export function retireAllWords(data, now = Date.now()) {
+  const r = data && typeof data === 'object' ? data.retireAll : null;
+  if (!r || typeof r !== 'object' || typeof r.reArmReviewAt !== 'string') return null;
+  const t = Date.parse(r.reArmReviewAt);
+  if (!Number.isFinite(t)) return null;
+  const when = new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  const count = Number.isFinite(r.retired) ? r.retired : 0;
+  if (t <= now) return `Every learned skill was retired ${r.at ? ago(r.at, now) || 'earlier' : 'earlier'} (${count}); the pause on new skills ended ${when}.`;
+  return `Every learned skill was retired ${r.at ? ago(r.at, now) || 'earlier' : 'earlier'} by ${clean(r.actor, 60) || 'you'} (${count}). I draft nothing new until ${when}, when this is reviewed.`;
 }

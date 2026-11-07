@@ -55,7 +55,7 @@ import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 import { isLearnedCanonical, learnedStateOf, hasMergeMarkers, type PreflightResult, type RenderSkillOutcome } from '../LearnedSkillReconciler.js';
 import type { FenceResult } from './WriterFence.js';
 import type { VersionStore } from './VersionStore.js';
-import { SKILL_LEARNING_PATHS, SKILL_NAME_RE, type CommitOp, type CommitProtocolLike, type CommitResult, type LearnedCanonicalState } from './types.js';
+import { SKILL_LEARNING_PATHS, SKILL_NAME_RE, type ArchiveMoveOp, type CommitOp, type CommitProtocolLike, type CommitResult, type LearnedCanonicalState } from './types.js';
 
 export type MoveOp = 'retire' | 'restore';
 
@@ -65,8 +65,8 @@ export interface CommitJournalRow {
   op: 'commit-prepare' | 'commit' | 'commit-void' | 'move-prepare' | 'move-commit' | 'move-void';
   txId: string;
   name: string;
-  /** The protocol op this transaction performs. */
-  commitOp: CommitOp | MoveOp;
+  /** The protocol op this transaction performs (`archive-rendering`: the Retirer's version-less moves, slice 3B). */
+  commitOp: CommitOp | MoveOp | ArchiveMoveOp;
   expectedPrevHash?: string | null;
   newHash?: string | null;
   epoch?: number;
@@ -529,6 +529,8 @@ export class CommitProtocol implements CommitProtocolLike {
   }
 
   private async recoverMove(p: CommitJournalRow, out: RecoverySummary): Promise<void> {
+    // A Retirer archive move (slice 3B) carries no version row: completed/reversed by the same rule, never a tombstone.
+    const archive = p.commitOp === 'archive-rendering';
     if (!p.from || !p.to) { out.voided += 1; this.journal({ op: 'move-void', txId: p.txId, name: p.name, commitOp: p.commitOp, detail: 'recovered: prepare row carried no paths' }); return; }
     const decision = completeOrReverseMove(p.from, p.to, `skill-learning:${p.commitOp}-move-recovery`);
     if (decision === 'lost' && fs.existsSync(p.from) && fs.existsSync(p.to)) {
@@ -541,7 +543,7 @@ export class CommitProtocol implements CommitProtocolLike {
       this.journal({ op: 'move-commit', txId: p.txId, name: p.name, commitOp: p.commitOp, from: p.from, to: p.to, newHash: p.newHash, epoch: p.epoch, fence: p.fence, detail: 'recovered: move completed' });
       out.finished += 1;
     } else {
-      this.d.versions.markVoid(p.name, p.txId, `recovered: move ${decision}`);
+      if (!archive) this.d.versions.markVoid(p.name, p.txId, `recovered: move ${decision}`);
       this.journal({ op: 'move-void', txId: p.txId, name: p.name, commitOp: p.commitOp, detail: `recovered: move ${decision}` });
       out.voided += 1;
     }

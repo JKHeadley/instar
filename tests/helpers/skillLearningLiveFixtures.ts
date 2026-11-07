@@ -14,9 +14,11 @@ import crypto from 'node:crypto';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { SkillLearningSentinel, type SkillLearningSentinelDeps, type SyncReconcileOutcomeLike, type VersionRowLike, type VersionStoreLike } from '../../src/monitoring/SkillLearningSentinel.js';
 import type { FamilyProvider } from '../../src/monitoring/skillLearning/Drafter.js';
+import type { VersionStoreForReview } from '../../src/monitoring/skillLearning/Reviewer.js';
+import type { EffectiveVersionRow, RejectedVersion, VersionAnnotation } from '../../src/monitoring/skillLearning/VersionStore.js';
 import { SKILL_LEARNING_DEFAULTS } from '../../src/config/ConfigDefaults.js';
 import type {
-  CommitOp, CommitProtocolLike, CommitResult, EventRow, LedgerReader, LedgerRow, LedgerWriter, OutcomeRow, RequestRow, SkillLearningConfig, VerdictRow,
+  CommitOp, CommitProtocolLike, CommitResult, EventRow, LearnedCanonicalState, LedgerReader, LedgerRow, LedgerWriter, OutcomeRow, RequestRow, SkillLearningConfig, VerdictRow,
 } from '../../src/monitoring/skillLearning/types.js';
 
 export class FakeLedger implements LedgerReader, LedgerWriter {
@@ -133,30 +135,78 @@ export function cfg(over: Partial<SkillLearningConfig> = {}): SkillLearningConfi
 
 export const sha256 = (s: string): string => crypto.createHash('sha256').update(s, 'utf-8').digest('hex');
 
-export interface ProtocolCall { op: CommitOp; name: string; newRaw: string; ctx: { expectedPrevHash: string | null; reason?: string } }
+export interface ProtocolCall { op: CommitOp; name: string; newRaw: string; ctx: { expectedPrevHash: string | null; reason?: string; authorFamily?: string; reviewerFamily?: string } }
 
 const bodyOf = (raw: string): string => raw.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '');
+const stateOf = (raw: string): LearnedCanonicalState => (raw.match(/instar-learned-state:\s*"?([a-z-]+)"?/)?.[1] as LearnedCanonicalState | undefined) ?? 'active';
+
+/** A fake row: the real store's effective row shape (slice-3A fields included) so the reviewer/reverter read it unchanged. */
+export type FakeRow = EffectiveVersionRow;
+type FakeRowInput = Omit<VersionRowLike, 'txId' | 'version' | 'at'> & Partial<Pick<VersionRowLike, 'txId' | 'version' | 'at'>> & Partial<Pick<FakeRow, 'op' | 'state' | 'fence' | 'authorFamily' | 'reviewerFamily' | 'reason' | 'citedCorrections' | 'rejectedBodyHash' | 'revertOf' | 'uncertainty'>>;
 
 /**
- * In-memory VersionStoreLike: version rows per name (what the fake protocol appends), the chain hash, and a
- * scriptable `reconcileAfterSync` (default: no rows ⇒ no-rows; on-disk = last live row ⇒ in-sync; else unknown-hash).
+ * In-memory VersionStoreLike + VersionStoreForReview: version rows per name (what the fake protocol appends), the
+ * chain hash, a scriptable `reconcileAfterSync` (default: no rows ⇒ no-rows; on-disk = last live row ⇒ in-sync;
+ * else unknown-hash), and — slice 3A — in-memory bodies, annotations folded straight into the row, reverts and
+ * rejected versions (the real store's semantics over a Map).
  */
-export class FakeVersionStore implements VersionStoreLike {
-  readonly byName = new Map<string, VersionRowLike[]>();
+export class FakeVersionStore implements VersionStoreLike, VersionStoreForReview {
+  readonly byName = new Map<string, FakeRow[]>();
   /** Scripted post-sync outcomes per name (the versions-phase tests); absent ⇒ the default classification. */
   readonly scripted = new Map<string, (onDiskFileHash: string | null) => SyncReconcileOutcomeLike>();
   reconcileCalls: Array<{ name: string; onDiskFileHash: string | null }> = [];
-  rows(name: string): ReadonlyArray<VersionRowLike> { return this.byName.get(name) ?? []; }
-  live(name: string): VersionRowLike[] { return this.rows(name).filter((r) => !r.void && !r.superseded); }
-  lastRow(name: string): VersionRowLike | null { const l = this.live(name); return l.length ? l[l.length - 1] : null; }
+  /** `<name>/<fileHash>` → raw document (the real store keeps these as files). */
+  readonly bodies = new Map<string, string>();
+  annotations: Array<{ name: string; txId: string; patch: VersionAnnotation }> = [];
+  /** Advance to make rows distinguishable in time (the real store orders by `(epoch, at)`). */
+  clock = NOW;
+  rows(name: string): ReadonlyArray<FakeRow> { return this.byName.get(name) ?? []; }
+  live(name: string): FakeRow[] { return this.rows(name).filter((r) => !r.void && !r.superseded); }
+  lastRow(name: string): FakeRow | null { const l = this.live(name); return l.length ? l[l.length - 1] : null; }
   expectedPrevHash(name: string): string | null { return this.lastRow(name)?.fileHash ?? null; }
-  append(name: string, row: Omit<VersionRowLike, 'txId' | 'version' | 'at'> & Partial<Pick<VersionRowLike, 'txId' | 'version' | 'at'>>): VersionRowLike {
+  append(name: string, row: FakeRowInput): FakeRow {
     const list = this.byName.get(name) ?? [];
     const version = row.version ?? list.filter((r) => !r.void).reduce((m, r) => Math.max(m, r.version), 0) + 1;
-    const full: VersionRowLike = { txId: row.txId ?? `tx-${name}-${version}`, version, at: row.at ?? new Date(NOW).toISOString(), ...row };
+    const full: FakeRow = {
+      kind: 'version', txId: row.txId ?? `tx-${name}-${version}`, version, at: row.at ?? new Date(this.clock).toISOString(),
+      fence: row.fence ?? 'local', op: row.op ?? 'create', state: row.state ?? 'active', citedCorrections: row.citedCorrections ?? [],
+      ...row, void: row.void === true, superseded: row.superseded === true,
+    };
     list.push(full);
     this.byName.set(name, list);
     return full;
+  }
+  annotate(name: string, txId: string, patch: VersionAnnotation): void {
+    this.annotations.push({ name, txId, patch });
+    const row = this.rows(name).find((r) => r.txId === txId);
+    if (!row) throw new Error(`FakeVersionStore.annotate: no row ${txId} for ${name}`);
+    if (patch.rejectedBodyHash) row.rejectedBodyHash = patch.rejectedBodyHash;
+    if (patch.citedCorrections) row.citedCorrections = [...patch.citedCorrections];
+    if (patch.revertOf) row.revertOf = patch.revertOf;
+    if (patch.uncertainty) row.uncertainty = { ...patch.uncertainty };
+    if (patch.reviewerFamily) row.reviewerFamily = patch.reviewerFamily;
+  }
+  storeBody(name: string, fileHash: string, raw: string): { stored: boolean; movedToCas: string[] } {
+    const k = `${name}/${fileHash}`;
+    const stored = !this.bodies.has(k);
+    if (stored) this.bodies.set(k, raw);
+    return { stored, movedToCas: [] };
+  }
+  readBody(name: string, fileHash: string): string | null { return this.bodies.get(`${name}/${fileHash}`) ?? null; }
+  reverts(name: string): FakeRow[] { return this.live(name).filter((r) => r.op === 'revert'); }
+  revertsSince(name: string, sinceMs: number): FakeRow[] { return this.reverts(name).filter((r) => Date.parse(r.at) >= sinceMs); }
+  rejectedVersions(name: string): RejectedVersion[] {
+    const rows = this.rows(name);
+    const out: RejectedVersion[] = [];
+    for (const rv of rows) {
+      if (rv.void || rv.op !== 'revert') continue;
+      const target = rv.revertOf ? rows.find((r) => r.txId === rv.revertOf) ?? null : null;
+      const before = target ?? [...rows].reverse().find((r) => !r.void && !r.superseded && rows.indexOf(r) < rows.indexOf(rv) && r.bodyHash !== rv.bodyHash) ?? null;
+      const bodyHash = rv.rejectedBodyHash ?? before?.bodyHash ?? null;
+      if (!bodyHash) continue;
+      out.push({ txId: before?.txId ?? null, bodyHash, citedCorrections: before?.citedCorrections ?? [], revertTxId: rv.txId, at: rv.at });
+    }
+    return out;
   }
   reconcileAfterSync(name: string, onDiskFileHash: string | null): SyncReconcileOutcomeLike {
     this.reconcileCalls.push({ name, onDiskFileHash });
@@ -186,7 +236,7 @@ export class FakeCommitProtocol implements CommitProtocolLike {
   constructor(private readonly projectDir: string, versions = new FakeVersionStore()) { this.versions = versions; }
   private canonical(name: string): string { return path.join(this.projectDir, '.instar', 'skills', name, 'SKILL.md'); }
   get version(): number { return [...this.versions.byName.values()].reduce((n, l) => n + l.length, 0); }
-  async write(op: CommitOp, name: string, newRaw: string, ctx: { expectedPrevHash: string | null; reason?: string }): Promise<CommitResult> {
+  async write(op: CommitOp, name: string, newRaw: string, ctx: { expectedPrevHash: string | null; reason?: string; authorFamily?: string; reviewerFamily?: string }): Promise<CommitResult> {
     this.calls.push({ op, name, newRaw, ctx });
     if (this.refuse) return { ok: false, reason: this.refuse, detail: 'fake refusal' };
     const file = this.canonical(name);
@@ -201,7 +251,7 @@ export class FakeCommitProtocol implements CommitProtocolLike {
         const raw = fs.readFileSync(file, 'utf-8');
         const locked = raw.includes('instar-learned-state: "operator-owned"') ? raw : raw.replace(/instar-learned-state: "?[a-z-]+"?/, 'instar-learned-state: "operator-owned"').replace(/instar-learned-locked: "?(true|false)"?/, 'instar-learned-locked: "true"');
         fs.writeFileSync(file, locked);
-        this.versions.append(name, { fileHash: sha256(locked), bodyHash: sha256(bodyOf(locked)), epoch: this.epoch, machineId: this.machineId, void: false, superseded: false });
+        this.versions.append(name, { fileHash: sha256(locked), bodyHash: sha256(bodyOf(locked)), epoch: this.epoch, machineId: this.machineId, void: false, superseded: false, op: 'lock', state: 'operator-owned' });
       }
       return { ok: false, reason: onDisk === null && ctx.expectedPrevHash !== null ? 'unknown-provenance' : 'user-edit-conflict', detail: `on disk ${onDisk} differs from the last version row ${ctx.expectedPrevHash}` };
     }
@@ -211,7 +261,10 @@ export class FakeCommitProtocol implements CommitProtocolLike {
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, newRaw);
     }
-    const row = this.versions.append(name, { fileHash: sha256(newRaw), bodyHash: sha256(bodyOf(newRaw)), epoch: this.epoch, machineId: this.machineId, void: false, superseded: false });
+    const row = this.versions.append(name, {
+      fileHash: sha256(newRaw), bodyHash: sha256(bodyOf(newRaw)), epoch: this.epoch, machineId: this.machineId, void: false, superseded: false,
+      op, state: op === 'reject' ? 'proposal' : stateOf(newRaw), ...(ctx.authorFamily ? { authorFamily: ctx.authorFamily } : {}), ...(ctx.reviewerFamily ? { reviewerFamily: ctx.reviewerFamily } : {}), ...(ctx.reason ? { reason: ctx.reason } : {}),
+    });
     return { ok: true, txId: row.txId, fileHash: row.fileHash, version: row.version, epoch: this.epoch, fence: 'local' };
   }
   async move(op: 'retire' | 'restore', name: string, fromAbs: string, toAbs: string): Promise<CommitResult> {

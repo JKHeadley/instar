@@ -110,7 +110,12 @@ export interface VerdictRow {
 export interface EventRow {
   kind: 'event';
   eventId: string;
-  event: 'improve' | 'reviewer';
+  /**
+   * `improve` / `reviewer` — a reviewer pass is requested (slice 1/2). Slice 3A adds the bounded-revert signals the
+   * attention module (3C) consumes: `revert-refused` (N+1 was left `pending`, item 1) and `revert-breaker`
+   * (`review.revertBreakerPer30d` reverts on one key ⇒ locked, item 5).
+   */
+  event: 'improve' | 'reviewer' | 'revert-refused' | 'revert-breaker';
   runId: string;
   procedureKey: string;
   /** The learned skill the flipped run used, when the §3.9 join saw one. */
@@ -155,7 +160,14 @@ export interface SkillLearningStatus {
   skills: LearnedSkillSummary[];
   proposals: ProposalSummary[];
   pending: PendingSummary[];   // slice 2 (commit protocol)
-  retired: unknown[];   // slice 3
+  /** Slice 3 (§3.8): canonicals under `skill-learning/retired/<name>/`, with the renderings each machine archived. */
+  retired: RetiredSummary[];
+  /** Slice 3 (§3.8): a locked (`operator-owned`) learned canonical whose rendering is STILL on this machine — listed until the tick archives it. */
+  lockLeftRendering?: Array<{ name: string; layouts: string[]; state?: string }>;
+  /** Slice 3 (§3.8): a retired skill whose rendering this machine could not archive (the skill is reported active, never silently gone). */
+  retireBlocked?: Array<{ name: string; layout: string; reason: string }>;
+  /** Slice 3: the last `retire-all` tap on this machine and the date its hold is reviewed (drafting pauses until then). */
+  retireAll?: { at: string; actor: string; reArmReviewAt: string; retired: number } | null;
   lastTickAt?: string;
   llmSpendCentsToday?: number;
   /** True on a machine that does not hold the operator-messaging lease: it observes, never drafts or finalizes (§3.2 single writer). */
@@ -180,6 +192,7 @@ export interface LearnedSkillSummary {
   measurableRate: number | null;
   misfires: number;
   version: number;
+  /** The CURRENT version row's reviewer family (`same-as-author` marks a same-family-held patch, §3.7). */
   reviewerFamily?: string;
   lastUsedAt?: string;
   locked: boolean;
@@ -187,6 +200,43 @@ export interface LearnedSkillSummary {
   operatorEdited: number;
   /** The 7-day "new" label (§3.5): an `active` skill created/confirmed inside the last 7 days, computed at read time. */
   isNew: boolean;
+  /** Slice 3A: uses of a version reviewed `same-as-author` (§3.7 hold) — counted here, EXCLUDED from the score/accepted/corrected fields above (the rung-2 metric). */
+  sameFamilyExcluded?: number;
+  /** Slice 3B (§3.8): a RETIRED skill whose rendering this machine could not archive — reported active here, never silently gone. */
+  retireBlocked?: boolean;
+  /** Slice 3A: the version rows (every machine, tombstones folded) with per-version scores — on the by-name read (`GET /skills/learned/:name`). */
+  versions?: LearnedVersionSummary[];
+}
+
+/** Slice 3A (§3.7): one version row as `GET /skills/learned/:name` lists it, with its §3.6 per-version score. */
+export interface LearnedVersionSummary {
+  version: number;
+  txId: string;
+  fileHash: string;
+  bodyHash: string;
+  epoch: number;
+  at: string;
+  op: string;
+  state: LearnedCanonicalState;
+  machineId: string;
+  authorFamily?: string;
+  reviewerFamily?: string;
+  /** On a `revert` row: hash(N+1), the body the revert rejected. */
+  rejectedBodyHash?: string;
+  /** The correction event ids a patch's hunks answered (§3.7 "which correction it answers"). */
+  citedCorrections: string[];
+  /** On a `revert` row: the txId of the rejected version row. */
+  revertOf?: string;
+  /** On a `revert` row: the counts the trigger saw — corrected / corroborated runs on N+1, and N's corrected rate. */
+  uncertainty?: { nCorrected: number; nRuns: number; prevRate: number | null };
+  void: boolean;
+  superseded: boolean;
+  /** §3.6 per-version counts (uses of THIS body: `skillUsed.contentHash` = the body hash; operator-edited and version-uncertain uses excluded). */
+  uses: number;
+  accepted: number;
+  acceptedInferred: number;
+  corrected: number;
+  score: number | null;
 }
 
 export interface ProposalSummary {
@@ -228,12 +278,43 @@ export interface PendingSummary {
   description: string;
   paraphrases: string[];
   reviewerFamily?: string;
-  pendingReason?: 'one-family' | 'rung-unproven';
+  /** Slice 3A adds `same-family` (a §3.7 patch held for the operator's tap) and `revert-refused` (N+1 left pending because its rollback failed validation). */
+  pendingReason?: 'one-family' | 'rung-unproven' | 'same-family' | 'revert-refused' | 'restored';
+  /** Slice 3B (`restored`): shown when the skill had been retired for harm — the operator sees why before confirming the restore. */
+  harmReason?: string;
   /** sha256 of the canonical SKILL.md raw bytes at the time of the snapshot. */
   fileHash: string;
   createdAt: string;
   version: number;
 }
+
+/** Why a skill was retired (§3.8): the evidence class behind the verdict. */
+export type RetireKind = 'score' | 'misfire' | 'unused' | 'operator' | 'retire-all';
+
+/** A retired skill as `GET /skills/learned` lists it (slice 3, §3.8 / §3.10). */
+export interface RetiredSummary {
+  name: string;
+  /** Plain words: the reviewer's (or the operator's, or the default rung's) reason. */
+  reason: string;
+  kind: RetireKind;
+  retiredAt: string;
+  /** Retired for harm (a corrected-rate / score verdict): shown on restore; a learning was posted. */
+  harm?: boolean;
+  by: 'reviewer' | 'default-rung' | 'operator';
+  /** The version the retire row carries. */
+  version: number;
+  /** The reviewer family that judged it, when a reviewer did. */
+  reviewerFamily?: string;
+  /** The family that authored the retired version (the restore reviewer must differ). */
+  authorFamily?: string;
+  /** Per machine id: the layouts whose rendering that machine archived under `retired/<name>/renderings/<machineId>/`. */
+  renderingsArchived: Record<string, string[]>;
+  /** The archive directory relative to the state dir (where the operator finds the bytes). */
+  archiveDir: string;
+}
+
+/** Slice 3B: a journaled directory move that carries NO version row — a rendering archive, a set-aside, a history move. Recovery completes/reverses it without touching the version store. */
+export type ArchiveMoveOp = 'archive-rendering';
 
 /** Operations the six-step commit protocol (§3.5 tail) journals. */
 export type CommitOp = 'create' | 'patch' | 'revert' | 'confirm' | 'reject' | 'lock' | 'unlock';
@@ -256,7 +337,8 @@ export type CommitResult =
 
 /** The commit protocol as the sentinel (2B) and the routes (2A/2C) consume it; CommitProtocol.ts implements. */
 export interface CommitProtocolLike {
-  write(op: CommitOp, name: string, newRaw: string, ctx: { expectedPrevHash: string | null; reason?: string }): Promise<CommitResult>;
+  /** `authorFamily` / `reviewerFamily` land on the version row (§3.5 table; `reviewerFamily: 'same-as-author'` marks the §3.7 hold). */
+  write(op: CommitOp, name: string, newRaw: string, ctx: { expectedPrevHash: string | null; reason?: string; authorFamily?: string; reviewerFamily?: string }): Promise<CommitResult>;
   move(op: 'retire' | 'restore', name: string, fromAbs: string, toAbs: string): Promise<CommitResult>;
   recoverOwnJournal(): Promise<{ finished: number; voided: number; locked: number; foreignDangling: number }>;
 }
@@ -270,7 +352,20 @@ export interface SkillLearningSentinelLike {
   confirmPending(name: string, opts?: { forwardedFromMachine?: string }): Promise<{ ok: true } | { ok: false; error: string }>;
   /** Slice 2: the operator's reject tap on a `pending` skill (mirror of confirmPending). */
   rejectPending(name: string, opts?: { forwardedFromMachine?: string }): Promise<{ ok: true } | { ok: false; error: string }>;
+  /** Slice 3 (§3.8): lock a learned canonical `operator-owned` (no further patches/renders; its rendering is archived). */
+  lockSkill(name: string, opts?: SkillTapOpts): Promise<SkillTapResult>;
+  /** Slice 3: the mirror tap — `operator-owned` → `active`, rendered again. */
+  unlockSkill(name: string, opts?: SkillTapOpts): Promise<SkillTapResult>;
+  /** Slice 3: retire by the operator's hand (archive first on every machine, canonical moved, never deleted). */
+  retireSkill(name: string, opts?: SkillTapOpts): Promise<SkillTapResult>;
+  /** Slice 3: restore a retired skill — moved back, re-linted, re-reviewed by a different family, held `pending`. */
+  restoreSkill(name: string, opts?: SkillTapOpts): Promise<SkillTapResult>;
+  /** Slice 3: retire every learned skill, with an audit row naming the actor and the re-arm review date (now + 14 d). */
+  retireAll(opts?: SkillTapOpts): Promise<SkillTapResult & { retired?: string[]; refused?: Array<{ name: string; error: string }> }>;
 }
+
+export interface SkillTapOpts { forwardedFromMachine?: string; reason?: string }
+export type SkillTapResult = { ok: true; detail?: string } | { ok: false; error: string };
 
 /** Directory layout (§4). All under config.stateDir. */
 export const SKILL_LEARNING_PATHS = {
@@ -289,3 +384,74 @@ export const SKILL_LEARNING_PATHS = {
 export type LearnedCanonicalState = 'proposal' | 'pending' | 'active' | 'operator-owned' | 'retired';
 
 export const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,62}[a-z0-9]$|^[a-z0-9]$/;
+
+// ─── Slice 3: attention items 1–6 (§3.10) ───────────────────────────────────
+
+/**
+ * The condition signals the sentinel hands `SkillLearningAttention.tick` every tick (§3.10 items 1–6). The
+ * sentinel derives them from durable state (the log tail, the ledger, the proposals and canonical layouts); the
+ * attention controller never reads those itself, so a test can drive every item from this one object.
+ */
+export interface SkillLearningSignals {
+  /** The tick's clock (ms). */
+  at: number;
+  /** §3.2 single writer: heals and notices run on the lease holder only. */
+  holdsLease: boolean;
+  /** `mode === 'live'` (3A): items 1/2 heal through live writes, so in shadow mode they are governed `shadow`; items 3–6 are unaffected. */
+  live: boolean;
+  /** The lease epoch (the heal gates' fence); null when no coordinator exists (single-machine agents, fence `local`). */
+  epoch: number | null;
+  /** Item 1: learned skills the retirer retired for harm (3B), with the version the bounded revert targets. */
+  harmRetired: Array<{ skill: string; version: number; reason?: string }>;
+  /** Item 2: a wanted draft the reviewer struck for index cost (§3.9), with the measurement it cited. */
+  indexCostTooHigh: Array<{ key: string; name?: string; indexBytes: number | null; claudeHeadroomChars: number | null; at: string }>;
+  /** Item 3: consecutive drafter refusals per procedure key since its last successful draft. */
+  refusalStreaks: Record<string, number>;
+  /** Item 4: classifier model calls and failures inside the last 24 h (`calls24h` null = no call count available yet). */
+  classifier: { calls24h: number | null; failures24h: number };
+  /** Item 5 (unmeasured): every active learned skill with its measurable rate and corroborated/total uses. */
+  skills: Array<{ name: string; measurableRate: number | null; uses: number; corroborated: number; locked: boolean }>;
+  /** Item 5 (revert breaker, 3A): keys whose `revert-breaker` EventRow fired, newest first per key. */
+  revertBreakers: Array<{ key: string; skill?: string; reason?: string; at: string }>;
+  /** Item 5 (equal-epoch split-brain, deviation (t)): the skills the versions phase demoted. */
+  splitBrain: Array<{ name: string; detail?: string }>;
+  /** Item 6: proposals + skills created in the last 7 days, with the arbiter's label (the "reasons" the spec shows). */
+  createdLast7d: Array<{ name: string; kind: 'proposal' | 'skill'; arbiterOnly: boolean; disagreement?: 'arbiter-only' | 'default-only' | null; createdAt: string }>;
+}
+
+/** The outcome an injected heal reports back (3A's revert, 3B's retire proposal, the two family swaps). */
+export type SkillLearningHealOutcome =
+  | { healed: true; detail?: string }
+  /** `terminal`: the heal ran but its own judgment says notifying is the only step left (item 1: the reverted version
+   *  is harmful too; item 2: nothing is retirable) — the episode notifies NOW instead of retrying. */
+  | { healed: false; reason: string; detail?: string; terminal?: boolean };
+
+/** The heals 3A/3B provide (fakes in tests). Each is bounded by its own caller; the attention gate bounds the attempts. */
+export interface SkillLearningHeals {
+  /** Item 1 — 3A Reverter: bounded revert of the harm-retired skill to the version before `version`. */
+  revertFirst?(input: { skill: string; version: number }): Promise<SkillLearningHealOutcome>;
+  /** Item 2 — 3B Retirer via the reviewer: propose retiring the lowest-scored unused learned skill to make room for `key`'s draft. */
+  retireLowestUnused?(input: { key: string; indexBytes: number | null; claudeHeadroomChars: number | null }): Promise<SkillLearningHealOutcome>;
+  /** Item 3: swap the drafter family for `key` once (the controller never asks twice inside one episode). */
+  swapDrafterFamily?(input: { key: string; streak: number }): Promise<SkillLearningHealOutcome>;
+  /** Item 4: the bounded classifier failure swap (once per episode). */
+  swapClassifierFamily?(input: { failures24h: number; calls24h: number; rate: number }): Promise<SkillLearningHealOutcome>;
+}
+
+/** The observation the attention controller raises (TelegramAdapter.createAttentionItem's subset it uses). */
+export interface SkillLearningAttentionObservation {
+  id: string;
+  conditionKey: string;
+  category: 'skill-learning';
+  priority: 'HIGH' | 'NORMAL';
+  title: string;
+  summary: string;
+  needsUser: boolean;
+  silent: boolean;
+  sourceContext: 'skill-learning-sentinel';
+}
+
+/** What the sentinel's `attention` phase calls each tick. */
+export interface SkillLearningAttentionLike {
+  tick(signals: SkillLearningSignals): Promise<unknown>;
+}

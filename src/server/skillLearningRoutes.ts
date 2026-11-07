@@ -7,6 +7,14 @@
  *   POST /skills/learned/proposals/:name/disagree     same, `{ reason }` required (400 without)
  *   POST /skills/learned/pending/:name/confirm        slice 2: the operator's one-tap confirm of a `pending` skill
  *   POST /skills/learned/pending/:name/reject         slice 2: the mirror tap — the skill goes back to proposals
+ *   POST /skills/learned/:name/lock                   slice 3 (§3.8): operator-owned — no patches, its rendering archived
+ *   POST /skills/learned/:name/unlock                 slice 3: active again, rendered fresh
+ *   POST /skills/learned/:name/retire                 slice 3: archive first on every machine, canonical moved, never deleted
+ *   POST /skills/learned/:name/restore                slice 3: moved back, re-linted, re-reviewed, held `pending`
+ *   POST /skills/learned/retire-all                   slice 3: every learned skill, audit row with the re-arm review date
+ *
+ * The slice-3 taps use the pending taps' exact idiom: SKILL_NAME_RE at the edge → `forwardToHolder` (body
+ * unchanged, PIN included) → the holder's PIN check (same bucket logic) → the sentinel method.
  *
  * The pending taps forward FIRST (`forwardToHolder`, deviations (w)/(x)): a machine that is not the
  * lease holder sends the request BODY UNCHANGED, PIN INCLUDED, to the holder with the asserted
@@ -40,6 +48,7 @@ export const LEASE_HOLDER_UNREACHABLE = 'lease-holder-unreachable';
 export const SKILL_LEARNING_PIN_MESSAGE = 'Operator PIN required — agreeing or disagreeing with a learned-skill proposal is a human action, not an agent action';
 export const FORWARDED_HEADER = 'x-instar-skill-learning-forwarded';
 export const SKILL_LEARNING_PENDING_PIN_MESSAGE = 'Operator PIN required — confirming or rejecting a pending learned skill is a human action, not an agent action';
+export const SKILL_LEARNING_LIFECYCLE_PIN_MESSAGE = 'Operator PIN required — locking, unlocking, retiring or restoring a learned skill is a human action, not an agent action';
 /** Asserted (bearer-authenticated, unsigned): the mesh id of the machine that forwarded a pending tap. */
 export const FORWARDED_FROM_HEADER = 'x-instar-forwarded-from';
 const FORWARDED_FROM_RE = /^[\w.:@-]{1,160}$/;
@@ -251,6 +260,52 @@ export function createSkillLearningRoutes(ctx: SkillCtx, timings: { forwardTimeo
 
   router.post('/skills/learned/pending/:name/confirm', pendingRoute('confirm'));
   router.post('/skills/learned/pending/:name/reject', pendingRoute('reject'));
+
+  // ── Slice 3 (§3.8 / §3.10): lock / unlock / retire / restore / retire-all — the pending idiom, exactly ──
+  type Lifecycle = 'lock' | 'unlock' | 'retire' | 'restore';
+  const lifecycleRoute = (tap: Lifecycle) => async (req: Request, res: Response) => {
+    const name = nameOf(req, res);
+    if (!name) return;
+    if (!isSkillLearningEnabled(ctx.config)) { res.status(503).json({ error: SKILL_LEARNING_DISABLED, machine: machineName(ctx) }); return; }
+    if (await forwardToHolder(req, res)) return; // proxied or 503 — the standby never pre-validates the PIN
+    const sentinel = live(res);
+    if (!sentinel) return;
+    const forwardedFromMachine = forwardedFromOf(req);
+    const forwardedBucket = forwardedBucketOf(ctx, req);
+    if (!requireMandatePin(req, res, { message: SKILL_LEARNING_LIFECYCLE_PIN_MESSAGE, ...(forwardedBucket ? { forwardedBucketKey: forwardedBucket } : {}) })) return; // 503/429/403 already sent
+    const body = (req.body ?? {}) as { reason?: unknown };
+    const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, MAX_REASON_CHARS) : undefined;
+    const opts = { ...(forwardedFromMachine ? { forwardedFromMachine } : {}), ...(reason ? { reason } : {}) };
+    const out = tap === 'lock' ? await sentinel.lockSkill(name, opts)
+      : tap === 'unlock' ? await sentinel.unlockSkill(name, opts)
+        : tap === 'retire' ? await sentinel.retireSkill(name, opts)
+          : await sentinel.restoreSkill(name, opts);
+    if (!out.ok) {
+      const notFound = out.error === 'not-found' || out.error === 'not-retired' || out.error === 'pending-not-found';
+      res.status(notFound ? 404 : 409).json({ error: out.error, name, machine: machineName(ctx) });
+      return;
+    }
+    res.json({ ok: true, name, action: tap, machine: machineName(ctx), ...(out.detail ? { detail: out.detail } : {}), ...(forwardedFromMachine ? { forwardedFromMachine } : {}) });
+  };
+
+  router.post('/skills/learned/retire-all', async (req: Request, res: Response) => {
+    if (!isSkillLearningEnabled(ctx.config)) { res.status(503).json({ error: SKILL_LEARNING_DISABLED, machine: machineName(ctx) }); return; }
+    if (await forwardToHolder(req, res)) return;
+    const sentinel = live(res);
+    if (!sentinel) return;
+    const forwardedFromMachine = forwardedFromOf(req);
+    const forwardedBucket = forwardedBucketOf(ctx, req);
+    if (!requireMandatePin(req, res, { message: SKILL_LEARNING_LIFECYCLE_PIN_MESSAGE, ...(forwardedBucket ? { forwardedBucketKey: forwardedBucket } : {}) })) return;
+    const body = (req.body ?? {}) as { reason?: unknown };
+    const reason = typeof body.reason === 'string' ? body.reason.trim().slice(0, MAX_REASON_CHARS) : undefined;
+    const out = await sentinel.retireAll({ ...(forwardedFromMachine ? { forwardedFromMachine } : {}), ...(reason ? { reason } : {}) });
+    if (!out.ok) { res.status(409).json({ error: out.error, machine: machineName(ctx) }); return; }
+    res.json({ ok: true, action: 'retire-all', retired: out.retired ?? [], refused: out.refused ?? [], machine: machineName(ctx), ...(out.detail ? { detail: out.detail } : {}), ...(forwardedFromMachine ? { forwardedFromMachine } : {}) });
+  });
+  router.post('/skills/learned/:name/lock', lifecycleRoute('lock'));
+  router.post('/skills/learned/:name/unlock', lifecycleRoute('unlock'));
+  router.post('/skills/learned/:name/retire', lifecycleRoute('retire'));
+  router.post('/skills/learned/:name/restore', lifecycleRoute('restore'));
 
   return router;
 }

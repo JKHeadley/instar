@@ -30,6 +30,7 @@ import type { PreflightResult, RenderSkillOutcome } from '../LearnedSkillReconci
 import { WriterFence, type WriterFenceDeps } from './WriterFence.js';
 import { VersionStore } from './VersionStore.js';
 import { CommitProtocol } from './CommitProtocol.js';
+import { Retirer } from './Retirer.js';
 
 /** What the commit protocol needs from the reconciler (LearnedSkillReconciler satisfies it). */
 export interface ReconcilerForCommit {
@@ -38,6 +39,10 @@ export interface ReconcilerForCommit {
   renderSkill(name: string, txId: string): Promise<RenderSkillOutcome>;
   /** Idempotent; releases the boot gate when the reconciler was constructed with `holdUntilReleased`. */
   releaseBootGate?(): void;
+  /** Slice 3B: bind the Retirer whose archive sweep runs first in every reconcile pass (under the reconciler's mutex). */
+  setRetirer?(retirer: { reconcileRetiredRenderings(): ReturnType<Retirer['reconcileRetiredRenderings']> } | null): void;
+  /** Slice 3B: drop the baselines of renderings the Retirer archived outside a pass. */
+  forgetRenderings?(rels: string[]): Promise<void>;
 }
 
 export type FenceInput = Pick<WriterFenceDeps, 'hasCoordinator' | 'holdsLease' | 'currentEpoch' | 'leaseMediumLocal' | 'pullRebase' | 'hasRemote' | 'isGitRepo'>;
@@ -91,6 +96,8 @@ export interface StartSkillLearningInput {
   topicMemory: { getMessagesSince(topicId: string | number, sinceIso: string, limit?: number): unknown } | null | undefined;
   /** Resolved lazily: the TelegramAdapter may not exist (no Telegram configured). */
   createAttentionItem?: (item: SkillLearningAttentionItem) => Promise<unknown> | unknown;
+  /** Slice 3: cause-clear for attention items (TelegramAdapter.clearAttentionCondition with {reconcile:true}). */
+  clearAttentionCondition?: (sel: { conditionKey: string }, reason: string, opts: { reconcile: true }) => unknown;
   slack?: { onMessageLogged: ((entry: never) => void) | null } | null;
   /** Lazy: the AgentServer (and its TopicOperatorStore) is constructed after this runs. */
   operatorStore: () => OperatorStoreLike | null | undefined;
@@ -104,6 +111,8 @@ export interface StartSkillLearningInput {
   holdsLease?: () => boolean;
   /** Lazy: the MaturationLadderService lives on the AgentServer, constructed after this runs. The sentinel reads rung 2 of `monitoring.skillLearning` from it. */
   ladder?: () => { features(): ReadonlyArray<{ id: string; rung: string; next: string | null; state: string }> } | null | undefined;
+  /** Slice 3B (deviation (ii)): `EvolutionManager.addLearning` on the holder — a retire for harm posts one learning. */
+  addLearning?: ((learning: { title: string; category: string; description: string; source: { agent: string; platform: string; contentId?: string; discoveredAt: string }; tags: string[] }) => unknown) | null;
   logger?: (message: string) => void;
 }
 
@@ -149,8 +158,24 @@ export function startSkillLearning(
       )
     : Promise.resolve();
   void recovery.finally(() => { try { input.reconciler.releaseBootGate?.(); } catch { /* @silent-fallback-ok — a reconciler without a gate has nothing to release */ } });
-  try { input.reconciler.start(); } catch (err) { log(`[skill-learning] reconciler start failed: ${err instanceof Error ? err.message : String(err)}`); }
   const config = resolveSkillLearningConfig(input.rawConfig);
+  // Slice 3B (§3.8): the Retirer exists on EVERY machine (its archive sweep runs inside the reconciler whether or
+  // not the sentinel is on — a retired skill pulled by sync must leave this machine's discovery too); the holder-side
+  // judgment and the taps need the sentinel, which binds the reviewer fns into it below.
+  let retirer: Retirer | null = null;
+  try {
+    retirer = new Retirer({
+      projectDir: input.projectDir, stateDir: input.stateDir, machineId: input.machineId, config,
+      commitProtocol: stack?.protocol ?? null, versions: stack?.versions ?? null,
+      addLearning: input.addLearning ?? null,
+      forgetRenderings: (rels) => input.reconciler.forgetRenderings?.(rels),
+      logger: log,
+    });
+    input.reconciler.setRetirer?.(retirer);
+  } catch (err) {
+    log(`[skill-learning] retirer NOT built: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try { input.reconciler.start(); } catch (err) { log(`[skill-learning] reconciler start failed: ${err instanceof Error ? err.message : String(err)}`); }
   if (!config.enabled) return null;
   try {
     const sentinel = create({
@@ -182,9 +207,12 @@ export function startSkillLearning(
       degradationReporter: input.degradationReporter ?? null,
       featureEvidence: input.featureEvidence as never,
       createAttentionItem: input.createAttentionItem,
+      clearAttentionCondition: input.clearAttentionCondition,
       holdsLease: input.holdsLease,
       // Read through a thin proxy: a ladder not constructed yet answers no features ⇒ rung 2 unproven (pending, the conservative side).
       ladder: input.ladder ? { features: () => { try { return input.ladder?.()?.features() ?? []; } catch { return []; } } } : null, // @silent-fallback-ok — an unreadable ladder reads as unproven
+      retirer,
+      harmRetired: () => retirer?.harmRetired() ?? [],
       logger: log,
     } as Parameters<typeof SkillLearningSentinel.create>[0]);
     sentinel.start();

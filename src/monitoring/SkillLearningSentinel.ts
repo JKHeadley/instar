@@ -40,8 +40,8 @@
  * `llm.batchSize` keys per tick; every key reaches a durable verdict row
  * (draft → proposal exists; wait/never/refused → an unexpired VerdictRow holds
  * it until the re-ask horizon), so with an empty backlog a tick makes ZERO
- * calls. The growth notice is a SIGNAL (attention item, silent) at most once
- * per 7-day window — never a refusal (§3.3 "growth signal, not a wall").
+ * calls. The growth notice (§3.10 item 6) is raised by SkillLearningAttention from the signals this
+ * sentinel hands it each tick — a SIGNAL, never a refusal (§3.3 "growth signal, not a wall").
  */
 /* @self-action-controller: skill-learning-tick */
 /* @self-action-controller: skill-learning-live-write */
@@ -74,17 +74,24 @@ import {
 } from './skillLearning/Drafter.js';
 import { lintDraft, DRAFT_BODY_MAX_CHARS } from './skillLearning/Lint.js';
 import { measureIndexCost, renderIndexCostLine, type IndexCostReading } from './skillLearning/IndexCost.js';
+import { SkillLearningAttention, deriveIndexCostStrikes, deriveRefusalStreaks, readLogTail } from './skillLearning/SkillLearningAttention.js';
+import { Reviewer, SAME_AS_AUTHOR, ONE_FAMILY_REVIEW, type LearnedCanonical, type PendingSidecarInput, type VersionStoreForReview } from './skillLearning/Reviewer.js';
+import { Reverter } from './skillLearning/Reverter.js';
+import { parseRetireReviewOutput, type Retirer, type RetireCandidate, type RetireReviewInput, type RetireReviewAnswer, type RestoreReviewInput } from './skillLearning/Retirer.js';
+import { scoreOf, versionCounts } from './skillLearning/VersionStore.js';
 import {
   SKILL_LEARNING_PATHS,
-  type CommitProtocolLike, type EventRow, type LearnedCanonicalState, type LearnedSkillSummary, type LedgerReader, type LedgerWriter,
-  type OutcomeRow, type PendingSummary, type ProposalSidecar, type ProposalSummary, type RequestRow, type RowSource,
+  type CommitProtocolLike, type EventRow, type LearnedCanonicalState, type LearnedSkillSummary, type LearnedVersionSummary, type LedgerReader, type LedgerWriter,
+  type OutcomeRow, type PendingSummary, type ProposalSidecar, type ProposalSummary, type RequestRow, type RowSource, type SkillTapOpts, type SkillTapResult,
   type SkillLearningConfig, type SkillLearningMode, type SkillLearningSentinelLike, type SkillLearningStatus, type VerdictRow,
+  type SkillLearningSignals, type SkillLearningAttentionLike, type SkillLearningAttentionObservation, type SkillLearningHealOutcome,
 } from './skillLearning/types.js';
 
 export const SKILL_LEARNING_FEATURE = 'monitoring.skillLearning';
 const COMPONENT_DRAFTER = 'skillLearning.drafter';
 const COMPONENT_REVIEWER = 'skillLearning.reviewer';
 const WEEK_MS = 7 * 86_400_000;
+const DAY_MS = 86_400_000;
 const LEARNED_ORIGIN_KEY = 'instar-learned-origin';
 const LEARNED_STATE_KEY = 'instar-learned-state';
 const LEARNED_ACTIVATED_KEY = 'instar-learned-activated';
@@ -128,9 +135,18 @@ export interface SkillLearningSentinelDeps {
   /** 1A's outcome-window closer, when wired. */
   outcomes?: { close(): Promise<void> | void };
   /** 1A's filter + classifier counters, merged into status(). */
-  counters?: () => Partial<Pick<SkillLearningStatus, 'filtered' | 'classifierFailures24h' | 'abortedUnreachable24h' | 'pendingBacklog'>>;
+  counters?: () => Partial<Pick<SkillLearningStatus, 'filtered' | 'classifierFailures24h' | 'abortedUnreachable24h' | 'pendingBacklog'>> & { /** Total classifier model calls so far (slice 3: the item-4 failure-rate denominator is sampled from it per tick). */ classifierCalls?: number };
+  /** Slice 3 (§3.10 items 1–6): the attention controller the `attention` phase hands this tick's signals to. Null = no attention items. */
+  attention?: SkillLearningAttentionLike | null;
+  /** Slice 3: skills the retirer (3B) retired for harm, when wired; default reads `instar-learned-retire-reason` under the retired layout. */
+  harmRetired?: () => Array<{ skill: string; version: number; reason?: string }>;
   /** Reachable model families, preference order; the first is the drafter, a different one reviews. */
-  families: () => ReadonlyArray<FamilyProvider>;
+  families: (procedureKey?: string) => ReadonlyArray<FamilyProvider>;
+  /**
+   * Slice 3 (item 4's heal): the classifier's model door, swappable once per episode to a different family.
+   * `create()` builds it over the per-framework provider cache; absent ⇒ the heal answers `no-alternate-family`.
+   */
+  classifierDoor?: ClassifierDoor | null;
   /** The transcript file for a run's session; null when unknown. */
   transcriptPath: (run: { sessionName?: string; topicId: string; runId: string }) => string | null;
   /** The operator's message text for a ledger source (TopicMemory by source); null when unavailable. */
@@ -139,7 +155,7 @@ export interface SkillLearningSentinelDeps {
   correctionMessages?: (runId: string, procedureKey: string) => string[];
   /** `GET /preferences/session-context` block — injected, never fetched from inside. */
   preferencesBlock?: () => string | null;
-  createAttentionItem?: (item: SkillLearningAttentionItem) => Promise<unknown> | unknown;
+  createAttentionItem?: (item: SkillLearningAttentionItem | SkillLearningAttentionObservation) => Promise<unknown> | unknown;
   degradation?: { report(event: SkillLearningDegradationEvent): void } | null;
   provenance: JudgmentRecorder;
   /** Measured skill-index bytes (§3.9), when the server measures it (superseded by `indexCost`; kept for callers that only know bytes). */
@@ -164,6 +180,19 @@ export interface SkillLearningSentinelDeps {
    * hash (reported in the log row) and the phase is skipped.
    */
   versionStore?: VersionStoreLike | null;
+  /**
+   * Slice 3A: the §3.7 reviewer (patch after a corrected run) and the bounded reverter, run as the lease-gated
+   * `revert` → `review` phases. Default: built here from the version store when it supports review bodies/annotations
+   * (`VersionStoreForReview`) and a commit protocol is wired; null disables the phase; tests inject fakes.
+   */
+  reviewer?: { tick(opts?: { dryRun?: boolean }): Promise<unknown> } | null;
+  reverter?: { tick(opts?: { dryRun?: boolean }): Promise<unknown> } | null;
+  /**
+   * Slice 3B: the Retirer (§3.8) — the holder's retire judgment runs as the lease-gated `retire` phase; its
+   * every-machine sweep runs inside the reconciler. The sentinel binds the reviewer fns (families + provenance)
+   * into it at construction. Null: no retire judgment, taps answer `no-retirer`.
+   */
+  retirer?: Retirer | null;
   /** Injectable queue (tests); default: the sentinel's own. */
   queue?: LlmQueue;
   /** Feature-evidence sink; default: the process-wide `featureEvidence`. */
@@ -195,7 +224,7 @@ export interface SkillLearningCreateInput {
   /** The shared router — the classifier's (1A) door. The drafter/reviewer use per-framework providers (see `families`). */
   sharedIntelligence: IntelligenceProvider | null;
   topicMemory: Pick<TopicMemory, 'getMessagesSince'> | null;
-  telegram?: { createAttentionItem?(item: SkillLearningAttentionItem): Promise<unknown> } | null;
+  telegram?: { createAttentionItem?(item: SkillLearningAttentionItem | SkillLearningAttentionObservation): Promise<unknown> } | null;
   slack?: AttachSeamsInput['slack'];
   topicOperatorStore: { asVerifiedOperator(topicId: number | string): { uid: string } | null };
   userManager?: { listUsers(): Array<{ permissions: string[]; channels: Array<{ type: string; identifier: string }> }> } | null;
@@ -212,7 +241,12 @@ export interface SkillLearningCreateInput {
   provenanceLog: { recordDecision(input: DecisionRowInput): string | null; status(): { counters: Record<string, number> } } | null;
   degradationReporter?: { report(event: SkillLearningDegradationEvent): void } | null;
   featureEvidence?: { record(featureId: string, input: FeatureEvidenceInput): string | null } | null;
-  createAttentionItem?: (item: SkillLearningAttentionItem) => Promise<unknown> | unknown;
+  createAttentionItem?: (item: SkillLearningAttentionItem | SkillLearningAttentionObservation) => Promise<unknown> | unknown;
+  /**
+   * Slice 3 (attention items 1–6): the TelegramAdapter's `clearAttentionCondition` (wire.ts passes it) — the cause-clear
+   * path of SkillLearningAttention. Absent ⇒ conditions are never cleared through the adapter (a no-op clear is used).
+   */
+  clearAttentionCondition?: (selector: { conditionKey: string }, resolution: string, options: { reconcile: true }) => unknown;
   preferencesBlock?: () => string | null;
   /** Test seam: per-framework provider builder (default `buildIntelligenceProvider({ framework })`). */
   buildProvider?: (framework: DrafterFramework) => IntelligenceProvider | null;
@@ -230,6 +264,12 @@ export interface SkillLearningCreateInput {
   versionStore?: VersionStoreLike | null;
   /** Slice 2: §3.9 index-cost measurement override (tests); default measures the real rendered index. */
   indexCost?: () => IndexCostReading | null;
+  /** Slice 3: the attention controller (SkillLearningAttention) the `attention` phase drives; null/absent = no attention items. */
+  attention?: SkillLearningAttentionLike | null;
+  /** Slice 3: the retirer's harm list (3B); absent = read from the retired layout's frontmatter. */
+  harmRetired?: () => Array<{ skill: string; version: number; reason?: string }>;
+  /** Slice 3B: the Retirer wire.ts built over the commit stack (its reviewer fns are bound by the sentinel). */
+  retirer?: Retirer | null;
   logger?: (message: string) => void;
   now?: () => number;
 }
@@ -244,7 +284,7 @@ export interface TickSummary {
   arbiterCalls: number;
   phaseFailures: string[];
   admissionRefusals: number;
-  /** True when this tick skipped the keys/growth phases because the machine does not hold the lease. */
+  /** True when this tick skipped the keys phase because the machine does not hold the lease. */
   observeOnly: boolean;
 }
 
@@ -274,24 +314,30 @@ export interface VersionStoreLike {
   reconcileAfterSync(name: string, onDiskFileHash: string | null): SyncReconcileOutcomeLike;
 }
 
-/** The display sidecar beside a `pending` canonical (`<stateDir>/skill-learning/pending/<name>.json`). */
-interface PendingSidecar {
-  name: string;
-  key: string;
-  description: string;
-  paraphrases: string[];
-  reviewerFamily?: string;
-  pendingReason: 'one-family' | 'rung-unproven';
-  createdAt: string;
-  evidence: { sources: RowSource[]; runIds: string[] };
-  disagreement?: 'arbiter-only' | 'default-only' | null;
-  arbiterOnly: boolean;
-}
+/** The display sidecar beside a `pending` canonical (`<stateDir>/skill-learning/pending/<name>.json`); slice 3A's reviewer/reverter write the same shape. */
+type PendingSidecar = PendingSidecarInput;
 
 interface SentinelState {
-  growthNoticeAt?: string;
   /** Post-sync epoch reconciliation (durable per machine): one consequence per `(name, on-disk fileHash)`, and the counts status() shows. */
   versions?: { handled: Record<string, string>; epochSuperseded: number; splitBrain: number; locked: number };
+  /** Slice 3A: corrected runs the reviewer has handled (runId → status) — idempotent per run across restarts. */
+  review?: { handled: Record<string, string> };
+  /** Slice 3A: refused reverts decided per (name → on-disk fileHash). */
+  revert?: { handled: Record<string, string> };
+  /** Slice 3 (item 3's heal): per procedure key, the drafter framework the next draft uses instead of the default order. */
+  drafterSwaps?: Record<string, { from: string; to: string; family: string; at: string }>;
+  /** Slice 3 (item 4's heal): the classifier's door after a bounded failure swap (restored by `create()` on boot). */
+  classifierDoor?: { framework: string; family: string; at: string };
+}
+
+/** Slice 3 (item 4): the classifier's swappable model door, built by `create()`. */
+export interface ClassifierDoor {
+  /** The framework currently answering the classifier (null = the shared router's own choice). */
+  current(): string | null;
+  /** Frameworks a swap may move to, with their families (the per-framework providers the sentinel can build). */
+  alternatives(): Array<{ framework: string; family: string }>;
+  /** Point the door at `framework`; false when no provider can be built for it. */
+  swapTo(framework: string): boolean;
 }
 
 interface LoadedProposal { sidecar: ProposalSidecar; dir: string }
@@ -368,11 +414,22 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
   private lastTick: TickSummary | null = null;
   private readonly counters = {
     ticks: 0, tickFailures: 0, admissionRefusals: 0, arbiterOutages: 0, draftsWritten: 0, draftsRefused: 0,
-    reviewsPassed: 0, reviewsFailed: 0, oneFamilyHolds: 0, coveredByHandwritten: 0, improveEvents: 0, growthNotices: 0,
+    reviewsPassed: 0, reviewsFailed: 0, oneFamilyHolds: 0, coveredByHandwritten: 0, improveEvents: 0,
     // Slice 2 (live mode).
     liveCreates: 0, pendingCreates: 0, confirms: 0, rejects: 0, commitRefusals: 0, arbiterGoverned: 0, costStrikes: 0, liveFallbacks: 0,
     epochSuperseded: 0, splitBrain: 0, versionLocks: 0,
+    // Slice 3B.
+    retires: 0, restores: 0,
+    // Slice 3A (§3.7).
+    patches: 0, pendingPatches: 0, reviewHolds: 0, patchRefusals: 0, reverts: 0, revertRefusals: 0, revertBreakers: 0,
+    // `mode: shadow` (§9 rollback): the slice-3 decisions logged as would-* rows with no write.
+    wouldRetire: 0, wouldRevert: 0, wouldPatch: 0,
   };
+  /** Slice 3A: built once from the deps (or injected); null when the store/protocol cannot support review. */
+  private reviewerInstance: { tick(opts?: { dryRun?: boolean }): Promise<unknown> } | null | undefined;
+  private reverterInstance: { tick(opts?: { dryRun?: boolean }): Promise<unknown> } | null | undefined;
+  /** The Reverter itself (item 1's heal calls `revertOne` on it). */
+  private reverterInner: Reverter | null = null;
   /** In-process dedupe of once-per-key notices (covered-by-handwritten); the log row is the durable record. */
   private readonly notedCovered = new Set<string>();
   /** Last logged arbiter-promotion verdict (the row is written when it changes, not every tick). */
@@ -389,7 +446,18 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     this.log = deps.logger ?? (() => {});
     this.queue = deps.queue ?? new LlmQueue({ maxConcurrent: 1, maxDailyCents: Math.max(0, deps.config.llm.maxDailyCents) });
     this.evidence = deps.evidence ?? sharedFeatureEvidence;
+    // Slice 3B: the Retirer's judgment and restore reviews run through this sentinel's families + provenance.
+    deps.retirer?.bind({
+      reviewer: (input) => this.retireReview(input),
+      restoreReviewer: (input) => this.restoreReview(input),
+      existingSkills: () => this.loadExistingSkills().map((e) => ({ name: e.name, description: e.description, learned: e.learned })),
+      appendLog: (row) => this.appendLog(row),
+      candidates: () => this.retireCandidates(),
+    });
   }
+
+  /** Slice 3B: the Retirer (3C's index-cost heal and 3A's held-rendering retraction late-bind through it). */
+  get retirer(): Retirer | null { return this.deps.retirer ?? null; }
 
   // ─── Paths ──────────────────────────────────────────────────────────
 
@@ -408,7 +476,9 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     try { return this.deps.rungTwoProven?.() === true; } catch { return false; } // @silent-fallback-ok — an unreadable ladder reads as unproven
   }
   /** Per-machine (the directory is git-synced; a shared name would conflict between machines). */
-  private get statePath(): string { return path.join(this.deps.stateDir, 'skill-learning', `sentinel-state.${this.deps.machineId}.json`); }
+  private get statePath(): string { return SkillLearningSentinel.statePathOf(this.deps.stateDir, this.deps.machineId); }
+  /** The per-machine sentinel state file (`create()` reads the persisted family swaps from it before the sentinel exists). */
+  static statePathOf(stateDir: string, machineId: string): string { return path.join(stateDir, 'skill-learning', `sentinel-state.${machineId}.json`); }
 
   private holdsLease(): boolean {
     try { return this.deps.holdsLease ? this.deps.holdsLease() !== false : true; } catch { return false; } // @silent-fallback-ok — an unreadable lease reads as "not the holder": observe-only is the safe side
@@ -445,12 +515,26 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       // Every machine, not lease-gated: a read of the synced version shards plus tombstones/locks of bodies
       // this machine holds (idempotent per (name, on-disk hash); see reconcileVersions).
       await this.phase('versions', summary, async () => { await this.reconcileVersions(); });
+      // Slice 3 (§3.10): the six attention items, each behind its self-heal; the controller gates on the lease itself.
+      await this.phase('attention', summary, async () => { await this.deps.attention?.tick(this.attentionSignals()); });
       await this.phase('classifier', summary, async () => { await this.deps.classifier?.tick(); });
       await this.phase('outcomes', summary, async () => { await this.deps.outcomes?.close(); });
       await this.phase('index-cost', summary, async () => { this.tickIndexCost = this.measureIndexCost(); });
-      if (this.holdsLease()) {
+      if (this.holdsLease() && this.retireAllHold()) {
+        // Slice 3B: a `retire-all` hold is in force until its re-arm review date — nothing is drafted; the sweep still runs.
+        summary.observeOnly = true;
+        summary.held++;
+      } else if (this.holdsLease()) {
+        // `mode: shadow` (§9 rollback) stops EVERY write: the three slice-3 phases run their decision logic and log
+        // `would-retire` / `would-revert` / `would-patch` rows, calling neither `write` nor `move` on the protocol.
+        const dryRun = this.mode() !== 'live';
         await this.phase('keys', summary, async () => { await this.evaluateKeys(summary); });
-        await this.phase('growth', summary, async () => { await this.checkGrowthSignal(); });
+        // §3.8, holder only: the retire judgment inside the evidence floor (reviewer, defaults only when unavailable).
+        await this.phase('retire', summary, async () => { await this.judgeRetirements(dryRun); });
+        // §3.7, holder only: the bounded revert first (a harmful version is rolled back before anyone patches it),
+        // then the reviewer over the corrected runs that remain unhandled.
+        await this.phase('revert', summary, async () => { await this.reverter()?.tick({ dryRun }); });
+        await this.phase('review', summary, async () => { await this.reviewer()?.tick({ dryRun }); });
       } else {
         summary.observeOnly = true;          // the lease holder drafts; this machine observes (§3.2 single writer)
       }
@@ -674,7 +758,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
   }
 
   private async askArbiter(ctx: ArbiterContext): Promise<{ verdict: 'draft' | 'wait' | 'never'; reason: string } | null | 'admission'> {
-    const families = this.deps.families();
+    const families = this.deps.families(ctx.procedureKey);
     const drafter = families[0];
     if (!drafter) return null;
     const prompt = buildArbiterPrompt(ctx);
@@ -704,7 +788,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     key: string, requests: RequestRow[], outcomes: OutcomeRow[], floor: FloorResult, decision: ArbiterDecision,
     existing: ExistingSkill[], proposals: LoadedProposal[], target: DraftTarget = 'proposal',
   ): Promise<'written' | 'refused' | 'admission'> {
-    const families = this.deps.families();
+    const families = this.deps.families(key);   // item 3's heal may have rotated the drafter family for this key
     const drafter = families[0];
     if (!drafter) { this.refuse(key, 'no-family'); return 'refused'; }
 
@@ -852,7 +936,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     }
 
     if (target === 'canonical') {
-      return this.liveCreate({ key, doc, skillMd, createdAt, evidence, sources, runIds: cleanRuns.map((r) => r.runId), reviewerFamily, pendingReason, decision, requests, draftKind: action.action, flags: lint.flags.length });
+      return this.liveCreate({ key, doc, skillMd, createdAt, evidence, sources, runIds: cleanRuns.map((r) => r.runId), reviewerFamily, pendingReason, decision, requests, draftKind: action.action, flags: lint.flags.length, authorFamily: drafter.family });
     }
 
     const sidecar: ProposalSidecar = {
@@ -876,6 +960,8 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
   private async liveCreate(input: {
     key: string; doc: ParsedSkillDoc; skillMd: string; createdAt: string; evidence: string; sources: RowSource[]; runIds: string[];
     reviewerFamily?: string; pendingReason?: 'one-family'; decision: ArbiterDecision; requests: RequestRow[]; draftKind: 'new' | 'patch'; flags: number;
+    /** The drafter's family — lands on the version row so the §3.7 reviewer can route to a different one. */
+    authorFamily?: string;
   }): Promise<'written' | 'refused'> {
     const { key, doc } = input;
     const protocol = this.deps.commitProtocol;
@@ -902,7 +988,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     const raw = renderProposalSkillMd(doc, { key, createdAt: input.createdAt, evidence: input.evidence, state });
     let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
     try {
-      res = await protocol.write('create', doc.name, raw, { expectedPrevHash: null, reason: `skill-learning create (${state}${pendingReason ? `: ${pendingReason}` : ''})` });
+      res = await protocol.write('create', doc.name, raw, { expectedPrevHash: null, reason: `skill-learning create (${state}${pendingReason ? `: ${pendingReason}` : ''})`, ...(input.authorFamily ? { authorFamily: input.authorFamily } : {}), ...(input.reviewerFamily ? { reviewerFamily: input.reviewerFamily } : {}) });
     } catch (err) {
       res = { ok: false, reason: 'invalid', detail: (err instanceof Error ? err.message : String(err)).slice(0, 200) };
     }
@@ -998,26 +1084,80 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     writeFileAtomic(path.join(dir, 'proposal.json'), `${JSON.stringify(sidecar, null, 2)}\n`);
   }
 
-  // ─── Growth signal (§3.3, attention item 6) ─────────────────────────
+  // ─── Slice 3: condition signals for the attention items (§3.10) ─────────
 
-  private async checkGrowthSignal(): Promise<void> {
+  /** Per-tick samples of the classifier's total call counter, so item 4 has a 24 h denominator (in-memory, like the classifier's own failure window). */
+  private readonly classifierSamples: Array<{ at: number; calls: number }> = [];
+
+  /**
+   * Everything SkillLearningAttention needs this tick, read from durable state only: the log tail (drafter refusal
+   * streaks, index-cost strikes), the classifier counters, the learned-skill summaries, the ledger's breaker events,
+   * the split-brain proposals, this week's creations, and the retirer's harm list.
+   */
+  attentionSignals(): SkillLearningSignals {
     const nowMs = this.now();
-    const limit = Math.max(0, Math.floor(this.cfg.growthSignals.createdPerWeekNotice));
-    const recent = this.loadProposals().filter((p) => { const t = Date.parse(p.sidecar.createdAt); return Number.isFinite(t) && nowMs - t <= WEEK_MS; });
-    if (recent.length <= limit) return;
-    const state = readJson<SentinelState>(this.statePath) ?? {};
-    const last = state.growthNoticeAt ? Date.parse(state.growthNoticeAt) : NaN;
-    if (Number.isFinite(last) && nowMs - last < WEEK_MS) return;
-    const names = recent.map((p) => `${p.sidecar.name}${p.sidecar.arbiterOnly ? ' (arbiter-only)' : ''}`).join(', ');
-    await this.raiseAttention({
-      id: 'skill-learning:growth', conditionKey: 'skill-learning:growth', silent: true, category: 'skill-learning', priority: 'LOW',
-      title: `${recent.length} skill proposals in 7 days (notice at ${limit})`,
-      summary: `Proposals this week: ${names}. This is a signal for your review, not a limit — nothing was refused.`,
-    });
-    this.counters.growthNotices++;
-    writeFileAtomic(this.statePath, `${JSON.stringify({ ...state, growthNoticeAt: new Date(nowMs).toISOString() }, null, 2)}\n`);
-    this.appendLog({ kind: 'growth-signal', proposals7d: recent.length, limit });
-    this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'growth-signal', context: { proposals7d: recent.length, limit } });
+    const rows = readLogTail(this.logPath);
+    const ext = this.deps.counters?.() ?? {};
+    const calls = typeof ext.classifierCalls === 'number' ? ext.classifierCalls : null;
+    let calls24h: number | null = null;
+    if (calls !== null) {
+      this.classifierSamples.push({ at: nowMs, calls });
+      while (this.classifierSamples.length > 1 && nowMs - this.classifierSamples[1].at >= DAY_MS) this.classifierSamples.shift();
+      if (this.classifierSamples.length > 300) this.classifierSamples.splice(0, this.classifierSamples.length - 300);
+      calls24h = Math.max(0, calls - this.classifierSamples[0].calls);
+    }
+    const keys = this.deps.ledger.keys().map((k) => k.procedureKey);
+    const skills = this.learnedSkillSummaries(keys).filter((sk) => sk.state === 'learned' || sk.state === 'locked');
+    const revertBreakers: SkillLearningSignals['revertBreakers'] = [];
+    for (const key of keys) {
+      // 3A appends `revert-breaker` EventRows (slice 3); read by literal so this file does not depend on the union's growth.
+      const hit = this.deps.ledger.eventsForKey(key).find((e) => (e.event as string) === 'revert-breaker');
+      if (hit) revertBreakers.push({ key, skill: hit.skill, reason: hit.reason, at: hit.at });
+    }
+    const proposals = this.loadProposals();
+    const createdLast7d: SkillLearningSignals['createdLast7d'] = [];
+    for (const p of proposals) {
+      const t = Date.parse(p.sidecar.createdAt);
+      if (Number.isFinite(t) && nowMs - t <= WEEK_MS && t <= nowMs) createdLast7d.push({ name: p.sidecar.name, kind: 'proposal', arbiterOnly: p.sidecar.arbiterOnly, disagreement: p.sidecar.disagreement ?? null, createdAt: p.sidecar.createdAt });
+    }
+    for (const sk of skills) if (sk.isNew) createdLast7d.push({ name: sk.name, kind: 'skill', arbiterOnly: false, createdAt: sk.lastUsedAt ?? new Date(nowMs).toISOString() });
+    return {
+      at: nowMs,
+      holdsLease: this.holdsLease(),
+      live: this.mode() === 'live',
+      epoch: null,
+      harmRetired: this.harmRetired(),
+      indexCostTooHigh: deriveIndexCostStrikes(rows, nowMs),
+      refusalStreaks: deriveRefusalStreaks(rows),
+      classifier: { calls24h, failures24h: ext.classifierFailures24h ?? 0 },
+      skills: skills.map((sk) => ({ name: sk.name, measurableRate: sk.measurableRate, uses: sk.uses, corroborated: sk.measurableRate === null ? 0 : Math.round(sk.measurableRate * sk.uses), locked: sk.locked })),
+      revertBreakers,
+      splitBrain: proposals.filter((p) => p.sidecar.pendingReason === 'split-brain').map((p) => ({ name: p.sidecar.name })),
+      createdLast7d,
+    };
+  }
+
+  /** The retirer's harm list: the injected reader, else `instar-learned-retire-reason: harm…` under `skill-learning/retired/<name>/SKILL.md`. */
+  private harmRetired(): Array<{ skill: string; version: number; reason?: string }> {
+    if (this.deps.harmRetired) {
+      try { return this.deps.harmRetired(); } catch (err) { this.log(`[SkillLearningSentinel] harmRetired reader failed: ${err instanceof Error ? err.message : String(err)}`); return []; } // @silent-fallback-ok — logged; item 1 simply sees no harm retirements this tick and re-reads next tick
+    }
+    const root = path.join(this.deps.stateDir, SKILL_LEARNING_PATHS.retiredDir);
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch { return []; } // @silent-fallback-ok — no retired layout yet
+    const out: Array<{ skill: string; version: number; reason?: string }> = [];
+    for (const e of entries) {
+      if (!e.isDirectory() || !validSkillName(e.name)) continue;
+      let text: string;
+      try { text = fs.readFileSync(path.join(root, e.name, 'SKILL.md'), 'utf-8'); } catch { continue; } // @silent-fallback-ok — a retired dir without SKILL.md is not a skill
+      const meta = skillMeta(text);
+      if (!meta?.learned) continue;
+      const reason = meta.doc.metadata['instar-learned-retire-reason'];
+      if (typeof reason !== 'string' || !/^harm/i.test(reason)) continue;
+      const version = Number.parseInt(meta.doc.metadata['instar-learned-version'] ?? '1', 10);
+      out.push({ skill: e.name, version: Number.isFinite(version) ? version : 1, reason });
+    }
+    return out;
   }
 
   private async raiseAttention(item: SkillLearningAttentionItem): Promise<void> {
@@ -1128,8 +1268,26 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       recordDecision: (row) => input.provenanceLog ? input.provenanceLog.recordDecision(row) : null,
       isRecordingLive: () => input.provenanceLog !== null && input.provenanceLog !== undefined && (writeErrorsAtTickStart === null || writeErrors() === writeErrorsAtTickStart),
     };
+    // Slice 3 (item 4's heal): the classifier's door is a thin proxy over a swappable provider — the shared router by
+    // default, a per-framework provider after a bounded failure swap (persisted; restored here on boot).
+    const statePath = SkillLearningSentinel.statePathOf(input.stateDir, input.machineId);
+    const persisted = readJson<SentinelState>(statePath) ?? {};
+    let classifierProvider: IntelligenceProvider | null = null;
+    let classifierFramework: string | null = null;
+    const classifierDoor: ClassifierDoor = {
+      current: () => classifierFramework ?? input.frameworks?.overrides?.['skillLearning.classifier'] ?? input.frameworks?.default ?? null,
+      alternatives: () => enabledDrafterFrameworks().map((fw) => ({ framework: fw, family: familyOfFramework(fw) })),
+      swapTo: (framework) => {
+        if (!isDrafterFramework(framework)) return false;
+        const provider = providerFor(framework);
+        if (!provider) return false;
+        classifierProvider = provider; classifierFramework = framework;
+        return true;
+      },
+    };
     const classifier = new Classifier({
-      ledger, machineId: input.machineId, topicMemory: input.topicMemory, intelligence: input.sharedIntelligence, queue,
+      ledger, machineId: input.machineId, topicMemory: input.topicMemory,
+      intelligence: input.sharedIntelligence ? { evaluate: (prompt, opts) => (classifierProvider ?? input.sharedIntelligence!).evaluate(prompt, opts) } : null, queue,
       provenance: input.provenanceLog ?? null, degradation: input.degradationReporter ?? null, outcomes, batchSize: cfg.llm.batchSize, retryAfterDays: cfg.shadow.verdictReaskDays, now, logger: log,
     });
     // Families: one provider per reachable framework, through the same tier resolver the cross-model reviewer uses.
@@ -1138,14 +1296,18 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     const build = input.buildProvider ?? ((fw: DrafterFramework) => buildIntelligenceProvider({ framework: fw }));
     const cache = new Map<DrafterFramework, IntelligenceProvider | null>();
     const isDrafterFramework = (f: unknown): f is DrafterFramework => f === 'claude-code' || f === 'codex-cli' || f === 'gemini-cli';
-    const families = (): FamilyProvider[] => {
-      const enabled = (input.frameworks?.enabled?.length ? input.frameworks.enabled : [input.frameworks?.default ?? 'claude-code']).filter(isDrafterFramework);
+    const enabledDrafterFrameworks = (): DrafterFramework[] => (input.frameworks?.enabled?.length ? input.frameworks.enabled : [input.frameworks?.default ?? 'claude-code']).filter(isDrafterFramework);
+    const providerFor = (fw: DrafterFramework): IntelligenceProvider | null => {
+      if (!cache.has(fw)) { try { cache.set(fw, build(fw)); } catch { cache.set(fw, null); } } // @silent-fallback-ok — an unbuildable framework is simply not reachable
+      return cache.get(fw) ?? null;
+    };
+    const baseFamilies = (): FamilyProvider[] => {
+      const enabled = enabledDrafterFrameworks();
       const first = input.frameworks?.overrides?.['skillLearning.drafter'] ?? input.frameworks?.default ?? enabled[0];
       const ordered = [...new Set([first, ...enabled])].filter((f): f is DrafterFramework => isDrafterFramework(f) && enabled.includes(f));
       const out: FamilyProvider[] = [];
       for (const fw of ordered) {
-        if (!cache.has(fw)) { try { cache.set(fw, build(fw)); } catch { cache.set(fw, null); } } // @silent-fallback-ok — an unbuildable framework is simply not reachable
-        const provider = cache.get(fw);
+        const provider = providerFor(fw);
         if (!provider) continue;
         out.push({
           family: familyOfFramework(fw), framework: fw,
@@ -1157,6 +1319,18 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       }
       return out;
     };
+    // Item 3's heal rotated the drafter for a key: that key's draft (and arbiter) sees the swapped framework first.
+    const families = (procedureKey?: string): FamilyProvider[] => {
+      const list = baseFamilies();
+      if (!procedureKey) return list;
+      const swap = (readJson<SentinelState>(statePath) ?? {}).drafterSwaps?.[procedureKey];
+      if (!swap) return list;
+      const i = list.findIndex((f) => f.framework === swap.to);
+      return i <= 0 ? list : [list[i], ...list.filter((_, j) => j !== i)];
+    };
+    if (persisted.classifierDoor?.framework && !classifierDoor.swapTo(persisted.classifierDoor.framework)) {
+      log(`[SkillLearningSentinel] persisted classifier door ${persisted.classifierDoor.framework} is not buildable; the shared router answers`);
+    }
     const messageText = (source: RowSource): string | null => {
       const row = ledger.requestBySource(source);
       if (!row || !input.topicMemory) return null;
@@ -1168,12 +1342,30 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
         return hit ? hit.text : null;
       } catch { return null; } // @silent-fallback-ok — an unreadable TopicMemory reads as "message unavailable" in the prompt
     };
-    const sentinel = new SkillLearningSentinel({
+    // Slice 3 (§3.10 items 1–6): the attention controller over this sentinel's heals (late-bound: the sentinel is
+    // constructed right after; the heals run only from its tick). An injected `attention` (tests) wins.
+    let sentinel!: SkillLearningSentinel;
+    const attention: SkillLearningAttentionLike | null = input.attention !== undefined ? input.attention : new SkillLearningAttention({
+      stateDir: input.stateDir, machineId: input.machineId, config: cfg,
+      heals: {
+        revertFirst: (i) => sentinel.healRevertFirst(i),
+        retireLowestUnused: (i) => sentinel.healRetireLowestUnused(i),
+        swapDrafterFamily: (i) => sentinel.healSwapDrafterFamily(i),
+        swapClassifierFamily: (i) => sentinel.healSwapClassifierFamily(i),
+      },
+      createAttentionItem: (obs) => (input.createAttentionItem ? input.createAttentionItem(obs) : input.telegram?.createAttentionItem ? input.telegram.createAttentionItem(obs) : undefined),
+      clearAttentionCondition: (match, resolution, options) => {
+        const r = input.clearAttentionCondition?.(match, resolution, options);
+        return r && typeof r === 'object' && 'closed' in r ? (r as { closed: number; refusedSticky: number }) : undefined;
+      },
+      degradation: input.degradationReporter ?? null, evidence: input.featureEvidence ?? null, now, logger: log,
+    });
+    sentinel = new SkillLearningSentinel({
       config: cfg, stateDir: input.stateDir, projectDir: input.projectDir, machineId: input.machineId, ledger,
       ingest: { ingestNew: async () => { writeErrorsAtTickStart = writeErrors(); await ledger.ingestNew(); } },
       classifier,
       outcomes: { close: () => { outcomes.tick(); } },
-      counters: () => ({ filtered: filter.filtered(), classifierFailures24h: classifier.counters().classifierFailures24h, pendingBacklog: ledger.pendingCount() }),
+      counters: () => ({ filtered: filter.filtered(), classifierFailures24h: classifier.counters().classifierFailures24h, classifierCalls: classifier.counters().llmCalls, pendingBacklog: ledger.pendingCount() }),
       families,
       transcriptPath: (run) => {
         const session = run.sessionName ? input.findSession?.(run.sessionName) : undefined;
@@ -1200,9 +1392,79 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       mode: () => readMode() ?? cfg.mode,
       rungTwoProven,
       indexCost: input.indexCost,
+      retirer: input.retirer ?? null,
+      attention,
+      classifierDoor,
+      harmRetired: input.harmRetired,
       now, logger: log,
     });
     return sentinel;
+  }
+
+  // ─── Slice 3: the heals SkillLearningAttention runs (items 1–4), each bounded by its own caller ───
+
+  /** The attention controller this sentinel drives (null = none; tests read it to prove the wiring). */
+  attention(): SkillLearningAttentionLike | null {
+    return this.deps.attention ?? null;
+  }
+
+  /** Item 1: the bounded revert of the harm-retired skill (3A's Reverter.revertOne), through the commit protocol. */
+  async healRevertFirst(input: { skill: string; version: number }): Promise<SkillLearningHealOutcome> {
+    if (!validSkillName(input.skill)) return { healed: false, reason: 'invalid-name', terminal: true };
+    if (this.mode() !== 'live') { this.appendLog({ kind: 'heal-skipped', heal: 'revert-first', mode: 'shadow', name: input.skill, version: input.version }); return { healed: false, reason: 'shadow', detail: 'mode: shadow writes nothing; the revert phase logs would-revert rows instead' }; }
+    this.reverter();
+    const rv = this.reverterInner;
+    if (!rv) return { healed: false, reason: 'no-reverter', detail: 'no commit protocol / review-capable version store is wired on this machine', terminal: true };
+    const out = await rv.revertOne(input.skill, input.version);
+    this.appendLog({ kind: 'heal-revert-first', name: input.skill, version: input.version, ...out });
+    return out;
+  }
+
+  /** Item 2: delegate to the Retirer's reviewer-proposed retirement of the lowest-scored unused skill (3B), late-bound. */
+  async healRetireLowestUnused(input: { key: string; indexBytes: number | null; claudeHeadroomChars: number | null }): Promise<SkillLearningHealOutcome> {
+    if (this.mode() !== 'live') { this.appendLog({ kind: 'heal-skipped', heal: 'retire-lowest-unused', mode: 'shadow', key: input.key }); return { healed: false, reason: 'shadow', detail: 'mode: shadow writes nothing; the retire phase logs would-retire rows instead' }; }
+    const retirer = this.deps.retirer as (Retirer & { retireLowestUnused?: (i: typeof input) => Promise<SkillLearningHealOutcome> }) | null | undefined;
+    if (!retirer || typeof retirer.retireLowestUnused !== 'function') return { healed: false, reason: 'retirer-unavailable', detail: 'no Retirer with retireLowestUnused is wired on this machine' };
+    const out = await retirer.retireLowestUnused(input);
+    this.appendLog({ kind: 'heal-retire-lowest-unused', key: input.key, indexBytes: input.indexBytes, claudeHeadroomChars: input.claudeHeadroomChars, ...out });
+    return out;
+  }
+
+  /**
+   * Item 3: rotate the drafter family for ONE key (persisted in the sentinel state, read by `families(key)` on the
+   * next draft/arbiter call of that key). `terminal: one-family` when no different family is reachable.
+   */
+  async healSwapDrafterFamily(input: { key: string; streak: number }): Promise<SkillLearningHealOutcome> {
+    const current = this.deps.families(input.key);
+    const base = this.deps.families();
+    const now = current[0] ?? base[0];
+    if (!now) return { healed: false, reason: 'no-family', detail: 'no model family is reachable', terminal: true };
+    const alt = base.find((f) => f.family !== now.family);
+    if (!alt) return { healed: false, reason: 'one-family', detail: `only the ${now.family} family is reachable; nothing to swap to`, terminal: true };
+    const state = readJson<SentinelState>(this.statePath) ?? {};
+    const at = new Date(this.now()).toISOString();
+    const drafterSwaps = { ...(state.drafterSwaps ?? {}), [input.key]: { from: now.family, to: alt.framework, family: alt.family, at } };
+    writeFileAtomic(this.statePath, `${JSON.stringify({ ...state, drafterSwaps }, null, 2)}\n`);
+    this.appendLog({ kind: 'drafter-family-swap', key: input.key, streak: input.streak, from: now.family, to: alt.family, framework: alt.framework });
+    this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'drafter-family-swap', context: { key: input.key, from: now.family, to: alt.family, streak: input.streak } });
+    return { healed: true, detail: `drafter for ${input.key}: ${now.family} → ${alt.family} (${alt.framework})` };
+  }
+
+  /** Item 4: the bounded classifier failure swap — point the classifier's door at a different family once (persisted). */
+  async healSwapClassifierFamily(input: { failures24h: number; calls24h: number; rate: number }): Promise<SkillLearningHealOutcome> {
+    const door = this.deps.classifierDoor;
+    if (!door) return { healed: false, reason: 'no-alternate-family', detail: 'the classifier door is not swappable on this machine', terminal: true };
+    const currentFw = door.current();
+    const currentFamily = currentFw ? familyOfFramework(currentFw) : null;
+    const alt = door.alternatives().find((a) => a.family !== currentFamily);
+    if (!alt) return { healed: false, reason: 'no-alternate-family', detail: `every reachable framework is the ${currentFamily ?? 'current'} family`, terminal: true };
+    if (!door.swapTo(alt.framework)) return { healed: false, reason: 'swap-failed', detail: `no provider could be built for ${alt.framework}` };
+    const state = readJson<SentinelState>(this.statePath) ?? {};
+    const at = new Date(this.now()).toISOString();
+    writeFileAtomic(this.statePath, `${JSON.stringify({ ...state, classifierDoor: { framework: alt.framework, family: alt.family, at } }, null, 2)}\n`);
+    this.appendLog({ kind: 'classifier-family-swap', from: currentFw, fromFamily: currentFamily, to: alt.framework, toFamily: alt.family, failures24h: input.failures24h, calls24h: input.calls24h, rate: input.rate });
+    this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'classifier-family-swap', context: { from: currentFw, to: alt.framework, failures24h: input.failures24h, calls24h: input.calls24h, rate: input.rate } });
+    return { healed: true, detail: `classifier door: ${currentFw ?? 'router'} → ${alt.framework} (${alt.family})` };
   }
 
   // ─── SkillLearningSentinelLike ──────────────────────────────────────
@@ -1232,7 +1494,10 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       skills,
       proposals: proposals.map((p) => this.proposalSummary(p.sidecar)),
       pending: this.pendingSummaries(),
-      retired: [],
+      retired: this.deps.retirer?.listRetired() ?? [],
+      lockLeftRendering: this.deps.retirer?.lockLeftRendering() ?? [],
+      retireBlocked: this.deps.retirer?.retireBlocked() ?? [],
+      retireAll: this.retireAllStatus(),
       lastTickAt: this.lastTickAt,
       llmSpendCentsToday: this.queue.getDailySpendCents(),
       unlinkedMessages: this.deps.unlinkedMessages?.() ?? 0,
@@ -1250,7 +1515,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
   skill(name: string): LearnedSkillSummary | ProposalSummary | null {
     if (!validSkillName(name)) return null;
     const learned = this.learnedSkillSummaries(this.deps.ledger.keys().map((k) => k.procedureKey), { includePending: true }).find((s) => s.name === name);
-    if (learned) return learned;
+    if (learned) return { ...learned, versions: this.versionSummaries(name) };
     const p = this.loadProposals().find((x) => x.sidecar.name === name);
     return p ? this.proposalSummary(p.sidecar) : null;
   }
@@ -1293,6 +1558,7 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
         name: e.name, description: c.doc.description, paraphrases: side?.paraphrases ?? [],
         ...(side?.reviewerFamily ? { reviewerFamily: side.reviewerFamily } : {}),
         pendingReason: side?.pendingReason ?? 'rung-unproven',
+        ...((side as { harmReason?: string } | null)?.harmReason ? { harmReason: (side as { harmReason?: string }).harmReason } : {}),
         fileHash: c.fileHash, createdAt: c.doc.metadata['instar-learned-created'] ?? side?.createdAt ?? '', version: Number.isFinite(version) ? version : 1,
       });
     }
@@ -1329,7 +1595,8 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       // canonical is a conflict the protocol locks `operator-owned`, surfaced as such.
       const expectedPrevHash = this.chainHash(name, c.fileHash);
       let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
-      try { res = await protocol.write('confirm', name, next, { expectedPrevHash: expectedPrevHash.hash, reason: 'operator confirm tap' }); } catch (err) {
+      const side = this.readPendingSidecar(name);
+      try { res = await protocol.write('confirm', name, next, { expectedPrevHash: expectedPrevHash.hash, reason: 'operator confirm tap', ...(side?.reviewerFamily ? { reviewerFamily: side.reviewerFamily } : {}) }); } catch (err) {
         return { ok: false, error: `commit-failed: ${err instanceof Error ? err.message : String(err)}` };
       }
       if (!res.ok) return this.tapRefused('confirm', name, res, expectedPrevHash, c.fileHash, opts);
@@ -1537,12 +1804,404 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     const lockedByProtocol = !res.ok && res.reason === 'user-edit-conflict';
     if (res.ok || lockedByProtocol) {
       this.counters.versionLocks++;
-      this.appendLog({ kind: 'lock', name, by: res.ok ? 'sentinel' : 'protocol-conflict', expectedPrevHash: expected.hash, chain: expected.source, onDiskFileHash: c.fileHash, detail: reason, ...(res.ok ? { txId: res.txId, version: res.version, fileHash: res.fileHash } : { protocolDetail: (res.detail ?? '').slice(0, 200) }) });
+      // Slice 3B (lock retraction): a lock stops renders but retracts nothing — archive what this machine still renders.
+      const left = await this.archiveLeftover(name);
+      this.appendLog({ kind: 'lock', name, by: res.ok ? 'sentinel' : 'protocol-conflict', expectedPrevHash: expected.hash, chain: expected.source, onDiskFileHash: c.fileHash, detail: reason, lockLeftRendering: left, ...(res.ok ? { txId: res.txId, version: res.version, fileHash: res.fileHash } : { protocolDetail: (res.detail ?? '').slice(0, 200) }) });
       this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'lock', context: { name, by: res.ok ? 'sentinel' : 'protocol-conflict' } });
       return true;
     }
     this.appendLog({ kind: 'lock-refused', name, reason: res.reason, detail: `${reason}; ${(res.detail ?? '').slice(0, 160)}`, expectedPrevHash: expected.hash, chain: expected.source });
     return false;
+  }
+
+  // ─── Slice 3B: §3.8 lock / unlock / retire / restore / retire-all + the retire judgment ───
+
+  private retireAllHold(): boolean {
+    try { return this.deps.retirer?.retireAllHold() === true; } catch { return false; } // @silent-fallback-ok — an unreadable hold file reads as no hold; the record itself is in the log row that wrote it
+  }
+
+  private retireAllStatus(): SkillLearningStatus['retireAll'] {
+    const r = this.deps.retirer?.retireAllRecord() ?? null;
+    return r ? { at: r.at, actor: r.actor, reArmReviewAt: r.reArmReviewAt, retired: r.retired.length } : null;
+  }
+
+  /** After a lock on this machine: archive the rendering it left (lock retraction); returns the layouts still rendered. */
+  private async archiveLeftover(name: string): Promise<string[]> {
+    const retirer = this.deps.retirer;
+    if (!retirer) return [];
+    try {
+      const r = await retirer.archiveLeftoverRenderings(name);
+      if (r.archived.length) this.appendLog({ kind: 'lock-retraction', name, archived: r.archived.map((a) => `${a.layout}:${a.via}`), blocked: r.blocked.map((b) => `${b.layout}:${b.reason}`) });
+      return r.left;
+    } catch (err) { // @silent-fallback-ok — logged here as lock-retraction-failed; the every-machine sweep retries on the next reconcile pass and status lists lockLeftRendering meanwhile
+      this.appendLog({ kind: 'lock-retraction-failed', name, error: (err instanceof Error ? err.message : String(err)).slice(0, 200) });
+      return retirer.lockLeftRendering().find((l) => l.name === name)?.layouts ?? [];
+    }
+  }
+
+  /** The operator's lock tap: `active` → `operator-owned` through `write('lock')`; the rendering left here is archived. */
+  lockSkill(name: string, opts: SkillTapOpts = {}): Promise<SkillTapResult> {
+    if (!validSkillName(name)) return Promise.resolve({ ok: false, error: 'invalid-name' });
+    return this.serialized(name, async () => {
+      const c = this.readCanonical(name);
+      if (!c) return { ok: false, error: 'not-found' };
+      if (c.state === 'operator-owned') { const left = await this.archiveLeftover(name); return { ok: true, detail: left.length ? `already locked; still rendered: ${left.join(', ')}` : 'already locked' }; }
+      if (c.state !== 'active') return { ok: false, error: `not-lockable:${c.state}` };
+      const protocol = this.deps.commitProtocol;
+      if (!protocol) return { ok: false, error: 'no-commit-protocol' };
+      const locked = withLearnedMetadata(c.raw, { [LEARNED_STATE_KEY]: 'operator-owned', 'instar-learned-locked': 'true' });
+      if (!locked) return { ok: false, error: 'unparseable-canonical' };
+      const expected = this.chainHash(name, c.fileHash);
+      const reason = opts.reason ? scrubSecrets(String(opts.reason)).replace(/\s+/g, ' ').trim().slice(0, 240) : 'operator lock tap'; // bounded-input-reviewed: the operator's own words, stored in the log/version row, never a model prompt
+      let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
+      try { res = await protocol.write('lock', name, locked, { expectedPrevHash: expected.hash, reason }); } catch (err) {
+        return { ok: false, error: `commit-failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      const lockedByProtocol = !res.ok && res.reason === 'user-edit-conflict';
+      if (!res.ok && !lockedByProtocol) { this.appendLog({ kind: 'lock-refused', name, reason: res.reason, detail: (res.detail ?? '').slice(0, 200), by: 'operator', forwardedFromMachine: opts.forwardedFromMachine ?? null }); return { ok: false, error: `commit:${res.reason}${res.detail ? ` (${res.detail.slice(0, 160)})` : ''}` }; }
+      this.counters.versionLocks++;
+      const left = await this.archiveLeftover(name);
+      this.appendLog({ kind: 'lock', name, by: 'operator', expectedPrevHash: expected.hash, chain: expected.source, onDiskFileHash: c.fileHash, detail: reason, lockLeftRendering: left, forwardedFromMachine: opts.forwardedFromMachine ?? null, ...(res.ok ? { txId: res.txId, version: res.version, fileHash: res.fileHash } : { protocolDetail: (res.detail ?? '').slice(0, 200) }) });
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'lock', context: { name, by: 'operator', forwardedFromMachine: opts.forwardedFromMachine ?? null } });
+      return { ok: true, ...(left.length ? { detail: `still rendered here: ${left.join(', ')} (archive blocked; see retireBlocked)` } : {}) };
+    });
+  }
+
+  /** The operator's unlock tap: `operator-owned` → `active` through `write('unlock')` — rendered again (fresh; the archive stays). */
+  unlockSkill(name: string, opts: SkillTapOpts = {}): Promise<SkillTapResult> {
+    if (!validSkillName(name)) return Promise.resolve({ ok: false, error: 'invalid-name' });
+    return this.serialized(name, async () => {
+      const c = this.readCanonical(name);
+      if (!c) return { ok: false, error: 'not-found' };
+      if (c.state === 'active') return { ok: true, detail: 'already unlocked' };
+      if (c.state !== 'operator-owned') return { ok: false, error: `not-locked:${c.state}` };
+      const protocol = this.deps.commitProtocol;
+      if (!protocol) return { ok: false, error: 'no-commit-protocol' };
+      const unlocked = withLearnedMetadata(c.raw, { [LEARNED_STATE_KEY]: 'active', 'instar-learned-locked': 'false' });
+      if (!unlocked) return { ok: false, error: 'unparseable-canonical' };
+      const expected = this.chainHash(name, c.fileHash);
+      let res: Awaited<ReturnType<CommitProtocolLike['write']>>;
+      try { res = await protocol.write('unlock', name, unlocked, { expectedPrevHash: expected.hash, reason: 'operator unlock tap' }); } catch (err) {
+        return { ok: false, error: `commit-failed: ${err instanceof Error ? err.message : String(err)}` };
+      }
+      if (!res.ok) { this.appendLog({ kind: 'unlock-refused', name, reason: res.reason, detail: (res.detail ?? '').slice(0, 200), forwardedFromMachine: opts.forwardedFromMachine ?? null }); return { ok: false, error: `commit:${res.reason}${res.detail ? ` (${res.detail.slice(0, 160)})` : ''}` }; }
+      this.appendLog({ kind: 'unlock', name, by: 'operator', txId: res.txId, version: res.version, fileHash: res.fileHash, forwardedFromMachine: opts.forwardedFromMachine ?? null });
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'unlock', context: { name, forwardedFromMachine: opts.forwardedFromMachine ?? null } });
+      return { ok: true };
+    });
+  }
+
+  /** The operator's retire tap (§3.8): archive first on this machine, canonical moved to `retired/`, never deleted. */
+  retireSkill(name: string, opts: SkillTapOpts = {}): Promise<SkillTapResult> {
+    if (!validSkillName(name)) return Promise.resolve({ ok: false, error: 'invalid-name' });
+    return this.serialized(name, async () => {
+      const retirer = this.deps.retirer;
+      if (!retirer) return { ok: false, error: 'no-retirer' };
+      const reason = opts.reason ? scrubSecrets(String(opts.reason)).replace(/\s+/g, ' ').trim().slice(0, 240) : 'retired by the operator'; // bounded-input-reviewed: the operator's own words, stored in the sidecar/frontmatter/log, never a model prompt
+      const r = await retirer.retire(name, { kind: 'operator', reason, harm: false, by: 'operator', actor: opts.forwardedFromMachine ? `operator via ${opts.forwardedFromMachine}` : 'operator' });
+      if (!r.ok) return r.error === 'already-retired' ? { ok: true, detail: 'already retired' } : { ok: false, error: r.error };
+      this.counters.retires++;
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'retire', context: { name, by: 'operator', version: r.version, blocked: r.blocked.length } });
+      return { ok: true, ...(r.blocked.length ? { detail: `retire-blocked here: ${r.blocked.map((b) => `${b.layout} (${b.reason})`).join('; ')}` } : {}) };
+    });
+  }
+
+  /** The operator's restore tap: moved back, re-linted, re-reviewed by a family ≠ the retired author, held `pending`. */
+  restoreSkill(name: string, opts: SkillTapOpts = {}): Promise<SkillTapResult> {
+    if (!validSkillName(name)) return Promise.resolve({ ok: false, error: 'invalid-name' });
+    return this.serialized(name, async () => {
+      const retirer = this.deps.retirer;
+      if (!retirer) return { ok: false, error: 'no-retirer' };
+      const r = await retirer.restore(name, { actor: opts.forwardedFromMachine ? `operator via ${opts.forwardedFromMachine}` : 'operator' });
+      if (!r.ok) return { ok: false, error: r.detail ? `${r.error}: ${r.detail.slice(0, 200)}` : r.error };
+      const c = this.readCanonical(name);
+      const at = new Date(this.now()).toISOString();
+      try {
+        this.writePendingSidecar({
+          name, key: c?.doc.metadata['instar-learned-key'] ?? '', description: r.description, paraphrases: [], reviewerFamily: r.reviewerFamily,
+          pendingReason: r.pendingReason, createdAt: at, evidence: { sources: [], runIds: [] }, disagreement: null, arbiterOnly: false,
+          ...(r.harmReason ? { harmReason: r.harmReason } : {}),
+        } as unknown as PendingSidecar);
+      } catch (err) { // @silent-fallback-ok — the restore landed (the canonical is pending on disk, listed by pendingSummaries without paraphrases); the sidecar failure is logged on the next line
+        this.appendLog({ kind: 'restore-sidecar-failed', name, error: (err instanceof Error ? err.message : String(err)).slice(0, 200) });
+      }
+      this.counters.restores++;
+      this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'restore', context: { name, version: r.version, pendingReason: r.pendingReason, harm: Boolean(r.harmReason) } });
+      return { ok: true, detail: r.harmReason ? `restored as pending; it had been retired for harm: ${r.harmReason.slice(0, 160)}` : 'restored as pending — confirm to switch it on' };
+    });
+  }
+
+  /** Retire every live learned skill; the audit row names the actor and the re-arm review date (now + 14 d). */
+  async retireAll(opts: SkillTapOpts = {}): Promise<SkillTapResult & { retired?: string[]; refused?: Array<{ name: string; error: string }> }> {
+    const retirer = this.deps.retirer;
+    if (!retirer) return { ok: false, error: 'no-retirer' };
+    const actor = opts.forwardedFromMachine ? `operator via ${opts.forwardedFromMachine}` : 'operator';
+    const reason = opts.reason ? scrubSecrets(String(opts.reason)).replace(/\s+/g, ' ').trim().slice(0, 240) : undefined; // bounded-input-reviewed: the operator's own words, stored in the audit row, never a model prompt
+    const record = await retirer.retireAll(actor, reason);
+    this.counters.retires += record.retired.length;
+    this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'retire-all', context: { actor, retired: record.retired.length, refused: record.refused.length, reArmReviewAt: record.reArmReviewAt } });
+    return { ok: true, retired: record.retired, refused: record.refused, detail: `retired ${record.retired.length}; drafting paused until ${record.reArmReviewAt}` };
+  }
+
+  /** The holder's `retire` tick phase: candidates with their numbers → the Retirer's floor + reviewer judgment. */
+  async judgeRetirements(dryRun = false): Promise<void> {
+    const retirer = this.deps.retirer;
+    if (!retirer) return;
+    const candidates = this.retireCandidates();
+    if (candidates.length === 0) return;
+    const decisions = await retirer.judge(candidates, { dryRun });
+    for (const d of decisions) {
+      if (d.verdict === 'retire' && d.shadow) { this.counters.wouldRetire++; this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'held', reason: 'would-retire', context: { name: d.name, by: d.by, kind: d.kind ?? null, harm: d.harm ?? false, version: d.version } }); }
+      else if (d.verdict === 'retire' && d.applied) { this.counters.retires++; this.evidence.record(SKILL_LEARNING_FEATURE, { kind: 'fired', reason: 'retire', context: { name: d.name, by: d.by, kind: d.kind ?? null, harm: d.harm ?? false, version: d.version } }); }
+      else if (d.verdict === 'patch' && !d.refused) {
+        // The reviewer would rather patch: a `reviewer` event for the §3.7 reviewer, never a retire.
+        const c = this.readCanonical(d.name);
+        const key = c?.doc.metadata['instar-learned-key'] ?? '';
+        if (key) this.deps.ledger.append({ kind: 'event', eventId: crypto.randomUUID(), event: 'reviewer', runId: `retire-review:${d.name}:v${d.version}`, procedureKey: key, skill: d.name, reason: `retire reviewer answered patch: ${(d.reason ?? '').slice(0, 160)}`, at: new Date(this.now()).toISOString(), machineId: this.deps.machineId });
+      }
+    }
+  }
+
+  /** Every live learned skill with the §3.8 numbers as signals (current-version runs, misfires, silence, cost per expected use). */
+  retireCandidates(): RetireCandidate[] {
+    const keys = this.deps.ledger.keys();
+    const summaries = this.learnedSkillSummaries(keys.map((k) => k.procedureKey));
+    const nowMs = this.now();
+    const windowMs = this.cfg.defaultGate.windowDays * 86_400_000;
+    const out: RetireCandidate[] = [];
+    for (const s of summaries) {
+      if (s.retireBlocked || (s.state !== 'learned' && s.state !== 'locked')) continue;
+      const c = this.readCanonical(s.name);
+      if (!c || (c.state !== 'active' && c.state !== 'operator-owned')) continue;
+      const key = c.doc.metadata['instar-learned-key'] ?? '';
+      const countersSince = c.doc.metadata['instar-learned-counters-since'] ?? c.doc.metadata[LEARNED_ACTIVATED_KEY] ?? c.doc.metadata['instar-learned-created'] ?? new Date(nowMs).toISOString();
+      const outcomes = key ? this.deps.ledger.outcomesForKey(key).filter((o) => o.at >= countersSince) : [];
+      let corroboratedRuns = 0; let correctedRuns = 0; let requestsWithoutUse = 0;
+      for (const o of outcomes) {
+        const u = o.skillUsed;
+        // A closed run of this key that used no skill at all: the key was requested and the skill did not fire (the unused floor's first arm).
+        if (!u) { if (!o.provisional) requestsWithoutUse++; continue; }
+        if (u.skill !== s.name || u.operatorEdited || u.versionUncertain) continue;
+        if ((u.version ?? s.version) !== s.version) continue;
+        if (u.corroborated) corroboratedRuns++;
+        if (o.label === 'corrected' || o.label === 'redo') correctedRuns++;
+      }
+      const requests = key ? this.deps.ledger.requestsForKey(key) : [];
+      const lastRequestAt = keys.find((k) => k.procedureKey === key)?.lastAt || undefined;
+      const occurrencesInWindow = requests.filter((r) => nowMs - Date.parse(r.at) <= windowMs).length;
+      // §3.9: the bytes this skill costs in the index are its `name: description` line; sessions/week is not measured yet (null → cost unmeasured).
+      const indexBytes = Buffer.byteLength(`${s.name}: ${c.doc.description}\n`, 'utf-8');
+      const authorFamily = this.currentAuthorFamily(s.name);
+      out.push({
+        name: s.name, state: c.state as 'active' | 'operator-owned', locked: s.locked, version: s.version, key,
+        ...(authorFamily ? { authorFamily } : {}),
+        score: s.score, corroboratedRuns, correctedRuns, uses: s.uses, misfires: s.misfires, lastUsedAt: s.lastUsedAt, lastRequestAt,
+        requestsWithoutUse, occurrencesInWindow, countersSince, indexBytes, sessionsPerWeek: null,
+      });
+    }
+    return out;
+  }
+
+  private currentAuthorFamily(name: string): string | undefined {
+    const rows = this.deps.versionStore?.rows(name) ?? [];
+    for (let i = rows.length - 1; i >= 0; i--) { const r = rows[i] as VersionRowLike & { authorFamily?: string }; if (!r.void && !r.superseded) return r.authorFamily; }
+    return undefined;
+  }
+
+  /** The §3.8 retire reviewer: the second family when one exists (else the first), recorded through provenance; `null` = unavailable. */
+  private async retireReview(input: RetireReviewInput): Promise<RetireReviewAnswer | null | 'unrecorded'> {
+    const families = this.deps.families();
+    const reviewer = families[1] ?? families[0];
+    if (!reviewer) return null;
+    let raw: string | 'admission';
+    try { raw = await this.callFamily(reviewer, COMPONENT_REVIEWER, input.prompt); } catch { return null; } // @silent-fallback-ok — a reviewer outage is the named 'unavailable' arm: the Retirer logs it and the static defaults decide (spec §3.8)
+    if (raw === 'admission') return null;
+    const parsed = parseRetireReviewOutput(raw);
+    const recorded = this.recordJudgment({
+      component: COMPONENT_REVIEWER,
+      decisionPoint: 'skill-learning-retire',
+      context: buildBoundedContext({ name: input.candidate.name, version: input.candidate.version, score: input.candidate.score, corroboratedRuns: input.candidate.corroboratedRuns, misfires: input.candidate.misfires, daysUnused: input.signals.daysUnused, costPerExpectedUse: input.signals.costPerExpectedUse, family: reviewer.family, promptChars: input.prompt.length, reason: parsed?.reason ?? null }),
+      optionsPresented: ['retire', 'keep', 'patch'],
+      decision: parsed?.verdict ?? 'unclassified',
+      reason: parsed?.reason ?? 'unparseable',
+      floor: `minCorroboratedRuns=${this.cfg.retire.minCorroboratedRuns} misfires>=2 unused=1 request without use or silence ${3 * this.cfg.defaultGate.windowDays}d`,
+      fallbackRung: `defaults score<${input.defaults.scoreFloor} misfire>${input.defaults.misfireFloor} unused>=${input.defaults.unusedDays}d (only when the reviewer is unavailable)`,
+      model: 'capable',
+      door: reviewer.framework,
+    });
+    if (!recorded) return 'unrecorded';
+    if (!parsed) { this.appendLog({ kind: 'retire-review-unparseable', name: input.candidate.name, family: reviewer.family }); return null; }
+    return { ...parsed, family: reviewer.family };
+  }
+
+  /** The restore reviewer: a family ≠ the retired version's author; `'one-family'` when none; `null` when unrecorded/unavailable. */
+  private async restoreReview(input: RestoreReviewInput): Promise<{ pass: boolean; reason: string; family: string } | 'one-family' | null> {
+    const families = this.deps.families();
+    const reviewer = input.authorFamily ? pickReviewer(families, input.authorFamily) : (families[1] ?? families[0] ?? null);
+    if (!reviewer) return families.length ? 'one-family' : null;
+    const prompt = buildReviewPrompt({ skillMd: input.skillMd, flags: input.flags, operatorMessages: input.harmReason ? [`This skill was retired for harm: ${input.harmReason}`] : [], outlines: [], drafterFamily: input.authorFamily ?? 'unknown', indexCostLine: renderIndexCostLine(this.tickIndexCost) });
+    let raw: string | 'admission';
+    try { raw = await this.callFamily(reviewer, COMPONENT_REVIEWER, prompt); } catch { return null; } // @silent-fallback-ok — a reviewer outage refuses the restore by name (`review-error`/`review-unrecorded` in the Retirer's log row); nothing moves
+    if (raw === 'admission') return null;
+    const verdict = parseReviewOutput(raw, input.flags);
+    const recorded = this.recordJudgment({
+      component: COMPONENT_REVIEWER,
+      decisionPoint: 'skill-learning-restore-review',
+      context: buildBoundedContext({ name: input.name, flags: input.flags.length, family: reviewer.family, authorFamily: input.authorFamily ?? null, harm: Boolean(input.harmReason), promptChars: prompt.length }),
+      optionsPresented: ['pass', 'refuse'],
+      decision: verdict ? (verdict.pass ? 'pass' : 'refuse') : 'unclassified',
+      reason: verdict?.reason ?? 'unparseable',
+      floor: "different family than the retired version's author; every flagged line explicitly cleared",
+      fallbackRung: 'refuse',
+      model: 'capable',
+      door: reviewer.framework,
+    });
+    if (!recorded) return null;
+    return { pass: Boolean(verdict?.pass), reason: verdict?.reason ?? 'unparseable', family: reviewer.family };
+  }
+
+  // ─── Slice 3A: the §3.7 reviewer + bounded reverter (holder-only tick phases) ───
+
+  /** Every learned canonical under `.instar/skills` with the fields the reviewer/reverter need. */
+  listLearnedCanonicals(): LearnedCanonical[] {
+    let entries: fs.Dirent[] = [];
+    try { entries = fs.readdirSync(this.canonicalRoot, { withFileTypes: true }); } catch { return []; } // @silent-fallback-ok — no canonical layout yet ⇒ nothing to review
+    const out: LearnedCanonical[] = [];
+    for (const e of entries) {
+      if (!e.isDirectory() || !validSkillName(e.name)) continue;
+      const c = this.readCanonical(e.name);
+      if (!c) continue;
+      out.push({ name: e.name, raw: c.raw, fileHash: c.fileHash, doc: c.doc, state: c.state, locked: c.doc.metadata['instar-learned-locked'] === 'true', key: c.doc.metadata['instar-learned-key'] ?? '' });
+    }
+    return out;
+  }
+
+  /** A durable string map inside the sentinel's state file (`review.handled`, `revert.handled`). */
+  private durableMap(section: 'review' | 'revert'): { get(k: string): string | undefined; set(k: string, v: string): void } {
+    return {
+      get: (k) => (readJson<SentinelState>(this.statePath) ?? {})[section]?.handled[k],
+      set: (k, v) => {
+        const state = readJson<SentinelState>(this.statePath) ?? {};
+        const handled = { ...(state[section]?.handled ?? {}), [k]: v };
+        writeFileAtomic(this.statePath, `${JSON.stringify({ ...state, [section]: { handled } }, null, 2)}\n`);
+      },
+    };
+  }
+
+  /** The store supports §3.7 bodies/annotations (the real VersionStore does; a slice-2 fake may not). */
+  private reviewStore(): VersionStoreForReview | null {
+    const store = this.deps.versionStore as (VersionStoreLike & Partial<VersionStoreForReview>) | null | undefined;
+    if (!store || typeof store.annotate !== 'function' || typeof store.storeBody !== 'function' || typeof store.readBody !== 'function' || typeof store.rejectedVersions !== 'function' || typeof store.reverts !== 'function' || typeof store.revertsSince !== 'function') return null;
+    return store as VersionStoreForReview;
+  }
+
+  private evidenceSink(): { record(kind: 'fired' | 'held' | 'error' | 'outcome', reason: string, context: Record<string, unknown>): void } {
+    const flat = (v: unknown): string | number | boolean | null => (v === null || typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') ? v : v === undefined ? null : Array.isArray(v) ? v.map(String).join(',') : JSON.stringify(v).slice(0, 500);
+    return { record: (kind, reason, context) => { this.evidence.record(SKILL_LEARNING_FEATURE, { kind, reason, context: Object.fromEntries(Object.entries(context).map(([k, v]) => [k, flat(v)])) }); } };
+  }
+
+  reviewer(): { tick(opts?: { dryRun?: boolean }): Promise<unknown> } | null {
+    if (this.reviewerInstance !== undefined) return this.reviewerInstance;
+    if (this.deps.reviewer !== undefined) { this.reviewerInstance = this.deps.reviewer; return this.reviewerInstance; }
+    const versions = this.reviewStore();
+    const protocol = this.deps.commitProtocol;
+    if (!versions || !protocol) { this.reviewerInstance = null; return null; }
+    const inner = new Reviewer({
+      cfg: this.cfg, machineId: this.deps.machineId, ledger: this.deps.ledger, versions, protocol,
+      families: this.deps.families,
+      callFamily: (provider, prompt) => this.callFamily(provider, COMPONENT_REVIEWER, prompt),
+      recordJudgment: (input) => this.recordJudgment(input),
+      learnedCanonicals: () => this.listLearnedCanonicals(),
+      existingSkills: () => this.loadExistingSkills(),
+      runSlice: (o, r) => this.sliceFor(o, r ?? { source: { channel: 'telegram', chatId: '', messageId: '' }, sessionName: o.sessionName } as RequestRow),
+      operatorMessage: this.deps.operatorMessage,
+      correctionMessages: (runId, key) => this.deps.correctionMessages?.(runId, key) ?? [],
+      writePendingSidecar: (sidecar) => this.writePendingSidecar(sidecar),
+      handled: this.durableMap('review'),
+      indexCostLine: () => renderIndexCostLine(this.tickIndexCost),
+      log: (row) => this.appendLog(row),
+      evidence: this.evidenceSink(),
+      now: this.now, logger: this.log,
+    });
+    this.reviewerInstance = {
+      tick: async (opts?: { dryRun?: boolean }) => {
+        const r = await inner.tick(opts);
+        this.counters.patches += r.patched; this.counters.pendingPatches += r.pendingPatches; this.counters.reviewHolds += r.held; this.counters.patchRefusals += r.refused; this.counters.wouldPatch += r.wouldPatch;
+        if (r.admissionRefused) this.counters.admissionRefusals++;
+        return r;
+      },
+    };
+    return this.reviewerInstance;
+  }
+
+  reverter(): { tick(opts?: { dryRun?: boolean }): Promise<unknown> } | null {
+    if (this.reverterInstance !== undefined) return this.reverterInstance;
+    if (this.deps.reverter !== undefined) { this.reverterInstance = this.deps.reverter; return this.reverterInstance; }
+    const versions = this.reviewStore();
+    const protocol = this.deps.commitProtocol;
+    if (!versions || !protocol) { this.reverterInstance = null; return null; }
+    const inner = new Reverter({
+      cfg: this.cfg, machineId: this.deps.machineId, ledger: this.deps.ledger, versions, protocol,
+      learnedCanonicals: () => this.listLearnedCanonicals(),
+      existingSkills: () => this.loadExistingSkills(),
+      writePendingSidecar: (sidecar) => this.writePendingSidecar(sidecar),
+      handled: this.durableMap('revert'),
+      // Late-bound (3B): archive the renderings of a version a refused revert left pending.
+      archiveRenderings: (name) => this.deps.retirer?.archiveLeftoverRenderings(name),
+      log: (row) => this.appendLog(row),
+      evidence: this.evidenceSink(),
+      now: this.now, logger: this.log,
+    });
+    this.reverterInner = inner;
+    this.reverterInstance = {
+      tick: async (opts?: { dryRun?: boolean }) => {
+        const r = await inner.tick(opts);
+        this.counters.reverts += r.reverted; this.counters.revertRefusals += r.refused; this.counters.revertBreakers += r.breakers; this.counters.wouldRevert += r.wouldRevert;
+        return r;
+      },
+    };
+    return this.reverterInstance;
+  }
+
+  /** The current (last live) version row's reviewer family, when a store is wired. */
+  private currentReviewerFamily(name: string): string | undefined {
+    const store = this.deps.versionStore;
+    if (!store) return undefined;
+    try {
+      // The current body's reviewer family: a confirm/lock row keeps the body, so the family travels with the body hash.
+      const rows = (store.rows(name) as ReadonlyArray<VersionRowLike & { reviewerFamily?: string }>).filter((r) => !r.void && !r.superseded);
+      const last = rows.length ? rows[rows.length - 1] : null;
+      if (!last) return undefined;
+      for (let i = rows.length - 1; i >= 0; i--) { const r = rows[i]; if (r.bodyHash === last.bodyHash && r.reviewerFamily) return r.reviewerFamily; }
+    } catch (err) { // @silent-fallback-ok — the summary simply carries no reviewer family; the read error is logged
+      this.log(`[SkillLearningSentinel] version rows unreadable for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    return undefined;
+  }
+
+  /** §3.7: every version row of a skill (tombstones + annotations folded) with its per-version §3.6 counts and score. */
+  versionSummaries(name: string): LearnedVersionSummary[] {
+    const store = this.deps.versionStore;
+    if (!store) return [];
+    let rows: ReadonlyArray<VersionRowLike & Partial<LearnedVersionSummary> & { op?: string; state?: LearnedCanonicalState }> = [];
+    try { rows = store.rows(name); } catch (err) { // @silent-fallback-ok — an unreadable store lists no versions; the read error is logged
+      this.log(`[SkillLearningSentinel] version rows unreadable for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    }
+    const c = this.readCanonical(name);
+    const key = c?.doc.metadata['instar-learned-key'] ?? '';
+    const counts = key ? versionCounts(name, this.deps.ledger.outcomesForKey(key)) : new Map();
+    return rows.map((r) => {
+      const n = counts.get(r.bodyHash) ?? { uses: 0, accepted: 0, acceptedInferred: 0, corrected: 0 };
+      return {
+        version: r.version, txId: r.txId, fileHash: r.fileHash, bodyHash: r.bodyHash, epoch: r.epoch, at: r.at, op: r.op ?? 'create', state: r.state ?? 'active', machineId: r.machineId,
+        ...(r.authorFamily ? { authorFamily: r.authorFamily } : {}), ...(r.reviewerFamily ? { reviewerFamily: r.reviewerFamily } : {}),
+        ...(r.rejectedBodyHash ? { rejectedBodyHash: r.rejectedBodyHash } : {}), citedCorrections: r.citedCorrections ?? [],
+        ...(r.revertOf ? { revertOf: r.revertOf } : {}), ...(r.uncertainty ? { uncertainty: r.uncertainty } : {}),
+        void: r.void === true, superseded: r.superseded === true,
+        uses: n.uses, accepted: n.accepted, acceptedInferred: n.acceptedInferred, corrected: n.corrected, score: scoreOf(n),
+      };
+    });
   }
 
   private proposalSummary(s: ProposalSidecar): ProposalSummary {
@@ -1569,15 +2228,47 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       if (meta.doc.metadata[LEARNED_STATE_KEY] === 'pending' && !opts.includePending) continue;
       learned.push({ name: e.name, doc: meta.doc });
     }
+    // Slice 3B (§3.8): a retired skill whose rendering this machine could not archive is still live HERE — reported active, flagged.
+    const blockedHere = new Set<string>();
+    for (const name of this.deps.retirer?.blockedNames() ?? []) {
+      if (learned.some((l) => l.name === name)) continue;
+      const raw = this.deps.retirer?.retiredCanonicalRaw(name);
+      const meta = raw ? skillMeta(raw) : null;
+      if (meta?.learned) { learned.push({ name, doc: meta.doc }); blockedHere.add(name); }
+    }
     if (learned.length === 0) return [];
-    const uses = new Map<string, { uses: number; accepted: number; inferred: number; corrected: number; unknown: number; weak: number; corroborated: number; misfires: number; operatorEdited: number; lastUsedAt?: string }>();
+    // Slice 3B: counters restart at a restore (`instar-learned-counters-since`); earlier uses belong to the retired life.
+    const countersSince = new Map<string, string>();
+    for (const { name, doc } of learned) { const since = doc.metadata['instar-learned-counters-since']; if (since) countersSince.set(name, since); }
+    const uses = new Map<string, { uses: number; accepted: number; inferred: number; corrected: number; unknown: number; weak: number; corroborated: number; misfires: number; operatorEdited: number; sameFamilyExcluded: number; lastUsedAt?: string }>();
+    // §3.7: a body whose version was reviewed `same-as-author` is excluded from the rung-2 metric fields.
+    const sameFamilyBodies = new Map<string, Set<string>>();
+    const store = this.deps.versionStore;
+    for (const { name } of learned) {
+      if (!store) break;
+      let rows: ReadonlyArray<VersionRowLike & { reviewerFamily?: string }> = [];
+      try { rows = store.rows(name); } catch (err) { // @silent-fallback-ok — an unreadable store excludes nothing (the uses are still counted); the read error is logged
+        this.log(`[SkillLearningSentinel] version rows unreadable for ${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      const set = new Set<string>();
+      for (const r of rows) if (!r.void && (r.reviewerFamily === SAME_AS_AUTHOR || r.reviewerFamily === ONE_FAMILY_REVIEW)) set.add(r.bodyHash);
+      if (set.size) sameFamilyBodies.set(name, set);
+    }
     for (const key of keys) {
       for (const o of this.deps.ledger.outcomesForKey(key)) {
         if (!o.skillUsed) continue;
-        const u = uses.get(o.skillUsed.skill) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0, operatorEdited: 0 };
+        const since = countersSince.get(o.skillUsed.skill);
+        if (since && o.at < since) continue;
+        const u = uses.get(o.skillUsed.skill) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0, operatorEdited: 0, sameFamilyExcluded: 0 };
         if (o.skillUsed.operatorEdited) {
           // The operator's edited rendering ran, not the version: reported, never scored.
           u.operatorEdited++;
+          if (!u.lastUsedAt || o.at > u.lastUsedAt) u.lastUsedAt = o.at;
+          uses.set(o.skillUsed.skill, u);
+          continue;
+        }
+        if (sameFamilyBodies.get(o.skillUsed.skill)?.has(o.skillUsed.contentHash)) {
+          u.sameFamilyExcluded++;
           if (!u.lastUsedAt || o.at > u.lastUsedAt) u.lastUsedAt = o.at;
           uses.set(o.skillUsed.skill, u);
           continue;
@@ -1596,8 +2287,9 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
     }
     const nowMs = this.now();
     return learned.map(({ name, doc }) => {
-      const u = uses.get(name) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0, operatorEdited: 0 };
+      const u = uses.get(name) ?? { uses: 0, accepted: 0, inferred: 0, corrected: 0, unknown: 0, weak: 0, corroborated: 0, misfires: 0, operatorEdited: 0, sameFamilyExcluded: 0 };
       const measured = u.accepted + u.inferred + u.corrected;
+      const reviewerFamily = this.currentReviewerFamily(name);
       const score = measured > 0 ? (u.accepted + 0.5 * u.inferred + 1) / (u.accepted + 0.5 * u.inferred + u.corrected + 2) : null;
       const state = doc.metadata[LEARNED_STATE_KEY];
       const version = Number.parseInt(doc.metadata['instar-learned-version'] ?? '1', 10);
@@ -1606,13 +2298,16 @@ export class SkillLearningSentinel implements SkillLearningSentinelLike {
       const isNew = (state === undefined || state === 'active') && Number.isFinite(since) && nowMs - since >= 0 && nowMs - since < NEW_LABEL_MS;
       return {
         name,
-        state: state === 'retired' ? 'retired' : state === 'proposal' || state === 'pending' ? 'proposal' : doc.metadata['instar-learned-locked'] === 'true' ? 'locked' : 'learned',
+        state: blockedHere.has(name) ? 'learned' : state === 'retired' ? 'retired' : state === 'proposal' || state === 'pending' ? 'proposal' : doc.metadata['instar-learned-locked'] === 'true' ? 'locked' : 'learned',
+        ...(blockedHere.has(name) ? { retireBlocked: true } : {}),
         score, uses: u.uses, accepted: u.accepted, acceptedInferred: u.inferred, corrected: u.corrected, unknown: u.unknown, weakPositive: u.weak,
         measurableRate: u.uses > 0 ? u.corroborated / u.uses : null, misfires: u.misfires,
         version: Number.isFinite(version) ? version : 1, lastUsedAt: u.lastUsedAt,
         locked: doc.metadata['instar-learned-locked'] === 'true',
         operatorEdited: u.operatorEdited,
         isNew,
+        ...(reviewerFamily ? { reviewerFamily } : {}),
+        ...(u.sameFamilyExcluded ? { sameFamilyExcluded: u.sameFamilyExcluded } : {}),
       } satisfies LearnedSkillSummary;
     });
   }

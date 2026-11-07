@@ -19,6 +19,8 @@ import { Outcomes } from '../../src/monitoring/skillLearning/Outcomes.js';
 import type { FamilyProvider } from '../../src/monitoring/skillLearning/Drafter.js';
 import { SKILL_LEARNING_DEFAULTS } from '../../src/config/ConfigDefaults.js';
 import { FakeCommitProtocol, FakeVersionStore } from '../helpers/skillLearningLiveFixtures.js';
+import { SkillLearningAttention } from '../../src/monitoring/skillLearning/SkillLearningAttention.js';
+import type { Admission } from '../../src/monitoring/selfaction/types.js';
 import type {
   EventRow, LedgerReader, LedgerRow, LedgerWriter, OutcomeRow, RequestRow, SkillLearningConfig, VerdictRow,
 } from '../../src/monitoring/skillLearning/types.js';
@@ -279,11 +281,13 @@ describe('SkillLearningSentinel — shadow pipeline', () => {
     expect(h.attention).toEqual([]);
     expect(proposalDirs(home)).toHaveLength(6);
     expect(h.sentinel.status().observeOnly).toBe(true);
+    expect(h.sentinel.attentionSignals()).toMatchObject({ holdsLease: false });   // the attention phase sees the same gate
     holder = true;                                           // the lease arrives: the same machine drafts
     const s2 = await h.sentinel.tick();
     expect(s2.observeOnly).toBe(false);
     expect(s2.drafted).toBe(1);
-    expect(h.attention).toHaveLength(1);
+    expect(h.attention).toEqual([]);                         // no attention controller wired: the growth signal is its item 6, not a sentinel notice
+    expect(h.sentinel.attentionSignals().createdLast7d).toHaveLength(7);
     expect(h.sentinel.status().observeOnly).toBe(false);
   });
 
@@ -484,31 +488,44 @@ describe('SkillLearningSentinel — shadow pipeline', () => {
     expect(order).toEqual(['ingest', 'classifier', 'outcomes']);
   });
 
-  it('growth signal: more than createdPerWeekNotice proposals in 7 days ⇒ ONE silent attention item per week window, never a refusal', async () => {
+  it('growth signal (§3.10 item 6): more than createdPerWeekNotice proposals in 7 days ⇒ ONE silent attention item through the attention phase, never a refusal; it clears when the week passes', async () => {
     const home = mkHome(); const ledger = new FakeLedger();
     const dir = path.join(home.stateDir, 'skill-learning', 'proposals');
     for (let i = 0; i < 5; i++) {
       fs.mkdirSync(path.join(dir, `p-${i}`), { recursive: true });
       fs.writeFileSync(path.join(dir, `p-${i}`, 'proposal.json'), JSON.stringify({ name: `p-${i}`, key: `k-${i}`, arbiterOnly: i % 2 === 0, createdAt: new Date(NOW - i * DAY).toISOString(), evidence: { sources: [], runIds: [] }, draftKind: 'new', description: 'd', paraphrases: [] }));
     }
-    const h = harness(home, ledger, []);
+    const attention: unknown[] = []; const cleared: string[] = [];
+    const clock = { now: NOW };
+    const controller = new SkillLearningAttention({
+      stateDir: home.stateDir, machineId: 'm1', config: cfg(), heals: {},
+      createAttentionItem: (obs) => { attention.push(obs); },
+      clearAttentionCondition: (m) => { cleared.push(m.conditionKey); return { closed: 1, refusedSticky: 0 }; },
+      admit: async () => ({ outcome: 'allow', token: { id: 't' }, reason: 'allow' } as unknown as Admission), consumeToken: () => ({ proceed: true, valid: true }),
+      now: () => clock.now,
+    });
+    const h = harness(home, ledger, [], { attention: controller, now: () => clock.now });
+    const s = await h.sentinel.tick();
+    expect(s.phaseFailures).toEqual([]);
+    expect(attention).toHaveLength(1);
+    expect(attention[0]).toMatchObject({ id: 'skill-learning:6:growth', conditionKey: 'skill-learning:6:growth', silent: true, needsUser: false, priority: 'NORMAL', category: 'skill-learning' });
+    expect((attention[0] as { summary: string }).summary).toContain('nothing was refused');
+    expect((attention[0] as { summary: string }).summary).toContain('p-0 (proposal, arbiter-only)');
     await h.sentinel.tick();
-    expect(h.attention).toHaveLength(1);
-    expect(h.attention[0]).toMatchObject({ conditionKey: 'skill-learning:growth', silent: true, priority: 'LOW' });
-    expect((h.attention[0] as { summary: string }).summary).toContain('nothing was refused');
+    expect(attention).toHaveLength(1);                     // one notice per condition episode
+    clock.now = NOW + 8 * DAY;
     await h.sentinel.tick();
-    expect(h.attention).toHaveLength(1);                   // once per window
-    h.clock.now = NOW + 8 * DAY;
-    await h.sentinel.tick();
-    expect(h.attention).toHaveLength(1);                   // the proposals are now older than 7 days → below the notice
+    expect(attention).toHaveLength(1);                     // the proposals are now older than 7 days → below the notice...
+    expect(cleared).toEqual(['skill-learning:6:growth']);  // ...so the condition cleared and the row closed cause-cleared
     for (let i = 5; i < 11; i++) {
       fs.mkdirSync(path.join(dir, `p-${i}`), { recursive: true });
-      fs.writeFileSync(path.join(dir, `p-${i}`, 'proposal.json'), JSON.stringify({ name: `p-${i}`, key: `k-${i}`, arbiterOnly: false, createdAt: new Date(h.clock.now - 1000).toISOString(), evidence: { sources: [], runIds: [] }, draftKind: 'new', description: 'd', paraphrases: [] }));
+      fs.writeFileSync(path.join(dir, `p-${i}`, 'proposal.json'), JSON.stringify({ name: `p-${i}`, key: `k-${i}`, arbiterOnly: false, createdAt: new Date(clock.now - 1000).toISOString(), evidence: { sources: [], runIds: [] }, draftKind: 'new', description: 'd', paraphrases: [] }));
     }
     await h.sentinel.tick();
-    expect(h.attention).toHaveLength(2);                   // a new week window
+    expect(attention).toHaveLength(2);                     // a new episode
     expect(h.sentinel.status().counts.proposals).toBe(11); // nothing refused
-    expect(fs.existsSync(path.join(home.stateDir, 'skill-learning', 'sentinel-state.m1.json'))).toBe(true); // per-machine, never a shared name in a synced dir
+    expect(h.attention).toEqual([]);                       // the sentinel itself raises no growth notice any more
+    expect(readLog(home).some((r) => r.kind === 'attention' && r.event === 'notify' && r.item === 6)).toBe(true);
   });
 
   it('recordOperatorVerdict updates the sidecar and appends an operator VerdictRow; unknown names and verdicts are errors', async () => {

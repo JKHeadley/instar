@@ -49,6 +49,14 @@
  * `releaseBootGate()` — the server releases it after the commit journal's own
  * recovery has run, so recovery always precedes the boot pass.
  *
+ * Slice 3 (§3.8, retire as its own reconciliation): when a Retirer is bound
+ * (`setRetirer`), every `reconcileAll` runs `retirer.reconcileRetiredRenderings()`
+ * FIRST, under the same mutex — retired skills' renderings and locked skills'
+ * leftover renderings are archived (never deleted) before anything renders — and
+ * the baselines of the renderings that left the layouts are dropped from the
+ * shard. `forgetRenderings(rels)` does the same drop for an archive the Retirer
+ * performed outside a pass (a retire tap on the holder).
+ *
  * Self-action posture: the tick is a self-triggered controller. Its convergence
  * argument is registered as `learned-skill-reconciler` in
  * src/testing/selfActionRegistry.ts: one render per learned skill per canonical
@@ -175,6 +183,14 @@ export interface ReconcileRunSummary {
   errors: number;
   /** Why nothing happened, when nothing happened. */
   inert?: 'disabled' | 'no-canonical-dir' | 'already-running';
+  /** Slice 3: renderings archived by the retire/lock sweep this pass, and the ones it could not archive. */
+  retireArchived?: number;
+  retireBlocked?: number;
+}
+
+/** What the reconciler needs from the Retirer (src/monitoring/skillLearning/Retirer.ts implements). */
+export interface RetiredRenderingReconciler {
+  reconcileRetiredRenderings(): { archived: Array<{ rel: string }>; lockArchived: Array<{ rel: string }>; blocked: Array<{ name: string; layout: string; reason: string }>; lockLeftRendering: Array<{ name: string; layouts: string[]; state?: string }>; forgottenRels: string[] };
 }
 
 export interface LearnedSkillReconcilerStatus {
@@ -192,6 +208,9 @@ export interface LearnedSkillReconcilerStatus {
   /** The currently locked renderings (from the shard). */
   lockedConflicts: Array<{ renderingPath: string; skill: string; target: RenderTarget; reason: string; at: string }>;
   lockedFailures: Array<{ renderingPath: string; skill: string; target: RenderTarget; error: string; at: string }>;
+  /** Slice 3: from the last retire/lock sweep — retired skills still rendered here (blocked) and locked skills still rendered here. */
+  retireBlocked: Array<{ name: string; layout: string; reason: string }>;
+  lockLeftRendering: Array<{ name: string; layouts: string[]; state?: string }>;
 }
 
 const CANONICAL_ROOT = '.instar/skills';
@@ -263,6 +282,9 @@ export class LearnedSkillReconciler {
   private lock: Promise<void> = Promise.resolve();
   private bootGate: { promise: Promise<void>; release: () => void } | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+  /** Slice 3: the retire/lock archive sweep, bound by wire.ts after construction. */
+  private retirer: RetiredRenderingReconciler | null = null;
+  private lastSweep: { retireBlocked: Array<{ name: string; layout: string; reason: string }>; lockLeftRendering: Array<{ name: string; layouts: string[]; state?: string }> } = { retireBlocked: [], lockLeftRendering: [] };
 
   private lastRun: ReconcileRunSummary | null = null;
   private runs = 0;
@@ -288,6 +310,51 @@ export class LearnedSkillReconciler {
   /** Release the boot gate (idempotent). The server calls this after the commit journal recovered. */
   releaseBootGate(): void {
     this.bootGate?.release();
+  }
+
+  /** Slice 3: bind the Retirer whose sweep runs first in every pass (under this mutex). */
+  setRetirer(retirer: RetiredRenderingReconciler | null): void {
+    this.retirer = retirer;
+  }
+
+  /**
+   * Slice 3: drop the baselines / locks of renderings that LEFT the layouts (archived by the Retirer outside
+   * a pass), so a later restore renders fresh instead of reading a stale baseline. Waits for the mutex.
+   */
+  async forgetRenderings(rels: string[]): Promise<void> {
+    if (rels.length === 0) return;
+    await this.withLock(async () => {
+      this.loadShard();
+      if (this.dropRels(rels)) {
+        try { this.saveShard(); } catch (err) { this.log(`[LearnedSkillReconciler] baseline shard write failed after forget: ${(err as Error).message}`); } // @silent-fallback-ok — logged on this line; the in-memory shard already dropped the entries and the next pass re-reads the (stale) file, where a stale baseline for an ABSENT rendering is harmless (no content → no conflict check)
+      }
+    });
+  }
+
+  private dropRels(rels: string[]): boolean {
+    let dirty = false;
+    for (const rel of rels) {
+      if (this.shard.baselines[rel]) { delete this.shard.baselines[rel]; dirty = true; }
+      if (this.shard.conflicts[rel]) { delete this.shard.conflicts[rel]; dirty = true; }
+      if (this.shard.failed[rel]) { delete this.shard.failed[rel]; dirty = true; }
+    }
+    return dirty;
+  }
+
+  /** The retire/lock sweep, FIRST in a pass: archive before any render, forget what left. Never throws into the pass. */
+  private runRetireSweep(summary: ReconcileRunSummary): boolean {
+    if (!this.retirer) return false;
+    try {
+      const sweep = this.retirer.reconcileRetiredRenderings();
+      this.lastSweep = { retireBlocked: sweep.blocked, lockLeftRendering: sweep.lockLeftRendering };
+      summary.retireArchived = sweep.archived.length + sweep.lockArchived.length;
+      summary.retireBlocked = sweep.blocked.length;
+      return this.dropRels(sweep.forgottenRels);
+    } catch (err) { // @silent-fallback-ok — counted in summary.errors (status) and logged here; a failed sweep leaves every rendering in place (archive-first means nothing was removed) and the next pass retries
+      summary.errors += 1;
+      this.log(`[LearnedSkillReconciler] retire sweep failed: ${(err as Error).message}`);
+      return false;
+    }
   }
 
   /** Run `fn` under the shared mutex, waiting for whatever holds it. */
@@ -350,6 +417,8 @@ export class LearnedSkillReconciler {
       lockedFailures: Object.entries(this.shard.failed).map(([renderingPath, f]) => ({
         renderingPath, skill: f.skill, target: f.target, error: f.error, at: f.at,
       })),
+      retireBlocked: this.lastSweep.retireBlocked,
+      lockLeftRendering: this.lastSweep.lockLeftRendering,
     };
   }
 
@@ -499,19 +568,28 @@ export class LearnedSkillReconciler {
     if (this.bootGate) await this.bootGate.promise;
     if (this.running) return finish('already-running');
     if (this.deps.reconcileEnabled && this.deps.reconcileEnabled() === false) return finish('disabled');
-    if (!fs.existsSync(this.canonicalDir)) return finish('no-canonical-dir');
+    if (!fs.existsSync(this.canonicalDir) && !this.retirer) return finish('no-canonical-dir');
 
     return this.withLock(async () => {
       // The baseline is loaded synchronously before any reconcile, and a
       // dangling prepare is recovered before any edit detection.
       this.loadShard();
       this.recoverJournal();
+      // Slice 3: retire/lock archives first (archive-first is the only removal path), then forget what left.
+      let shardDirty = this.runRetireSweep(summary);
+      const saveIfDirty = (): void => {
+        if (!shardDirty) return;
+        try { this.saveShard(); shardDirty = false; } catch (err) {
+          summary.errors += 1;
+          this.log(`[LearnedSkillReconciler] baseline shard write failed: ${(err as Error).message}`);
+        }
+      };
+      if (!fs.existsSync(this.canonicalDir)) { saveIfDirty(); return finish('no-canonical-dir'); }
 
       const learned = this.listLearnedCanonicals();
       summary.learned = learned.length;
-      if (learned.length === 0) return finish();
+      if (learned.length === 0) { saveIfDirty(); return finish(); }
       const targets = this.targets();
-      let shardDirty = false;
 
       for (const name of learned) {
         for (const target of targets) {
@@ -525,12 +603,7 @@ export class LearnedSkillReconciler {
           }
         }
       }
-      if (shardDirty) {
-        try { this.saveShard(); } catch (err) {
-          summary.errors += 1;
-          this.log(`[LearnedSkillReconciler] baseline shard write failed: ${(err as Error).message}`);
-        }
-      }
+      saveIfDirty();
       if (summary.rendered > 0 || summary.conflicts > 0 || summary.failed > 0) {
         this.log(`[LearnedSkillReconciler] ${reason}: ${summary.rendered} rendered, ${summary.skipped} in sync, ${summary.conflicts} conflict(s), ${summary.failed} failed`);
       }
