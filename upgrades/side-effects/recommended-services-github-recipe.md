@@ -1,6 +1,6 @@
-# Side-Effects Review — GitHub private-backup setup recipe (dark), the state folder pushed by the server
+# Side-Effects Review — GitHub private-backup setup recipe, the state folder pushed by the server; available after its live proof
 
-**Tier 2 by risk** (credentials: a GitHub token is stored and used; the agent's state folder is pushed to an outside service; a config switch is written), with second-pass review. Spec: `docs/specs/recommended-services.md`, First recipes: GitHub ("a new private repo. `verify` proves the repo is private and reads back a push. Pushes are refused if the repo isn't private. For an existing agent with a public backup remote, that raises one attention item with the fix"). ELI16: `docs/specs/recommended-services-github-recipe.eli16.md`. Dark: the catalog row keeps `setupRecipe: null`; only a proving agent reaches it.
+**Tier 2 by risk** (credentials: a GitHub token is stored and used; the agent's state folder is pushed to an outside service; a config switch is written), with second-pass review. Spec: `docs/specs/recommended-services.md`, First recipes: GitHub ("a new private repo. `verify` proves the repo is private and reads back a push. Pushes are refused if the repo isn't private. For an existing agent with a public backup remote, that raises one attention item with the fix"). ELI16: `docs/specs/recommended-services-github-recipe.eli16.md`. Built dark, proven live on a throwaway agent, then the catalog row set to `setupRecipe: 'github-v1'` in the same PR (see Live proof).
 
 **Size:** 5 source files (1 new), 5 test files (3 new); about 300 lines of source. **Effort:** no spec rounds (parent spec converged and approved); 1 commit attempt expected.
 
@@ -54,7 +54,7 @@ No new static heuristic at a competing-signals decision point. "Private or not" 
 
 ## 6. External surfaces
 
-- Dark on the fleet: the catalog row stays unavailable; the e2e test pins it.
+- Available on every agent once this lands: the confirm page answers for `github-state-backup`, a yes opens a setup session, the key route stores `github_backup_token`. The e2e test pins availability and that the push stops at the missing yes.
 - On a proving agent: a private repository is created under the token's account and the state folder pushed to it. Values go from this process to git over HTTPS with the token in the credential helper's environment.
 - `GET /recommended-services/:id/confirm` for this row has no `copies` field (not a secrets copy).
 - One attention item (HIGH) when a backup repository is public, with the exact settings path to fix it.
@@ -82,6 +82,26 @@ A revert removes the recipe, the surface and the attention plumbing; `listsCopie
 ## Found problems, triaged
 
 - The hourly `GitSyncManager` and this recipe's daily push both push the state branch; harmless today, but one owner of "the push" would be cleaner. → noted for the git-backup owner, no change here.
+
+
+## Live proof (2026-11-07, throwaway `recsvc-bw-agent`, port 4461, built from this branch; real Telegram test group; Echo as the person)
+
+| Step | Evidence |
+|---|---|
+| Ask in the group → agent explained benefit, what leaves, cost, account, and sent the confirm link | `group-80-github-answer-msg109.json` (msg 109, 23:43:17Z) |
+| Yes with the PIN on the confirm page | `github-confirm-yes-response.json` (choice yes, origin person-asked, 23:43:53Z) |
+| Setup topic opened; one Secret Drop link for the token, "never in chat" | msg 111, topic 110 (23:44:45Z) |
+| Token submitted through the drop (values over stdin) | `github-drop-submit-response.json` (23:45:29Z) |
+| Server created the private repository and pushed; check passed | GitHub API: `EchoOfDawn/instar-recsvc-bw-agent-state` private, created 23:45:50Z, pushed 23:47:08Z, head 8a38c8f5 == local HEAD, no `config.json`/`secrets/`/`state/` in the tree (`github-repo-check-api.txt`); `github-row-after-pass.json` (verify pass 23:47:13Z) |
+| Agent told the person it works, in plain words | msg 113 (23:47:26Z) |
+| Repository made public → check fails, push refused, ONE attention item (HIGH) | `github-verify-while-public.json`, `github-sync-while-public.json`, `github-attention-while-public.json`; a second failing check raised no second item; `pushed_at` unchanged |
+| Private again → check passes | `github-verify-after-private-again.json` |
+| No with switch-off on the confirm page | `github-confirm-no-switchoff-response.json` (shutdown authorized, 23:48:48Z); `github-setup-state-after-switch-off.json` (stopped 23:48:49Z); token gone from the vault; `gitBackup.enabled: false` written; repository still present and private (GitHub API) |
+
+Found in the proof, triaged:
+- The first push right after GitHub created the repository failed once; the setup session retried and it worked. Fixed here: `sync` retries the first push once, after 3 s, only for a repository it just created (`GITHUB_FIRST_PUSH_RETRY_MS`), pinned by a unit test.
+- The agent server's restart (onto this build) stranded the running session's send credential, so its first reply was refused with "invalid origin token" until the session was respawned. Not this recipe's; filed as fb-96d3f7ef-6e0 (and fb-053f97c6-8f6 from the test agent's side).
+- The test agent's setup-session brief was first left at the prompt (injection stuck, auto-recovered on attempt 1): the known bracketed-paste race, already a degradation, no new filing.
 
 ## Second-pass review
 

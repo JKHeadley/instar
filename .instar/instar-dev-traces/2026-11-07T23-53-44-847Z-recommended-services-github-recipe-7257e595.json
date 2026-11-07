@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "recommended-services-github-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-07T23:53:44.847Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-github-recipe.md",
+  "artifactSha256": "34e6ee9a5693691dd3e1619112f4c7f445f4abc83fe36267d5bf818447d3de28",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-github-recipe.eli16.md",
+    "src/recommended/catalog.ts",
+    "src/recommended/recipes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "tests/unit/recommended-services-github-recipe.test.ts",
+    "upgrades/next/recommended-services-github-recipe.md",
+    "upgrades/side-effects/recommended-services-github-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Opens GitHub private backup to every agent's owner after its live proof; credentials and an outside push; full chain, second-pass concurred.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
