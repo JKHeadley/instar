@@ -146,6 +146,20 @@ async function readBounded(res: Response, maxBytes: number, controller: AbortCon
   return Buffer.concat(chunks).toString('utf8');
 }
 
+/**
+ * The reason a registry gave for an error, when its body carries one: `{ reason }`
+ * (400, 413, 422) or `{ error: { message } }` (429). Undefined for anything else,
+ * so the caller can fall back to the raw text.
+ */
+export function registryErrorReason(json: unknown): string | undefined {
+  if (!json || typeof json !== 'object') return undefined;
+  const body = json as { reason?: unknown; error?: { message?: unknown } | null };
+  for (const candidate of [body.reason, body.error?.message]) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate;
+  }
+  return undefined;
+}
+
 // ââ Reading records back: re-verify everything, label the rest ââââââââââ
 
 /** One row of a lookup page as the server sends it (every field is the server's word). */
