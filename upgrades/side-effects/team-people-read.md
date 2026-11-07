@@ -78,3 +78,5 @@ A plain revert. `state/reachable-people.json` is ignored by older builds. An ope
 ## Conclusion
 
 Additive and read-only. Nothing is restricted.
+
+- The ladder line in the spec names only the registry entry, and the awareness section is tracked in the completeness test.

@@ -322,7 +322,8 @@ Step 1 is a plain revert. From step 2 on, older builds since v1.3.1631 refuse a 
 - **dev-agent-live:** Echo, with a test member on a test phone.
 - **fleet:** step 1 has no flag and ships live, so the warning is visible on its own. From step 2 there is no new flag: team phones ride `mobilePairing.native.enabled`, which is dark on the fleet today. An owner who wants a team turns it on through their agent. Graduating that switch fleet-wide belongs to the app work and is not needed for a team to start.
 - **graduation criterion:** a real team of at least three people uses one agent for a week with no conversation reaching someone without a grant, and no message attributed to the wrong person.
-- **ladder:** mobilePairing.native (step 1 has no switch and restricts nothing, and team phones ride this ladder)
+- **ladder:** mobilePairing.native
+- Step 1 has no switch and restricts nothing, and team phones ride this ladder.
 - **dark-window:** if no team phone is paired within 30 days of step 3, record why on the Maturation board with a new date.
 
 ## Left behind
