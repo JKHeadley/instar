@@ -157,7 +157,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       res.status(400).json({ error: 'bad-path', detail: 'That address is not one this change can be signed for.' });
       return;
     }
-    inTurn(() => handler(req, res)).catch((err: unknown) => {
+    inTurn(() => handler(req, res)).catch((err: unknown) => { // @silent-fallback-ok — the caller is told the change was not saved
       console.warn(`[team-access] ${req.path} failed: ${err instanceof Error ? err.message : String(err)}`);
       if (!res.headersSent) res.status(500).json({ error: 'team-access-write-failed', detail: 'That change was not saved. Try again.' });
     });

@@ -314,7 +314,7 @@ export class TeamAccessLog {
       // A lost or altered row in the middle could be a downgrade: the fold would quietly give back
       // what it took away. Past the last accepted restore, every row must be there and verify.
       this.health = this.folded.highestSeq < this.seedSeq || unplaced || !this.intact(rows) ? 'unreadable' : 'ok';
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — health 'unreadable' is the report: team phones are refused and the owner sees it
       console.warn(`[team-access] log unreadable: ${err instanceof Error ? err.message : String(err)}`);
       this.rows = []; this.folded = emptyState(); this.health = 'unreadable';
     }
@@ -377,7 +377,7 @@ export class TeamAccessLog {
 
   /** The snapshot a rollback is judged against. Failing to take one never undoes a change. */
   private snapshot(): void {
-    try { this.writeLastGood(); } catch (err) {
+    try { this.writeLastGood(); } catch (err) { // @silent-fallback-ok — the snapshot is a second copy; the change itself is saved
       console.warn(`[team-access] last-good not written: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
@@ -424,7 +424,7 @@ export class TeamAccessLog {
       const raw = JSON.parse(fs.readFileSync(this.confinedFile, 'utf8')) as { entries?: unknown };
       if (!Array.isArray(raw.entries)) return null;
       return raw.entries.filter((e): e is ConfinedEntry => !!e && typeof (e as ConfinedEntry).ref === 'string');
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — null means unreadable, and every caller refuses on it
       // Missing is empty only on an agent that shows no team use here. Callers add the signs they hold.
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return this.health === 'absent' && !this.hasLastGoodTeamOn() ? [] : null;
       return null;

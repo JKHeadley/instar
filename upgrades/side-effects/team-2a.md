@@ -131,3 +131,5 @@ No access gain raised. Fixed: a link is now made before anything is saved or con
 A lost live log takes no writes until restored, so a new row cannot hide the loss.
 
 The team access awareness section is tracked in the completeness test.
+
+A sweep of 480 related test files before the PR found the bookkeeping these changes needed: closure entries, owner-only route lists, spies that follow the unlocked spawn, and catch annotations.

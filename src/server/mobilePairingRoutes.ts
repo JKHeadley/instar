@@ -506,7 +506,7 @@ export class MobilePairingService {
     for (const d of this.devices.list()) {
       if (d.role !== 'team' || d.status === 'revoked' || (personKey !== null && d.userId !== personKey)) continue;
       const at = new Date().toISOString();
-      try { this.keyLedger?.recordRevocation(d, at); } catch (err) { this.deps.reportDegradation?.('MobilePairing.keyLedger', err); }
+      try { this.keyLedger?.recordRevocation(d, at); } catch (err) { this.deps.reportDegradation?.('MobilePairing.keyLedger', err); } // @silent-fallback-ok — reported; a failed ledger write never blocks a revocation
       this.devices.revoke(d.id, at);
       this.confirm.drop(d.id);
     }
