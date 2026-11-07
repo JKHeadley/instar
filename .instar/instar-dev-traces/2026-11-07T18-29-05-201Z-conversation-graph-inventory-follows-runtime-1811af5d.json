@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-inventory-follows-runtime",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T18:29:05.201Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-inventory-follows-runtime.md",
+  "artifactSha256": "8ca3bdc4fa0708581160f9507364b2649041c1fc293f1ff279cb0f5b5e72faff",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/server/GraphSourceInventoryBinding.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -38,3 +38,5 @@ Before: warning still on five minutes after a removal, cleared by restart. After
 
 ## Second-pass review
 Not required: one small lifecycle helper for a background observer; no session, gate or message decision touched.
+
+The failure path keeps the @silent-fallback-ok marker from the code it replaced: the caller reports the failure.

@@ -16,7 +16,7 @@ export class GraphSourceInventoryBinding<Runtime extends object,Worker extends G
    const worker=await create(runtime);
    if(this.stopped||this.runtime!==runtime){await worker.close();return;}
    this.worker=worker;worker.start();
-  })().catch(onFailure).finally(()=>{if(this.opening===started)this.opening=null;});
+  })().catch(error=>{/* @silent-fallback-ok: onFailure reports it; coverage stays partial and no certified rows are inferred */onFailure(error);}).finally(()=>{if(this.opening===started)this.opening=null;});
   this.opening=started;
  }
  async close():Promise<void>{this.stopped=true;await this.opening;await this.worker?.close();this.worker=null;}
