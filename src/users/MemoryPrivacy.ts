@@ -7,6 +7,7 @@
  * sessions inside the boundary. State lives in `state/memory-privacy.json`.
  */
 
+import { setAsideUnlessRealFolder } from '../core/memorySessionPolicy.js';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -379,7 +380,10 @@ export class MemoryPrivacy {
       ? path.join(this.deps.instarRoot, 'memory-scopes', encodeURIComponent(this.deps.agentId), `none-${sessionSuffix}`)
       : memoryScopeDir(this.deps.instarRoot, this.deps.agentId, audience);
     if (!dir) return null;
-    for (const sub of ['', 'inbox', 'tmp']) fs.mkdirSync(path.join(dir, sub), { recursive: true, mode: 0o700 });
+    for (const sub of ['', 'inbox', 'tmp']) {
+      if (sub) setAsideUnlessRealFolder(path.join(dir, sub));
+      fs.mkdirSync(path.join(dir, sub), { recursive: true, mode: 0o700 });
+    }
     return dir;
   }
 

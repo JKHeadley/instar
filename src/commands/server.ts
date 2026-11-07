@@ -13192,6 +13192,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       });
 
       sessionManager.on('sessionComplete', (session) => {
+        // The same rule the periodic scan applies: a confined session never feeds agent-wide digests.
+        if (!sessionManager.feedsAgentDigests(session)) return;
         activitySentinel!.synthesizeSession(session).then((report) => {
           if (report.synthesisCreated) {
             console.log(`[ActivitySentinel] Session synthesis created for ${session.name}: ${report.digestCount} digests`);
