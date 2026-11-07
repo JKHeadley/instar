@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-07T13:28:46.349Z",
+  "slug": "gemini-reviewer-trust-and-tier",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 74,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GeminiCliIntelligenceProvider.ts",
+      "src/core/crossModelReviewer.ts",
+      "src/core/intelligenceProviderFactory.ts"
+    ],
+    "addedLines": 71,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -60,15 +60,34 @@ export interface GeminiCliIntelligenceProviderOptions {
   /** Optional override for the captured-output byte cap (per stream). */
   maxOutputBytes?: number;
   capacityPolicy?: GeminiCapacityPolicyConfig;
+  /**
+   * Pass `--skip-trust` on the one-shot ("Trust the current workspace for this
+   * session"). gemini CLI >= ~0.40 refuses a headless run outside a trusted
+   * folder with exit 55; the flag trusts the cwd for THIS invocation only — no
+   * global gemini setting and no trust env var is touched. Off by default, so
+   * only callers that opt in (today: the cross-model spec reviewer, which hands
+   * the CLI a prompt and never a workspace to act on) change behaviour.
+   *
+   * Older CLIs (measured: 0.35.0) do not know the flag and their strict argv
+   * parser exits 1 with `Unknown arguments: skip-trust`. Those CLIs also have
+   * no trust gate, so on that exact refusal the call is retried ONCE without
+   * the flag rather than regressing every agent still on an old gemini.
+   */
+  skipTrust?: boolean;
 }
+
+/** gemini's strict yargs refusal of a flag it predates (measured on 0.35.0). */
+const UNKNOWN_SKIP_TRUST_RE = /Unknown arguments?:[^\n]*skip-?trust/i;
 
 export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
   private readonly geminiPath: string;
   private readonly maxOutputBytes: number | undefined;
   private readonly capacityPolicy: GeminiCapacityPolicyConfig | undefined;
+  private readonly skipTrust: boolean;
 
   constructor(options: GeminiCliIntelligenceProviderOptions) {
     this.geminiPath = options.geminiPath;
+    this.skipTrust = options.skipTrust === true;
     this.maxOutputBytes = options.maxOutputBytes;
     this.capacityPolicy = options.capacityPolicy;
     // options.workingDirectory is intentionally not stored — one-shot judgment
@@ -91,9 +110,11 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
     const childEnv = buildGeminiChildEnv();
 
     let attempt = 0;
+    let skipTrust = this.skipTrust;
     // eslint-disable-next-line no-constant-condition
     while (true) {
-    const args = buildGeminiOneShotArgv(currentModel, prompt);
+    const baseArgs = buildGeminiOneShotArgv(currentModel, prompt);
+    const args = skipTrust ? ['--skip-trust', ...baseArgs] : baseArgs;
     // Observable Intelligence: surface the model actually being run this attempt
     // (currentModel can change across capacity-retries) so the funnel records the
     // provider/model that produced the result.
@@ -110,6 +131,13 @@ export class GeminiCliIntelligenceProvider implements IntelligenceProvider {
         `Gemini CLI error: ${err.message}` + (stderr ? ` — ${stderr.slice(0, 600)}` : ''),
       );
     });
+
+    if (result.exitCode !== 0 && skipTrust && UNKNOWN_SKIP_TRUST_RE.test(result.stderr)) {
+      // An old CLI that predates both the flag and the trust gate. Retry once
+      // without it; `skipTrust` is now false so this branch cannot loop.
+      skipTrust = false;
+      continue;
+    }
 
     if (result.exitCode !== 0) {
       // The benign `Loaded cached credentials` stderr line only appears on a
