@@ -147,6 +147,7 @@ import { VetoedKillBackoff, normalizeReasonKey, IDLE_ZOMBIE_ESCALATION_REASONS }
 import type { IncidentDedupe } from '../monitoring/IncidentDedupe.js';
 import { ensureAgentOwnedMemory, defaultClaudeConfigHome } from './AgentOwnedMemory.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
+import { redactSpawnError } from './redactSpawnError.js';
 import {
   CLAUDE_MCP_TOOL_TIMEOUT_ENV_FLAGS,
   type ThreadlineMcpSpawnWiring,
@@ -997,7 +998,8 @@ export class SessionManager extends EventEmitter {
   }
 
   private originSpawnError(error: unknown): string {
-    return String(error).replace(/ior1_[A-Za-z0-9_-]{43}/g, '[origin-token-redacted]');
+    // #2184: the raw error carries the full tmux argv, including `-e GH_TOKEN=…`.
+    return redactSpawnError(error);
   }
 
   private originConfirmsProcessGone(tmuxSession: string): boolean {

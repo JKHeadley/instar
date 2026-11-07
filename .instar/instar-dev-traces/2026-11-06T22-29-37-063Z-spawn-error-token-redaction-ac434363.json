@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "spawn-error-token-redaction",
+  "sessionId": "406f510f-7601-4156-be32-2b3eb0c97b44",
+  "timestamp": "2026-11-06T22:29:37.063Z",
+  "artifactPath": "upgrades/side-effects/spawn-error-token-redaction.md",
+  "artifactSha256": "fe7dac6020926f1782f770316912d71fabc59d0866a48fbf8b5c2c111b0cfe3a",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/core/redactSpawnError.ts",
+    "src/providers/adapters/anthropic-headless/transport/agenticSessionHeadless.ts",
+    "src/providers/adapters/openai-codex/transport/agenticSessionHeadless.ts",
+    "src/server/routes.ts",
+    "tests/unit/redactSpawnError.test.ts",
+    "tests/unit/spawn-error-token-leak.test.ts",
+    "upgrades/next/spawn-error-token-redaction.md",
+    "upgrades/side-effects/spawn-error-token-redaction.eli16.md",
+    "upgrades/side-effects/spawn-error-token-redaction.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix that changes only spawn-failure error text; a revert fully undoes it and no credential handling is added (#2184).",
+  "eli16Path": "upgrades/side-effects/spawn-error-token-redaction.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/spawn-error-token-redaction.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
