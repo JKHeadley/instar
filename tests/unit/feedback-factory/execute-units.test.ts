@@ -781,6 +781,20 @@ describe('canary review-round regressions', () => {
 });
 
 describe('runner and filesystem helpers', () => {
+  it('a timed-out run records when it first printed and what was running', async () => {
+    const env = { PATH: process.env.PATH ?? '' };
+    const silent = await runCapped(process.execPath, ['-e', 'setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 500 });
+    expect(silent.timedOut).toBe(true);
+    expect(silent.stderr).toContain('no output at all');
+    expect(silent.stderr).toContain('setTimeout');
+    const talking = await runCapped(process.execPath, ['-e', 'console.log("hi"); setTimeout(()=>{}, 60000)'], { cwd: os.tmpdir(), env, timeoutMs: 1_500 });
+    expect(talking.timedOut).toBe(true);
+    expect(talking.stdout).toContain('hi');
+    expect(talking.stderr).toContain('first output after');
+    const finished = await runCapped(process.execPath, ['-e', 'process.exit(0)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 });
+    expect(finished.stderr).toBe('');
+  });
+
   it('runCapped enforces the wall clock and the output cap and never throws on a non-zero exit', async () => {
     const env = { PATH: process.env.PATH ?? '' };
     expect((await runCapped(process.execPath, ['-e', 'process.exit(3)'], { cwd: os.tmpdir(), env, timeoutMs: 10_000 })).exitCode).toBe(3);
