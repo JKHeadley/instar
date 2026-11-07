@@ -76,11 +76,11 @@ export class ConversationGraphMemberLossSurface {
  }
  private resumeRequest(){const row=this.held()?.row;if(!row)return null;return{requestId:row.intent.payload.requestId,removedMachineIds:row.intent.payload.removed.map(member=>member.machineId)};}
  /** Nothing irreversible has started, so the owner can still keep the machine. */
- private cancellable():boolean{try{const held=this.held();return !!held&&!held.authority.memberLossDisclosed()&&this.store().readProgressForIntent(held.row.intent,held.context)===null;}catch{return false;}}
+ private cancellable():boolean{try{const held=this.held();return !!held&&!held.authority.memberLossDisclosed()&&this.store().readProgressForIntent(held.row.intent,held.context)===null;}catch{/* @silent-fallback-ok: unknown state is reported as not cancellable, which is the safe answer */return false;}}
  private status(){
-  let held=false;try{held=this.held()!==null;}catch{held=false;}
+  let held=false;try{held=this.held()!==null;}catch{/* @silent-fallback-ok: status read only; every action re-reads and refuses */held=false;}
   const removed=this.job?.removed??[],actual=this.options.manager.memberLossPlanningComponents(),identity=this.options.manager.identity,self=identity?.loadIdentity().machineId,registry=identity?.loadRegistry().machines??{};
-  let current:ReturnType<NonNullable<typeof actual>['authority']['currentMembership']>|null=null;try{current=actual?actual.authority.currentMembership():null;}catch{current=null;}
+  let current:ReturnType<NonNullable<typeof actual>['authority']['currentMembership']>|null=null;try{current=actual?actual.authority.currentMembership():null;}catch{/* @silent-fallback-ok: status read only; an unreadable roster shows no machines */current=null;}
   const members=current?current.members.map(member=>{const row=registry[member.machineId];return{machineId:member.machineId,name:verifiedEntityName(member.machineId,row?.nickname??row?.name)||'Agent machine',self:member.machineId===self};}):[];
   return {state:this.job?.state??(held?'interrupted':'none'),held,removed,failure:this.job?.state==='failed'?this.job.failure:null,members,resume:held?this.resumeRequest():null,cancellable:this.job?.state!=='running'&&this.cancellable()};
  }
@@ -100,7 +100,7 @@ export class ConversationGraphMemberLossSurface {
     const held=this.held();if(!held)this.assertOneSurvivor(req.body?.removedMachineIds);
     res.json(await this.service().prepare(req,surface,req.body));return true;
    }
-  }catch(error){res.status(409).json({code:opaqueFailure(error)});return true;}
+  }catch(error){/* @silent-fallback-ok: the refusal is the answer, returned to the owner as a code */res.status(409).json({code:opaqueFailure(error)});return true;}
   // Claimed before the first await, so two devices cannot both start a removal.
   const prior=this.job,job:Job={state:'running',removed:[],failure:null};this.job=job;
   try{
@@ -113,6 +113,6 @@ export class ConversationGraphMemberLossSurface {
    void removeLostMachine({manager:this.options.manager,stateDir:this.options.stateDir,intent,resumed,progress}).then(()=>{job.state='done';},error=>{job.state='failed';job.failure=opaqueFailure(error);console.warn(`[conversation-graph] machine removal stopped: ${job.failure}`);});
    res.status(202).json({state:'running',removed:job.removed});return true;
   // The owner was already checked by the surface. 403 here would make the dashboard forget its session for a refusal that has nothing to do with it.
-  }catch(error){this.job=prior;res.status(409).json({code:opaqueFailure(error)});return true;}
+  }catch(error){/* @silent-fallback-ok: the refusal is the answer, returned to the owner as a code */this.job=prior;res.status(409).json({code:opaqueFailure(error)});return true;}
  }
 }

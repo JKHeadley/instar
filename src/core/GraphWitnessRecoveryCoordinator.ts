@@ -59,7 +59,7 @@ export class GraphWitnessRecoveryCoordinator {
     const creators=events.filter(event=>event.op==='create-effort'&&event.headerId===header.headerId&&reduced.efforts.get(nodeKey(event.subject))?.headerId===header.headerId);
     if(creators.length!==1)return {state:'held',reason:creators.length?'header-creator-ambiguous':'header-creator-evidence-missing'};
     const headers:HeaderOperation[]=[];for(const entry of union.records){if(entry.packet.coreType!=='header-op')continue;const op=validateHeaderOperation(entry.core);if(!op)return {state:'held',reason:'certified-header-core-invalid'};if(op.headerId===header.headerId)headers.push(op);}
-    let state:ReturnType<typeof deriveCertifiedHeaderMetadata>;try{state=deriveCertifiedHeaderMetadata(headers);}catch{return {state:'held',reason:'certified-header-state-conflict'};}
+    let state:ReturnType<typeof deriveCertifiedHeaderMetadata>;try{state=deriveCertifiedHeaderMetadata(headers);}catch{/* @silent-fallback-ok: a conflict holds the row with this reason */return {state:'held',reason:'certified-header-state-conflict'};}
     if(state?.held.length)return {state:'held',reason:'header-version-evidence-incomplete'};
     const reason:GraphPendingRevalidation['reason']=record.erasure||state?.forgotten||!record.encryptedSourceBundle?'erased-source':header.kind==='set-effort-title'&&header.baseVersion!==(state?.version??0)?'stale-heads':'ok';
     const heads=headers.filter(op=>state?.forgotten?op.kind==='forget-header':op.kind==='set-effort-title'&&op.baseVersion===(state?.version??0)-1).map(op=>op.opId).sort();

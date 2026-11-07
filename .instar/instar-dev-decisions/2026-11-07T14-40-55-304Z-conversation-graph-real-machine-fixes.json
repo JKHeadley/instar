@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-07T14:40:55.304Z",
+  "slug": "conversation-graph-real-machine-fixes",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GraphWitnessRecoveryCoordinator.ts",
+      "src/server/ConversationGraphMemberLossSurface.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Comments only; no new trigger."
+  },
+  "verdict": "pass"
+}

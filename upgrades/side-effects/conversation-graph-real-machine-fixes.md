@@ -62,3 +62,9 @@ One fresh Claude reviewer, read-only, nothing run, three rounds.
 - Second round: the keychain fix is closed. No remembered answer can generate or adopt a key. Unchanged existing risk: a non-not-found failure on the fresh read still falls through to the file key. It also found that the lease refresh broke later checks, so it was reverted, and that the origin fix is partial.
 
 Reviewer did not concur on removal at scale, recorded under Not established. CMT-1437 tracks it.
+
+## Later: silent-fallback count
+
+The removal route's five status and refusal catches, and the recovery coordinator's header conflict catch, carry explicit markers saying why they do not report. The unit suite had counted them as new silent fallbacks (500 against a limit of 494).
+
+A memo to skip rebuilding the certified view when peer data had not moved was tried and reverted. A failed stream read could leave a stale baseline, and it gained only about 15%.
