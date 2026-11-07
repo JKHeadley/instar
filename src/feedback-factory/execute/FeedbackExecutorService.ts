@@ -30,7 +30,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
+  GITHUB_OUTAGE_NOTICE_MS, CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -481,6 +481,7 @@ export class FeedbackExecutorService {
     this.pruneScratch();
     const avail = await this.refreshAvailability();
     if (avail.reason === 'not-canonical-owner') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    if (avail.reason !== 'github-unavailable' && this.metaJson('exec:github_outage')) this.setMeta(epoch, 'exec:github_outage', null);
     // Stop paths first: no refusal below may skip them.
     const acted = await this.runStopPaths(epoch, avail.slug);
     if (AUTHORITY_WITHDRAWN_REASONS.has(avail.reason)) await this.disarmAll(avail.reason === 'disabled' ? 'executor-disabled' : `executor-${avail.reason}`);
@@ -488,7 +489,10 @@ export class FeedbackExecutorService {
       out.reason = avail.reason;
       return;
     }
-    if (avail.reason === 'github-unavailable') { out.result = 'degraded'; out.reason = avail.reason; return; }
+    if (avail.reason === 'github-unavailable') {
+      await this.noteGithubOutage(epoch);
+      out.result = 'degraded'; out.reason = avail.reason; return;
+    }
     const slug = avail.slug!;
     const approver = avail.approver!;
     // Live attempts: lease, disk cap, finished sessions.
@@ -896,6 +900,21 @@ export class FeedbackExecutorService {
     });
   }
 
+  /** Fixes stop without any failed attempt during a GitHub outage, so the outage itself must be reported. */
+  private async noteGithubOutage(epoch: number): Promise<void> {
+    const outage = this.metaJson<{ since: number; notified?: boolean }>('exec:github_outage') ?? { since: this.now() };
+    const due = !outage.notified && this.now() - outage.since >= GITHUB_OUTAGE_NOTICE_MS;
+    this.setMeta(epoch, 'exec:github_outage', { since: outage.since, notified: outage.notified === true || due });
+    if (!due) return;
+    await this.attention({
+      id: `feedback-execute:github-unavailable:${outage.since}`,
+      title: 'Feedback fixes have stopped: no GitHub access',
+      summary: `Feedback fix attempts have been unable to reach GitHub for about ${Math.round((this.now() - outage.since) / HOUR_MS)} hours, so no new fixes are starting. Reports are still being collected and sorted. It resumes by itself when access returns.`,
+      description: `The executor last had working GitHub access before ${new Date(outage.since).toISOString()} and rechecks on every run. Check the agent's saved GitHub credential first: a replaced token is the usual cause. The executor status shows this as github-unavailable.`,
+      category: 'monitoring', priority: 'HIGH', sourceContext: 'feedback-execute:github-unavailable',
+    });
+  }
+
   private async depsUnavailable(epoch: number, reason: string): Promise<void> {
     const prior = this.metaJson<{ failures: number; nextRetryAt: number; notified?: boolean }>('exec:deps') ?? { failures: 0, nextRetryAt: 0 };
     const failures = prior.failures + 1;
@@ -1184,6 +1203,12 @@ export class FeedbackExecutorService {
       reason,
       ...(r ? { detail: `${reason}${commandFailureTail(r, { perStream: PROBE_TAIL_CHARS })}` } : {}),
     });
+    /** A run stopped by a limit keeps the same reason and also names which check it stopped. */
+    const limited = (stage: string, r: { timedOut: boolean; outputCapped: boolean; stdout: string; stderr: string }) => ({
+      ok: false as const,
+      reason: limit(r)!,
+      detail: `${limit(r)!} during the ${stage} check${commandFailureTail(r, { perStream: PROBE_TAIL_CHARS })}`,
+    });
     /** A fresh trusted clone at the base SHA with `entries` applied and node_modules linked by trusted code. */
     const freshClone = async (dir: string, entries: ChangeEntry[]) => {
       removeAttemptTree(dir, this.trashRoot(), 'feedback-execute stale check clone');
@@ -1196,7 +1221,7 @@ export class FeedbackExecutorService {
       // (a) base check: a throwaway clone at the base SHA with only the tests/ changes copied in.
       await freshClone(p.baseClone, testEntries(changeSet));
       const base = await run(p.baseClone, 'base', testCmd);
-      if (limit(base)) return { ok: false, reason: limit(base)! };
+      if (limit(base)) return limited('base', base);
       const imports = relativeImports(testEntries(changeSet).map((e) => ({ path: e.path, text: e.bytes?.toString('utf8') ?? '' })));
       const verdict = classifyBaseFailure(`${base.stdout}\n${base.stderr}`, base.exitCode, sourcePaths(changeSet), imports);
       if (!verdict.ok) return failed(`base-check:${verdict.reason}`, base);
@@ -1204,7 +1229,7 @@ export class FeedbackExecutorService {
       // own workspace, whose node_modules link and files the session controlled).
       await freshClone(p.headClone, changeSet.entries);
       const head = await run(p.headClone, 'head', testCmd);
-      if (limit(head)) return { ok: false, reason: limit(head)! };
+      if (limit(head)) return limited('head', head);
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
       if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
@@ -1213,13 +1238,13 @@ export class FeedbackExecutorService {
       // runs only the base tooling), then the unit tests related to the changed sources.
       await freshClone(p.gateClone, changeSet.entries);
       const lint = await run(p.gateClone, 'lint', cfg.lintCommand);
-      if (limit(lint)) return { ok: false, reason: limit(lint)! };
+      if (limit(lint)) return limited('lint', lint);
       if (lint.exitCode !== 0) return failed('gate:lint', lint);
       const sources = sourcePaths(changeSet).filter((s) => /\.[cm]?[jt]sx?$/.test(s));
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
         const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
-        if (limit(related)) return { ok: false, reason: limit(related)! };
+        if (limit(related)) return limited('related-tests', related);
         if (related.exitCode !== 0) return failed('gate:related-tests', related);
       }
     } finally {
