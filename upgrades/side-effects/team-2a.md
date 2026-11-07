@@ -127,3 +127,5 @@ Fixed: a non-standard topic reference such as `telegram:01` could sit apart from
 
 ## Outside-family code review, last pass, 2026-11-07
 No access gain raised. Fixed: a link is now made before anything is saved or confined; a grant listed before its person is refused rather than dropped; a live log lost with its snapshot intact now reads as damaged, so restore works. Review stopped here: the last rounds raised ordering and recovery edges only.
+
+A lost live log takes no writes until restored, so a new row cannot hide the loss.

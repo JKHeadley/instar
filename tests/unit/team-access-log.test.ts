@@ -229,8 +229,11 @@ describe('TeamAccessLog', () => {
     log.writeLastGood();
     SafeFsExecutor.safeUnlinkSync(logPath(), { operation: 'tests/unit/team-access-log.test.ts' });
     const next = open();
+    // A lost log takes no writes until the owner restores it: a row here would hide the loss.
+    expect(() => next.appendMachineEvents([{ type: 'conversation-own', ref: 'r', personKey: 'sam' }])).toThrow('unreadable');
+    next.restore({ teamRefs: [], allRefs: () => [] });
     const row = next.appendMachineEvents([{ type: 'conversation-own', ref: 'r', personKey: 'sam' }]);
-    expect(row.seq).toBe(3);
+    expect(row.seq).toBeGreaterThan(2);
   });
 
   describe('confined list', () => {
