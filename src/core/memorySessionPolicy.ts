@@ -14,6 +14,7 @@
  *    home and the temp roots and re-allows an exact list.
  */
 
+import { setAsideUnlessRealFolder } from '../users/MemoryPrivacy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -139,14 +140,6 @@ export function applyMemorySessionLaunch(argv: string[], settingsPath: string, s
   if (argv.includes('--dangerously-skip-permissions') || !argv.includes('dontAsk') || !argv.includes(settingsPath)) {
     throw new Error('memory-session-launch-missing: the memory session form was not applied');
   }
-}
-
-/** A session can leave a link or a file where the server expects a folder: move it out of the way. */
-export function setAsideUnlessRealFolder(dir: string): void {
-  let info: fs.Stats;
-  try { info = fs.lstatSync(dir); } catch { return; } // @silent-fallback-ok — nothing there is the normal first run
-  if (!info.isSymbolicLink() && info.isDirectory()) return;
-  fs.renameSync(dir, `${dir}.set-aside-${randomUUID()}`);
 }
 
 /**

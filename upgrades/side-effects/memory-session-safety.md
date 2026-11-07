@@ -12,3 +12,5 @@ The resume id check sits in the launch abstraction and applies to every framewor
 
 ## Hook payload paths
 A scoped session's hook events lose `transcript_path`, `agent_transcript_path` and `cwd` before any consumer sees them. Two optional consumers read those on the server: pre-compaction flush, and the green-PR stop gate. Neither needs them for a scoped session. Over-block: pre-compaction flush does not run for a scoped session, which is right, since its text should not reach owner memory.
+
+- The folder check lives in `MemoryPrivacy.ts` so no new file enters the Stage-B certified set.
