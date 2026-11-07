@@ -45,6 +45,34 @@ export function copiedSecretNames(secrets: Secrets): string[] {
   return out.filter((n) => !n.startsWith('secretDrops.') && n !== 'bitwarden_master_password' && n !== 'bw-master-password').sort();
 }
 
+/**
+ * Secrets a fresh agent still keeps in its config file, before pairing moves them into the vault: its
+ * auth token, dashboard PIN, messaging tokens and tunnel token. A copy that skipped them would be empty
+ * on exactly the agents that need it most (found in the first live proof, fb-1b0a0b01-d96). Named
+ * `config.<path>` so the page and the vault tell them from vault leaves. A `{ secret: true }` placeholder
+ * means the value already lives in the vault, where the leaf walk finds it.
+ */
+export function configHeldSecrets(config: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  const take = (name: string, v: unknown): void => { if (typeof v === 'string' && v) out[name] = v; };
+  take('config.authToken', config.authToken);
+  take('config.dashboardPin', config.dashboardPin);
+  const tunnel = config.tunnel as Record<string, unknown> | undefined;
+  take('config.tunnel.token', tunnel?.token);
+  const messaging = Array.isArray(config.messaging) ? (config.messaging as Array<Record<string, unknown>>) : [];
+  for (const m of messaging) {
+    const type = typeof m?.type === 'string' ? m.type : 'messaging';
+    const cfg = (m?.config ?? {}) as Record<string, unknown>;
+    for (const key of ['token', 'botToken', 'appToken', 'signingSecret']) take(`config.messaging.${type}.${key}`, cfg[key]);
+  }
+  return out;
+}
+
+/** Everything the copy covers: vault leaves plus the config-held secrets, sorted, names only. */
+export function copySourceNames(secrets: Secrets, config: Record<string, unknown>): string[] {
+  return [...new Set([...copiedSecretNames(secrets), ...Object.keys(configHeldSecrets(config))])].sort();
+}
+
 /** The production surface: BitwardenProvider on this machine, scoped to this agent's folder. */
 export function realBitwardenSurface(agentName: string): BitwardenSurface {
   const provider = new BitwardenProvider({ agentName });

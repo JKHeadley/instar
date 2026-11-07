@@ -38,7 +38,8 @@ describe('recommended services wiring', () => {
     expect(routes).toContain("otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack)");
     expect(routes).toContain('deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); }');
     // The Bitwarden recipe's copy and page list come from the real vault and the real CLI surface, names only.
-    expect(routes).toContain('readSecretNames: () => copiedSecretNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read())');
+    expect(routes).toContain('readSecretNames: () => copySourceNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), ctx.config as unknown as Record<string, unknown>)');
+    expect(routes).toContain("if (name.startsWith('config.')) return configHeldSecrets(ctx.config as unknown as Record<string, unknown>)[name] ?? null;");
     expect(routes).toContain('bitwarden: realBitwardenSurface(');
   });
 
