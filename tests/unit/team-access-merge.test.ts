@@ -135,36 +135,35 @@ describe('mergeRows', () => {
 });
 
 describe('findGaps', () => {
-  const none = () => null;
   it('a whole chain has none', () => {
-    expect(findGaps([row('A', 1, []), row('A', 2, []), row('A', 3, [])], none)).toEqual([]);
+    expect(findGaps([row('A', 1, []), row('A', 2, []), row('A', 3, [])])).toEqual([]);
   });
   it('a sleeping machine holding rows nobody has here is not a gap', () => {
-    expect(findGaps([row('A', 1, []), row('A', 2, [])], none)).toEqual([]);
+    expect(findGaps([row('A', 1, []), row('A', 2, [])])).toEqual([]);
   });
   it('a missing middle row is seen', () => {
-    expect(findGaps([row('A', 1, []), row('A', 3, [])], none)).toEqual([{ kind: 'chain-break', origin: 'A', incarnation: 'i1', afterSeq: 1 }]);
+    expect(findGaps([row('A', 1, []), row('A', 3, [])])).toEqual([{ kind: 'chain-break', origin: 'A', incarnation: 'i1', afterSeq: 1 }]);
   });
   it('a row whose previous hash does not match is seen', () => {
-    expect(findGaps([row('A', 1, []), row('A', 2, [], {}, { prev: 'other' })], none)).toHaveLength(1);
+    expect(findGaps([row('A', 1, []), row('A', 2, [], {}, { prev: 'other' })])).toHaveLength(1);
   });
   it('two rows with one identity are a fork', () => {
-    const g = findGaps([row('A', 1, []), row('A', 2, []), row('A', 2, [], {}, { hash: 'different' })], none);
+    const g = findGaps([row('A', 1, []), row('A', 2, []), row('A', 2, [], {}, { hash: 'different' })]);
     expect(g).toContainEqual({ kind: 'fork', origin: 'A', incarnation: 'i1', seq: 2 });
   });
   it('a new incarnation proves a lost tail, unless the owner already named that machine', () => {
-    const first = () => 'i0';
-    expect(findGaps([row('A', 1, [])], first)).toEqual([{ kind: 'new-incarnation', origin: 'A', incarnation: 'i1' }]);
-    const named: MergeEvent = { type: 'origin-gone', machine: 'A', incarnation: 'i0', throughSeq: 4 };
-    expect(findGaps([row('A', 1, []), row('B', 1, [named])], (o) => (o === 'A' ? 'i0' : null))).toEqual([]);
+    const older = row('A', 1, [], {}, { incarnation: 'i0' });
+    expect(findGaps([older, row('A', 2, [])])).toEqual([{ kind: 'new-incarnation', origin: 'A', incarnation: 'i1', previous: 'i0', throughSeq: 1 }]);
+    const named: MergeEvent = { type: 'origin-gone', machine: 'A', incarnation: 'i0', throughSeq: 1 };
+    expect(findGaps([older, row('A', 2, []), row('B', 1, [named])])).toEqual([]);
   });
   it('a gap the owner accepted does not read as damage again', () => {
     const accepted: MergeEvent = { type: 'origin-gone', machine: 'A', incarnation: 'i1', throughSeq: 3 };
-    expect(findGaps([row('A', 1, []), row('A', 4, [], {}, { prev: 'x' }), row('B', 1, [accepted])], none)).toEqual([]);
+    expect(findGaps([row('A', 1, []), row('A', 4, [], {}, { prev: 'x' }), row('B', 1, [accepted])])).toEqual([]);
   });
   it('does not depend on arrival order', () => {
     const rows = [row('A', 1, []), row('A', 3, []), row('B', 1, [])];
-    const answers = new Set(permutations(rows).map((p) => JSON.stringify(findGaps(p, none))));
+    const answers = new Set(permutations(rows).map((p) => JSON.stringify(findGaps(p))));
     expect(answers.size).toBe(1);
   });
 });

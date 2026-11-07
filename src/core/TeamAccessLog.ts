@@ -23,7 +23,7 @@ import {
   type LedgerView, type MachineKeyLookup, type MachineSignature, type MachineSigner,
 } from './AppRecordSignatures.js';
 import { DEVICE_TIME_WINDOW_MS, isStrictLowSDer, parseDevicePublicKey } from './MobileDeviceKeys.js';
-import { UNCHAINED_INCARNATION, findGaps, mayReadMessage, mergeRows, streamKey, type AccessStamp, type Gap, type ReaderGrant, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
+import { UNCHAINED_INCARNATION, findGaps, mayReadMessage, mergeRows, rankOf, streamKey, type AccessStamp, type Gap, type ReaderGrant, type MergeEvent, type MergeRow } from './TeamAccessMerge.js';
 import type { GrantAccess } from '../permissions/TeamAccess.js';
 import type { OrgRole } from '../permissions/types.js';
 
@@ -149,7 +149,7 @@ function mergeEventsOf(row: TeamAccessRow): MergeEvent[] {
     if (e.type !== 'lower') return [];
     if (e.ref) return [{ type: 'grant-remove', personKey: e.personKey, ref: e.ref }];
     if (e.remove) return [{ type: 'person-remove', personKey: e.personKey }];
-    return e.role ? [{ type: 'person-set', personKey: e.personKey, role: e.role }] : [];
+    return e.role ? [{ type: 'person-set', personKey: e.personKey, role: e.role, lower: true }] : [];
   });
 }
 
@@ -175,7 +175,22 @@ export function foldLog(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAc
     const person = known.get(key);
     if (person) people.set(key, { ...person, role: p.role as OrgRole });
   }
-  return { ...plain, on: merged.on, people, grants: merged.grants };
+  // Who owns a conversation, leaving out what the owner voided. Owned beats shared: a grant to anyone else goes.
+  const gone = counted.flatMap((r) => (r.kind === 'request' ? (bodyEvents(r) ?? []).flatMap((e) => (e.type === 'origin-gone' ? [e] : [])) : []));
+  const voided = (r: TeamAccessRow): boolean => gone.some((g) => g.machine === originOf(r) && g.incarnation === (r.incarnation ?? UNCHAINED_INCARNATION) && r.seq > g.throughSeq);
+  const owned = new Map<string, string>();
+  for (const r of [...counted].sort(rowOrder)) {
+    if (r.kind !== 'machine' || voided(r)) continue;
+    for (const e of knownEvents(r)) if (e.type === 'conversation-own' && !owned.has(e.ref)) owned.set(e.ref, e.personKey);
+  }
+  const grants = merged.grants;
+  for (const [ref, owner] of owned) for (const [person, refs] of grants) if (person !== owner) refs.delete(ref);
+  return { ...plain, on: merged.on, people, grants, owned };
+}
+
+/** One order for rows from any machine, so nothing depends on which arrived first. */
+function rowOrder(a: TeamAccessRow, b: TeamAccessRow): number {
+  return a.seq - b.seq || (streamOf(a) < streamOf(b) ? -1 : streamOf(a) > streamOf(b) ? 1 : rowHash(a) < rowHash(b) ? -1 : 1);
 }
 
 /**
@@ -186,15 +201,8 @@ export function gapsIn(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAcc
   if (new Set(rows.map(originOf)).size <= 1) return [];
   const plain = foldRows(rows, verify);
   const owners = (r: TeamAccessRow): boolean => verify(r) === 'verified' && r.kind === 'request' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner';
-  const first = new Map<string, string>();
-  for (const r of rows) {
-    const inc = r.incarnation ?? UNCHAINED_INCARNATION;
-    if (inc === UNCHAINED_INCARNATION) continue;
-    const held = first.get(originOf(r));
-    if (held === undefined || inc < held) first.set(originOf(r), inc);
-  }
   const merge = rows.map((r) => toMergeRow(r, owners(r) ? mergeEventsOf(r) : []));
-  const gaps = findGaps(merge, (o) => first.get(o) ?? null);
+  const gaps = findGaps(merge);
   const settled = new Set(merge.flatMap((r) => r.events.flatMap((e) => (e.type === 'origin-gone' ? [streamKey(e.machine, e.incarnation)] : []))));
   for (const r of rows) {
     const unread = r.kind === 'machine' && knownEvents(r).length < r.events.length;
@@ -226,6 +234,14 @@ export const TEAM_ACCESS_WRITE_PATHS: readonly RegExp[] = [
   /^\/mobile\/team\/invites$/, /^\/mobile\/team\/grants$/, /^\/mobile\/team\/people\/[^/]+$/, /^\/mobile\/team\/off$/, /^\/mobile\/team\/origin-gone$/,
 ];
 
+/** Did a machine this one knows sign this row? Anything else is not taken in, and comes again next exchange. */
+export function rowSignedByKnownMachine(row: TeamAccessRow, machineKey: MachineKeyLookup): boolean {
+  const { machineSig, ...rest } = row;
+  const atMs = Date.parse(row.kind === 'request' ? row.receivedAt : row.at);
+  if (!Number.isFinite(atMs) || (row.origin !== undefined && row.origin !== machineSig.machineId)) return false;
+  return verifyMachineSignature(machineKey, machineSig, rowPayload(rest as Omit<RequestRow, 'machineSig'> | Omit<MachineRow, 'machineSig'>), atMs) === 'ok';
+}
+
 /** Which events each route may carry. A row's signature covers its path, so this binds what was signed. */
 export function eventsFitPath(pathWithQuery: string, events: ReadonlyArray<{ type: string; personKey?: string }>): boolean {
   const person = /^\/mobile\/team\/people\/([^/]+)$/.exec(pathWithQuery);
@@ -248,6 +264,8 @@ export function eventsFitPath(pathWithQuery: string, events: ReadonlyArray<{ typ
  */
 export function verifyTeamAccessRow(row: TeamAccessRow, ledger: LedgerView, machineKey: MachineKeyLookup): RowVerdict {
   const { machineSig, ...rest } = row;
+  // A machine writes only its own stream, so no peer can add to another's.
+  if (row.origin !== undefined && row.origin !== machineSig.machineId) return 'failed';
   const atMs = Date.parse(row.kind === 'request' ? row.receivedAt : row.at);
   if (!Number.isFinite(atMs)) return 'failed';
   const rowSig = verifyMachineSignature(machineKey, machineSig, rowPayload(rest as Omit<RequestRow, 'machineSig'> | Omit<MachineRow, 'machineSig'>), atMs);
@@ -333,7 +351,8 @@ function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
       if (e.ref) { s.grants.get(e.personKey)?.delete(e.ref); return; }
       if (e.remove) { s.people.delete(e.personKey); s.grants.delete(e.personKey); return; }
       const p = s.people.get(e.personKey);
-      if (p && e.role) p.role = e.role;
+      // A machine can only ever take someone down, however the row reads.
+      if (p && e.role && rankOf(e.role) < rankOf(p.role)) p.role = e.role;
       return;
     }
   }
@@ -345,7 +364,7 @@ function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
  */
 export function foldRows(rows: ReadonlyArray<TeamAccessRow>, verify: (row: TeamAccessRow) => RowVerdict): TeamAccessState {
   const s = emptyState();
-  for (const row of [...rows].sort((a, b) => a.seq - b.seq)) foldRowInto(s, row, verify);
+  for (const row of [...rows].sort(rowOrder)) foldRowInto(s, row, verify);
   return s;
 }
 
@@ -386,6 +405,8 @@ export interface TeamAccessLogOptions {
   stateDir: string;
   signer: MachineSigner | null;
   verify: (row: TeamAccessRow) => RowVerdict;
+  /** A peer's row is taken in only if this says a known machine signed it. */
+  machineSigned?: (row: TeamAccessRow) => boolean;
   now?: () => number;
 }
 
@@ -679,15 +700,56 @@ export class TeamAccessLog {
     return (this.rows.some((r) => originOf(r) !== own) ? mine : Math.max(mine, this.seedSeq)) + 1;
   }
 
-  /** Did the log ever hold this person, present or gone? */
+  /** Did the log ever hold this person, present or gone? A used key is never used again. */
   everHeld(personKey: string): boolean {
     return this.rows.some((r) => r.kind === 'request' && (bodyEvents(r) ?? []).some((e) => e.type === 'person-add' && e.personKey === personKey));
+  }
+
+  /** Is there a verified row taking this person away? Silence from a log that failed to read is not one. */
+  wasRemoved(personKey: string): boolean {
+    return this.rows.some((r) => {
+      if (this.opts.verify(r) !== 'verified') return false;
+      if (r.kind === 'machine') return knownEvents(r).some((e) => e.type === 'lower' && e.personKey === personKey && e.remove === true);
+      return (bodyEvents(r) ?? []).some((e) => e.type === 'team-off' || (e.type === 'person-remove' && e.personKey === personKey));
+    });
+  }
+
+  /** Could this agent have a team, going by any row at all? For decisions where a wrong no is the harm. */
+  mayHaveTeam(): boolean {
+    return this.rows.some((r) => r.kind === 'request' && (bodyEvents(r) ?? []).some((e) => e.type === 'team-on'));
+  }
+
+  /** Has the owner named every stream this log holds from that machine as gone? */
+  isGone(machineId: string): boolean {
+    const plain = this.state();
+    const named = new Set(this.rows.flatMap((r) => (r.kind === 'request' && this.opts.verify(r) === 'verified' && plain.bindings.get(r.signedOrigin.keyHash) === 'owner'
+      ? (bodyEvents(r) ?? []).flatMap((e) => (e.type === 'origin-gone' && e.machine === machineId ? [e.incarnation] : []))
+      : [])));
+    if (named.size === 0) return false;
+    return this.rows.filter((r) => originOf(r) === machineId).every((r) => named.has(r.incarnation ?? UNCHAINED_INCARNATION));
   }
 
   /** What this machine holds: origin/incarnation to highest seq. */
   vector(): Record<string, number> {
     const out: Record<string, number> = {};
     for (const r of this.rows) out[streamOf(r)] = Math.max(out[streamOf(r)] ?? 0, r.seq);
+    return out;
+  }
+
+  /**
+   * What this machine holds without a hole, for asking peers. A row refused on arrival leaves a hole,
+   * and it must come again once this machine can take it.
+   */
+  unbroken(): Record<string, number> {
+    const seqs = new Map<string, number[]>();
+    for (const r of this.rows) seqs.set(streamOf(r), [...(seqs.get(streamOf(r)) ?? []), r.seq]);
+    const out: Record<string, number> = {};
+    for (const [stream, list] of seqs) {
+      const sorted = [...list].sort((a, b) => a - b);
+      let top = sorted[0];
+      for (const seq of sorted) { if (seq > top + 1) break; top = seq; }
+      out[stream] = top;
+    }
     return out;
   }
 
@@ -724,7 +786,7 @@ export class TeamAccessLog {
       if (!isRowShaped(row)) { refused += 1; continue; }
       const id = `${streamOf(row)}#${row.seq}#${rowHash(row)}`;
       if (held.has(id)) continue;
-      if (this.opts.verify(row) === 'failed') { refused += 1; continue; }
+      if (this.opts.verify(row) === 'failed' || this.opts.machineSigned?.(row) === false) { refused += 1; continue; }
       // Before folding, and for a row that cannot be placed yet too: confining is the safe direction.
       this.ensureConfinedFile();
       for (const entry of confinesIn(row)) { this.confineHere(entry); touched.add(entry.ref); }
@@ -797,6 +859,9 @@ export class TeamAccessLog {
    */
   rebuildFromPeer(rows: ReadonlyArray<TeamAccessRow>): { added: number; refused: number; touched: string[] } {
     const stamp = (this.opts.now ?? Date.now)();
+    // Everything that still reads is kept: a row only this machine held may be a removal.
+    const salvaged = [...this.salvage(this.lastGoodLog()), ...this.salvage(this.logFile)];
+    const locks = this.heldLocks();
     for (const file of [this.logFile, this.confinedFile]) {
       if (fs.existsSync(file)) fs.renameSync(file, `${file}.damaged-${stamp}`);
     }
@@ -804,8 +869,33 @@ export class TeamAccessLog {
     this.seedSeq = 0;
     this.health = 'ok';
     this.mintIncarnation();
-    this.ensureConfinedFile();
-    return this.ingest(rows);
+    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    this.writeConfined(locks);
+    return this.ingest([...salvaged, ...rows]);
+  }
+
+  /** Every lock this machine can still find. The list only ever grows, and a restore's sweep is in no row. */
+  private heldLocks(): ConfinedEntry[] {
+    let lastGood: ConfinedEntry[] = [];
+    try {
+      lastGood = (JSON.parse(fs.readFileSync(this.lastGoodConfined(), 'utf8')) as { entries?: ConfinedEntry[] }).entries ?? [];
+    } catch {
+      // @silent-fallback-ok — no snapshot of the list; what the rows say stands alone.
+      lastGood = [];
+    }
+    const byRef = new Map<string, ConfinedEntry>();
+    const rows = this.health === 'unreadable' ? this.salvage(this.logFile) : this.rows;
+    for (const e of [...(this.readConfined() ?? []), ...lastGood, ...rows.flatMap(confinesIn), ...confinedFromRows(rows, this.opts.verify)]) {
+      if (!byRef.has(e.ref) || e.personKey) byRef.set(e.ref, e);
+    }
+    return [...byRef.values()];
+  }
+
+  /** A damaged lock list comes back from the log and the last good copy. The log itself is left alone. */
+  rebuildLocks(): void {
+    const locks = this.heldLocks();
+    if (fs.existsSync(this.confinedFile)) fs.renameSync(this.confinedFile, `${this.confinedFile}.damaged-${(this.opts.now ?? Date.now)()}`);
+    this.writeConfined(locks);
   }
 
   /** Is this machine's lock list broken, or gone though rows here locked something? A new agent has none, and that is fine. */
@@ -959,30 +1049,31 @@ export class TeamAccessLog {
    * messages). With no list left and a visibly damaged log, `allRefs` is confined too: a read-only
    * grantee leaves no message behind. A lost final row leaves no gap, so that one case cannot be seen.
    */
-  restore(input: { teamRefs: ConfinedEntry[]; allRefs: () => ConfinedEntry[] }): { logLost: boolean; listLost: boolean } {
-    const wasUnreadable = this.health === 'unreadable';
-    const readRows = (file: string): TeamAccessRow[] => {
-      let raw = '';
-      try { raw = fs.readFileSync(file, 'utf8'); } catch {
-        // @silent-fallback-ok — a missing file contributes no rows.
+  /** Every row that still parses in a file, keeping nothing unreadable. */
+  private salvage(file: string): TeamAccessRow[] {
+    let raw = '';
+    try { raw = fs.readFileSync(file, 'utf8'); } catch {
+      // @silent-fallback-ok — a missing file contributes no rows.
+      return [];
+    }
+    return raw.split('\n').flatMap((line) => {
+      if (!line.trim()) return [];
+      try {
+        return this.parseLines(line) ?? [];
+      } catch {
+        // @silent-fallback-ok — keeps every row that still parses.
         return [];
       }
-      return raw.split('\n').flatMap((line) => {
-        if (!line.trim()) return [];
-        try {
-          const one = this.parseLines(line);
-          return one ?? [];
-        } catch {
-          // @silent-fallback-ok — restore keeps every row that still parses.
-          return [];
-        }
-      });
-    };
-    const live = readRows(this.logFile);
+    });
+  }
+
+  restore(input: { teamRefs: ConfinedEntry[]; allRefs: () => ConfinedEntry[] }): { logLost: boolean; listLost: boolean } {
+    const wasUnreadable = this.health === 'unreadable';
+    const live = this.salvage(this.logFile);
     const logLost = live.length === 0;
-    const bySeq = new Map<number, TeamAccessRow>();
-    for (const r of [...readRows(this.lastGoodLog()), ...live]) bySeq.set(r.seq, r);
-    const merged = [...bySeq.values()].sort((a, b) => a.seq - b.seq);
+    const byRow = new Map<string, TeamAccessRow>();
+    for (const r of [...this.salvage(this.lastGoodLog()), ...live]) byRow.set(`${streamOf(r)}#${r.seq}#${rowHash(r)}`, r);
+    const merged = [...byRow.values()].sort(rowOrder);
 
     const current = fs.existsSync(this.confinedFile) ? this.readConfined() : null;
     const listLost = current === null;
@@ -999,7 +1090,8 @@ export class TeamAccessLog {
     const fromLog = confinedFromRows(merged, this.opts.verify);
     // With no list left and a log visibly damaged, nothing may be released: every conversation is
     // confined. A surviving log with no gap is taken at its word, since it holds every grant.
-    const damaged = logLost || wasUnreadable || merged.some((r, i) => r.seq !== i + 1 || this.opts.verify(r) !== 'verified');
+    const multi = new Set(merged.map(originOf)).size > 1;
+    const damaged = logLost || wasUnreadable || merged.some((r, i) => (!multi && r.seq !== i + 1) || this.opts.verify(r) !== 'verified') || (multi && gapsIn(merged, this.opts.verify).length > 0);
     const noList = listLost && lastGood.length === 0;
     const sources = [...(current ?? []), ...lastGood, ...fromLog, ...input.teamRefs, ...(noList && damaged ? input.allRefs() : [])];
     for (const e of sources) if (!byRef.has(e.ref)) byRef.set(e.ref, e);
@@ -1016,7 +1108,8 @@ export class TeamAccessLog {
     }
     fs.renameSync(tmp, this.logFile);
     this.rows = merged;
-    this.folded = foldRows(merged, this.opts.verify);
+    this.gapsCache = null; this.grantsCache.clear();
+    this.folded = foldLog(merged, this.opts.verify);
     this.seedSeq = Math.max(this.seedSeq, this.folded.highestSeq);
     this.health = 'ok';
     // A repaired log is a new stream, so a row written here cannot collide with one a peer holds.

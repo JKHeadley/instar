@@ -17,6 +17,7 @@ import { mountMobilePermissionsRoutes, permissionPresenceMessage, type MobilePer
 import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { TeamAccessLog } from '../../src/core/TeamAccessLog.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -728,11 +729,17 @@ describe('Face ID actions', () => {
 });
 
 describe('when a machine\'s record has a gap', () => {
-  const peerRow = () => ({
-    seq: 1, kind: 'machine', at: new Date().toISOString(), events: [{ type: 'confine', ref: 'telegram:77' }],
-    origin: 'peer-b', incarnation: 'i1', prev: null, seen: {},
-    machineSig: { machineId: 'peer-b', signerKeyHash: 'unknown-key', sig: 'c2ln' },
-  }) as never;
+  /** A real second machine, known to this one, writing an event from a newer build. */
+  const peerRow = async (dir: string) => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'team-peer-'));
+    await new MachineIdentityManager(other).generateIdentity({ name: 'peer' });
+    const identity = JSON.parse(fs.readFileSync(path.join(other, 'machine', 'identity.json'), 'utf8'));
+    const here = new MachineIdentityManager(dir);
+    here.registerMachine(identity, 'standby');
+    here.storeRemoteIdentity(identity);
+    const log = new TeamAccessLog({ stateDir: other, signer: loadMachineSigner(other), verify: () => 'verified' });
+    return log.appendMachineEvents([{ type: 'from-the-future' } as never]);
+  };
   const gone = (machine: string, incarnation: string, throughSeq: number) => ({ events: [{ type: 'origin-gone', machine, incarnation, throughSeq }] });
 
   it('every team phone waits, the owner is told why, and only the owner with Face ID can settle it', async () => {
@@ -742,7 +749,9 @@ describe('when a machine\'s record has a gap', () => {
     const member = phone(e, { userId: 'p-1', role: 'team' });
     expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
 
-    expect(e.svc.teamLog()!.ingest([peerRow()]).added).toBe(1);
+    const row = await peerRow(e.dir);
+    expect(e.svc.teamLog()!.ingest([row]).added).toBe(1);
+    const peer = row.origin as string; const stream = row.incarnation as string;
     const held = await send(e, member, 'GET', '/mobile/team/people');
     expect(held.status).toBe(403);
     expect(held.body.error).toBe('access-being-checked');
@@ -750,13 +759,13 @@ describe('when a machine\'s record has a gap', () => {
     expect(context.body.refusal).toBe('access-being-checked');
     expect(context.body.held.map((g: { kind: string }) => g.kind)).toEqual(['unplaced']);
 
-    const body = gone('peer-b', 'i1', 0);
+    const body = gone(peer, stream, 1);
     expect((await send(e, member, 'POST', '/mobile/team/origin-gone', body)).status).toBe(403);
     expect((await send(e, owner, 'POST', '/mobile/team/origin-gone', body)).status).toBe(401);
     const self = loadMachineSigner(e.dir)!.machineId();
     expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone(self, e.svc.teamLog()!.currentIncarnation(), 0))).body.error).toBe('origin-is-this-machine');
     expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('peer-c', 'i1', 0))).body.error).toBe('unknown-origin');
-    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('peer-b', 'i1', 9))).body.error).toBe('unknown-origin');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone(peer, stream, 9))).body.error).toBe('unknown-origin');
     expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(403);
 
     const settled = await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', body);
@@ -764,6 +773,17 @@ describe('when a machine\'s record has a gap', () => {
     expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
     e.svc.teamLog()!.load();
     expect(e.svc.teamLog()!.gaps()).toEqual([]);
+  });
+
+  it('a peer with no rows here can be retired, but only a peer this machine knows', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    e.svc.teamPuller = { knows: (m: string) => m === 'retired', refusing: () => false, belowFloor: () => [], waitingOn: () => [] } as never;
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('stranger', 'none', 0))).body.error).toBe('unknown-origin');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('retired', 'none', 3))).body.error).toBe('unknown-origin');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('retired', 'none', 0))).status).toBe(200);
+    e.svc.teamPuller = null;
   });
 });
 

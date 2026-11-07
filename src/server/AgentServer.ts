@@ -600,7 +600,7 @@ export class AgentServer {
     });
     options.sleepWakeDetector?.on('wake', () => svc.teamPuller?.noteWake());
     // With a team on, native off is below the floor, and a machine behind a reachable peer waits to catch up.
-    options.coordinator?.setLeaseHold?.(() => svc.teamOn() && (!isMobileNativeEnabled(options.config) || (svc.teamPuller?.behind() ?? false)));
+    options.coordinator?.setLeaseHold?.(() => (svc.teamOn() || (svc.teamLog()?.mayHaveTeam() ?? false)) && (!isMobileNativeEnabled(options.config) || (svc.teamPuller?.behind() ?? false)));
     if (!(options.mobileRoutes?.start ?? !process.env.VITEST)) return;
     void svc.teamPuller.tick();
     this.teamPullTimer = setInterval(() => { void svc.teamPuller?.tick(); }, PULL_INTERVAL_MS);
@@ -2171,10 +2171,12 @@ export class AgentServer {
       };
       machineRouteContext.teamAccessRows = (have, heads, senderId) => {
         const log = this.mobilePairing?.teamLog() ?? null;
-        this.mobilePairing?.teamPuller?.noteInbound(senderId, false);
+        const missing = log?.rowsBeyond(have, heads) ?? [];
+        // A peer that already holds everything here has nothing to push, and that counts as answering.
+        this.mobilePairing?.teamPuller?.noteInbound(senderId, missing.length === 0);
         const privacy = options.sessionManager.memoryPrivacyStatus?.();
         return {
-          rows: log?.rowsBeyond(have, heads).slice(0, ROWS_PER_CALL) ?? [], vector: log?.vector() ?? {},
+          rows: missing.slice(0, ROWS_PER_CALL), vector: log?.vector() ?? {},
           standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
         };
       };

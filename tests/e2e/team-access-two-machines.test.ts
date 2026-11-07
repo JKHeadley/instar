@@ -149,6 +149,10 @@ describe('team access on two machines', () => {
     // The key ledger replicates through the journal in production.
     for (const row of svcA.keyLedger!.rows()) svcB.keyLedger!.ingestReplicated(row);
 
+    // A peer that already holds everything counts as answering, though it has nothing to push.
+    const noted: Array<[string, boolean]> = [];
+    const real = svcA.teamPuller!.noteInbound.bind(svcA.teamPuller!);
+    svcA.teamPuller!.noteInbound = (id, answered) => { noted.push([id, answered]); real(id, answered); };
     // The laptop pulls: real HTTP, real machine signature.
     const pulled = await svcB.teamPuller!.tick();
     expect(pulled!.outcomes).toEqual([expect.objectContaining({ answered: true, refused: 0 })]);
@@ -157,6 +161,9 @@ describe('team access on two machines', () => {
     expect(logB.gaps()).toEqual([]);
     expect(svcB.teamOn()).toBe(true);
     expect(svcB.teamStanding('mia')).toEqual(svcA.teamStanding('mia'));
+    await svcB.teamPuller!.tick();
+    expect(noted.at(0)).toEqual([b.identity.machineId, false]);
+    expect(noted.at(-1)).toEqual([b.identity.machineId, true]);
     expect(logB.isConfined(shared)).toBe(true);
     expect(B.changed).toContain(shared); // the laptop ended any session of it
     expect(svcA.teamPuller!.belowFloor()).toEqual([]);

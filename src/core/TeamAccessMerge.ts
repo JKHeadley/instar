@@ -13,7 +13,8 @@ export type MergeEvent =
   | { type: 'team-on' }
   | { type: 'team-off' }
   | { type: 'person-add'; personKey: string; role: string }
-  | { type: 'person-set'; personKey: string; role: string }
+  /** `lower` is a machine narrowing someone: it can only ever take a role down. */
+  | { type: 'person-set'; personKey: string; role: string; lower?: boolean }
   | { type: 'person-remove'; personKey: string }
   | { type: 'grant'; personKey: string; ref: string; access: GrantAccess }
   | { type: 'grant-remove'; personKey: string; ref: string }
@@ -45,11 +46,12 @@ export function hasSeen(by: MergeRow, row: MergeRow): boolean {
 }
 
 const ROLE_RANK: Readonly<Record<string, number>> = { guest: 0, member: 1, admin: 2 };
-const rankOf = (role: string): number => ROLE_RANK[role] ?? 0;
+export const rankOf = (role: string): number => ROLE_RANK[role] ?? 0;
 
 /** Does this event give anyone anything? Only these are void from a returning gone origin. */
-function widens(e: MergeEvent): boolean {
-  return e.type === 'grant' || e.type === 'person-add' || e.type === 'team-on' || e.type === 'person-set';
+function widens(e: MergeEvent, addedAs: ReadonlyMap<string, string>): boolean {
+  if (e.type === 'person-set') return !e.lower && rankOf(e.role) > rankOf(addedAs.get(e.personKey) ?? 'guest');
+  return e.type === 'grant' || e.type === 'person-add' || e.type === 'team-on';
 }
 
 interface Change { row: MergeRow; index: number; event: MergeEvent }
@@ -81,7 +83,9 @@ export function mergeRows(input: ReadonlyArray<MergeRow>): MergedAccess {
   const rows = canonical(input);
   const gone: Array<Extract<MergeEvent, { type: 'origin-gone' }>> = [];
   for (const r of rows) for (const e of r.events) if (e.type === 'origin-gone') gone.push(e);
-  const isVoid = (c: Change): boolean => widens(c.event)
+  const addedAs = new Map<string, string>();
+  for (const r of rows) for (const e of r.events) if (e.type === 'person-add' && !addedAs.has(e.personKey)) addedAs.set(e.personKey, e.role);
+  const isVoid = (c: Change): boolean => widens(c.event, addedAs)
     && gone.some((g) => g.machine === c.row.origin && g.incarnation === c.row.incarnation && c.row.seq > g.throughSeq);
 
   const all: Change[] = rows.flatMap((row) => row.events.map((event, index) => ({ row, index, event })));
@@ -111,7 +115,11 @@ export function mergeRows(input: ReadonlyArray<MergeRow>): MergedAccess {
   }
   for (const [key, changes] of byPerson) {
     if (removed.has(key)) continue;
-    const roles = current(changes).map((c) => (c.event as { role: string }).role);
+    const lowers = changes.filter((c) => (c.event as { lower?: boolean }).lower);
+    const set = changes.filter((c) => !lowers.includes(c));
+    const roleOf = (c: Change): string => (c.event as { role: string }).role;
+    // A lowering takes a role down from wherever it stands, until the owner sets one knowing of it.
+    const roles = [...current(set).map(roleOf), ...lowers.filter((l) => !set.some((d) => supersedes(d, l))).map(roleOf)];
     out.people.set(key, { role: roles.reduce((low, r) => (rankOf(r) < rankOf(low) ? r : low)) });
   }
 
@@ -141,15 +149,17 @@ export function mergeRows(input: ReadonlyArray<MergeRow>): MergedAccess {
 export type Gap =
   | { kind: 'chain-break'; origin: string; incarnation: string; afterSeq: number }
   | { kind: 'fork'; origin: string; incarnation: string; seq: number }
-  | { kind: 'new-incarnation'; origin: string; incarnation: string }
+  /** Settled by naming `previous`, the stream that lost its tail, through `throughSeq`. */
+  | { kind: 'new-incarnation'; origin: string; incarnation: string; previous: string; throughSeq: number }
   /** A row this machine cannot verify yet, because the signer's key has not reached it. */
   | { kind: 'unplaced'; origin: string; incarnation: string; seq: number };
 
 /**
  * What a machine can actually see is wrong. A row only a sleeping machine holds is none of these: it is
- * pending, and holds nobody. `firstIncarnation` says which stream of an origin was its first.
+ * pending, and holds nobody. A machine's streams follow its own numbering, so each new one proves the one
+ * before lost a tail, unless the owner named that one.
  */
-export function findGaps(input: ReadonlyArray<MergeRow>, firstIncarnation: (origin: string) => string | null): Gap[] {
+export function findGaps(input: ReadonlyArray<MergeRow>): Gap[] {
   const rows = canonical(input);
   const gone = rows.flatMap((r) => r.events.flatMap((e) => (e.type === 'origin-gone' ? [e] : [])));
   const gaps: Gap[] = [];
@@ -159,14 +169,22 @@ export function findGaps(input: ReadonlyArray<MergeRow>, firstIncarnation: (orig
     list.push(r);
     streams.set(streamOf(r), list);
   }
+  const named = (origin: string, incarnation: string): boolean => gone.some((g) => g.machine === origin && g.incarnation === incarnation);
+  // Rows from before chains are the start of an origin's history, never a lost tail.
+  const chained = [...streams.values()].filter((l) => l[0].incarnation !== UNCHAINED_INCARNATION).sort((x, y) => x[0].seq - y[0].seq || (x[0].incarnation < y[0].incarnation ? -1 : 1));
+  const lastOf = new Map<string, MergeRow[]>();
+  for (const list of chained) {
+    const { origin, incarnation } = list[0];
+    const before = lastOf.get(origin);
+    if (before && !named(origin, before[0].incarnation)) {
+      gaps.push({ kind: 'new-incarnation', origin, incarnation, previous: before[0].incarnation, throughSeq: before[before.length - 1].seq });
+    }
+    lastOf.set(origin, list);
+  }
   for (const list of streams.values()) {
     const { origin, incarnation } = list[0];
-    const named = gone.some((g) => g.machine === origin);
-    const first = firstIncarnation(origin);
-    // Rows from before chains are the start of an origin's history, never a lost tail.
-    if (first !== null && first !== incarnation && incarnation !== UNCHAINED_INCARNATION && !named) gaps.push({ kind: 'new-incarnation', origin, incarnation });
     // The owner has settled this stream: its rows count only as `mergeRows` allows, and hold nobody.
-    if (gone.some((g) => g.machine === origin && g.incarnation === incarnation)) continue;
+    if (named(origin, incarnation)) continue;
     let last: MergeRow | null = null;
     for (const r of list) {
       if (last && r.seq === last.seq) { gaps.push({ kind: 'fork', origin, incarnation, seq: r.seq }); continue; }

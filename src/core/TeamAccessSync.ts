@@ -33,20 +33,32 @@ export type PullResult = { outcomes: PeerOutcome[]; anyAnswered: boolean; lastAn
 
 /** A peer sends at most this many rows in one exchange. Each stream stays in order, so the rest is only pending. */
 export const ROWS_PER_CALL = 500;
+const MAX_PAGES = 40;
 
 /** Ask each peer for what is missing, and give it what it lacks. A peer that does not answer is not an error: laptops sleep. */
-export async function pullFromPeers(log: Pick<TeamAccessLog, 'vector' | 'heads' | 'ingest' | 'rowsBeyond'>, peers: ReadonlyArray<SyncPeer>, now: () => number = Date.now): Promise<PullResult> {
+export async function pullFromPeers(log: Pick<TeamAccessLog, 'vector' | 'unbroken' | 'heads' | 'ingest' | 'rowsBeyond'>, peers: ReadonlyArray<SyncPeer>, now: () => number = Date.now): Promise<PullResult> {
   const outcomes: PeerOutcome[] = [];
   const touched = new Set<string>();
   let lastAnsweredAt: number | null = null;
   for (const peer of peers) {
     try {
-      const { rows, vector, standing } = await peer.fetchRows(log.vector(), log.heads());
-      const result = log.ingest(rows);
+      // A long log comes in pages, and each stream stays in order.
+      let page = await peer.fetchRows(log.unbroken(), log.heads());
+      let result = log.ingest(page.rows);
+      let added = result.added;
+      let refused = result.refused;
       for (const ref of result.touched) touched.add(ref);
+      for (let i = 0; i < MAX_PAGES && page.rows.length >= ROWS_PER_CALL && result.added > 0; i += 1) {
+        page = await peer.fetchRows(log.unbroken(), log.heads());
+        result = log.ingest(page.rows);
+        added += result.added;
+        refused += result.refused;
+        for (const ref of result.touched) touched.add(ref);
+      }
+      const { vector, standing } = page;
       const held = log.vector();
       const behind = Object.entries(vector).some(([stream, seq]) => (held[stream] ?? 0) < seq);
-      outcomes.push({ machineId: peer.machineId, answered: true, added: result.added, refused: result.refused, behind, ...(standing ? { standing } : {}) });
+      outcomes.push({ machineId: peer.machineId, answered: true, added, refused, behind, ...(standing ? { standing } : {}) });
       lastAnsweredAt = now();
       const theirs = log.rowsBeyond(vector).slice(0, ROWS_PER_CALL);
       // @silent-fallback-ok — the peer answered; rows it lacks go at the next exchange.
@@ -155,6 +167,8 @@ export class TeamAccessPuller {
       if (log.healthState() === 'unreadable' || log.listDamaged()) {
         await this.repair(log);
         if (log.healthState() === 'unreadable' || log.listDamaged()) return null;
+        // Serving waits for the whole exchange below, not just this first page.
+        this.settled = false;
       }
       const result = await pullFromPeers(log, this.deps.peers(), () => this.now());
       const now = this.now();
@@ -189,14 +203,16 @@ export class TeamAccessPuller {
     }
   }
 
-  /** Any peer's rows rebuild a damaged log. With none answering, the owner's restore is the way forward. */
+  /** An answering peer is what lets a damaged machine mend itself. With none, the owner's restore is the way forward. */
   private async repair(log: TeamAccessLog): Promise<void> {
     for (const peer of this.deps.peers()) {
       try {
         const { rows } = await peer.fetchRows({}, {});
-        if (rows.length === 0) continue;
-        const { touched } = log.rebuildFromPeer(rows);
-        await this.deps.afterIngest(touched);
+        if (log.healthState() === 'unreadable') {
+          if (rows.length === 0) continue;
+          log.rebuildFromPeer(rows);
+        }
+        if (log.listDamaged()) log.rebuildLocks();
         return;
       } catch (err) {
         // @silent-fallback-ok — the next peer may answer; reported so a machine stuck damaged is seen.
@@ -205,8 +221,14 @@ export class TeamAccessPuller {
     }
   }
 
+  /** A machine the owner named as gone is not waited for and blocks nothing, until it returns on a new stream. */
+  private gone(machineId: string): boolean { return this.deps.log()?.isGone(machineId) ?? false; }
+
+  /** Is this one of this machine's peers? */
+  knows(machineId: string): boolean { return this.deps.peers().some((p) => p.machineId === machineId); }
+
   private liveness(): PeerLiveness[] {
-    return this.deps.peers().filter((p) => !this.noLog.has(p.machineId)).map((p) => ({
+    return this.deps.peers().filter((p) => !this.noLog.has(p.machineId) && !this.gone(p.machineId)).map((p) => ({
       machineId: p.machineId, lastEvidenceAt: this.evidenceAt(p.machineId), firstUnansweredAt: this.firstUnanswered.get(p.machineId) ?? null,
     }));
   }
@@ -215,7 +237,7 @@ export class TeamAccessPuller {
   belowFloor(): BelowFloor[] {
     return this.deps.peers().flatMap((p): BelowFloor[] => {
       const s = this.standing.get(p.machineId);
-      if (!s) return [];
+      if (!s || this.gone(p.machineId)) return [];
       if (s.enforcement < TEAM_ENFORCEMENT_VERSION) return [{ machineId: p.machineId, reason: 'old-build' }];
       if (!s.native) return [{ machineId: p.machineId, reason: 'native-off' }];
       return s.privacy ? [] : [{ machineId: p.machineId, reason: 'memory-privacy-off' }];

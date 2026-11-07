@@ -394,7 +394,7 @@ describe('what holds every team person', () => {
       { origin: 'A', incarnation: 'v1', seq: 1, prev: null, hash: 'h1', seen: {}, events: [] },
       { origin: 'A', incarnation: 'v1', seq: 2, prev: null, hash: 'h2', seen: {}, events: [] },
       { origin: 'A', incarnation: 'x', seq: 3, prev: 'anchor', hash: 'h3', seen: {}, events: [] },
-    ], () => 'x');
+    ]);
     expect(merged).toEqual([]);
   });
 });
@@ -851,5 +851,226 @@ describe('what must survive a crash', () => {
     expect(a.mayRead('p', 'c1', old, null)).toBe(false);
     a.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'c1', access: 'use' }]));
     expect(a.mayRead('p', 'c1', old, null)).toBe(true);
+  });
+});
+
+describe('what the access review found', () => {
+  const twoWith = () => { const a = machine('A'); const b = machine('B'); start(a); sync(a, b); return { a, b }; };
+  const files = (l: TeamAccessLog) => l as unknown as { logFile: string; confinedFile: string; lastGoodDir: string; dir: string };
+  const pullerFor = (a: TeamAccessLog, b: TeamAccessLog) => new TeamAccessPuller({
+    log: () => a, afterIngest: () => undefined,
+    peers: () => [{ machineId: 'B', fetchRows: async (have, heads) => ({ rows: b.rowsBeyond(have, heads), vector: b.vector() }) }],
+  });
+
+  it('a torn lock list leaves a healthy log alone, so a removal only this machine holds stands', async () => {
+    const { a, b } = twoWith();
+    a.ensureConfinedFile();
+    a.confine({ ref: 'c1' });
+    a.appendMachineEvents([{ type: 'lower', personKey: 'p', remove: true }]);
+    fs.writeFileSync(files(a).confinedFile, 'broken');
+    const stream = a.currentIncarnation();
+    await pullerFor(a, b).tick();
+    expect(a.state().people.has('p')).toBe(false);
+    expect(a.currentIncarnation()).toBe(stream);
+    expect(a.isConfined('c1')).toBe(true);
+    expect(fs.readdirSync(files(a).dir).some((f) => f.startsWith('log.jsonl.damaged-'))).toBe(false);
+  });
+
+  it('a damaged log keeps every row that still reads', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-salv-'));
+    const a = new TeamAccessLog({ stateDir: dir, signer: signerFor('A'), verify });
+    const b = machine('B');
+    start(a); sync(a, b);
+    a.appendMachineEvents([{ type: 'lower', personKey: 'p', remove: true }]);
+    fs.appendFileSync(files(a).logFile, 'not json\n');
+    if (fs.existsSync(files(a).lastGoodDir)) fs.renameSync(files(a).lastGoodDir, `${files(a).lastGoodDir}.aside`);
+    a.load();
+    expect(a.healthState()).toBe('unreadable');
+    await pullerFor(a, b).tick();
+    expect(a.healthState()).toBe('ok');
+    expect(a.state().people.has('p')).toBe(false);
+  });
+
+  it('a rebuild never takes a lock away, even one no row ever told of', async () => {
+    const { a, b } = twoWith();
+    a.ensureConfinedFile();
+    a.confine({ ref: 'c1' });
+    const list = files(a).confinedFile;
+    const entries = JSON.parse(fs.readFileSync(list, 'utf8'));
+    const held = Array.isArray(entries) ? entries : entries.entries;
+    held.push({ ref: 'swept' });
+    fs.writeFileSync(list, JSON.stringify(Array.isArray(entries) ? held : { ...entries, entries: held }));
+    expect(a.isConfined('swept')).toBe(true);
+    fs.writeFileSync(files(a).logFile, 'not json\n{}\n');
+    a.load();
+    await pullerFor(a, b).tick();
+    expect(a.isConfined('swept')).toBe(true);
+  });
+
+  it('naming a machine gone stops it being waited for or blocking, until it returns on a new stream', async () => {
+    const { a, b } = twoWith();
+    const clock = { now: 1_000_000 };
+    let up = true;
+    const p = new TeamAccessPuller({
+      log: () => a, afterIngest: () => undefined, now: () => clock.now, leaseEvidenceAt: () => clock.now,
+      peers: () => [{ machineId: 'B', fetchRows: async (have, heads) => { if (!up) throw new Error('no'); return { rows: b.rowsBeyond(have, heads), vector: b.vector(), standing: { enforcement: 0, native: true, privacy: true } }; } }],
+    });
+    await p.tick();
+    expect(p.belowFloor()).toHaveLength(1);
+    up = false;
+    await p.tick();
+    clock.now += 16 * 60_000;
+    expect(p.refusing()).toBe(true);
+    a.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'B', incarnation: 'none', throughSeq: 0 }]));
+    expect(p.refusing()).toBe(false);
+    expect(p.belowFloor()).toEqual([]);
+    const back = b.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    a.ingest([back]);
+    expect(a.isGone('B')).toBe(false);
+    expect(p.belowFloor()).toHaveLength(1);
+  });
+
+  it('a restore keeps rows from every machine, though their numbers overlap', () => {
+    const { a, b } = twoWith();
+    b.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    b.appendMachineEvents([{ type: 'lower', personKey: 'p', remove: true }]);
+    sync(a, b);
+    const before = a.allRows().length;
+    fs.writeFileSync(files(a).confinedFile, 'broken');
+    a.restore({ teamRefs: [], allRefs: () => [] });
+    expect(a.allRows().length).toBeGreaterThanOrEqual(before);
+    expect(a.state().people.has('p')).toBe(false);
+  });
+
+  it('a row refused on arrival comes again once it can be taken', () => {
+    let refuseIt: string | null = null;
+    const v = (r: TeamAccessRow) => (r.kind === 'machine' && r.events.some((e) => (e as { ref?: string }).ref === refuseIt) ? 'failed' as const : verify(r));
+    const a = machine('A');
+    start(a);
+    const b = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-ref-')), signer: signerFor('B'), verify: v });
+    bind(b);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    refuseIt = 'c1';
+    b.ingest(a.rowsBeyond(b.unbroken()));
+    expect(b.gaps().map((g) => g.kind)).toEqual(['chain-break']);
+    refuseIt = null;
+    b.ingest(a.rowsBeyond(b.unbroken(), b.heads()));
+    expect(b.gaps()).toEqual([]);
+  });
+
+  it('a row no known machine signed is not taken in, and locks nothing', () => {
+    const a = machine('A');
+    start(a);
+    const row = a.appendMachineEvents([{ type: 'confine', ref: 'owner-private' }]);
+    const b = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-unk-')), signer: signerFor('B'), verify: () => 'unknown', machineSigned: () => false });
+    expect(b.ingest([row]).refused).toBe(1);
+    expect(b.allRows()).toHaveLength(0);
+    expect(b.isConfined('owner-private')).not.toBe(true);
+  });
+
+  it('a team can be seen before its rows can be verified, for the lease', () => {
+    const a = machine('A');
+    start(a);
+    const b = new TeamAccessLog({ stateDir: fs.mkdtempSync(path.join(os.tmpdir(), 'team-may-')), signer: signerFor('B'), verify: () => 'unknown' });
+    b.ingest(a.allRows() as TeamAccessRow[]);
+    expect(b.state().on).toBe(false);
+    expect(b.mayHaveTeam()).toBe(true);
+    expect(machine('C').mayHaveTeam()).toBe(false);
+  });
+
+  const lose = (log: TeamAccessLog) => { (log as unknown as { mintIncarnation(): string }).mintIncarnation(); };
+
+  it('a new stream names the one before it, and settling that clears it, whatever the random names', () => {
+    for (let i = 0; i < 12; i += 1) {
+      const { a, b } = twoWith();
+      bind(b);
+      const old = a.currentIncarnation();
+      const through = a.vector()[`A/${old}`];
+      lose(a);
+      a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+      sync(a, b);
+      const [gap] = b.gaps() as Array<{ incarnation: string; previous: string; throughSeq: number }>;
+      expect(gap).toMatchObject({ incarnation: a.currentIncarnation(), previous: old, throughSeq: through });
+      a.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'A', incarnation: gap.previous, throughSeq: gap.throughSeq }]));
+      expect(a.gaps()).toEqual([]);
+    }
+  });
+
+  it('a second loss on a machine already settled once is still seen', () => {
+    const { a } = twoWith();
+    const first = a.currentIncarnation();
+    lose(a);
+    const b = machine('B');
+    a.appendMachineEvents([{ type: 'confine', ref: 'c1' }]);
+    a.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'A', incarnation: first, throughSeq: 2 }]));
+    bind(b); b.ingest(a.allRows() as TeamAccessRow[]);
+    expect(b.gaps()).toEqual([]);
+    lose(a);
+    a.appendMachineEvents([{ type: 'confine', ref: 'c2' }]);
+    b.ingest(a.allRows() as TeamAccessRow[]);
+    expect(b.gaps().map((g) => g.kind)).toContain('new-incarnation');
+  });
+
+  it('a machine can lower a role but never raise one, on one machine or several', () => {
+    const { a, b } = twoWith();
+    a.appendSignedRequest(signed([{ type: 'person-set', personKey: 'p', role: 'guest' }]));
+    sync(a, b);
+    b.appendMachineEvents([{ type: 'lower', personKey: 'p', role: 'admin' as never }]);
+    sync(a, b);
+    expect(a.state().people.get('p')?.role).toBe('guest');
+    const solo = machine('S');
+    start(solo);
+    solo.appendMachineEvents([{ type: 'lower', personKey: 'p', role: 'admin' as never }]);
+    expect(solo.state().people.get('p')?.role).toBe('member');
+    solo.appendMachineEvents([{ type: 'lower', personKey: 'p', role: 'guest' }]);
+    expect(solo.state().people.get('p')?.role).toBe('guest');
+  });
+
+  it('a lower role from a machine named gone still counts: it narrows', () => {
+    const { a, b } = twoWith();
+    const row = b.appendMachineEvents([{ type: 'confine', ref: 'c0' }]);
+    b.appendSignedRequest(signed([{ type: 'person-set', personKey: 'p', role: 'guest' }]));
+    sync(a, b);
+    a.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'B', incarnation: row.incarnation as string, throughSeq: row.seq }]));
+    expect(a.state().people.get('p')?.role).toBe('guest');
+  });
+
+  it('owned beats shared in the grants too, on every machine', () => {
+    const { a, b } = twoWith();
+    a.appendSignedRequest(signed([{ type: 'person-add', personKey: 'q', name: 'Bo', role: 'member' }]));
+    sync(a, b);
+    a.appendSignedRequest(signed([{ type: 'grant', personKey: 'p', ref: 'c1', access: 'use' }]));
+    b.appendMachineEvents([{ type: 'conversation-own', ref: 'c1', personKey: 'q' }]);
+    sync(a, b);
+    for (const l of [a, b]) {
+      expect(l.state().owned.get('c1')).toBe('q');
+      expect(l.state().grants.get('p')?.has('c1') ?? false).toBe(false);
+    }
+  });
+
+  it('ownership from a range the owner voided does not count', () => {
+    const { a, b } = twoWith();
+    const row = b.appendMachineEvents([{ type: 'confine', ref: 'c0' }]);
+    b.appendMachineEvents([{ type: 'conversation-own', ref: 'c9', personKey: 'p' }]);
+    sync(a, b);
+    expect(a.state().owned.get('c9')).toBe('p');
+    a.appendSignedRequest(signed([{ type: 'origin-gone', machine: 'B', incarnation: row.incarnation as string, throughSeq: row.seq }]));
+    expect(a.state().owned.has('c9')).toBe(false);
+  });
+
+  it('two claims to one conversation settle the same way in either arrival order', () => {
+    const { a, b } = twoWith();
+    a.appendMachineEvents([{ type: 'conversation-own', ref: 'c1', personKey: 'p' }]);
+    b.appendMachineEvents([{ type: 'conversation-own', ref: 'c1', personKey: 'q' }]);
+    sync(a, b);
+    expect(a.state().owned.get('c1')).toBe(b.state().owned.get('c1'));
+  });
+
+  it('only a verified removal counts as one', () => {
+    const { a } = twoWith();
+    expect(a.wasRemoved('p')).toBe(false);
+    a.appendMachineEvents([{ type: 'lower', personKey: 'p', remove: true }]);
+    expect(a.wasRemoved('p')).toBe(true);
   });
 });

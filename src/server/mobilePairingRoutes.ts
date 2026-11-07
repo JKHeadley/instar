@@ -54,7 +54,7 @@ import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
-import { TeamAccessLog, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
+import { TeamAccessLog, rowSignedByKnownMachine, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { attentionForNonOwner, tierAtLeast, tierOfRole, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
@@ -463,6 +463,7 @@ export class MobilePairingService {
     this.teamLogInstance = new TeamAccessLog({
       stateDir, signer: loadMachineSigner(stateDir),
       verify: (row) => verifyTeamAccessRow(row, ledger.view(), lookup),
+      machineSigned: (row) => rowSignedByKnownMachine(row, lookup),
     });
     try {
       this.teamLogInstance.backfillConfineRows();
@@ -540,8 +541,8 @@ export class MobilePairingService {
     this.teamGrantCheck?.();
     for (const d of this.devices.list()) {
       if (d.role !== 'team' || d.status === 'revoked' || !d.userId) continue;
-      // A phone can pair before its person's row arrives here, so only someone the log once held counts.
-      if (log.everHeld(d.userId) && !this.teamStanding(d.userId)) this.revokePersonPhones(d.userId);
+      // Only a verified removal revokes: a phone can pair before its person's row arrives, and a revoked key is gone for good.
+      if (log.wasRemoved(d.userId) && !this.teamStanding(d.userId)) this.revokePersonPhones(d.userId);
     }
   }
 

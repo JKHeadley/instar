@@ -271,7 +271,9 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       // Only a stream this log has rows from can be gone. This machine's earlier stream can, its current one cannot.
       if (gone.machine === deps.signer()?.machineId() && gone.incarnation === log.currentIncarnation()) return { status: 409, body: { error: 'origin-is-this-machine', detail: 'This is the machine you are connected to, so it cannot be marked as gone.' } };
       const held = log.vector()[streamKey(gone.machine, gone.incarnation)];
-      if (held === undefined || gone.throughSeq > held) return { status: 409, body: { error: 'unknown-origin', detail: 'This machine holds no such record to settle.' } };
+      // A machine with no rows here can still be retired, so it stops being waited for.
+      const noRowsPeer = held === undefined && gone.throughSeq === 0 && (svc.teamPuller?.knows(gone.machine) ?? false);
+      if (!noRowsPeer && (held === undefined || gone.throughSeq > held)) return { status: 409, body: { error: 'unknown-origin', detail: 'This machine holds no such record to settle.' } };
       appendRequest(req, deviceId);
       svc.reconcileTeamPhones();
       return { status: 200, body: { ok: true } };
