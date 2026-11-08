@@ -4,6 +4,7 @@
  * bearer token alone. A yes needs a single-use token and the PIN, and is refused for a service
  * with no proven setup. Absent ledger answers 503.
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
@@ -185,7 +186,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
 
   const ledgerOr503 = (res: Response): RecommendedServicesLedger | null => {
     const ledger = deps.ledger();
-    if (!ledger) res.status(503).json({ error: 'recommended-services-unavailable', detail: 'Choices cannot be saved on this machine yet, because it has no machine identity.' });
+    if (!ledger) res.status(503).json(storageErrorResponse({ error: 'recommended-services-unavailable', detail: 'Choices cannot be saved on this machine yet, because it has no machine identity.' }, deps.stateDir));
     return ledger;
   };
 
@@ -237,7 +238,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     try {
       ledger.recordNo({ service: req.params.id, reason: reason as NoReason, shutdown: shutdown ? 'authorized' : 'none', origin: 'owner-surface' });
     } catch {
-      res.status(503).json({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' });
+      res.status(503).json(storageErrorResponse({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' }, deps.stateDir));
       return;
     }
     // Open pages refuse this no anyway through their list of known nos. This only tidies up.
@@ -344,7 +345,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       try {
         ledger.recordNo({ service: row.id, reason: reason as NoReason, shutdown: 'none', origin: 'owner-surface', offerTextHash: binding.offerTextHash });
       } catch {
-        res.status(503).json({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' });
+        res.status(503).json(storageErrorResponse({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' }, deps.stateDir));
         return;
       }
       try {
@@ -379,7 +380,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     try {
       yes = ledger.recordYes({ service: row.id, origin: binding.origin, offerTextHash: binding.offerTextHash, grantMachine: binding.targetMachine, principal: binding.owner });
     } catch {
-      res.status(503).json({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' });
+      res.status(503).json(storageErrorResponse({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' }, deps.stateDir));
       return;
     }
     // The yes is saved and stands. These two are records of it, so a failure here is reported, not refused.

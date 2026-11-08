@@ -14,6 +14,7 @@
  * the machine that answered (`machine: { key, name }`, the same key as GET /mobile/machines). An agent on more than
  * one machine otherwise shows "someone at this Mac" with no way to tell which Mac.
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, singleFlight } from './mobileCapacityRoutes.js';
 import { summarizeHealth, type HealthCurrentState, type HealthIssuesSummary } from '../monitoring/healthIssues.js';
@@ -175,7 +176,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
       res.json({ ok: true, note, ...page(answer(raw)) });
     } catch (err) {
       report('POST /mobile/health-issues/choices', err);
-      res.status(500).json({ error: 'choice-not-saved', detail: 'I couldn’t save that, so nothing changed. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'choice-not-saved', detail: 'I couldn’t save that, so nothing changed. Try again.' }, req.app.locals.stateDir));
     }
   });
 
@@ -193,7 +194,7 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
       res.json({ ok: true, note, ...page(answer(raw)) });
     } catch (err) {
       report('POST /mobile/health-issues/choices/undo', err);
-      res.status(500).json({ error: 'choice-not-saved', detail: 'I couldn’t save that, so it’s still hidden. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'choice-not-saved', detail: 'I couldn’t save that, so it’s still hidden. Try again.' }, req.app.locals.stateDir));
     }
   });
 
