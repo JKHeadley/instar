@@ -12,6 +12,8 @@
  *   POST   /mobile/chat/app/:key                     send     {text, requestId}
  *   GET    /mobile/chat/app/:key/messages?before=    browse (backwards, (at,eventId) order)
  *   GET    /mobile/chat/app/:key/events?cursor=      sync (this machine's ingest order)
+ *   POST   /mobile/conversations/read                 read report {marks:[{ref,id,atMs,machine?}]} (mobile-unread-messages §3.5)
+ *   GET    /mobile/conversations/read-markers?cursor= this machine's merged read markers (Bearer only; the catch-up between machines)
  *
  * Every mutation is idempotent through MobileChatRequestStore keyed on (deviceId, requestId)
  * with an operation-specific payload hash. The send keeps the order of §4.2: authenticate →
@@ -25,6 +27,7 @@
  * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
@@ -41,7 +44,8 @@ import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileCh
 import {
   cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
 } from '../core/appConversationText.js';
-import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
+import { isOwnerPerson } from '../core/MobilePeople.js';
+import { messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
 import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import {
   MAX_ATTACHMENTS, pushPreviewBody, type AppAttachment,
@@ -57,6 +61,8 @@ import type { RouteContext } from './routes.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { deviceTextForRow } from '../core/appPlatformMedia.js';
+import { ConversationUnreadService, type Reader, type UnreadFields } from '../core/ConversationUnreadService.js';
+import { isMessagePosition, isReaderKey, CATCH_UP_PAGE } from '../core/ConversationReadMarkers.js';
 import {
   checkSignedFiles, claimMediaUploads, mediaRecordTooLarge, preflightMediaAttachments, publishMediaMessage, signedFileHashParts,
   type SignedAttachment,
@@ -77,6 +83,22 @@ export interface ConversationListRow {
   machine?: string | null;
   /** People and roles: an app conversation an MSP phone created (its person, machine-namespaced). */
   ownerPerson?: ConversationOwner | null;
+  /** Unread (mobile-unread-messages §3.5), present only for a reader. `unreadCount` absent ⇒ unknown. */
+  hasUnread?: boolean;
+  unreadCount?: number;
+  unreadMore?: true;
+  readUpTo?: { atMs: number; id: string } | null;
+}
+
+/** The unread fields of a row as the app receives them (§3.5). */
+function unreadOut(f: UnreadFields): Pick<ConversationListRow, 'hasUnread' | 'unreadCount' | 'unreadMore' | 'readUpTo'> {
+  return { hasUnread: f.hasUnread, ...(f.unreadCount !== undefined ? { unreadCount: f.unreadCount } : {}), ...(f.unreadMore ? { unreadMore: true as const } : {}), readUpTo: f.readUpTo };
+}
+/** A peer's unread fields, re-validated (§3.5: type and range checks). */
+function peerUnread(r: Record<string, unknown>): Pick<ConversationListRow, 'hasUnread' | 'unreadCount' | 'unreadMore' | 'readUpTo'> {
+  if (typeof r.hasUnread !== 'boolean') return {};
+  const count = typeof r.unreadCount === 'number' && Number.isSafeInteger(r.unreadCount) && r.unreadCount >= 0 && r.unreadCount <= 100_000 ? r.unreadCount : undefined;
+  return { hasUnread: r.hasUnread, ...(count !== undefined ? { unreadCount: count } : {}), ...(r.unreadMore === true ? { unreadMore: true as const } : {}), readUpTo: isMessagePosition(r.readUpTo) ? r.readUpTo : null };
 }
 
 export function conversationSortKey(r: Pick<ConversationListRow, 'id' | 'platform'>): string { return `${r.platform}:${r.id}`; }
@@ -134,10 +156,10 @@ function sanitizePeerConversation(raw: unknown, machine: string): ConversationLi
   const lastActivity = r.lastActivity === null || r.lastActivity === undefined ? null : strictIso(r.lastActivity);
   if (lastActivity === undefined) return null;
   if (r.platform === 'app' && isAppConversationKey(r.id)) {
-    return { id: r.id, platform: 'app', title: s(r.title, 80), lastActivity, lastPreview: s(r.lastPreview, 140), machine, ownerPerson: validConversationOwner(r.ownerPerson) };
+    return { id: r.id, platform: 'app', title: s(r.title, 80), lastActivity, lastPreview: s(r.lastPreview, 140), machine, ownerPerson: validConversationOwner(r.ownerPerson), ...peerUnread(r) };
   }
   if (r.platform === 'telegram' && typeof r.id === 'number' && Number.isSafeInteger(r.id) && r.id > 0) {
-    return { id: r.id, platform: 'telegram', title: s(r.title, 128), lastActivity, lastPreview: s(r.lastPreview, 140), machine };
+    return { id: r.id, platform: 'telegram', title: s(r.title, 128), lastActivity, lastPreview: s(r.lastPreview, 140), machine, ...peerUnread(r) };
   }
   // A Slack conversation's id is the peer's local durable id (mobile-native-conversations §4.9).
   if (r.platform === 'slack' && typeof r.id === 'number' && Number.isSafeInteger(r.id) && r.id < 0) {
@@ -230,6 +252,8 @@ export interface MobileConversationRouteDeps {
   pool?: PoolReadCtx | null;
   /** The agent's current origin display bits (message-origin-all-platforms §5). Absent ⇒ all on. */
   originDisplay?: () => OriginDisplaySettings;
+  /** Unread counts and read markers (mobile-unread-messages). Absent or off ⇒ no read fields, the read routes 503. */
+  unread?: ConversationUnreadService | null;
   now?: () => number;
 }
 
@@ -401,7 +425,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     let r: ReturnType<typeof store.reserve>;
     try { r = store.reserve(deviceId, requestId, hash, 0, extra); } catch {
-      res.status(503).json({ error: 'conversation-unavailable', detail: 'The request could not be recorded, so nothing was changed. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'conversation-unavailable', detail: 'The request could not be recorded, so nothing was changed. Try again.' }, svc!.deps.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -475,6 +499,39 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     return { rows: merged.rows, more: merged.nextCursor !== null, slackOwnerUnset };
   };
 
+  /** Every local row strictly after a cursor (the pre-filter for `unreadBeyondPage`, §3.5): in-memory rows plus one app page. */
+  const localRowsAfter = (cursor: string | null): ConversationListRow[] => {
+    const c = parseListCursor(cursor);
+    const out: ConversationListRow[] = [];
+    try {
+      for (const x of svc!.store.listConversations({ limit: 500, cursor: c ? cursor : null }).conversations) {
+        out.push({ id: x.conversationKey, platform: 'app', title: x.title, lastActivity: x.lastActivity ?? x.createdAt, lastPreview: null, ...(x.ownerPerson ? { ownerPerson: x.ownerPerson } : {}) });
+      }
+    } catch { /* @silent-fallback-ok — the flag is a hint; a failed read leaves it false */ }
+    try {
+      for (const t of deps.telegramTopics?.() ?? []) {
+        const r: ConversationListRow = { id: t.topicId, platform: 'telegram', title: t.topicName, lastActivity: t.lastActivity, lastPreview: null };
+        if (isAfterListCursor(r, c)) out.push(r);
+      }
+    } catch { /* @silent-fallback-ok — as above */ }
+    try {
+      for (const x of deps.slackConversations?.() ?? []) {
+        const r: ConversationListRow = { id: x.id, platform: 'slack', title: x.title, lastActivity: x.lastActivity, lastPreview: null, machine: deps.machineId() };
+        if (isAfterListCursor(r, c)) out.push(r);
+      }
+    } catch { /* @silent-fallback-ok — as above */ }
+    return out;
+  };
+
+  /** The unread service when it is on, else null. */
+  const unreadOn = (): ConversationUnreadService | null => (deps.unread && deps.unread.enabled() ? deps.unread : null);
+  /** The reader of a list or history request: the phone's person, or the agent's forwarded `reader=` key (§3.5). */
+  const readerOf = (req: Request): Reader | null => {
+    const u = unreadOn();
+    if (!u) return null;
+    return u.resolveReader({ person: devicePersonOf(req), viaDevice: principalOf(req).kind === 'device', readerParam: req.query.reader });
+  };
+
   router.get('/mobile/conversations', async (req: Request, res: Response) => {
     if (!readGate(req, res)) return;
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
@@ -484,37 +541,124 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
+    const person = devicePersonOf(req);
+    /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
+    const shownPreview = (r: ConversationListRow): ConversationListRow => {
+      if (person?.role !== 'team' || r.platform !== 'app') return r;
+      const newest = svc!.store.browseMessages(String(r.id), null, 100).messages.filter((m) => deps.pairing.mayReadStored(person, String(r.id), m)).pop();
+      return { ...r, lastPreview: newest ? messagePreview(newest) : null };
+    };
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
       if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
       return deviceMayUse(deps.pairing, req, String(r.id));
+    }).map(shownPreview);
+    // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
+    // anything after the page is unread. A Bearer read without a forwarded reader gets none.
+    const unread = unreadOn();
+    const reader = readerOf(req);
+    if (unread && reader) unread.touchBaseline(reader);
+    const self = deps.machineId();
+    const strip = (r: ConversationListRow): ConversationListRow => { const { hasUnread: _h, unreadCount: _c, unreadMore: _m, readUpTo: _r, ...rest } = r; return rest; };
+    const withFields = (rows: ConversationListRow[], keepPeerTelegram: boolean): ConversationListRow[] => rows.map((r) => {
+      if (!unread || !reader) return strip(r);
+      // App rows are counted here (every machine holds every app conversation); a Telegram row keeps
+      // the count of the machine that listed it; a Slack row is always this machine's.
+      if (keepPeerTelegram && r.platform === 'telegram' && r.machine && r.machine !== self) return r;
+      const f = unread.rowFields(reader, r);
+      return f ? { ...strip(r), ...unreadOut(f) } : strip(r);
     });
-    if (req.query.scope !== 'pool') {
+    const totals = (rows: ConversationListRow[], beyond: boolean): Record<string, unknown> => {
+      if (!unread || !reader) return {};
+      let unreadTotal = 0; let unreadTotalMore = false;
+      for (const r of rows) {
+        if (r.unreadCount !== undefined) unreadTotal += r.unreadCount; else if (r.hasUnread) unreadTotalMore = true;
+        if (r.unreadMore) unreadTotalMore = true;
+      }
+      return { unreadTotal, unreadTotalMore, unreadBeyondPage: beyond };
+    };
+    const beyondLocal = (page: ConversationListRow[], more: boolean): boolean => {
+      if (!unread || !reader || !more) return false;
+      const last = page[page.length - 1];
+      return visible(localRowsAfter(last ? listCursorFor(last) : cursor)).some((r) => {
+        const f = unread.rowFields(reader, { ...r, lastActivity: r.lastActivity });
+        return !!f && f.hasUnread;
+      });
+    };
+    // A peer's preview cannot be judged here, so a team phone lists what this machine holds.
+    if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
-      res.json({ conversations: visible(m.rows), nextCursor: m.nextCursor, ...ownerNote });
+      const rows = withFields(visible(m.rows), false);
+      res.json({ conversations: rows, nextCursor: m.nextCursor, ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
     // same order (lossless), duplicates collapsed; a dark machine is a `pool.failed` row.
-    const self = deps.machineId();
-    const q = `/mobile/conversations?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}`;
+    const readerQ = reader ? `&reader=${encodeURIComponent(reader.key)}` : '';
+    const q = `/mobile/conversations?limit=${limit}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''}${readerQ}`;
+    let peerBeyond = false;
     const peers = deps.pool
-      ? await fetchPeers(deps.pool, q, MAX_POOL_LIST_BYTES, (body, machineId) => ({
-        rows: (Array.isArray(body.conversations) ? body.conversations.slice(0, limit) : [])
-          .map((r) => sanitizePeerConversation(r, machineId))
-          .filter((r): r is ConversationListRow => r !== null && isAfterListCursor(r, parseListCursor(cursor))),
-        more: typeof body.nextCursor === 'string' && body.nextCursor.length > 0,
-      }))
+      ? await fetchPeers(deps.pool, q, MAX_POOL_LIST_BYTES, (body, machineId) => {
+        if (body.unreadBeyondPage === true) peerBeyond = true;
+        return {
+          rows: (Array.isArray(body.conversations) ? body.conversations.slice(0, limit) : [])
+            .map((r) => sanitizePeerConversation(r, machineId))
+            .filter((r): r is ConversationListRow => r !== null && isAfterListCursor(r, parseListCursor(cursor))),
+          more: typeof body.nextCursor === 'string' && body.nextCursor.length > 0,
+        };
+      })
       : { results: [], failed: [] };
     // A peer's Slack rows are never listed: a Slack conversation id is local to the machine that
     // minted it, and the Slack routes on this machine look ids up here, so a peer row could name a
     // different conversation that shares the number (and would otherwise collapse onto this
     // machine's row of the same id). Only this machine's own Slack rows are listed.
     const peerPages = peers.results.map((p) => ({ ...p, rows: p.rows.filter((r) => r.platform !== 'slack') }));
-    const m = mergeConversationPages([{ rows: local.rows.map((r) => ({ ...r, machine: self })), more: local.more }, ...peerPages], limit);
+    const localRows = withFields(local.rows.map((r) => ({ ...r, machine: self })), false);
+    const m = mergeConversationPages([{ rows: localRows, more: local.more }, ...peerPages], limit);
     // A peer's app row is checked against THIS machine's copy of the conversation: one not
     // replicated here yet is not shown to an MSP phone (fail closed).
-    res.json({ conversations: visible(m.rows), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed } });
+    const rows = withFields(visible(m.rows), true);
+    // Unread beyond this page: a peer said so, something local after the page is unread, or a visible
+    // row the merge dropped past the page limit is unread (§3.5).
+    let beyond = peerBeyond || beyondLocal(m.rows, local.more);
+    if (unread && reader && !beyond) {
+      const all = mergeConversationPages([{ rows: localRows, more: false }, ...peerPages.map((p) => ({ ...p, more: false }))], 10_000).rows;
+      beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
+    }
+    res.json({ conversations: rows, nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
+  });
+
+  // ── Read reports (mobile-unread-messages §3.5) ──
+  const unreadOff = (res: Response) => res.status(503).json({ error: 'unread-off', detail: 'Unread counts are turned off on this agent.' });
+  router.post('/mobile/conversations/read', async (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!deps.pairing.enabled() || !svc) { off(res); return; }
+    const unread = unreadOn();
+    if (!unread) { unreadOff(res); return; }
+    const p = principalOf(req);
+    if (p.kind !== 'device' && p.kind !== 'token') { res.status(403).json({ error: 'operator-device-required' }); return; }
+    // The agent itself has no reader: a Bearer request carries the forwarded key or is refused.
+    if (p.kind === 'token' && !isReaderKey(req.query.reader)) { res.status(400).json({ error: 'reader-required', detail: 'A Bearer read report must name the reader it is forwarded for.' }); return; }
+    const reader = unread.resolveReader({ person: devicePersonOf(req), viaDevice: p.kind === 'device', readerParam: req.query.reader });
+    if (!reader) { res.status(403).json({ error: 'operator-device-required' }); return; }
+    const marks = ConversationUnreadService.parseMarks(req.body);
+    if (!marks) { res.status(400).json({ error: 'bad-marks', detail: 'Send 1-50 marks, each with ref, id and atMs.' }); return; }
+    if (reader.viaDevice) unread.touchBaseline(reader);
+    // A request that carries `reader=` is never forwarded again (no loops, no pool-wide fan-out).
+    const results = await unread.report(reader, marks, { forwarded: p.kind === 'token' });
+    res.json({ results });
+  });
+
+  // ── Catch-up between my machines (§3.3): Bearer only, never a phone (not on the device allowlist) ──
+  router.get('/mobile/conversations/read-markers', (req: Request, res: Response) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!deps.pairing.enabled() || !svc) { off(res); return; }
+    const unread = unreadOn();
+    if (!unread) { unreadOff(res); return; }
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'agent-token-required' }); return; }
+    const cursor = typeof req.query.cursor === 'string' ? req.query.cursor : null;
+    const limit = Math.max(1, Math.min(CATCH_UP_PAGE, Number(req.query.limit) || CATCH_UP_PAGE));
+    res.json(unread.exportPage(cursor, limit));
   });
 
   // ── Rename ──
@@ -656,7 +800,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: key, messageId }); } catch {
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: request could not be recorded', context: { messageId, deviceId } });
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, svc!.deps.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -680,7 +824,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: message could not be saved', context: { messageId, deviceId, files: stored.length } });
       if (stored.length > 0) featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files not published: message could not be saved', context: { messageId, files: stored.length } });
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, svc!.deps.stateDir));
       return;
     }
     for (const a of stored) {
@@ -837,7 +981,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
-    const pool = req.query.scope === 'pool';
+    const reader = devicePersonOf(req);
+    // A peer's rows cannot be judged here, so a team phone reads what this machine holds.
+    const pool = req.query.scope === 'pool' && reader?.role !== 'team';
     const live = svc!.liveConversation(key);
     // §4.8: a pool read also covers what has not replicated here yet, so a conversation this
     // machine has never seen is read from the peers. One it knows is deleted stays a 404.
@@ -846,10 +992,18 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const before = typeof req.query.before === 'string' ? req.query.before : null;
     const page = live ? svc!.store.browseMessages(key, before, limit) : { messages: [], nextBefore: null };
+    const shown = page.messages.filter((m) => deps.pairing.mayReadStored(reader, key, m));
     const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
     const originCtx = { display, selfMachineId: deps.machineId() };
-    const rows = page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx));
-    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore }); return; }
+    const rows = shown.map((m) => {
+      const row = historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx);
+      const heldFrom = reader === null || isOwnerPerson(reader) ? deps.pairing.heldFrom(key, m) : [];
+      return heldFrom.length > 0 ? { ...row, heldFrom } : row;
+    });
+    // Unread (§3.5): a device reader's effective position, for the "Unread messages" divider.
+    const unreadReader = principalOf(req).kind === 'device' ? readerOf(req) : null;
+    const readUpTo = unreadReader && unreadOn() ? { readUpTo: unreadOn()!.readUpTo(unreadReader, `app:${key.toLowerCase()}`) } : {};
+    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
     // machine cannot check it: `originVerified: "unknown"`, never the peer's verdict. Never
@@ -883,7 +1037,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const oldest = pageRows[pageRows.length - 1];
     res.json({
       conversationKey: key, messages: pageRows.reverse(),
-      nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed },
+      nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed }, ...readUpTo,
     });
   });
 
@@ -902,7 +1056,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // A deleted conversation, or a reply not replicated to this machine yet: the phone keeps the generic text.
     const ev = svc.liveConversation(key) ? svc.store.getMessageEvent(key, messageId) : null;
     const m = ev as unknown as { role?: string; text?: unknown; attachments?: AppAttachment[] } | null;
-    if (!m || m.role !== 'agent') { res.status(404).json({ error: 'not-found' }); return; }
+    if (!m || m.role !== 'agent' || !deps.pairing.mayReadMessageId(devicePersonOf(req), key, messageId)) { res.status(404).json({ error: 'not-found' }); return; }
     const name = deps.config.projectName ?? 'agent';
     res.json({ title: name.charAt(0).toUpperCase() + name.slice(1), body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
   });
@@ -917,7 +1071,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const page = svc!.store.syncEvents(key, typeof req.query.cursor === 'string' ? req.query.cursor : null, limit);
     res.json({
       conversationKey: key,
-      events: page.events.map((e) => {
+      events: page.events.filter((e) => {
+        // A message, and anything about one, such as its transcript.
+        const about = (e as { messageId?: unknown }).messageId;
+        // Text about a message that has not reached this machine waits for it.
+        if (typeof about !== 'string' || (e.kind !== 'transcript' && !svc!.store.hasMessage(about))) return true;
+        return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
+      }).map((e) => {
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
         return {
           ...rest,

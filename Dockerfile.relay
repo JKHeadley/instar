@@ -16,16 +16,23 @@ RUN corepack enable && pnpm install --frozen-lockfile --ignore-scripts && \
     npm run build-release
 
 # Copy source and build
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.relay.json ./
 COPY src/ src/
-COPY scripts/ scripts/
-RUN pnpm build
+# The relay has no desktop helper, scaffold, or standards-registry consumer.
+# Compile its transitive entrypoint graph without the full application packager,
+# which needs authored docs and template Markdown excluded from this context.
+COPY scripts/package-recovery-root.mjs scripts/
+RUN node node_modules/typescript-native/bin/tsc --project tsconfig.relay.json && node scripts/package-recovery-root.mjs
 
 # ── Production image ───────────────────────────────────────────────
 
 FROM node:22-alpine
 
 WORKDIR /app
+
+ARG RELAY_BUILD_REVISION
+ENV RELAY_BUILD_REVISION=${RELAY_BUILD_REVISION}
+LABEL org.opencontainers.image.revision=${RELAY_BUILD_REVISION}
 
 # Build tools for better-sqlite3 native addon
 RUN apk add --no-cache python3 make g++

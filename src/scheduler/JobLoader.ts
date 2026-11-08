@@ -454,6 +454,11 @@ export function validateJob(job: unknown, index?: number): void {
     }
   }
 
+  // Work weight (resource-aware placement §5) — optional
+  if (j.workWeight !== undefined && j.workWeight !== 'light' && j.workWeight !== 'standard' && j.workWeight !== 'heavy') {
+    throw new Error(`${prefix}: "workWeight" must be "light", "standard" or "heavy" if provided`);
+  }
+
   // Grounding config — validate structure if present
   if (j.grounding !== undefined) {
     validateGrounding(j.grounding, prefix);

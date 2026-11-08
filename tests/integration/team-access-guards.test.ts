@@ -17,7 +17,7 @@ import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, t
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
 import { createTeamRouter } from '../../src/server/teamRoutes.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
-import { actOnUrgent, createAppOwnerReceiver, parseAppForward, type AppPoolHandle } from '../../src/core/appConversationPool.js';
+import { actOnUrgent, createAppDrainDeliver, createAppOwnerReceiver, forwardSpeakerName, parseAppForward, type AppPoolHandle } from '../../src/core/appConversationPool.js';
 import type { SessionOwnershipRecord } from '../../src/core/SessionOwnership.js';
 import type { InboundMessage } from '../../src/core/SessionRouter.js';
 import type { AppDispatchInput } from '../../src/core/appInboundDispatch.js';
@@ -97,7 +97,7 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createTeamRouter(pairing, {
     signer: () => signer, applyConversationChange: async (_r, c) => c(), isSystemTopic: () => false, isJobTopic: () => false,
-    ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }), logsDir: path.join(dir, 'logs'),
+    ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }), logsDir: path.join(dir, 'logs'), stateDir: dir, conversationTitle: () => null,
     restoreRefs: () => ({ teamRefs: [], allRefs: () => [] }), requireMemoryPrivacy: () => true,
   }));
   app.use(createRoutes(ctx));
@@ -289,7 +289,7 @@ describe('the same rules through a conversation on another machine (app-conversa
       receiver.accepted(m.sessionKey, m.messageId, row);
       return parseAppForward(row)!;
     };
-    return { holder, owner, routed, onOwner, verdict };
+    return { holder, owner, routed, onOwner, verdict, receiver };
   }
   const talk = async (m: Awaited<ReturnType<typeof moved>>, who: 'mia' | 'owner', text: string) => {
     const p = who === 'mia' ? m.holder.mia : m.holder.owner;
@@ -361,6 +361,158 @@ describe('the same rules through a conversation on another machine (app-conversa
     expect(m.owner.dispatched[1].memoryPersonId).toBeNull();
   });
 
+  /** The route's real forward, as a row with its fields changed: an older holder, or a damaged one. */
+  const rowOf = (m: Awaited<ReturnType<typeof moved>>, change: (p: Record<string, unknown>) => void = () => undefined) => {
+    const last = m.routed[m.routed.length - 1];
+    const p = JSON.parse(JSON.stringify(last.payload)) as Record<string, unknown>;
+    change(p);
+    return { sessionKey: last.sessionKey, messageId: last.messageId, payload: JSON.stringify(p), senderEnvelope: last.senderEnvelope };
+  };
+  const ready = (m: Awaited<ReturnType<typeof moved>>, key: string) => {
+    if (!m.owner.svc.liveConversation(key)) m.owner.svc.applyCreate('d', rid(), key, 'Moved');
+    m.owner.svc.channels.register(String(m.owner.registry.appAliasFor(key)), 'sess-owner');
+  };
+  const handover = { commitReceipt: () => true, stopRecheck: () => false };
+  const landsHere = (m: Awaited<ReturnType<typeof moved>>, h: Partial<typeof handover> = {}) => {
+    const deliver = createAppDrainDeliver({ service: () => m.owner.svc, routerReady: () => true, route: async () => ({ action: 'handled-locally', acked: true }) });
+    return (row: ReturnType<typeof rowOf>) => deliver(row, { ...handover, ...h });
+  };
+
+  it('a row with no scope, from an older holder or the queue, still stops only that conversation', async () => {
+    const m = await moved();
+    const a = await talk(m, 'mia', 'stop');
+    ready(m, a.key);
+    const row = rowOf(m, (p) => { delete p.stopScope; });
+    expect(parseAppForward(row.payload)!.stopScope).toBe('conversation');
+    m.receiver.accepted(row.sessionKey, row.messageId, row.payload);
+    expect(m.owner.spies.stops).toEqual(['conversation']);
+    await landsHere(m)({ ...row, messageId: 'another-attempt' });
+    expect(m.owner.spies.stops).toEqual(['conversation', 'conversation']);
+    // The owner's own stop stays whole: the field is forced only for a team sender.
+    const b = await talk(m, 'owner', 'stop');
+    expect(parseAppForward(rowOf(m).payload)!.stopScope).toBeUndefined();
+    expect(b.r.body.deliveryState).toBe('intercepted');
+  });
+
+  it('a team send with no person is refused on the owner and in a drain, never run as the owner\'s', async () => {
+    const m = await moved();
+    const a = await talk(m, 'mia', 'hello');
+    ready(m, a.key);
+    const row = rowOf(m, (p) => { p.memoryPersonId = null; });
+    m.receiver.ingest(row.sessionKey, row.payload);
+    m.receiver.accepted(row.sessionKey, row.messageId, row.payload);
+    await vi.waitFor(() => expect(m.owner.svc.store.deliveryState(row.messageId)).toBe('refused'));
+    const held = await talk(m, 'mia', 'hello again');
+    ready(m, held.key);
+    const heldRow = rowOf(m, (p) => { p.memoryPersonId = null; });
+    m.receiver.ingest(heldRow.sessionKey, heldRow.payload);
+    expect(await landsHere(m)(heldRow)).toEqual({ kind: 'local-delivered' });
+    expect(m.owner.svc.store.deliveryState(heldRow.messageId)).toBe('refused');
+    expect(m.owner.dispatched).toEqual([]);
+  });
+
+  it('only the owner\'s own message may fall back to the owner\'s name', async () => {
+    const m = await moved();
+    const a = await talk(m, 'mia', 'hello');
+    const noName = parseAppForward(rowOf(m, (p) => { p.ownerName = null; }).payload)!;
+    expect(forwardSpeakerName(m.owner.svc, noName)).toBe('Mia');
+    const blank = parseAppForward(rowOf(m, (p) => { p.ownerName = null; delete (p.event as Record<string, unknown>).senderName; }).payload)!;
+    expect(forwardSpeakerName(m.owner.svc, blank)).toBe('Another person');
+    for (const role of ['msp', 'team']) {
+      const other = parseAppForward(rowOf(m, (p) => { p.ownerName = null; const e = p.event as Record<string, unknown>; e.senderRole = role; delete e.senderName; }).payload)!;
+      expect(forwardSpeakerName(m.owner.svc, other)).not.toBe('Ann');
+    }
+    const owners = parseAppForward(rowOf(m, (p) => { p.ownerName = null; const e = p.event as Record<string, unknown>; e.senderRole = 'owner'; }).payload)!;
+    expect(forwardSpeakerName(m.owner.svc, owners)).toBe('Ann');
+    ready(m, a.key);
+    const row = rowOf(m, (p) => { p.ownerName = null; });
+    m.receiver.ingest(row.sessionKey, row.payload);
+    m.receiver.accepted(row.sessionKey, row.messageId, row.payload);
+    await vi.waitFor(() => expect(m.owner.dispatched).toHaveLength(1));
+    expect(m.owner.dispatched[0].ownerName).toBe('Mia');
+  });
+
+  it('a team event whose signature failed does nothing: no stop, no send. One not yet checkable still runs', async () => {
+    const m = await moved();
+    const a = await talk(m, 'mia', 'stop');
+    ready(m, a.key);
+    const verify = vi.spyOn(m.owner.svc, 'verify').mockReturnValue('failed');
+    const stop = rowOf(m);
+    m.receiver.ingest(stop.sessionKey, stop.payload);
+    m.receiver.accepted(stop.sessionKey, stop.messageId, stop.payload);
+    expect(m.owner.spies.stops).toEqual([]);
+    expect(m.owner.svc.store.deliveryState(stop.messageId)).toBe('refused');
+    const b = await talk(m, 'mia', 'hello');
+    ready(m, b.key);
+    const send = rowOf(m);
+    m.receiver.ingest(send.sessionKey, send.payload);
+    m.receiver.accepted(send.sessionKey, send.messageId, send.payload);
+    await vi.waitFor(() => expect(m.owner.svc.store.deliveryState(send.messageId)).toBe('refused'));
+    expect(m.owner.dispatched).toEqual([]);
+    const c = await talk(m, 'mia', 'hello there');
+    ready(m, c.key);
+    const held = rowOf(m);
+    m.receiver.ingest(held.sessionKey, held.payload);
+    expect(await landsHere(m)(held)).toEqual({ kind: 'local-delivered' });
+    expect(m.owner.svc.store.deliveryState(held.messageId)).toBe('refused');
+    verify.mockReturnValue('unknown');
+    const d = await talk(m, 'mia', 'once more');
+    ready(m, d.key);
+    const later = rowOf(m);
+    m.receiver.ingest(later.sessionKey, later.payload);
+    m.receiver.accepted(later.sessionKey, later.messageId, later.payload);
+    await vi.waitFor(() => expect(m.owner.dispatched).toHaveLength(1));
+    // The owner's own failed verdict keeps today's policy: delivered, and flagged by the verdict.
+    verify.mockReturnValue('failed');
+    const e = await talk(m, 'owner', 'from the owner');
+    ready(m, e.key);
+    const own = rowOf(m);
+    m.receiver.ingest(own.sessionKey, own.payload);
+    m.receiver.accepted(own.sessionKey, own.messageId, own.payload);
+    await vi.waitFor(() => expect(m.owner.dispatched).toHaveLength(2));
+  });
+
+  describe('the drain', () => {
+    it('delivers a team send as theirs once, and acts on a held stop in its scope', async () => {
+      const m = await moved();
+      const a = await talk(m, 'mia', 'hello');
+      ready(m, a.key);
+      const row = rowOf(m);
+      m.receiver.ingest(row.sessionKey, row.payload);
+      const deliver = landsHere(m);
+      expect(await deliver(row)).toEqual({ kind: 'local-delivered' });
+      expect(m.owner.dispatched).toHaveLength(1);
+      expect(m.owner.dispatched[0].memoryPersonId).toBe('mia');
+      expect(m.owner.svc.store.deliveryState(row.messageId)).toBe('delivered');
+      await deliver(row); // already handled: never a second dispatch
+      expect(m.owner.dispatched).toHaveLength(1);
+      const b = await talk(m, 'mia', 'stop');
+      ready(m, b.key);
+      const stop = rowOf(m, (p) => { delete p.stopScope; });
+      m.receiver.ingest(stop.sessionKey, stop.payload);
+      expect(await deliver(stop)).toEqual({ kind: 'local-delivered' });
+      expect(m.owner.spies.stops).toEqual(['conversation']);
+      expect(m.owner.svc.store.deliveryState(stop.messageId)).toBe('intercepted');
+    });
+
+    it('answers for every way a row does not land here', async () => {
+      const m = await moved();
+      const a = await talk(m, 'mia', 'hello');
+      ready(m, a.key);
+      const row = rowOf(m);
+      m.receiver.ingest(row.sessionKey, row.payload);
+      const via = (out: Record<string, unknown>) => createAppDrainDeliver({ service: () => m.owner.svc, routerReady: () => true, route: async () => out as never });
+      expect(await via({ action: 'queued', detail: 'mid-move' })(row, handover)).toEqual({ kind: 'un-routable', reason: 'mid-move' });
+      expect(await via({ action: 'forwarded' })(row, handover)).toEqual({ kind: 'remote-delivered' });
+      expect(await landsHere(m, { commitReceipt: () => false })(row)).toEqual({ kind: 'handover-refused' });
+      expect(await landsHere(m, { stopRecheck: () => true })(row)).toEqual({ kind: 'stopped-before-inject' });
+      expect(m.owner.dispatched).toEqual([]);
+      expect(await via({ action: 'rejected' })(row, handover)).toEqual({ kind: 'sender-rejected' });
+      expect(m.owner.svc.store.deliveryState(row.messageId)).toBe('refused');
+      expect((await createAppDrainDeliver({ service: () => m.owner.svc, routerReady: () => true, route: async () => ({ action: 'forwarded' }) as never })({ ...row, payload: 'not a forward' }, handover)).kind).toBe('failed');
+    });
+  });
+
   it('only the one known scope survives parsing', () => {
     const event = { kind: 'message', conversationKey: 'k', messageId: 'm', eventId: 'e' };
     expect(parseAppForward({ kind: 'app-forward', event, seed: 's', stopScope: 'conversation' })!.stopScope).toBe('conversation');
@@ -422,6 +574,39 @@ describe('with no access log able to open', () => {
     e.pairing.keyLedger = null;
     expect(e.pairing.teamLog()).toBeNull();
     expect(e.pairing.teamOn()).toBe(true);
+  });
+});
+
+describe('phones across machines', () => {
+  it('an active team phone is bound in the log, once', async () => {
+    const { e, mia } = await withMember();
+    e.pairing.bindTeamPhones();
+    e.pairing.bindTeamPhones();
+    const binds = e.pairing.teamLog()!.allRows().flatMap((r) => (r.kind === 'machine' ? r.events.filter((x) => x.type === 'phone-bind' && x.deviceId === mia.id) : []));
+    expect(binds).toHaveLength(1);
+  });
+
+  it('a removal that arrives here revokes this machine\'s phones for that person, and nobody else\'s', async () => {
+    const { e, mia, owner } = await withMember();
+    const stranger = phone(e, { userId: 'not-in-the-log-yet', role: 'team' });
+    e.pairing.reconcileTeamPhones();
+    expect(e.pairing.devices.get(mia.id)!.status).toBe('active');
+    e.pairing.teamLog()!.appendMachineEvents([{ type: 'lower', personKey: 'mia', remove: true }]); // as a peer's row would fold
+    e.pairing.reconcileTeamPhones();
+    expect(e.pairing.devices.get(mia.id)!.status).toBe('revoked');
+    expect(e.pairing.devices.get(owner.id)!.status).toBe('active');
+    // A phone can pair before its person's row reaches this machine.
+    expect(e.pairing.devices.get(stranger.id)!.status).toBe('active');
+  });
+});
+
+describe('a phone reading its own standing', () => {
+  it('a team phone gets its tier and tabs, from the log; a guest has no composer; the owner has no standing', async () => {
+    const { e, mia, owner } = await withMember();
+    expect((await send(e, mia, 'GET', '/mobile/device')).body.standing).toEqual({ tier: 'member', screens: ['chat', 'composer', 'new-conversation', 'my-access'] });
+    await send(e, owner, 'POST', '/mobile/team/people/mia', { events: [{ type: 'person-set', personKey: 'mia', role: 'guest' }] });
+    expect((await send(e, mia, 'GET', '/mobile/device')).body.standing).toEqual({ tier: 'guest', screens: ['chat', 'my-access'] });
+    expect((await send(e, owner, 'GET', '/mobile/device')).body.standing).toBeUndefined();
   });
 });
 

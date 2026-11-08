@@ -144,6 +144,7 @@ export type MeshCommand =
   | { type: 'agent-identity-observe'; agentName: string; requesterNonce: string }
   | { type: 'agent-identity-request'; agentName: string; expectedFingerprint: string; requesterNonce: string }
   | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
+  | { type: 'recovery-enrollment-advert' }
   | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
   | {
       // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
@@ -444,7 +445,7 @@ export interface RbacDeps {
    * authority is the R4a asymmetric signature verification in the handler, which re-binds to the
    * authenticated sender + registered operator key. Mirrors the deny-by-default discipline of R3a.
    */
-  authorizeMandateDeliver?: (args: { sender: MachineId }) => boolean;
+  authorizeMandateDeliver?: (args: { sender: MachineId; command?: MeshCommand }) => boolean;
 }
 
 /**
@@ -517,7 +518,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // the trusted operator machine / the feature is dark, the verb is refused HERE — before the
       // handler runs. The LOAD-BEARING authority is still the R4a signature re-verification in the
       // handler (this gate is the coarse, fail-closed pre-filter).
-      const authd = deps.authorizeMandateDeliver?.({ sender }) ?? false;
+      const authd = deps.authorizeMandateDeliver?.({ sender, command }) ?? false;
       return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
     case 'commitment-mutate':
@@ -548,6 +549,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'secret-share':
     case 'ssh-bootstrap-advert':
     case 'ssh-proof-publish':
+    case 'recovery-enrollment-advert':
     case 'a2a-inbox-deliver':
     case 'a2a-relay-forward':
     case 'a2a-relay-forward-ack':

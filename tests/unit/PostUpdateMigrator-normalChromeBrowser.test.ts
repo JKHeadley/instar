@@ -1,3 +1,4 @@
+import { ACCOUNT_ACTION_SAFETY_HEADING } from '../../src/data/accountActionSafety.js';
 /**
  * Normal-Chrome browser — Agent Awareness + Migration Parity
  * (specs docs/specs/normal-chrome-builtin-skill.md, docs/specs/normal-chrome-cross-platform.md).
@@ -64,7 +65,7 @@ describe('NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION', () => {
     expect(text).not.toContain('secret-drop-retrieve.mjs'); // the Secret Drop rewrite sniffs that string
     expect(text).toContain('never take focus or send input while the operator is using the machine');
     expect(text).not.toContain('macOS only');
-    expect(text.length).toBeLessThan(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().length * 2); // a pointer-sized card, not the skill
+    expect(text.slice(0, text.indexOf(ACCOUNT_ACTION_SAFETY_HEADING)).length).toBeLessThan(NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION_V1().length * 2); // browser card stays compact; account safety is a separate section
   });
 
   it('generateClaudeMd carries the section verbatim and not the v1 heading (Agent Awareness)', () => {

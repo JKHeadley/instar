@@ -50,6 +50,8 @@ export interface SenderEnvelope {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** A team phone's person, so the machine that delivers can judge them itself (team-roles-and-access §3.6). */
+  personKey?: string;
 }
 
 export interface PendingInboundRow {

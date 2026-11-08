@@ -41,6 +41,9 @@ describe('recommended services setup', () => {
   let running: string[];
   let topicSession: string | null;
   let now: number;
+  let reach: boolean;
+  let otherRoute: boolean;
+  let rows: CatalogRow[];
 
   const app = () => {
     const a = express();
@@ -48,12 +51,13 @@ describe('recommended services setup', () => {
     a.use(express.json());
     const router = express.Router();
     registerRecommendedServiceRoutes(router, {
-      ledger: () => ledger, stateDir: dir, owner: () => '42', catalog: [PROVEN], port: 4040, now: () => now,
+      ledger: () => ledger, stateDir: dir, owner: () => '42', catalog: rows, port: 4040, now: () => now,
       checkPin: () => true, checkConfirmPin: () => true, recordApproval: () => undefined,
       openCommitment: () => 'CMT-1', finishCommitment: finish, withdrawCommitment: withdraw, startSetup: start, stopSetup: stop,
       sessionForTopic: () => topicSession,
       isSetupRunning: (id) => running.includes(id), notifyStuck: stuck, clearStuck: cleared, tellOwner: told,
-      readSecret: () => secret, writeSecret: (_n, v) => { secret = v; },
+      readSecret: () => secret, writeSecret: (_n, v) => { secret = v; }, deleteSecret: () => { secret = null; },
+      canReachOwner: () => reach, otherRouteWorks: async () => otherRoute,
       fetch: (async () => { if (answer instanceof Error) throw answer; return answer; }) as unknown as typeof fetch,
       onReady: (r) => { reconcile = r; },
     });
@@ -77,6 +81,7 @@ describe('recommended services setup', () => {
     finish = vi.fn(); withdraw = vi.fn(); stuck = vi.fn(async () => true); cleared = vi.fn(); told = vi.fn();
     stop = vi.fn(() => { running = []; return true; });
     secret = null; answer = { ok: true, status: 200 }; now = Date.parse('2026-11-04T12:00:00Z');
+    reach = true; otherRoute = true; rows = [PROVEN];
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/recommended-services-setup.test.ts' }));
 
@@ -269,7 +274,11 @@ describe('recommended services setup', () => {
       await started();
       expect((await put(a, '')).status).toBe(400);
       expect((await put(a, 'two\nlines')).status).toBe(400);
-      expect((await put(a, 'has space')).status).toBe(400);
+      expect((await put(a, 'tab\there')).status).toBe(400);
+      // A passphrase has spaces in it (Bitwarden's master passwords, for one); only control characters are refused.
+      expect((await put(a, 'has space')).status).toBe(200);
+      expect(secret).toBe('has space');
+      secret = null;
       expect((await request(a).post('/recommended-services/jev/key').send({ value: 'k' })).status).toBe(403);
       expect((await request(a).post('/recommended-services/jev/key').set('X-Instar-Request', '1').send({ value: 'k' })).status).toBe(400);
       expect(secret).toBeNull();
@@ -564,16 +573,238 @@ describe('recommended services setup', () => {
     });
   });
 
-  describe('which agents can reach a recipe', () => {
-    it('no agent by default, and only the recipes it names', () => {
-      expect(catalogWithProving(undefined, () => true).filter(isServiceAvailable)).toEqual([]);
-      expect(catalogWithProving([], () => true).filter(isServiceAvailable)).toEqual([]);
-      expect(catalogWithProving(['made-up'], () => true).filter(isServiceAvailable)).toEqual([]);
-      expect(catalogWithProving(['jev-v1'], () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(['jev']);
+  describe('a machine that cannot message the person', () => {
+    it('refuses a yes without spending the page, and takes it once it can', async () => {
+      const a = app();
+      reach = false;
+      const page = await request(a).get('/recommended-services/jev/confirm');
+      expect(page.status).toBe(200);
+      expect(page.body.canSetUp).toBe(false);
+      const yes = await request(a).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: page.body.token, pin: '1', answer: 'yes' });
+      expect(yes.status).toBe(409);
+      expect(yes.body.error).toBe('cannot-reach-you');
+      expect(ledger.effective('jev').choice).toBe('unset');
+      expect(start).not.toHaveBeenCalled();
+      reach = true;
+      const again = await request(a).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: page.body.token, pin: '1', answer: 'yes' });
+      expect(again.status).toBe(200);
+      expect(again.body.choice).toBe('yes');
+      await started();
     });
 
-    it('a fleet agent ignores the list, whatever its config says', () => {
-      expect(catalogWithProving(['jev-v1'], () => false).filter(isServiceAvailable)).toEqual([]);
+    it('still takes a no there, since a no needs nobody told', async () => {
+      const a = app();
+      reach = false;
+      const res = await say(a, 'no');
+      expect(res.status).toBe(200);
+      expect(ledger.effective('jev').choice).toBe('no');
+    });
+
+    it('lets a restart wait, costing no attempt, and restarts once it can reach them again', async () => {
+      const a = app();
+      await say(a, 'yes');
+      await started();
+      running = [];
+      reach = false;
+      now += 6 * 60_000;
+      await reconcile();
+      expect(start).toHaveBeenCalledTimes(1);
+      expect(readSetupStates(dir).jev?.attempts).toBe(1);
+      reach = true;
+      await reconcile();
+      expect(start).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('a confirmed no that switches the service off', () => {
+    const storeKey = (a: express.Express, value: string) => request(a).post('/recommended-services/jev/key').set('X-Instar-Request', '1').type('text/plain').send(value);
+    // The session stores the key through the key route and reports the pass, so this machine's record says setup did it.
+    const working = async (a: express.Express) => {
+      await say(a, 'yes');
+      await started();
+      expect((await storeKey(a, 'k')).status).toBe(200);
+      expect((await verify(a)).body.result).toBe('pass');
+      expect(readSetupStates(dir).jev).toMatchObject({ keyStoredBySetup: true });
+      expect(readSetupStates(dir).jev?.signedInBySetup).toBeUndefined();
+      const page = await request(a).get('/recommended-services/jev/confirm');
+      expect(page.body.workingHere).toBe(true);
+      expect(page.body.switchOffHere).toBe(true);
+      return page.body.token as string;
+    };
+    const sayNo = (a: express.Express, token: string, shutdown: unknown) =>
+      request(a).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token, pin: '1', answer: 'no', reason: 'not-needed', shutdown });
+    const stopped = () => vi.waitFor(() => expect(readSetupStates(dir).jev?.stopped).toBeTruthy());
+
+    it('removes the key this machine uses, records it, and tells the person what that means', async () => {
+      const a = app();
+      const token = await working(a);
+      const res = await sayNo(a, token, true);
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ choice: 'no', shutdown: 'authorized', switchingOff: true });
+      await stopped();
+      expect(secret).toBeNull();
+      const state = readSetupStates(dir).jev!;
+      expect(state.verified).toBeUndefined();
+      expect(state.keyStoredBySetup).toBeUndefined();
+      expect(told.mock.calls.map((c) => c[0]).some((t: string) => /switched off on this machine/.test(t))).toBe(true);
+      const list = await request(a).get('/recommended-services');
+      const jev = list.body.services.find((s: { service: string }) => s.service === 'jev');
+      expect(jev.stopped.detail).toMatch(/switched off/);
+      expect(jev.switchingOff).toBe(false);
+      expect(jev.verified).toBeNull();
+    });
+
+    it('a plain no leaves a working service on, exactly as the page says', async () => {
+      const a = app();
+      const token = await working(a);
+      const res = await sayNo(a, token, false);
+      expect(res.body).toMatchObject({ choice: 'no', shutdown: 'none', switchingOff: false });
+      await settle();
+      expect(secret).toBe('k');
+      expect(readSetupStates(dir).jev?.stopped).toBeUndefined();
+      await reconcile();
+      expect(secret).toBe('k');
+    });
+
+    it('refuses a switch-off that is not a plain yes or no', async () => {
+      const a = app();
+      const token = await working(a);
+      expect((await sayNo(a, token, 'yes')).status).toBe(400);
+      expect(ledger.effective('jev').choice).toBe('yes');
+    });
+
+    it('a service the person had before setup is theirs: the page offers no switch-off, and a switch-off leaves it', async () => {
+      secret = 'k';
+      const a = app();
+      await say(a, 'yes');
+      await vi.waitFor(() => expect(readSetupStates(dir).jev?.alreadyHeld).toBe(true));
+      expect(start).not.toHaveBeenCalled();
+      const page = await request(a).get('/recommended-services/jev/confirm');
+      expect(page.body).toMatchObject({ workingHere: true, switchOffHere: false });
+      await sayNo(a, page.body.token, true);
+      await stopped();
+      expect(secret).toBe('k');
+      expect(told.mock.calls.map((c) => c[0]).some((t: string) => /yours before I set anything up/.test(t))).toBe(true);
+    });
+
+    it('a key the person had, refused at the yes and accepted later, is never counted as setup\'s own', async () => {
+      // The check before setup saw a key here that TypeSafe refused, so setup ran; the key route then refused to replace it.
+      secret = 'k';
+      answer = { ok: false, status: 401 };
+      const a = app();
+      await say(a, 'yes');
+      await started();
+      expect(readSetupStates(dir).jev?.alreadyHeld).toBeUndefined();
+      expect(readSetupStates(dir).jev?.absentBeforeSetup).toBeUndefined();
+      expect((await storeKey(a, 'mine')).status).toBe(409);
+      answer = { ok: true, status: 200 };
+      expect((await verify(a)).body.result).toBe('pass');
+      expect(readSetupStates(dir).jev?.keyStoredBySetup).toBeUndefined();
+      const page = await request(a).get('/recommended-services/jev/confirm');
+      expect(page.body).toMatchObject({ workingHere: true, switchOffHere: false });
+      await sayNo(a, page.body.token, true);
+      await stopped();
+      expect(secret).toBe('k');
+      expect(told.mock.calls.map((c) => c[0]).some((t: string) => /yours before I set anything up/.test(t))).toBe(true);
+    });
+
+    it('switched off, set up again, switched off again: the record starts over with the new yes', async () => {
+      const a = app();
+      const token = await working(a);
+      await sayNo(a, token, true);
+      await stopped();
+      expect(secret).toBeNull();
+      start.mockClear();
+      await say(a, 'yes');
+      await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+      expect(readSetupStates(dir).jev?.stopped).toBeUndefined();
+      expect((await storeKey(a, 'k2')).status).toBe(200);
+      expect((await verify(a)).body.result).toBe('pass');
+      const page = await request(a).get('/recommended-services/jev/confirm');
+      expect(page.body).toMatchObject({ workingHere: true, switchOffHere: true });
+      const list = await request(a).get('/recommended-services');
+      expect(list.body.services.find((s: { service: string }) => s.service === 'jev')).toMatchObject({ stopped: null, switchingOff: false });
+      await sayNo(a, page.body.token, true);
+      await stopped();
+      expect(secret).toBeNull();
+    });
+
+    it('a service that is not a way in never waits on another route', async () => {
+      const a = app();
+      const token = await working(a);
+      otherRoute = false;
+      await sayNo(a, token, true);
+      await stopped();
+      expect(secret).toBeNull();
+      expect(told.mock.calls.map((c) => c[0]).some((t: string) => /only way I can reach you/.test(t))).toBe(false);
+    });
+
+    it('a way in waits while it may be the only route, says so once, and the regular check finishes it and tells them', async () => {
+      rows = [{ ...PROVEN, wayIn: true }];
+      const a = app();
+      const token = await working(a);
+      otherRoute = false;
+      await sayNo(a, token, true);
+      await vi.waitFor(() => expect(readSetupStates(dir).jev?.stopRequestedAt).toBeTruthy());
+      expect(secret).toBe('k');
+      expect(told.mock.calls.map((c) => c[0]).filter((t: string) => /stays on for now/.test(t))).toHaveLength(1);
+      await reconcile();
+      expect(secret).toBe('k');
+      expect(told.mock.calls.map((c) => c[0]).filter((t: string) => /stays on for now/.test(t))).toHaveLength(1);
+      const list = await request(a).get('/recommended-services');
+      expect(list.body.services.find((s: { service: string }) => s.service === 'jev').switchingOff).toBe(true);
+      otherRoute = true;
+      await reconcile();
+      expect(secret).toBeNull();
+      expect(readSetupStates(dir).jev?.stopped).toBeTruthy();
+      expect(readSetupStates(dir).jev?.stopRequestedAt).toBeUndefined();
+      // The promise "I'll tell you" is kept, even though the no had already cleared what was working here.
+      expect(told.mock.calls.map((c) => c[0]).filter((t: string) => /switched off on this machine/.test(t))).toHaveLength(1);
+    });
+
+    it('obeys a switch-off that arrives from another machine', async () => {
+      const a = app();
+      await working(a);
+      ledger.recordNo({ service: 'jev', shutdown: 'authorized', reason: 'none', origin: 'owner-surface' });
+      await reconcile();
+      expect(secret).toBeNull();
+      expect(readSetupStates(dir).jev?.stopped).toBeTruthy();
+      await reconcile();
+      expect(told.mock.calls.map((c) => c[0]).filter((t: string) => /switched off on this machine/.test(t))).toHaveLength(1);
+    });
+
+    it('the plain no route switches off too, when asked', async () => {
+      const a = app();
+      await working(a);
+      const res = await request(a).post('/recommended-services/jev/no').set('X-Instar-Request', '1').send({ pin: '1', shutdown: true });
+      expect(res.body).toMatchObject({ choice: 'no', shutdown: 'authorized', switchingOff: true });
+      await stopped();
+      expect(secret).toBeNull();
+    });
+
+    it('a machine that never had the service records the switch-off quietly', async () => {
+      const a = app();
+      await say(a, 'yes');
+      await started();
+      const page = await request(a).get('/recommended-services/jev/confirm');
+      expect(page.body.workingHere).toBeFalsy();
+      await sayNo(a, page.body.token, true);
+      await stopped();
+      expect(told.mock.calls.map((c) => c[0]).some((t: string) => /switch/.test(t))).toBe(false);
+    });
+  });
+
+  describe('which agents can reach a recipe', () => {
+    it('the proven recipes by default, plus only the recipes it names', () => {
+      const proven = ['tailscale', 'jev', 'bitwarden'];
+      expect(catalogWithProving(undefined, () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(proven);
+      expect(catalogWithProving([], () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(proven);
+      expect(catalogWithProving(['made-up'], () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(proven);
+      expect(catalogWithProving(['jev-v1'], () => true).filter(isServiceAvailable).map((r) => r.id)).toEqual(proven);
+    });
+
+    it('a fleet agent ignores the list, whatever its config says, and keeps the proven ones', () => {
+      expect(catalogWithProving(['jev-v1', 'made-up'], () => false).filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev', 'bitwarden']);
     });
 
     it('every recipe names a real service, and its brief gives the person no task', () => {

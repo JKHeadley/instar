@@ -1310,3 +1310,16 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
   .chat-bubble { max-width: 88%; }
   .chat-menu .btn-quiet { padding: 0 10px; }
 }
+/* What I've learned to do (Learned page): proposal cards, the disagree reason, one line per skill. */
+.skill-proposals { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.skill-paraphrases { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.disagree-with { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
+.reason-select { height: 44px; font: inherit; font-size: 14px; color: var(--text); background: var(--surface-solid); border: 1px solid var(--hairline-strong); border-radius: var(--r-md); padding: 0 10px; max-width: 100%; }
+.reason-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.skill-lines { margin: var(--s-2) 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14.5px; }
+.skill-line { color: var(--text); }
+/* Waiting for your OK (slice 2): the pending skill's description, paraphrases and reason on the first screen; Confirm leads, Reject is quiet. */
+.skill-pending-list { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.skill-pending .need-title { overflow-wrap: anywhere; }
+.skill-pending-why { font-style: italic; }
+.skill-pending .sheet-actions { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; margin-top: var(--s-1); }

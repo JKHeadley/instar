@@ -64,6 +64,18 @@ export interface MachineLoadReport {
   acceptingWork?: boolean | null;
   /** True only when the machine ACTS on `acceptingWork` (enabled, not dry-run). */
   admissionEnforced?: boolean;
+  /**
+   * The operator's per-machine heavy-work override (`multiMachine.placement.heavyWork`,
+   * docs/specs/resource-aware-placement.md §3). Omitted for `auto` and by older code;
+   * a reader treats absent as `auto` (the size floor decides).
+   */
+  heavyWork?: 'allow' | 'deny';
+  /**
+   * Heavy helper spawns this machine accepted in the last few minutes (resource-aware
+   * placement §1), so deciders count work its load average does not show yet.
+   * Omitted when zero and by older code.
+   */
+  heavyPending?: number;
 }
 
 /** A report older than this is `unknown` however fresh the transport contact (B1). */
@@ -192,6 +204,11 @@ export function clampLoadReport(raw: unknown): MachineLoadReport | null {
     // older code clamps byte-identical (absent ⇒ "not refusing", never a substitute).
     ...(r.acceptingWork !== undefined ? { acceptingWork: boolOrNull(r.acceptingWork) } : {}),
     ...(r.admissionEnforced !== undefined ? { admissionEnforced: r.admissionEnforced === true } : {}),
+    // Heavy-work override (resource-aware placement §3): only the two explicit values
+    // survive; anything else is dropped, which reads as `auto`.
+    ...(r.heavyWork === 'allow' || r.heavyWork === 'deny' ? { heavyWork: r.heavyWork } : {}),
+    ...(typeof r.heavyPending === 'number' && Number.isFinite(r.heavyPending) && r.heavyPending > 0
+      ? { heavyPending: Math.min(1000, Math.floor(r.heavyPending)) } : {}),
   };
 }
 
@@ -255,6 +272,10 @@ export interface MachineLoadSamplerDeps {
   onSample?: (verdict: LoadVerdict) => void;
   /** Current admission state, read at report time (spec C1). Absent ⇒ fields omitted. */
   admission?: () => { acceptingWork: boolean; enforced: boolean } | null;
+  /** This machine's heavy-work override, read at report time (resource-aware placement §3). Absent ⇒ omitted (auto). */
+  heavyWork?: () => 'auto' | 'allow' | 'deny' | null | undefined;
+  /** Accepted heavy spawns in the pending window, read at report time. Absent ⇒ omitted. */
+  heavyPending?: () => number;
   platform?: LoadPlatform;
   cpus?: () => Array<{ times: { user: number; nice: number; sys: number; idle: number; irq: number } }>;
   loadavg?: () => number[];
@@ -281,7 +302,7 @@ export interface MachineLoadSamplerDeps {
  * first heartbeat (B1).
  */
 export class MachineLoadSampler {
-  private readonly d: Required<Pick<MachineLoadSamplerDeps, 'platform' | 'cpus' | 'loadavg' | 'totalmem' | 'readMemAvailablePct' | 'readNativePressure' | 'eventLoopLagP99Ms' | 'sessions' | 'spawnCapSaturated' | 'testRunnerSaturated' | 'now' | 'monoNow' | 'bootId' | 'intervalMs'>> & { log?: (line: string) => void; onSample?: (verdict: LoadVerdict) => void; admission?: () => { acceptingWork: boolean; enforced: boolean } | null };
+  private readonly d: Required<Pick<MachineLoadSamplerDeps, 'platform' | 'cpus' | 'loadavg' | 'totalmem' | 'readMemAvailablePct' | 'readNativePressure' | 'eventLoopLagP99Ms' | 'sessions' | 'spawnCapSaturated' | 'testRunnerSaturated' | 'now' | 'monoNow' | 'bootId' | 'intervalMs'>> & { log?: (line: string) => void; onSample?: (verdict: LoadVerdict) => void; admission?: () => { acceptingWork: boolean; enforced: boolean } | null; heavyWork?: () => 'auto' | 'allow' | 'deny' | null | undefined; heavyPending?: () => number };
   private samples: LoadSample[] = [];
   private seq = 0;
   private prevCpu: { idle: number; total: number } | null = null;
@@ -312,6 +333,8 @@ export class MachineLoadSampler {
       log: deps.log,
       onSample: deps.onSample,
       admission: deps.admission,
+      heavyWork: deps.heavyWork,
+      heavyPending: deps.heavyPending,
     };
     this.startedMono = mono();
     this.graceUntilMono = this.startedMono + LOAD_BOOT_GRACE_MS;
@@ -426,7 +449,21 @@ export class MachineLoadSampler {
       sampleAgeMs: Math.max(0, mono - this.cached.sampledMono),
       uptimeS: Math.max(0, Math.floor((mono - this.startedMono) / 1000)),
       ...this.admissionFields(),
+      ...this.heavyWorkField(),
     };
+  }
+
+  private heavyWorkField(): { heavyWork?: 'allow' | 'deny'; heavyPending?: number } {
+    const out: { heavyWork?: 'allow' | 'deny'; heavyPending?: number } = {};
+    if (this.d.heavyWork) {
+      const v = safe(() => this.d.heavyWork!(), null);
+      if (v === 'allow' || v === 'deny') out.heavyWork = v;
+    }
+    if (this.d.heavyPending) {
+      const n = safe(() => this.d.heavyPending!(), 0);
+      if (typeof n === 'number' && Number.isFinite(n) && n > 0) out.heavyPending = Math.min(1000, Math.floor(n));
+    }
+    return out;
   }
 
   private admissionFields(): { acceptingWork?: boolean; admissionEnforced?: boolean } {

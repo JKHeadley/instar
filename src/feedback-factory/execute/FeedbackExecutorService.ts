@@ -15,6 +15,7 @@
  * code holds the credentials and never runs git or any tool in the session's workspace after
  * creating it: it reads the change set as bytes and publishes from its own clone.
  */
+import { storageMachineName } from '../../core/storageMachineName.js';
 import { groupTestFilesByConfig } from '../../localVerify/inventory.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -188,6 +189,11 @@ export const REVIEW_FAILED_CLOSE_REPORT_AFTER = 3;
 const PR_BODY_FOOTER = '🤖 Generated with [Claude Code](https://claude.com/claude-code)';
 
 /** Which preparation step a (scrubbed) failure message points at; an id-shaped value the audit keeps. */
+/** The start of a failure message (what ran) and its end (why it failed), bounded for the status record. */
+export function boundedFailureDetail(text: string): string {
+  return text.length <= 500 ? text : `${text.slice(0, 80)} … ${text.slice(-420)}`;
+}
+
 export function prepareFailureStep(detail: string | null): string {
   if (!detail) return 'unknown';
   if (/base-sha|feedback-execute fetch base|\bfetch\b/.test(detail)) return 'fetch-base';
@@ -742,11 +748,13 @@ export class FeedbackExecutorService {
         : error instanceof RerouteRefusedError ? 'reroute-capacity'
         : error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
       // The message says which step failed (clone, deps, symlink, …); without it every failure read "Error".
-      const message = error instanceof Error ? scrubForStore(error.message, { maxBytes: 2048 }) : null;
-      const detail = message ? (message.error ? '[detail withheld: scrub failed]' : message.text.slice(0, 300)) : null;
+      // A git command's flags fill the start of its message and the error comes last, so keep both ends.
+      const signal = error instanceof Error ? (error as { signal?: unknown }).signal : null;
+      const message = error instanceof Error ? scrubForStore(`${error.message}${typeof signal === 'string' ? ` [killed by ${signal}]` : ''}`, { maxBytes: 8192 }) : null;
+      const detail = message ? (message.error ? '[detail withheld: scrub failed]' : boundedFailureDetail(message.text)) : null;
       // The audit keeps only id-shaped values (a sentence becomes "[text:N]"), so it carries the step;
       // the scrubbed message itself is kept in executor state and shown as status.lastPrepareFailure.
-      const step = prepareFailureStep(detail);
+      const step = prepareFailureStep(message && !message.error ? message.text : detail);
       this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown', step });
       // Under a stale epoch every write below is refused; the new owner ends the row.
       if (reason === 'stale-epoch') return false;
@@ -1008,9 +1016,9 @@ export class FeedbackExecutorService {
       return;
     }
     if (alive) {
-      if (row.workspace && row.tmpDir && treeBytes(row.workspace, WORKSPACE_DISK_CAP_BYTES) + treeBytes(row.tmpDir, WORKSPACE_DISK_CAP_BYTES) > WORKSPACE_DISK_CAP_BYTES) {
+      if (row.workspace && row.tmpDir && await treeBytes(row.workspace, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(row.tmpDir, WORKSPACE_DISK_CAP_BYTES) > WORKSPACE_DISK_CAP_BYTES) {
         await this.stopSession(row);
-        this.endAttempt(row, epoch, 'failed', 'limit:workspace-disk');
+        this.endAttempt(row, epoch, 'failed', `limit:workspace-disk on ${storageMachineName(this.opts.paths.stateDir)}`);
         await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       }
       return;
@@ -1127,7 +1135,7 @@ export class FeedbackExecutorService {
     }
     if (result.outcome === 'gave-up') { this.endAttempt(row, epoch, 'failed', 'gave-up'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
     let changeSet: ChangeSet;
-    try { changeSet = buildChangeSet(workspace, row.publishClone!); } catch (error) {
+    try { changeSet = await buildChangeSet(workspace, row.publishClone!); } catch (error) {
       const reason = error instanceof ChangeSetError ? error.reason : 'changeset-unreadable';
       this.endAttempt(row, epoch, 'failed', reason);
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
@@ -1204,7 +1212,7 @@ export class FeedbackExecutorService {
     const testCmd = groupTestFilesByConfig(result.testFiles)
       .map((g) => `./node_modules/.bin/vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
       .join(' && ');
-    const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
+    const diskOk = async (clone: string) => await treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
     // a process left behind by one run (attempt test code) can never reach a tree a later check reads.
     const run = async (cwd: string, label: string, command: string, timeoutMs = CONFINED_COMMAND_TIMEOUT_MS) => {
@@ -1254,7 +1262,7 @@ export class FeedbackExecutorService {
       if (limit(head)) return limited('head', head);
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
-      if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
+      if (!(await diskOk(p.headClone))) return { ok: false, reason: `limit:workspace-disk on ${storageMachineName(this.opts.paths.stateDir)}` };
       // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
       // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
       // runs only the base tooling), then the unit tests related to the changed sources.

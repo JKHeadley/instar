@@ -23,6 +23,20 @@ export interface ServiceSetupState {
   held?: boolean;
   /** This key came from setup, so setup may correct it until it has passed. */
   keyStoredBySetup?: boolean;
+  /** The check before setup found nothing of the service here (not signed in, not installed, no key), so a later pass is setup's own doing. */
+  absentBeforeSetup?: boolean;
+  /** Setup's own session made this machine's sign-in: the service was absent before setup and the check passed through the verify route. For a recipe with a key, `keyStoredBySetup` is the evidence instead. A switch-off may undo only that. */
+  signedInBySetup?: boolean;
+  /** The person confirmed a no that also switches the service off here, and the switch-off is done. */
+  stopped?: { at: string; detail: string };
+  /** The switch-off is confirmed but waits, because this service may be the person's only way in. */
+  stopRequestedAt?: string;
+  /** For a recipe that keeps a copy elsewhere (Bitwarden): when the copy was last brought up to date, and how many items it holds. */
+  lastSyncAt?: string;
+  copies?: number;
+  /** The last time a refresh was tried, and how many refreshes in a row have failed (a failed refresh waits before trying again). */
+  lastSyncAttemptAt?: string;
+  syncFailures?: number;
 }
 
 export function setupStateFile(stateDir: string): string {

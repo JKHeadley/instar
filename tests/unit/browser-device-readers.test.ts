@@ -34,6 +34,9 @@ const ALLOWED: ReadonlyArray<[string, string]> = [
   // Team routes: fail closed on purpose (§4.1 table).
   ['src/server/teamRoutes.ts', '!dev?.publicKey'],
   ['src/server/teamRoutes.ts', 'deviceKeyHashOf(dev.publicKey)'],
+  // Team phones only (role 'team'): a browser is the owner's, so it is skipped — fails closed on purpose.
+  ['src/server/mobilePairingRoutes.ts', "d.role !== 'team' || d.status !== 'active' || !d.publicKey"],
+  ['src/server/mobilePairingRoutes.ts', 'const keyHash = deviceKeyHashOf(d.publicKey);'],
   // A phone redeemed a link (browsers redeem none), and the phone branch of waitingPhones.
   ['src/server/mobilePairingRoutes.ts', "publicKey: device.publicKey ?? ''"],
   ['src/server/mobilePairingRoutes.ts', ': !!d.publicKey));'],

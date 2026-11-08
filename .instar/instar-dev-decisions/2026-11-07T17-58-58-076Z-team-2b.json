@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-07T17:58:58.076Z",
+  "slug": "team-2b",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 50,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/TeamAccessEvents.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 47,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

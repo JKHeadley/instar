@@ -13,6 +13,10 @@ const root = process.cwd();
 const rows: readonly CatalogRow[] = RECOMMENDED_SERVICE_CATALOG;
 
 describe('recommended services catalog', () => {
+  it('makes clear that Jev is an optional efficiency upgrade', () => {
+    expect(rows.find(row => row.id === 'jev')?.benefit).toMatch(/optional.*agent runs without it/i);
+  });
+
   it('holds the nine services the operator approved, once each', () => {
     expect([...RECOMMENDED_SERVICE_IDS].sort()).toEqual([
       'bitwarden', 'cloudflare-domain', 'email', 'github-state-backup', 'jev', 'second-ai-door', 'tailscale', 'telegram', 'voice-transcription',
@@ -59,17 +63,18 @@ describe('recommended services catalog', () => {
     }
   });
 
-  it('a service with no proven recipe is unavailable, and none has one yet', () => {
+  it('a service with no proven recipe is unavailable; only the live-proven ones have one', () => {
     expect(isServiceAvailable({ ...rows[0], setupRecipe: 'tailscale-v1' })).toBe(true);
     expect(isServiceAvailable({ ...rows[0], setupRecipe: null })).toBe(false);
-    // Giving a real service a recipe opens the confirm page to the public and promises setup. Before this
-    // may change, rollout step 3 must ship: live proof, and the check that setup messages give the person no
-    // other task (the first live run, on 2026-11-04, left real Telegram and a brand-new account still to prove);
-    // a route to stop a running service; a way to store a key that keeps it out of the session;
-    // the lease question for a machine that can't reach the person; for address services, the owner-only
-    // button or the "an address comes first" row; and the confirm page in the CLAUDE.md section. The four
-    // questions listed under step 3 bind offers rather than recipes, and are kept here so they can't be missed.
-    expect(rows.filter(isServiceAvailable), 'see the comment above before giving a service a recipe').toEqual([]);
+    // Giving a real service a recipe opens the confirm page to the public and promises setup. Tailscale and Jev
+    // got theirs on 2026-11-07 (topic 135786), and Bitwarden the same day, after each was proven live on a test agent, with what the earlier
+    // comment here asked for: the switch-off route for a working service (`shutdown: authorized`, carried out by
+    // the recipe), a key route that keeps the key out of the session, and a yes refused on a machine that can't
+    // message the person. The owner-only Telegram button and the "an address comes first" row belong to the
+    // offer list, which is not live, so they ship with it. Every other row stays unavailable until its recipe
+    // has its own live proof, so this assertion must change only with such a proof.
+    expect(rows.filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev', 'bitwarden']);
+    expect(rows.filter(isServiceAvailable).map((r) => r.setupRecipe)).toEqual(['tailscale-v1', 'jev-v1', 'bitwarden-v1']);
   });
 
   it('a row never gives the person a task', () => {
@@ -97,6 +102,9 @@ describe('outside services on the console', () => {
     expect(row({ choice: 'yes', available: true }).end).toBe('You said yes');
     expect(row({ choice: 'no' }).end).toBe('You said no');
     expect(row({ legacyDeclined: true }).end).toBe('You said no');
+    // A confirmed switch-off: waiting for another route, then done. Both beat the old "Working".
+    expect(row({ choice: 'no', switchingOff: true, verified: { result: 'pass' } }).end).toBe('Switching off');
+    expect(row({ choice: 'no', stopped: { at: 't', detail: 'd' } }).end).toBe('Switched off');
   });
 
   it('never states a backup as stronger than its status', () => {

@@ -1,0 +1,56 @@
+{
+  "ts": "2026-11-06T22:42:39.859Z",
+  "slug": "skill-learning-sentinel-slice1",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 23,
+  "loc": 4798,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/componentCategories.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/monitoring/SkillLearningSentinel.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/monitoring/skillLearning/Arbiter.ts",
+      "src/monitoring/skillLearning/Classifier.ts",
+      "src/monitoring/skillLearning/Drafter.ts",
+      "src/monitoring/skillLearning/Floor.ts",
+      "src/monitoring/skillLearning/Ledger.ts",
+      "src/monitoring/skillLearning/Lint.ts",
+      "src/monitoring/skillLearning/Outcomes.ts",
+      "src/monitoring/skillLearning/RunSlice.ts",
+      "src/monitoring/skillLearning/SeamFilter.ts",
+      "src/monitoring/skillLearning/types.ts",
+      "src/monitoring/skillLearning/wire.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mandatePin.ts",
+      "src/server/routes.ts",
+      "src/server/skillLearningRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 4753,
+    "deletedLines": 45
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "SkillLearningSentinel tick registered as controller skill-learning-tick (verb converge-classify-draft, boundK = pending/batchSize, empty backlog = zero LLM emits; refused drafts persist a wait verdict with expiresAt as the settling brake); the convergence ratchet fails if its emits do not settle"
+    }
+  },
+  "verdict": "pass"
+}

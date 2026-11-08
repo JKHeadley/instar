@@ -1,3 +1,7 @@
+import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
+import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
+import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
+import { ACCOUNT_ACTION_SAFETY, ACCOUNT_ACTION_SAFETY_HEADING } from '../data/accountActionSafety.js';
 const NEW_JOB_REPORT_LINE = '2. **Need periodic checks?** Create a job in `.instar/jobs.json`.';
 const NEW_JOB_REPORT_ASK = ' If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.';
 const SCHEDULER_REPORT_CHOICE_HEADING = "## Who sees this job's reports";
@@ -144,7 +148,8 @@ import {
   withoutTailStamp,
   type CoreRegionLocation,
 } from '../scaffold/claudeMdLayout.js';
-import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
+import { getMigrationDefaults, applyDefaults, SKILL_LEARNING_DEFAULTS } from '../config/ConfigDefaults.js';
+import { normalizeSkillFrontmatter } from './skillCanonicalFrontmatter.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { getDefaultJobs, installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
@@ -276,6 +281,7 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
 
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
  *  add/update migrations so the three cannot drift. */
+export const RESOURCE_PLACEMENT_CLAUDE_MD_LINE = `- **Resource-aware placement (heavy work goes to big machines with room):** placement compares machines by per-core load from FRESH evidence (a load number older than a minute does not count, and a machine with none never wins by default). A machine counts as big enough for heavy work (builds, full test runs, simulators) at 12+ cores and 32+ GB; heavy work goes only to such a machine with headroom right now (fresh verdict not saturated/impaired, under 1.0 load per core including heavy helpers it just accepted), otherwise it waits with a named reason. Local Verify peer hand-offs follow the same rule, so a small machine like a Mac Mini no longer receives full verifies. A job can declare \`workWeight: "heavy"\`; it then skips a machine below that size while another online big machine exists (the job-silence alert explains it). Per machine, \`multiMachine.placement.heavyWork\`: \`allow\` lifts the size rule for that machine, \`deny\` keeps heavy work off it (\`auto\` = by size); it is advertised in that machine's load report. **Before running heavy helper work in an in-session subagent** (a subagent always runs on THIS machine), read \`GET /pool/placement/preview?workWeight=heavy\` (read-only: the choice and one row per machine with size, fresh per-core load, headroom and why). If it picks another machine, or this one has no headroom, start a headless helper instead: \`POST /pool/heavy-work/spawn\` with header \`X-Instar-Request: 1\` and \`{ "name": "...", "prompt": "..." }\` — it picks the machine and starts the helper there through that machine's own \`/sessions/spawn\`. The helper works in THAT machine's agent home: its prompt must fetch its inputs from a shared source (a pushed git branch into a fresh worktree there) and return results through a shared channel (a pushed branch or PR, or a message to my session). Outcomes: 201 started; 409 \`heavy-work-no-machine\` (nothing big enough has room: wait, or run locally only if the preview shows this machine has headroom); 502 \`target-refused\`; 504 \`target-unconfirmed\` — never retry it: read that machine's sessions, finished ones included (\`GET /sessions\` with \`scope=pool\` and \`include=all\`), and check the work's shared results and side effects before ever starting it again.`;
 export const OVERLOAD_SHED_CLAUDE_MD_LINE = `- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
 
 /**
@@ -651,7 +657,7 @@ export function NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(): string {
     .replace(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING)
     .replace('is the proven method on macOS AND Windows:', 'is the proven method on macOS, Windows and Linux:')
     .replace('Linux with no Windows underneath is not built (ACT-138): say so plainly.', linux)
-    .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`);
+    .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`) + '\n' + ACCOUNT_ACTION_SAFETY;
 }
 
 /**
@@ -1107,6 +1113,8 @@ export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or hi
 /** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
 export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
 /** The native session screen (docs/specs/mobile-native-session-screen.md), inserted after the "Open session" bullet. Sniff: "native session screen". */
+/** Unread counts (docs/specs/mobile-unread-messages.md): the bullet after the native session screen line. */
+export const APP_CONVERSATIONS_UNREAD_LINE = '- The app shows per-person unread counts: a read marker per person per conversation (replicated across my machines) plus "your own reply marks everything before it as read"; Telegram and Slack give a bot no per-user read state, so the marker here is the source. Phones report what they read with `POST /mobile/conversations/read`; my own Bearer reads of the list and history carry NO read fields (`hasUnread`, `unreadCount`, `readUpTo` appear only for a phone). When the operator asks "why does the app say N unread?" read `GET /mobile/conversations` as the phone would, never guess from Telegram. Off switch: `mobilePairing.native.unread.enabled: false`.';
 /** Dashboard conversations (docs/specs/dashboard-conversations-browser-device.md), inserted after the native session screen line. Sniff: "browser device". */
 export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work > Conversations, `#/work/chats`) is a browser set up as a device of its own: it holds its own key, is approved the way a new phone would be (with a Telegram owner: the owner\'s private Telegram chat or an owner phone, never the PIN alone), is listed in People > Phones as "Browser", and may only use conversations and files and remove itself. A message marked 💻 (`💻 <owner> (from the dashboard)`, or `(💻 signed)` in the session tag) means an approved browser key of the owner signed it in the dashboard — weaker proof than a phone, since the dashboard pages come from my own machine. Setup: `POST /mobile/browser-devices` (Bearer + dashboard PIN session); state: `GET /mobile/browser-devices/status`. Gate: `mobilePairing.browser.enabled` (development agents live, fleet dark). When the operator asks "can I chat with you from the dashboard?", yes, on Work > Conversations once the browser is approved.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
@@ -1254,6 +1262,7 @@ The session's bind token is the only destination; the script takes no conversati
 ${APP_CONVERSATIONS_POOL_LINE}
 ${APP_CONVERSATIONS_OPEN_SESSION_LINE}
 ${APP_CONVERSATIONS_NATIVE_SESSION_LINE}
+${APP_CONVERSATIONS_UNREAD_LINE}
 ${DASHBOARD_CONVERSATIONS_LINE}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
@@ -1372,6 +1381,10 @@ ${MOBILE_APP_POOL_LINE()}
 `;
 }
 
+/** The shipped v1 sentence of the recommended-services block; a legacy-layout CLAUDE.md still carrying it gets the v2 wording. */
+export const RECOMMENDED_SERVICES_V1_TAIL = 'field says whether it is. Offers are not live yet.';
+export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale and Jev can be set up on every agent: the person says yes or no on the dashboard\'s Services row (`/dashboard/service-yes?service=<id>`, PIN); a yes starts a setup session in its own topic that owns the whole job; a no can also switch a working service off here. I don\'t offer services on my own yet.';
+
 /**
  * CLAUDE.md awareness block for recommended outside services (docs/specs/recommended-services.md).
  * Unique content-sniff marker: `Recommended outside services (`. Kept short on purpose.
@@ -1379,7 +1392,7 @@ ${MOBILE_APP_POOL_LINE()}
 export function RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port: number): string {
   return `\n### Recommended outside services (\`GET /recommended-services\`)
 
-The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` field says whether it is. Offers are not live yet.
+The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V2_TAIL}
 - Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services\`. A no stands until the person confirms a yes, and I never re-offer on my own for now.
 - **The person only approves, asks for changes, or supplies a credential.** After a yes, everything else is mine: research, creating accounts, getting keys, setup. They never open a browser or follow steps.
 - **Whose account is their choice.** I can fully manage their accounts like an executive assistant, use accounts of my own, or both. I make that clear and never recommend against either.
@@ -2278,6 +2291,121 @@ export function migrateConfigIdleKillVetoBackoffDefault(config: Record<string, u
 }
 
 /**
+ * Skill-learning sentinel config defaults (docs/specs/skill-learning-sentinel.md
+ * §3, frontloaded decision 20). Adds the whole `monitoring.skillLearning` block
+ * ONLY when absent — never a partial rewrite of an operator's block. The values
+ * are the single shipped copy (`SKILL_LEARNING_DEFAULTS` in ConfigDefaults).
+ * Returns true iff the block was written. Idempotent.
+ */
+export function migrateConfigSkillLearningDefaults(config: Record<string, unknown>): boolean {
+  let monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object' || Array.isArray(monitoring)) {
+    monitoring = {};
+    config.monitoring = monitoring;
+  }
+  if (Object.prototype.hasOwnProperty.call(monitoring, 'skillLearning')) return false;
+  monitoring.skillLearning = structuredClone(SKILL_LEARNING_DEFAULTS);
+  return true;
+}
+
+// ── Skill canonical-backfill helpers (skill-learning-sentinel slice 0) ──
+//
+// The slug grammar, frontmatter grammar and stamp line mirror
+// src/providers/parity/rules/skillParityRule.ts (its parseFrontmatter / sha256 /
+// STAMP_LINE_RE are module-private there). tests/unit cross-check the hash against
+// skillParityRule.verify() so the two cannot drift silently.
+
+/** Concept-spec slug grammar (specs/instar-concepts/skill.md): enforced at every entry point. */
+export const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SKILL_STAMP_KEY = 'x-instar-stamp';
+const SKILL_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+const SKILL_STAMP_LINE_RE = /^x-instar-stamp:\s*([a-f0-9]{64})\s*$/m;
+
+/** Agent-home `.gitignore` entries (decision 3): the derived cache and the legacy flat telemetry file. */
+export const SKILL_LEARNING_GITIGNORE_PROJECT: readonly string[] = Object.freeze([
+  '.instar/state/skill-learning.db*',
+  '.instar/skill-telemetry.jsonl*',
+  // Rows the hook could not attribute to a machine: a shared file that two
+  // machines would both append to — the conflict shape the per-machine layout removes.
+  '.instar/skill-telemetry/unknown.jsonl',
+]);
+/** The same entries, spelled for the `.instar/.gitignore` of the internal state repo. */
+export const SKILL_LEARNING_GITIGNORE_STATE: readonly string[] = Object.freeze([
+  'state/skill-learning.db*',
+  'skill-telemetry.jsonl*',
+  'skill-telemetry/unknown.jsonl',
+]);
+
+/**
+ * sha256 of a SKILL.md body after its frontmatter — the value the parity rule
+ * writes as `x-instar-stamp`. null when the file carries no frontmatter block.
+ */
+export function skillBodyHash(raw: string): string | null {
+  const m = raw.match(SKILL_FRONTMATTER_RE);
+  if (!m) return null;
+  return crypto.createHash('sha256').update(m[2], 'utf-8').digest('hex');
+}
+
+/**
+ * Insert `x-instar-stamp: <hash>` as the last frontmatter line of a rendered
+ * SKILL.md. Body bytes are untouched. null when the file has no frontmatter or
+ * already carries a stamp (an existing stamp is never rewritten here).
+ */
+export function stampSkillRendering(raw: string, hash: string): string | null {
+  if (SKILL_STAMP_LINE_RE.test(raw)) return null;
+  const m = raw.match(/^(---\r?\n[\s\S]*?)(\r?\n---\r?\n?)([\s\S]*)$/);
+  if (!m) return null;
+  return `${m[1]}\n${SKILL_STAMP_KEY}: ${hash}${m[2]}${m[3]}`;
+}
+
+function readUtf8OrNull(p: string): string | null {
+  try {
+    return fs.readFileSync(p, 'utf-8');
+  } catch { // @silent-fallback-ok — "absent or unreadable" is the normal answer this probe exists to give; the caller logs canonical-backfill-unparseable / skips, never writes on a guess
+    return null;
+  }
+}
+
+/**
+ * Copy a rendered skill directory into canonical, verbatim: SKILL.md, scripts/,
+ * references/, assets/ and every other file or subdirectory as-is. Symlinks are
+ * skipped (they can escape the tree). A codex rendering's `agents/` sibling
+ * (openai.yaml) is a rendering artifact, not canonical content, and is not
+ * copied. Writes into a temp dir beside the destination and renames into
+ * place, so a crash never leaves a half-copied canonical that a later run
+ * would read as complete. Never deletes anything.
+ */
+function copySkillTreeVerbatim(
+  src: string,
+  dest: string,
+  opts: { fromCodexRendering: boolean; skillMdOverride?: string | null },
+): void {
+  const parent = path.dirname(dest);
+  fs.mkdirSync(parent, { recursive: true });
+  const tmp = path.join(parent, `.backfill-${path.basename(dest)}-${process.pid}-${Date.now().toString(36)}`);
+  const walk = (from: string, to: string, top: boolean): void => {
+    fs.mkdirSync(to, { recursive: true });
+    for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      if (top && opts.fromCodexRendering && entry.isDirectory() && entry.name === 'agents') continue;
+      const s = path.join(from, entry.name);
+      const d = path.join(to, entry.name);
+      if (entry.isDirectory()) {
+        walk(s, d, false);
+      } else if (entry.isFile()) {
+        if (top && entry.name === 'SKILL.md' && typeof opts.skillMdOverride === 'string') {
+          fs.writeFileSync(d, opts.skillMdOverride);
+        } else {
+          fs.copyFileSync(s, d);
+        }
+      }
+    }
+  };
+  walk(src, tmp, true);
+  fs.renameSync(tmp, dest);
+}
+
+/**
  * tmux Event-Loop Resilience, Increment 1 (tmux-event-loop-resilience-spec): the THREE
  * dev-gated `enabled` flags OMIT `enabled` in ConfigDefaults so resolveDevAgentGate
  * resolves them (live-on-dev, dark fleet). An existing agent that ran an interim build
@@ -2702,6 +2830,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninApprovalBoundary(result);
     this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
+    this.migrateAccountActionSafetySkill(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -2751,6 +2880,7 @@ export class PostUpdateMigrator {
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHookTelemetryGitignore(result);
     this.migrateDeviceLimitProvenanceGitignore(result);
+    this.migrateSkillLearningGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
@@ -3537,6 +3667,30 @@ export class PostUpdateMigrator {
       result.upgraded.push('gitignore: state/judgment-provenance/ (machine-local provenance rows)');
     } catch (err) {
       result.errors.push(`judgment-provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Skill-learning gitignore (docs/specs/skill-learning-sentinel.md decision 3) ──
+  //
+  // `.instar/state/skill-learning.db*` is the git-ignored derived SQLite cache of
+  // the synced per-machine ledger, and `.instar/skill-telemetry.jsonl*` is the
+  // legacy flat telemetry file (two machines appending to it produced sync
+  // conflicts; the hook now writes `.instar/skill-telemetry/<machineId>.jsonl`).
+  // Fresh installs get both via MachineIdentity GITIGNORE_ENTRIES; existing agents
+  // only here (the judgment-provenance precedent: existing files only, idempotent).
+  // A legacy file git already tracks stays tracked — this never runs `git rm`.
+  private migrateSkillLearningGitignore(result: MigrationResult): void {
+    const projectGitignore = path.join(this.config.projectDir, '.gitignore');
+    if (fs.existsSync(projectGitignore)) {
+      for (const entry of SKILL_LEARNING_GITIGNORE_PROJECT) {
+        this.addGitignoreEntry(projectGitignore, entry, result, 'project .gitignore');
+      }
+    }
+    const instarGitignore = path.join(this.config.stateDir, '.gitignore');
+    if (fs.existsSync(instarGitignore)) {
+      for (const entry of SKILL_LEARNING_GITIGNORE_STATE) {
+        this.addGitignoreEntry(instarGitignore, entry, result, '.instar/.gitignore');
+      }
     }
   }
 
@@ -4453,7 +4607,9 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      installBootWrapper(this.config.projectDir);
+      if(fs.existsSync(path.join(this.config.stateDir,'recovery','host.json'))){
+        if(!installAutoStart(this.config.projectName,this.config.projectDir,this.config.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');
+      }else installBootWrapper(this.config.projectDir);
       result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal + version-managed node candidates');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
@@ -4904,8 +5060,12 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
-      fs.writeFileSync(plistPath, next, 'utf-8');
+      const recoveryUpdate=beginRecoveryAutostartUpdate(this.config.projectDir,plistPath,next);
+      try {
+        fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
+        fs.writeFileSync(plistPath, next, 'utf-8');
+        recoveryUpdate?.commit();
+      } catch(error) {recoveryUpdate?.rollback();throw error;}
       const raised = found.filter((v) => v < LAUNCHD_PROCESS_CEILING_FLOOR).join('/');
       result.upgraded.push(
         `launchd process ceiling: raised ${raised} → ${LAUNCHD_PROCESS_CEILING_FLOOR} (applies at next restart)`,
@@ -5390,6 +5550,21 @@ export class PostUpdateMigrator {
     } catch (err) {
       result.errors.push(`parity-renderings: backfill failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // Skill canonical backfill runs AFTER the parity pass on purpose: on an agent
+    // whose set-aware parity marker is not yet recorded, the parity pass sees no
+    // canonical instances (as it always has) and records its marker; the backfill
+    // then copies renderings into canonical without triggering a fleet-wide
+    // re-render of every existing `.claude/skills/` file.
+    try {
+      await this.migrateSkillsCanonicalBackfill(result);
+    } catch (err) {
+      result.errors.push(`canonical-backfill: failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      await this.migrateBuiltinSkillRenderings(result);
+    } catch (err) {
+      result.errors.push(`skill-renderings: failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return result;
   }
 
@@ -5463,6 +5638,7 @@ export class PostUpdateMigrator {
     // Lazy-import registry so PostUpdateMigrator doesn't pull the entire
     // parity graph at startup for agents that never invoke migrate().
     const { listParityRules } = await import('../providers/parity/registry.js');
+    const { isLearnedCanonical } = await import('../providers/parity/rules/skillParityRule.js');
 
     const rules = listParityRules();
     let renderedCount = 0;
@@ -5476,6 +5652,18 @@ export class PostUpdateMigrator {
         continue;
       }
       for (const instance of instances) {
+        // A LEARNED skill canonical belongs to the skill-learning sentinel's reconciler, which renders
+        // it by frontmatter state (pending/operator-owned stay unrendered); never render it here
+        // (skill-learning-sentinel §3.5; the parity rule's own funnel refuses `render-held` too).
+        if (rule.primitive === 'skill') {
+          let canonicalRaw: string | null = null;
+          try { canonicalRaw = fs.readFileSync(path.join(this.config.projectDir, '.instar', 'skills', instance, 'SKILL.md'), 'utf-8'); } catch { canonicalRaw = null; } // @silent-fallback-ok — an unreadable canonical is the rule's own read error below, not a learned skip
+          if (canonicalRaw !== null && isLearnedCanonical(canonicalRaw)) {
+            skippedCount += 1;
+            result.skipped.push(`parity-renderings: skill/${instance} is a learned canonical — the learned-skill reconciler renders it by state`);
+            continue;
+          }
+        }
         for (const framework of frameworks) {
           if (!rule.frameworks.includes(framework)) continue;
           try {
@@ -5493,7 +5681,7 @@ export class PostUpdateMigrator {
             //   - 'refused to remediate' (memory rule — never auto-regenerates
             //     identity/learning artifacts; see specs/instar-concepts/memory.md)
             // Both are skips, not errors. Operator resolves manually.
-            const isRefuse = msg.includes('user-edit-conflict') || msg.includes('refused to remediate');
+            const isRefuse = msg.includes('user-edit-conflict') || msg.includes('refused to remediate') || msg.includes('render-held:');
             if (isRefuse) {
               skippedCount += 1;
               result.skipped.push(`parity-renderings: ${rule.primitive}/${instance} on ${framework} — ${msg}`);
@@ -5514,6 +5702,166 @@ export class PostUpdateMigrator {
 
     if (renderedCount === 0 && skippedCount === 0) {
       result.skipped.push('parity-renderings: no canonical instances found (new agent or no primitives shipped yet)');
+    }
+  }
+
+  // ── Skills canonical backfill (docs/specs/skill-learning-sentinel.md slice 0) ──
+  //
+  // specs/instar-concepts/skill.md deferred the one-time backfill of existing
+  // `.claude/skills/` and `.agents/skills/` into canonical `.instar/skills/`;
+  // it never shipped, so on every existing agent the canonical dir was empty and
+  // the parity rule was a structural no-op. Decision 6: copy-only and nothing is
+  // ever deleted; when both renderings exist and differ, the `.claude` copy
+  // becomes canonical and the differing `.agents` copy is left untouched,
+  // unstamped and logged (`canonical-backfill-conflict`). Decision 7:
+  // unconditional (no flag) and idempotent — a second run copies nothing.
+  // Existing renderings whose body equals canonical are stamped with the
+  // canonical body hash (`x-instar-stamp`) so verify reads them as in sync; a
+  // rendering on disk is never re-rendered or overwritten here.
+  async migrateSkillsCanonicalBackfill(result: MigrationResult): Promise<void> {
+    const projectDir = this.config.projectDir;
+    const canonicalRoot = path.join(projectDir, '.instar', 'skills');
+    const sources: ReadonlyArray<{ root: string; label: 'claude' | 'agents' }> = [
+      { root: path.join(projectDir, '.claude', 'skills'), label: 'claude' },
+      { root: path.join(projectDir, '.agents', 'skills'), label: 'agents' },
+    ];
+    const counts = { copied: 0, stamped: 0, conflicts: 0, canonical: 0, invalid: 0, noSkillMd: 0, unparseable: 0, errors: 0 };
+    const names = new Set<string>();
+    for (const src of sources) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(src.root, { withFileTypes: true });
+      } catch {
+        continue; // rendering root absent — nothing to backfill from
+      }
+      for (const entry of entries) {
+        if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+        if (!SKILL_SLUG_RE.test(entry.name)) {
+          counts.invalid += 1;
+          result.skipped.push(`canonical-backfill-invalid-name: ${src.label}/${entry.name} (not a skill slug; left untouched)`);
+          continue;
+        }
+        names.add(entry.name);
+      }
+    }
+
+    for (const name of [...names].sort()) {
+      try {
+        const canonicalDir = path.join(canonicalRoot, name);
+        const claudeDir = path.join(sources[0].root, name);
+        const agentsDir = path.join(sources[1].root, name);
+        const claudeHas = fs.existsSync(path.join(claudeDir, 'SKILL.md'));
+        const agentsHas = fs.existsSync(path.join(agentsDir, 'SKILL.md'));
+        if (!fs.existsSync(canonicalDir)) {
+          if (!claudeHas && !agentsHas) {
+            counts.noSkillMd += 1;
+            result.skipped.push(`canonical-backfill-no-skill-md: ${name} (no SKILL.md in any rendering; left untouched)`);
+            continue;
+          }
+          const from = claudeHas ? claudeDir : agentsDir;
+          // Canonical must parse under the parity rule's YAML schema. A rendering with
+          // an unquoted `description:` holding ": " is read fine by Claude Code but
+          // not by js-yaml; the frontmatter is re-quoted (same content, body bytes
+          // untouched so the stamp still matches). Unparseable even then → no
+          // canonical for this skill; the rendering stays where it is.
+          const normalized = normalizeSkillFrontmatter(fs.readFileSync(path.join(from, 'SKILL.md'), 'utf-8'));
+          if (normalized === null) {
+            counts.unparseable += 1;
+            result.skipped.push(`canonical-backfill-unparseable: ${path.relative(projectDir, path.join(from, 'SKILL.md'))} (frontmatter does not parse; no canonical written, rendering left untouched)`);
+            continue;
+          }
+          copySkillTreeVerbatim(from, canonicalDir, {
+            fromCodexRendering: !claudeHas,
+            skillMdOverride: normalized.changed ? normalized.text : null,
+          });
+          counts.copied += 1;
+          result.upgraded.push(`canonical-backfill: ${name} ← ${path.relative(projectDir, from)}${normalized.changed ? ' (frontmatter re-quoted to parse)' : ''}`);
+        } else {
+          counts.canonical += 1;
+        }
+
+        const canonicalRaw = readUtf8OrNull(path.join(canonicalDir, 'SKILL.md'));
+        const hash = canonicalRaw === null ? null : skillBodyHash(canonicalRaw);
+        if (hash === null) {
+          result.skipped.push(`canonical-backfill-unstampable: ${name} (canonical SKILL.md missing or without frontmatter)`);
+          continue;
+        }
+        for (const src of sources) {
+          const renderedPath = path.join(src.root, name, 'SKILL.md');
+          const raw = readUtf8OrNull(renderedPath);
+          if (raw === null) continue;
+          if (skillBodyHash(raw) !== hash) {
+            counts.conflicts += 1;
+            result.skipped.push(`canonical-backfill-conflict: ${name} (${src.label} rendering body differs from canonical; left untouched, unstamped)`);
+            continue;
+          }
+          const stamped = stampSkillRendering(raw, hash);
+          if (stamped === null) continue; // already carries a stamp
+          fs.writeFileSync(renderedPath, stamped);
+          counts.stamped += 1;
+        }
+      } catch (err) {
+        counts.errors += 1;
+        result.errors.push(`canonical-backfill: ${name} — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const summary = `canonical-backfill: ${counts.copied} copied, ${counts.stamped} stamped, ${counts.conflicts} conflicts, ` +
+      `${counts.canonical} already canonical, ${counts.invalid} invalid names, ${counts.noSkillMd} without SKILL.md, ` +
+      `${counts.unparseable} unparseable, ${counts.errors} errors`;
+    (counts.copied + counts.stamped > 0 ? result.upgraded : result.skipped).push(summary);
+  }
+
+  // ── Built-in skill renderings from canonical (same spec, slice 0) ──
+  //
+  // installBuiltinSkills() now writes canonical `.instar/skills/<slug>/SKILL.md`
+  // first; a framework rendering that is ABSENT is produced here through the
+  // parity rule's remediate() for every enabled framework the rule renders. A
+  // rendering already on disk is never overwritten (installBuiltinSkills'
+  // invariant; the backfill above stamps it instead), so this is idempotent.
+  async migrateBuiltinSkillRenderings(result: MigrationResult): Promise<void> {
+    const projectDir = this.config.projectDir;
+    const canonicalRoot = path.join(projectDir, '.instar', 'skills');
+    let names: string[];
+    try {
+      names = fs.readdirSync(canonicalRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory() && SKILL_SLUG_RE.test(e.name))
+        .map(e => e.name)
+        .sort();
+    } catch { // @silent-fallback-ok — no canonical skills directory yet is the normal first-boot state; nothing to render, nothing to skip
+      return; // no canonical skills yet
+    }
+    if (names.length === 0) return;
+    // Lazy import: keep the parity graph out of the migrator's startup path.
+    const { skillParityRule, isLearnedCanonical } = await import('../providers/parity/rules/skillParityRule.js');
+    const frameworks = this.getEnabledFrameworks().filter(f => skillParityRule.frameworks.includes(f));
+    let rendered = 0;
+    for (const name of names) {
+      // A LEARNED canonical (metadata.instar-learned-origin) belongs to the skill-learning
+      // sentinel's reconciler, which honours its frontmatter state: a `pending` skill awaiting the
+      // operator's confirm tap must never be rendered here (skill-learning-sentinel §3.5; deviation dd).
+      let canonicalRaw: string | null = null;
+      try { canonicalRaw = fs.readFileSync(path.join(canonicalRoot, name, 'SKILL.md'), 'utf-8'); } catch { canonicalRaw = null; } // @silent-fallback-ok — an unreadable learned canonical is skipped here (never rendered on a guess); the reconciler owns learned canonicals and reports its own failures
+      if (canonicalRaw !== null && isLearnedCanonical(canonicalRaw)) {
+        result.skipped.push(`skill-renderings: ${name} is a learned canonical — the learned-skill reconciler renders it by state`);
+        continue;
+      }
+      for (const framework of frameworks) {
+        const renderedMd = path.join(projectDir, framework === 'claude-code' ? '.claude/skills' : '.agents/skills', name, 'SKILL.md');
+        if (fs.existsSync(renderedMd)) continue;
+        try {
+          await skillParityRule.remediate(projectDir, name, framework);
+          rendered += 1;
+          result.upgraded.push(`skill-renderings: ${name} → ${framework}`);
+        } catch (err) {
+          // A canonical that fails the rule's read (frontmatter, slug) is a skip,
+          // not a migration error — the rendering it came from is untouched.
+          result.skipped.push(`skill-renderings: ${name} on ${framework} — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    if (rendered === 0) {
+      result.skipped.push('skill-renderings: every canonical skill already rendered for the enabled frameworks');
     }
   }
 
@@ -5760,6 +6108,11 @@ export class PostUpdateMigrator {
 </dict>
 </plist>`;
 
+    // Enrolled agents pin this script's and plist's digests in their recovery
+    // host.json. A plain overwrite here would leave every pin stale: the watchdog
+    // would then skip those agents and repair would refuse to start. Every rewrite
+    // goes through the same transaction as installFleetWatchdog, which rebinds them.
+    let recoveryFleetUpdate: ReturnType<typeof beginRecoveryFleetUpdate> = null;
     try {
       // Compare against current contents to avoid noisy re-installs.
       const scriptCurrent = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf-8') : '';
@@ -5773,6 +6126,7 @@ export class PostUpdateMigrator {
 
       fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
       fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+      recoveryFleetUpdate = beginRecoveryFleetUpdate(scriptPath, plistPath, scriptBody, plistBody);
       if (scriptChanged) fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
       if (plistChanged) fs.writeFileSync(plistPath, plistBody);
 
@@ -5782,8 +6136,14 @@ export class PostUpdateMigrator {
       } catch (err) {
         const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
         result.errors.push(`fleet-watchdog: plist validation failed: ${stderr}`);
+        const failedUpdate = recoveryFleetUpdate;
+        recoveryFleetUpdate = null;
+        failedUpdate?.rollback();
         return;
       }
+
+      recoveryFleetUpdate?.commit();
+      recoveryFleetUpdate = null;
 
       // Reload only if plist changed (script-only changes don't need launchd touch).
       //
@@ -5808,6 +6168,11 @@ export class PostUpdateMigrator {
       );
     } catch (err) {
       result.errors.push(`fleet-watchdog: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        recoveryFleetUpdate?.rollback();
+      } catch (rollbackErr) {
+        result.errors.push(`fleet-watchdog: recovery rollback incomplete: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+      }
     }
   }
 
@@ -6261,6 +6626,19 @@ export class PostUpdateMigrator {
    *    to are in the shipped skill);
    *  - a missing file is left to installBuiltinSkills (fresh installs). Custom skills are never read.
    */
+  private migrateAccountActionSafetySkill(result: MigrationResult): void {
+    const file = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
+    try {
+      if (!fs.existsSync(file)) return;
+      const current = fs.readFileSync(file, 'utf8');
+      if (!current.includes('name: normal-chrome-browser') || current.includes(ACCOUNT_ACTION_SAFETY_HEADING)) return;
+      fs.writeFileSync(file, current.trimEnd() + '\n\n' + ACCOUNT_ACTION_SAFETY);
+      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (account-action safety)');
+    } catch (err) {
+      result.errors.push(`account-action safety skill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateNormalChromeBrowserSkill(result: MigrationResult): void {
     const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
     try {
@@ -8803,6 +9181,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Quiet by Default notifications');
     }
+    if (!content.includes('### Server-down remote recovery')) {
+      content += recoveryAwareness(this.config.port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added server-down recovery setup and proof awareness');
+    }
     if (!content.includes('/notifications/jobs/:slug/push')) {
       const anchor = 'or the PIN-confirmed dashboard toggle.';
       if (content.includes(anchor)) content = content.replace(anchor, `${anchor} ${QUIET_JOB_CHOICE_SENTENCE}`);
@@ -8878,6 +9261,12 @@ setTimeout(() => process.exit(0), 2000);
                 : 'CLAUDE.md: added Normal-Chrome browser section',
         );
       }
+    }
+
+    if (!content.includes(ACCOUNT_ACTION_SAFETY_HEADING)) {
+      content += '\n' + ACCOUNT_ACTION_SAFETY;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: account-action safety');
     }
 
     // A verified display name must follow its routing ID onto existing agents.
@@ -9339,10 +9728,21 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
     }
 
+    // Team access reached several machines: an existing agent's line still says it cannot.
+    if (content.includes('On a one-machine agent the owner can invite')) {
+      content = content.replace('On a one-machine agent the owner can invite', 'The owner can invite').replace('; and an agent that has had team members cannot add a second machine until multi-machine team support lands.', '; and a machine on an older build cannot join an agent that has a team. If the record on one machine shows a gap, every team phone waits until it is filled or the owner settles it on their phone.');
+      patched = true;
+    }
     if (!content.includes('Registry First — team access:')) {
-      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
+      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. The owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and a machine on an older build cannot join an agent that has a team. If the record on one machine shows a gap, every team phone waits until it is filled or the owner settles it on their phone.';
       patched = true;
       result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — team requests:')) {
+      content += '\n- **Registry First — team requests:** when someone asks me for access, I do not grant it and cannot. I file it with `POST /team/proposals` with a typed `change` (grant, role or invite) and an optional `reason`, and say the owner will see it in the app. The owner approves or declines there. A member gets one open request at a time, and a member who asks who has access gets: "Only the owner can see that."';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team requests Registry First awareness');
     }
 
     if (!content.includes('Registry First — people:')) {
@@ -10032,10 +10432,24 @@ setTimeout(() => process.exit(0), 2000);
         result.upgraded.push('CLAUDE.md: added the native session screen line');
       }
     }
+    // Unread counts (docs/specs/mobile-unread-messages.md): the bullet after the native session screen line.
+    if (content.includes(APP_CONVERSATIONS_NATIVE_SESSION_LINE) && !content.includes('per-person unread counts')) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_NATIVE_SESSION_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_UNREAD_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the app unread counts line');
+      }
+    }
+
     // Dashboard conversations (docs/specs/dashboard-conversations-browser-device.md): after the native session screen line.
     if (content.includes(APP_CONVERSATIONS_NATIVE_SESSION_LINE) && !content.includes(DASHBOARD_CONVERSATIONS_LINE)) {
       const lines = content.split('\n');
-      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_NATIVE_SESSION_LINE);
+      // After the unread line when it is there, else after the native session line (the template's order).
+      const unreadAt = lines.findIndex((l) => l === APP_CONVERSATIONS_UNREAD_LINE);
+      const at = unreadAt >= 0 ? unreadAt : lines.findIndex((l) => l === APP_CONVERSATIONS_NATIVE_SESSION_LINE);
       if (at >= 0) {
         lines.splice(at + 1, 0, DASHBOARD_CONVERSATIONS_LINE);
         content = lines.join('\n');
@@ -10295,6 +10709,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Recommended services (docs/specs/recommended-services.md) — Agent Awareness + Migration Parity.
+    // v1 → v2 wording (Tailscale and Jev available on every agent): the shipped sentence is swapped in place, once.
+    if (content.includes('Recommended outside services (') && content.includes(RECOMMENDED_SERVICES_V1_TAIL)) {
+      content = content.replace(RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: recommended services section now says Tailscale and Jev can be set up');
+    }
     if (!content.includes('Recommended outside services (')) {
       content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);
       patched = true;
@@ -11223,6 +11643,29 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(oneClickEnd, oneClickEnd + '\n' + signinSkillBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added /subscription-signin skill awareness');
+      }
+    }
+
+    // One-tap repair setting awareness (spec one-tap-unattended-repair §7), content-sniffed.
+    if (
+      content.includes('One-click repair across all machines') &&
+      !content.includes('One-tap repair setting (Accounts page)')
+    ) {
+      const oneClickEnd = 'an unreachable peer is shown honestly and suppresses competing actions until truth returns.';
+      const oneTapBullet = "- **One-tap repair setting (Accounts page)** \u2014 the console Accounts page has an **Automatic sign-in repair** section (direct link: the dashboard URL + `#/capacity/accounts?s=auto-repair`). Each machine's row shows its setting in plain words, the exact accounts its list will hold, accounts not covered yet, and which accounts will still ask and why. After one PIN unlock, **Turn on for ticked machines** sets the operator's own machine to repair without asking and refreshes the account list of any other machine already set that way; **Switch ticked machines back to asking first** undoes it; **Finish restarting** re-queues a restart that did not happen. A machine set to \"asks you first\", watching only, or off is never escalated from another machine. It reads `GET /subscription-relogin?scope=pool` (`pool.configs`) and writes through `POST /subscription-relogin/configure-pool` (recent dashboard unlock only) \u2192 a signed, single-use mandate \u2192 `POST /subscription-relogin/configure-with-mandate` on each target. **When to use** (PROACTIVE): the user wants sign-in repair on everywhere, or an account was added and its machine's row says it isn't covered \u2192 send the direct link to the section. Never call the configure routes yourself; they need the operator's unlock.";
+      if (content.includes(oneClickEnd)) {
+        content = content.replace(oneClickEnd, oneClickEnd + '\n' + oneTapBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added one-tap repair setting awareness');
+      }
+    }
+    // The old "configure this on any machine" sentence now points at the section.
+    {
+      const oldConfigureSentence = "A recent dashboard PIN unlock can safely configure this on any machine with `POST /subscription-relogin/configure`; the endpoint validates exact identities, persists an audit row, and requests a supervised restart so the authority change is actually live.";
+      if (content.includes(oldConfigureSentence)) {
+        content = content.replace(oldConfigureSentence, "The operator switches this on from the Accounts page's **Automatic sign-in repair** section (below), which writes through the PIN-gated configure routes with exact identities, an audit row and a supervised restart; never call those routes yourself.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: pointed sign-in repair configuration at the Accounts section');
       }
     }
 
@@ -12921,6 +13364,16 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
       content += '\n' + shedLine + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added overload shed line');
+    }
+
+    // Resource-aware placement (2026-11-07, docs/specs/resource-aware-placement.md): agents
+    // that carry the pool section learn heavy-work placement, the read-only preview and the
+    // placed-helper route. Idempotent via the unique 'Resource-aware placement (heavy work'
+    // marker (deliberately not containing '/pool/placement', an older migration's marker).
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Resource-aware placement (heavy work')) {
+      content += '\n' + RESOURCE_PLACEMENT_CLAUDE_MD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added resource-aware placement line');
     }
 
     // Post-transfer closeout awareness (2026-06-05): agents that already carry
@@ -15622,6 +16075,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // normal-chrome-builtin-skill: the helper scripts are framework-neutral
       // (.instar/scripts/browser/), so a Codex/Gemini agent on macOS uses them too.
       '### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)', // == NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING (a literal so the parity guard can see it)
+      '### Account actions: read before acting', // framework-neutral browser safety, including Codex/Gemini
       // a2a-single-agent-identity: the agent identity + coherence check are server-side and
       // framework-agnostic (a Codex/Gemini agent runs on the same mesh and must explain the
       // not-provisioned posture and the adopt-from-a-sibling path honestly too).
@@ -15748,6 +16202,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Registry First — people:',
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
+      '**Registry First — team requests:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is
@@ -15964,6 +16419,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // will guess. Mirrored like every agent-facing capability.
       '### Mesh Self-Healing: stale-owner release + lease hand-back',
       '### Cold-Start Lifeline Fallback',
+      '### Server-down remote recovery',
       // Durable Conversation Identity: framework-agnostic HTTP surface — a
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.
@@ -17301,6 +17757,18 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
       patched = true;
       result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
+    // Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3, decision 20):
+    // the whole `monitoring.skillLearning` block is added only when absent, as one
+    // unit, so an existing agent carries exactly the shipped defaults (kill switch
+    // `enabled: false`; `restartNeeded: true` on its ladder entry because the hook
+    // chain and tick are wired at boot). An operator's block is never touched.
+    if (migrateConfigSkillLearningDefaults(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added monitoring.skillLearning defaults (enabled:false, mode:shadow; restart needed to take effect)');
+    } else {
+      result.skipped.push('config.json: monitoring.skillLearning already present');
     }
 
     // Apply defaults from the canonical ConfigDefaults registry.
@@ -23881,34 +24349,87 @@ function findContradictions(text, state) {
   }
 
   private getSkillUsageTelemetryHook(): string {
-    return `#!/bin/bash
-# Skill Usage Telemetry — PostToolUse hook for Skill tool.
+    // docs/specs/skill-learning-sentinel.md §2 + decisions 18/29. ONE JSON row per
+    // Skill invocation, built by python (never shell-interpolated into JSON), with
+    // exactly {ts, skill, session_id, session_name, topic_id, machine_id,
+    // content_hash} — no args, no free text. content_hash is the x-instar-stamp of
+    // the rendered SKILL.md at invocation (absent → "unknown"). Per-machine file
+    // .instar/skill-telemetry/<machine_id>.jsonl. Always exits 0.
+    // String.raw: the script has no `${` and no backticks, so nothing is escaped.
+    return String.raw`#!/bin/bash
+# Skill Usage Telemetry — PostToolUse hook for the Skill tool.
 #
-# Logs every skill invocation to .instar/skill-telemetry.jsonl
-# for future pattern detection (which skills are used, when, how often).
-#
-# Cross-pollinated from Dawn's Portal project (2026-04-09).
-# Lightweight: appends one JSONL line, no network calls.
+# Appends ONE JSON row per Skill invocation to
+#   .instar/skill-telemetry/<machine_id>.jsonl
+# Row: {ts, skill, session_id, session_name, topic_id, machine_id, content_hash}
+# No args, no free text: skill is validated against the skill slug grammar,
+# machine_id against ^[\w-]{1,64}$ (INSTAR_MACHINE_ID, else this machine's
+# .instar/machine/identity.json machineId, else "unknown"), and content_hash is the x-instar-stamp read
+# from the rendered SKILL.md at invocation ("unknown" when absent).
+# The row is built by python, never by shell string interpolation.
+# Spec: docs/specs/skill-learning-sentinel.md (slice 0). Always exits 0.
 
 INPUT=$(cat)
 
-TOOL_NAME=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
+TOOL_NAME=$(printf '%s' "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
 if [ "$TOOL_NAME" != "Skill" ]; then
   exit 0
 fi
 
-INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
-TELEMETRY_FILE="$INSTAR_DIR/skill-telemetry.jsonl"
-
-SKILL_NAME=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('skill','unknown'))" 2>/dev/null)
-SKILL_ARGS=$(echo "$INPUT" | python3 -c "import json,sys; a=json.load(sys.stdin).get('tool_input',{}).get('args',''); print(a[:200])" 2>/dev/null)
-OUTPUT_LEN=$(echo "$INPUT" | python3 -c "import json,sys; print(len(str(json.load(sys.stdin).get('tool_output',''))))" 2>/dev/null)
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-SESSION_ID="\${INSTAR_SESSION_ID:-}"
-
-mkdir -p "$INSTAR_DIR"
-echo "{\\"timestamp\\":\\"$TIMESTAMP\\",\\"skill\\":\\"$SKILL_NAME\\",\\"args\\":\\"$SKILL_ARGS\\",\\"session_id\\":\\"$SESSION_ID\\",\\"output_length\\":$OUTPUT_LEN}" >> "$TELEMETRY_FILE"
+export INSTAR_SESSION_ID INSTAR_SESSION_NAME INSTAR_TOPIC_ID INSTAR_MACHINE_ID CLAUDE_PROJECT_DIR
+printf '%s' "$INPUT" | python3 -c '
+import datetime, json, os, re, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+if not isinstance(data, dict) or data.get("tool_name") != "Skill":
+    sys.exit(0)
+ti = data.get("tool_input")
+raw_skill = ti.get("skill") if isinstance(ti, dict) else None
+skill = raw_skill if isinstance(raw_skill, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", raw_skill) else "unknown"
+def env(name, pattern, limit):
+    v = os.environ.get(name, "")
+    return v if isinstance(v, str) and len(v) <= limit and re.fullmatch(pattern, v) else ""
+project = os.environ.get("CLAUDE_PROJECT_DIR") or "."
+machine_re = r"[\w-]{1,64}"
+machine = os.environ.get("INSTAR_MACHINE_ID", "")
+if not re.fullmatch(machine_re, machine):
+    # Sessions spawned before this update (and unpaired agents) carry no env var:
+    # read the identity file of this machine so their rows never pool into one shared file.
+    machine = "unknown"
+    try:
+        with open(os.path.join(project, ".instar", "machine", "identity.json"), "r", encoding="utf-8") as f:
+            mid = json.load(f).get("machineId")
+        if isinstance(mid, str) and re.fullmatch(machine_re, mid):
+            machine = mid
+    except Exception:
+        pass
+content_hash = "unknown"
+if skill != "unknown":
+    try:
+        with open(os.path.join(project, ".claude", "skills", skill, "SKILL.md"), "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(65536)
+        m = re.search(r"^x-instar-stamp:\s*([a-f0-9]{64})\s*$", head, re.M)
+        if m:
+            content_hash = m.group(1)
+    except Exception:
+        pass
+row = {
+    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "skill": skill,
+    "session_id": env("INSTAR_SESSION_ID", r"[\w-]{1,64}", 64),
+    "session_name": env("INSTAR_SESSION_NAME", r"[\w.:@-]{1,128}", 128),
+    "topic_id": env("INSTAR_TOPIC_ID", r"[\w-]{1,32}", 32),
+    "machine_id": machine,
+    "content_hash": content_hash,
+}
+out_dir = os.path.join(project, ".instar", "skill-telemetry")
+os.makedirs(out_dir, exist_ok=True)
+with open(os.path.join(out_dir, machine + ".jsonl"), "a", encoding="utf-8") as f:
+    f.write(json.dumps(row) + "\n")
+' 2>/dev/null
+exit 0
 `;
   }
 

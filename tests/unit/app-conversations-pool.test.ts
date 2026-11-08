@@ -442,7 +442,7 @@ describe('messages reach the owner (§2.4)', () => {
       app: { isApp: (c) => c.session.startsWith('app:'), urgentAccepted: () => false, canTake: () => true, ingest: () => true, ...app },
       ...over,
     });
-    const send = (id: string, epoch = 10) => h({ type: 'deliverMessage', session: RK, messageId: id, payload: {}, ownershipEpoch: epoch } as never, 'peer') as { accepted: string };
+    const send = (id: string, epoch = 10) => h({ type: 'deliverMessage', session: RK, messageId: id, payload: {}, ownershipEpoch: epoch, senderEnvelope: { via: 'mobile-device', deviceId: 'd', eventId: 'e' } } as never, 'peer') as { accepted: string };
     return { send, accepted, seen };
   };
 

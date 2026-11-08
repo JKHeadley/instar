@@ -85,18 +85,18 @@ describe('Agent Awareness + Migration Parity: the dashboard conversations (brows
     (m as unknown as { migrateClaudeMd(r: R): void }).migrateClaudeMd(result);
     return result;
   };
-  it('new agents get it once, right after the native session screen line, and it explains 💻', async () => {
+  it('new agents get it once, right after the unread line (after the native session screen line), and it explains 💻', async () => {
     const { generateClaudeMd } = await import('../../src/scaffold/templates.js');
-    const { APP_CONVERSATIONS_NATIVE_SESSION_LINE, DASHBOARD_CONVERSATIONS_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const { APP_CONVERSATIONS_UNREAD_LINE, DASHBOARD_CONVERSATIONS_LINE } = await import('../../src/core/PostUpdateMigrator.js');
     const md = generateClaudeMd('test', 'Test', 4040, false);
     expect(md.split(DASHBOARD_CONVERSATIONS_LINE).length - 1).toBe(1);
     const lines = md.split('\n');
-    expect(lines[lines.indexOf(APP_CONVERSATIONS_NATIVE_SESSION_LINE) + 1]).toBe(DASHBOARD_CONVERSATIONS_LINE);
+    expect(lines[lines.indexOf(APP_CONVERSATIONS_UNREAD_LINE) + 1]).toBe(DASHBOARD_CONVERSATIONS_LINE);
     expect(DASHBOARD_CONVERSATIONS_LINE).toContain('💻');
     expect(DASHBOARD_CONVERSATIONS_LINE).toContain('approved browser key of the owner signed it in the dashboard');
   });
   it('existing agents get it in place, once (idempotent)', async () => {
-    const { APP_CONVERSATIONS_CLAUDEMD_SECTION, APP_CONVERSATIONS_NATIVE_SESSION_LINE, DASHBOARD_CONVERSATIONS_LINE } = await import('../../src/core/PostUpdateMigrator.js');
+    const { APP_CONVERSATIONS_CLAUDEMD_SECTION, APP_CONVERSATIONS_NATIVE_SESSION_LINE, APP_CONVERSATIONS_UNREAD_LINE, DASHBOARD_CONVERSATIONS_LINE } = await import('../../src/core/PostUpdateMigrator.js');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dash-conv-'));
     try {
       fs.mkdirSync(path.join(dir, '.instar'), { recursive: true });
@@ -106,7 +106,7 @@ describe('Agent Awareness + Migration Parity: the dashboard conversations (brows
       fs.writeFileSync(md, `# CLAUDE.md\n${old}`);
       expect((await run(dir)).upgraded).toContain('CLAUDE.md: added the dashboard conversations (browser device) line');
       const lines = fs.readFileSync(md, 'utf-8').split('\n');
-      expect(lines[lines.indexOf(APP_CONVERSATIONS_NATIVE_SESSION_LINE) + 1]).toBe(DASHBOARD_CONVERSATIONS_LINE);
+      expect(lines[lines.indexOf(APP_CONVERSATIONS_UNREAD_LINE) + 1]).toBe(DASHBOARD_CONVERSATIONS_LINE);
       expect((await run(dir)).upgraded).not.toContain('CLAUDE.md: added the dashboard conversations (browser device) line');
       expect(fs.readFileSync(md, 'utf-8').split(DASHBOARD_CONVERSATIONS_LINE).length - 1).toBe(1);
     } finally {

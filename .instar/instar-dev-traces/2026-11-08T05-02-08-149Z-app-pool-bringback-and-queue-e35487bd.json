@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "app-pool-bringback-and-queue",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-08T05:02:08.149Z",
+  "artifactPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "artifactSha256": "e38de453623bf1e109be9f208a964e5c77808e1443106d418e641b3c6ad92e18",
+  "coveredFiles": [
+    "tests/unit/app-pool-bringback-queue.test.ts",
+    "upgrades/side-effects/app-pool-bringback-and-queue.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only addition to the Tier 1 fix: a returning owner never flaps the offer, and an app-only agent delivers a queued app message end to end",
+  "eli16Path": "docs/specs/app-pool-bringback-and-queue.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-pool-bringback-and-queue.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": false
+}

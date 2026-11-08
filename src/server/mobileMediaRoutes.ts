@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import { Router, type Request, type Response } from 'express';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
-import { deviceMayUse } from './mobilePairingRoutes.js';
+import { deviceMayUse, devicePersonOf } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
@@ -229,6 +229,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       if (att) { refKey = k; break; }
     }
     if (!att) { notFound(); return; }
+    // A file belongs to its message: one held from this reader stays held.
+    if (!deps.pairing.mayReadMessageId(devicePersonOf(req), refKey, att.messageId)) { notFound(); return; }
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
     if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged where it was stored and has been set aside.' }); return; }
@@ -329,7 +331,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     // The exact set is recorded in the reservation first, so a crash midway resumes it (§4.7).
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'purge', conversationKey: '', sets: JSON.stringify(sets) }); } catch {
-      res.status(503).json({ error: 'purge-unavailable', detail: 'The request could not be recorded, so nothing was removed. Try again.' });
+      res.status(503).json({ error: 'purge-unavailable', detail: `The request could not be recorded on ${s.media!.machineWords()}, so nothing was removed. Try again.` });
       return;
     }
     if (r.kind !== 'reserved') { res.status(429).json({ error: 'too-many-requests' }); return; }

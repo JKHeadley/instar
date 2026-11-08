@@ -171,3 +171,17 @@ describe('AppConversationStore', () => {
     expect(peer.ingestReplicated(appEventFromReplicatedData(validated))!.appended).toBe(true);
   });
 });
+
+describe('a stamp from another machine', () => {
+  const message = (accessStamp: unknown) => ({ eventId: 'e', kind: 'message', conversationKey: '00000000-0000-4000-8000-000000000001', at: '2026-11-07T10:00:00.000Z', machineId: 'm', messageId: 'x', role: 'agent', text: 't', accessStamp });
+  it('that cannot be read is held from everyone, not taken as none', () => {
+    for (const bad of ['x', null, { origin: 'a' }, { origin: 'a', incarnation: 'i', seq: 0, access: {} }, { origin: 'a', incarnation: 'i', seq: 1, access: { s: 'no' } }]) {
+      expect((validateAppEvent(message(bad)) as { accessStamp?: { seq: number } }).accessStamp?.seq).toBe(Number.MAX_SAFE_INTEGER);
+    }
+  });
+  it('that is sound is kept, and none stays none', () => {
+    const good = { origin: 'a', incarnation: 'i', seq: 3, access: { s: 1 } };
+    expect((validateAppEvent(message(good)) as { accessStamp?: unknown }).accessStamp).toEqual(good);
+    expect((validateAppEvent(message(undefined)) as { accessStamp?: unknown }).accessStamp).toBeUndefined();
+  });
+});

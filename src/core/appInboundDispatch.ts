@@ -18,7 +18,7 @@ import { safeInboxTarget } from './memorySessionPolicy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
-import type { AppConversationStore } from './AppConversationStore.js';
+import type { AppConversationStore, BrowsedMessage } from './AppConversationStore.js';
 import { cleanConversationTitle } from './appConversationText.js';
 import { historyLine } from './appMediaTypes.js';
 
@@ -69,6 +69,8 @@ export interface AppProfile {
 }
 
 export interface AppInboundDispatchDeps {
+  /** Is this stored message held from any current reader of the conversation? */
+  heldFromAReader?: (conversationKey: string, message: BrowsedMessage) => boolean;
   sessions: AppDispatchSessions;
   channels: SessionChannelRegistry;
   store: AppConversationStore;
@@ -171,7 +173,8 @@ export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSess
 function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; fileFor: (name: string) => string } {
     // Context: recent history from the conversation store (never a platform API).
     const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
-      .filter((m) => m.messageId !== input.messageId);
+      // A session serves every reader of its conversation, so it leaves out what any of them may not see.
+      .filter((m) => m.messageId !== input.messageId && !deps.heldFromAReader?.(input.conversationKey, m));
     const lines: string[] = [];
     if (input.notes && input.notes.length > 0) {
       lines.push('--- Files from earlier messages ---');

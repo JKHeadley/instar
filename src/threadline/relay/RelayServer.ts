@@ -31,6 +31,7 @@ import { RegistryStore } from './RegistryStore.js';
 import { RegistryAuth } from './RegistryAuth.js';
 import type { RegistryEntry, RegistrySearchParams } from './RegistryStore.js';
 import type { MessageEnvelope } from './types.js';
+import { RecoveryControlPlane, type RecoveryAuthorityConfig } from '../../recovery/RecoveryControlPlane.js';
 import { mergeDefaults } from '../../core/mergeDefaults.js';
 
 type ResolvedRelayServerConfig = Omit<Required<RelayServerConfig>, 'rateLimitConfig' | 'a2aRateLimitConfig' | 'offlineQueueConfig' | 'abuseDetectorConfig'> & {
@@ -65,6 +66,7 @@ export class RelayServer {
   readonly metrics: RelayMetrics;
   readonly registry: RegistryStore;
   readonly registryAuth: RegistryAuth;
+  private recovery: RecoveryControlPlane | null = null;
   private httpServer: http.Server | null = null;
   private wss: WebSocketServer | null = null;
   private running = false;
@@ -187,6 +189,12 @@ export class RelayServer {
   /**
    * Start the relay server.
    */
+  /** Host provisions per-agent secret-manager signers; no request can enable this. */
+  configureRecovery(authorities: ReadonlyMap<string, RecoveryAuthorityConfig>): void {
+    if (this.running) throw new Error('recovery-configure-before-start');
+    this.recovery = new RecoveryControlPlane(this.registry, authorities);
+  }
+
   async start(): Promise<void> {
     if (this.running) return;
 
@@ -194,6 +202,8 @@ export class RelayServer {
       this.httpServer = http.createServer(async (req, res) => {
         const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
         const pathname = url.pathname;
+
+        if (this.recovery && await this.recovery.handle(req, res, pathname)) return;
 
         // CORS headers for registry API
         if (pathname.startsWith('/v1/registry')) {
@@ -216,6 +226,8 @@ export class RelayServer {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
             status: 'ok',
+            buildRevision: /^[0-9a-f]{40}$/.test(process.env.RELAY_BUILD_REVISION ?? '')
+              ? process.env.RELAY_BUILD_REVISION : null,
             agents: this.presence.size,
             connections: this.connections.size,
             offlineQueue: queueStats,

@@ -179,7 +179,8 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     const seen: unknown[] = [];
     const ok = checkCommandRBAC(cmd, 'OPERATOR', rbac({ authorizeMandateDeliver: (a) => { seen.push(a); return true; } }));
     expect(ok).toEqual({ ok: true, reason: 'ok' });
-    expect(seen[0]).toEqual({ sender: 'OPERATOR' });
+    // The command is threaded too, so the gate can recognise the configure-only shape (one-tap-unattended-repair §4).
+    expect(seen[0]).toEqual({ sender: 'OPERATOR', command: cmd });
   });
 
   it('state-snapshot is read/observe class — any registered peer → ok (no router/owner role)', () => {

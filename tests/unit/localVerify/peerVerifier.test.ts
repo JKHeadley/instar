@@ -1103,3 +1103,64 @@ describe('code review round 2 fixes', () => {
     expect(c.peer.runs()).toHaveLength(0);
   });
 });
+
+// ── resource-aware placement §4: peers respect size and load ───────────
+
+describe('coordinator — peer fit (resource-aware placement)', () => {
+  function twoPeers(peerFit?: (id: string) => { eligible: boolean; reason: string; score: number | null }) {
+    const h = harness();
+    const peer = fakePeer();
+    const sentTo: string[] = [];
+    const client: PeerClient = { ...peer.client, run: async (p, req) => { sentTo.push(p.machineId); return peer.client.run(p, req); } };
+    h.svc.setPeerWiring({
+      peers: () => [{ machineId: 'mini', url: 'http://mini:4042' }, { machineId: 'm5pro', url: 'http://m5pro:4042' }],
+      client,
+      lease: { holdsLease: () => true, leaseEpoch: () => 7, holderMachineId: () => 'coord' },
+      ...(peerFit ? { peerFit } : {}),
+    });
+    return { ...h, peer, sentTo };
+  }
+
+  it('without the seam, the configured order is kept (today\'s behaviour)', async () => {
+    const c = twoPeers();
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.runTimers();
+    expect(c.sentTo[0]).toBe('mini');
+  });
+
+  it('a peer below the floor is skipped and the skip is audited', async () => {
+    const c = twoPeers((id) => (id === 'mini' ? { eligible: false, reason: 'machine-too-small', score: null } : { eligible: true, reason: 'fits', score: 0.7 }));
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.runTimers();
+    expect(c.sentTo).toEqual(['m5pro']);
+    const audit = fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8');
+    expect(audit).toContain('"event":"peer-skipped-resource"');
+    expect(audit).toContain('"reason":"machine-too-small"');
+  });
+
+  it('every peer ineligible → nothing is handed off (the entry waits for the local slot)', async () => {
+    const c = twoPeers(() => ({ eligible: false, reason: 'machine-busy', score: null }));
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.runTimers();
+    expect(c.sentTo).toEqual([]);
+  });
+
+  it('eligible peers are tried least-loaded first', async () => {
+    const c = twoPeers((id) => ({ eligible: true, reason: 'fits', score: id === 'mini' ? 0.9 : 0.3 }));
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.runTimers();
+    expect(c.sentTo[0]).toBe('m5pro');
+  });
+
+  it('a fit seam that throws keeps that peer (no silent drop)', async () => {
+    const c = twoPeers(() => { throw new Error('registry gone'); });
+    c.setForeignHolders([9001]);
+    await c.svc.request(1);
+    await c.runTimers();
+    expect(c.sentTo[0]).toBe('mini');
+  });
+});

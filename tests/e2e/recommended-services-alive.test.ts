@@ -64,8 +64,9 @@ describe('recommended services: production wiring', () => {
     expect(list.body.offersLive).toBe(false);
     expect(list.body).toMatchObject({ migrationComplete: false, firstResult: null });
     const jev = list.body.services.find((row: { service: string }) => row.service === 'jev');
-    expect(jev).toMatchObject({ name: 'Jev (TypeSafe)', backupStatus: 'specified', choice: 'unset', available: false });
-    expect(list.body.services.filter((row: { available: boolean }) => row.available)).toEqual([]);
+    // The two live-proven recipes are available on every agent, with no proving list; the other seven are not.
+    expect(jev).toMatchObject({ name: 'Jev (TypeSafe)', backupStatus: 'specified', choice: 'unset', available: true });
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden']);
 
     const noPin = await request(app).post('/recommended-services/jev/no').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noPin.status).toBe(403);
@@ -75,17 +76,23 @@ describe('recommended services: production wiring', () => {
     expect(no.body).toMatchObject({ choice: 'no', reason: 'cost' });
     expect(makeLedger().effective('jev').choice).toBe('no');
 
-    // No token is needed to reach the confirm route, and no real service has a proven setup, so it refuses a yes.
+    // No token is needed to reach the confirm route. A service with no proven setup refuses a yes outright.
+    const unproven = await request(app).get('/recommended-services/github-state-backup/confirm');
+    expect(unproven.status).toBe(409);
+    expect(unproven.body.error).toBe('not-available');
+    // Jev's page is reachable through the real wiring; with no verified owner on this bare server it stops at that, never at "not available".
     const page = await request(app).get('/recommended-services/jev/confirm');
-    expect(page.status).toBe(409);
-    expect(page.body.error).toBe('not-available');
+    expect([200, 409]).toContain(page.status);
+    if (page.status === 409) expect(page.body.error).toBe('no-owner');
     const yes = await request(app).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: 'forged', pin: PIN, answer: 'yes' });
     expect(yes.status).toBe(409);
     expect(makeLedger().effective('jev').choice).toBe('no');
-    // Verifying needs a recipe, and this agent is proving none.
+    // Verifying Jev gets past "no recipe" and stops at the missing yes; an unproven service has no recipe to verify.
     const verify = await request(app).post('/recommended-services/jev/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);
-    expect(verify.body.error).toBe('no-recipe');
+    expect(verify.body.error).toBe('not-granted-here');
+    const noRecipe = await request(app).post('/recommended-services/github-state-backup/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(noRecipe.body.error).toBe('no-recipe');
     const pageFile = await request(app).get('/dashboard/service-yes');
     expect(pageFile.status).toBe(200);
     expect(pageFile.headers['content-security-policy']).toContain("default-src 'none'");
@@ -97,29 +104,54 @@ describe('recommended services: production wiring', () => {
     expect(res.status).toBe(503);
   });
 
-  it('the key route refuses on an agent that is not proving a recipe, so a fleet agent stores nothing', async () => {
+  it('the key route stores nothing on a fleet agent without a yes, and nothing at all for an unproven service', async () => {
     const { server } = boot(true);
     const res = await request(server.getApp()).post('/recommended-services/jev/key')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('a-key');
-    expect(res.status).toBe(404);
-    expect(res.body.error).toBe('no-recipe');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('not-granted-here');
+    const unproven = await request(server.getApp()).post('/recommended-services/github-state-backup/key')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('a-key');
+    expect(unproven.status).toBe(404);
+    expect(unproven.body.error).toBe('no-recipe');
   });
 
-  it('the hold route refuses on an agent that is not proving a recipe', async () => {
+  it('the hold route works for a proven service and refuses an unproven one', async () => {
     const { server } = boot(true);
-    const res = await request(server.getApp()).post('/recommended-services/jev/hold')
+    const held = await request(server.getApp()).post('/recommended-services/jev/hold')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(held.status).toBe(200);
+    expect(held.body.held).toBe(true);
+    const res = await request(server.getApp()).post('/recommended-services/github-state-backup/hold')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('no-recipe');
   });
 
-  it('an agent proving the Tailscale recipe (a throwaway under a temp folder) reaches it through the real wiring, and only it', async () => {
+  it('the Bitwarden recipe is live on every agent: the copy route stops at the missing yes, a service without a copy has no such route', async () => {
+    const { server } = boot(true);
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.find((row: { service: string }) => row.service === 'bitwarden').available).toBe(true);
+    const sync = await request(app).post('/recommended-services/bitwarden/sync').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(sync.status).toBe(409);
+    expect(sync.body.error).toBe('not-granted-here');
+    const noCopy = await request(app).post('/recommended-services/jev/sync').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(noCopy.status).toBe(409);
+    expect(noCopy.body.error).toBe('no-copy-for-this-service');
+    // The page names what would be copied, as names, through the real vault and config.
+    const page = await request(app).get('/recommended-services/bitwarden/confirm');
+    if (page.status === 200) expect(Array.isArray(page.body.copies)).toBe(true);
+    else expect(page.body.error).toBe('no-owner');
+  });
+
+  it('an agent proving a recipe (a throwaway under a temp folder) reaches it through the real wiring, beside the proven ones', async () => {
     const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
     const app = server.getApp();
     const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(list.status).toBe(200);
     expect(list.body.offersLive).toBe(false);
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden']);
     // The recipe is wired: verify gets past "no-recipe" and stops at the missing yes.
     const verify = await request(app).post('/recommended-services/tailscale/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);

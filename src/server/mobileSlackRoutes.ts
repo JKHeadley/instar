@@ -28,14 +28,17 @@
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
 import { deviceIcon, mirrorPrefix, openItHint, requestDeviceClient, type DeviceClient } from '../core/deviceClientWording.js';
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, type MessageOriginEvidence } from '../messaging/messageOrigin.js';
 import type { SlackOriginLedger } from '../messaging/slack/SlackOriginLedger.js';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
+import type { ConversationUnreadService, UnreadSlackSource } from '../core/ConversationUnreadService.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { deviceAdmittedAt, deviceMayUse, devicePersonOf, isMobileChatEnabled, isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
@@ -74,6 +77,8 @@ export interface SlackHistoryRow {
   at: string;
   /** Present on a row written for a message sent from the app (joins to the app store). */
   eventId?: string;
+  /** The sender's Slack user id when the log recorded it (unread §3.4: the owner's own rows). */
+  platformUserId?: string | null;
 }
 
 export type SlackDispatchOutcome = 'delivered' | 'queued' | 'refused';
@@ -93,6 +98,8 @@ export interface MobileSlackBridge {
   originOf?(conv: SlackAppConversation, ts: string): { evidence: MessageOriginEvidence } | { missing: 'not-retained' | 'other-machine' | 'unlinked' };
   /** The latest row of each conversation, for the list (bounded read). */
   lastActivity(): Map<string, { at: string; preview: string }>;
+  /** The log tail's size and modification time: the revision an unread count is cached on (§3.4). */
+  historyVersion?(): string;
   /** The Slack inbound dispatch, with the operator as sender. Null when it is not wired yet. */
   dispatch(input: { conv: SlackAppConversation; text: string; ownerName: string; ownerUserId: string; messageId: string; originVerdict: OriginVerdict; originClient?: DeviceClient }): Promise<SlackDispatchOutcome>;
   /** Post the mirror line into the channel or thread. */
@@ -128,6 +135,23 @@ export interface MobileSlackRouteDeps {
   now?: () => number;
   /** Reads history from the machine that holds it, for the owner's phone. Absent: 409 wrong-machine, as before. */
   holderRead?: HolderRead;
+  /** Unread (mobile-unread-messages §3.5): the device reader's `readUpTo` on history. Absent or off ⇒ no field. */
+  unread?: ConversationUnreadService | null;
+}
+
+/** The Slack message source for unread counts (mobile-unread-messages §3.4), over the bridge's bounded tail parse. */
+export function slackUnreadSource(bridge: () => MobileSlackBridge | null): UnreadSlackSource {
+  return {
+    rows(id) {
+      const b = bridge();
+      const conv = b?.resolve(id);
+      if (!b || !conv) return null;
+      let rows: SlackHistoryRow[] = [];
+      try { rows = b.history(conv, 1000); } catch { rows = []; } // @silent-fallback-ok — an unreadable log counts as no rows
+      return { key: conv.key, rows: rows.map((r) => ({ ts: r.ts, at: r.at, fromUser: r.fromUser, ...(r.eventId ? { eventId: r.eventId } : {}), platformUserId: r.platformUserId ?? null })), complete: rows.length < 1000 };
+    },
+    version() { return bridge()?.historyVersion?.() ?? 'none'; },
+  };
 }
 
 /** The operator's Slack user id (`mobilePairing.slackOwnerUserId`), or null when unset or malformed. */
@@ -270,11 +294,17 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     const desc = [...byId.values()].sort((x, y) => cmp(String(y.at), String(x.at)) || cmp(String(y.eventId), String(x.eventId)));
     const page = desc.slice(0, limit);
     const oldest = page[page.length - 1];
+    // Unread (mobile-unread-messages §3.5): a device reader's effective position, for the "Unread messages" divider.
+    let readUpTo: Record<string, unknown> = {};
+    if (deviceId !== null && deps.unread && deps.unread.enabled()) {
+      const reader = deps.unread.resolveReader({ person: devicePersonOf(req), viaDevice: true });
+      if (reader) readUpTo = { readUpTo: deps.unread.readUpTo(reader, `slack:${deps.machineId()}:${id}`) };
+    }
     res.json({
       // `conversationKey` is the `ref` a download of this conversation's files names (§4.9).
       ...(deviceViewAsked ? { deviceView: true } : {}),
       conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key, messages: page.reverse(),
-      nextBefore: desc.length > limit && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null,
+      nextBefore: desc.length > limit && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, ...readUpTo,
     });
   });
 
@@ -394,7 +424,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     // Step 4 — reserve, then persist (fsync) BEFORE dispatch.
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: conv.key, messageId }); } catch {
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, deps.config.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -414,7 +444,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     } catch (err) {
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('MobileSlack.persist', err instanceof Error ? err.message : String(err));
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, deps.config.stateDir));
       return;
     }
     // People and roles §3.3/§3.5: the sender is the phone's person. An MSP the owner let use Slack
@@ -543,7 +573,7 @@ export interface MobileSlackBridgeDeps {
 const LOG_TAIL_LINES = 5000;
 const LOG_TAIL_BYTES = 8 * 1024 * 1024;
 
-interface LogRow { messageId?: unknown; channelId?: unknown; threadTs?: unknown; text?: unknown; fromUser?: unknown; timestamp?: unknown; senderName?: unknown; eventId?: unknown }
+interface LogRow { messageId?: unknown; channelId?: unknown; threadTs?: unknown; text?: unknown; fromUser?: unknown; timestamp?: unknown; senderName?: unknown; eventId?: unknown; platformUserId?: unknown }
 
 function routingKeyOf(channelId: string, threadTs: string | null): string { return threadTs ? `${channelId}:${threadTs}` : channelId; }
 
@@ -555,13 +585,22 @@ function inConversation(conv: SlackAppConversation, ts: string, threadTs: string
 
 export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBridge {
   const now = d.now ?? Date.now;
+  // One parse of the log tail is shared by every Slack row of a list request (unread §3.4): the
+  // parsed rows are kept while the file's size and modification time are unchanged.
+  let tailCache: { version: string; rows: LogRow[] } | null = null;
+  const tailVersion = (): string => {
+    try { const st = fs.statSync(d.adapter.getLogPath()); return `${st.size}:${st.mtimeMs}`; } catch { return 'none'; } // @silent-fallback-ok — no file reads as one unchanging version
+  };
   const tail = (): LogRow[] => {
+    const version = tailVersion();
+    if (tailCache && tailCache.version === version) return tailCache.rows;
     let lines: string[] = [];
     try {
       lines = readTail(d.adapter.getLogPath());
     } catch { lines = []; } // @silent-fallback-ok — a missing or unreadable log means no Slack rows; the store's rows remain
     const out: LogRow[] = [];
     for (const l of lines) { try { out.push(JSON.parse(l) as LogRow); } catch { /* @silent-fallback-ok — a torn line is skipped */ } }
+    tailCache = { version, rows: out };
     return out;
   };
   const toConv = (key: string, e: { id: number; channelId: string; threadTs: string | null; mintedAt: string; label?: string }): SlackAppConversation => ({
@@ -585,6 +624,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
     originOf(conv, ts) {
       return d.adapter.originLedger ? d.adapter.originLedger.lookup(conv.channelId, ts) : { missing: 'other-machine' };
     },
+    historyVersion() { return tailVersion(); },
     history(conv, limit) {
       const out = new Map<string, SlackHistoryRow>();
       for (const row of tail()) {
@@ -600,6 +640,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
           ts, text: row.text, fromUser: row.fromUser === true, at: row.timestamp,
           senderName: typeof row.senderName === 'string' ? row.senderName : null,
           ...(typeof row.eventId === 'string' && row.eventId ? { eventId: row.eventId } : {}),
+          ...(typeof row.platformUserId === 'string' && row.platformUserId ? { platformUserId: row.platformUserId } : {}),
         });
       }
       // The in-memory ring adds what the API fetched after a restart (it includes the bot's own messages).
@@ -609,7 +650,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
           if (out.has(m.ts) || !inConversation(conv, m.ts, m.thread_ts ?? null)) continue;
           const secs = Number(m.ts);
           if (!Number.isFinite(secs)) continue;
-          out.set(m.ts, { ts: m.ts, text: m.text, fromUser: !(bot && m.user === bot), at: new Date(secs * 1000).toISOString(), senderName: null });
+          out.set(m.ts, { ts: m.ts, text: m.text, fromUser: !(bot && m.user === bot), at: new Date(secs * 1000).toISOString(), senderName: null, ...(typeof m.user === 'string' && m.user ? { platformUserId: m.user } : {}) });
         }
       } catch { /* @silent-fallback-ok — the log rows remain */ }
       return [...out.values()].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).slice(-limit);

@@ -129,6 +129,7 @@ describe('MultiMachineCoordinator', () => {
         holdsLease: vi.fn(() => false),
         currentHolder: vi.fn(() => 'm_primary'),
         currentEpoch: vi.fn(() => 5),
+        hasNoSharedMedium: vi.fn(() => false),
       };
     }
 

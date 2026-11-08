@@ -635,6 +635,11 @@ export interface JobDefinition {
    *  If omitted or empty, the job runs on ALL machines (default behavior).
    *  Example: ["m_abc123...", "justins-macbook"] */
   machines?: string[];
+  /** How much this job asks of a machine (docs/specs/resource-aware-placement.md §5).
+   *  `heavy` (builds, full test runs, simulators) never runs on a machine below the
+   *  heavy-work size floor unless `machines` explicitly names that machine.
+   *  Absent = `standard` (today's behaviour). */
+  workWeight?: 'light' | 'standard' | 'heavy';
   /** Common blockers — pre-confirmed resolution patterns for this job.
    *  Injected into working memory at session start and used by the
    *  EscalationResolutionReviewer to catch unnecessary human escalations. */
@@ -1480,6 +1485,7 @@ export type SkipReason =
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
+  | 'machine-too-small' // A `workWeight: 'heavy'` job on a machine below the heavy-work size floor (resource-aware placement §5)
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
@@ -2804,6 +2810,8 @@ export interface MultiMachineConfig {
   };
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
+  /** Independent server-down recovery; requires owner enrollment before any host mutation. */
+  serverDownRecovery?: { enabled?: boolean };
   /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
   mutualSsh?: {
     enabled?: boolean;
@@ -4034,6 +4042,11 @@ export interface InstarConfig {
    */
   mobilePairing?: {
     enabled?: boolean;
+    /** Team access (docs/specs/team-roles-and-access.md). */
+    team?: {
+      /** Refuse team phones after 24 hours with no peer answering, instead of serving on. Off by default. */
+      strictStaleness?: boolean;
+    };
     /** Code lifetime in minutes, default 10, clamped to 1–60. */
     codeTtlMinutes?: number;
     /** Native operator chat (docs/specs/mobile-operator-chat.md). `enabled` omitted ⇒ follows mobilePairing. */
@@ -4050,6 +4063,11 @@ export interface InstarConfig {
        * `maxStoreBytes` (default 20 GiB, read live) is the agent-wide admission cap.
        */
       media?: { enabled?: boolean; maxStoreBytes?: number };
+      /**
+       * Unread counts, read reports and the app badge (docs/specs/mobile-unread-messages.md).
+       * `enabled` omitted ⇒ true wherever native conversations are on; `false` turns unread off alone. Read live.
+       */
+      unread?: { enabled?: boolean };
     };
     /**
      * Dashboard browsers as signed devices (docs/specs/dashboard-conversations-browser-device.md).
@@ -4614,6 +4632,13 @@ export interface InstarConfig {
      */
     nonGatingFailureSwap?: { enabled?: boolean; maxAttempts?: number };
     /**
+     * Internal Codex calls (sentinels, gates, extractors) pick the pool Codex account
+     * with the most room by its last reading, instead of only the machine's ambient
+     * login. Default ON; `{ enabled: false }` keeps every call on the ambient login.
+     * The framework and model never change, only which Codex login answers.
+     */
+    codexAccountSelection?: { enabled?: boolean };
+    /**
      * Unified self-action backpressure — the SelfActionGovernor (Increment B,
      * docs/specs/unified-self-action-backpressure.md; the companion doc is the
      * implementation authority). Ships OBSERVE-ONLY on every class,
@@ -4977,6 +5002,12 @@ export interface InstarConfig {
         /** Age of the oldest successful repair required in days. Default 30. */
         minimumEvidenceDays?: number;
       };
+      /**
+       * Monotonic write counter for this block (spec one-tap-unattended-repair §1). Incremented by
+       * every operator write (local configure, configure-pool, configure-with-mandate) and folded
+       * into the block's revision so A→B→A content still gets a new revision. Missing ⇒ 0.
+       */
+      generation?: number;
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
       /**
@@ -7826,6 +7857,35 @@ export interface MonitoringConfig {
      *  infra-gap batch serializes under the route's 10/min IP limit (Slice 2
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
+  };
+  /**
+   * Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3). Ships OFF;
+   * `enabled` is the kill switch (omitted ⇒ off on every agent) and is read at
+   * boot (`restartNeeded`). Slice 0 ships only the repairs (canonical backfill,
+   * telemetry hook); the sentinel itself reads this block from slice 1.
+   */
+  skillLearning?: {
+    /** Kill switch. Default false. */
+    enabled?: boolean;
+    /** `shadow` records what it WOULD do; `live` writes skills. Default shadow. */
+    mode?: 'shadow' | 'live';
+    /** The deterministic evidence floor: count-based, no time bound, never widened by a model. */
+    floor?: { minOccurrences?: number; minCorroboratedCleanRuns?: number };
+    /** The static fallback rung (its recency is its own, not the floor's). */
+    defaultGate?: { minSupport?: number; minDistinctDays?: number; minDistinctSessions?: number; windowDays?: number };
+    /** Evidence floor for admitting any arbiter to act. */
+    shadow?: { minDisagreementsSampled?: number; verdictReaskDays?: number };
+    /** A SIGNAL to the operator, never a refusal. */
+    growthSignals?: { createdPerWeekNotice?: number };
+    evidence?: { runSliceBytesPerRun?: number; promptBudgetBytes?: number; transcriptScanBytes?: number };
+    /** Retire floor + the static defaults the reviewer judges against. */
+    retire?: { minCorroboratedRuns?: number; defaultScoreFloor?: number; defaultMisfireFloor?: number; defaultUnusedDays?: number; measurableFloor?: number };
+    review?: { requireDifferentFamily?: boolean; minCorrectedRunsSameFamily?: number; revertBreakerPer30d?: number };
+    /** The spend ceiling is a money floor (irreversible spend), deliberately static. */
+    llm?: { maxDailyCents?: number; batchSize?: number };
+    tickMinutes?: number;
+    /** Every-machine rendering reconcile of `instar-learned` skills (decision 19). Read live. Default on. */
+    reconcile?: { enabled?: boolean };
   };
   /** Un-gated correction durable-outcome drain; enabled on dev agents via DEV_GATED_FEATURES. */
   correctionClassReview?: {

@@ -112,6 +112,11 @@ export interface UsageLimitWatchDeps {
   channelFor: (sessionName: string) => RecoveryChannel | null;
   /** A real call on the login in use. */
   probe: () => Promise<UsageProbeResult>;
+  /**
+   * Put a key the operator saved on disk into use before it is read. Without it a key put in during the
+   * limit is never probed, and the probe keeps testing the old walled key (2026-11-07 live proof).
+   */
+  syncKey?: () => void;
   /** Changes when the operator puts in a different key: worth a probe straight away. */
   keyFingerprint: () => string | null;
   isKeyAgent: () => boolean;
@@ -237,6 +242,8 @@ export class UsageLimitWatch {
       let result: UsageProbeResult = 'other';
       try { result = await this.deps.probe(); }
       catch { /* @silent-fallback-ok: a probe that could not run concludes nothing, by design */ }
+      // One line per probe, so a limit that never ends can be read from the log (it could not on 2026-11-07).
+      this.logger.log(`[UsageLimitWatch] usage probe: ${result}${this.state.limited ? ' (limited)' : ''}`);
       if (result === 'limited') { await this.open(null); this.backOffIfProbeWasDue(); return; }
       if (result === 'ok') { if (this.state.limited) await this.recovered(); return; }
       if (this.state.limited) this.backOffIfProbeWasDue();
@@ -256,6 +263,8 @@ export class UsageLimitWatch {
     if (!this.started) return;
     if (this.state.limited) {
       await this.sendOperatorNotice();
+      try { this.deps.syncKey?.(); }
+      catch (err) { /* @silent-fallback-ok: logged; the fingerprint below is still read */ this.logger.warn(`[UsageLimitWatch] key sync failed: ${err instanceof Error ? err.message : String(err)}`); }
       const fp = this.deps.keyFingerprint();
       if (fp !== this.lastFingerprint) { this.lastFingerprint = fp; this.state.nextProbeAt = 0; }
       if (this.deps.accountKnownToHaveRoom()) await this.recovered(); // an account came back or was added

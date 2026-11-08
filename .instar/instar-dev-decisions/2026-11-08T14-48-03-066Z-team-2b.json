@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-08T14:48:03.066Z",
+  "slug": "team-2b",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationUnreadService.ts"
+    ],
+    "addedLines": 3,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

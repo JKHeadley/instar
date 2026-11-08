@@ -199,13 +199,21 @@ import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../m
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { createSkillLearningRoutes } from './skillLearningRoutes.js';
+import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
+import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
+import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
+import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
+import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
+import type { TeamAccessRow } from '../core/TeamAccessLog.js';
 import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
-import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
+import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId, slackUnreadSource } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
 import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
@@ -470,9 +478,13 @@ export class AgentServer {
   private wsManager: WebSocketManager | null = null;
   private config: InstarConfig;
   /** Mobile pairing links (docs/specs/mobile-pairing-link.md). */
+  private teamPullTimer: ReturnType<typeof setInterval> | null = null;
+  private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
+  conversationUnread: ConversationUnreadService | null = null;
   private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
@@ -537,6 +549,69 @@ export class AgentServer {
    * The second-person notice (team-roles-and-access §3.10): at boot, hourly, and on a new sender,
    * on the lease holder only. At most one pass a minute, however many senders arrive.
    */
+  /** Rows arrived from a peer: end what they changed here, and re-check this machine's phones. */
+  private async afterTeamRows(touched: string[]): Promise<void> {
+    for (const ref of touched) {
+      try {
+        await this.teamConversationChange?.(ref, () => undefined);
+        this.mobilePairing?.teamLog()?.releaseAccess(ref);
+      } catch (err) {
+        // @silent-fallback-ok — reported; the spawn check reads the same confined list either way.
+        this.mobilePairing?.reportTeamFault('TeamAccess.endSession', err);
+      }
+    }
+    this.mobilePairing?.reconcileTeamPhones();
+  }
+
+  /** The regular exchange of access rows. Silent with no peers, so a one-machine agent sees nothing. */
+  private startTeamPuller(options: {
+    config: InstarConfig;
+    coordinator?: { enabled?: boolean; leaseObservedAt?(machineId: string): number | null; setLeaseHold?(hold: () => boolean): void; identity?: { machineId: string } | null; managers?: { identityManager?: { loadSigningKey(): string } } } | null;
+    resolvePeerUrls?: () => Array<{ machineId: string; url: string; kind: PeerEndpointKind }>;
+    recordRopeResult?: import('./poolPeerFetch.js').RopeResultRecorder;
+    sleepWakeDetector?: import('../core/SleepWakeDetector.js').SleepWakeDetector;
+    sessionManager: { applyConversationChange?<T>(ref: string, change: () => Promise<T> | T): Promise<T> };
+    mobileRoutes?: { start?: boolean };
+  }): void {
+    const svc = this.mobilePairing;
+    const self = options.coordinator?.identity?.machineId;
+    if (!svc || svc.teamPuller || !self || !options.resolvePeerUrls) return;
+    fs.mkdirSync(path.join(options.config.stateDir, TEAM_ACCESS_DIR), { recursive: true, mode: 0o700 });
+    this.teamConversationChange = (ref, change) => options.sessionManager.applyConversationChange!(ref, change);
+    const call = async (peer: { machineId: string; url: string; kind: PeerEndpointKind }, route: string, body: unknown): Promise<globalThis.Response> => {
+      const key = options.coordinator!.managers!.identityManager!.loadSigningKey();
+      return poolPeerFetch(options.recordRopeResult, peer, route, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(self, key, body) },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+      });
+    };
+    svc.teamPuller = new TeamAccessPuller({
+      log: () => svc.teamLog(),
+      peers: () => (options.resolvePeerUrls?.() ?? []).map((peer) => ({
+        machineId: peer.machineId,
+        fetchRows: async (have, heads) => {
+          const r = await call(peer, '/api/team-access/rows', { have, heads });
+          if (r.status === 404) throw new PeerHasNoLog(peer.machineId);
+          if (!r.ok) throw new Error(`team-access-rows-${r.status}`);
+          return await r.json() as PeerRows;
+        },
+        pushRows: async (rows) => { await call(peer, '/api/team-access/push', { rows }); },
+      })),
+      leaseEvidenceAt: (id) => options.coordinator?.leaseObservedAt?.(id) ?? null,
+      afterIngest: (touched) => this.afterTeamRows(touched),
+      strictStaleness: () => options.config.mobilePairing?.team?.strictStaleness === true,
+      standingFile: path.join(options.config.stateDir, TEAM_ACCESS_DIR, 'peers.json'),
+      reportError: (err) => svc.reportTeamFault('TeamAccess.pull', err),
+    });
+    options.sleepWakeDetector?.on('wake', () => svc.teamPuller?.noteWake());
+    // With a team on, native off is below the floor, and a machine behind a reachable peer waits to catch up.
+    options.coordinator?.setLeaseHold?.(() => (svc.teamOn() || (svc.teamLog()?.mayHaveTeam() ?? false)) && (!isMobileNativeEnabled(options.config) || (svc.teamPuller?.behind() ?? false)));
+    if (!(options.mobileRoutes?.start ?? !process.env.VITEST)) return;
+    void svc.teamPuller.tick();
+    this.teamPullTimer = setInterval(() => { void svc.teamPuller?.tick(); }, PULL_INTERVAL_MS);
+    this.teamPullTimer.unref();
+  }
+
   private startReachNotices(options: { config: InstarConfig; reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople; coordinator?: MultiMachineCoordinator; resolvePeerUrls?: () => Array<{ machineId: string; url: string; kind: import('./peerUrlGuard.js').PeerEndpointKind }>; meshSelfId?: string | null }): void {
     const people = options.reachablePeople;
     if (!people) return;
@@ -743,6 +818,8 @@ export class AgentServer {
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
   private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** Skill Learning Sentinel (skill-learning-sentinel §3.10): bound by server.ts via setSkillLearningSentinel(); the routes read it through a getter, so a late bind is live at once. */
+  private skillLearningSentinel: SkillLearningSentinelLike | null = null;
   /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
   private feedbackOwnerServing: (() => boolean) | null = null;
   private feedbackDrainDb: (() => import('better-sqlite3').Database | null) | null = null;
@@ -928,6 +1005,11 @@ export class AgentServer {
   private slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
   /** a2a-single-agent-identity: the agent-identity runtime (detector + audit + lever). */
   private agentIdentityRuntime: AgentIdentityRuntime | null = null;
+
+  /** Bind (or unbind) the running Skill Learning Sentinel; `/skills/learned*` answers 503 `skill-learning-disabled` until one is set. */
+  setSkillLearningSentinel(sentinel: SkillLearningSentinelLike | null): void {
+    this.skillLearningSentinel = sentinel;
+  }
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
@@ -1250,6 +1332,10 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** The read-marker store (mobile-unread-messages §3.3), built by server.ts on the replication path. */
+    readMarkers?: ConversationReadMarkerStore | null;
+    /** The machine's hybrid logical clock in ms, for a baseline that never runs behind a peer's time (§3.2). */
+    readMarkersHlcNowMs?: () => number;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
     /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
@@ -1497,6 +1583,8 @@ export class AgentServer {
      *  A factory (not a pre-bound runner) so the route can wrap the request-built
      *  RealChannelDriver, sharing the gate's artifact store. Undefined when dark/unwired. */
     liveTestRunnerCtx?: LiveTestRunnerWiring;
+    /** Skill Learning Sentinel (skill-learning-sentinel §3.10) — server.ts binds it via `setSkillLearningSentinel()` right after construction (off the constructor line); the option remains for tests and embedders. */
+    skillLearningSentinel?: SkillLearningSentinelLike | null;
     unifiedTrust?: import('../threadline/UnifiedTrustWiring.js').UnifiedTrustSystem;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     /** Shared proxy coordinator (PresenceProxy ↔ PromiseBeacon ↔ /build heartbeat). */
@@ -1614,6 +1702,7 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.skillLearningSentinel = options.skillLearningSentinel ?? null;
     this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
@@ -1653,6 +1742,7 @@ export class AgentServer {
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
     this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, express.text({ type: 'text/plain', limit: '8kb' }));
     this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
+    this.app.locals.stateDir = options.config.stateDir;
     this.app.use(duplicateResponseGuard);
     this.app.use(corsMiddleware);
 
@@ -1818,18 +1908,10 @@ export class AgentServer {
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
     this.mobilePairing = new MobilePairingService({
-      // Team phones need the sandbox on, and one machine until multi-machine support lands (§3.6, §4.1).
+      // Team phones need the sandbox on (§3.6).
       teamGate: () => {
         const status = options.sessionManager.memoryPrivacyStatus?.();
         if (!status?.enabled || !status.sandboxReady) return 'memory-privacy-required';
-        try {
-          const identity = options.coordinator?.managers?.identityManager;
-          const self = options.coordinator?.identity?.machineId;
-          if (identity?.getActiveMachines().some((m) => m.machineId !== self)) return 'team-needs-one-machine';
-        } catch {
-          // @silent-fallback-ok — an unreadable registry counts as several machines, the strict direction.
-          return 'team-needs-one-machine';
-        }
         return 'ok';
       },
       config: this.config,
@@ -1909,8 +1991,18 @@ export class AgentServer {
         machineId: options.coordinator?.identity?.machineId ?? 'local',
         enabled: () => isMobilePushEnabled(this.config),
         // People and roles: a reply push goes only to phones that may use that conversation.
-        mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
+        mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
+        // Unread (mobile-unread-messages §3.6): the phone's app-conversation unread as the badge; app conversations only.
+        badgeFor: (deviceId, conversationKey, messageId) => {
+          const u = this.conversationUnread;
+          if (!u || !u.enabled() || !isAppConversationKey(conversationKey)) return null;
+          const d = mp.devices.get(deviceId);
+          const person = d ? mp.personOfDevice(d) : null;
+          if (!person || !person.ok) return null;
+          const reader = u.resolveReader({ person, viaDevice: true });
+          return reader ? u.badgeFor(reader, messageId ? { conversationKey, messageId } : undefined) : null;
+        },
         phoneStillCounts: (deviceId) => {
           const d = mp.devices.get(deviceId);
           return !!d && mp.personOfDevice(d).ok;
@@ -2101,7 +2193,10 @@ export class AgentServer {
         onLeaseReceived: options.leaseTransport
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
           : undefined, // returns the resulting observed epoch → accept-ack (Decision 9)
-        onLeasePullRequest: options.onLeasePullRequest,
+        onLeasePullRequest: () => {
+          options.coordinator?.noteLeasePeerPull();
+          return options.onLeasePullRequest?.() ?? null;
+        },
         onLiveTailReceived: options.liveTailReceiver,
         onHandoffAck: options.handoffWireTransport
           ? (ack: unknown) => options.handoffWireTransport!.recordAck(ack)
@@ -2130,10 +2225,30 @@ export class AgentServer {
           : undefined,
         resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
       };
-      machineRouteContext.teamJoinBlocked = () => {
+      machineRouteContext.teamJoinBlocked = (enforcement) => {
+        if (enforcement >= TEAM_ENFORCEMENT_VERSION) return false;
         if (this.mobilePairing) return this.mobilePairing.teamJoinBlocked();
         const entries = new TeamConfinement(options.config.stateDir).entries();
         return entries === null || entries.size > 0;
+      };
+      machineRouteContext.teamAccessRows = (have, heads, senderId) => {
+        const log = this.mobilePairing?.teamLog() ?? null;
+        const missing = log?.rowsBeyond(have, heads) ?? [];
+        // A peer that already holds everything here has nothing to push, and that counts as answering.
+        this.mobilePairing?.teamPuller?.noteInbound(senderId, missing.length === 0);
+        const privacy = options.sessionManager.memoryPrivacyStatus?.();
+        return {
+          rows: missing.slice(0, ROWS_PER_CALL), vector: log?.vector() ?? {}, starts: log?.starts() ?? {},
+          standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
+        };
+      };
+      machineRouteContext.teamAccessPush = async (rows, senderId) => {
+        const log = this.mobilePairing?.teamLog() ?? null;
+        if (!log) throw new Error('team-access-unavailable');
+        const { added, refused, touched } = log.ingest(rows as TeamAccessRow[]);
+        this.mobilePairing?.teamPuller?.noteInbound(senderId, true);
+        if (added > 0) await this.afterTeamRows(touched);
+        return { added, refused };
       };
       this.machineRouteContext = machineRouteContext;
       const machineRoutes = createMachineRoutes(machineRouteContext);
@@ -5635,6 +5750,7 @@ export class AgentServer {
           ? { get: options.liveConfig.get.bind(options.liveConfig) }
           : null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,
+      topicIntentStore: options.topicIntentStore ?? null,
       usherSignalStore: options.usherSignalStore ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,
       telemetryHeartbeat: options.telemetryHeartbeat ?? null,
@@ -6076,6 +6192,15 @@ export class AgentServer {
     // Native app conversations (docs/specs/mobile-native-conversations.md, increment 1). The gate
     // is read ONCE here, at boot. The bootstrap-wired service (server.ts) takes precedence; on any
     // other init path it is default-constructed over the same registry and request store.
+    // With native off this machine still keeps the access log and the locks, because a team may exist on its peers.
+    if (this.mobilePairing && !isMobileNativeEnabled(options.config) && options.coordinator?.identity) {
+      const signer = loadMachineSigner(options.config.stateDir);
+      if (signer) {
+        this.mobilePairing.keyLedger = new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup: identityKeyLookup(options.config.stateDir) });
+        this.startTeamPuller(options);
+        options.sessionManager.refuseConfinedSpawns?.();
+      }
+    }
     if (this.mobilePairing && isMobileNativeEnabled(options.config)) {
       this.mobilePairing.nativeOn = true;
       try {
@@ -6099,6 +6224,8 @@ export class AgentServer {
             confineStranded: () => { throw new Error('pairing-not-ready'); },
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+            // Refusals name the machine ("Mac Studio is nearly out of disk space"), never "this machine".
+            machineName: () => (options.meshSelfId ? verifiedEntityName(options.meshSelfId, options.machinePoolRegistry?.getCapacity(options.meshSelfId)?.nickname) : null),
             registry: routeCtx.conversationRegistry!,
             requests,
             holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
@@ -6125,6 +6252,7 @@ export class AgentServer {
           });
           const created = svc;
           dispatch = createAppInboundDispatch({
+            heldFromAReader: (key, message) => (this.mobilePairing?.heldFrom(key, message).length ?? 0) > 0,
             sessions: sm as unknown as Parameters<typeof createAppInboundDispatch>[0]['sessions'],
             channels: created.channels, store: created.store, stateDir: options.config.stateDir,
             spawnAdmission: () => options.spawnAdmission ?? null,
@@ -6139,6 +6267,17 @@ export class AgentServer {
         // reconciled against the device registry in both directions (a crash between the writes).
         const keyLedger = svc.deps.keyLedger ?? null;
         this.mobilePairing.keyLedger = keyLedger;
+        this.startTeamPuller(options);
+        const teamSvc = this.mobilePairing;
+        // The registry, not the dialable list: a peer with no usable address still counts.
+        const severalMachines = (): boolean => {
+          try { return (options.coordinator?.managers?.identityManager?.getActiveMachines().length ?? 0) > 1 || (options.resolvePeerUrls?.() ?? []).length > 0; } catch { return true; } // @silent-fallback-ok — an unreadable registry stamps, the safe direction
+        };
+        svc.store.useAccessStamps({
+          // Stamped once there could be a reader, and on any agent with peers: a cut-off machine cannot know of a first invite.
+          stamp: (ev) => (teamSvc.teamOn() || severalMachines() ? teamSvc.teamLog()?.stampMessage(ev.conversationKey, ev.role) ?? null : null),
+          saw: (stamp) => teamSvc.teamLog()?.noteMessage(stamp),
+        });
         // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).
         this.mobilePairing.useAppConversationStore(svc.store);
         // Set here on every path: production builds the service before this server exists.
@@ -6631,6 +6770,9 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
+    // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
+    this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
@@ -6648,8 +6790,44 @@ export class AgentServer {
         holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
       })
       : null;
+    // Unread (docs/specs/mobile-unread-messages.md): the service over the replicated marker store and the
+    // three message sources the list already loads. Built only when server.ts built the store (native
+    // chat on and the flag on); `enabled()` is read live so the flag can switch unread off alone.
+    if (this.mobilePairing && this.appConversations && options.readMarkers) {
+      const mp = this.mobilePairing;
+      const appSvc = this.appConversations;
+      const telegram = options.telegram;
+      this.conversationUnread = new ConversationUnreadService({
+        store: options.readMarkers,
+        enabled: () => mp.nativeOn && isMobileUnreadEnabled(this.config),
+        machineId: () => appSvc.deps.machineId(),
+        app: appSvc.store,
+        telegram: telegram ? {
+          history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
+          version: (topicId) => telegram.getTopicContentVersion(topicId),
+          exists: (topicId) => telegram.getAllTopicMappings().some((m) => m.topicId === topicId),
+        } : null,
+        slack: slackBridge ? slackUnreadSource(() => slackBridge) : null,
+        ownerIdentity: () => mp.ownerIdentity(),
+        personOfReaderKey: (key) => personOfReaderKey(mp, key),
+        readerRemoved: (key) => readerRemovedHere(mp, key),
+        mayUse: (person, ref, op) => mp.mayUse(person, ref, op ?? 'read'),
+        mayReadMessage: (person, key, m) => mp.mayReadStored(person, key, m),
+        peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+        peerAllowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+        authToken: () => this.config.authToken ?? '',
+        recordRope: routeCtx.recordRopeResult ?? undefined,
+        hlcNowMs: options.readMarkersHlcNowMs,
+        report: (what, detail) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'unread counts and read markers for app conversations',
+          fallback: 'a count reads unknown or a marker is shared later', reason: detail, impact: 'An unread count in the app may lag.',
+        }),
+      });
+      routeCtx.conversationUnread = this.conversationUnread;
+    }
     if (this.mobilePairing) {
       this.app.use(createMobileSlackRouter({
+        unread: this.conversationUnread,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         slack: slackBridge ? () => slackBridge : null, sentinel: options.sentinel ?? null,
         // The same machine id the conversation list puts on its rows.
@@ -6664,6 +6842,7 @@ export class AgentServer {
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
       this.app.use(createMobileConversationRouter({
+        unread: this.conversationUnread,
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         mediaEnabled: isMobileMediaEnabled(options.config),
@@ -6803,6 +6982,12 @@ export class AgentServer {
           return { userId: id, several: owners.length > 1, links: (owner?.telegramUserId ? { telegram: owner.telegramUserId } : {}) as Record<string, string | number> };
         },
         logsDir: path.join(options.config.stateDir, 'logs'),
+        stateDir: options.config.stateDir,
+        conversationTitle: (refOrPlace) => {
+          const topic = /^telegram:(?:topic:)?(\d+)$/.exec(refOrPlace);
+          if (topic) return options.telegram?.getAllTopicMappings().find((m) => m.topicId === Number(topic[1]))?.topicName ?? null;
+          return appStore?.getConversation(refOrPlace.replace(/^app:/, ''))?.title ?? null;
+        },
         restoreRefs: () => {
           const keys = appStore?.liveConversationKeys() ?? [];
           const teamDevices = new Set(pairingSvc.devices.list().filter((d) => d.role === 'team').map((d) => d.id));
@@ -8723,11 +8908,27 @@ export class AgentServer {
     });
   }
 
+  /**
+   * Unread (mobile-unread-messages §3.3): start the retry and gc timers and the boot catch-up from any
+   * reachable peer, after the pool registry has had a moment to name them. Phones get no baseline
+   * until it settles. Returns the service for the boot's late-bound references, or null when off.
+   */
+  startConversationUnread(delayMs = process.env.VITEST ? 0 : 15_000): ConversationUnreadService | null {
+    const svc = this.conversationUnread;
+    if (!svc) return null;
+    svc.start();
+    const t = setTimeout(() => { void svc.catchUp().catch(() => { /* @silent-fallback-ok — the 5-minute retry resumes it */ }); }, delayMs);
+    t.unref?.();
+    return svc;
+  }
+
   async stop(): Promise<void> {
+    if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
+    this.conversationUnread?.stop();
     this.appConversations?.stop();
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
@@ -9325,6 +9526,11 @@ export class AgentServer {
       },
       lifelineTopicId: () => tg.getLifelineTopicId(),
     });
+  }
+
+  /** The maturation ladder service (constructed late in boot); null until then or when disabled. */
+  getMaturationLadder(): MaturationLadderService | null {
+    return this.maturationLadder;
   }
 
   getTopicOperatorStore(): TopicOperatorStore | null {

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "resource-aware-placement",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T09:44:43.328Z",
+  "artifactPath": "upgrades/side-effects/resource-aware-placement.md",
+  "artifactSha256": "2039909b4669fbee802569e1b502fae66b7ee392409f72af6ab74d738af4d0d7",
+  "specPath": "docs/specs/resource-aware-placement.md",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/scheduler/JobScheduler.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/resource-aware-placement.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Ratchet fixes inside the converged Tier-2 change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

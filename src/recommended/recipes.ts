@@ -10,10 +10,13 @@
 import { execFile } from 'node:child_process';
 import type { CatalogRow } from './catalog.js';
 import { RECOMMENDED_SERVICE_CATALOG } from './catalog.js';
+import { VAULT_CHECK_ITEM, type BitwardenSurface } from './bitwardenVault.js';
 
 export interface VerifyResult {
   result: 'pass' | 'fail' | 'unknown';
   detail: string;
+  /** On a fail: nothing of the service is here at all (no key, not signed in, not installed), as opposed to one that is here but not working. */
+  absent?: boolean;
 }
 
 /** What reading `tailscale status --json` gave: no program at all, a program that answered with an error, a reading, or no answer in time. */
@@ -28,6 +31,39 @@ export interface RecipeDeps {
   fetch?: typeof fetch;
   /** Tests pass their own reading; the default asks the tailscale program on this machine. */
   tailscaleStatus?: () => Promise<TailscaleStatusRead>;
+  /** This machine's Bitwarden CLI, scoped to the agent's own folder. Absent means the recipe can't check. */
+  bitwarden?: BitwardenSurface;
+}
+
+/** What a recipe that keeps a copy elsewhere needs to bring it up to date. */
+export interface SyncDeps extends RecipeDeps {
+  /** The names of the secrets to copy, and a reader for each. Values stay in-process. */
+  secretNames: () => string[];
+}
+
+export interface SyncResult {
+  ok: boolean;
+  /** Names copied (never values). */
+  copied: string[];
+  detail: string;
+}
+
+/** What a confirmed no with "switch it off" has to work with. */
+export interface StopDeps extends RecipeDeps {
+  deleteSecret: (name: string) => void;
+  /** True only on positive evidence that this machine's own setup made the service work here (its key, or its sign-in). Never assumed. */
+  setUpHere: boolean;
+  /** Tests pass their own; the default runs `tailscale logout` on this machine. */
+  tailscaleLogout?: () => Promise<boolean>;
+  /** True when the check before setup found nothing of the service here, so a sign-in on this machine is setup's own. */
+  absentBefore?: boolean;
+}
+
+/** `stopped` false means the service is still on; `changed` says whether anything on this machine was undone; `detail` is for the person, in plain words. */
+export interface StopResult {
+  stopped: boolean;
+  changed: boolean;
+  detail: string;
 }
 
 export interface SetupRecipe {
@@ -37,6 +73,13 @@ export interface SetupRecipe {
   secretName: string | null;
   brief: (context: { port: number }) => string;
   verify: (deps: RecipeDeps) => Promise<VerifyResult>;
+  /**
+   * Switches the service off on this machine after the person confirmed a no with "switch it off"
+   * (the spec's `shutdown: authorized`). Undoes only what setup did here, never the person's own.
+   */
+  stop: (deps: StopDeps) => Promise<StopResult>;
+  /** For a service that keeps a copy of this agent's secrets elsewhere: write the copy. Values never leave the process. */
+  sync?: (deps: SyncDeps) => Promise<SyncResult>;
 }
 
 /** Exported so tests can check every recipe carries the shared rules. */
@@ -76,7 +119,7 @@ As of 2026-11-05 a new account opens at no cost, but TypeSafe refuses to create 
 ${RULES('jev', port)}`,
     verify: async ({ readSecret, fetch: doFetch = fetch }) => {
       const key = readSecret('typesafe_api_key');
-      if (!key) return { result: 'fail', detail: 'No key is stored yet.' };
+      if (!key) return { result: 'fail', absent: true, detail: 'No key is stored yet.' };
       try {
         const res = await doFetch('https://api.typesafe.ai/v1/models', { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
         if (res.ok) return { result: 'pass', detail: 'TypeSafe accepted the key.' };
@@ -85,6 +128,15 @@ ${RULES('jev', port)}`,
       } catch {
         return { result: 'unknown', detail: 'TypeSafe could not be reached.' };
       }
+    },
+    // The key is what makes Jev work here, so removing it switches Jev off for every feature at once. Like
+    // Tailscale, setup undoes only its own work: a key that was here before setup is the person's, and stays.
+    // The TypeSafe account and its credits are the person's too.
+    stop: async ({ readSecret, deleteSecret, setUpHere }) => {
+      if (!readSecret('typesafe_api_key')) return { stopped: true, changed: false, detail: 'Jev was not switched on here, so there was nothing to switch off.' };
+      if (!setUpHere) return { stopped: true, changed: false, detail: "The TypeSafe key on this machine was yours before I set anything up, so I've left it in place and will just stop relying on Jev. Say the word and I'll remove it for you." };
+      deleteSecret('typesafe_api_key');
+      return { stopped: true, changed: true, detail: 'Jev is switched off on this machine: its key is removed, so nothing here uses it any more. The TypeSafe account and any credits on it stay yours; say the word and I\'ll close them.' };
     },
   },
   {
@@ -109,10 +161,101 @@ What's known, as of 2026-11-06:
 ${RULES('tailscale', port)}`,
     verify: async ({ tailscaleStatus = readTailscaleStatus }) => {
       const read = await tailscaleStatus();
-      if (read.kind === 'missing') return { result: 'fail', detail: "Tailscale isn't installed on this machine." };
+      if (read.kind === 'missing') return { result: 'fail', absent: true, detail: "Tailscale isn't installed on this machine." };
       if (read.kind === 'failed') return { result: 'fail', detail: "Tailscale isn't running on this machine." };
       if (read.kind === 'timeout') return { result: 'unknown', detail: 'Tailscale did not answer in time.' };
       return judgeTailscaleStatus(read.stdout);
+    },
+    // Setup never signs a machine out that it didn't sign in (see the brief). So a switch-off signs
+    // out only when this machine's setup did the sign-in; a Tailscale the person already had stays.
+    stop: async ({ setUpHere, tailscaleStatus = readTailscaleStatus, tailscaleLogout = runTailscaleLogout }) => {
+      if (!setUpHere) return { stopped: true, changed: false, detail: "Tailscale was already yours before I set anything up, so I've left it exactly as it was. I just won't rely on it." };
+      const before = await tailscaleStatus();
+      if (before.kind === 'missing') return { stopped: true, changed: false, detail: "Tailscale isn't installed on this machine, so there was nothing to switch off." };
+      if (before.kind !== 'ok' || judgeTailscaleStatus(before.stdout).result !== 'pass') return { stopped: true, changed: false, detail: 'This machine was not signed in to Tailscale, so there was nothing to switch off.' };
+      if (!(await tailscaleLogout())) return { stopped: false, changed: false, detail: 'I tried to sign this machine out of Tailscale and it refused. It is still signed in.' };
+      const after = await tailscaleStatus();
+      const stillIn = after.kind === 'ok' && judgeTailscaleStatus(after.stdout).result === 'pass';
+      return stillIn
+        ? { stopped: false, changed: false, detail: 'I asked Tailscale to sign this machine out, but it still shows as signed in.' }
+        : { stopped: true, changed: true, detail: 'This machine is signed out of Tailscale. Your Tailscale account and your other devices are untouched.' };
+    },
+  },
+  {
+    id: 'bitwarden-v1',
+    service: 'bitwarden',
+    // The vault's master password, so this server can open the vault later to keep the copy fresh and to check it.
+    secretName: 'bitwarden_master_password',
+    brief: ({ port }) => `The person said yes to Bitwarden. Set it up on this machine.
+
+What it gives them: a copy of this agent's own secrets (its tokens, PIN and keys) in a Bitwarden vault, in a folder of the agent's own, so they survive losing this machine. Only that folder is ever touched. The copy is written by this server, never by you. The ONE value you handle is the Bitwarden login (email and master password), and only on the path Secret Drop -> a shell variable -> the two commands below. You never read, print, store or move any of the agent's own secrets.
+
+What's known, as of 2026-11-07:
+- The Bitwarden CLI is "bw". Check "bw --version". If it's missing, install it yourself without administrator rights where you can, somewhere this server also finds it: Homebrew ("brew install bitwarden-cli") on a Mac; otherwise "npm install -g @bitwarden/cli" under this user's Node (nvm or ~/.npm-global), or the standalone binary from Bitwarden's GitHub releases (bitwarden/clients, the "bw-macos" / "bw-linux" zip) placed in ~/.local/bin. The server looks in those places and in /usr/local/bin; a "bw" anywhere else is invisible to it.
+- Check "bw status --raw" first. If this machine is already logged in to a Bitwarden account, don't run "bw login" again (it refuses with "already logged in"): say whose account it is, ask before using it if the person hasn't said, and then only the master password is needed.
+- Whose account: the person can use their own Bitwarden account, or you can open a free account of the agent's own. Both are good. For their own account, ask for their Bitwarden email and master password through one Secret Drop link (two fields), never in chat. For an account of the agent's own, you need a lasting email address the agent owns; if there is none, say so and ask for the smallest thing you need. Bitwarden's free plan is enough and costs nothing; stop and ask before any page that charges or that accepts terms, per the rules below.
+- Read the dropped credential straight into shell variables from the Secret Drop retrieve route, one field each (the route answers {"values": {...}}): BW_EMAIL="$(curl -s -X POST ... | jq -r '.values.email')" and BW_PASSWORD="$(curl -s -X POST ... | jq -r '.values.password')", never through echo, cat or a file, and never print either. Log in with "bw login <email> --passwordenv BW_PASSWORD --raw", with the master password in that environment variable of that one command only. Never put a password on a command line, and never write it to a file. If the account has two-step login, bw asks for the code and would wait forever: pass it instead with "--method <n> --code <code>" (0 = authenticator app, 1 = email), with the code from the person through Secret Drop. You don't need to unlock the vault yourself: this server does every read and write.
+- Store the master password with the key route, piping it from the same shell variable (printf '%s' "$BW_PASSWORD" | curl ...), never typed into a command:
+curl -s -X POST http://localhost:${port}/recommended-services/bitwarden/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "Content-Type: text/plain" --data-binary @-
+Spaces inside a passphrase are fine. It refuses to replace a password that was here before setup started.
+- Then ask this server to write the copy; it reads the agent's secrets itself and puts each one in the folder "instar/<agent name>" as a Secure Note:
+curl -s -X POST http://localhost:${port}/recommended-services/bitwarden/sync -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1"
+The answer lists the names copied, never values. Tell the person those names in plain words.
+- Then call the check below. It passes when the folder is readable with the stored password and holds the agent's marker item.
+- The copy is kept fresh by this server from then on. Nothing else of the person's vault is read or changed.
+${RULES('bitwarden', port)}`,
+    verify: async ({ readSecret, bitwarden }) => {
+      if (!bitwarden) return { result: 'unknown', detail: "This server can't reach Bitwarden's program." };
+      const status = bitwarden.status();
+      // A program that did not answer says nothing: never "not logged in", which would start setup over a working vault.
+      if (status === null) return { result: 'unknown', detail: "Bitwarden's program did not answer." };
+      if (!status.installed) return { result: 'fail', absent: true, detail: "Bitwarden's program isn't installed on this machine." };
+      if (!status.loggedIn) return { result: 'fail', absent: true, detail: 'This machine is not logged in to Bitwarden.' };
+      const password = readSecret('bitwarden_master_password');
+      if (!password) return { result: 'fail', detail: 'No master password is stored yet, so the vault can\'t be opened from here.' };
+      if (!bitwarden.unlock(password)) return { result: 'fail', detail: 'Bitwarden refused the stored master password.' };
+      const names = bitwarden.itemNames();
+      if (names === null) return { result: 'unknown', detail: "The agent's folder in Bitwarden could not be read." };
+      if (!names.includes(VAULT_CHECK_ITEM)) return { result: 'fail', detail: "The agent's folder in Bitwarden doesn't hold its copy yet." };
+      const copies = names.filter((n) => n !== VAULT_CHECK_ITEM).length;
+      return { result: 'pass', detail: `Bitwarden holds a copy of this agent's secrets (${copies} item${copies === 1 ? '' : 's'}) in its own folder.` };
+    },
+    sync: async ({ readSecret, bitwarden, secretNames }) => {
+      if (!bitwarden) return { ok: false, copied: [], detail: "This server can't reach Bitwarden's program." };
+      const status = bitwarden.status();
+      if (status === null) return { ok: false, copied: [], detail: "Bitwarden's program did not answer." };
+      if (!status.installed || !status.loggedIn) return { ok: false, copied: [], detail: 'This machine is not logged in to Bitwarden.' };
+      const password = readSecret('bitwarden_master_password');
+      if (!password) return { ok: false, copied: [], detail: 'No master password is stored yet.' };
+      if (!bitwarden.unlock(password)) return { ok: false, copied: [], detail: 'Bitwarden refused the stored master password.' };
+      const copied: string[] = [];
+      const failed: string[] = [];
+      for (const name of secretNames()) {
+        const value = readSecret(name);
+        if (!value) continue;
+        (bitwarden.put(name, value) ? copied : failed).push(name);
+      }
+      const marker = bitwarden.put(VAULT_CHECK_ITEM, `instar copy, written ${new Date().toISOString()}`);
+      if (!marker) failed.push(VAULT_CHECK_ITEM);
+      const ok = failed.length === 0;
+      return { ok, copied, detail: ok ? `${copied.length} secret${copied.length === 1 ? '' : 's'} copied to the agent's folder in Bitwarden.` : `${copied.length} copied; ${failed.length} could not be written.` };
+    },
+    // The stored master password is what lets this machine open the vault, so removing it switches the copying
+    // off here. The copy itself is in the person's vault and stays; so does a login that was theirs before setup.
+    stop: async ({ readSecret, deleteSecret, setUpHere, absentBefore, bitwarden }) => {
+      if (!setUpHere) return { stopped: true, changed: false, detail: "Bitwarden on this machine was yours before I set anything up, so I've left it as it was and will just stop copying to it." };
+      let changed = false;
+      if (readSecret('bitwarden_master_password')) {
+        deleteSecret('bitwarden_master_password');
+        changed = true;
+      }
+      if (absentBefore && bitwarden && bitwarden.status()?.loggedIn) {
+        if (!bitwarden.logout()) return { stopped: false, changed, detail: 'I removed my copy of the master password, but Bitwarden refused to sign this machine out. It is still signed in.' };
+        changed = true;
+      }
+      return { stopped: true, changed, detail: changed
+        ? "Bitwarden copying is switched off on this machine: the master password is gone from here" + (absentBefore ? ' and the machine is signed out' : '') + ". The copies already in your Bitwarden folder stay. If you want them gone too, tell me and I'll ask for the master password once to delete them."
+        : 'Bitwarden copying was not switched on here, so there was nothing to switch off.' };
     },
   },
 ]);
@@ -143,6 +286,22 @@ export async function readTailscaleStatus(programs: readonly string[] = TAILSCAL
   return sawFailure ? { kind: 'failed' } : { kind: 'missing' };
 }
 
+/** Signs this machine out with the first tailscale program that answers. True when the command succeeded. */
+export async function runTailscaleLogout(programs: readonly string[] = TAILSCALE_PROGRAMS): Promise<boolean> {
+  for (const program of programs) {
+    const outcome = await new Promise<'ok' | 'missing' | 'failed'>((resolve) => {
+      execFile(program, ['logout'], { timeout: 20_000 }, (err) => {
+        if (!err) return resolve('ok');
+        const e = err as NodeJS.ErrnoException;
+        resolve(e.code === 'ENOENT' || e.code === 'EACCES' ? 'missing' : 'failed');
+      });
+    });
+    if (outcome === 'ok') return true;
+    if (outcome === 'failed') return false;
+  }
+  return false;
+}
+
 /** Pass only when this machine is signed in and online. The detail names no address, device or account. */
 export function judgeTailscaleStatus(raw: string): VerifyResult {
   let body: { BackendState?: unknown; Self?: { Online?: unknown; TailscaleIPs?: unknown } };
@@ -160,7 +319,7 @@ export function judgeTailscaleStatus(raw: string): VerifyResult {
     if (body.Self?.Online === false) return { result: 'fail', detail: "This machine is signed in to Tailscale but isn't online." };
     return { result: 'pass', detail: 'This machine is signed in to Tailscale and online.' };
   }
-  if (state === 'NeedsLogin') return { result: 'fail', detail: 'This machine is not signed in to Tailscale yet.' };
+  if (state === 'NeedsLogin') return { result: 'fail', absent: true, detail: 'This machine is not signed in to Tailscale yet.' };
   if (state === 'NeedsMachineAuth') return { result: 'fail', detail: "This machine is waiting for the tailnet's administrator to approve it." };
   if (state === 'Stopped') return { result: 'fail', detail: 'Tailscale is installed but switched off on this machine.' };
   return { result: 'fail', detail: `Tailscale is not ready on this machine (${state}).` };
