@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-07T23:53:59.588Z",
+  "slug": "recommended-services-github-recipe",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 14,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/recommended/catalog.ts",
+      "src/recommended/recipes.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The only new self-action is one bounded retry of the first push to a repository the recipe itself just created, after a fixed 3 s wait, never repeated; everything else is the one-shot per-state-change behaviour already declared"
+  },
+  "verdict": "pass"
+}
