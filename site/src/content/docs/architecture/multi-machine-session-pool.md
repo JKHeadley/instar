@@ -45,6 +45,16 @@ When you say "move this to the mini" or "run this on the workstation", the `Nick
 
 When several agents share one machine, each agent's router must see the *true* machine load, not just its own. `MachineLoadBroker` accounts for every resident agent's sessions and — crucially — does not trust agent self-reports for the authoritative number: it cross-checks each agent's claimed footprint against the OS-measured footprint. An agent that reports itself idle while actually saturating the box is flagged `suspect-overloaded`, so a lying agent can never attract sessions onto an already-busy machine. `MachineLoadBroker` also verifies the isolation invariant — distinct ports, identities, and non-nested home directories.
 
+### Size-aware placement and heavy work (`PlacementExecutor`, `JobLoader`, `JobScheduler`, `LocalVerifyService`)
+
+Load is compared per core, so a big machine and a small one at the same raw load are not treated as equally busy: `PlacementExecutor` divides each machine's load by its core count before picking the least-loaded one. Work also has a weight — light, standard or heavy. Only a machine at or above the heavy-work size floor (by default 12 cores and 32 GB of memory) that has room right now takes heavy work; when none has room, the work waits instead of piling onto a full machine.
+
+- **Jobs.** A job can declare `workWeight` (`light`, `standard` or `heavy`); `JobLoader` refuses any other value. `JobScheduler` skips a heavy job on a machine below the size floor, unless the job's `machines` list names that machine, and records why.
+- **Test runs.** When `LocalVerifyService` hands a full verify to another machine, it drops peers that are too small, too busy or unmeasurable and tries the rest least-loaded first. Repeated skips of the same peer for the same reason are recorded at most once every ten minutes.
+- **Helper work.** `GET /pool/placement/preview` answers "where would this heavy work go?" without changing anything, and `POST /pool/heavy-work/spawn` starts a background helper session on the machine the preview picks.
+
+Spec: `docs/specs/resource-aware-placement.md`.
+
 ## Rollout and rebalance (`StageAdvancer`, `SessionPoolE2EResultStore`, `RebalancePlanner`)
 
 The pool activates through a graduated ladder: **dark** (code shipped, always-local) → **shadow** (real placement + ownership, no moves) → **live-transfer** (failover + explicit pins) → **rebalance** (load-driven moves). The ladder is enforced in code, not by willpower. `SessionPoolE2EResultStore` is a signed, append-only record of each stage's end-to-end test outcome; `StageAdvancer` is the *sole* writer of the rollout stage and refuses to advance a stage unless the prior stage's result is green for the current commit — and `StageAdvancer` mechanically reverts if a live stage later regresses. A direct config write to the stage is rejected; only `StageAdvancer` holds the capability to change it.
