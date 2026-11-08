@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "recommended-services-existing-agents",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-08T02:31:55.132Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-existing-agents.md",
+  "artifactSha256": "95b07c6b03ac6ef73305d991f649c8d95bc0837299364e43bd70eb441646136d",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-existing-agents.eli16.md",
+    "src/core/types.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/recommended-services-offers.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-existing-agents.md",
+    "upgrades/side-effects/recommended-services-existing-agents.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A user-visible message to owners of existing agents once an operator switch is on; the parent spec's rollout step 5; twenty lines on a reviewed path, off by default.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

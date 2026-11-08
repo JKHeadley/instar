@@ -4954,7 +4954,15 @@ export interface InstarConfig {
   recommendedServices?: {
     provingRecipes?: string[];
     /** The first list of recommended services, sent once per service after a delivered first result. Off by default. */
-    offers?: { enabled?: boolean };
+    offers?: {
+      enabled?: boolean;
+      /**
+       * Rollout step 5 of recommended-services.md: existing agents (created before the offer shipped) stay out of the
+       * first list until this is true. Then this agent's owner is marked migration-complete at the next offer tick,
+       * and the first list follows the same rule as a new agent's (after a delivered first result, once).
+       */
+      existingAgents?: boolean;
+    };
   };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */

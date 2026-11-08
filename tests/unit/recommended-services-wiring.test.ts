@@ -70,6 +70,8 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('probe: (token, chatId) => probeTelegram(token, chatId),');
     expect(routes).toContain("const entry = { type: 'telegram', enabled: true, config: { token, chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 } };");
     expect(routes).toContain("requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },");
+    // Rollout step 5: the existing-agents switch is read live from the config.
+    expect(routes).toContain('existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,');
     // Cloudflare: the real API client, this agent's tunnel block (remembered until the restart), one public read, the planned restart.
     expect(routes).toContain('api: realCloudflareApi(),');
     expect(routes).toContain('tunnelConfigured: () => (tunnelWrittenHere ? tunnelWrittenHere.value : tunnelFromConfig()),');
