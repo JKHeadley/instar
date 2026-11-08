@@ -13,6 +13,10 @@ const root = process.cwd();
 const rows: readonly CatalogRow[] = RECOMMENDED_SERVICE_CATALOG;
 
 describe('recommended services catalog', () => {
+  it('makes clear that Jev is an optional efficiency upgrade', () => {
+    expect(rows.find(row => row.id === 'jev')?.benefit).toMatch(/optional.*agent runs without it/i);
+  });
+
   it('holds the nine services the operator approved, once each', () => {
     expect([...RECOMMENDED_SERVICE_IDS].sort()).toEqual([
       'bitwarden', 'cloudflare-domain', 'email', 'github-state-backup', 'jev', 'second-ai-door', 'tailscale', 'telegram', 'voice-transcription',

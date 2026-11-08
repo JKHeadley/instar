@@ -1,0 +1,38 @@
+{
+  "ts": "2026-11-08T00:26:04.645Z",
+  "slug": "topic-goal-drift",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 102,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CompletionEvaluator.ts",
+      "src/core/TopicGoalContext.ts",
+      "src/recommended/catalog.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 99,
+    "deletedLines": 3
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Completion judged a narrowed registered charter without consuming the wider user-supported topic goal; topic 135786 incident 140504."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/integration/topic-goal-completion.test.ts",
+      "howCaught": "Incident-shaped regression requires broader user-goal evidence at the existing completion authority; missing wiring or forged replacement fails."
+    },
+    "component": "CompletionEvaluator"
+  },
+  "verdict": "pass"
+}

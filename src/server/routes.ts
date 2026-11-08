@@ -1,3 +1,4 @@
+import { topicGoalContext } from '../core/TopicGoalContext.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
@@ -1535,6 +1536,8 @@ export interface RouteContext {
    *  in-process by checkOutboundMessage so the tone gate sees ArcCheck's
    *  signal alongside junk/jargon/duplicate. Null when disabled. */
   topicIntentArcCheck: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
+  /** Server-owned wider goal context for autonomous scope judgments. */
+  topicIntentStore?: import('../core/TopicIntent.js').TopicIntentStore | null;
   /** Usher signal store (rung 4). Used by the outbound-reply path to credit a
    *  re-surface nudge the agent's reply actually used (precision numerator,
    *  path (a)). Optional/null when the Usher is disabled. */
@@ -8273,7 +8276,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     scopeAccretionMetric('fired', 'register');
-    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped, initialStatus, preparationRequired: initialStatus === 'preparing' });
+    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped, initialStatus, preparationRequired: initialStatus === 'preparing', topicGoalContext: topicGoalContext(topicId, ctx.topicIntentStore, ctx.initiativeTracker) });
   });
 
   // ── POST /autonomous/:topic/run-end (R44) — every exit surface reports here ──
@@ -9033,6 +9036,13 @@ export function createRoutes(ctx: RouteContext): Router {
           };
         }
       }
+
+      // Client-supplied goal context is never accepted by parseStopSignals.
+      // Resolve fresh server state so a narrowed run charter cannot erase the
+      // user's topic goal. The existing LLM judges relevance and partial scope.
+      const widerGoal = topicGoalContext(resolvedTopic, ctx.topicIntentStore, ctx.initiativeTracker)
+        ?? (resolvedTopic ? JSON.stringify({ availability: 'unavailable-on-this-machine' }) : undefined);
+      if (widerGoal) signals = { ...(signals ?? {}), topicGoalContext: widerGoal };
 
       const verdict = await ctx.completionEvaluator.evaluate(
         effectiveCondition,

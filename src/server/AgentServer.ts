@@ -5591,6 +5591,7 @@ export class AgentServer {
           ? { get: options.liveConfig.get.bind(options.liveConfig) }
           : null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,
+      topicIntentStore: options.topicIntentStore ?? null,
       usherSignalStore: options.usherSignalStore ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,
       telemetryHeartbeat: options.telemetryHeartbeat ?? null,
