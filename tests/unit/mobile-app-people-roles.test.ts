@@ -175,6 +175,8 @@ describe('DEVICE_ALLOWLIST coverage', () => {
     'GET /mobile/chat/app/<uuid>/preview/x', 'POST /mobile/chat/slack/-1', 'GET /mobile/chat/slack/-1/messages',
     'POST /mobile/media/uploads', 'GET /mobile/media/<sha>', 'POST /mobile/media/purge',
     'GET /mobile/conversations/session', 'GET /mobile/conversations/<uuid>/placement',
+    // mobile-unread-messages §3.5: a read report names conversations in its body.
+    'POST /mobile/conversations/read',
   ];
   const UUID = '22222222-2222-4222-8222-222222222222';
   const sample = (s: string) => s.replace('<uuid>', UUID).replace('<sha>', 'a'.repeat(64));
@@ -386,7 +388,8 @@ describe('route tiers (team-roles-and-access §3.7)', () => {
 
   it('a route added without a decision stays closed to members', () => {
     const open = DEVICE_ALLOWLIST.filter((r) => r.tier === 'guest' || r.tier === 'member').length;
-    expect(open).toBe(26);
+    // 27: mobile-unread-messages §3.5 opened POST /mobile/conversations/read to guests (reading is guest).
+    expect(open).toBe(27);
   });
 
   it.each([

@@ -172,6 +172,8 @@ export interface BrowsedMessage {
   attachments?: AppAttachment[];
   senderName?: string;
   senderRole?: 'owner' | 'msp' | 'team';
+  /** Unread (mobile-unread-messages §3.4): the sender's registry person, so a count can tell a reader's own rows. */
+  senderPerson?: ConversationOwner;
   agentOrigin?: MessageOriginEvidence;
 }
 
@@ -925,12 +927,30 @@ export class AppConversationStore {
         ...(ev.receipt ? { receipt: ev.receipt } : {}),
         ...(ev.kind === 'media-message' ? { attachments: ev.attachments } : {}),
         ...(ev.senderName ? { senderName: ev.senderName } : {}), ...(ev.senderRole ? { senderRole: ev.senderRole } : {}),
+        ...(ev.senderPerson ? { senderPerson: ev.senderPerson } : {}),
         ...(ev.agentOrigin ? { agentOrigin: ev.agentOrigin } : {}),
       });
     }
     out.reverse();
     const oldest = page[page.length - 1];
     return { messages: out, nextBefore: more && oldest ? `${oldest.at},${oldest.eventId}` : null };
+  }
+
+  /**
+   * Unread (mobile-unread-messages §3.5): the stored time of one chat message by its event id, so a
+   * read report names a message this machine holds; null when it is not here (or not a message).
+   */
+  eventAt(conversationKey: string, eventId: string): string | null {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const row = this.db.prepare('SELECT at, kind FROM events WHERE canonicalKey = ? AND eventId = ?').get(canonicalKey, eventId) as { at: string; kind: string } | undefined;
+    return row && (row.kind === 'message' || row.kind === 'media-message') ? row.at : null;
+  }
+
+  /** Unread (§3.4): this machine's newest ingestSeq for a conversation, the local revision a count is cached on. */
+  newestIngestSeq(conversationKey: string): number {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const row = this.db.prepare('SELECT MAX(ingestSeq) AS s FROM events WHERE canonicalKey = ?').get(canonicalKey) as { s: number | null } | undefined;
+    return row?.s ?? 0;
   }
 
   /** Authenticated /health: total bytes and conversation count. */
