@@ -505,9 +505,12 @@ export async function dispatchStoredAppMessage(s: AppConversationService, input:
   }
   const pending = s.pendingContext(key);
   const originVerdict = s.verify(event);
+  // 💻 for a browser key, from the signed ledger activation row (dashboard-conversations-browser-device §4.3, §4.7).
+  const originClient = s.originClient(event, originVerdict);
   const outcome = await dispatch({
     conversationKey: key, alias: input.alias, title: input.title, text: sessionText, messageId: event.messageId,
     ownerName: input.ownerName, memoryPersonId: input.memoryPersonId, originVerdict,
+    ...(originClient ? { originClient } : {}),
     ...(pending.lines.length > 0 ? { notes: pending.lines } : {}),
   });
   if (outcome === 'delivered') pending.ack();

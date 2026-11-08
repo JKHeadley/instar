@@ -165,10 +165,25 @@ describe('View & Tunnel routes integration', () => {
         .expect(200);
 
       expect(res.headers['content-type']).toContain('text/html');
-      expect(res.text).toContain('PIN-protected');
-      expect(res.text).toContain('Unlock');
+      // Under the /view sandbox (dashboard-conversations-browser-device §4.12) no form can submit,
+      // so the page states that unlocking is not available here instead of showing a form.
+      expect(res.text).toContain('This view is protected by a PIN.');
+      expect(res.text).not.toContain('<form');
+      expect(res.text).not.toContain('<script');
       // Should NOT contain the actual content
       expect(res.text).not.toContain('Top secret content');
+    });
+
+    it('every /view response is sandboxed through the real server, including upper case and the PIN page (§4.12)', async () => {
+      const sandbox = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
+      const pin = await request(app).get(`/view/${pinViewId}`).expect(200);
+      expect(pin.headers['content-security-policy']).toBe(sandbox);
+      const upper = await request(app).get(`/VIEW/${pinViewId}`);
+      expect(upper.headers['content-security-policy']).toBe(sandbox);
+      const missing = await request(app).get('/view/does-not-exist');
+      expect(missing.headers['content-security-policy']).toBe(sandbox);
+      const unlocked = await request(app).post(`/view/${pinViewId}/unlock`).send({ pin: '9876' });
+      expect(unlocked.headers['content-security-policy']).toBe(sandbox);
     });
 
     it('POST /view/:id/unlock with correct PIN returns content', async () => {

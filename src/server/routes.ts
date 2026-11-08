@@ -18,6 +18,7 @@ import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
 import { configHeldSecrets, copySourceNames, realBitwardenSurface } from '../recommended/bitwardenVault.js';
+import { realGitHubBackupSurface } from '../recommended/githubBackup.js';
 import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
 import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserProvision.js';
 import { holdSetupForSession } from '../recommended/setupState.js';
@@ -16522,6 +16523,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     },
     // The folder name is guarded: a route harness may build a config with no project directory.
     bitwarden: realBitwardenSurface(ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent')),
+    github: realGitHubBackupSurface(ctx.config.stateDir, (ctx.config as unknown as { git?: Record<string, unknown> }).git),
+    agentName: ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent'),
+    // A confirmed no to GitHub turns the switch older versions read too, so no machine on an older build keeps pushing.
+    disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },
+    raiseAttention: async (id, title, text) => {
+      if (!ctx.telegram) return false;
+      try {
+        await ctx.telegram.createAttentionItem({ id, conditionKey: id, title, summary: text, description: text, priority: 'HIGH', category: 'recommended-services', sourceContext: 'agent' } as import('../messaging/TelegramAdapter.js').AttentionObservation);
+        return true;
+      } catch (err) {
+        DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Raise the attention item ${id}`, fallback: 'The next check tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'The person has not been told about the privacy issue.' });
+        return false;
+      }
+    },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.

@@ -27,6 +27,7 @@
  * this agent ⇒ 503 `slack-not-configured`. `mobilePairing.slackOwnerUserId` unset ⇒ 503
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
+import { deviceIcon, mirrorPrefix, openItHint, requestDeviceClient, type DeviceClient } from '../core/deviceClientWording.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
@@ -100,7 +101,7 @@ export interface MobileSlackBridge {
   /** The log tail's size and modification time: the revision an unread count is cached on (§3.4). */
   historyVersion?(): string;
   /** The Slack inbound dispatch, with the operator as sender. Null when it is not wired yet. */
-  dispatch(input: { conv: SlackAppConversation; text: string; ownerName: string; ownerUserId: string; messageId: string; originVerdict: OriginVerdict }): Promise<SlackDispatchOutcome>;
+  dispatch(input: { conv: SlackAppConversation; text: string; ownerName: string; ownerUserId: string; messageId: string; originVerdict: OriginVerdict; originClient?: DeviceClient }): Promise<SlackDispatchOutcome>;
   /** Post the mirror line into the channel or thread. */
   post(conv: SlackAppConversation, text: string): Promise<void>;
   /**
@@ -465,11 +466,12 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       if (!requests.finish(deviceId, requestId, { status, body: b })) s.deps.reportDegradation?.('MobileSlack.requestStore', 'could not record a finished request');
       res.status(status).json(b);
     };
+    const client = requestDeviceClient(req);
     const mirror = async (): Promise<'sent' | 'failed'> => {
       try {
         // A copy for people reading the channel: credential-shaped spans always hidden (§4.9).
-        if (stored.length > 0) await mirrorMediaToSlack(bridge, conv, ownerName, stored, hideCredentialSpans(delivered), (sha) => s.media.locateBlob(sha));
-        else await bridge.post(conv, `📱 ${ownerName} (from the app): ${hideCredentialSpans(delivered)}`);
+        if (stored.length > 0) await mirrorMediaToSlack(bridge, conv, ownerName, stored, hideCredentialSpans(delivered), (sha) => s.media.locateBlob(sha), client);
+        else await bridge.post(conv, `${mirrorPrefix(client, ownerName)}: ${hideCredentialSpans(delivered)}`);
         return 'sent';
       } catch (err) {
         s.deps.reportDegradation?.('MobileSlack.mirror', err instanceof Error ? err.message : String(err));
@@ -506,7 +508,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     }
     let outcome: 'delivered' | 'queued' | 'refused';
     try {
-      outcome = await bridge.dispatch({ conv, text: sessionText, ownerName, ownerUserId: speakAs, messageId, originVerdict: s.verify(msg) });
+      outcome = await bridge.dispatch({ conv, text: sessionText, ownerName, ownerUserId: speakAs, messageId, originVerdict: s.verify(msg), originClient: client });
     } catch (err) {
       delivery('unknown');
       requests.markUnknown(deviceId, requestId);
@@ -679,6 +681,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
           slackUserId: input.ownerUserId, senderName: input.ownerName, ts, channelId: input.conv.channelId,
           ...(input.conv.threadTs ? { threadTs: input.conv.threadTs } : {}),
           isDM: input.conv.channelId.startsWith('D'), appOrigin: input.originVerdict,
+          ...(input.originClient === 'browser' ? { appClient: 'browser' } : {}),
         },
       });
       return r ?? 'delivered';
@@ -727,15 +730,16 @@ export function slackListRows(bridge: MobileSlackBridge): Array<{ id: number; ti
  */
 export async function mirrorMediaToSlack(
   bridge: MobileSlackBridge, conv: SlackAppConversation, ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string,
-  locate: (sha256: string) => string | null,
+  locate: (sha256: string) => string | null, client: DeviceClient = 'phone',
 ): Promise<void> {
   if (typeof bridge.uploadFile !== 'function') throw new Error('this Slack adapter cannot upload files');
-  const line = caption ? `📱 ${ownerName} (from the app): ${caption}` : `📱 ${ownerName} (from the app)`;
+  const prefix = mirrorPrefix(client, ownerName);
+  const line = caption ? `${prefix}: ${caption}` : prefix;
   let commented = false;
   const missing: string[] = [];
   for (const a of attachments) {
     const p = locate(a.sha256);
-    if (!p) { missing.push(`📱 ${ownerName} sent ${displayName(a.filename)} (open it in the app)`); continue; }
+    if (!p) { missing.push(`${deviceIcon(client)} ${ownerName} sent ${displayName(a.filename)} (${openItHint(client)})`); continue; }
     await bridge.uploadFile(conv, p, { filename: displayName(a.filename), ...(!commented ? { initialComment: line } : {}) });
     commented = true;
   }

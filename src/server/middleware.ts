@@ -883,10 +883,25 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  * Security headers for dashboard paths — prevents clickjacking, MIME-sniffing,
  * and restricts resource loading to trusted sources.
  */
+/**
+ * The policy every /view response carries (dashboard-conversations-browser-device §4.12): an opaque
+ * origin with no script, no forms and no same-origin access, so agent-written markup (`marked` passes
+ * raw HTML through) can never reach the console's stored browser key, BroadcastChannel or tokens.
+ * Popups and downloads keep links and file downloads working.
+ */
+export const VIEW_SANDBOX_CSP = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
+
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
   // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
   // headers must too (dashboard-console-default-and-pair-page round 2).
   const p = req.path.toLowerCase();
+  // Every response under /view — the PIN page, the rendered view, the ?sig= tunnel link, a view
+  // relayed from the machine that holds it, and every refusal — is sandboxed by the machine that
+  // answers the browser, whatever the holder sent (§4.12). Set before any route runs.
+  if (p === '/view' || p.startsWith('/view/')) {
+    res.header('Content-Security-Policy', VIEW_SANDBOX_CSP);
+    res.header('X-Content-Type-Options', 'nosniff');
+  }
   if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
@@ -896,7 +911,10 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
     res.header('Content-Security-Policy',
       p === '/dashboard/desktop.html' || p === '/dashboard/desktop.js'
         ? `default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: 'self'; ${desktopConnect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
-        : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
+        : p.startsWith('/dashboard/console/')
+          // The console shows media it downloaded itself as blob: URLs (§4.11); data: stays blocked.
+          ? "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:"
+          : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
   }
   next();
