@@ -144,7 +144,8 @@ import {
   withoutTailStamp,
   type CoreRegionLocation,
 } from '../scaffold/claudeMdLayout.js';
-import { getMigrationDefaults, applyDefaults } from '../config/ConfigDefaults.js';
+import { getMigrationDefaults, applyDefaults, SKILL_LEARNING_DEFAULTS } from '../config/ConfigDefaults.js';
+import { normalizeSkillFrontmatter } from './skillCanonicalFrontmatter.js';
 import { CANONICAL_FEEDBACK_URL, LEGACY_FEEDBACK_URLS } from './canonicalFeedback.js';
 import { getDefaultJobs, installBuiltinSkills, installBrowserScripts } from '../commands/init.js';
 import { crossesBreaking, writeLifelineRestartSignal } from './version-skew.js';
@@ -1369,6 +1370,10 @@ ${MOBILE_APP_POOL_LINE()}
 `;
 }
 
+/** The shipped v1 sentence of the recommended-services block; a legacy-layout CLAUDE.md still carrying it gets the v2 wording. */
+export const RECOMMENDED_SERVICES_V1_TAIL = 'field says whether it is. Offers are not live yet.';
+export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale and Jev can be set up on every agent: the person says yes or no on the dashboard\'s Services row (`/dashboard/service-yes?service=<id>`, PIN); a yes starts a setup session in its own topic that owns the whole job; a no can also switch a working service off here. I don\'t offer services on my own yet.';
+
 /**
  * CLAUDE.md awareness block for recommended outside services (docs/specs/recommended-services.md).
  * Unique content-sniff marker: `Recommended outside services (`. Kept short on purpose.
@@ -1376,7 +1381,7 @@ ${MOBILE_APP_POOL_LINE()}
 export function RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port: number): string {
   return `\n### Recommended outside services (\`GET /recommended-services\`)
 
-The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` field says whether it is. Offers are not live yet.
+The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V2_TAIL}
 - Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services\`. A no stands until the person confirms a yes, and I never re-offer on my own for now.
 - **The person only approves, asks for changes, or supplies a credential.** After a yes, everything else is mine: research, creating accounts, getting keys, setup. They never open a browser or follow steps.
 - **Whose account is their choice.** I can fully manage their accounts like an executive assistant, use accounts of my own, or both. I make that clear and never recommend against either.
@@ -2292,6 +2297,121 @@ export function migrateConfigIdleKillVetoBackoffDefault(config: Record<string, u
 }
 
 /**
+ * Skill-learning sentinel config defaults (docs/specs/skill-learning-sentinel.md
+ * §3, frontloaded decision 20). Adds the whole `monitoring.skillLearning` block
+ * ONLY when absent — never a partial rewrite of an operator's block. The values
+ * are the single shipped copy (`SKILL_LEARNING_DEFAULTS` in ConfigDefaults).
+ * Returns true iff the block was written. Idempotent.
+ */
+export function migrateConfigSkillLearningDefaults(config: Record<string, unknown>): boolean {
+  let monitoring = config.monitoring as Record<string, unknown> | undefined;
+  if (!monitoring || typeof monitoring !== 'object' || Array.isArray(monitoring)) {
+    monitoring = {};
+    config.monitoring = monitoring;
+  }
+  if (Object.prototype.hasOwnProperty.call(monitoring, 'skillLearning')) return false;
+  monitoring.skillLearning = structuredClone(SKILL_LEARNING_DEFAULTS);
+  return true;
+}
+
+// ── Skill canonical-backfill helpers (skill-learning-sentinel slice 0) ──
+//
+// The slug grammar, frontmatter grammar and stamp line mirror
+// src/providers/parity/rules/skillParityRule.ts (its parseFrontmatter / sha256 /
+// STAMP_LINE_RE are module-private there). tests/unit cross-check the hash against
+// skillParityRule.verify() so the two cannot drift silently.
+
+/** Concept-spec slug grammar (specs/instar-concepts/skill.md): enforced at every entry point. */
+export const SKILL_SLUG_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
+const SKILL_STAMP_KEY = 'x-instar-stamp';
+const SKILL_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
+const SKILL_STAMP_LINE_RE = /^x-instar-stamp:\s*([a-f0-9]{64})\s*$/m;
+
+/** Agent-home `.gitignore` entries (decision 3): the derived cache and the legacy flat telemetry file. */
+export const SKILL_LEARNING_GITIGNORE_PROJECT: readonly string[] = Object.freeze([
+  '.instar/state/skill-learning.db*',
+  '.instar/skill-telemetry.jsonl*',
+  // Rows the hook could not attribute to a machine: a shared file that two
+  // machines would both append to — the conflict shape the per-machine layout removes.
+  '.instar/skill-telemetry/unknown.jsonl',
+]);
+/** The same entries, spelled for the `.instar/.gitignore` of the internal state repo. */
+export const SKILL_LEARNING_GITIGNORE_STATE: readonly string[] = Object.freeze([
+  'state/skill-learning.db*',
+  'skill-telemetry.jsonl*',
+  'skill-telemetry/unknown.jsonl',
+]);
+
+/**
+ * sha256 of a SKILL.md body after its frontmatter — the value the parity rule
+ * writes as `x-instar-stamp`. null when the file carries no frontmatter block.
+ */
+export function skillBodyHash(raw: string): string | null {
+  const m = raw.match(SKILL_FRONTMATTER_RE);
+  if (!m) return null;
+  return crypto.createHash('sha256').update(m[2], 'utf-8').digest('hex');
+}
+
+/**
+ * Insert `x-instar-stamp: <hash>` as the last frontmatter line of a rendered
+ * SKILL.md. Body bytes are untouched. null when the file has no frontmatter or
+ * already carries a stamp (an existing stamp is never rewritten here).
+ */
+export function stampSkillRendering(raw: string, hash: string): string | null {
+  if (SKILL_STAMP_LINE_RE.test(raw)) return null;
+  const m = raw.match(/^(---\r?\n[\s\S]*?)(\r?\n---\r?\n?)([\s\S]*)$/);
+  if (!m) return null;
+  return `${m[1]}\n${SKILL_STAMP_KEY}: ${hash}${m[2]}${m[3]}`;
+}
+
+function readUtf8OrNull(p: string): string | null {
+  try {
+    return fs.readFileSync(p, 'utf-8');
+  } catch { // @silent-fallback-ok — "absent or unreadable" is the normal answer this probe exists to give; the caller logs canonical-backfill-unparseable / skips, never writes on a guess
+    return null;
+  }
+}
+
+/**
+ * Copy a rendered skill directory into canonical, verbatim: SKILL.md, scripts/,
+ * references/, assets/ and every other file or subdirectory as-is. Symlinks are
+ * skipped (they can escape the tree). A codex rendering's `agents/` sibling
+ * (openai.yaml) is a rendering artifact, not canonical content, and is not
+ * copied. Writes into a temp dir beside the destination and renames into
+ * place, so a crash never leaves a half-copied canonical that a later run
+ * would read as complete. Never deletes anything.
+ */
+function copySkillTreeVerbatim(
+  src: string,
+  dest: string,
+  opts: { fromCodexRendering: boolean; skillMdOverride?: string | null },
+): void {
+  const parent = path.dirname(dest);
+  fs.mkdirSync(parent, { recursive: true });
+  const tmp = path.join(parent, `.backfill-${path.basename(dest)}-${process.pid}-${Date.now().toString(36)}`);
+  const walk = (from: string, to: string, top: boolean): void => {
+    fs.mkdirSync(to, { recursive: true });
+    for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+      if (entry.isSymbolicLink()) continue;
+      if (top && opts.fromCodexRendering && entry.isDirectory() && entry.name === 'agents') continue;
+      const s = path.join(from, entry.name);
+      const d = path.join(to, entry.name);
+      if (entry.isDirectory()) {
+        walk(s, d, false);
+      } else if (entry.isFile()) {
+        if (top && entry.name === 'SKILL.md' && typeof opts.skillMdOverride === 'string') {
+          fs.writeFileSync(d, opts.skillMdOverride);
+        } else {
+          fs.copyFileSync(s, d);
+        }
+      }
+    }
+  };
+  walk(src, tmp, true);
+  fs.renameSync(tmp, dest);
+}
+
+/**
  * tmux Event-Loop Resilience, Increment 1 (tmux-event-loop-resilience-spec): the THREE
  * dev-gated `enabled` flags OMIT `enabled` in ConfigDefaults so resolveDevAgentGate
  * resolves them (live-on-dev, dark fleet). An existing agent that ran an interim build
@@ -2765,6 +2885,7 @@ export class PostUpdateMigrator {
     this.migrateJudgmentProvenanceGitignore(result);
     this.migrateHookTelemetryGitignore(result);
     this.migrateDeviceLimitProvenanceGitignore(result);
+    this.migrateSkillLearningGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
@@ -3551,6 +3672,30 @@ export class PostUpdateMigrator {
       result.upgraded.push('gitignore: state/judgment-provenance/ (machine-local provenance rows)');
     } catch (err) {
       result.errors.push(`judgment-provenance gitignore: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  // ── Skill-learning gitignore (docs/specs/skill-learning-sentinel.md decision 3) ──
+  //
+  // `.instar/state/skill-learning.db*` is the git-ignored derived SQLite cache of
+  // the synced per-machine ledger, and `.instar/skill-telemetry.jsonl*` is the
+  // legacy flat telemetry file (two machines appending to it produced sync
+  // conflicts; the hook now writes `.instar/skill-telemetry/<machineId>.jsonl`).
+  // Fresh installs get both via MachineIdentity GITIGNORE_ENTRIES; existing agents
+  // only here (the judgment-provenance precedent: existing files only, idempotent).
+  // A legacy file git already tracks stays tracked — this never runs `git rm`.
+  private migrateSkillLearningGitignore(result: MigrationResult): void {
+    const projectGitignore = path.join(this.config.projectDir, '.gitignore');
+    if (fs.existsSync(projectGitignore)) {
+      for (const entry of SKILL_LEARNING_GITIGNORE_PROJECT) {
+        this.addGitignoreEntry(projectGitignore, entry, result, 'project .gitignore');
+      }
+    }
+    const instarGitignore = path.join(this.config.stateDir, '.gitignore');
+    if (fs.existsSync(instarGitignore)) {
+      for (const entry of SKILL_LEARNING_GITIGNORE_STATE) {
+        this.addGitignoreEntry(instarGitignore, entry, result, '.instar/.gitignore');
+      }
     }
   }
 
@@ -5404,6 +5549,21 @@ export class PostUpdateMigrator {
     } catch (err) {
       result.errors.push(`parity-renderings: backfill failed: ${err instanceof Error ? err.message : String(err)}`);
     }
+    // Skill canonical backfill runs AFTER the parity pass on purpose: on an agent
+    // whose set-aware parity marker is not yet recorded, the parity pass sees no
+    // canonical instances (as it always has) and records its marker; the backfill
+    // then copies renderings into canonical without triggering a fleet-wide
+    // re-render of every existing `.claude/skills/` file.
+    try {
+      await this.migrateSkillsCanonicalBackfill(result);
+    } catch (err) {
+      result.errors.push(`canonical-backfill: failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    try {
+      await this.migrateBuiltinSkillRenderings(result);
+    } catch (err) {
+      result.errors.push(`skill-renderings: failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return result;
   }
 
@@ -5477,6 +5637,7 @@ export class PostUpdateMigrator {
     // Lazy-import registry so PostUpdateMigrator doesn't pull the entire
     // parity graph at startup for agents that never invoke migrate().
     const { listParityRules } = await import('../providers/parity/registry.js');
+    const { isLearnedCanonical } = await import('../providers/parity/rules/skillParityRule.js');
 
     const rules = listParityRules();
     let renderedCount = 0;
@@ -5490,6 +5651,18 @@ export class PostUpdateMigrator {
         continue;
       }
       for (const instance of instances) {
+        // A LEARNED skill canonical belongs to the skill-learning sentinel's reconciler, which renders
+        // it by frontmatter state (pending/operator-owned stay unrendered); never render it here
+        // (skill-learning-sentinel §3.5; the parity rule's own funnel refuses `render-held` too).
+        if (rule.primitive === 'skill') {
+          let canonicalRaw: string | null = null;
+          try { canonicalRaw = fs.readFileSync(path.join(this.config.projectDir, '.instar', 'skills', instance, 'SKILL.md'), 'utf-8'); } catch { canonicalRaw = null; } // @silent-fallback-ok — an unreadable canonical is the rule's own read error below, not a learned skip
+          if (canonicalRaw !== null && isLearnedCanonical(canonicalRaw)) {
+            skippedCount += 1;
+            result.skipped.push(`parity-renderings: skill/${instance} is a learned canonical — the learned-skill reconciler renders it by state`);
+            continue;
+          }
+        }
         for (const framework of frameworks) {
           if (!rule.frameworks.includes(framework)) continue;
           try {
@@ -5507,7 +5680,7 @@ export class PostUpdateMigrator {
             //   - 'refused to remediate' (memory rule — never auto-regenerates
             //     identity/learning artifacts; see specs/instar-concepts/memory.md)
             // Both are skips, not errors. Operator resolves manually.
-            const isRefuse = msg.includes('user-edit-conflict') || msg.includes('refused to remediate');
+            const isRefuse = msg.includes('user-edit-conflict') || msg.includes('refused to remediate') || msg.includes('render-held:');
             if (isRefuse) {
               skippedCount += 1;
               result.skipped.push(`parity-renderings: ${rule.primitive}/${instance} on ${framework} — ${msg}`);
@@ -5528,6 +5701,166 @@ export class PostUpdateMigrator {
 
     if (renderedCount === 0 && skippedCount === 0) {
       result.skipped.push('parity-renderings: no canonical instances found (new agent or no primitives shipped yet)');
+    }
+  }
+
+  // ── Skills canonical backfill (docs/specs/skill-learning-sentinel.md slice 0) ──
+  //
+  // specs/instar-concepts/skill.md deferred the one-time backfill of existing
+  // `.claude/skills/` and `.agents/skills/` into canonical `.instar/skills/`;
+  // it never shipped, so on every existing agent the canonical dir was empty and
+  // the parity rule was a structural no-op. Decision 6: copy-only and nothing is
+  // ever deleted; when both renderings exist and differ, the `.claude` copy
+  // becomes canonical and the differing `.agents` copy is left untouched,
+  // unstamped and logged (`canonical-backfill-conflict`). Decision 7:
+  // unconditional (no flag) and idempotent — a second run copies nothing.
+  // Existing renderings whose body equals canonical are stamped with the
+  // canonical body hash (`x-instar-stamp`) so verify reads them as in sync; a
+  // rendering on disk is never re-rendered or overwritten here.
+  async migrateSkillsCanonicalBackfill(result: MigrationResult): Promise<void> {
+    const projectDir = this.config.projectDir;
+    const canonicalRoot = path.join(projectDir, '.instar', 'skills');
+    const sources: ReadonlyArray<{ root: string; label: 'claude' | 'agents' }> = [
+      { root: path.join(projectDir, '.claude', 'skills'), label: 'claude' },
+      { root: path.join(projectDir, '.agents', 'skills'), label: 'agents' },
+    ];
+    const counts = { copied: 0, stamped: 0, conflicts: 0, canonical: 0, invalid: 0, noSkillMd: 0, unparseable: 0, errors: 0 };
+    const names = new Set<string>();
+    for (const src of sources) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(src.root, { withFileTypes: true });
+      } catch {
+        continue; // rendering root absent — nothing to backfill from
+      }
+      for (const entry of entries) {
+        if (entry.isSymbolicLink() || !entry.isDirectory()) continue;
+        if (!SKILL_SLUG_RE.test(entry.name)) {
+          counts.invalid += 1;
+          result.skipped.push(`canonical-backfill-invalid-name: ${src.label}/${entry.name} (not a skill slug; left untouched)`);
+          continue;
+        }
+        names.add(entry.name);
+      }
+    }
+
+    for (const name of [...names].sort()) {
+      try {
+        const canonicalDir = path.join(canonicalRoot, name);
+        const claudeDir = path.join(sources[0].root, name);
+        const agentsDir = path.join(sources[1].root, name);
+        const claudeHas = fs.existsSync(path.join(claudeDir, 'SKILL.md'));
+        const agentsHas = fs.existsSync(path.join(agentsDir, 'SKILL.md'));
+        if (!fs.existsSync(canonicalDir)) {
+          if (!claudeHas && !agentsHas) {
+            counts.noSkillMd += 1;
+            result.skipped.push(`canonical-backfill-no-skill-md: ${name} (no SKILL.md in any rendering; left untouched)`);
+            continue;
+          }
+          const from = claudeHas ? claudeDir : agentsDir;
+          // Canonical must parse under the parity rule's YAML schema. A rendering with
+          // an unquoted `description:` holding ": " is read fine by Claude Code but
+          // not by js-yaml; the frontmatter is re-quoted (same content, body bytes
+          // untouched so the stamp still matches). Unparseable even then → no
+          // canonical for this skill; the rendering stays where it is.
+          const normalized = normalizeSkillFrontmatter(fs.readFileSync(path.join(from, 'SKILL.md'), 'utf-8'));
+          if (normalized === null) {
+            counts.unparseable += 1;
+            result.skipped.push(`canonical-backfill-unparseable: ${path.relative(projectDir, path.join(from, 'SKILL.md'))} (frontmatter does not parse; no canonical written, rendering left untouched)`);
+            continue;
+          }
+          copySkillTreeVerbatim(from, canonicalDir, {
+            fromCodexRendering: !claudeHas,
+            skillMdOverride: normalized.changed ? normalized.text : null,
+          });
+          counts.copied += 1;
+          result.upgraded.push(`canonical-backfill: ${name} ← ${path.relative(projectDir, from)}${normalized.changed ? ' (frontmatter re-quoted to parse)' : ''}`);
+        } else {
+          counts.canonical += 1;
+        }
+
+        const canonicalRaw = readUtf8OrNull(path.join(canonicalDir, 'SKILL.md'));
+        const hash = canonicalRaw === null ? null : skillBodyHash(canonicalRaw);
+        if (hash === null) {
+          result.skipped.push(`canonical-backfill-unstampable: ${name} (canonical SKILL.md missing or without frontmatter)`);
+          continue;
+        }
+        for (const src of sources) {
+          const renderedPath = path.join(src.root, name, 'SKILL.md');
+          const raw = readUtf8OrNull(renderedPath);
+          if (raw === null) continue;
+          if (skillBodyHash(raw) !== hash) {
+            counts.conflicts += 1;
+            result.skipped.push(`canonical-backfill-conflict: ${name} (${src.label} rendering body differs from canonical; left untouched, unstamped)`);
+            continue;
+          }
+          const stamped = stampSkillRendering(raw, hash);
+          if (stamped === null) continue; // already carries a stamp
+          fs.writeFileSync(renderedPath, stamped);
+          counts.stamped += 1;
+        }
+      } catch (err) {
+        counts.errors += 1;
+        result.errors.push(`canonical-backfill: ${name} — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const summary = `canonical-backfill: ${counts.copied} copied, ${counts.stamped} stamped, ${counts.conflicts} conflicts, ` +
+      `${counts.canonical} already canonical, ${counts.invalid} invalid names, ${counts.noSkillMd} without SKILL.md, ` +
+      `${counts.unparseable} unparseable, ${counts.errors} errors`;
+    (counts.copied + counts.stamped > 0 ? result.upgraded : result.skipped).push(summary);
+  }
+
+  // ── Built-in skill renderings from canonical (same spec, slice 0) ──
+  //
+  // installBuiltinSkills() now writes canonical `.instar/skills/<slug>/SKILL.md`
+  // first; a framework rendering that is ABSENT is produced here through the
+  // parity rule's remediate() for every enabled framework the rule renders. A
+  // rendering already on disk is never overwritten (installBuiltinSkills'
+  // invariant; the backfill above stamps it instead), so this is idempotent.
+  async migrateBuiltinSkillRenderings(result: MigrationResult): Promise<void> {
+    const projectDir = this.config.projectDir;
+    const canonicalRoot = path.join(projectDir, '.instar', 'skills');
+    let names: string[];
+    try {
+      names = fs.readdirSync(canonicalRoot, { withFileTypes: true })
+        .filter(e => e.isDirectory() && SKILL_SLUG_RE.test(e.name))
+        .map(e => e.name)
+        .sort();
+    } catch { // @silent-fallback-ok — no canonical skills directory yet is the normal first-boot state; nothing to render, nothing to skip
+      return; // no canonical skills yet
+    }
+    if (names.length === 0) return;
+    // Lazy import: keep the parity graph out of the migrator's startup path.
+    const { skillParityRule, isLearnedCanonical } = await import('../providers/parity/rules/skillParityRule.js');
+    const frameworks = this.getEnabledFrameworks().filter(f => skillParityRule.frameworks.includes(f));
+    let rendered = 0;
+    for (const name of names) {
+      // A LEARNED canonical (metadata.instar-learned-origin) belongs to the skill-learning
+      // sentinel's reconciler, which honours its frontmatter state: a `pending` skill awaiting the
+      // operator's confirm tap must never be rendered here (skill-learning-sentinel §3.5; deviation dd).
+      let canonicalRaw: string | null = null;
+      try { canonicalRaw = fs.readFileSync(path.join(canonicalRoot, name, 'SKILL.md'), 'utf-8'); } catch { canonicalRaw = null; } // @silent-fallback-ok — an unreadable learned canonical is skipped here (never rendered on a guess); the reconciler owns learned canonicals and reports its own failures
+      if (canonicalRaw !== null && isLearnedCanonical(canonicalRaw)) {
+        result.skipped.push(`skill-renderings: ${name} is a learned canonical — the learned-skill reconciler renders it by state`);
+        continue;
+      }
+      for (const framework of frameworks) {
+        const renderedMd = path.join(projectDir, framework === 'claude-code' ? '.claude/skills' : '.agents/skills', name, 'SKILL.md');
+        if (fs.existsSync(renderedMd)) continue;
+        try {
+          await skillParityRule.remediate(projectDir, name, framework);
+          rendered += 1;
+          result.upgraded.push(`skill-renderings: ${name} → ${framework}`);
+        } catch (err) {
+          // A canonical that fails the rule's read (frontmatter, slug) is a skip,
+          // not a migration error — the rendering it came from is untouched.
+          result.skipped.push(`skill-renderings: ${name} on ${framework} — ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    if (rendered === 0) {
+      result.skipped.push('skill-renderings: every canonical skill already rendered for the enabled frameworks');
     }
   }
 
@@ -10298,6 +10631,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Recommended services (docs/specs/recommended-services.md) — Agent Awareness + Migration Parity.
+    // v1 → v2 wording (Tailscale and Jev available on every agent): the shipped sentence is swapped in place, once.
+    if (content.includes('Recommended outside services (') && content.includes(RECOMMENDED_SERVICES_V1_TAIL)) {
+      content = content.replace(RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: recommended services section now says Tailscale and Jev can be set up');
+    }
     if (!content.includes('Recommended outside services (')) {
       content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);
       patched = true;
@@ -17333,6 +17672,18 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     }
 
+    // Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3, decision 20):
+    // the whole `monitoring.skillLearning` block is added only when absent, as one
+    // unit, so an existing agent carries exactly the shipped defaults (kill switch
+    // `enabled: false`; `restartNeeded: true` on its ladder entry because the hook
+    // chain and tick are wired at boot). An operator's block is never touched.
+    if (migrateConfigSkillLearningDefaults(config)) {
+      patched = true;
+      result.upgraded.push('config.json: added monitoring.skillLearning defaults (enabled:false, mode:shadow; restart needed to take effect)');
+    } else {
+      result.skipped.push('config.json: monitoring.skillLearning already present');
+    }
+
     // Apply defaults from the canonical ConfigDefaults registry.
     // This single call replaces ALL individual migration blocks (externalOperations,
     // promptGate, threadline, etc.). Adding a new default to ConfigDefaults.ts
@@ -23911,34 +24262,87 @@ function findContradictions(text, state) {
   }
 
   private getSkillUsageTelemetryHook(): string {
-    return `#!/bin/bash
-# Skill Usage Telemetry — PostToolUse hook for Skill tool.
+    // docs/specs/skill-learning-sentinel.md §2 + decisions 18/29. ONE JSON row per
+    // Skill invocation, built by python (never shell-interpolated into JSON), with
+    // exactly {ts, skill, session_id, session_name, topic_id, machine_id,
+    // content_hash} — no args, no free text. content_hash is the x-instar-stamp of
+    // the rendered SKILL.md at invocation (absent → "unknown"). Per-machine file
+    // .instar/skill-telemetry/<machine_id>.jsonl. Always exits 0.
+    // String.raw: the script has no `${` and no backticks, so nothing is escaped.
+    return String.raw`#!/bin/bash
+# Skill Usage Telemetry — PostToolUse hook for the Skill tool.
 #
-# Logs every skill invocation to .instar/skill-telemetry.jsonl
-# for future pattern detection (which skills are used, when, how often).
-#
-# Cross-pollinated from Dawn's Portal project (2026-04-09).
-# Lightweight: appends one JSONL line, no network calls.
+# Appends ONE JSON row per Skill invocation to
+#   .instar/skill-telemetry/<machine_id>.jsonl
+# Row: {ts, skill, session_id, session_name, topic_id, machine_id, content_hash}
+# No args, no free text: skill is validated against the skill slug grammar,
+# machine_id against ^[\w-]{1,64}$ (INSTAR_MACHINE_ID, else this machine's
+# .instar/machine/identity.json machineId, else "unknown"), and content_hash is the x-instar-stamp read
+# from the rendered SKILL.md at invocation ("unknown" when absent).
+# The row is built by python, never by shell string interpolation.
+# Spec: docs/specs/skill-learning-sentinel.md (slice 0). Always exits 0.
 
 INPUT=$(cat)
 
-TOOL_NAME=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
+TOOL_NAME=$(printf '%s' "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_name',''))" 2>/dev/null)
 if [ "$TOOL_NAME" != "Skill" ]; then
   exit 0
 fi
 
-INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
-TELEMETRY_FILE="$INSTAR_DIR/skill-telemetry.jsonl"
-
-SKILL_NAME=$(echo "$INPUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('tool_input',{}).get('skill','unknown'))" 2>/dev/null)
-SKILL_ARGS=$(echo "$INPUT" | python3 -c "import json,sys; a=json.load(sys.stdin).get('tool_input',{}).get('args',''); print(a[:200])" 2>/dev/null)
-OUTPUT_LEN=$(echo "$INPUT" | python3 -c "import json,sys; print(len(str(json.load(sys.stdin).get('tool_output',''))))" 2>/dev/null)
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-SESSION_ID="\${INSTAR_SESSION_ID:-}"
-
-mkdir -p "$INSTAR_DIR"
-echo "{\\"timestamp\\":\\"$TIMESTAMP\\",\\"skill\\":\\"$SKILL_NAME\\",\\"args\\":\\"$SKILL_ARGS\\",\\"session_id\\":\\"$SESSION_ID\\",\\"output_length\\":$OUTPUT_LEN}" >> "$TELEMETRY_FILE"
+export INSTAR_SESSION_ID INSTAR_SESSION_NAME INSTAR_TOPIC_ID INSTAR_MACHINE_ID CLAUDE_PROJECT_DIR
+printf '%s' "$INPUT" | python3 -c '
+import datetime, json, os, re, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    data = {}
+if not isinstance(data, dict) or data.get("tool_name") != "Skill":
+    sys.exit(0)
+ti = data.get("tool_input")
+raw_skill = ti.get("skill") if isinstance(ti, dict) else None
+skill = raw_skill if isinstance(raw_skill, str) and re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", raw_skill) else "unknown"
+def env(name, pattern, limit):
+    v = os.environ.get(name, "")
+    return v if isinstance(v, str) and len(v) <= limit and re.fullmatch(pattern, v) else ""
+project = os.environ.get("CLAUDE_PROJECT_DIR") or "."
+machine_re = r"[\w-]{1,64}"
+machine = os.environ.get("INSTAR_MACHINE_ID", "")
+if not re.fullmatch(machine_re, machine):
+    # Sessions spawned before this update (and unpaired agents) carry no env var:
+    # read the identity file of this machine so their rows never pool into one shared file.
+    machine = "unknown"
+    try:
+        with open(os.path.join(project, ".instar", "machine", "identity.json"), "r", encoding="utf-8") as f:
+            mid = json.load(f).get("machineId")
+        if isinstance(mid, str) and re.fullmatch(machine_re, mid):
+            machine = mid
+    except Exception:
+        pass
+content_hash = "unknown"
+if skill != "unknown":
+    try:
+        with open(os.path.join(project, ".claude", "skills", skill, "SKILL.md"), "r", encoding="utf-8", errors="replace") as f:
+            head = f.read(65536)
+        m = re.search(r"^x-instar-stamp:\s*([a-f0-9]{64})\s*$", head, re.M)
+        if m:
+            content_hash = m.group(1)
+    except Exception:
+        pass
+row = {
+    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "skill": skill,
+    "session_id": env("INSTAR_SESSION_ID", r"[\w-]{1,64}", 64),
+    "session_name": env("INSTAR_SESSION_NAME", r"[\w.:@-]{1,128}", 128),
+    "topic_id": env("INSTAR_TOPIC_ID", r"[\w-]{1,32}", 32),
+    "machine_id": machine,
+    "content_hash": content_hash,
+}
+out_dir = os.path.join(project, ".instar", "skill-telemetry")
+os.makedirs(out_dir, exist_ok=True)
+with open(os.path.join(out_dir, machine + ".jsonl"), "a", encoding="utf-8") as f:
+    f.write(json.dumps(row) + "\n")
+' 2>/dev/null
+exit 0
 `;
   }
 

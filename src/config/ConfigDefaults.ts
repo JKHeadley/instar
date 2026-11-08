@@ -28,6 +28,30 @@ export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
 ] as const;
 
 /** Fields shared across ALL agent types and contexts (init + migration) */
+/**
+ * Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3). The single
+ * shipped copy: SHARED_DEFAULTS reads it for fresh installs and
+ * PostUpdateMigrator.migrateConfigSkillLearningDefaults adds it, whole, to an
+ * existing agent whose config lacks `monitoring.skillLearning`. `enabled` is the
+ * kill switch (false ⇒ off on every agent; read at boot, so a restart applies a
+ * change — `restartNeeded: true` on its ladder entry).
+ */
+export const SKILL_LEARNING_DEFAULTS = Object.freeze({
+  enabled: false,
+  mode: 'shadow',
+  floor: { minOccurrences: 2, minCorroboratedCleanRuns: 1 },
+  defaultGate: { minSupport: 3, minDistinctDays: 2, minDistinctSessions: 2, windowDays: 30 },
+  shadow: { minDisagreementsSampled: 5, verdictReaskDays: 14 },
+  growthSignals: { createdPerWeekNotice: 4 },
+  evidence: { runSliceBytesPerRun: 98304, promptBudgetBytes: 262144, transcriptScanBytes: 4194304 },
+  retire: { minCorroboratedRuns: 3, defaultScoreFloor: 0.4, defaultMisfireFloor: 0.3, defaultUnusedDays: 60, measurableFloor: 0.2 },
+  review: { requireDifferentFamily: true, minCorrectedRunsSameFamily: 2, revertBreakerPer30d: 2 },
+  llm: { maxDailyCents: 50, batchSize: 20 },
+  tickMinutes: 10,
+  // Live kill switch for the every-machine rendering reconcile (decision 19); server.ts reads it.
+  reconcile: { enabled: true },
+} as const);
+
 const SHARED_DEFAULTS: Record<string, unknown> = {
   notifications: {
     selectivity: {
@@ -721,6 +745,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
+    // Skill-learning sentinel: the whole block, kill switch off (see SKILL_LEARNING_DEFAULTS).
+    skillLearning: structuredClone(SKILL_LEARNING_DEFAULTS) as Record<string, unknown>,
     // Both omit `enabled`: resolveDevAgentGate makes them live on development
     // agents and dark on the fleet. v1 remains observe-only via dryRun:true.
     correctionClassReview: {

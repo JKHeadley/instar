@@ -84,17 +84,20 @@ describe('voice session lines', () => {
 
 const m4a = () => Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), crypto.randomBytes(500)]);
 
-function service(transcribeVoice?: (p: string, t: string) => Promise<string>, transcribeDeadlineMs?: number) {
+function service(transcribeVoice?: (p: string, t: string) => Promise<string>, transcribeDeadlineMs?: number, disk: { free: number; total: number } = ROOMY) {
   const dir = tmp();
   const reports: string[] = [];
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => 'm1', registry: new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true }),
     requests: new MobileChatRequestStore(dir), holdsLease: () => true, ownerName: () => 'Justin', dispatch: () => null,
-    reportDegradation: (_w, d) => reports.push(d),
+    reportDegradation: (_w, d) => reports.push(d), mediaDiskSpace: () => disk,
     ...(transcribeVoice ? { transcribeVoice } : {}), ...(transcribeDeadlineMs !== undefined ? { transcribeDeadlineMs } : {}),
   });
   return { svc, reports };
 }
+
+/** A disk with room, whatever this machine's disk holds. */
+const ROOMY = { free: 1e12, total: 2e12 };
 
 async function voiceMessage(svc: AppConversationService, transcript?: string): Promise<MediaMessageEvent> {
   const bytes = m4a();
@@ -162,5 +165,14 @@ describe('sessionLinesFor — voice notes', () => {
     const { svc } = service();
     const ev = await voiceMessage(svc);
     expect((await linesFor(svc, ev))[0]).toMatch(/\(transcription unavailable: no voice transcription on this machine; /);
+  });
+});
+
+describe('the disk floor, whatever this machine holds', () => {
+  it('a voice note is taken with room and refused below the floor', async () => {
+    const roomy = service(undefined, undefined, ROOMY).svc;
+    await expect(voiceMessage(roomy)).resolves.toBeTruthy();
+    const full = service(undefined, undefined, { free: 1e9, total: 2e12 }).svc;
+    await expect(voiceMessage(full)).rejects.toThrow('upload refused');
   });
 });

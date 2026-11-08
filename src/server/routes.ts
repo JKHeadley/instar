@@ -1,3 +1,4 @@
+import { topicGoalContext } from '../core/TopicGoalContext.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
@@ -61,6 +62,7 @@ import {
   type MaintenancePoolView,
 } from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
+import { createMandatePinCheck } from './mandatePin.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
 import { createSessionPresentationResolver } from './sessionPresentation.js';
@@ -1537,6 +1539,8 @@ export interface RouteContext {
    *  in-process by checkOutboundMessage so the tone gate sees ArcCheck's
    *  signal alongside junk/jargon/duplicate. Null when disabled. */
   topicIntentArcCheck: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
+  /** Server-owned wider goal context for autonomous scope judgments. */
+  topicIntentStore?: import('../core/TopicIntent.js').TopicIntentStore | null;
   /** Usher signal store (rung 4). Used by the outbound-reply path to credit a
    *  re-surface nudge the agent's reply actually used (precision numerator,
    *  path (a)). Optional/null when the Usher is disabled. */
@@ -8278,7 +8282,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     scopeAccretionMetric('fired', 'register');
-    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped, initialStatus, preparationRequired: initialStatus === 'preparing' });
+    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped, initialStatus, preparationRequired: initialStatus === 'preparing', topicGoalContext: topicGoalContext(topicId, ctx.topicIntentStore, ctx.initiativeTracker) });
   });
 
   // ── POST /autonomous/:topic/run-end (R44) — every exit surface reports here ──
@@ -9038,6 +9042,13 @@ export function createRoutes(ctx: RouteContext): Router {
           };
         }
       }
+
+      // Client-supplied goal context is never accepted by parseStopSignals.
+      // Resolve fresh server state so a narrowed run charter cannot erase the
+      // user's topic goal. The existing LLM judges relevance and partial scope.
+      const widerGoal = topicGoalContext(resolvedTopic, ctx.topicIntentStore, ctx.initiativeTracker)
+        ?? (resolvedTopic ? JSON.stringify({ availability: 'unavailable-on-this-machine' }) : undefined);
+      if (widerGoal) signals = { ...(signals ?? {}), topicGoalContext: widerGoal };
 
       const verdict = await ctx.completionEvaluator.evaluate(
         effectiveCondition,
@@ -15160,50 +15171,12 @@ export function createRoutes(ctx: RouteContext): Router {
   // PIN verification mirrors /dashboard/unlock: sha256 + timingSafeEqual + a
   // per-IP attempt limit. Read paths + /mandate/evaluate are Bearer-gated.
 
-  const mandatePinAttempts = new Map<string, { count: number; resetAt: number }>();
-  const MANDATE_PIN_MAX_ATTEMPTS = 5;
-  const MANDATE_PIN_WINDOW_MS = 5 * 60 * 1000;
-
-  /** Verify the operator PIN for mandate issuance/revocation. Returns an error
-   *  string (already sent) or null when the PIN is valid.
-   *  S2-1 hardening (routing-control-room-spend): the per-IP lockout counters
-   *  write through to the durable PinAttemptStore when available, so a server
-   *  restart no longer resets brute-force lockout. The in-memory Map remains the
-   *  fallback when stateDir is unavailable. */
+  // The check itself lives in mandatePin.ts (createMandatePinCheck) so route modules
+  // can run the same gate with a route-specific message; this closure keeps the
+  // original (req, res, pinOverride?) signature for every caller in this file.
+  const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
   function checkMandatePin(req: import('express').Request, res: import('express').Response, pinOverride?: string): boolean {
-    if (!ctx.config.dashboardPin) {
-      res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' });
-      return false;
-    }
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    const now = Date.now();
-    if (ctx.pinAttemptStore?.blocked(ip)) {
-      res.status(429).json({ error: 'Too many attempts. Try again later.' });
-      return false;
-    }
-    let entry = mandatePinAttempts.get(ip);
-    if (entry && now > entry.resetAt) { mandatePinAttempts.delete(ip); entry = undefined; }
-    if (entry && entry.count >= MANDATE_PIN_MAX_ATTEMPTS) {
-      res.status(429).json({ error: 'Too many attempts. Try again later.' });
-      return false;
-    }
-    const pin = pinOverride ?? (req.body ?? {}).pin;
-    if (!pin || typeof pin !== 'string') {
-      res.status(403).json({ error: 'Operator PIN required — mandate issuance/revocation is a human action, not an agent action' });
-      return false;
-    }
-    const ha = createHash('sha256').update(pin).digest();
-    const hb = createHash('sha256').update(ctx.config.dashboardPin).digest();
-    if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
-      if (!entry) { entry = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; mandatePinAttempts.set(ip, entry); }
-      entry.count++;
-      const durableRemaining = ctx.pinAttemptStore?.recordFailure(ip);
-      res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: durableRemaining ?? (MANDATE_PIN_MAX_ATTEMPTS - entry.count) });
-      return false;
-    }
-    mandatePinAttempts.delete(ip);
-    ctx.pinAttemptStore?.recordSuccess(ip);
-    return true;
+    return requireMandatePin(req, res, { pinOverride });
   }
 
   // Evaluate an action against a mandate (the enforcement consumption point).
@@ -16504,6 +16477,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     port: ctx.config.port,
     readSecret: (name) => { const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; },
     writeSecret: (name, value) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).set(name, value); },
+    deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); },
+    // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
+    canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
+    // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.
+    // The channel being switched off never counts as its own backup.
+    otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack),
     // Its own conversation, because setup needs the person: for a credential, a decision, and to say it works.
     startSetup: async (service, name, brief, existingTopic) => {
       if (!ctx.telegram) throw new Error('setup needs a Telegram conversation to reach the person');

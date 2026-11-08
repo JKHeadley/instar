@@ -544,6 +544,39 @@ describe('tenure clamp (§3.5)', () => {
     expect(store.getRow(seq)?.state).toBe('delivered'); // same tenure — no clamp
   });
 
+  /** The same holder's process restarts: same store and holder, a new boot id. */
+  function rebootedLoop(): QueueDrainLoop {
+    const next = new QueueDrainLoop({ ...deps, bootSessionId: 'boot-2' });
+    next.onLeaseAcquired('mac-a');
+    return next;
+  }
+
+  it('an app message survives its own holder\'s reboot past the clamp and is delivered (pool-proof-1107 step 8)', async () => {
+    const seq = enqueue('app:3423321f-dd47-45f7-b70e-eeed826a5a47', 'nine-b');
+    advance(deps.qcfg.staleCustodyTtlMs + 60_000);
+    const next = rebootedLoop();
+    await next.runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('delivered');
+    expect(deps.lossReports).toEqual([]);
+  });
+
+  it('a non-app message still takes the reboot clamp', async () => {
+    const seq = enqueue('13481', 'm');
+    advance(deps.qcfg.staleCustodyTtlMs + 60_000);
+    await rebootedLoop().runDrainPass('test');
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('stale-custody-reboot');
+  });
+
+  it('an app message still ends at its TTL after a reboot, as ttl-expired', async () => {
+    const seq = enqueue('app:3423321f-dd47-45f7-b70e-eeed826a5a47', 'm');
+    advance(deps.qcfg.entryTtlMs + 60_000);
+    await rebootedLoop().tick(); // the server's backstop tick runs the TTL sweep, as for any row
+    expect(store.getRow(seq)?.state).toBe('expired');
+    expect(store.getRow(seq)?.terminal_reason).toBe('ttl-expired');
+    expect(deps.lossReports.some((r) => r.reason === 'ttl-expired')).toBe(true);
+  });
+
   it('same-holder re-acquire does not clamp (tenure unchanged)', async () => {
     const seq = enqueue('s', 'm');
     loop.onLeaseAcquired('mac-a'); // same holder at the tip

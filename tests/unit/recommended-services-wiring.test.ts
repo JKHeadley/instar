@@ -32,6 +32,13 @@ describe('recommended services wiring', () => {
     expect(read('src/server/routes.ts')).toContain('OFFER_RETIRED');
   });
 
+  it('the server gives the routes a real reach check, a strand check and a key remover', () => {
+    const routes = read('src/server/routes.ts');
+    expect(routes).toContain('canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); }');
+    expect(routes).toContain("otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack)");
+    expect(routes).toContain('deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); }');
+  });
+
   it('a lone machine backs its choices up', () => {
     expect(read('src/core/BackupManager.ts')).toContain("'state/recommended-services/'");
   });

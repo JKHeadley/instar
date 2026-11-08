@@ -18,7 +18,7 @@ import { SourceTreeGuardError } from '../../src/core/SourceTreeGuard.js';
 import { sanitizedGitEnv } from '../helpers/git-test-env.js';
 
 // Frozen copies of the two lists as they stood before the table existed, plus
-// the two additions the spec makes. Written out on purpose: the other tests in
+// the changes each later spec made. Written out on purpose: the other tests in
 // this file read the table they check, so only this copy can catch a verb that
 // was dropped or moved from one class to another.
 const FROZEN_WRITE_VERBS = [
@@ -26,27 +26,39 @@ const FROZEN_WRITE_VERBS = [
   'merge', 'mv', 'pull', 'push', 'rebase', 'reset', 'restore', 'revert', 'rm', 'stash', 'submodule', 'switch',
   'tag', 'update-ref', 'merge-tree', 'commit-tree', 'worktree', 'prune', 'notes', 'replace', 'filter-branch',
   'remote', 'config', 'format-patch',
-  'reflog', // added by this change: its write shapes were already accepted
+  'reflog', // EVO-028: its write shapes were already accepted
+  // EVO-029: write-tree always writes; seven read verbs with a write or
+  // program-running form became shape, so a write surface may be asked to run them.
+  'write-tree', 'symbolic-ref', 'hash-object', 'interpret-trailers', 'fsck', 'grep', 'ls-remote', 'help',
 ];
 const FROZEN_READ_VERBS = [
   'status', 'log', 'diff', 'show', 'rev-parse', 'rev-list', 'ls-files', 'ls-tree', 'ls-remote', 'describe',
   'name-rev', 'blame', 'cat-file', 'cherry', 'grep', 'shortlog', 'count-objects', 'fsck', 'var', 'version',
-  '--version', 'help', 'write-tree', 'interpret-trailers', 'check-ref-format', 'symbolic-ref', 'show-ref',
+  '--version', 'help', 'interpret-trailers', 'check-ref-format', 'symbolic-ref', 'show-ref',
   'for-each-ref', 'merge-base', 'reflog', 'hash-object', 'config', 'remote', 'branch', 'worktree', 'format-patch',
   'stash',
-  'check-ignore', // added by this change
+  'check-ignore', // EVO-028
+  // EVO-029: write-tree left the read list.
 ];
 
-// One read-shaped and one write-shaped argument list per shape-checked verb.
-// A `shape` verb with no entry here fails the test below.
-const SHAPE_EXAMPLES: Record<string, { read: string[]; write: string[] }> = {
-  branch: { read: ['--list'], write: ['new-branch'] },
+// One read-shaped and one non-read argument list per shape-checked verb.
+// `write` runs on a write surface; `refused` runs nowhere. A `shape` verb with
+// no entry here fails the test below.
+const SHAPE_EXAMPLES: Record<string, { read: string[]; write?: string[]; refused?: string[] }> = {
+  branch: { read: ['--list'], write: ['new-branch'], refused: ['--edit-description'] },
   remote: { read: ['get-url', 'origin'], write: ['add', 'origin', 'x'] },
   worktree: { read: ['list'], write: ['add', '../wt'] },
-  config: { read: ['--get', 'user.name'], write: ['user.name', 'X'] },
-  'format-patch': { read: ['-1'], write: ['--inline', '-1'] },
+  config: { read: ['--get', 'user.name'], write: ['user.name', 'X'], refused: ['--edit'] },
+  'format-patch': { read: ['-1', '--stdout'], write: ['-1'] },
   stash: { read: ['list'], write: ['push'] },
   reflog: { read: ['show'], write: ['expire', '--expire=now', '--all'] },
+  'symbolic-ref': { read: ['--short', 'HEAD'], write: ['HEAD', 'refs/heads/x'] },
+  'hash-object': { read: ['f.txt'], write: ['-w', 'f.txt'] },
+  'interpret-trailers': { read: ['--trailer', 'A: b', 'msg'], write: ['--in-place', 'msg'] },
+  fsck: { read: ['--full'], write: ['--lost-found'] },
+  grep: { read: ['-n', '-e', 'x'], refused: ['-Oless', 'x'] },
+  'ls-remote': { read: ['--tags', 'origin'], refused: ['--upload-pack=x', 'origin'] },
+  help: { read: ['-a'], refused: ['commit'] },
 };
 
 function mkSandbox(prefix = 'sge-vc-'): string {
@@ -133,8 +145,10 @@ describe('GIT_VERB_CLASSES — the one table', () => {
     expect(shapeVerbs.sort()).toEqual(Object.keys(SHAPE_EXAMPLES).sort());
     for (const verb of shapeVerbs) {
       const ex = SHAPE_EXAMPLES[verb];
+      expect(ex.write ?? ex.refused).toBeDefined();
       expect({ verb, got: classifyGitInvocation(verb, ex.read) }).toEqual({ verb, got: 'read' });
-      expect({ verb, got: classifyGitInvocation(verb, ex.write) }).toEqual({ verb, got: 'write' });
+      if (ex.write) expect({ verb, got: classifyGitInvocation(verb, ex.write) }).toEqual({ verb, got: 'write' });
+      if (ex.refused) expect({ verb, got: classifyGitInvocation(verb, ex.refused) }).toEqual({ verb, got: 'refused' });
     }
   });
 
@@ -267,13 +281,14 @@ describe('SafeGitExecutor surfaces agree on a verb', () => {
     }
   });
 
-  it('keeps run reading args[0] when a pre-verb flag comes first', () => {
+  it('routes run on the verb past a pre-verb flag (EVO-029 item 1)', () => {
     const opts = { cwd: sandbox, operation: 'test-preverb' };
-    // A read behind a pre-verb flag reaches readSync and runs.
-    expect(typeof SafeGitExecutor.run(['-c', 'x.y=z', 'status', '--porcelain'], opts)).toBe('string');
-    // A write behind a pre-verb flag also reaches readSync, which refuses it.
-    expect(
-      messageOf(() => SafeGitExecutor.run(['-c', 'x.y=z', 'commit', '--allow-empty', '-m', 'm'], opts)),
-    ).toContain('use SafeGitExecutor.execSync');
+    // An admitted -c on a read reaches readSync and runs.
+    expect(typeof SafeGitExecutor.run(['-c', 'core.fsmonitor=false', 'status', '--porcelain'], opts)).toBe('string');
+    // A write behind a pre-verb flag now reaches execSync and commits.
+    const before = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sandbox, encoding: 'utf-8', env: sanitizedGitEnv() });
+    SafeGitExecutor.run(['-c', 'commit.gpgsign=false', 'commit', '--allow-empty', '-m', 'm'], opts);
+    const after = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: sandbox, encoding: 'utf-8', env: sanitizedGitEnv() });
+    expect(after).not.toBe(before);
   });
 });

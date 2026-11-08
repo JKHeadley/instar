@@ -139,7 +139,13 @@ export function mountMobileHealthRoutes(router: Router, deps: MobileHealthDeps):
       res.json({ ...page(answer(await read())), ...(deps.choices?.failedToRead ? { hiddenUnreadable: true } : {}) });
     } catch (err) {
       report('GET /mobile/health-issues', err);
-      res.status(500).json({ error: 'health-unavailable' });
+      // The one honest "can't tell": the agent answered but couldn't read its own health. Say why.
+      const msg = err instanceof Error ? err.message : String(err);
+      const reason = /abort|timeout|timed out/i.test(msg) ? 'timeout' : /\/health answered/.test(msg) ? 'health-read-failed' : 'summary-failed';
+      res.status(500).json({
+        error: 'health-unavailable', verdict: 'unsure', reason,
+        detail: reason === 'timeout' ? 'I took too long to read my own health just now.' : 'I couldn’t read my own health just now.',
+      });
     }
   });
 

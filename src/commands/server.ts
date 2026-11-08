@@ -240,8 +240,8 @@ import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } 
 import { isSlackSessionKey, isSlackConversationKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { tokenMayWriteConversation } from '../core/conversationKeys.js';
 import { createConversationPorts, conversationResumeViews } from '../core/conversationPorts.js';
-import { actOnUrgent, AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossState, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
-import { appPlacement, runAppMove, runBringBack, setAppPoolMoves } from '../core/appConversationMove.js';
+import { actOnUrgent, AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossState, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchQueuedInbound, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
+import { appPlacement, ownerAnswering, runAppMove, runBringBack, setAppPoolMoves } from '../core/appConversationMove.js';
 import { DEFAULT_DRAIN_CLAIM_GRACE_MS } from '../core/SessionDrainRunner.js';
 import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
 import type { MachineCapacity } from '../core/types.js';
@@ -311,6 +311,9 @@ import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } from '../core/leaseMediumSelection.js';
 import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
+import { skillLearningSlackLink, skillLearningTelegramLink } from '../monitoring/skillLearning/SeamFilter.js';
+import { startSkillLearning, skillLearningEnv, createLearnedSkillReconciler, bootReconcileLearnedSkills } from '../monitoring/skillLearning/wire.js';
+import { SkillLearningSentinel } from '../monitoring/SkillLearningSentinel.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
 import { readJsonlTailLastLines } from '../utils/jsonl-tail.js';
@@ -6243,6 +6246,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // honesty observer that STOPS attempting goes BLIND if the registry recovers.
     const MAX_BACKOFF_TICKS = 20;
     let leaseCoordinatorRef: LeaseCoordinator | undefined;
+    // Hoisted (skill-learning slice 2): the commit protocol's WriterFence pulls through it at write time.
+    let gitSyncRef: GitSyncManager | undefined;
     // U4.3/U4.5 — hoisted rope-health seams. The resolver + prober are closure-locals
     // of the mesh-init block; U4.5's RopeHealthMonitor (constructed far below) reads the
     // REAL resolver snapshot through `_ropeSnapshotSource` (never a copy), and the
@@ -6291,6 +6296,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       (configPath, fallback) => liveConfig.get<boolean>(configPath, fallback),
       (message) => console.log(pc.dim(`  [lease] ${message}`)),
     );
+    // ── Learned-skill rendering reconcile (skill-learning-sentinel §3.2,
+    // decisions 19/28). Renderings live outside stateDir and never sync, so
+    // EVERY machine re-renders `instar-learned` canonicals here: once at boot
+    // (below, after the boot pull), at the sync() call sites when commits were
+    // pulled, and on a 10-minute tick. Runs regardless of
+    // monitoring.skillLearning.enabled (it repairs the concept spec's own
+    // deferred design); `monitoring.skillLearning.reconcile.enabled: false` is
+    // the live kill switch. Constructed before the git substrate so the boot
+    // pull can hand it its first 'pull'.
+    const learnedSkillReconciler = await createLearnedSkillReconciler({ config, liveConfig, machineId: coordinator.identity?.machineId ?? os.hostname(), log: (m) => console.log(pc.dim(`  ${m}`)) });
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
     // a standby needs it to pull, and a standby that later self-elects to awake
     // (the Phase-0 scenario) must ALREADY have it so its role-change push fires.
@@ -6308,7 +6323,6 @@ export async function startServer(options: StartOptions): Promise<void> {
       // handoff/live-tail transports below. (2026-05-31 bug, found live: the
       // lease block was nested in the git-gated try, so a gitSync throw left the
       // standby with leaseHolder=null → MeshRpc 'not-router' → transfer dead.)
-      let gitSyncRef: GitSyncManager | undefined;
       let leaseMedium = selectLeaseMedium({
         projectDir: config.projectDir,
         registryAbsPath: idMgr.registryPath,
@@ -6333,6 +6347,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             const syncResult = await gitSync.sync();
             if (syncResult.pulled) {
               console.log(pc.green(`  Git sync: pulled ${syncResult.commitsPulled} commit(s)`));
+              // A pulled canonical learned skill must be re-rendered on this machine.
+              void learnedSkillReconciler.reconcileAll('pull').catch(() => { /* @silent-fallback-ok — counted in status(), never fails boot */ });
             }
           }
           gitSyncRef = gitSync;
@@ -7264,6 +7280,10 @@ export async function startServer(options: StartOptions): Promise<void> {
         config.multiMachine?.sessionPool?.inboundQueue,
       ),
       localMachineId: () => coordinator.identity?.machineId ?? os.hostname(),
+      // skill-learning-sentinel decision 18: the `INSTAR_MACHINE_ID` export
+      // for spawned sessions is the verified machine identity or nothing —
+      // never the hostname (SessionManager omits the export on null).
+      machineId: () => coordinator.identity?.machineId ?? null,
       ownerEpochForConversation: (conversationId) => stageBOwnerEpochForConversation(conversationId),
       stageCRecoveryEnabled,
     });
@@ -15774,6 +15794,16 @@ export async function startServer(options: StartOptions): Promise<void> {
     };
 
 
+    // Skill Learning Sentinel (skill-learning-sentinel §3, slice 1) — ONE expression (startServer sits at
+    // TS2563's limit): starts the reconciler above, then builds + starts the sentinel when
+    // monitoring.skillLearning.enabled is true. Provenance and the topic-operator store are constructed later
+    // in boot and are read lazily; a missing provenance log fails CLOSED (no verdict is recorded).
+    const skillLearningSentinel = startSkillLearning({ reconciler: learnedSkillReconciler, fence: { hasCoordinator: () => leaseCoordinatorRef !== undefined, holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true), currentEpoch: () => (leaseCoordinatorRef ? leaseCoordinatorRef.currentEpoch() : 0), leaseMediumLocal: () => coordinator.getSyncStatus().leaseMedium?.medium === 'local', pullRebase: () => (gitSyncRef ? gitSyncRef.pullRebase() : null), hasRemote: () => { const none = gitLeaseHasNoRemote(config.projectDir); return none === null ? null : !none; }, isGitRepo: () => isGitRepo }, rawConfig: config, projectDir: config.projectDir, stateDir: config.stateDir, ...skillLearningEnv({ config, identity: coordinator.identity, telegram, slack: slackAdapter, sharedIntelligence, topicMemory }), operatorStore: () => _agentServerRef?.getTopicOperatorStore() ?? null, provenance: () => _judgmentProvenance, slackTopicId: (channelId) => String(slackChannelToSyntheticId(channelId)), findSession: (name) => state.findSessionByTmux(name), featureEvidence, holdsLease: () => leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true, ladder: () => _agentServerRef?.getMaturationLadder() ?? null, addLearning: (learning) => evolution.addLearning(learning), logger: (m) => console.log(pc.dim(`  ${m}`)) }, (deps) => SkillLearningSentinel.create(deps));
+    // Learned-skill rendering reconcile — the boot pass (after the post-update migrations, the boot
+    // pull above, and the commit journal recovery startSkillLearning started: the reconciler's gate
+    // releases when that recovery finishes) and the 10-minute tick.
+    await bootReconcileLearnedSkills(learnedSkillReconciler, { info: (m) => console.log(pc.dim(`  ${m}`)), warn: (m) => console.log(pc.yellow(`  ${m}`)) });
+
     // Helper Watchdog — detects subagent stalls and rate-limit failures,
     // surfacing them back into the parent session's stdin so the agent
     // can decide whether to retry smaller. Complements SessionWatchdog,
@@ -17986,6 +18016,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               console.log(`[Usher] ${credited.length} signal(s) marked acted (miss) on topic ${entry.topicId}`);
             }
           }
+          // Skill-learning sentinel seam (docs/specs/skill-learning-sentinel.md §3.1, slice 1): chained
+          // AFTER the Human-as-Detector link, inside this callback so startServer's own control-flow
+          // graph grows by nothing (TS2563 sits at its limit). Gated on monitoring.skillLearning.enabled;
+          // a no-op until the sentinel installs its filter; a throw inside is caught + counted there.
+          skillLearningTelegramLink(entry, config.monitoring?.skillLearning?.enabled);
         };
 
         // ── Topic-Intent ArcCheck (rung 3 / Layer 3) ────────────────────
@@ -18674,6 +18709,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                 senderName: entry.senderName,
               });
             }
+
+            // Skill-learning sentinel seam on Slack (support-only rows, §3.1 correction d) — the same
+            // contained link as the Telegram one; placed before the system-channel returns so the
+            // filter, not this callback, decides what it admits.
+            skillLearningSlackLink(entry, config.monitoring?.skillLearning?.enabled);
 
             // Clear stall tracking when agent responds in this channel
             if (!entry.fromUser && entry.channelId) {
@@ -22976,6 +23016,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           key: () => configuredClaudeOauthKey(),
           baseUrl: () => config.sessions.anthropicBaseUrl,
         }),
+        // A key put in during the limit goes into use first, so the probe and the restarted
+        // conversations run on it, not on the old walled key (2026-11-07 live proof).
+        syncKey: () => claudeKeyHealth.refreshKeyFromDisk(),
         keyFingerprint: () => { const k = configuredClaudeOauthKey(); return k ? claudeKeyFingerprint(k) : null; },
         isKeyAgent: () => Boolean(configuredClaudeOauthKey()),
         listWalledSessions: async () => {
@@ -29792,10 +29835,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // defaults true (the single-router topology).
                   holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
                   isStopped: (sk) => stoppedTopics.has(sk),
-                  dispatchInbound: async (msg, handover) => {
-                    if (!_drainLocalDeliver) return { kind: 'un-routable', reason: 'local-tail-not-wired' };
-                    return _drainLocalDeliver(msg, handover);
-                  },
+                  // App rows reach the app tail whether or not Telegram wired the local tail.
+                  dispatchInbound: (msg, handover) => dispatchQueuedInbound(msg, handover, { app: _appDrainDeliver, local: _drainLocalDeliver }),
                   forceReplace: async (msg) => {
                     // At stage 'dark' no forced cross-machine re-place (CMT-1117):
                     // false ⇒ attempts-exhausted + the loss notice, never a
@@ -30065,8 +30106,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               selfId: meshSelfId,
               holdsLease: appHoldsLease,
               read: (rk: string) => ownReg.read(rk),
-              // Direct contact, not `online`: a lingering git-synced beat keeps that true for up to an hour on a dead machine.
-              ownerOnline: (m: string) => { const c = appCaps().find((x) => x.machineId === m); return c?.liveness ? c.liveness.state === 'live' : c?.online === true; },
+              // Fresh direct contact only: neither `online` (a lingering beat) nor a "live" kept for the 15-minute failover window.
+              ownerOnline: (m: string) => ownerAnswering(appCaps().find((x) => x.machineId === m), machinePoolRegistry?.directAttempts(m) ?? []),
               nicknameOf: appNick,
             };
             setAppPoolMoves({
@@ -33170,6 +33211,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
+    // Skill Learning Sentinel (skill-learning-sentinel §3.10): bound here, away from the constructor
+    // argument list every PR extends; the routes read it through a getter and listen() is later.
+    server.setSkillLearningSentinel(skillLearningSentinel);
 
     // ── WS2.6 SEND-SIDE: topicOperator (the THIRD PII kind) ──────────────
     // The AUTHORITATIVE topic-operator writer is the AgentServer's OWN

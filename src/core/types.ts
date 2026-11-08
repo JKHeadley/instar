@@ -7820,6 +7820,35 @@ export interface MonitoringConfig {
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
   };
+  /**
+   * Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3). Ships OFF;
+   * `enabled` is the kill switch (omitted ⇒ off on every agent) and is read at
+   * boot (`restartNeeded`). Slice 0 ships only the repairs (canonical backfill,
+   * telemetry hook); the sentinel itself reads this block from slice 1.
+   */
+  skillLearning?: {
+    /** Kill switch. Default false. */
+    enabled?: boolean;
+    /** `shadow` records what it WOULD do; `live` writes skills. Default shadow. */
+    mode?: 'shadow' | 'live';
+    /** The deterministic evidence floor: count-based, no time bound, never widened by a model. */
+    floor?: { minOccurrences?: number; minCorroboratedCleanRuns?: number };
+    /** The static fallback rung (its recency is its own, not the floor's). */
+    defaultGate?: { minSupport?: number; minDistinctDays?: number; minDistinctSessions?: number; windowDays?: number };
+    /** Evidence floor for admitting any arbiter to act. */
+    shadow?: { minDisagreementsSampled?: number; verdictReaskDays?: number };
+    /** A SIGNAL to the operator, never a refusal. */
+    growthSignals?: { createdPerWeekNotice?: number };
+    evidence?: { runSliceBytesPerRun?: number; promptBudgetBytes?: number; transcriptScanBytes?: number };
+    /** Retire floor + the static defaults the reviewer judges against. */
+    retire?: { minCorroboratedRuns?: number; defaultScoreFloor?: number; defaultMisfireFloor?: number; defaultUnusedDays?: number; measurableFloor?: number };
+    review?: { requireDifferentFamily?: boolean; minCorrectedRunsSameFamily?: number; revertBreakerPer30d?: number };
+    /** The spend ceiling is a money floor (irreversible spend), deliberately static. */
+    llm?: { maxDailyCents?: number; batchSize?: number };
+    tickMinutes?: number;
+    /** Every-machine rendering reconcile of `instar-learned` skills (decision 19). Read live. Default on. */
+    reconcile?: { enabled?: boolean };
+  };
   /** Un-gated correction durable-outcome drain; enabled on dev agents via DEV_GATED_FEATURES. */
   correctionClassReview?: {
     enabled?: boolean;

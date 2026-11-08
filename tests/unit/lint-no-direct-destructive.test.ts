@@ -244,6 +244,40 @@ describe('lint-no-direct-destructive — shell', () => {
   });
 });
 
+describe('lint-no-direct-destructive — shell verbs follow the SafeGitExecutor table (EVO-029)', () => {
+  // One write example and one read example per shape verb the shell lint
+  // checks by form; the classifier test holds the same pairs.
+  const SHAPE_SHELL_EXAMPLES: Record<string, { write: string; read: string }> = {
+    remote: { write: 'git remote add origin https://x', read: 'git remote -v' },
+    reflog: { write: 'git reflog expire --expire=now --all', read: 'git reflog show' },
+    'symbolic-ref': { write: 'git symbolic-ref HEAD refs/heads/x', read: 'git symbolic-ref --short HEAD' },
+    config: { write: 'git config user.name X', read: 'git config --get user.name' },
+  };
+
+  it('flags every write-class verb in the table', async () => {
+    const { GIT_VERB_CLASSES } = await import('../../src/core/SafeGitExecutor.js');
+    const missed: string[] = [];
+    for (const [verb, cls] of GIT_VERB_CLASSES) {
+      if (cls !== 'write') continue;
+      const file = path.join(sandbox, `w-${verb}.sh`);
+      writeFile(file, `#!/bin/sh\ngit ${verb} x\n`);
+      if (runLint(file).code !== 1) missed.push(verb);
+    }
+    expect(missed).toEqual([]);
+  });
+
+  it('flags the write form and passes the read form of the shape verbs it checks', () => {
+    for (const [verb, ex] of Object.entries(SHAPE_SHELL_EXAMPLES)) {
+      const bad = path.join(sandbox, `sw-${verb}.sh`);
+      writeFile(bad, `#!/bin/sh\n${ex.write}\n`);
+      expect({ verb, code: runLint(bad).code }).toEqual({ verb, code: 1 });
+      const ok = path.join(sandbox, `sr-${verb}.sh`);
+      writeFile(ok, `#!/bin/sh\n${ex.read} 2>/dev/null\n`);
+      expect({ verb, code: runLint(ok).code }).toEqual({ verb, code: 0 });
+    }
+  });
+});
+
 describe('lint-no-direct-destructive — package.json scripts', () => {
   it('flags destructive git in npm script values', () => {
     const file = path.join(sandbox, 'package.json');
