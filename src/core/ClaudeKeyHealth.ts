@@ -22,6 +22,8 @@ export type ClaudeKeyProbeResult = 'ok' | 'rejected' | 'no-auth' | 'inconclusive
 
 export const CONFIRM_DELAY_MS = 30_000;
 export const TICK_MS = 60_000;
+/** How often the saved key is compared with the one in use, whatever the key's state. */
+export const KEY_WATCH_MS = 60_000;
 export const OK_MIN_PROBE_INTERVAL_MS = 5 * 60_000;
 export const DEAD_PROBE_START_MS = 10 * 60_000;
 export const NEW_KEY_RETRY_START_MS = 60_000;
@@ -143,6 +145,7 @@ export class ClaudeKeyHealth {
   private working = false;
   private timer: NodeJS.Timeout | null = null;
   private confirmTimer: NodeJS.Timeout | null = null;
+  private keyWatch: NodeJS.Timeout | null = null;
   private lastProbeAt = 0;
   private lastOkFingerprint: string | null = null;
   private noAuthReported: string | null = null;
@@ -173,7 +176,30 @@ export class ClaudeKeyHealth {
     }
     this.save();
     this.ensureTimer();
+    this.startKeyWatch();
     if (this.state.status === 'dead') await this.tick();
+  }
+
+  /**
+   * Put a key saved on disk (`instar set-claude-key`) into use now. Before this ran on its own, a key
+   * was only read while this monitor was already alarmed or a session sat at the login screen, so a
+   * key put in during a usage limit was never used: sessions and the usage probe stayed on the old
+   * walled key, and nothing picked up (B2Lead live proof, 2026-11-07). Never throws.
+   */
+  refreshKeyFromDisk(): void {
+    try {
+      this.syncKeyFromDisk();
+      this.ensureTimer();
+    } catch (err) {
+      // @silent-fallback-ok: logged; the next watch pass reads the key again
+      this.logger.warn(`[ClaudeKeyHealth] could not read the saved key: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private startKeyWatch(): void {
+    if (this.deps.manualTimers || this.keyWatch) return;
+    this.keyWatch = setInterval(() => this.refreshKeyFromDisk(), KEY_WATCH_MS);
+    this.keyWatch.unref?.();
   }
 
   /** A signal from an internal call. Asks for a probe, decides nothing. */
@@ -236,8 +262,10 @@ export class ClaudeKeyHealth {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     if (this.confirmTimer) clearTimeout(this.confirmTimer);
+    if (this.keyWatch) clearInterval(this.keyWatch);
     this.timer = null;
     this.confirmTimer = null;
+    this.keyWatch = null;
   }
 
   private syncKeyFromDisk(): void {

@@ -64,6 +64,7 @@ import {
   type MaintenancePoolView,
 } from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
+import { createMandatePinCheck } from './mandatePin.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
 import { createSessionPresentationResolver } from './sessionPresentation.js';
@@ -15168,50 +15169,12 @@ export function createRoutes(ctx: RouteContext): Router {
   // PIN verification mirrors /dashboard/unlock: sha256 + timingSafeEqual + a
   // per-IP attempt limit. Read paths + /mandate/evaluate are Bearer-gated.
 
-  const mandatePinAttempts = new Map<string, { count: number; resetAt: number }>();
-  const MANDATE_PIN_MAX_ATTEMPTS = 5;
-  const MANDATE_PIN_WINDOW_MS = 5 * 60 * 1000;
-
-  /** Verify the operator PIN for mandate issuance/revocation. Returns an error
-   *  string (already sent) or null when the PIN is valid.
-   *  S2-1 hardening (routing-control-room-spend): the per-IP lockout counters
-   *  write through to the durable PinAttemptStore when available, so a server
-   *  restart no longer resets brute-force lockout. The in-memory Map remains the
-   *  fallback when stateDir is unavailable. */
+  // The check itself lives in mandatePin.ts (createMandatePinCheck) so route modules
+  // can run the same gate with a route-specific message; this closure keeps the
+  // original (req, res, pinOverride?) signature for every caller in this file.
+  const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
   function checkMandatePin(req: import('express').Request, res: import('express').Response, pinOverride?: string): boolean {
-    if (!ctx.config.dashboardPin) {
-      res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' });
-      return false;
-    }
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    const now = Date.now();
-    if (ctx.pinAttemptStore?.blocked(ip)) {
-      res.status(429).json({ error: 'Too many attempts. Try again later.' });
-      return false;
-    }
-    let entry = mandatePinAttempts.get(ip);
-    if (entry && now > entry.resetAt) { mandatePinAttempts.delete(ip); entry = undefined; }
-    if (entry && entry.count >= MANDATE_PIN_MAX_ATTEMPTS) {
-      res.status(429).json({ error: 'Too many attempts. Try again later.' });
-      return false;
-    }
-    const pin = pinOverride ?? (req.body ?? {}).pin;
-    if (!pin || typeof pin !== 'string') {
-      res.status(403).json({ error: 'Operator PIN required — mandate issuance/revocation is a human action, not an agent action' });
-      return false;
-    }
-    const ha = createHash('sha256').update(pin).digest();
-    const hb = createHash('sha256').update(ctx.config.dashboardPin).digest();
-    if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
-      if (!entry) { entry = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; mandatePinAttempts.set(ip, entry); }
-      entry.count++;
-      const durableRemaining = ctx.pinAttemptStore?.recordFailure(ip);
-      res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: durableRemaining ?? (MANDATE_PIN_MAX_ATTEMPTS - entry.count) });
-      return false;
-    }
-    mandatePinAttempts.delete(ip);
-    ctx.pinAttemptStore?.recordSuccess(ip);
-    return true;
+    return requireMandatePin(req, res, { pinOverride });
   }
 
   // Evaluate an action against a mandate (the enforcement consumption point).

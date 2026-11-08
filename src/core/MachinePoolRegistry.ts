@@ -397,6 +397,11 @@ export class MachinePoolRegistry {
     try { return this.d.selfMachineId?.(); } catch { return undefined; /* @silent-fallback-ok — unresolved self id: treat every machine as a peer (display only) */ }
   }
 
+  /** This process's recent direct attempts to a machine (a copy, oldest first), for callers that weigh failures. */
+  directAttempts(machineId: string): DirectAttempt[] {
+    return [...(this.attempts.get(machineId) ?? [])];
+  }
+
   /** Record a failed direct attempt and its shape (A1 `lastDirectFailure`). */
   recordPullFailure(machineId: string, shape: PullFailureShape): void {
     if (machineId === this.selfId()) return;

@@ -199,6 +199,8 @@ import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../m
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { createSkillLearningRoutes } from './skillLearningRoutes.js';
+import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
@@ -712,6 +714,8 @@ export class AgentServer {
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
   private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** Skill Learning Sentinel (skill-learning-sentinel §3.10): bound by server.ts via setSkillLearningSentinel(); the routes read it through a getter, so a late bind is live at once. */
+  private skillLearningSentinel: SkillLearningSentinelLike | null = null;
   /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
   private feedbackOwnerServing: (() => boolean) | null = null;
   private feedbackDrainDb: (() => import('better-sqlite3').Database | null) | null = null;
@@ -897,6 +901,11 @@ export class AgentServer {
   private slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
   /** a2a-single-agent-identity: the agent-identity runtime (detector + audit + lever). */
   private agentIdentityRuntime: AgentIdentityRuntime | null = null;
+
+  /** Bind (or unbind) the running Skill Learning Sentinel; `/skills/learned*` answers 503 `skill-learning-disabled` until one is set. */
+  setSkillLearningSentinel(sentinel: SkillLearningSentinelLike | null): void {
+    this.skillLearningSentinel = sentinel;
+  }
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
@@ -1466,6 +1475,8 @@ export class AgentServer {
      *  A factory (not a pre-bound runner) so the route can wrap the request-built
      *  RealChannelDriver, sharing the gate's artifact store. Undefined when dark/unwired. */
     liveTestRunnerCtx?: LiveTestRunnerWiring;
+    /** Skill Learning Sentinel (skill-learning-sentinel §3.10) — server.ts binds it via `setSkillLearningSentinel()` right after construction (off the constructor line); the option remains for tests and embedders. */
+    skillLearningSentinel?: SkillLearningSentinelLike | null;
     unifiedTrust?: import('../threadline/UnifiedTrustWiring.js').UnifiedTrustSystem;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     /** Shared proxy coordinator (PresenceProxy ↔ PromiseBeacon ↔ /build heartbeat). */
@@ -1583,6 +1594,7 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.skillLearningSentinel = options.skillLearningSentinel ?? null;
     this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
@@ -6585,6 +6597,9 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
+    // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
+    this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
@@ -9279,6 +9294,11 @@ export class AgentServer {
       },
       lifelineTopicId: () => tg.getLifelineTopicId(),
     });
+  }
+
+  /** The maturation ladder service (constructed late in boot); null until then or when disabled. */
+  getMaturationLadder(): MaturationLadderService | null {
+    return this.maturationLadder;
   }
 
   getTopicOperatorStore(): TopicOperatorStore | null {
