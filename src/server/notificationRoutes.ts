@@ -1,3 +1,4 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { readPeerJobs, readPeerNotifications } from './notificationPoolRead.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
@@ -23,7 +24,7 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       const envelope = record.notification?.origin === 'verified-reply' && record.producerKind === 'session' && !ctx.state.getSession(record.sessionId ?? '')?.jobSlug
         ? verifiedReplyEnvelope('lifeline-origin-session') : record.notification?.origin === 'verified-reply' ? undefined : record.notification;
       res.json(await gate.route(topicId, request.policy?.text ?? body.text ?? body.caption ?? '', runtime.service.restoreJobEnvelope(record, envelope), record.operationId));
-    } catch { res.status(503).json({ error: 'Notification classification could not be saved' }); }
+    } catch { res.status(503).json(storageErrorResponse({ error: 'Notification classification could not be saved' }, ctx.config.stateDir)); }
   });
   router.get('/notifications/selectivity', async (req, res) => {
     const gate = ctx.telegram?.selectivity;
@@ -71,11 +72,11 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
       if (!peer || !isPeerUrlAllowedForCredentials({ url: peer.url, kind: peer.kind }, allow).ok) { res.status(503).json({ error: 'The notice owner is unavailable; its acknowledgement is still pending' }); return; }
       try { const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/notifications/quiet/' + encodeURIComponent(String(req.params.id)), { method: 'PATCH', headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(1800) }); res.status(response.status).json(await response.json()); }
-      catch { res.status(503).json({ error: 'The notice owner could not save this acknowledgement. Please retry.' }); }
+      catch { res.status(503).json({ error: `${ctx.machinePoolRegistry?.getCapacity(machine)?.nickname ?? ctx.listPoolMachines?.().find(row => row.machineId === machine)?.nickname ?? 'The notice owner (name unavailable)'} could not save this acknowledgement. Please retry.` }); }
       return;
     }
     try { const found = await gate.store.ack(String(req.params.id)); res.status(found ? 200 : 404).json({ ok: found }); }
-    catch { res.status(503).json({ error: 'Could not save the acknowledgement. Please retry.' }); }
+    catch { res.status(503).json(storageErrorResponse({ error: 'Could not save the acknowledgement. Please retry.' }, ctx.config.stateDir)); }
   });
   router.post('/notifications/categories/:id/push', async (req, res) => {
     const gate = ctx.telegram?.selectivity;
@@ -95,7 +96,7 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       if (ctx.liveConfig && ctx.liveConfig.get(`notifications.selectivity.push.categories.${category}`, !req.body.enabled) !== req.body.enabled) throw new Error('Preference write did not persist');
       if (conversational) await ctx.telegram!.sendToTopic(topicId, `Done — routine ${category.replaceAll('-', ' ')} ${req.body.enabled ? 'will now be pushed' : 'will stay in the notification feed'}.`, { envelope: verifiedReplyEnvelope('notification-preference-confirm') });
       res.json({ ok: true, category, enabled: req.body.enabled });
-    } catch { res.status(503).json({ error: 'Could not save the preference. Please retry.' }); }
+    } catch { res.status(503).json(storageErrorResponse({ error: 'Could not save the preference. Please retry.' }, ctx.config.stateDir)); }
   });
   router.post('/notifications/jobs/:slug/push', async (req, res) => {
     const gate = ctx.telegram?.selectivity;
@@ -132,6 +133,6 @@ export function mountNotificationRoutes(router: Router, ctx: RouteContext, verif
       const message = `Reports from ${name ?? slug} ${outcome}.`;
       if (conversational) await ctx.telegram!.sendToTopic(topicId, `Done — ${message}`, { envelope: verifiedReplyEnvelope('notification-preference-confirm') });
       res.json({ ok: true, slug, enabled: req.body.enabled, categoryPush, enforcing, topicId: conversational && req.body.enabled ? topicId : null, message });
-    } catch { res.status(503).json({ error: 'Could not save the preference. Please retry.' }); }
+    } catch { res.status(503).json(storageErrorResponse({ error: 'Could not save the preference. Please retry.' }, ctx.config.stateDir)); }
   });
 }

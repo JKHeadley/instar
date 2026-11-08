@@ -1,3 +1,4 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/mobilePairingRoutes.ts');
@@ -249,7 +250,7 @@ export const APPROVE_REFUSAL: Record<Exclude<ApproveOutcome, 'approved'>, { stat
 export function approveAnswer(res: Response, outcome: ApproveOutcome, deviceId: string): void {
   if (outcome === 'approved') { res.json({ status: 'active', deviceId }); return; }
   const r = APPROVE_REFUSAL[outcome];
-  res.status(r.status).json({ error: r.error, detail: r.detail });
+  res.status(r.status).json(outcome === 'failed' ? storageErrorResponse({ error: r.error, detail: r.detail }, res.app?.locals?.stateDir) : { error: r.error, detail: r.detail });
 }
 
 export class MobilePairingService {
@@ -994,7 +995,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     } catch (err) {
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: registry write', context: { routeKind: eligible.kind } });
-      res.status(500).json({ error: 'Could not record the device. Ask for a new link.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the device. Ask for a new link.' }, svc.deps.stateDir));
       return;
     }
     if (!created.ok) {
@@ -1292,7 +1293,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let g: ReturnType<typeof svc.grants.set>;
     try { g = svc.grants.set(userId, change, deviceId); } catch (err) {
       deps.reportDegradation?.('MobilePeople.grantWrite', err);
-      res.status(500).json({ error: 'Could not record the change. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the change. Try again.' }, svc.deps.stateDir));
       return;
     }
     res.json({ userId, name: choice.name, grants: { ownerConversations: g.ownerConversations, slack: g.slack } });
@@ -1320,7 +1321,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let d: DeviceRecord | null;
     try { d = svc.devices.setPerson(String(req.params.id), { userId: choice.userId, role: 'msp' }); } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
-      res.status(500).json({ error: 'Could not record the assignment. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the assignment. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
@@ -1360,7 +1361,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       try { svc.keyLedger.recordActivation(d, approvedVia, approvedAt); } catch (err) {
         deps.reportDegradation?.('MobilePairing.keyLedger', err);
         featureEvidence.record('mobilePairing', { kind: 'error', reason: 'confirm failed: key ledger write', context: { deviceId: d.id, approvedVia } });
-        res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
+        res.status(500).json(storageErrorResponse({ error: 'Could not record the confirmation. Try again.' }, svc.deps.stateDir));
         return;
       }
     }
@@ -1369,7 +1370,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'confirm failed: registry write', context: { deviceId: d.id, approvedVia } });
-      res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the confirmation. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (check.result === 'ok') {
@@ -1438,7 +1439,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'revoke failed: registry write', context: { deviceId: id, by: p.kind } });
-      res.status(500).json({ error: 'Could not record the revocation. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the revocation. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (held) { svc.confirm.drop(id); featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked here', context: { deviceId: id, by: p.kind, heldHere: true, ...(requestedBy && requestedBy !== id ? { requestedBy } : {}) } }); res.json({ revoked: true, machine: deps.selfMachineId ?? null }); return; }
@@ -1468,7 +1469,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let r: ReturnType<typeof svc.devices.setPush>;
     try { r = svc.devices.setPush(p.deviceId, reg); } catch (err) {
       deps.reportDegradation?.('MobilePush.registryWrite', err);
-      res.status(500).json({ error: 'Could not record the registration. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the registration. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (!r.ok) { res.status(r.reason === 'not-active' ? 403 : 409).json({ error: r.reason }); return; }
@@ -1684,7 +1685,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let r: ReturnType<MobileChatRequestStore['reserve']>;
     try { r = store.reserve(p.deviceId, requestId, hash, topicId, app ? { op: 'send', conversationKey: storeKey, messageId: storeMessageId } : undefined); } catch (err) {
       deps.reportDegradation?.('MobileChat.requestStore', err);
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -1702,7 +1703,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       } catch (err) {
         store.release(p.deviceId, requestId);
         deps.reportDegradation?.('MobileChat.persist', err);
-        res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
+        res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, svc.deps.stateDir));
         return;
       }
     }

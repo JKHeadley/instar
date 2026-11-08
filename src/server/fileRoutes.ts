@@ -9,6 +9,7 @@
  * blocked filenames, never-editable enforcement.
  */
 
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { Router, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -921,7 +922,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
             size: contentSize,
             success: false,
           });
-          res.status(500).json({ error: 'Failed to save file' });
+          res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
         }
         return;
       }
@@ -932,7 +933,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
         size: contentSize,
         success: false,
       });
-      res.status(500).json({ error: 'Failed to save file' });
+      res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
     }
   });
 
