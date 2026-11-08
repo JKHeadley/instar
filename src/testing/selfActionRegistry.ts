@@ -66,6 +66,7 @@ import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/A
 import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
+import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -4302,6 +4303,43 @@ const appPoolEnforcer: SelfActionController = {
   },
 };
 
+
+/**
+ * browser-activation-effect-retry — a browser device's activation effects (the owner notice,
+ * retiring a replaced browser; docs/specs/dashboard-conversations-browser-device.md §4.2 step 10)
+ * are retried until they complete and never dropped: 30 s doubling to a 1 h ceiling, one attempt in
+ * flight per record, one report after 24 attempts, one local fallback notice. Under a target that
+ * always rejects, the steady state is one attempt an hour per record.
+ */
+const browserActivationEffectRetry: SelfActionController = {
+  id: 'browser-activation-effect-retry',
+  actionVerb: 'retry',
+  models: 'src/server/mobileBrowserDevices.ts (BrowserDeviceController.runEffects — nextEffectAttemptAt, 1 h ceiling)',
+  modelsPath: 'src/server/mobileBrowserDevices.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Each effect\'s attempts and next attempt time are on the device record in mobile-devices.json, so a restart resumes the same schedule.' },
+  boundK: 24 * 30 + 8,
+  perTargetBoundK: 24 * 30 + 8,
+  ticks: 24 * 30 * 12,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'An identity effect is never abandoned (a dropped notice hides a new signing identity from the owner); it settles to one attempt an hour after a short ramp; no two attempts are ever closer than the first 30 s backoff.', rateFloorMs: EFFECT_FIRST_BACKOFF_MS },
+  delegatedGiveUp: 'The owner removing the browser in People > Phones ends its notice; the 24-attempt DegradationReporter report surfaces it',
+  makeUnderPressure(f, sink) {
+    let attempts = 0;
+    let nextAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextAt || !f.targetAlwaysRejects()) return;
+        sink.emit({ verb: 'retry', target: 'browser-activation-notice' });
+        sink.emitTimesMs.push(now);
+        attempts += 1;
+        nextAt = nextEffectAttemptAt(attempts, now);
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   failureCalloutInvestigation,
   attributionAuditRetry,
@@ -4404,4 +4442,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
   appPoolEnforcer,
+  browserActivationEffectRetry,
 ];

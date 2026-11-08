@@ -1085,7 +1085,8 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
-    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? 'Approved. That phone is paired.' : r.text);
+    const browser = r.client === 'browser';
+    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? (browser ? 'Approved. That browser is set up.' : 'Approved. That phone is paired.') : r.text);
     if (r.outcome === 'approved') {
       // The code stays in the message: a shipped app's code box only submits a complete-looking code,
       // and once the phone is active any such code finishes it. Only the buttons go.
@@ -1094,8 +1095,9 @@ export class TelegramAdapter implements MessagingAdapter {
       });
       // A validated owner tap and consumed pairing nonce establish this reply; scope its
       // capability to the existing owner-DM funnel without altering any topic's waiting state.
-      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(
-        'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
+      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(browser
+        ? 'Approved. That browser can now use your conversations with this agent. If the dashboard still shows a code box, type the code above to finish. You can remove the browser any time on the Phones page.'
+        : 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
       ));
       return 'approved';
     }
@@ -1118,10 +1120,17 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.answerCallback(t.callbackQueryId, 'Only the owner can do this.');
       return 'refused';
     }
-    const r = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
-    await this.answerCallback(t.callbackQueryId, r === 'declined' ? 'Declined. That phone will not be paired.' : 'This pairing has already ended.');
-    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, 'Declined. That phone was not paired.');
-    return r;
+    const raw = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
+    const r = typeof raw === 'string' ? raw : raw.result;
+    const browser = typeof raw !== 'string' && raw.client === 'browser';
+    // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
+    // way is answered "already approved", never as declined.
+    const toast = r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
+      : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
+      : 'This pairing has already ended.';
+    await this.answerCallback(t.callbackQueryId, toast);
+    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.');
+    return r === 'declined' ? 'declined' : 'unknown';
   }
 
   /** The small toast answering a button tap. Best-effort. */
@@ -2344,9 +2353,9 @@ export class TelegramAdapter implements MessagingAdapter {
   public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
-  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
+  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown' | 'already-approved' | { result: 'declined' | 'unknown' | 'already-approved'; client?: 'phone' | 'browser' }) | null = null;
   /** Approve instead of a code (mobile-pairing-approve §3.2): the owner's Approve tap. Wired by AgentServer. */
-  public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string }) | null = null;
+  public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
 

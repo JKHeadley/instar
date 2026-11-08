@@ -13,6 +13,7 @@
  * appended by the server only on a `verified` origin verdict (increment 2); increment 1 never
  * appends it.
  */
+import { signedTag, type DeviceClient } from './deviceClientWording.js';
 import { safeInboxTarget } from './memorySessionPolicy.js';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,6 +32,8 @@ export interface AppDispatchInput {
   ownerName: string;
   /** The origin verdict; increment 1 always passes 'unknown' (never 'verified'). */
   originVerdict: 'verified' | 'redacted' | 'failed' | 'unknown' | 'none';
+  /** The kind of device that signed it (dashboard-conversations-browser-device §4.7); absent ⇒ phone. */
+  originClient?: DeviceClient;
   /**
    * Lines the session missed (media spec §4.12): files that finished copying after an earlier
    * delivery with no live session to tell, and files that could not be copied within 7 days.
@@ -145,10 +148,10 @@ function toSpawnOptions(p: AppProfile | null): SpawnEngine {
 const HISTORY = 30;
 
 /** The injection tag. Title and owner name are re-cleaned here (defense in depth). */
-export function appInjectionTag(alias: number, title: string, ownerName: string, verdict: AppDispatchInput['originVerdict']): string {
+export function appInjectionTag(alias: number, title: string, ownerName: string, verdict: AppDispatchInput['originVerdict'], client: DeviceClient = 'phone'): string {
   const t = cleanConversationTitle(title) ?? 'Untitled';
   const o = cleanConversationTitle(ownerName) ?? 'Operator';
-  return `[app:${alias} "${t}" from ${o}${verdict === 'verified' ? ' (📱 signed)' : ''}]`;
+  return `[app:${alias} "${t}" from ${o}${verdict === 'verified' ? ` ${signedTag(client)}` : ''}]`;
 }
 
 /**
@@ -227,7 +230,7 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     // second one beside it (spec §3.1). If it was refused, this message starts the session below.
     await waitForStart(deps, `app:${input.conversationKey}`);
     const channelKey = String(input.alias);
-    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
+    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict, input.originClient ?? 'phone');
     const { ctxPath, contextData, fileFor } = writeContext(deps, input);
     const full = `${tag} ${input.text} (IMPORTANT: Read ${ctxPath} for conversation history and app relay instructions — you MUST relay your response back.)`;
     let bootstrap = full;

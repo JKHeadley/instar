@@ -38,8 +38,13 @@ import type { InstarConfig } from '../core/types.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import {
   ConfirmationCodes, DeviceRegistry, displayCode, type ApprovedVia, type CodeFormat, ReplayGuard, parseDevicePublicKey, verifyDeviceRequest,
-  type DeviceRecord, type DeviceStatus,
+  type DeviceRecord, type DeviceStatus, deviceKeyOf, isBrowserDevice, keyHashOf,
 } from '../core/MobileDeviceKeys.js';
+import { mirrorPrefix, requestDeviceClient } from '../core/deviceClientWording.js';
+import {
+  BrowserDeviceController, browserApprovalText, isBrowserDevicesEnabled, isLoopbackHost, loopbackBindingOk, mountBrowserDeviceRoutes,
+  type BrowserNoticeRaiser,
+} from './mobileBrowserDevices.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import type { RouteContext } from './routes.js';
@@ -131,6 +136,13 @@ export interface MobilePairingDeps {
   peopleMachineId?: () => string;
   /** This agent's own identity key, for vouching for its owner's phones (mobile-pairing-introducer §3.2). */
   readIdentity?: () => { publicKey: Buffer; privateKey: Buffer } | null;
+  /**
+   * Raise the owner's security notice for a new browser (dashboard-conversations-browser-device
+   * §4.2 step 10): a Telegram attention item when Telegram is configured, else the local attention
+   * list plus a push to owner phones; `localOnly` forces the local item and its one push.
+   * Resolves true once raised.
+   */
+  raiseBrowserNotice?: BrowserNoticeRaiser;
 }
 
 /** The default people lookup: the registry on disk (read-only, no writes) plus `config.users`. */
@@ -284,6 +296,8 @@ export class MobilePairingService {
   push: MobilePushService | null = null;
   /** Peer resolution for the push fan-out, set once the route context exists. */
   pushPoolCtx: PoolCtx | null = null;
+  /** Browser devices (dashboard-conversations-browser-device): activation, effects, recovery. */
+  readonly browser: BrowserDeviceController;
 
   constructor(readonly deps: MobilePairingDeps, now: () => number = Date.now) {
     this.codes = new PairingCodeStore(now);
@@ -308,6 +322,11 @@ export class MobilePairingService {
       reportDegradation: deps.reportDegradation,
       now,
     }) : null;
+    // Browser setups stuck sending their approval message are removed (their hourly slot comes
+    // back), and recorded browser work is noted, before the boot expiry below (which skips
+    // records carrying an activation intent; recovery runs when the key ledger is attached).
+    this.browser = new BrowserDeviceController(this, now);
+    this.browser.bootScan();
     // The confirmation-code key is per process: any device still pending from before
     // this boot can never be confirmed, so it is expired now (spec 2.2, Restarts).
     try { this.devices.expireAllPending(); } catch (err) { deps.reportDegradation?.('MobilePairing.bootExpiry', err); } // @silent-fallback-ok — reported through DegradationReporter
@@ -326,6 +345,9 @@ export class MobilePairingService {
     const t = this.now();
     for (const [h, e] of this.takenCodes) if (e.expiresAt <= t) this.takenCodes.delete(h);
     for (const id of this.contested) { const d = this.devices.get(id); if (!d || d.status !== 'pending') this.contested.delete(id); }
+    // Browser work (stuck setups, activation intents, effects) runs whatever the lease or the
+    // browser switch says: it only finishes recorded work. Nothing is read when none is pending.
+    this.browser.tick();
     if (!this.enabled() || this.holdsLease()) return;
     // The Telegram path's code travels through the lease holder's adapter, so a lease move voids
     // it. A dashboard-path device has no such dependency and survives a lease move (§4.4).
@@ -627,19 +649,25 @@ export class MobilePairingService {
     for (const id of hits) {
       this.confirm.drop(id);
       this.dashboardCodes.delete(id);
-      try { this.devices.decline(id); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leakDecline', err); }
+      let outcome: string = 'declined';
+      try { outcome = this.devices.decline(id); } catch (err) { this.deps.reportDegradation?.('MobilePairing.leakDecline', err); }
+      // An approval that already wrote first stands; the owner is not told it was cancelled.
+      if (outcome === 'already-approved') continue;
       void this.deps.ownerDM?.('A pairing code was sent in a conversation, so I cancelled that pairing. Codes only go into the Instar app. Ask me for a new link if you were pairing a phone.', '');
     }
     return hits;
   }
 
   /** The owner's Decline button. */
-  declineByNonce(nonce: string): 'declined' | 'unknown' {
+  declineByNonce(nonce: string): 'declined' | 'unknown' | 'already-approved' {
     const id = this.declineNonces.get(nonce);
     if (!id) return 'unknown';
     this.declineNonces.delete(nonce);
     this.confirm.drop(id);
-    try { this.devices.decline(id); } catch (err) { // @silent-fallback-ok — reported through DegradationReporter
+    try {
+      // An approval that wrote first wins (dashboard-conversations-browser-device §4.1).
+      if (this.devices.decline(id) === 'already-approved') return 'already-approved';
+    } catch (err) { // @silent-fallback-ok — reported through DegradationReporter
       // The code is already gone, so the device can never confirm; it expires on its own.
       this.deps.reportDegradation?.('MobilePairing.declineWrite', err);
     }
@@ -695,7 +723,12 @@ export class MobilePairingService {
   approvable(d: DeviceRecord): boolean { return (d.role === undefined || d.role === 'owner') && !this.contested.has(d.id); }
 
   /** Phones waiting on this machine. */
-  waitingPhones(): DeviceRecord[] { return this.devices.list().filter((d) => d.status === 'pending' && !!d.publicKey); }
+  waitingPhones(): DeviceRecord[] {
+    // A pending browser is a waiting device only once its approval message was delivered
+    // (`awaiting`) and until an approval recorded its intent (dashboard-conversations-browser-device §4.1).
+    return this.devices.list().filter((d) => d.status === 'pending'
+      && (isBrowserDevice(d) ? !!d.browserPublicKey && d.setupState === 'awaiting' && !d.activating : !!d.publicKey));
+  }
 
   /**
    * The one approval funnel (spec §3.1). Synchronous from the read to the registry write, so two
@@ -722,6 +755,10 @@ export class MobilePairingService {
     if (!this.isDashboardPending(deviceId) && !this.holdsLease()) return 'moved';
     // A reflex tap must not pick between two phones: the code still works, and Decline is one tap (§4).
     if (waiting.length > 1) return 'another-phone-waiting';
+    if (isBrowserDevice(d)) {
+      const r = this.browser.activate(deviceId, via, opts);
+      return r === 'activated' ? 'approved' : r === 'not-pending' ? 'ended' : 'failed';
+    }
     const approvedAt = new Date(this.now()).toISOString();
     try {
       // Ledger row first (the durable intent), registry second, as confirm does; nothing is consumed on failure.
@@ -744,14 +781,68 @@ export class MobilePairingService {
     return id ? this.approvePending(id, 'telegram-dm') : 'ended';
   }
 
-  /** Decline one waiting phone, from any surface. */
-  declinePending(deviceId: string): void {
+  /**
+   * Decline one waiting phone, from any surface. Returns what the registry did: a record an
+   * approval already claimed answers 'already-approved' and is left alone.
+   */
+  declinePending(deviceId: string): 'declined' | 'already-approved' | 'not-pending' | 'failed' {
     this.confirm.drop(deviceId);
     this.dropDashboardCode(deviceId);
     for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);
-    try { this.devices.decline(deviceId); } catch (err) { // @silent-fallback-ok — the code is gone, so the device can never confirm; reported
+    try { return this.devices.decline(deviceId); } catch (err) { // @silent-fallback-ok — the code is gone, so the device can never confirm; reported
       this.deps.reportDegradation?.('MobilePairing.declineWrite', err);
+      return 'failed';
     }
+  }
+
+  // ── Browser devices (docs/specs/dashboard-conversations-browser-device.md) ──
+
+  /** The browser switch, read live: `mobilePairing.browser.enabled` with pairing and native conversations on. */
+  browserOn(): boolean { return this.enabled() && isBrowserDevicesEnabled(this.deps.config); }
+
+  /** After any activation of a browser record: its code, nonces and dashboard code are gone; others stay code-only. */
+  afterActivation(deviceId: string): void {
+    this.confirm.drop(deviceId);
+    this.dropDashboardCode(deviceId);
+    for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);
+    this.contestOthers(deviceId);
+  }
+
+  /** The kind of device a Telegram button's nonce names (for the tap's wording); phone when unknown. */
+  nonceClient(nonce: string): 'phone' | 'browser' {
+    const id = this.declineNonces.get(nonce);
+    try { return id && isBrowserDevice(this.devices.get(id)) ? 'browser' : 'phone'; } catch { return 'phone'; } // @silent-fallback-ok — wording only
+  }
+
+  /** A browser setup removed before approval: its code and decline nonces go with it. */
+  dropSetupSecrets(deviceId: string): void {
+    this.confirm.drop(deviceId);
+    this.dropDashboardCode(deviceId);
+    for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);
+  }
+
+  private forwardedRevokes = new Set<string>();
+  /** The best-effort extra after a replaced browser's ledger revocation row: once per device id. */
+  forwardRevokeOnce(deviceId: string): void {
+    if (this.forwardedRevokes.has(deviceId) || !this.pushPoolCtx) return;
+    this.forwardedRevokes.add(deviceId);
+    void forwardRevoke(this.pushPoolCtx, deviceId).catch(() => { /* @silent-fallback-ok — the ledger revocation row is what retires the key; this only makes it sooner */ });
+  }
+
+  /**
+   * The owner's private message for a pending browser (§4.2 step 9), through the same delivery
+   * helper as a phone's: the code, a decline nonce, and Approve when the tap may approve it.
+   */
+  async sendBrowserApproval(device: DeviceRecord): Promise<boolean> {
+    if (!this.deps.ownerDM) return false;
+    const code = this.confirm.issue(device.id, Date.parse(device.expiresAt!), 'word');
+    const nonce = crypto.randomBytes(12).toString('hex');
+    this.declineNonces.set(nonce, device.id);
+    const canApprove = isPairingApproveEnabled(this.deps.config) && this.approvable(device);
+    const codeLine = `Your code to set up a browser with ${this.deps.config.projectName} is ${displayCode(code)}.`;
+    const delivered = await deliverOwnerDM(this, browserApprovalText(this.deps.config.projectName, device, codeLine, canApprove), nonce, canApprove);
+    if (!delivered) { this.confirm.drop(device.id); this.declineNonces.delete(nonce); }
+    return !!delivered;
   }
 
   /** An owner phone able to answer on this machine right now: active, owner, presence key on file. */
@@ -789,7 +880,9 @@ export class MobilePairingService {
   /** The record of who approved, in the owner's private chat when there is one (spec §3.4). */
   tellOwnerPhoneApproved(approverId: string, d: DeviceRecord): void {
     const approver = this.devices.get(approverId);
-    const text = `${approver?.deviceName ?? 'Your paired phone'} approved a new phone with Face ID: ${d.deviceName ?? 'unnamed'} (key ${d.fingerprint ?? 'unknown'}). If that was not you, remove both phones on the Phones page.`;
+    const text = isBrowserDevice(d)
+      ? `${approver?.deviceName ?? 'Your paired phone'} approved a new browser with Face ID: ${d.deviceName ?? 'unnamed'} (key ${d.fingerprint ?? 'unknown'}). If that was not you, remove the browser and that phone on the Phones page.`
+      : `${approver?.deviceName ?? 'Your paired phone'} approved a new phone with Face ID: ${d.deviceName ?? 'unnamed'} (key ${d.fingerprint ?? 'unknown'}). If that was not you, remove both phones on the Phones page.`;
     void Promise.resolve(this.deps.ownerDM?.(text, '')).catch(() => { /* @silent-fallback-ok — a courtesy record; the activation already happened and shows on the Phones page */ });
   }
 
@@ -1044,13 +1137,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       `Type it into the Instar app only if you are pairing a phone right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
       `Phone name: ${device.deviceName ?? '(none given)'}`,
     ]).join('\n\n');
-    let delivered: number | null = null;
-    try {
-      delivered = await Promise.race([
-        svc.deps.ownerDM!(text, `md:d:${nonce}`, ...(canApprove ? [`md:a:${nonce}`] : [])),
-        new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
-      ]);
-    } catch { delivered = null; } // @silent-fallback-ok — treated as not delivered: the pending device is removed and the caller gets 409
+    const delivered = await deliverOwnerDM(svc, text, nonce, canApprove);
     if (!delivered || !svc.deps.ownerDM) {
       // An owner phone may have approved during the wait (mobile-pairing-approve §3.4): that stands.
       const now = svc.devices.get(device.id);
@@ -1068,9 +1155,29 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
   });
 }
 
+/**
+ * The owner's private approval message, delivered within 10 s or not at all (shared by phone
+ * redeem and browser setup). Resolves to the Telegram message id, or null when not delivered.
+ */
+async function deliverOwnerDM(svc: MobilePairingService, text: string, nonce: string, canApprove: boolean): Promise<number | null> {
+  if (!svc.deps.ownerDM) return null;
+  try {
+    return await Promise.race([
+      svc.deps.ownerDM(text, `md:d:${nonce}`, ...(canApprove ? [`md:a:${nonce}`] : [])),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 10_000)),
+    ]);
+  } catch { return null; } // @silent-fallback-ok — treated as not delivered: the pending device is removed and the caller gets 409
+}
+
 /** Bearer routes: mounted on the authenticated router. */
 export function createMobilePairingRouter(svc: MobilePairingService, deps: MobilePairingDeps, poolCtx?: PoolCtx): Router {
   const router = Router();
+
+  // Browser devices (docs/specs/dashboard-conversations-browser-device.md §4.2, §4.6): Bearer routes.
+  mountBrowserDeviceRoutes(router, svc, {
+    verifyOperatorSession: (token) => poolCtx?.verifyDashboardOperatorSession?.(token) === true,
+    telegramConfigured: () => !!poolCtx?.telegram,
+  });
 
   router.post('/mobile/pairing-codes', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -1192,9 +1299,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (!svc.isDashboardPending(id)) { res.status(404).json({ error: 'not-pending' }); return; }
     svc.confirm.drop(id);
     svc.dropDashboardCode(id);
-    try { svc.devices.decline(id); } catch (err) { // @silent-fallback-ok — the code is gone, so the device can never confirm; reported
+    let outcome: string = 'declined';
+    try { outcome = svc.devices.decline(id); } catch (err) { // @silent-fallback-ok — the code is gone, so the device can never confirm; reported
       deps.reportDegradation?.('MobilePairing.declineWrite', err);
     }
+    if (outcome === 'already-approved') { res.status(409).json({ error: 'already-approved', detail: 'This device was already approved. Remove it on the Phones page if this wasn\'t you.' }); return; }
     res.json({ declined: true });
   });
 
@@ -1226,6 +1335,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
       ...(d.status === 'pending' ? svc.waitingFields(d) : {}),
       ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
+      // A browser's setup page (dashboard-conversations-browser-device §4.2): its kind, fingerprint and window.
+      ...(isBrowserDevice(d) ? { client: 'browser', fingerprint: d.fingerprint ?? null, ...(d.status === 'pending' && d.expiresAt ? { expiresAt: d.expiresAt } : {}), ...(d.setupState ? { setupState: d.setupState } : {}), ...(d.activating ? { approving: true } : {}) } : {}),
       // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
       person: personView(svc.personOfDevice(d)),
     });
@@ -1347,6 +1458,15 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       res.status(422).json({ error: 'wrong-format', detail: 'That is not the pairing code. The code looks like KITE-4172: a word, then four digits.' });
       return;
     }
+    if (check.result === 'ok' && isBrowserDevice(d)) {
+      // A browser (dashboard-conversations-browser-device §4.2 step 10): intent → ledger row →
+      // registry → effects. Refused when a decline (or another approval) wrote first.
+      const r = svc.browser.activate(d.id, 'telegram-dm');
+      if (r === 'activated') { res.json({ status: 'active' }); return; }
+      if (r === 'not-pending') { res.status(409).json({ error: 'not-pending', detail: 'This setup was already decided. Reload the page.' }); return; }
+      res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
+      return;
+    }
     let after: DeviceRecord | null;
     const approvedAt = new Date().toISOString();
     if (check.result === 'ok' && svc.keyLedger) {
@@ -1377,12 +1497,16 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     }
     featureEvidence.record('mobilePairing', { kind: 'held', reason: 'confirm refused: wrong code', context: { deviceId: d.id, nowDeclined: after?.status === 'declined', pairingPaused: svc.devices.pairingPaused() } });
     if (svc.devices.pairingPaused()) {
-      deps.raiseAttention?.('Phone pairing paused', 'Ten wrong pairing codes were entered in the last 24 hours, so phone pairing is paused for now. If you were not pairing a phone, someone may be guessing.');
+      deps.raiseAttention?.(isBrowserDevice(d) ? 'Phone and browser setup paused' : 'Phone pairing paused', isBrowserDevice(d)
+        ? 'Ten wrong codes were entered in the last 24 hours, so setting up phones and browsers is paused for now. If you were not setting up a browser or a phone, someone may be guessing.'
+        : 'Ten wrong pairing codes were entered in the last 24 hours, so phone pairing is paused for now. If you were not pairing a phone, someone may be guessing.');
     }
     if (after?.status === 'declined') {
       svc.confirm.drop(d.id);
       svc.dropDashboardCode(d.id);
-      void deps.ownerDM?.('Three wrong codes were typed for a phone pairing, so I cancelled it. If that was you, ask me for a new link. If not, someone may have your pairing link.', '');
+      void deps.ownerDM?.(isBrowserDevice(d)
+        ? 'Three wrong codes were typed for a browser setup, so I cancelled it. If that was you, set the browser up again from the dashboard. If not, someone may be trying to add a browser.'
+        : 'Three wrong codes were typed for a phone pairing, so I cancelled it. If that was you, ask me for a new link. If not, someone may have your pairing link.', '');
       res.status(409).json({ error: 'declined' });
       return;
     }
@@ -1409,6 +1533,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const id = String(req.params.id);
     const p = principalOf(req);
     const requestedBy = p.kind === 'device' ? p.deviceId : null;
+    // A browser may remove only itself (dashboard-conversations-browser-device §4.4).
+    if (p.kind === 'device' && p.deviceId !== id && isBrowserDevice(svc.devices.get(p.deviceId))) {
+      res.status(403).json({ error: 'own-device-only', detail: 'A browser can only remove itself.' });
+      return;
+    }
     if (p.kind === 'device' && p.deviceId !== id) {
       const requester = svc.devices.get(p.deviceId);
       const person = devicePersonOf(req);
@@ -1781,11 +1910,12 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
           () => (tg as unknown as TelegramMediaMirrorTarget).sendMediaToTopic(id, files, value, options)),
       };
       if (app && stored.length > 0) {
-        const result = await mirrorMediaToTelegram(mirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha));
+        const result = await mirrorMediaToTelegram(mirrorTarget, topicId, senderName, stored, mirrorText, (sha) => app.media.locateBlob(sha), requestDeviceClient(req));
         if (result.delivery.outcome === 'recorded') mirrorRecorded = { quietId: result.delivery.receipt.quietId, deliveredParts: result.delivery.deliveredParts };
         else mirrored = true;
       } else {
-        const result = await sendMirrorText(topicId, `📱 ${senderName} (from the app): ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
+        // 💻 "(from the dashboard)" for a browser device (dashboard-conversations-browser-device §4.7).
+        const result = await sendMirrorText(topicId, `${mirrorPrefix(requestDeviceClient(req), senderName)}: ${mirrorText}`, { silent: true, skipStallClear: true, operatorMirror: true });
         if (isQuietReceipt(result)) mirrorRecorded = { quietId: result.quietId, deliveredParts: 0 };
         else mirrored = true;
       }
@@ -1826,9 +1956,15 @@ export function personFields(d: DeviceRecord, svc: MobilePairingService): Record
 }
 
 function publicDeviceView(d: DeviceRecord, machine: string | null, svc?: MobilePairingService): Record<string, unknown> {
-  const showFingerprint = d.status === 'active' || d.status === 'revoked';
+  // A ledger revocation row wins for a browser at once, everywhere (dashboard-conversations-browser-device §4.6).
+  let status: DeviceRecord['status'] = d.status;
+  if (isBrowserDevice(d) && status !== 'revoked' && svc?.keyLedger && d.browserPublicKey) {
+    try { if (svc.keyLedger.keyRevoked(keyHashOf(d.browserPublicKey))) status = 'revoked'; } catch { /* @silent-fallback-ok — the registry status is shown when the ledger cannot be read */ }
+  }
+  const showFingerprint = status === 'active' || status === 'revoked';
   return {
-    id: d.id, deviceName: d.deviceName, label: d.label, pairedAt: d.pairedAt, status: d.status, ...(svc ? personFields(d, svc) : {}),
+    id: d.id, deviceName: d.deviceName, label: d.label, pairedAt: d.pairedAt, status, ...(svc ? personFields(d, svc) : {}),
+    ...(isBrowserDevice(d) ? { client: 'browser', lastSeenAt: d.lastSeenAt ?? null, ...(svc && !svc.browserOn() ? { switchedOff: true } : {}) } : {}),
     ...(showFingerprint && d.fingerprint ? { fingerprint: d.fingerprint } : {}),
     ...(d.approvedAt ? { approvedAt: d.approvedAt } : {}), ...(d.revokedAt ? { revokedAt: d.revokedAt } : {}),
     machine,
@@ -1867,7 +2003,38 @@ const UUID = APP_CONVERSATION_KEY_PATTERN;
 // conversation, so it must call the shared `mayUse` check (the coverage test reads this flag).
 // `ownerOnly`: only a phone whose person is the owner (403 owner-phone-required otherwise).
 // `bucket`: the name of the rule's own bucket (rules sharing a name share a count).
-export interface DeviceRule { method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean; tier?: Tier }
+// `browser`: a browser device may use the route (dashboard-conversations-browser-device §4.4). Closed
+// by default: a route opens to browsers only by being named in BROWSER_ROUTES below.
+export interface DeviceRule { method: string; re: RegExp; statuses: ReadonlySet<DeviceStatus>; sendRoute?: boolean; body?: 'json' | 'octet' | 'none'; ownBucket?: number; bucket?: string; unassignedOk?: boolean; conversationRef?: boolean; ownerOnly?: boolean; tier?: Tier; browser?: true }
+
+/**
+ * The routes a browser device may call (dashboard-conversations-browser-device §4.4): its own
+ * status, confirm and self-revoke, and the conversation and media routes. Everything else —
+ * presence keys, console tickets, permissions, desktop, the dashboard PIN, team, people, pairing
+ * approval, introducers, session control, push, attention — stays closed to browsers.
+ */
+const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
+  ['GET', /^\/mobile\/device$/.source],
+  ['POST', /^\/mobile\/device\/confirm$/.source],
+  ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
+  ['GET', /^\/mobile\/conversations$/.source],
+  ['POST', /^\/mobile\/conversations$/.source],
+  ['PATCH', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
+  ['DELETE', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
+  ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}$`).source],
+  ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/messages$`).source],
+  ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/events$`).source],
+  ['GET', /^\/telegram\/topics$/.source],
+  ['GET', /^\/topic\/list$/.source],
+  ['GET', /^\/telegram\/topics\/[^/]+\/messages$/.source],
+  ['POST', /^\/mobile\/chat\/\d+$/.source],
+  ['GET', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/.source],
+  ['POST', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/.source],
+  ['POST', /^\/mobile\/media\/uploads$/.source],
+  ['PUT', new RegExp(`^/mobile/media/uploads/${APP_CONVERSATION_KEY_PATTERN}/chunks/(0|[1-9][0-9]{0,5})$`).source],
+  ['GET', new RegExp(`^/mobile/media/uploads/${APP_CONVERSATION_KEY_PATTERN}$`).source],
+  ['GET', /^\/mobile\/media\/[0-9a-f]{64}$/.source],
+];
 
 /**
  * The routes a team phone may reach, and the lowest tier for each (team-roles-and-access §3.7). This
@@ -2088,11 +2255,17 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/default$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
   ];
-  return rules.map((rule) => {
+  const mapped = rules.map((rule) => {
     const named = TEAM_ROUTE_TIERS.find(([method, re]) => method === rule.method && re.source === rule.re.source);
+    const browser = BROWSER_ROUTES.some(([method, source]) => method === rule.method && source === rule.re.source);
     // Closed by default (§3.7): a route opens to a team phone only by being named.
-    return { ...rule, tier: rule.ownerOnly ? 'owner' : named ? named[2] : 'owner' };
+    return { ...rule, tier: rule.ownerOnly ? 'owner' : named ? named[2] : 'owner', ...(browser ? { browser: true as const } : {}) } as DeviceRule;
   });
+  // Every named browser route must match a rule exactly: a typo would silently close it.
+  for (const [method, source] of BROWSER_ROUTES) {
+    if (!mapped.some((r) => r.method === method && r.re.source === source)) throw new Error(`BROWSER_ROUTES names no device rule: ${method} ${source}`);
+  }
+  return mapped;
 })();
 
 /**
@@ -2111,7 +2284,9 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     const id = req.headers['x-instar-device'];
     if (id === undefined) return 'none';
     if (!svc.enabled()) return 'none'; // gate off: device headers authenticate nothing
-    const refuse = (status: number, error: string): 'refused' => { res.status(status).json({ error }); return 'refused'; };
+    // Every 401 names the answering machine (dashboard-conversations-browser-device §4.6), so a
+    // browser can tell "refused here" from "set up elsewhere".
+    const refuse = (status: number, error: string): 'refused' => { res.status(status).json({ error, ...(status === 401 ? { machineId: svc.deps.selfMachineId ?? null } : {}) }); return 'refused'; };
     const pathNorm = req.path.toLowerCase().replace(/\/+$/, '') || '/';
     // Notification read token (mobile-push §2.2): exactly GET /mobile/attention/<id> or a reply
     // preview (chat-media §4.11), no signature.
@@ -2119,6 +2294,8 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (notifyToken !== undefined) {
       if (req.method !== 'GET' || !NOTIFY_TOKEN_PATHS.some((re) => re.test(pathNorm)) || req.headers['x-instar-device-sig'] !== undefined || typeof notifyToken !== 'string' || typeof id !== 'string') return refuse(403, 'notify-token-not-allowed');
       const d = svc.devices.get(id);
+      // A browser has no notification token: the branch refuses it (dashboard-conversations-browser-device §4.4).
+      if (d && isBrowserDevice(d)) return refuse(403, 'notify-token-not-allowed');
       const h = crypto.createHash('sha256').update(notifyToken).digest();
       const stored = d?.notifyTokenHash ? Buffer.from(d.notifyTokenHash, 'hex') : null;
       if (!d || d.status !== 'active' || !stored || stored.length !== h.length || !crypto.timingSafeEqual(stored, h)) return refuse(401, 'device-unauthorized');
@@ -2149,12 +2326,22 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     // if it is a listed own name still named by local configuration AND this request itself
     // arrived through this machine's own local TLS front. Flag off: the stored paired host.
     let host: string | undefined;
-    if (svc.ownNames) {
+    // Browser devices (dashboard-conversations-browser-device §4.4–4.5): refused while the switch is
+    // off; a loopback-bound browser is checked against its exact stored loopback host, from a
+    // loopback peer with no forwarding header, in both multi-route modes.
+    const peek = typeof id === 'string' ? svc.devices.get(id) : null;
+    const browserDevice = !!peek && isBrowserDevice(peek);
+    if (browserDevice && !svc.browserOn()) return refuse(403, 'browser-devices-off');
+    if (browserDevice && isLoopbackHost(peek!.host)) {
+      if (!loopbackBindingOk(peek!, req)) { svc.browser.noteRefusal(peek!.id, 'host-refused'); return refuse(401, 'device-unauthorized'); }
+      host = peek!.host;
+    } else if (svc.ownNames) {
       const h = normalizeRequestHost(req.headers.host);
       if (!h || !svc.ownNames.accepts(h) || !arrivedOverLocalTls(req.secure, req.socket.remoteAddress, req.headers['x-forwarded-proto'])) {
         // The bar is about OWN names: a name that is not ours is someone knocking, not a refusal of a real route.
         const ownName = !!h && svc.ownNames.accepts(h);
         featureEvidence.recordAtMostEvery('mobilePairing.multiRoute', `host-refused|${ownName}`, 60_000, { kind: ownName ? 'error' : 'held', reason: ownName ? 'refused on an own name: not over local TLS' : 'refused: host is not an own name', context: { ownName, routeKind: ownName ? svc.ownNames.listed().find((n) => n.host === h)?.kind ?? 'unknown' : null } });
+        if (browserDevice) svc.browser.noteRefusal(peek!.id, 'host-refused');
         return refuse(401, 'device-unauthorized');
       }
       host = h;
@@ -2166,24 +2353,31 @@ export function deviceAuthenticator(svc: MobilePairingService) {
       { deviceId: id, time: req.headers['x-instar-device-time'], sig: req.headers['x-instar-device-sig'], method: req.method, pathWithQuery: req.originalUrl, rawBody: raw, host },
       (deviceId) => {
         const d = svc.devices.get(deviceId);
-        if (!d || !d.publicKey || !d.host || d.status === 'legacy-token') return null;
+        // A browser's key is `browserPublicKey` (dashboard-conversations-browser-device §4.1 reader table).
+        const key = deviceKeyOf(d);
+        if (!d || !key || !d.host || d.status === 'legacy-token') return null;
         // A revocation row in the device-key ledger takes effect at once, even when the registry
         // write after it failed (mobile-native-conversations §4.6: the ledger row is the recorded
         // intent). In-memory index, no file read per request.
-        const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id);
-        admittedIdentity = Object.freeze({ keyHash: deviceKeyHashOf(d.publicKey),
+        const ledgerRevoked = !!svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(key), d.id);
+        admittedIdentity = Object.freeze({ keyHash: deviceKeyHashOf(key),
           userId: d.userId ?? null, role: d.role ?? 'owner' });
-        return { publicKey: d.publicKey, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
+        return { publicKey: key, host: d.host, status: ledgerRevoked ? 'revoked' : d.status as DeviceStatus };
       },
       rule.statuses, svc.replay, Date.now(), rule.sendRoute === true,
     );
     if (!v.ok && host) {
       featureEvidence.recordAtMostEvery('mobilePairing.multiRoute', `signature-refused|${v.reason}|${host}`, 60_000, { kind: v.reason === 'rate-limited' ? 'held' : 'error', reason: `signature refused on an own name: ${v.reason}`, context: { signatureReason: v.reason, host, routeKind: svc.ownNames?.listed().find((n) => n.host === host)?.kind ?? 'unknown' } });
     }
+    if (!v.ok && browserDevice && (v.reason === 'stale' || v.reason === 'replay' || v.reason === 'rate-limited')) {
+      svc.browser.noteRefusal(peek!.id, v.reason === 'stale' ? 'stale-time' : v.reason);
+    }
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
+    // A browser may call only the routes named for it (§4.4); checked after the signature, before the person check.
+    if (browserDevice && !rule.browser) return refuse(403, 'browser-device-not-allowed');
     if (rule.ownBucket !== undefined) {
-      if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket, rule.bucket)) return refuse(429, 'too-many-requests');
-    } else if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) return refuse(429, 'too-many-requests');
+      if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket, rule.bucket)) { if (browserDevice) svc.browser.noteRefusal(v.deviceId, 'rate-limited'); return refuse(429, 'too-many-requests'); }
+    } else if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) { if (browserDevice) svc.browser.noteRefusal(v.deviceId, 'rate-limited'); return refuse(429, 'too-many-requests'); }
     // People and roles (spec §3.4): the phone's person, resolved once per request. A phone whose
     // person is no longer in the registry is refused everywhere except its own status, confirm and
     // self-revoke — never downgraded to the owner.
@@ -2208,6 +2402,14 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     }
     (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device', deviceId: v.deviceId };
     (req as unknown as { instarDeviceAdmissionIdentity: MobileDeviceAdmissionIdentity | null }).instarDeviceAdmissionIdentity = admittedIdentity;
+    if (rec && isBrowserDevice(rec)) {
+      // The wording a send uses (💻, "from the dashboard") follows the signing device's kind (§4.7).
+      (req as unknown as { instarDeviceClient: 'browser' }).instarDeviceClient = 'browser';
+      // "Last used on this machine", at most once a minute; never refuses or delays the request.
+      try { svc.devices.touch(rec.id); } catch (err) {
+        featureEvidence.recordAtMostEvery('mobilePairing.browser', 'touch-failed', 60 * 60_000, { kind: 'error', reason: `lastSeenAt write failed: ${err instanceof Error ? err.message : String(err)}` });
+      }
+    }
     // The moment the device signature was accepted: the signed records' `receivedAt` (§4.6).
     (req as unknown as { instarDeviceAdmittedAt: number }).instarDeviceAdmittedAt = Date.now();
     // The Host the signature was checked against (multi-route: one of this machine's own names;

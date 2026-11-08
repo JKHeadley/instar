@@ -7,6 +7,7 @@
  * and its key (the store's composite key). The waiting phone must be held by this machine: a pending pairing lives in the
  * machine-local registry and nothing here is forwarded (spec §6).
  */
+import { deviceClientOf } from '../core/deviceClientWording.js';
 import type { Request, Response, Router } from 'express';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import type { DeviceRecord } from '../core/MobileDeviceKeys.js';
@@ -29,6 +30,13 @@ export function pairingApproveMessage(approverDeviceId: string, host: string, ch
 }
 
 const ENDED_DETAIL = 'That phone is no longer waiting: it was paired, declined, or its link expired.';
+/** The browser wording of ENDED_DETAIL (dashboard-conversations-browser-device §4.7). */
+const ENDED_DETAIL_BROWSER = 'That browser is no longer waiting: it was set up, declined, or its approval window ran out.';
+/** A decline that arrives after the approval already started (§4.1): never answered as declined. */
+export const ALREADY_APPROVED_DETAIL = 'Already approved — remove it in People > Phones if this wasn\'t you.';
+
+/** The fields a browser record adds (§4.1), read loosely so this file does not depend on their declaration order. */
+type BrowserFields = { client?: unknown; setupState?: unknown; activating?: unknown };
 
 export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePairingService, now: () => number = Date.now): void {
   const challenges = new BoundSecretStore(now);
@@ -52,11 +60,23 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
 
   const waitingRow = (id: string): DeviceRecord | null => {
     const d = svc.devices.get(id);
-    return d && d.status === 'pending' && d.fingerprint ? d : null;
+    if (!d || d.status !== 'pending' || !d.fingerprint) return null;
+    const b = d as DeviceRecord & BrowserFields;
+    // §4.1: a record whose approval already started is not waiting; a browser waits only once its
+    // approval message was delivered (`awaiting`), so nothing can approve one still `notifying`.
+    if (b.activating) return null;
+    if (b.client === 'browser' && b.setupState !== 'awaiting') return null;
+    return d;
   };
   const ended = (res: Response, approver: string, target: string): void => {
     featureEvidence.record('mobilePairing', { kind: 'held', reason: 'phone approval refused: pairing-ended', context: { approver, deviceId: target } });
-    res.status(409).json({ error: 'pairing-ended', detail: ENDED_DETAIL });
+    const client = deviceClientOf(svc.devices.get(target) as (DeviceRecord & BrowserFields) | null | undefined);
+    res.status(409).json({ error: 'pairing-ended', detail: client === 'browser' ? ENDED_DETAIL_BROWSER : ENDED_DETAIL });
+  };
+  /** A pending record whose approval already started (§4.1 "Decline never races an approval"). */
+  const alreadyApproving = (id: string): boolean => {
+    const d = svc.devices.get(id) as (DeviceRecord & BrowserFields) | null | undefined;
+    return !!d && (d.status === 'active' || (d.status === 'pending' && !!d.activating));
   };
 
   router.get('/mobile/pairing-requests', (req: Request, res: Response) => {
@@ -121,9 +141,16 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
     if (!approver) return;
     const id = String(req.params.id);
     const d = waitingRow(id);
-    if (!d) { ended(res, approver, id); return; }
+    if (!d) {
+      if (alreadyApproving(id)) { res.status(409).json({ error: 'already-approved', detail: ALREADY_APPROVED_DETAIL }); return; }
+      ended(res, approver, id);
+      return;
+    }
     if (!proven(req, res, approver, 'decline', d)) return;
-    svc.declinePending(id);
+    // The decline is one synchronous registry write; when an approval wrote first it reports so
+    // (DeviceRegistry.decline → 'already-approved') and this answer is never `declined: true`.
+    const r: unknown = svc.declinePending(id);
+    if (r === 'already-approved' || alreadyApproving(id)) { res.status(409).json({ error: 'already-approved', detail: ALREADY_APPROVED_DETAIL }); return; }
     featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'declined by owner phone', context: { approver, deviceId: id } });
     res.json({ declined: true });
   });

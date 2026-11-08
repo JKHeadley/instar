@@ -1,4 +1,5 @@
 import { isQuietReceipt, QuietRecordedError, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
+import { deviceIcon, mirrorPrefix, openItHint, type DeviceClient } from '../core/deviceClientWording.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/mobileMediaSend.ts');
 /**
@@ -173,28 +174,30 @@ export interface TelegramMirrorPlan {
 /**
  * Plan the Telegram mirror of an app-sent media message (§4.9): files above 50,000,000 bytes
  * become "📱 <owner> sent <display name> (too large for Telegram; open it in the app)"; the rest
- * upload with the caption "📱 <owner> (from the app): <caption>". `locate` returns the blob path
+ * upload with the caption "📱 <owner> (from the app): <caption>" (💻 … (from the dashboard) for a browser, §4.7). `locate` returns the blob path
  * on this machine; a file with no local blob is treated like an oversized one (a text line), so a
  * mirror never waits on a copy.
  */
 export function planTelegramMirror(
   ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string, locate: (sha256: string) => string | null,
+  client: DeviceClient = 'phone',
 ): TelegramMirrorPlan {
+  const prefix = mirrorPrefix(client, ownerName);
   const upload: TelegramMirrorFile[] = [];
   const tooLarge: string[] = [];
   for (const a of attachments) {
     const p = a.size <= TELEGRAM_MIRROR_MAX_BYTES ? locate(a.sha256) : null;
     if (p) upload.push({ path: p, filename: displayName(a.filename), mediaType: a.mediaType, kind: a.kind, size: a.size });
-    else tooLarge.push(`📱 ${ownerName} sent ${displayName(a.filename)} (too large for Telegram; open it in the app)`);
+    else tooLarge.push(`${deviceIcon(client)} ${ownerName} sent ${displayName(a.filename)} (too large for Telegram; ${openItHint(client)})`);
   }
-  const line = caption ? `📱 ${ownerName} (from the app): ${caption}` : `📱 ${ownerName} (from the app)`;
+  const line = caption ? `${prefix}: ${caption}` : prefix;
   const textLines: string[] = [];
   let uploadCaption: string | null = line;
   if (upload.length === 0) {
     uploadCaption = null;
     if (caption) textLines.push(line);
   } else if (line.length > TELEGRAM_MIRROR_CAPTION_MAX) {
-    uploadCaption = `📱 ${ownerName} (from the app)`;
+    uploadCaption = prefix;
     textLines.push(line);
   }
   return { upload, caption: uploadCaption, textLines: [...textLines, ...tooLarge] };
@@ -219,10 +222,10 @@ export type TelegramMirrorResult = TelegramMirrorPlan & { delivery: TelegramMirr
  */
 export async function mirrorMediaToTelegram(
   tg: TelegramMediaMirrorTarget, topicId: number, ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string,
-  locate: (sha256: string) => string | null,
+  locate: (sha256: string) => string | null, client: DeviceClient = 'phone',
 ): Promise<TelegramMirrorResult> {
   if (typeof tg.sendMediaToTopic !== 'function') throw new Error('this Telegram adapter cannot send files');
-  const plan = planTelegramMirror(ownerName, attachments, caption, locate);
+  const plan = planTelegramMirror(ownerName, attachments, caption, locate, client);
   let deliveredParts = 0;
   const recorded = (receipt: QuietReceipt): TelegramMirrorResult => ({ ...plan, delivery: { outcome: 'recorded', deliveredParts, receipt } });
   try {

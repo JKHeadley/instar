@@ -113,6 +113,11 @@ describe('console served beside the legacy dashboard', () => {
       ['/dashboard/process-health.js', 'javascript'],
       ['/dashboard/console/files.js', 'javascript'],
       ['/dashboard/console/files-model.js', 'javascript'],
+      ['/dashboard/console/page-lifecycle.js', 'javascript'],
+      ['/dashboard/console/browser-device.js', 'javascript'],
+      ['/dashboard/console/chats.js', 'javascript'],
+      ['/dashboard/console/chats-model.js', 'javascript'],
+      ['/dashboard/console/credential-shape.js', 'javascript'],
       ['/dashboard/console/fonts/inter-latin-wght-normal.woff2', 'font/woff2'],
       ['/dashboard/console/fonts/jetbrains-mono-latin-wght-normal.woff2', 'font/woff2'],
     ] as const) {

@@ -689,6 +689,18 @@ export class AppConversationService {
     try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.approvedVia ?? null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
   }
 
+  /**
+   * `'browser'` when the signed ledger activation row of the key that signed this record says so
+   * (dashboard-conversations-browser-device §4.3), only for a `verified` or `redacted` verdict;
+   * otherwise (or unreadable) null. Display detail only; the verdict is unaffected.
+   */
+  originClient(record: Pick<VerifiableRecord, 'origin'>, verdict: OriginVerdict): 'browser' | null {
+    const o = record.origin as { keyHash?: unknown; deviceId?: unknown } | undefined;
+    if (!o || typeof o.keyHash !== 'string' || typeof o.deviceId !== 'string') return null;
+    if (verdict !== 'verified' && verdict !== 'redacted') return null;
+    try { return this.deps.keyLedger?.view()?.get(ledgerViewKey(o.keyHash, o.deviceId))?.client === 'browser' ? 'browser' : null; } catch { return null; } // @silent-fallback-ok — display detail only; the verdict is unaffected
+  }
+
   /** Mint (idempotently) a local alias for every live conversation in the store. */
   reconcileAliases(): void {
     for (const key of this.store.liveConversationKeys()) {

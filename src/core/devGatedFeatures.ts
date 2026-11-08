@@ -925,6 +925,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Device-signed only, behind the existing allowlist; the server decides a file\'s type from its bytes and serves everything non-executable; reply files are confined to three roots and scanned by the existing credential wall; every admission is capped and a free-disk floor protects the machine. Off ⇒ the media routes answer 503, nothing is copied, and what is stored stays. Dark on the fleet until the development-agent live proof passes.',
   },
   {
+    name: 'mobilePairingBrowser',
+    configPath: 'mobilePairing.browser.enabled',
+    description: 'Dashboard conversations with the browser as its own signed device (docs/specs/dashboard-conversations-browser-device.md): a browser holds its own non-extractable key, is approved through the same channel a new phone would be (never the PIN alone on an agent with a Telegram owner), may call only the conversation and media routes and revoke itself, and every message it signs is marked as browser-signed from the signed ledger row.',
+    justification: 'a new signing client identity; proven live on the development agent before any fleet exposure',
+  },
+  {
     name: 'mobilePairingMultiRoute',
     configPath: 'mobilePairing.multiRoute.enabled',
     description: 'Several routes per agent for the Instar iPhone app (docs/specs/mobile-multi-route.md): a paired phone\'s signature is accepted on any of this machine\'s proven own names (Cloudflare tunnel hostname, Tailscale HTTPS name), GET /mobile/routes lists them, and a boot step maps tailscale serve HTTPS 443 to the agent port when 443 has no serve config.',
