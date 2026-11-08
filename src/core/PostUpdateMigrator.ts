@@ -1114,8 +1114,11 @@ export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native sessio
  * The native Accounts / What thinking costs / Resource usage reads (docs/specs/mobile-native-capacity-screens.md),
  * one bullet in the Mobile app routes block after the probe bullet. Sniff: `GET /mobile/accounts`.
  */
+/** The capacity bullet's old resources clause, and its replacement (resources now cover every machine). */
+export const MOBILE_CAPACITY_SCREENS_RESOURCES_OLD = "Accounts and spend cover every machine that answers (a machine that didn't is named); resources are this machine's.";
+export const MOBILE_CAPACITY_SCREENS_RESOURCES_NEW = "Accounts, spend and resources cover every machine that answers (a machine that didn't is named, never shown as zeros; resources with ?scope=local is the one-machine peer read).";
 export function MOBILE_CAPACITY_SCREENS_LINE(port: number): string {
-  return `- The app's native Accounts, What thinking costs and Resource usage screens read \`GET /mobile/accounts\`, \`GET /mobile/spend?window=today|week|month\` and \`GET /mobile/resources\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Accounts, What thinking costs and Resource usage views show (no login folders, machine or account ids, credential references or raw errors). Accounts and spend cover every machine that answers (a machine that didn't is named); resources are this machine's. Signing in and spending limits stay in the console. When the operator asks "what does my phone show for accounts?" or "why does the app say an account needs signing in?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/accounts\`.`;
+  return `- The app's native Accounts, What thinking costs and Resource usage screens read \`GET /mobile/accounts\`, \`GET /mobile/spend?window=today|week|month\` and \`GET /mobile/resources\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Accounts, What thinking costs and Resource usage views show (no login folders, machine or account ids, credential references or raw errors). Accounts, spend and resources cover every machine that answers (a machine that didn't is named, never shown as zeros; resources with ?scope=local is the one-machine peer read). Signing in and spending limits stay in the console. When the operator asks "what does my phone show for accounts?" or "why does the app say an account needs signing in?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/accounts\`.`;
 }
 export const MOBILE_CAPACITY_SCREENS_MARKER = 'GET /mobile/accounts';
 /**
@@ -10370,6 +10373,14 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the native Accounts, Spend and Resource usage line');
+    }
+
+    // Resource usage now covers every machine (2026-11-06): an existing capacity bullet that still says
+    // "resources are this machine's" gets the new wording. Idempotent: the old phrase is gone once replaced.
+    if (content.includes(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD)) {
+      content = content.replace(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD, MOBILE_CAPACITY_SCREENS_RESOURCES_NEW);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Resource usage line now covers every machine');
     }
 
     // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet

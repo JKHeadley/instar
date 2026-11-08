@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
 import {
+  summarizeResourceMachines, MAX_SESSIONS_PER_MACHINE, accountNotices,
   summarizeAccounts, accountCellState, usageWindows, accountEmail, kindWord,
   summarizeSpend, summarizeRecorded, summarizeLimits, summarizeConversations, windowOf, basisWord, modelWord, doorWord, routeStatusWord,
   summarizeResources, ownerOrBearer, singleFlight, rowKey,
@@ -209,7 +210,9 @@ describe('accounts', () => {
     const r = summarizeAccounts(pool([], [{ machineId: 'm_self', error: 'peer-pool-unavailable' }, { machineId: 'm_peer', machineNickname: 'Evil Name', error: 'HTTP 500 /Users/x' }, { machineId: 'm_x', error: 'timeout' }]), { now: NOW, nicknameOf: (id) => (id === 'm_peer' ? 'Mac Mini' : null) });
     expect(r.unread).toEqual({ count: 2, names: ['Mac Mini'] });
     expect(r.localUnreadable).toBe(true);
-    expect(r.headline).toBe("This machine's account list can't be read right now.");
+    expect(r.headline).toBe("The account list can't be read right now.");
+    // Named when the answering machine's name is known (never "this machine").
+    expect(accountNotices([], { localUnreadable: true, partial: false, selfName: 'Mac Studio' })[0].title).toBe("Mac Studio's account list can't be read right now.");
     const unconfigured = summarizeAccounts(pool([], [{ machineId: 'm_self', error: 'peer-pool-unconfigured' }]), { now: NOW });
     expect(unconfigured.localUnreadable).toBe(false);
     expect(unconfigured.unread.count).toBe(0);
@@ -305,9 +308,9 @@ describe('spend', () => {
 
   it('headline: one machine, all machines, partial; never $0 for unpriced use', () => {
     const okL = (net: number, unpriced = 0) => ledger([], { netUsd: net, unpricedTokensIn: unpriced });
-    expect(summarizeSpend('week', { machines: [self(okL(4.2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $4.20 of pay-per-use cost this week on this machine.');
-    expect(summarizeSpend('today', { machines: [self(okL(0))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No pay-per-use cost today on this machine.');
-    expect(summarizeSpend('today', { machines: [self(okL(0, 12000))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No priced pay-per-use cost today on this machine; 12k tokens had no price on file.');
+    expect(summarizeSpend('week', { machines: [self(okL(4.2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $4.20 of pay-per-use cost this week on Studio.');
+    expect(summarizeSpend('today', { machines: [self(okL(0))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No pay-per-use cost today on Studio.');
+    expect(summarizeSpend('today', { machines: [self(okL(0, 12000))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('No priced pay-per-use cost today on Studio; 12k tokens had no price on file.');
     const peer = (summary: SpendMachine['summary']): SpendMachine => ({ name: 'Mac Mini', machineId: 'm_peer', isSelf: false, summary, tokens: tok(1) });
     expect(summarizeSpend('month', { machines: [self(okL(1)), peer(okL(2))], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $3.00 of pay-per-use cost in the last 30 days across 2 machines.');
     expect(summarizeSpend('month', { machines: [self(okL(1)), peer({ ok: false, off: true })], caps: { ok: false, off: true }, status: { ok: false, off: true } }).headline).toBe('About $1.00 of pay-per-use cost in the last 30 days on the machine that answered.');
@@ -327,27 +330,28 @@ describe('spend', () => {
     ]);
     const here = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 3, committedLifetimeUsd: 40, meteredLeaseHolder: 'm_self' }, { keyRef: 'k2', provider: 'groq', door: 'groq', committedDayUsd: 1 }] } }, { ok: false, off: true }, () => null, ['single-machine', 'm_self']);
     expect(here.routes).toEqual([
-      expect.objectContaining({ committedDayUsd: 3, committedLifetimeUsd: 40, heldBy: 'this machine', committedElsewhere: false }),
+      expect.objectContaining({ committedDayUsd: 3, committedLifetimeUsd: 40, heldBy: 'the machine the app reached', committedElsewhere: false }),
       expect.objectContaining({ committedDayUsd: 1, heldBy: null, committedElsewhere: false }),
     ]);
     // The money layer's own id for a machine without a mesh ('single-machine') is this machine too.
     const solo = summarizeLimits({ ok: true, data: { keys: [{ keyRef: 'k', provider: 'openrouter', door: 'openrouter', committedDayUsd: 2, meteredLeaseHolder: 'single-machine' }] } }, { ok: false, off: true }, () => null, ['single-machine']);
-    expect(solo.routes).toEqual([expect.objectContaining({ committedDayUsd: 2, heldBy: 'this machine', committedElsewhere: false })]);
-    expect(l).toMatchObject({ storeUnreadable: true, routesState: 'ok', controlsState: 'ok', routesSentence: '1 paid route is open; 1 frozen.', sentence: 'Limits are on and enforcing; a paid route is frozen on this machine.' });
+    expect(solo.routes).toEqual([expect.objectContaining({ committedDayUsd: 2, heldBy: 'the machine the app reached', committedElsewhere: false })]);
+    expect(l).toMatchObject({ storeUnreadable: true, routesState: 'ok', controlsState: 'ok', routesSentence: '1 paid route is open; 1 frozen.', sentence: 'Limits are on and enforcing; a paid route is frozen.' });
     const text = JSON.stringify(l);
     for (const leak of ['REF', 'm_holder', 'm_unnamed', 'm_self', '/Users/x', 'keyRef', 'meteredLeaseHolder']) expect(text).not.toContain(leak);
   });
 
   it('limits: every lifecycle sentence, and the two sources stay independent', () => {
-    const st = (s: Record<string, unknown>) => summarizeLimits({ ok: false, off: true }, { ok: true, data: s });
-    expect(st({ lifecycleState: 'enable-pending-restart' }).sentence).toBe('Limits are turned on but wait for a restart to start enforcing on this machine.');
-    expect(st({ lifecycleState: 'probe-failed', failingComponent: 'MeteredSpendLedger' })).toMatchObject({ sentence: 'Limits are turned on but not enforcing (probe failed: MeteredSpendLedger) on this machine.', notEnforcingWhileOn: true, routesState: 'off', controlsState: 'ok' });
-    expect(st({ lifecycleState: 'construction-failed', failingComponent: '/Users/x/evil path!' }).sentence).toBe('Limits are turned on but not enforcing (construction failed) on this machine.');
-    expect(st({ lifecycleState: 'disabled' }).sentence).toBe('Spending limits are off on this machine.');
-    expect(st({}).sentence).toBe('Spending limits are off on this machine.');
-    expect(st({ lifecycleState: 'arming' }).sentence).toBe('Limits: arming on this machine.');
-    expect(st({ lifecycleState: 'BAD STATE' }).sentence).toBe('Limits: state unknown on this machine.');
+    const st = (s: Record<string, unknown>) => summarizeLimits({ ok: false, off: true }, { ok: true, data: s }, () => null, [], 'Mac Studio');
+    expect(st({ lifecycleState: 'enable-pending-restart' }).sentence).toBe('Limits are turned on but wait for a restart to start enforcing on Mac Studio.');
+    expect(st({ lifecycleState: 'probe-failed', failingComponent: 'MeteredSpendLedger' })).toMatchObject({ sentence: 'Limits are turned on but not enforcing (probe failed: MeteredSpendLedger) on Mac Studio.', notEnforcingWhileOn: true, routesState: 'off', controlsState: 'ok' });
+    expect(st({ lifecycleState: 'construction-failed', failingComponent: '/Users/x/evil path!' }).sentence).toBe('Limits are turned on but not enforcing (construction failed) on Mac Studio.');
+    expect(st({ lifecycleState: 'disabled' }).sentence).toBe('Spending limits are off on Mac Studio.');
+    expect(st({}).sentence).toBe('Spending limits are off on Mac Studio.');
+    expect(st({ lifecycleState: 'arming' }).sentence).toBe('Limits: arming on Mac Studio.');
+    expect(st({ lifecycleState: 'BAD STATE' }).sentence).toBe('Limits: state unknown on Mac Studio.');
     const down = summarizeLimits({ ok: true, data: { keys: [] } }, { ok: false, off: false });
+    expect(summarizeLimits({ ok: false, off: true }, { ok: true, data: { lifecycleState: 'disabled' } }).sentence).toBe('Spending limits are off.');
     expect(down).toMatchObject({ routesState: 'ok', routesSentence: 'No paid route is set up.', controlsState: 'unavailable', sentence: "Can't tell whether spending limits are on." });
     expect(summarizeLimits({ ok: false, off: false }, { ok: false, off: true })).toMatchObject({ routesState: 'unavailable', controlsState: 'off' });
   });
@@ -381,6 +385,63 @@ describe('resources', () => {
     expect(old.total!.stale).toBe(true);
     expect(old.headline).toBe('Last recorded 20 min ago: Instar was using 12% CPU and 1.0 GB of memory (peak 24% in the last hour). No newer reading.');
     expect(summarizeResources([], new Map(), 'Studio', NOW).headline).toBe('No total reading yet.');
+  });
+});
+
+describe('resources across every machine', () => {
+  const proc = (key: string, cpu: number, mem = 1e9, ageMs = 30_000) => ({ key, name: key, ended: false, stale: ageMs > SAMPLE_STALE_MS, cpuPercent: cpu, memoryBytes: mem, avgCpuPercent: cpu, peakCpuPercent: cpu, peakMemoryBytes: mem, newestAt: new Date(NOW - ageMs).toISOString() });
+  const info = (key: string, name: string, extra: Partial<{ isSelf: boolean; leading: boolean; sessions: number; maxSessions: number }> = {}) => ({ key, name, isSelf: false, leading: false, sessions: 2, maxSessions: 10, version: '1.3.1703', ...extra });
+  const body = (cpu: number, mem: number, sessions = 0) => ({ enabled: true, headline: 'x', total: proc('total', cpu, mem), server: proc('server', 1), sessions: Array.from({ length: sessions }, (_, i) => proc(`s${i}`, 10 - i)) });
+
+  it('combines every machine, names the busiest, and keeps a silent machine at no numbers (never zeros)', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Mac Studio', { isSelf: true, leading: true, sessions: 14, maxSessions: 25 }), answer: { ok: true, body: body(43, 6.1e9, 8) } },
+      { info: info('b', 'Laptop', { sessions: 3, maxSessions: 15 }), answer: { ok: true, body: body(12, 2e9) } },
+      { info: info('c', 'Mama PC'), answer: { ok: false, reason: 'not-answering' } },
+    ], NOW);
+    expect(r.combined).toMatchObject({ machines: 3, answering: 2, notAnswering: ['Mama PC'], memoryBytes: 8.1e9, runningSessions: 19, maxSessions: 50 });
+    expect(r.combined.headline).toBe('2 of 3 machines · 8.1 GB of memory · 19 sessions');
+    expect(r.combined.busiest).toBe('Busiest: Mac Studio, 43% CPU');
+    const mama = r.machines.find((m) => m.name === 'Mama PC')!;
+    expect(mama).toMatchObject({ state: 'not-answering', line: 'Not answering', total: null, server: null, sessions: [] });
+    // Not answering first, so the warning is on top; then the leading machine.
+    expect(r.machines.map((m) => m.name)).toEqual(['Mama PC', 'Mac Studio', 'Laptop']);
+    const studio = r.machines.find((m) => m.name === 'Mac Studio')!;
+    expect(studio.sessions).toHaveLength(MAX_SESSIONS_PER_MACHINE);
+    expect(studio).toMatchObject({ sessionsShownOf: 8, line: '43% CPU · 6.1 GB' });
+  });
+
+  it('a machine that answers without recording is "not recorded there"; offline is named', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: false, headline: 'off' } } },
+      { info: info('b', 'Mini'), answer: { ok: false, reason: 'offline' } },
+    ], NOW);
+    expect(r.machines.map((m) => [m.name, m.state, m.line])).toEqual([['Mini', 'not-answering', 'Offline'], ['Studio', 'off', 'Not recorded there']]);
+    expect(r.combined).toMatchObject({ answering: 0, off: ['Studio'], memoryBytes: null });
+    expect(r.combined.headline).toBe("No machine's resource use could be read right now.");
+  });
+
+  it('a stale reading is dated and left out of the combined memory', () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: true, headline: 'x', total: proc('total', 30, 1e9, 20 * 60_000), sessions: [] } } },
+      { info: info('b', 'Mini'), answer: { ok: true, body: body(5, 2e9) } },
+    ], NOW);
+    expect(r.machines.find((m) => m.name === 'Studio')!.line).toBe('Last read 20 min ago: 30% CPU · 1.0 GB');
+    expect(r.combined.memoryBytes).toBe(2e9);
+    expect(r.combined.busiest).toBe('Busiest: Mini, 5% CPU');
+  });
+
+  it("a peer's answer is re-read through the allowlist: bad keys dropped, text scrubbed and capped", () => {
+    const r = summarizeResourceMachines([
+      { info: info('a', 'Studio'), answer: { ok: true, body: { enabled: true, headline: 'h', total: proc('total', 1), extra: '/etc/secret', sessions: [
+        { ...proc('ok1', 3), name: `token=${'z'.repeat(30)} ${'n'.repeat(200)}`, pid: 99, path: '/Users/x' },
+        { ...proc('bad key with spaces', 2) },
+      ] } } },
+    ], NOW);
+    const m = r.machines[0];
+    expect(m.sessions).toHaveLength(1);
+    expect(m.sessions[0].name.length).toBeLessThanOrEqual(80);
+    expect(JSON.stringify(r)).not.toMatch(/z{30}|\/etc\/secret|\/Users\/x|"pid"/);
   });
 });
 
