@@ -646,7 +646,7 @@
     },
     {
       "category": "fleet-config",
-      "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census §5).",
+      "description": "Fleet-wide config: feature flags, messaging[] config, monitoring tunables, multiMachine policy. SHARES config.json with machine-local fields (port, paths) -- split-required before whole-file sync (census §5); subscriptionPool.assistedRelogin is a per-machine field (each machine's own sign-in repair setting, docs/specs/one-tap-unattended-repair.md) and must never be whole-file synced.",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "lww",
