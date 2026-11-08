@@ -66,6 +66,8 @@ export interface SlackAppConversation {
   threadTs: string | null;
   label: string | null;
   mintedAt: string | null;
+  /** The channel's Slack name (no '#') when known (fb-4db533fa-9d9); null while it is being looked up. */
+  channelName?: string | null;
 }
 
 /** One Slack history row as the bridge reads it (slack-messages.jsonl and the in-memory ring). */
@@ -170,7 +172,9 @@ export function parseSlackConversationId(raw: string): number | null {
 /** The title the app shows for a Slack conversation: its label, else `#<channel>` (a thread says so). */
 export function slackConversationTitle(c: SlackAppConversation): string {
   const base = c.label ? c.label.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : '';
-  const name = base || `#${c.channelId}`;
+  const channelName = c.channelName ? c.channelName.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : '';
+  // Its label, else `#<name>` from Slack, else the id while the name is being looked up.
+  const name = base || (channelName ? `#${channelName}` : `#${c.channelId}`);
   return c.threadTs ? `${name} (thread)` : name;
 }
 
@@ -546,6 +550,10 @@ export interface SlackAdapterLike {
   isAuthorized(userId: string): boolean;
   /** message-origin-all-platforms §3: the origin ledger every Slack send writes to first. */
   originLedger?: Pick<SlackOriginLedger, 'lookup'>;
+  /** A user's display name from the adapter's cache, or null while it is fetched (fb-4db533fa-9d9). */
+  cachedUserName?(userId: string): string | null;
+  /** A channel's name from the adapter's cache, or null while it is fetched (fb-4db533fa-9d9). */
+  cachedChannelName?(channelId: string): string | null;
 }
 
 /** The slice of ConversationRegistry the bridge uses. */
@@ -603,9 +611,21 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
     tailCache = { version, rows: out };
     return out;
   };
+  const channelNameOf = (channelId: string): string | null => { try { return d.adapter.cachedChannelName?.(channelId) ?? null; } catch { return null; } }; // @silent-fallback-ok — the title falls back to the id; the adapter logs a failed lookup
   const toConv = (key: string, e: { id: number; channelId: string; threadTs: string | null; mintedAt: string; label?: string }): SlackAppConversation => ({
-    id: e.id, key, channelId: e.channelId, threadTs: e.threadTs, label: e.label ?? null, mintedAt: e.mintedAt ?? null,
+    id: e.id, key, channelId: e.channelId, threadTs: e.threadTs, label: e.label ?? null, mintedAt: e.mintedAt ?? null, channelName: channelNameOf(e.channelId),
   });
+  /**
+   * A row's sender name: the logged name, unless it is missing or is just the user id (the old
+   * fallback when the lookup failed), in which case the adapter's cached name (fb-4db533fa-9d9).
+   */
+  const nameFor = (logged: string | null, userIdIn: string | undefined): string | null => {
+    // A logged "name" that is itself a Slack user id is the old fallback: look the id up.
+    const userId = userIdIn ?? (logged && /^[UW][A-Z0-9]{6,30}$/.test(logged) ? logged : undefined);
+    if (logged && logged !== userId) return logged;
+    if (!userId) return logged;
+    try { return d.adapter.cachedUserName?.(userId) ?? logged; } catch { return logged; } // @silent-fallback-ok — the adapter logs a failed lookup; the logged value stands
+  };
   let activityCache: { at: number; map: Map<string, { at: string; preview: string }> } | null = null;
 
   return {
@@ -614,7 +634,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
       if (!r || r.platform !== 'slack' || r.origin === 'replicated' || typeof r.key !== 'string' || typeof r.channelId !== 'string' || typeof r.id !== 'number') return null;
       // An alias resolves to its target; the app keeps using the id it was given.
       const listed = d.registry.list({ platform: 'slack', limit: 5000 }).find((x) => x.entry.id === r.id);
-      return { id, key: r.key, channelId: r.channelId, threadTs: r.threadTs ?? null, label: r.label ?? null, mintedAt: listed?.entry.mintedAt ?? null };
+      return { id, key: r.key, channelId: r.channelId, threadTs: r.threadTs ?? null, label: r.label ?? null, mintedAt: listed?.entry.mintedAt ?? null, channelName: channelNameOf(r.channelId) };
     },
     conversations() {
       return d.registry.list({ platform: 'slack', limit: 500 })
@@ -638,7 +658,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
         if (typeof row.text !== 'string' || typeof row.timestamp !== 'string') continue;
         out.set(ts, {
           ts, text: row.text, fromUser: row.fromUser === true, at: row.timestamp,
-          senderName: typeof row.senderName === 'string' ? row.senderName : null,
+          senderName: nameFor(typeof row.senderName === 'string' ? row.senderName : null, typeof row.platformUserId === 'string' ? row.platformUserId : undefined),
           ...(typeof row.eventId === 'string' && row.eventId ? { eventId: row.eventId } : {}),
           ...(typeof row.platformUserId === 'string' && row.platformUserId ? { platformUserId: row.platformUserId } : {}),
         });
@@ -650,7 +670,8 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
           if (out.has(m.ts) || !inConversation(conv, m.ts, m.thread_ts ?? null)) continue;
           const secs = Number(m.ts);
           if (!Number.isFinite(secs)) continue;
-          out.set(m.ts, { ts: m.ts, text: m.text, fromUser: !(bot && m.user === bot), at: new Date(secs * 1000).toISOString(), senderName: null, ...(typeof m.user === 'string' && m.user ? { platformUserId: m.user } : {}) });
+          const fromUser = !(bot && m.user === bot);
+          out.set(m.ts, { ts: m.ts, text: m.text, fromUser, at: new Date(secs * 1000).toISOString(), senderName: fromUser ? nameFor(null, typeof m.user === 'string' ? m.user : undefined) : null, ...(typeof m.user === 'string' && m.user ? { platformUserId: m.user } : {}) });
         }
       } catch { /* @silent-fallback-ok — the log rows remain */ }
       return [...out.values()].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).slice(-limit);
