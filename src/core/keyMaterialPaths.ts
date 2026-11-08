@@ -50,6 +50,9 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   // ORIGIN_LOCAL_PREFIXES for gitignore + backup; listed here so the file
   // routes refuse it by the same list.
   'origin-sessions-',
+  // Telegram test-group marker key (32-byte HMAC key, 0600): it decides which groups on
+  // the operator's account this agent may delete (docs/specs/telegram-test-groups.md).
+  'state/telegram-test-groups.key',
   // Conversation-bind token secret (32-byte HMAC key).
   'state/conversation-bind-token.secret',
   // Manifest-integrity signing secret (`.instar/state/.manifest-key`,

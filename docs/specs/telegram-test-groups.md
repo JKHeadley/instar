@@ -5,7 +5,6 @@ author: "echo"
 parent-principle: "Structure beats Willpower"
 parent-spec: "telegram-message-origin"
 eli16-overview: "docs/specs/telegram-test-groups.eli16.md"
-approved: false
 lessons-engaged: [operator-chores-are-the-agents, narrow-typed-capability-not-raw-browser, P20-verify-the-state, outcome-unknown-is-not-failure, never-silently-cut-the-data-a-decision-depends-on]
 feedback: "fb-87d2e9e4-e87"
 review-convergence: "2026-11-08T16:12:24.734Z"
@@ -17,6 +16,9 @@ single-run-completable: true
 frontloaded-decisions: 7
 cheap-to-change-tags: 0
 contested-then-cleared: 0
+approved: true
+approved-by: "Echo (agent), standing spec-approval grant, 2026-11-08 08:20 PST (re-recorded 15:05 PST; the 08:20 approval was typed into a one-shot session and never arrived)"
+approval-decisions: "Grant authority covered: Justin 2026-09-14 22:10Z (account chores are the agent own) and topic 135786 2026-11-05 11:34 (one test group on his account with only him and the test bot). Proof after release."
 ---
 
 # Telegram test groups through the browser broker
@@ -105,10 +107,10 @@ GET and delete answer on the machine that owns the profile; elsewhere `503` like
 - Create writes its `intent` line after the cap checks pass and immediately before the create evaluation (so refusals never count as attempts); if the append fails the create is refused (`409 test-groups-audit-unavailable`). Every operation writes an `outcome` line.
 - The log carries the flood hold: a line with `reason: 'flood-wait'` and `until`.
 - Read for caps: lines from the last 24 h. A torn final line without a newline (a crash mid-append) is truncated on open. Damage anywhere else moves the file aside to `state/telegram-test-groups.damaged-<ts>.jsonl` and starts a new log whose first line is a conservative hold: creates refuse for 24 h (`429 test-groups-limit`, `audit-damaged`). It heals itself, never lifts the cap, and needs nobody.
-- When the file exceeds 2 MB it is rewritten (temp + fsync + rename) keeping the last 30 days.
+- When the file exceeds 2 MB it becomes the one kept segment `state/telegram-test-groups.1.jsonl` (registry class A rotating log); the 24 h count reads both files.
 - A missing file is normal (first use); the live cap does not depend on it, and the daily cap still counts live groups made in the last 24 h.
 - The audit log and key file are declared in the State-Coherence Registry with their machine-local posture, so the coherence lints cover them.
-- Registration: the prefix `state/telegram-test-groups.` is added to `ORIGIN_LOCAL_PREFIXES` in `OriginLocalPaths.ts`, the list that already drives the gitignore defaults, the `PostUpdateMigrator` gitignore migration, git-sync exclusions and backup blocked prefixes for the other origin-local files. Temp files are named `state/telegram-test-groups.<uuid>.tmp` so the prefix covers them. A test asserts the path is excluded from sync and backup.
+- Registration: the prefix `state/telegram-test-groups.` is added to `ORIGIN_LOCAL_PREFIXES` in `OriginLocalPaths.ts`, the list that already drives the gitignore defaults, the `PostUpdateMigrator` gitignore migration, git-sync exclusions and backup blocked prefixes for the other origin-local files. A test asserts the path is excluded from sync and backup.
 
 ### 5. Driver and page scripts
 
@@ -257,4 +259,4 @@ Steps: create `Instar test - test groups proof`; confirm through the spare bot's
 
 ## Rollback
 
-Dark by default: no grant, no creates. Removing or expiring the grant stops creates (new and queued); list and delete keep working. Code rollback order is agent-owned: Echo lists and deletes every remaining test group, confirms the list is empty, removes the marker key and audit log (a reverted `KEY_MATERIAL_PATHS` would otherwise stop protecting the key file), reverts, then ships a follow-up migration removing the awareness text (migrations only add, so a bare revert would leave agents told about routes that 404).
+Dark by default: no grant, no creates. Removing or expiring the grant stops creates (new and queued); list and delete keep working. Code rollback order is agent-owned: Echo lists and deletes every remaining test group, confirms the list is empty, removes the marker key and audit log (a reverted `KEY_MATERIAL_PATHS` would otherwise stop protecting the key file), reverts, then ships one more migration that removes the awareness text (migrations only add, so a bare revert would leave agents told about routes that 404).
