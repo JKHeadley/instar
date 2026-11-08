@@ -23,6 +23,7 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
@@ -56,6 +57,7 @@ import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMain
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js';
+import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
@@ -382,6 +384,33 @@ const reachSecondPersonNotice: SelfActionController = {
         if (!reachNoticeDue(steadyCount, heldAt)) return;
         sink.emit({ verb: 'notify', target: 'team:second-person' });
         heldAt = steadyCount;
+      },
+    };
+  },
+};
+
+/** session-monitor-dead-recovery: a dead conversation never comes back and the same
+ * message stays unanswered, so the monitor keeps polling it. One restart, then quiet. */
+const sessionMonitorDeadRecovery: SelfActionController = {
+  id: 'session-monitor-dead-recovery',
+  actionVerb: 'restart',
+  models: 'src/monitoring/SessionMonitor.ts (dead case — deadRecoveryDue, one fresh restart per unanswered message)',
+  modelsPath: 'src/monitoring/SessionMonitor.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: `The attempt is held in memory, so a server restart allows one more for the same message, and only within ${DEAD_RECOVERY_MAX_AGE_MS / 3_600_000} hours of it. The failure notice stays deduplicated on disk.` },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60,
+  tickMs: 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    const userMessageAt = f.clock.nowMs();
+    let attempted: number | undefined;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!deadRecoveryDue(attempted, userMessageAt, f.clock.nowMs())) return;
+        attempted = userMessageAt;
+        sink.emit({ verb: 'restart', target: 'dead-conversation' });
       },
     };
   },
@@ -3310,6 +3339,37 @@ const claudeKeySessionRefresh: SelfActionController = {
 };
 
 /**
+ * usage-limit-session-refresh — when Claude usage comes back, a conversation with messages waiting is
+ * restarted. Worst case, the probe keeps passing while the session keeps hitting the limit (say it
+ * sits on another account). The REAL brake is `decideLimitRefresh`: 3 restarts per session in a
+ * rolling day, then it is left as it is and reported.
+ */
+const usageLimitSessionRefresh: SelfActionController = {
+  id: 'usage-limit-session-refresh',
+  actionVerb: 'session-refresh',
+  models: 'src/core/UsageLimitWatch.ts (decideLimitRefresh: 3 restarts per session per rolling day)',
+  modelsPath: 'src/core/UsageLimitWatch.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Restart times are persisted, so a server restart resets nothing, and a server restart is never caused by this controller.' },
+  boundK: REFRESH_MAX_PER_DAY,
+  perTargetBoundK: REFRESH_MAX_PER_DAY,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'walled-session';
+    let recent = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideLimitRefresh({ recentRefreshes: recent }) !== 'attempt') return;
+        recent += 1;
+        sink.emit({ verb: 'session-refresh', target: TARGET });
+        if (!f.targetAlwaysRejects()) { recent = 0; } // it answered (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * slack-refused-hold-retry — a refused Slack conversation start is retried. Under the pinned fixture
  * every retry is refused. The REAL brake is `decideRefusedRetry`: a fixed schedule of 6 tries over
  * about two hours, then the person is asked to resend and the messages are dropped. Nothing re-adds
@@ -4252,9 +4312,11 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobCoverageAlertRetry,
   profileReconciliationNotice,
   linuxBrowserInstallRetry,
+  sessionMonitorDeadRecovery,
   codex429ExitNotice,
   claudeKeySessionRefresh,
   slackRefusedHoldRetry,
+  usageLimitSessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
