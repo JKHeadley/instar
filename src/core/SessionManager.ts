@@ -4487,7 +4487,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       if (!path.isAbsolute(options.accountPin.configHome)) throw new Error('account-pin-config-home-invalid');
     }
-    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
+    // Match interactive spawns: an explicit model (including a tier used by
+    // internal judges) wins; otherwise honor the saved default for the actual
+    // launch framework, after any closed-lane fallback.
+    const requestedModel = options.model ?? this.config.frameworkDefaultModels?.[headlessFramework];
+    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel);
 
 
 
