@@ -9,3 +9,5 @@ This change reads the failing computer's own nickname from the machine registry 
 The error still means exactly what it meant before. The amount of required free space, storage limits, retries, notification frequency and cleanup behavior stay the same. A forwarded error keeps the name of the machine where it originated. Internal paths stay private in generic HTTP error replies. Reading a name does not create identity files or change any machine settings.
 
 Tests cover the original phone upload, both storage-capacity branches, paste limits, write failures, health messages, live nickname changes and a broken registry. This is a small reversible bug fix; reverting it requires no state migration. It adds no disk-watch job: that work is tracked separately by the operator.
+
+Release checks also list the new naming helpers explicitly as diagnostic code: they choose words and read names. They do not change the certified delivery or recovery code, whose file hashes and signed test evidence remain unchanged.

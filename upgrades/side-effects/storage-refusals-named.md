@@ -83,3 +83,8 @@ review_storage_errors: “Concur with the review after round 3. The concrete gap
 
 ## Commit-gate contract acknowledgment
 The migration-completeness gate treats any change to recordThreadMessage.ts as a producer-surface revision. Its manifest and every declared producer, consumer and validator now acknowledge threadline-inbound-canonical-store@2 in lockstep. These are comment/manifest acknowledgments only; no persisted history format or runtime migration changes. The first commit attempt was refused by MCC6, so the acknowledgments were completed rather than bypassing the gate.
+
+## Certified dependency partition
+The push gate found storageMachineName.ts and channelIdentity.ts newly reachable through existing diagnostic producers. Both are explicitly excluded with reasons: read-only local nickname/display-name formatting has no Stage-B dispatch, receipt, admission or recovery authority. The certified code set, its member hashes and its signed canary evidence remain unchanged; the manifest writer and check validate that fact. No canary evidence was restamped onto changed certified code.
+
+Partition review: review_storage_errors concurred with both diagnostic-only exclusions, verifying unchanged roots, seven certified members, hashes, fingerprint and signed evidence digest. The dedicated code-binding suite passed all 20 tests; the manifest check passes. Existing exclusion ordering is preserved to keep review small.
