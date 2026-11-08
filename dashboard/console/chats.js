@@ -878,7 +878,7 @@ class ChatsPage {
 
   seekLeadership() {
     if (this.leader || this.lockAbort || !this.live || !this.pageEl) return;
-    const locks = navigator.locks;
+    const locks = globalThis.navigator && globalThis.navigator.locks;
     if (!locks || typeof locks.request !== 'function') { this.becomeLeader(null); return; }
     this.lockAbort = new AbortController();
     locks.request(POLL_LOCK, { signal: this.lockAbort.signal }, () => new Promise((release) => {
