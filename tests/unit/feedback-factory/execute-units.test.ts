@@ -12,7 +12,7 @@ import http from 'node:http';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import {
-  EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath,
+  EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath, nodeInstallReadAllows,
   pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
 import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
@@ -92,6 +92,51 @@ describe('policy', () => {
     // With no attempt temp under it, the system temp stays denied (the must-fail probe's premise).
     expect(systemTempDenies('/h/.worktrees/w')).toContain(realTmp);
     expect(systemTempDenies('/h/.worktrees/w', '/h/.worktrees/w-tmp')).toContain(realTmp);
+  });
+
+  it('re-allows reads of a Node install under home (nvm), never one that would re-open a denied path (fb-c238c6c9-f0d)', () => {
+    const base = { agentHome: '/u/.instar/agents/a', publishClone: '/u/.instar/agents/a/.worktrees/w-publish', homeDir: '/u' };
+    // nvm-style install under home: its root is re-allowed, and it reaches the runtime and worker settings.
+    const nvm = { ...base, nodeExecPath: '/u/.nvm/versions/node/v24.15.0/bin/node' };
+    expect(nodeInstallReadAllows(nvm)).toEqual(['/u/.nvm/versions/node/v24.15.0']);
+    const paths = { ...nvm, workspace: '/u/.instar/agents/a/.worktrees/w', tmpDir: '/tmp/fb-1', depsCache: '/u/.instar/agents/a/.worktrees/.feedback-deps/x', testRunnerHoldersFile: '/u/.instar/h.json' };
+    expect(buildSandboxRuntimeSettings(paths).filesystem.allowRead).toEqual([paths.workspace, paths.depsCache, paths.tmpDir, '/u/.nvm/versions/node/v24.15.0']);
+    const worker = buildClaudeSandboxSettings({ paths, agentHomeChildren: [] }) as { sandbox: { filesystem: { allowRead: string[]; denyRead: string[] } } };
+    expect(worker.sandbox.filesystem.allowRead).toContain('/u/.nvm/versions/node/v24.15.0');
+    // Home stays denied, and so do the credential paths beside the install.
+    expect(worker.sandbox.filesystem.denyRead).toEqual(expect.arrayContaining(['/u', '/u/.ssh', '/u/.config']));
+    // The install's global npm config can carry a registry token: it stays denied (the more specific deny wins).
+    expect(buildSandboxRuntimeSettings(paths).filesystem.denyRead).toContain('/u/.nvm/versions/node/v24.15.0/etc/npmrc');
+    expect(buildSandboxRuntimeSettings({ ...paths, nodeExecPath: '/usr/local/bin/node' }).filesystem.denyRead.some((d) => d.endsWith('/etc/npmrc'))).toBe(false);
+    // A system install is outside home and needs nothing.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/usr/local/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/opt/homebrew/bin/node' })).toEqual([]);
+    // ~/bin/node: the root would be home itself.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/bin/node' })).toEqual([]);
+    // A root that contains the agent home or a credential path.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.instar/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, homeDir: '/u', nodeExecPath: '/u/Library/bin/node' })).toEqual([]);
+    // A root inside the agent home or the publish clone.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.instar/agents/a/tools/node/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.instar/agents/a/.worktrees/w-publish/n/bin/node' })).toEqual([]);
+    // The publish-clone guard on its own: a clone outside the agent home.
+    expect(nodeInstallReadAllows({ ...base, publishClone: '/u/clones/p', nodeExecPath: '/u/clones/p/n/bin/node' })).toEqual([]);
+    expect(nodeInstallReadAllows({ ...base, publishClone: '/u/clones/p', nodeExecPath: '/u/clones/bin/node' })).toEqual([]);
+    // No bin/ directory: the binary's own directory is the root.
+    expect(nodeInstallReadAllows({ ...base, nodeExecPath: '/u/.volta/tools/image/node/24/node' })).toEqual(['/u/.volta/tools/image/node/24']);
+  });
+
+  it('returns both spellings of a Node install reached through a symlink, and matches a symlinked home', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'node-install-'));
+    try {
+      const real = path.join(root, '.nvm', 'versions', 'node', 'v1');
+      fs.mkdirSync(path.join(real, 'bin'), { recursive: true });
+      fs.writeFileSync(path.join(real, 'bin', 'node'), '');
+      fs.symlinkSync(real, path.join(root, '.nvm', 'current'));
+      const got = nodeInstallReadAllows({ agentHome: path.join(root, 'agent'), publishClone: path.join(root, 'agent', 'p'), homeDir: root, nodeExecPath: path.join(root, '.nvm', 'current', 'bin', 'node') });
+      expect(got).toContain(path.join(root, '.nvm', 'current'));
+      expect(got).toContain(fs.realpathSync(real));
+    } finally { SafeFsExecutor.safeRmSync(root, { recursive: true, force: true, operation: 'tests/unit/feedback-factory/execute-units.test.ts:node-install-symlink' }); }
   });
 
   it('Claude settings: dontAsk allowlist, denies web/MCP and the agent home entries, no system-temp write deny', () => {
