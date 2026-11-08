@@ -221,7 +221,9 @@ export function consoleState(svc: MobilePairingService, now: () => number = Date
 export function activeOwnerPhone(svc: MobilePairingService, deviceId: string): boolean {
   if (!svc.enabled()) return false;
   const d = svc.devices.get(deviceId);
-  if (!d || d.status !== 'active' || !d.publicKey) return false;
+  // Fails closed for a browser on purpose (dashboard-conversations-browser-device §4.1): it reads
+  // `publicKey`, which a browser record never has, and refuses `client: 'browser'` explicitly.
+  if (!d || d.status !== 'active' || !d.publicKey || d.client === 'browser') return false;
   if (svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id)) return false;
   const p = svc.personOfDevice(d);
   return p.ok && p.role === 'owner';

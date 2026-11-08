@@ -10731,7 +10731,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // after the sanitized name; "📱 signed" only when the phone's signature checked out.
           const appOrigin = message.metadata?.appOrigin;
           if (typeof appOrigin === 'string') {
-            prefix = `${prefix.slice(0, -1)} (📱 ${appOrigin === 'verified' ? 'signed' : 'from the app'})]`;
+            // A dashboard browser (dashboard-conversations-browser-device §4.7) is marked 💻.
+            const browserSent = message.metadata?.appClient === 'browser';
+            const mark = appOrigin === 'verified' ? 'signed' : (browserSent ? 'from the dashboard' : 'from the app');
+            prefix = `${prefix.slice(0, -1)} (${browserSent ? '💻' : '📱'} ${mark})]`;
           }
 
           // Build context for the session — inject inline like Telegram does
