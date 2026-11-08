@@ -9,7 +9,9 @@
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { NO_REASONS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
+import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
+import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
+import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
 import { recipeFor, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
@@ -87,7 +89,21 @@ export interface RecommendedServiceRouteDeps {
   /** Tests supply their own rows; real servers use the catalog, plus any recipe this agent is proving. */
   catalog?: readonly CatalogRow[];
   now?: () => number;
+  /** The kill switch for the first list (`recommendedServices.offers.enabled`). Off means no offer is ever sent. */
+  offersEnabled?: () => boolean;
+  /** Sends one list with its buttons to the owner's conversation and returns the platform's message id, or null when it did not go. */
+  sendOfferList?: (text: string, buttons: Array<{ text: string; data: string }>) => Promise<string | number | null>;
+  /** The address the person can open the confirm page at (tunnel or home network), or null when there is none. */
+  linkBase?: () => string | null;
+  /** Lets the adapter hand offer-button taps to these routes. */
+  registerOfferTapHandler?: (handler: OfferTapHandler) => void;
 }
+
+/** A tap on an offer button. `fromIsOwner` is the adapter's owner-principal check; a yes needs it, a no does not. */
+export type OfferTapHandler = (tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>;
+
+/** Between two sends of the same pending list, when the first returned no message id. */
+export const OFFER_RESEND_AFTER_MS = 60 * 60_000;
 
 /** What the list shows about setup on this machine. */
 function setupView(state: ServiceSetupState | undefined): { verified: ServiceSetupState['verified'] | null; alreadyHeld: boolean; stalled: boolean; held: boolean; stopped: ServiceSetupState['stopped'] | null; switchingOff: boolean } {
@@ -97,6 +113,19 @@ function setupView(state: ServiceSetupState | undefined): { verified: ServiceSet
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): void {
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
+  const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
+  /**
+   * Offers go out only when every precondition holds on this machine: the switch is on, the migration flag is
+   * set for this owner, a first result was delivered, this machine can reach the person (lease and channel),
+   * and there is an owner to offer to. Multi-machine agents also need the choices to replicate, or a yes on
+   * one machine could meet a no the other never saw.
+   */
+  const offersLive = (): boolean => {
+    const ledger = deps.ledger();
+    const owner = deps.owner();
+    return !!deps.offersEnabled?.() && !!deps.sendOfferList && !!ledger && owner !== null
+      && isMigrationComplete(deps.stateDir, owner) && readDeliveredFirstResult(deps.stateDir) !== null && reach();
+  };
   let mintLimitReported = false;
   const starting = new Set<string>();
   const stopping = new Set<string>();
@@ -305,6 +334,163 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
    * no live session and no pass gets a bounded restart, then one notice, because nothing else would
    * say that setup quietly died.
    */
+  /**
+   * A yes, from whichever verified surface: the confirm page (PIN) or the owner-only button for an address
+   * service. Saves the choice, then the records of it (a failure there is reported, never refused), then starts
+   * setup. False only when the choice itself could not be saved.
+   */
+  const applyYes = (ledger: RecommendedServicesLedger, row: CatalogRow, input: { origin: import('../recommended/RecommendedServicesLedger.js').ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string }): boolean => {
+    let yes;
+    try {
+      yes = ledger.recordYes({ service: row.id, origin: input.origin, offerTextHash: input.offerTextHash, grantMachine: input.grantMachine, principal: input.principal });
+    } catch {
+      return false;
+    }
+    try { taps.invalidateService(row.id); } catch { /* @silent-fallback-ok — a stale button answers "already answered" */ }
+    const followUps: [string, () => void][] = [
+      ['approval record', () => deps.recordApproval(`recommended-service:${row.id}`, yes.eventId)],
+      ['setup commitment', () => {
+        // A fresh yes to changed text keeps the promise already open.
+        if (readSetupStates(deps.stateDir)[row.id]?.commitmentId) return;
+        const commitmentId = deps.openCommitment(row.name, row.id);
+        if (commitmentId) updateSetupState(deps.stateDir, row.id, { commitmentId });
+      }],
+    ];
+    for (const [what, run] of followUps) {
+      try {
+        run();
+      } catch (err) {
+        DegradationReporter.getInstance().report({
+          feature: 'RecommendedServices.confirm',
+          primary: `Write the ${what} after the owner said yes to ${row.id}`,
+          fallback: 'The yes is saved. This record is missing.',
+          reason: err instanceof Error ? err.message : String(err),
+          impact: `Setup of ${row.name} may not be tracked until someone notices.`,
+        });
+      }
+    }
+    liftHold(row.id);
+    clearStop(row.id);
+    void beginSetup(row);
+    return true;
+  };
+
+  /**
+   * The first list (spec, Offers). Rows are written `pending` before the send and `offered` only from the
+   * message id the platform returned, so a failed send is never counted as an offer and a crash between the
+   * two repeats at most one list. A service that `verify` finds working here with no choice is `inUse`: a
+   * fact about this machine, never a choice, and it keeps the row out of the list.
+   */
+  let lastOfferAttemptAt = 0;
+  // One list build at a time: the regular check's timer does not wait for a slow tick, and two overlapping
+  // builds would each write pending rows and send. A second tick while one runs simply skips.
+  let offering = false;
+  const maybeOfferList = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
+    if (offering) return;
+    offering = true;
+    try {
+      await buildAndSendOfferList(ledger, nowMs);
+    } finally {
+      offering = false;
+    }
+  };
+  const buildAndSendOfferList = async (ledger: RecommendedServicesLedger, nowMs: number): Promise<void> => {
+    if (!offersLive() || !deps.sendOfferList) return;
+    const owner = deps.owner();
+    if (owner === null) return;
+    if (nowMs - lastOfferAttemptAt < OFFER_RESEND_AFTER_MS) return;
+    // Stamped before any probe or write, so a failing ledger write or a refused send costs one try an hour, not one a tick.
+    lastOfferAttemptAt = nowMs;
+    // Resume a list that was written but never proven delivered (a crash, a lease move, a refused send).
+    const pending = ledger.pendingOffers(owner, nowMs);
+    let listId: string;
+    let rows: CatalogRow[];
+    if (pending.length) {
+      listId = pending[0]!.listId;
+      rows = catalog.filter((row) => pending.some((r) => r.service === row.id && r.listId === listId));
+    } else {
+      const last = ledger.lastListAt(owner);
+      if (last !== null && nowMs - last < OFFER_LIST_EVERY_MS) return;
+      const candidates = offerCandidates(catalog, (row) => ({ choice: ledger.effective(row.id), offer: ledger.offerState(row.id, owner, nowMs), inUse: !!readSetupStates(deps.stateDir)[row.id]?.inUse }));
+      rows = [];
+      for (const row of candidates) {
+        // In use already? Only a passing check on this machine says so; an unmeasurable one keeps the row.
+        const recipe = recipeFor(row);
+        if (recipe) {
+          try {
+            const seen = await recipe.verify(recipeDeps());
+            if (seen.result === 'pass') {
+              updateSetupState(deps.stateDir, row.id, { inUse: true });
+              continue;
+            }
+          } catch { /* @silent-fallback-ok — unmeasurable keeps the row in the list, as the spec says */ }
+        }
+        rows.push(row);
+      }
+      if (!rows.length) return;
+      listId = newListId();
+      try {
+        for (const row of rows) ledger.recordOfferPending({ service: row.id, owner, listId });
+      } catch (err) { // @silent-fallback-ok — reported through report(), and no list is sent on this path
+        report('Write the pending offers', err, 'No list was sent; the next check tries again.');
+        return;
+      }
+    }
+    const linkBase = deps.linkBase?.() ?? null;
+    const rendered = renderOfferList(rows, { listId, linkBase, hasAddress: linkBase !== null, now: nowMs });
+    let messageId: string | number | null = null;
+    try {
+      messageId = await deps.sendOfferList(rendered.text, rendered.buttons);
+    } catch (err) {
+      report('Send the first list of services', err, 'The list stays pending and is sent again later.');
+      return;
+    }
+    if (messageId === null || messageId === undefined || messageId === '') return;
+    try { taps.add(rendered.taps); } catch (err) { report('Write the offer buttons', err, 'The buttons under the list answer "expired"; the dashboard still works.'); }
+    try {
+      for (const row of rows) ledger.recordOfferDelivered({ service: row.id, owner, listId, messageId });
+    } catch (err) {
+      report('Record the delivered offers', err, 'The list was sent; the record is missing, so one repeat is possible.');
+    }
+  };
+
+  // Offer buttons (telegram-button-approval.md §1). `rs:n:` is S-class: less action, undoable through the
+  // confirm page, bounded per hour. `rs:y:` is P-class: owner-only, only for an address service, because an
+  // owner with no address cannot open the page.
+  deps.registerOfferTapHandler?.(async ({ action, nonce, fromIsOwner }) => {
+    const ledger = deps.ledger();
+    if (!ledger) return 'Choices cannot be saved on this machine right now.';
+    const tap = taps.peek(nonce);
+    if (!tap || tap.action !== action) return 'That button has been used or has expired. My dashboard has the list.';
+    const row = catalog.find((r) => r.id === tap.service);
+    if (!row) return 'That service is no longer offered.';
+    if (ledger.effective(row.id).choice !== 'unset') {
+      taps.consume(nonce);
+      return 'Already answered.';
+    }
+    if (action === 'no') {
+      if (!taps.admitNo()) return 'Too many answers this hour. My dashboard has the list.';
+      if (!taps.consume(nonce)) return 'Already answered.';
+      try {
+        ledger.recordNo({ service: row.id, reason: 'none', shutdown: 'none', origin: 'first-offer', offerTextHash: offerTextHash(row) });
+      } catch {
+        return 'That choice could not be saved. Nothing changed.';
+      }
+      try { tokens.invalidateService(row.id); } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+      taps.invalidateService(row.id);
+      endSetup(row.id);
+      return `No to ${row.name}. I won't ask again without a real reason.`;
+    }
+    if (!fromIsOwner) return 'Only the owner can say yes.';
+    if (!row.wayIn) return 'A yes to this one needs the page, with your PIN.';
+    if (!isServiceAvailable(row)) return 'That service is not available here right now.';
+    const owner = deps.owner();
+    if (owner === null || !reach()) return 'I cannot start setup from this machine right now.';
+    if (!taps.consume(nonce)) return 'Already answered.';
+    if (!applyYes(ledger, row, { origin: 'first-offer', offerTextHash: offerTextHash(row), grantMachine: ledger.machineId(), principal: owner })) return 'That choice could not be saved. Nothing changed.';
+    return `Yes to ${row.name}. Setting it up now; I'll say when it works.`;
+  });
+
   const reconcile = async (): Promise<void> => {
     const ledger = deps.ledger();
     if (!ledger) return;
@@ -370,7 +556,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       else if (decision === 'give-up' && await deps.notifyStuck(row.id, row.name)) updateSetupState(deps.stateDir, row.id, { exhausted: true });
     }
   };
-  deps.onReady?.(reconcile);
+  const reconcileAndOffer = async (): Promise<void> => {
+    await reconcile();
+    const ledger = deps.ledger();
+    if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
+  };
+  deps.onReady?.(reconcileAndOffer);
 
   const ledgerOr503 = (res: Response): RecommendedServicesLedger | null => {
     const ledger = deps.ledger();
@@ -381,11 +572,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   router.get('/recommended-services', (_req, res) => {
     const ledger = ledgerOr503(res);
     if (!ledger) return;
+    const owner = deps.owner();
     const services = catalog.map((row) => {
       const { id, setupRecipe: _setupRecipe, ...text } = row;
-      return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null, ...setupView(readSetupStates(deps.stateDir)[id]) };
+      const state = readSetupStates(deps.stateDir)[id];
+      return { ...text, ...ledger.effective(id), available: isServiceAvailable(row), grantedHere: ledger.activeGrant(id, ledger.machineId()) !== null, ...setupView(state),
+        offered: owner !== null && ledger.offerState(id, owner) === 'offered', inUse: !!state?.inUse };
     });
-    res.json({ services, offersLive: false, migrationComplete: isMigrationComplete(deps.stateDir), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
+    res.json({ services, offersLive: offersLive(), migrationComplete: isMigrationComplete(deps.stateDir, owner ?? undefined), firstResult: readDeliveredFirstResult(deps.stateDir), replicating: ledger.isReplicating() });
   });
 
   /** Asks for nothing and grants nothing: it only stops this session being restarted, so it needs no PIN. */
@@ -432,7 +626,8 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // Open pages refuse this no anyway through their list of known nos. This only tidies up.
     try {
       tokens.invalidateService(req.params.id);
-    } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+      taps.invalidateService(req.params.id);
+    } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page; a stale button sees the no and answers "already answered" */ }
     const before = readSetupStates(deps.stateDir)[req.params.id];
     endSetup(req.params.id);
     const row = catalog.find((r) => r.id === req.params.id);
@@ -480,7 +675,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     }
     let minted: { token: string; expiresAt: number };
     try {
-      minted = tokens.mint({ service: row.id, owner, targetMachine: ledger.machineId(), offerTextHash: offerTextHash(row), origin: 'person-asked', nosAtOpen: ledger.knownNoIds(row.id) });
+      // A page opened for a service the owner was offered, and has not answered, answers that offer.
+      const origin = ledger.effective(row.id).choice === 'unset' && ledger.offerState(row.id, owner) === 'offered' ? 'first-offer' : 'person-asked';
+      minted = tokens.mint({ service: row.id, owner, targetMachine: ledger.machineId(), offerTextHash: offerTextHash(row), origin, nosAtOpen: ledger.knownNoIds(row.id) });
     } catch {
       res.status(503).json({ error: 'recommended-services-unavailable' });
       return;
@@ -557,7 +754,8 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       }
       try {
         tokens.invalidateService(row.id);
-      } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+        taps.invalidateService(row.id);
+      } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page; a stale button sees the no and answers "already answered" */ }
       const before = readSetupStates(deps.stateDir)[row.id];
       endSetup(row.id);
       if (shutdown) void stopService(row, before);
@@ -586,39 +784,10 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.json(ledger.effective(row.id));
       return;
     }
-    let yes;
-    try {
-      yes = ledger.recordYes({ service: row.id, origin: binding.origin, offerTextHash: binding.offerTextHash, grantMachine: binding.targetMachine, principal: binding.owner });
-    } catch {
+    if (!applyYes(ledger, row, { origin: binding.origin, offerTextHash: binding.offerTextHash, grantMachine: binding.targetMachine, principal: binding.owner })) {
       res.status(503).json(storageErrorResponse({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' }, deps.stateDir));
       return;
     }
-    // The yes is saved and stands. These two are records of it, so a failure here is reported, not refused.
-    const followUps: [string, () => void][] = [
-      ['approval record', () => deps.recordApproval(`recommended-service:${row.id}`, yes.eventId)],
-      ['setup commitment', () => {
-        // A fresh yes to changed text keeps the promise already open.
-        if (readSetupStates(deps.stateDir)[row.id]?.commitmentId) return;
-        const commitmentId = deps.openCommitment(row.name, row.id);
-        if (commitmentId) updateSetupState(deps.stateDir, row.id, { commitmentId });
-      }],
-    ];
-    for (const [what, run] of followUps) {
-      try {
-        run();
-      } catch (err) {
-        DegradationReporter.getInstance().report({
-          feature: 'RecommendedServices.confirm',
-          primary: `Write the ${what} after the owner said yes to ${row.id}`,
-          fallback: 'The yes is saved. This record is missing.',
-          reason: err instanceof Error ? err.message : String(err),
-          impact: `Setup of ${row.name} may not be tracked until someone notices.`,
-        });
-      }
-    }
-    liftHold(row.id);
-    clearStop(row.id);
-    void beginSetup(row);
     res.json(ledger.effective(row.id));
   });
 
