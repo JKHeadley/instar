@@ -481,9 +481,14 @@ class ChatsPage {
     // A server row replaces this page's own placeholder for the same message.
     const real = new Set(list.filter((b) => !b.id.startsWith('local:') && b.messageId).map((b) => b.messageId));
     const realTexts = list.filter((b) => !b.id.startsWith('local:') && b.side === 'right').map((b) => `${b.text}|${b.at}`);
+    // A row this browser signed, with the placeholder's text, from no earlier than a minute before it:
+    // the server already holds the message, even while the send's own answer is on its way (a Telegram
+    // send answers only after dispatch, so the polled row can arrive first).
+    const ownRows = list.filter((b) => !b.id.startsWith('local:') && b.side === 'right' && b.own);
     v.list = list.filter((b) => {
       if (!b.id.startsWith('local:')) return true;
       if (b.messageId && real.has(b.messageId)) return false;
+      if (ownRows.some((o) => o.text === b.text && Date.parse(o.at || '') >= Date.parse(b.at || '') - 60_000)) return false;
       if (b.final && v.ref.kind !== 'app' && realTexts.some((k) => k.startsWith(`${b.text}|`))) return false;
       return true;
     });

@@ -520,6 +520,17 @@ describe('POST /mobile/browser-devices', () => {
     expect((await request(s.srv).get('/mobile/browser-devices/status').set('Host', s.host)).status).toBe(503);
   });
 
+  it('status: telegramSend is false without a Telegram owner to speak as (live proof finding)', async () => {
+    const s0 = await server({ ownerDM: async () => 7, telegramOwner: false });
+    const app0 = express(); app0.use(express.json());
+    app0.use(createMobilePairingRouter(s0.pairing, s0.pairing.deps, { config: s0.config, telegram: {} } as never));
+    expect((await request(app0).get('/mobile/browser-devices/status')).body.telegramSend).toBe(false);
+    const s1 = await server({ ownerDM: async () => 7, telegramOwner: true });
+    const app1 = express(); app1.use(express.json());
+    app1.use(createMobilePairingRouter(s1.pairing, s1.pairing.deps, { config: s1.config, telegram: {} } as never));
+    expect((await request(app1).get('/mobile/browser-devices/status')).body.telegramSend).toBe(true);
+  });
+
   it('status: precedence revoked > registry > elsewhere > not-found', async () => {
     const s = await server({});
     const { payload, dev } = body(s.host);
