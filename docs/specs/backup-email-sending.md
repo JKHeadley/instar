@@ -213,7 +213,7 @@ Dark behind the recipe's proving list (test agent), then available in the catalo
 
 ## Maturation plan
 
-- **ladder:** recommendedServices.email (parent ladder test agent, development agent, fleet, entry added with the build)
+- **ladder:** not applicable: this PR is the spec only and adds no flag; the build adds the `recommendedServices.email` entry to `src/data/feature-ladders.json` (parent ladder test agent, development agent, fleet) and changes this line to the bare id.
 - **test-agent-live:** on a throwaway agent, shape A with Echo's test identity and shape C with Echo's own Workspace mailbox: the yes, the typed recipient, the code, a scheduled report read from the real inbox in a browser, then the drill (email switched off, the report arrives in the topic with its line), every row of the outbox state table exercised by the tests.
 - **dev-agent-live:** the catalog row flipped to `email-v1` and the development agent's owner set up for real; one week of every emailed report `delivered`, `accepted` (SMTP) or fallen back, no unexplained duplicate, the hourly checkpoint and the reconciliation sweep observed doing nothing when nothing is wrong.
 - **fleet:** after the development-agent week, the row available to every agent, offered through the proactive list like the other services; existing agents follow the parent's rollout step 5.
