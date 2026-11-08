@@ -5,6 +5,7 @@
  * output goes to a log. The ledger in ./install/progress.ts lets a harness poll it and `--resume`
  * continue it.
  */
+import { storageMachineName } from '../core/storageMachineName.js';
 import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
 import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -96,7 +97,7 @@ export function preflightRefusal(facts: PreflightFacts): { message: string; next
     const need = (MIN_FREE_BYTES / 1024 ** 3).toFixed(1);
     const have = (facts.freeBytes / 1024 ** 3).toFixed(1);
     return {
-      message: `Instar needs about ${need} GB of free disk space, and this computer has ${have} GB.`,
+      message: `Instar needs about ${need} GB of free disk space, and ${storageMachineName()} has ${have} GB.`,
       nextStep: 'Free some space, then run instar install --resume.',
     };
   }

@@ -38,6 +38,7 @@
  * built in src/monitoring/SkillLearningSentinel.ts and bound with `AgentServer.setSkillLearningSentinel()`.
  */
 import { Router, type Request, type Response } from 'express';
+import { operatorError } from '../core/storageMachineName.js';
 import type { RouteContext } from './routes.js';
 import { createMandatePinCheck } from './mandatePin.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
@@ -186,7 +187,7 @@ export function createSkillLearningRoutes(ctx: SkillCtx, timings: { forwardTimeo
         res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
       } catch (err) {
         // NOT silent: the tap did not land anywhere; the caller sees the exact reason.
-        res.status(503).json({ error: LEASE_HOLDER_UNREACHABLE, detail: err instanceof Error ? err.message : String(err) });
+        res.status(503).json({ error: LEASE_HOLDER_UNREACHABLE, detail: operatorError(err, ctx.config.stateDir) });
       }
       return;
     }
@@ -237,7 +238,7 @@ export function createSkillLearningRoutes(ctx: SkillCtx, timings: { forwardTimeo
       res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
     } catch (err) {
       // NOT silent: the tap did not land anywhere; never queued.
-      res.status(503).json({ error: LEASE_HOLDER_UNREACHABLE, detail: err instanceof Error ? err.message : String(err), machine: machineName(ctx) });
+      res.status(503).json({ error: LEASE_HOLDER_UNREACHABLE, detail: operatorError(err, ctx.config.stateDir), machine: machineName(ctx) });
     }
     return true;
   };
