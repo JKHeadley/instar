@@ -493,9 +493,21 @@ interface FixCommandDeps {
  */
 
 /** mobile-operator-chat: an app message keeps its "via the app" mark when routed or queued. */
-function mobileEnvelope(msg: { metadata?: Record<string, unknown> }): { via?: 'mobile-device'; deviceId?: string; eventId?: string } {
+/** Team access checks that need the running server: delivery, and what a session may be given (Step 2b). */
+function wireTeamChecks(server: AgentServer): void {
+  _teamMayDeliver = (personKey, ref) => server.mobilePairing?.teamMayDeliver(personKey, ref) ?? false;
+  _teamHeldFromAReader = (key, message) => (server.mobilePairing?.heldFrom(key, message).length ?? 0) > 0;
+  const convs = server.appConversations;
+  convs?.useHeldCheck((key, messageId) => {
+    const row = convs.store.getMessageEvent(key, messageId) as { accessStamp?: import('../core/TeamAccessMerge.js').AccessStamp } | null;
+    return !!row && (_teamHeldFromAReader?.(key, row) ?? false);
+  });
+}
+
+function mobileEnvelope(msg: { metadata?: Record<string, unknown> }): { via?: 'mobile-device'; deviceId?: string; eventId?: string; personKey?: string } {
   if (msg.metadata?.viaMobileDevice !== true) return {};
-  return { via: 'mobile-device', deviceId: String(msg.metadata.deviceId ?? ''), eventId: String(msg.metadata.eventId ?? '') };
+  const personKey = typeof msg.metadata.personKey === 'string' ? msg.metadata.personKey : null;
+  return { via: 'mobile-device', deviceId: String(msg.metadata.deviceId ?? ''), eventId: String(msg.metadata.eventId ?? ''), ...(personKey ? { personKey } : {}) };
 }
 
 export function shouldInterceptFixCommand(
@@ -791,6 +803,10 @@ let _topicProfileCtxRef: {
 // The custody engine (null = feature dark / gate failed / invariants violated —
 // every consumer treats null as "refused → today's fall-through").
 let _inboundQueue: import('../core/QueueDrainLoop.js').QueueDrainLoop | null = null;
+/** May this team person still send here? A queued or forwarded message can outlive a removal. Absent answers no. */
+let _teamMayDeliver: ((personKey: string, ref: string) => boolean) | null = null;
+/** Is a stored message held from any current reader? Set once the server exists. */
+let _teamHeldFromAReader: ((key: string, message: { accessStamp?: import('../core/TeamAccessMerge.js').AccessStamp }) => boolean) | null = null;
 /** Memory privacy (docs/specs/memory-privacy.md): set in startServer, read at every inbound. */
 let _memoryInbound: import('../users/MemoryInboundTracker.js').MemoryInboundTracker | null = null;
 let _reachablePeople: import('../users/ReachablePeople.js').ReachablePeople | null = null;
@@ -3624,6 +3640,8 @@ export function wireTelegramRouting(
     }
     const topicId = Number(dmsg.sessionKey);
     if (!Number.isFinite(topicId)) return { kind: 'failed', error: new Error(`non-numeric sessionKey ${dmsg.sessionKey}`) };
+    const teamSender = dmsg.senderEnvelope?.personKey;
+    if (teamSender && !_teamMayDeliver?.(teamSender, `telegram:${topicId}`)) return { kind: 'sender-rejected' };
     // Stage 'dark' (CMT-1117): the queue engine now runs whenever the pool is
     // enabled, but cross-machine routing is the failover machinery a red E2E
     // demoted. At dark the drain delivers on THIS machine only, exactly like the
@@ -10012,6 +10030,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           }),
         });
         const appDispatchDeps: Parameters<typeof createAppInboundDispatch>[0] = {
+          // Until the server is up, a stamped row is left out rather than guessed at.
+          heldFromAReader: (key, message) => _teamHeldFromAReader?.(key, message) ?? !!message.accessStamp,
           // Memory privacy: an app conversation belongs to one phone's person. The owner's
           // own phone carries no person id, so it resolves to the owner.
           memoryInbound: async (input) => {
@@ -27580,6 +27600,12 @@ export async function startServer(options: StartOptions): Promise<void> {
               : (cmd.payload && typeof cmd.payload === 'object' && 'text' in (cmd.payload as object))
                 ? String((cmd.payload as { text: unknown }).text)
                 : undefined;
+            // This machine judges a team person for itself: it may know of a removal the sender did not.
+            const teamSender = (cmd as { senderEnvelope?: { personKey?: string } }).senderEnvelope?.personKey;
+            if (teamSender && !_teamMayDeliver?.(teamSender, `telegram:${topicId}`)) {
+              _inboundQueue?.reportPeerInjectError(cmd.session, cmd.messageId, 'team-person-no-longer-allowed');
+              return;
+            }
             // bug #13: a moved session ALREADY running on this machine must receive
             // follow-ups via INJECTION (mirroring the normal inbound dispatch), NOT a
             // re-spawn. getSessionForTopic returns the already-prefixed tmux name; routing
@@ -33668,6 +33694,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // construction left a first-tick window with no ReapGuard and, on standby,
     // no per-session write admission.
     sessionManager.startMonitoring();
+    wireTeamChecks(server);
     await server.start();
     // After the port is bound: installs the Linux Chrome driver's packages on a new agent. All
     // asynchronous and detached, so it cannot delay or fail this boot.

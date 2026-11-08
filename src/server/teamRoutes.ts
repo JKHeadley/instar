@@ -10,6 +10,7 @@ import { Router, type Request, type Response } from 'express';
 import { deviceKeyHashOf, type MachineSigner } from '../core/AppRecordSignatures.js';
 import { displayCode } from '../core/MobileDeviceKeys.js';
 import { parseSignedEvents, type RequestEvent } from '../core/TeamAccessEvents.js';
+import { streamKey } from '../core/TeamAccessMerge.js';
 import { TEAM_ACCESS_WRITE_PATHS, eventsFitPath, type ConfinedEntry, type TeamAccessRow } from '../core/TeamAccessLog.js';
 import { ORG_ROLES, type OrgRole } from '../permissions/types.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
@@ -50,7 +51,7 @@ const LOG_UNREADABLE: Refusal = { status: 409, error: 'team-access-unreadable', 
 
 const refuseText: Record<string, string> = {
   'memory-privacy-required': 'Team members need memory privacy on. Turn it on first.',
-  'team-needs-one-machine': 'Team members work on agents running on one machine for now. Support for several machines is the next step. You can still use owner and MSP phones.',
+  'access-being-checked': 'The access record is being checked across your machines. Team phones and changes wait until that finishes.',
 };
 
 /** Why this conversation cannot be shared, or null. Runs before anything is written. */
@@ -96,18 +97,6 @@ export class TeamRefusalLog {
 }
 
 const grantRefs = (events: RequestEvent[]): string[] => events.flatMap((e) => (e.type === 'grant' || e.type === 'grant-remove' ? [e.ref] : []));
-
-/** Every person the log has ever held, present or gone. */
-export function keysEverAdded(rows: ReadonlyArray<TeamAccessRow>): Set<string> {
-  const keys = new Set<string>();
-  for (const row of rows) {
-    if (row.kind !== 'request') continue;
-    let events: RequestEvent[] | null = null;
-    try { events = parseSignedEvents(JSON.parse(Buffer.from(row.signedOrigin.bodyB64, 'base64').toString('utf8'))); } catch { events = null; } // @silent-fallback-ok — an unreadable row names nobody
-    for (const e of events ?? []) if (e.type === 'person-add') keys.add(e.personKey);
-  }
-  return keys;
-}
 
 /** Plain lines for Activity, from the signed log. */
 export function activityLines(rows: ReadonlyArray<TeamAccessRow>): Array<{ seq: number; text: string }> {
@@ -275,6 +264,19 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return null;
   };
 
+  // A peer can sign a grant to a topic it does not know is a job's here. The row that undoes it is
+  // signed by this machine, so every machine reaches the same answer from the log alone.
+  svc.teamGrantCheck = () => {
+    const log = svc.teamLog();
+    if (!log) return;
+    for (const [personKey, refs] of log.state().grants) {
+      for (const ref of [...refs.keys()]) {
+        const why = grantRefusal(svc, deps, ref)?.error;
+        if (why === 'system-topic' || why === 'job-topic' || why === 'topic-cannot-be-confined') log.appendMachineEvents([{ type: 'lower', personKey, ref }]);
+      }
+    }
+  };
+
   svc.teamActionRunner = (kind, req, deviceId) => inTurn(async () => {
     const log = svc.teamLog();
     if (!log) return { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
@@ -295,11 +297,32 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     }
     if (log.healthState() === 'unreadable') return { status: 409, body: storageErrorResponse({ error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail }, path.dirname(deps.logsDir)) };
     const events = parseSignedEvents(req.body);
+    if (kind === 'team-origin-gone') {
+      const gone = events?.length === 1 && events[0].type === 'origin-gone' ? events[0] : null;
+      if (!gone) return { status: 400, body: { error: 'bad-events', detail: 'The request does not hold valid access changes.' } };
+      // Only a stream this log has rows from can be gone. This machine's earlier stream can, its current one cannot.
+      if (gone.machine === deps.signer()?.machineId() && gone.incarnation === log.currentIncarnation()) return { status: 409, body: { error: 'origin-is-this-machine', detail: 'This is the machine you are connected to, so it cannot be marked as gone.' } };
+      const held = log.vector()[streamKey(gone.machine, gone.incarnation)];
+      // A machine with no rows here can still be retired, so it stops being waited for.
+      const noRowsPeer = held === undefined && gone.throughSeq === 0 && (svc.teamPuller?.knows(gone.machine) ?? false);
+      if (!noRowsPeer && (held === undefined || gone.throughSeq > held)) return { status: 409, body: { error: 'unknown-origin', detail: 'This machine holds no such record to settle.' } };
+      appendRequest(req, deviceId);
+      svc.reconcileTeamPhones();
+      return { status: 200, body: { ok: true } };
+    }
     if (events?.length !== 1 || events[0].type !== 'team-off') return { status: 400, body: { error: 'bad-events', detail: 'The request does not hold valid access changes.' } };
     await underLocks((log.readConfined() ?? []).map((entry) => entry.ref), () => appendRequest(req, deviceId));
     svc.revokePersonPhones(null);
     return { status: 200, body: { ok: true } };
   });
+
+  /** A machine last known unable to keep a team's promises blocks anything new, and existing phones keep working (§3.6). */
+  const floorOk = (res: Response): boolean => {
+    const behind = svc.teamPuller?.belowFloor() ?? [];
+    if (behind.length === 0) return true;
+    res.status(409).json({ error: 'machine-below-floor', machines: behind, detail: `${behind.length === 1 ? 'A machine' : 'Some machines'} on this agent cannot keep team access private yet. Update ${behind.length === 1 ? 'it' : 'them'} or mark ${behind.length === 1 ? 'it' : 'them'} as gone first.` });
+    return false;
+  };
 
   // The agent, or a member's own session, asks. This gives nobody anything: only the owner's signed write does.
   router.post('/team/proposals', write(async (req, res) => {
@@ -337,7 +360,10 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     const log = svc.teamLog();
     res.json({
       ownerPersonKey: log?.state().ownerPersonKey ?? owner.userId, ownerLinks: owner.links, several: owner.several,
-      teamOn: svc.teamOn(), refusal: svc.teamRefusal(), openRequests: requests.open().length,
+      teamOn: svc.teamOn(), refusal: svc.teamRefusal(), held: log?.gaps() ?? [], openRequests: requests.open().length,
+      machinesBelowFloor: svc.teamPuller?.belowFloor() ?? [], waitingOn: svc.teamPuller?.waitingOn() ?? [],
+      // What marking a machine as gone has to name: each stream held here and how far it runs.
+      streams: log?.vector() ?? {},
       // Restore is offered up front, not only after a write fails.
       record: { health: log?.healthState() ?? 'absent', restoreNeeded: !!log && (log.healthState() === 'unreadable' || log.readConfined() === null) },
       // An invite makes these phones read-only into sessions with the owner's reach (§3.2).
@@ -354,6 +380,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!deviceId) return;
     const stop = svc.teamRefusal();
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
+    if (!floorOk(res)) return;
     // Nobody may invite a person they could not later remove: turning access off takes Face ID.
     if (!svc.devices.get(deviceId)?.presenceKey) { res.status(409).json({ error: 'face-id-required', detail: 'Set up Face ID for this phone in the app first, so you can turn team access off later.' }); return; }
     const log = svc.teamLog();
@@ -381,7 +408,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       res.status(400).json({ error: 'first-invite-incomplete', detail: 'The first invite also turns team access on.' });
       return;
     }
-    if (keysEverAdded(log.allRows()).has(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
+    if (log.everHeld(add.personKey)) { res.status(409).json({ error: 'person-key-used', detail: 'That person was on this agent before. Invite them as someone new.' }); return; }
     // The link first: its code means nothing until the person is in the log, and a mint that fails here
     // leaves nothing saved or confined, so a plain retry works.
     const link = svc.mintTeamLink(add.personKey, typeof body.label === 'string' ? body.label : null);
@@ -405,6 +432,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     if (!deviceId) return;
     const stop = svc.teamRefusal();
     if (stop) { res.status(409).json({ error: stop, detail: refuseText[stop] }); return; }
+    if (!floorOk(res)) return;
     const events = eventsOf(req, res);
     if (!events) return;
     const mismatch = requestCheck(req, events);

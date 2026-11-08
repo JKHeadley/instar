@@ -627,12 +627,22 @@ export class AppConversationService {
     }
   }
 
+  private heldCheck: ((conversationKey: string, messageId: string) => boolean) | null = null;
+
+  /** Team access says which messages a session must not be given yet. */
+  useHeldCheck(check: (conversationKey: string, messageId: string) => boolean): void { this.heldCheck = check; }
+
   /**
    * Lines for the next delivery's context: files that became available with no live session to
    * tell, and files that could not be copied within 7 days. `ack` removes them once delivered.
    */
   pendingContext(conversationKey: string): { lines: string[]; ack: () => void } {
-    const rows = this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[];
+    // A session serves every reader, so a file or transcript of a held message waits with it.
+    const open = <T extends { attachmentId: string }>(r: T): boolean => {
+      const messageId = this.store.mediaRef(r.attachmentId)?.messageId;
+      return !messageId || !this.heldCheck?.(conversationKey, messageId);
+    };
+    const rows = (this.media.indexDb.prepare(`SELECT * FROM pending_deliveries WHERE conversationKey = ? AND state IN ('ready','expired') ORDER BY createdAt`).all(conversationKey) as PendingRow[]).filter(open);
     const carried = new Set<string>();
     const lines = rows.map((r) => {
       if (!(r.state === 'ready' && r.path)) return `(a file from ${new Date(r.createdAt).toISOString().slice(0, 10)}, ${r.displayName}, could not be copied to this machine)`;
@@ -644,7 +654,7 @@ export class AppConversationService {
     });
     // Late transcripts that found no live session (§4.5.1), oldest first — except one whose
     // transcript the "now available" line above already carries (said once, never twice).
-    const notes = this.media.indexDb.prepare('SELECT attachmentId, line FROM transcript_notes WHERE conversationKey = ? ORDER BY createdAt').all(conversationKey) as Array<{ attachmentId: string; line: string }>;
+    const notes = (this.media.indexDb.prepare('SELECT attachmentId, line FROM transcript_notes WHERE conversationKey = ? ORDER BY createdAt').all(conversationKey) as Array<{ attachmentId: string; line: string }>).filter(open);
     for (const n of notes) if (!carried.has(n.attachmentId)) lines.push(transcriptForDelivery(n.line));
     return {
       lines,

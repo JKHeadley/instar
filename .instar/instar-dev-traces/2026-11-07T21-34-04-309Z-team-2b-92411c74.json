@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "team-2b",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T21:34:04.309Z",
+  "artifactPath": "upgrades/side-effects/team-2b.md",
+  "artifactSha256": "b418b3619d9f109de643ba5e25836e6cd0e5126e20ec562ef38fbd583dcad5db",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "src/data/stageBCertifiedSet.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -48,6 +48,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },
     {
+      "file": "src/core/TeamAccessMerge.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2b). Pure rules for how machines agree on access, run only when a team exists, not code the Stage-B canary exercises."
+    },
+    {
       "file": "src/core/TeamAccessLog.ts",
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },

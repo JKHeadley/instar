@@ -49,13 +49,17 @@ Existing agents work exactly as they do now. An update neither restricts anyone 
 - Scheduled jobs run for the owner and can read messages in the logs. That's within the owner's access, but the only thing keeping a member's words from steering a job is how the model behaves. Members are told, and it has its own fix on the list.
 - The dashboard stays the owner's. The app is everyone else's way in.
 - A conversation that has ever been shared, or that a member started, stays locked down for good, even after everyone else is removed.
-- An agent that has had team members can't add a second machine until multi-machine support lands.
+- A machine on an older build can't join an agent that has a team. It has to update first.
 - A phone reaches one of the agent's machines, and can send only while that machine is the one serving the agent. Every phone already works this way.
 - An agent that runs only on Codex can't have team members yet, because memory privacy only works with Claude Code.
 
 ## What comes first
 
 The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones on agents that run on one machine, with their People screens in the app. The checks for that step are done and it is being built now. Agents on several machines come straight after that, because most of ours run that way. The multi-machine parts proved hardest, so they get their own review rounds. Then admin maintenance, adding people across several agents, and Slack conversations for members.
+
+## When an agent runs on several machines
+
+Step 2b extends this to agents on more than one machine. A few rules change. If two people change access at the same moment and neither saw the other, the change that takes access away wins. Once someone is removed they can't be brought back by accident. Words written by a machine that was cut off are kept from new readers where that's possible; Telegram members will already have seen them. Any surviving machine can remove a person, so losing one machine never leaves nobody able to. A laptop going to sleep changes nothing for anyone: other machines pass its records along, and a machine keeps serving when its peers are asleep. Records only a sleeping machine holds just wait; nobody loses access over them. Whether a reader can see a message is worked out from facts that never change, so every machine gives the same answer. A machine that loses its records rebuilds them from the others before asking the owner for anything. Once a team exists, every machine gets the access records, and one that isn't set up for teams stays out of shared conversations until it is. The trade-off is that a machine cut off from everything can't hear about a removal until it reconnects.
 
 ## What you need to decide
 

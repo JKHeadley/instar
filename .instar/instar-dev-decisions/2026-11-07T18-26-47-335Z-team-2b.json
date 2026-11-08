@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-07T18:26:47.335Z",
+  "slug": "team-2b",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 279,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/TeamAccessLog.ts",
+      "src/core/TeamAccessSync.ts",
+      "src/core/types.ts",
+      "src/server/AgentServer.ts",
+      "src/server/machineRoutes.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 258,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -577,6 +577,29 @@ describe('with no access log able to open', () => {
   });
 });
 
+describe('phones across machines', () => {
+  it('an active team phone is bound in the log, once', async () => {
+    const { e, mia } = await withMember();
+    e.pairing.bindTeamPhones();
+    e.pairing.bindTeamPhones();
+    const binds = e.pairing.teamLog()!.allRows().flatMap((r) => (r.kind === 'machine' ? r.events.filter((x) => x.type === 'phone-bind' && x.deviceId === mia.id) : []));
+    expect(binds).toHaveLength(1);
+  });
+
+  it('a removal that arrives here revokes this machine\'s phones for that person, and nobody else\'s', async () => {
+    const { e, mia, owner } = await withMember();
+    const stranger = phone(e, { userId: 'not-in-the-log-yet', role: 'team' });
+    e.pairing.reconcileTeamPhones();
+    expect(e.pairing.devices.get(mia.id)!.status).toBe('active');
+    e.pairing.teamLog()!.appendMachineEvents([{ type: 'lower', personKey: 'mia', remove: true }]); // as a peer's row would fold
+    e.pairing.reconcileTeamPhones();
+    expect(e.pairing.devices.get(mia.id)!.status).toBe('revoked');
+    expect(e.pairing.devices.get(owner.id)!.status).toBe('active');
+    // A phone can pair before its person's row reaches this machine.
+    expect(e.pairing.devices.get(stranger.id)!.status).toBe('active');
+  });
+});
+
 describe('a phone reading its own standing', () => {
   it('a team phone gets its tier and tabs, from the log; a guest has no composer; the owner has no standing', async () => {
     const { e, mia, owner } = await withMember();

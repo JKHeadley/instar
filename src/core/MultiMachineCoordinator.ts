@@ -342,6 +342,16 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** This machine's identity (null if not initialized). */
   get identity(): MachineIdentity | null { return this._identity; }
 
+  private leaseHold: (() => boolean) | null = null;
+
+  /** A condition that keeps this machine from taking the lease. It never gives one up. */
+  setLeaseHold(hold: () => boolean): void { this.leaseHold = hold; }
+
+  /** When a peer's lease was last seen, on this machine's clock, or null. */
+  leaseObservedAt(machineId: string): number | null {
+    return this.leaseCoordinator?.peerLeaseObservations().get(machineId)?.observedAtMs ?? null;
+  }
+
   /** Whether this machine is the awake (primary) machine. */
   get isAwake(): boolean { return this._role === 'awake'; }
 
@@ -1502,7 +1512,8 @@ export class MultiMachineCoordinator extends EventEmitter {
         // machine creates no contention to leapfrog, so no agreement-gossip needed).
         this.reconcileRoleToLease('lease-tick-defer-preferred');
       } else {
-        await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
+        // A machine that cannot honour team access must not start serving (team-roles-and-access, "Step 2b").
+        if (!this.leaseHold?.()) await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
         this.reconcileRoleToLease('lease-tick');
       }
     } catch {

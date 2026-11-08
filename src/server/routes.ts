@@ -29302,7 +29302,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         senderName: fromFirstName,
         senderUsername: fromUsername,
         telegramUserId: fromUserId,
-        ...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),
+        ...(trust?.sender?.role === 'team' ? { teamPhone: true, ...(trust.sender.person ? { personKey: trust.sender.person.userId } : {}) } : {}),
         // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
         // standing-authorization resolver can prove non-forwarded provenance.
         // An app message is recorded with forwarded UNKNOWN, so no durable-evidence
@@ -29488,7 +29488,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           ...(trust ? { viaMobileDevice: true, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
           // A team phone's words are never a command (team-roles-and-access §4.1). Set only here, from
           // the authenticated phone: onTopicMessage reads it to skip every intercept.
-          ...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),
+          ...(trust?.sender?.role === 'team' ? { teamPhone: true, ...(trust.sender.person ? { personKey: trust.sender.person.userId } : {}) } : {}),
           // Explicit, so the message pipeline can refuse authority by the
           // flag as well as by the missing id.
           ...(senderUntrusted ? { senderUnverified: true } : {}),

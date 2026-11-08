@@ -1,3 +1,6 @@
+import type { AccessStamp } from '../core/TeamAccessMerge.js';
+import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
+import type { TeamActionKind } from './mobilePermissionsRoutes.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -52,7 +55,7 @@ import { PairingInviteTelegram } from '../threadline/PairingInviteTelegram.js';
 import { APP_CONVERSATION_KEY_PATTERN, derivedEventId, hideCredentialSpans, removeAuthorityTokens } from '../core/appConversationText.js';
 import type { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
-import { TeamAccessLog, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
+import { TeamAccessLog, rowSignedByKnownMachine, verifyTeamAccessRow } from '../core/TeamAccessLog.js';
 import { TeamConfinement } from '../users/TeamConfinement.js';
 import { attentionForNonOwner, tierAtLeast, tierOfRole, type ConversationOp, type Tier } from '../permissions/TeamAccess.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
@@ -92,7 +95,7 @@ export interface PairingSiblingView { machineId: string; name?: string; status?:
 export interface MobilePairingDeps {
   config: InstarConfig;
   /** Whether team phones may work right now (§3.6, §4.1). Absent refuses them. */
-  teamGate?: () => 'ok' | 'memory-privacy-required' | 'team-needs-one-machine';
+  teamGate?: () => 'ok' | 'memory-privacy-required';
   stateDir: string;
   tunnel?: () => PairingTunnelView | undefined;
   selfMachineId?: string | null;
@@ -428,7 +431,8 @@ export class MobilePairingService {
   readonly grants: MspGrantStore;
 
   /** Wire the app conversation store as the owner lookup (AgentServer; tests use the same call). */
-  useAppConversationStore(store: { getConversation(key: string): { ownerPerson: ConversationOwner | null } | null }): void {
+  useAppConversationStore(store: { getConversation(key: string): { ownerPerson: ConversationOwner | null } | null; getMessageEvent?(key: string, messageId: string): object | null }): void {
+    this.storedMessage = (key, id) => (store.getMessageEvent?.(key, id) ?? null) as StampedRow | null;
     this.appConversationOwner = (key) => {
       const c = store.getConversation(key);
       return c ? c.ownerPerson : undefined;
@@ -470,7 +474,12 @@ export class MobilePairingService {
     this.teamLogInstance = new TeamAccessLog({
       stateDir, signer: loadMachineSigner(stateDir),
       verify: (row) => verifyTeamAccessRow(row, ledger.view(), lookup),
+      machineSigned: (row) => rowSignedByKnownMachine(row, lookup),
     });
+    try {
+      this.teamLogInstance.backfillConfineRows();
+      this.bindTeamPhones();
+    } catch (err) { this.deps.reportDegradation?.('TeamAccess.backfill', err); } // @silent-fallback-ok — reported; retried at the next boot
     return this.teamLogInstance;
   }
 
@@ -485,9 +494,11 @@ export class MobilePairingService {
   }
 
   /** Why a team phone is refused right now, or null. Memory privacy is required, and stays required (§3.6). */
-  teamRefusal(): 'memory-privacy-required' | 'team-needs-one-machine' | null {
+  teamRefusal(): 'memory-privacy-required' | 'access-being-checked' | null {
     const gate = this.deps.teamGate?.() ?? 'memory-privacy-required';
-    return gate === 'ok' ? null : gate;
+    if (gate !== 'ok') return gate;
+    // A lost narrowing could have named anyone, so a gap holds everyone (Step 2b).
+    return this.teamLog()?.gaps().length || (this.teamOn() && this.teamPuller?.refusing()) ? 'access-being-checked' : null;
   }
 
   /** A one-time link for a team person. Their phone's standing comes from the log, never the link. */
@@ -523,8 +534,79 @@ export class MobilePairingService {
     }
   }
 
+  /** A team phone's key, in the log, so every machine can tell whose it is (Step 2b). */
+  bindTeamPhones(): void {
+    const log = this.teamLog();
+    if (!log || log.healthState() !== 'ok') return;
+    for (const d of this.devices.list()) {
+      if (d.role !== 'team' || d.status !== 'active' || !d.publicKey || !d.userId) continue;
+      const keyHash = deviceKeyHashOf(d.publicKey);
+      if (log.state().bindings.get(keyHash) !== d.userId) log.appendMachineEvents([{ type: 'phone-bind', keyHash, deviceId: d.id, boundTo: d.userId }]);
+    }
+  }
+
+  /** A removal can arrive from another machine: this machine then revokes its own phones for that person. */
+  reconcileTeamPhones(): void {
+    const log = this.teamLog();
+    if (!log || log.healthState() !== 'ok') return;
+    this.teamGrantCheck?.();
+    for (const d of this.devices.list()) {
+      if (d.role !== 'team' || d.status === 'revoked' || !d.userId) continue;
+      // Only a verified removal revokes: a phone can pair before its person's row arrives, and a revoked key is gone for good.
+      if (log.wasRemoved(d.userId) && !this.teamStanding(d.userId)) this.revokePersonPhones(d.userId);
+    }
+  }
+
+  reportTeamFault(feature: string, err: unknown): void { this.deps.reportDegradation?.(feature, err); }
+
+  private storedMessage: (key: string, messageId: string) => StampedRow | null = () => null;
+
+  /** The person's key, if a team phone is reading; everyone else reads by the existing rules. */
+  private teamReaderKey(person: ResolvedPerson | null): string | null {
+    return person?.role === 'team' && person.userId ? person.userId : null;
+  }
+
+  /** May this reader see this stored message? Rows with no stamp predate the rule, and every grant opens them. */
+  mayReadStored(person: ResolvedPerson | null, ref: string, row: StampedRow): boolean {
+    const key = this.teamReaderKey(person);
+    if (!key || !row.accessStamp) return true;
+    const log = this.teamLog();
+    return !!log && log.mayRead(key, ref, row.accessStamp, row.senderPerson?.userId ?? null);
+  }
+
+  /** May this reader see the message with this id? One not held here yet is not shown. Telegram cannot be held. */
+  mayReadMessageId(person: ResolvedPerson | null, ref: string, messageId: string): boolean {
+    if (!this.teamReaderKey(person) || ref.startsWith('telegram:')) return true;
+    const row = this.storedMessage(ref, messageId);
+    return !!row && this.mayReadStored(person, ref, row);
+  }
+
+  /** The current readers a message is held from, by name, for the owner's view. */
+  heldFrom(ref: string, row: StampedRow): string[] {
+    const log = this.teamLog();
+    if (!log || !row.accessStamp || !log.state().on) return [];
+    const s = log.state();
+    const readers = new Set<string>([...s.grants].filter(([, refs]) => refs.has(ref)).map(([key]) => key));
+    const owner = s.owned.get(ref);
+    if (owner) readers.add(owner);
+    return [...readers].filter((key) => !log.mayRead(key, ref, row.accessStamp!, row.senderPerson?.userId ?? null)).map((key) => s.people.get(key)?.name ?? key);
+  }
+
+  /** Set by the team router: voids a grant from another machine that this machine would have refused. */
+  teamGrantCheck: (() => void) | null = null;
+
+  /** May this team person send here, on this machine's own knowledge? */
+  teamMayDeliver(personKey: string, ref: string): boolean {
+    const log = this.teamLog();
+    if (!log || !this.teamStanding(personKey) || this.teamRefusal()) return false;
+    return log.state().owned.get(ref) === personKey || log.grantOf(personKey, ref) === 'use';
+  }
+
+  /** The exchange with peers; absent on an agent with no machine identity. */
+  teamPuller: TeamAccessPuller | null = null;
+
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
-  teamActionRunner: ((kind: 'team-off' | 'team-restore' | 'team-memory-privacy', req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
+  teamActionRunner: ((kind: TeamActionKind, req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
 
   /** Tell a team phone's readers about a reply in a Telegram topic they hold. */
   teamTopicReply(topicId: number): void {
@@ -535,7 +617,7 @@ export class MobilePairingService {
     this.push?.onAppReply(ref, `topic-${topicId}-${Date.now()}`);
   }
 
-  /** A second machine has to wait: it would know none of this (§4.1). */
+  /** A machine that does not understand a team must not join one (Step 2b). */
   teamJoinBlocked(): boolean {
     const log = this.teamLog();
     if (log && this.teamOn()) return true;
@@ -578,6 +660,17 @@ export class MobilePairingService {
     if (!d) return false;
     const p = this.personOfDevice(d);
     return p.ok && this.mayUse(p, ref);
+  }
+
+  /** May this phone be told about this message? With no id named, the conversation decides. */
+  deviceMayReadMessage(deviceId: string, ref: string, messageId: string | undefined): boolean {
+    const d = this.devices.get(deviceId);
+    if (!d) return false;
+    const p = this.personOfDevice(d);
+    if (!p.ok) return false;
+    // A push carries no text, and a peer's fan-out usually arrives before its row, so that one goes out.
+    if (messageId === undefined || !this.storedMessage(ref, messageId)) return true;
+    return this.mayReadMessageId(p, ref, messageId);
   }
 
   /** Validate a requested person for a pairing link or a reassignment (spec §3.2). */
@@ -1388,6 +1481,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       svc.dropDashboardCode(d.id);
       svc.noteActivated(d.id);
       for (const [n, id] of svc.declineNonces) if (id === d.id) svc.declineNonces.delete(n);
+      try { if (d.role === 'team') svc.bindTeamPhones(); } catch (err) { deps.reportDegradation?.('TeamAccess.bind', err); } // @silent-fallback-ok — reported; bound at the next boot
       featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'confirmed', context: { deviceId: d.id, approvedVia, role: d.role ?? 'owner' } });
       res.json({ status: 'active' });
       return;
@@ -2012,7 +2106,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/team\/invites$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/grants$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
-    { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy|origin-gone)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
     { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
     { method: 'POST', re: /^\/mobile\/people\/[^/]{1,128}\/grants$/, statuses: active },
@@ -2330,6 +2424,9 @@ export function readerRemovedHere(svc: MobilePairingService, key: string): boole
  * The shared conversation check for a device-signed (or notify-token) request: a bearer request
  * (no device person) may use everything, as before. Spec §3.4.
  */
+/** A stored message, as much of it as the reading rule needs. */
+export interface StampedRow { accessStamp?: AccessStamp; senderPerson?: ConversationOwner }
+
 export function deviceMayUse(svc: MobilePairingService, req: Request, ref: string, op: ConversationOp = 'read'): boolean {
   if (principalOf(req).kind === 'token') return true;
   const p = devicePersonOf(req);

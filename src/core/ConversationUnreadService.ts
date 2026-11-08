@@ -81,6 +81,12 @@ export interface ConversationUnreadDeps {
   readerRemoved?: (key: string) => boolean;
   /** The one shared conversation access check (`MobilePairingService.mayUse`). */
   mayUse: (person: ResolvedPerson, ref: string, op?: 'read') => boolean;
+  /**
+   * Team access 2b (team-roles-and-access, "A cut-off machine's words are held back"): whether this
+   * reader may see one stored app message. A row held from them is not counted, so a count never
+   * announces it. Absent ⇒ every row of a readable conversation counts.
+   */
+  mayReadMessage?: (person: ResolvedPerson, conversationKey: string, m: BrowsedMessage) => boolean;
   /** The pool's peers, for forwarding a mark and for the boot catch-up. Absent ⇒ one machine. */
   peers?: () => PoolPeerTarget[];
   peerAllowlist?: () => string[] | undefined;
@@ -241,7 +247,7 @@ export class ConversationUnreadService {
   countFor(reader: Reader, ref: string): CountResult | null {
     const stored = this.store.storedPosition(reader.key, ref);
     if (!stored) return { count: 0, more: false, ownNewest: null, effective: null };
-    const src = this.sourceRows(ref);
+    const src = this.sourceRows(ref, reader);
     if (!src) return null;
     const posKey = `${stored.atMs}:${stored.id}`;
     const ck = `${reader.key}\u0000${ref}`;
@@ -275,7 +281,7 @@ export class ConversationUnreadService {
   }
 
   /** The conversation's rows newest first, from the source the list already loads. */
-  private sourceRows(ref: string): SourceRows | null {
+  private sourceRows(ref: string, reader?: Reader): SourceRows | null {
     if (ref.startsWith('app:')) {
       const key = ref.slice(4);
       const app = this.deps.app;
@@ -284,13 +290,18 @@ export class ConversationUnreadService {
       if (!conv || conv.tombstoned) return null;
       const page = app.browseMessages(key, null, 100);
       const rows: RawRow[] = [];
+      const mayRead = this.deps.mayReadMessage;
+      const person = reader?.person ?? null;
+      let held = 0;
       for (const m of page.messages) {
+        if (mayRead && person && !mayRead(person, key, m)) { held++; continue; }
         const atMs = atMsOf(m.at);
         if (atMs === null) continue;
         rows.push({ atMs, id: m.eventId, sender: m.role === 'agent' ? { kind: 'agent' } : { kind: 'operator', viaApp: true, role: m.senderRole, person: m.senderPerson ?? null } });
       }
       rows.reverse();
-      return { rows, complete: page.nextBefore === null, rev: String(app.newestIngestSeq(key)) };
+      // A grant that shows a held row changes the count without a new message, so it changes `rev` too.
+      return { rows, complete: page.nextBefore === null, rev: `${app.newestIngestSeq(key)}:${held}` };
     }
     if (ref.startsWith('telegram:')) {
       const tg = this.deps.telegram;

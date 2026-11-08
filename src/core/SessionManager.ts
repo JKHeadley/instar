@@ -1789,10 +1789,15 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * it. Computed here for every interactive spawn, so a caller that passes no
    * place lands on `none` rather than on full reach. Null when unwired.
    */
+  private confinedSpawnsRefused = false;
+
+  /** A machine that cannot serve a team starts nothing in a confined conversation (team-roles-and-access, "Step 2b"). */
+  refuseConfinedSpawns(): void { this.confinedSpawnsRefused = true; }
+
   private planMemorySession(framework: string, tmuxSession: string, input: SessionPlaceInput): MemorySessionPlan | null {
     const wiring = this.memoryPrivacyWiring;
     // Before the off-switch check: with privacy off a confined conversation cannot be confined at all.
-    if (wiring?.confinement?.refuseSpawn(input, wiring.privacy.enabled)) throw new MemoryPrivacyUnavailableError(framework);
+    if (wiring?.confinement?.refuseSpawn(input, wiring.privacy.enabled && !this.confinedSpawnsRefused)) throw new MemoryPrivacyUnavailableError(framework);
     if (!wiring || !wiring.privacy.enabled) return null;
     const place = wiring.privacy.placeFor(input, wiring.telegramGroupKey());
     const audience = wiring.privacy.audienceFor(place);
