@@ -1310,7 +1310,10 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-input { height: 44px; padding: 0 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
 .chat-fingerprint { font-family: var(--font-mono); letter-spacing: .04em; }
 @media (max-width: 899px) {
-  .chat-messages { height: calc(100dvh - 300px); }
+  /* The open conversation fits between the top bar and the bottom tab bar: the messages scroll inside it,
+     so the composer stays on the first screen however long the conversation is (flex: 1 alone sizes to content). */
+  .chats-page .chat-open { min-height: 0; height: calc(100dvh - var(--topbar-h, 56px) - 64px - 32px); }
+  .chats-page .chat-messages { height: auto; flex: 1 1 auto; min-height: 160px; }
   .chat-bubble { max-width: 88%; }
   .chat-menu .btn-quiet { padding: 0 10px; }
 }

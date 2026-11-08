@@ -204,6 +204,35 @@ describe('Conversations page', () => {
     expect(copies).toHaveLength(1);
   }, 15_000);
 
+  it('opened from a link before the list arrives, the header shows the real title once the list paints (live proof finding)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const at = new Date().toISOString();
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [], nextBefore: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    // The list was answered 404 (not loaded yet): the header falls back.
+    expect(doc.querySelector('.chat-title')?.textContent).toBe('Conversation');
+    // The list arrives later with the title.
+    const g = globalThis as Record<string, unknown>;
+    const prev = g.fetch as (u: string, i?: unknown) => Promise<Response>;
+    g.fetch = async (url: string, init?: unknown) => {
+      if (url.startsWith('/mobile/conversations')) return { ok: true, status: 200, json: async () => ({ conversations: [{ id: UUID, platform: 'app', title: 'Plans for Saturday', lastActivity: at, lastPreview: '' }], nextCursor: null }), headers: new dom.window.Headers() } as unknown as Response;
+      return prev(url, init);
+    };
+    dom.window.dispatchEvent(new dom.window.Event('focus'));
+    // A list refresh (the leader's 30 s refresh in real use; here the list's own Show more, which reloads it).
+    (doc.querySelector('button.chat-more') as HTMLButtonElement).click();
+    for (let i = 0; i < 60 && doc.querySelector('.chat-title')?.textContent !== 'Plans for Saturday'; i++) await flush(100);
+    expect(doc.querySelector('.chat-title')?.textContent).toBe('Plans for Saturday');
+  }, 15_000);
+
   it('a 401 answered "unknown" by the status route keeps the key', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');

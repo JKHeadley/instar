@@ -329,6 +329,10 @@ class ChatsPage {
   paintList() {
     if (!this.listEl) return;
     const open = this.view ? refString(this.view.ref) : '';
+    if (this.view && this.view.titleEl) {
+      const row = this.rows.find((r) => r.key === open);
+      if (row) { this.view.titleEl.textContent = row.title; this.view.titleEl = null; }
+    }
     if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
     else {
       setKids(this.listEl, this.rows.map((r) => el('a', { class: `row chat-row${r.key === open ? ' open' : ''}`, href: hashFor(r.ref), role: 'listitem' },
@@ -412,6 +416,8 @@ class ChatsPage {
     const v = { ref, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0 };
     this.view = v;
     const title = el('h2', { class: 'chat-title', text: row ? row.title : (ref.kind === 'telegram' ? `Topic ${ref.id}` : 'Conversation') });
+    // Opened from a link before the list arrived: the real title is filled in when the list paints.
+    v.titleEl = row ? null : title;
     const back = el('a', { class: 'btn-quiet chat-back', href: '#/work/chats', 'aria-label': 'Back to conversations', text: '‹' });
     const menu = el('div', { class: 'chat-menu' });
     if (ref.kind === 'app') {
