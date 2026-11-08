@@ -331,7 +331,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     // The exact set is recorded in the reservation first, so a crash midway resumes it (§4.7).
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'purge', conversationKey: '', sets: JSON.stringify(sets) }); } catch {
-      res.status(503).json({ error: 'purge-unavailable', detail: 'The request could not be recorded, so nothing was removed. Try again.' });
+      res.status(503).json({ error: 'purge-unavailable', detail: `The request could not be recorded on ${s.media!.machineWords()}, so nothing was removed. Try again.` });
       return;
     }
     if (r.kind !== 'reserved') { res.status(429).json({ error: 'too-many-requests' }); return; }

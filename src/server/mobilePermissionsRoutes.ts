@@ -27,6 +27,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isStorageFailure, storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, rowKey } from './mobileCapacityRoutes.js';
 import { cleanText } from './mobilePlansPeopleRoutes.js';
@@ -846,7 +847,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       } catch (err) {
         // The reason goes to the log. The phone gets words a person can use.
         console.warn(`[team-access] ${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
-        r = { status: 500, body: { error: 'team-action-failed', detail: 'That did not work, and nothing changed. Try again.' } };
+        const body = { error: 'team-action-failed', detail: 'That did not work, and nothing changed. Try again.' };
+        r = { status: 500, body: isStorageFailure(err) ? storageErrorResponse(body, deps.stateDir) : body };
       }
       finish(res, 'team-changed', built.action, g, r);
     });

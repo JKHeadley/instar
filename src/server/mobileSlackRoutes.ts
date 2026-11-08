@@ -27,6 +27,7 @@
  * this agent ⇒ 503 `slack-not-configured`. `mobilePairing.slackOwnerUserId` unset ⇒ 503
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
@@ -422,7 +423,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     // Step 4 — reserve, then persist (fsync) BEFORE dispatch.
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: conv.key, messageId }); } catch {
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, deps.config.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -442,7 +443,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     } catch (err) {
       requests.release(deviceId, requestId);
       s.deps.reportDegradation?.('MobileSlack.persist', err instanceof Error ? err.message : String(err));
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, deps.config.stateDir));
       return;
     }
     // People and roles §3.3/§3.5: the sender is the phone's person. An MSP the owner let use Slack

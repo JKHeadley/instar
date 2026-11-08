@@ -275,15 +275,25 @@ describe('what the app needs to show', () => {
     expect(off.body.detail).toMatch(/memory privacy/);
   });
 
-  it('a Face ID action that fails tells the phone nothing of the exception', async () => {
+  it.each([
+    ['ENOENT /secret/path/log.jsonl', true],
+    ['ENOSPC /secret/path/log.jsonl', true],
+    ['private credential failure', false],
+  ] as const)('a failed Face ID action keeps %s private and names only storage failures', async (message, storage) => {
     const e = await setup();
+    const identity = new MachineIdentityManager(e.dir);
+    const local = identity.loadIdentity();
+    identity.updateNickname(local.machineId, 'Mac Studio');
     const owner = phone(e);
     await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
-    e.svc.teamActionRunner = async () => { throw new Error('ENOENT /secret/path/log.jsonl'); };
+    e.svc.teamActionRunner = async () => { throw new Error(message); };
     const r = await faceId(e, owner, 'team-off', '/mobile/team/off', { events: [{ type: 'team-off' }] });
     expect(r.status).toBe(500);
-    expect(JSON.stringify(r.body)).not.toContain('secret');
+    expect(r.body.error).toBe('team-action-failed');
+    expect(JSON.stringify(r.body)).not.toMatch(/secret|private credential|ENOENT|ENOSPC/);
     expect(r.body.detail).toMatch(/Try again/);
+    if (storage) expect(r.body.detail).toContain('Mac Studio');
+    else expect(r.body.detail).toBe('That did not work, and nothing changed. Try again.');
   });
 
   it('context says when the record needs restoring, before any write fails', async () => {

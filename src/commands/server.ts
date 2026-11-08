@@ -6409,6 +6409,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             commitAndPush: (msg, paths) => gs.commitAndPush(msg, paths),
             localCommitIsFinal: () => !!config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled
               && survivorMayHold() && gitLeaseHasNoRemote(config.projectDir) === true,
+            hasNoRemote: () => gitLeaseHasNoRemote(config.projectDir),
             logger: (m) => console.log(pc.dim(m)),
           });
         } else {
@@ -9978,6 +9979,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           confineStranded: () => { throw new Error('pairing-not-ready'); },
           stateDir: config.stateDir,
           machineId: () => _meshSelfId ?? os.hostname(),
+          // Refusals name the machine ("Mac Studio is nearly out of disk space"), never "this machine".
+          machineName: () => {
+            const id = _meshSelfId;
+            const row = id ? _listPoolMachines?.().find((m) => m.machineId === id) : undefined;
+            return id ? verifiedEntityName(id, row?.nickname) : null;
+          },
           registry: conversationRegistry,
           requests: new MobileChatRequestStore(config.stateDir),
           holdsLease: () => (coordinator.enabled ? coordinator.holdsLease() : true),

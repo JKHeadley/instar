@@ -1,3 +1,4 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
 /**
  * The team access routes (docs/specs/team-roles-and-access.md §3.3, §3.4, §4.1). Step 2a: one machine,
  * and the owner's phone is the only person writer. Every write stores the phone's whole signed
@@ -170,7 +171,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   /** A write that fails answers plainly: an access change must never leave a request hanging. */
   const write = (handler: (req: Request, res: Response) => Promise<void>) => (req: Request, res: Response): void => {
-    if (svc.teamLog()?.healthState() === 'unreadable') { send(res, LOG_UNREADABLE); return; }
+    if (svc.teamLog()?.healthState() === 'unreadable') { send(res, storageErrorResponse(LOG_UNREADABLE, path.dirname(deps.logsDir))); return; }
     // Express also matches a trailing slash or a query, and the log would refuse that row after the
     // conversation had already changed. Refuse it before anything moves.
     if (req.originalUrl.startsWith('/mobile/') && !TEAM_ACCESS_WRITE_PATHS.some((re) => re.test(req.originalUrl))) {
@@ -179,7 +180,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     }
     inTurn(() => handler(req, res)).catch((err: unknown) => { // @silent-fallback-ok — the caller is told the change was not saved
       console.warn(`[team-access] ${req.path} failed: ${err instanceof Error ? err.message : String(err)}`);
-      if (!res.headersSent) res.status(500).json({ error: 'team-access-write-failed', detail: 'That change was not saved. Try again.' });
+      if (!res.headersSent) res.status(500).json({ error: 'team-access-write-failed', detail: storageErrorResponse({ error: 'That change was not saved. Try again.' }, path.dirname(deps.logsDir)).detail });
     });
   };
 
@@ -294,7 +295,7 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
       await underLocks(refs.allRefs().map((entry) => entry.ref), () => { result = log.restore(refs); });
       return { status: 200, body: { ok: true, ...(result as unknown as object) } };
     }
-    if (log.healthState() === 'unreadable') return { status: 409, body: { error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail } };
+    if (log.healthState() === 'unreadable') return { status: 409, body: storageErrorResponse({ error: LOG_UNREADABLE.error, detail: LOG_UNREADABLE.detail }, path.dirname(deps.logsDir)) };
     const events = parseSignedEvents(req.body);
     if (kind === 'team-origin-gone') {
       const gone = events?.length === 1 && events[0].type === 'origin-gone' ? events[0] : null;
