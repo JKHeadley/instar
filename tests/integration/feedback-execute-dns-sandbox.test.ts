@@ -33,8 +33,11 @@ describe('feedback executor macOS sandbox', () => {
         fs.writeFileSync(settingsPath, JSON.stringify(settings));
         // A generous limit: this run starts two Node processes and a sandbox on a loaded verifier.
         // A real DNS hang never returns, so it still fails, and the assertion above pins the setting.
+        // The inner command names this Node by its full path. A bare `node` is found through PATH,
+        // and on a host whose Node lives under the home folder (nvm) the sandbox cannot see that
+        // folder, so the shell reports "node: command not found" instead of testing DNS.
         const output = execFileSync(process.execPath, [runtime, '--settings', settingsPath, '-c',
-          'node -e "require(\'node:dns\'); process.stdout.write(\'dns-ready\')"'], {
+          `${JSON.stringify(process.execPath)} -e "require('node:dns'); process.stdout.write('dns-ready')"`], {
           cwd: workspace, timeout: 45_000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
         });
         expect(output).toContain('dns-ready');
