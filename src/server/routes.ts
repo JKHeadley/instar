@@ -338,6 +338,7 @@ import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJou
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import {
   readGuardPostureBootSnapshot,
   resolveGuardConfigSnapshot,
@@ -16532,6 +16533,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return false;
       }
     },
+    // The first list (docs/specs/recommended-services.md, Offers): off unless the switch is on; one message to
+    // the owner's conversation; its message id is the delivery proof. The link is the address the person can
+    // open the confirm page at: the tunnel when there is one, else this machine on the home network.
+    offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled,
+    sendOfferList: async (text, buttons) => {
+      const topicId = ctx.telegram?.getLifelineTopicId?.();
+      if (!ctx.telegram || topicId === undefined) return null;
+      return withNotificationEnvelope(stampNotification(), () => ctx.telegram!.sendOfferList(topicId, text, buttons));
+    },
+    linkBase: () => {
+      const tunnel = ctx.tunnel?.getExternalUrl?.('/') ?? null;
+      if (tunnel) return tunnel.replace(/\/+$/, '');
+      const ip = pickPrimaryLanIp(os.networkInterfaces() as never);
+      return ip ? `http://${ip}:${ctx.config.port}` : null;
+    },
+    registerOfferTapHandler: (handler) => { ctx.telegram?.setRecommendedOfferHandler?.(handler); },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.

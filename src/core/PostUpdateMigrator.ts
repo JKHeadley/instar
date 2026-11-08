@@ -1385,6 +1385,7 @@ ${MOBILE_APP_POOL_LINE()}
 /** The shipped v1 sentence of the recommended-services block; a legacy-layout CLAUDE.md still carrying it gets the v2 wording. */
 export const RECOMMENDED_SERVICES_V1_TAIL = 'field says whether it is. Offers are not live yet.';
 export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale and Jev can be set up on every agent: the person says yes or no on the dashboard\'s Services row (`/dashboard/service-yes?service=<id>`, PIN); a yes starts a setup session in its own topic that owns the whole job; a no can also switch a working service off here. I don\'t offer services on my own yet.';
+export const RECOMMENDED_SERVICES_V3_TAIL = 'field says whether it is. Tailscale, Jev, Bitwarden and GitHub backup can be set up on every agent: yes or no on the Services row (PIN); a yes starts a setup session that owns the job; a no can switch a service off. With `recommendedServices.offers.enabled` on I offer them myself, once, in one list; `offered` marks an unanswered row.';
 
 /**
  * CLAUDE.md awareness block for recommended outside services (docs/specs/recommended-services.md).
@@ -1393,7 +1394,7 @@ export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale
 export function RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port: number): string {
   return `\n### Recommended outside services (\`GET /recommended-services\`)
 
-The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V2_TAIL}
+The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V3_TAIL}
 - Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services\`. A no stands until the person confirms a yes, and I never re-offer on my own for now.
 - **The person only approves, asks for changes, or supplies a credential.** After a yes, everything else is mine: research, creating accounts, getting keys, setup. They never open a browser or follow steps.
 - **Whose account is their choice.** I can fully manage their accounts like an executive assistant, use accounts of my own, or both. I make that clear and never recommend against either.
@@ -10715,6 +10716,12 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL);
       patched = true;
       result.upgraded.push('CLAUDE.md: recommended services section now says Tailscale and Jev can be set up');
+    }
+    // v2 → v3 wording (Bitwarden and GitHub available; the first list behind its switch): swapped in place, once.
+    if (content.includes('Recommended outside services (') && content.includes(RECOMMENDED_SERVICES_V2_TAIL)) {
+      content = content.replace(RECOMMENDED_SERVICES_V2_TAIL, RECOMMENDED_SERVICES_V3_TAIL);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: recommended services section now names the offer list and all four recipes');
     }
     if (!content.includes('Recommended outside services (')) {
       content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);

@@ -39,6 +39,8 @@ export interface ServiceSetupState {
   syncFailures?: number;
   /** The attention item a failing check asked for (a public backup repository), raised once; cleared when the check passes again. */
   attentionRaised?: string;
+  /** `verify` passed here with no choice made: the service is already in use on this machine, so it is not offered (a fact, never a choice). */
+  inUse?: boolean;
 }
 
 export function setupStateFile(stateDir: string): string {
