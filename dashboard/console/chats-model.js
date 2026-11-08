@@ -122,6 +122,7 @@ export function bubble(kind, row, opts = {}) {
     attachments: Array.isArray(row.attachments) ? row.attachments.filter((a) => a && typeof a.sha256 === 'string').map(attachmentView) : [],
     delivery: side === 'right' && kind !== 'telegram' ? deliveryLabel(row.deliveryState, row.deliveryDetail) : side === 'right' && row.deliveryState ? deliveryLabel(row.deliveryState, row.deliveryDetail) : null,
     mark: side === 'right' ? originMark(row, own) : null,
+    own,
   };
 }
 
@@ -276,7 +277,9 @@ export function unfinishedAction(entry, { deviceId, machineId, nowMs }) {
 export function sendOutcome(status, data) {
   const d = data || {};
   if (status === 200 || status === 201) {
-    const state = typeof d.deliveryState === 'string' ? d.deliveryState : 'pending';
+    // App sends answer `deliveryState`; Telegram and Slack sends answer `outcome` ('delivered' / 'refused').
+    const state = typeof d.deliveryState === 'string' ? d.deliveryState
+      : d.outcome === 'delivered' ? 'delivered' : d.outcome === 'refused' ? 'refused' : 'pending';
     return { final: state !== 'pending' && state !== 'forwarded' && state !== 'waiting', state, label: deliveryLabel(state, d.detail || d.deliveryDetail) };
   }
   // warning-exempt: a delivery or signature state on the operator's own message, shown inside the open conversation where it is read and answered
@@ -287,6 +290,10 @@ export function sendOutcome(status, data) {
   if (status === 409) return { final: true, state: 'unknown', label: { label: d.error === 'not-serving' ? 'Sending to Telegram works from the machine serving Telegram' : 'unknown — check the conversation', tone: 'attn' } };
   // warning-exempt: a delivery or signature state on the operator's own message, shown inside the open conversation where it is read and answered
   if (status === 400 || status === 413) return { final: true, state: 'refused', label: { label: d.detail || 'not delivered', tone: 'bad' } };
+  // A 503 that names why sending is off here (no Telegram owner, the switch, media) is final: retrying
+  // cannot help. A bare 503 (a server still starting) is retried.
+  // warning-exempt: a delivery or signature state on the operator's own message, shown inside the open conversation where it is read and answered
+  if (status === 503 && ['chat-unavailable', 'browser-devices-off', 'media-off', 'slack-owner-unset'].includes(d.error)) return { final: true, state: 'refused', label: { label: d.detail ? `not delivered — ${d.detail}` : 'not delivered', tone: 'bad' } };
   return { final: false, state: 'sending', label: deliveryLabel('sending') };
 }
 

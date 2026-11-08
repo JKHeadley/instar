@@ -73,7 +73,8 @@ describe('browser devices — production wiring', () => {
 
     const status0 = await auth(request(app).get('/mobile/browser-devices/status').set('Host', HOST));
     expect(status0.status).toBe(200);
-    expect(status0.body).toMatchObject({ enabled: true, approvalPath: 'dashboard' });
+    // No Telegram owner to speak as: the page is told it cannot send into Telegram here.
+    expect(status0.body).toMatchObject({ enabled: true, approvalPath: 'dashboard', telegramSend: false });
 
     const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN });
     expect(unlock.status).toBe(200);
