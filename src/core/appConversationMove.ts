@@ -204,16 +204,24 @@ export interface AppBringBackDeps {
 
 /**
  * Whether a moved conversation's machine is answering, for its placement and for Bring it back here.
- * Only fresh DIRECT contact counts, by the same 2-minute rule as pool readiness. Reading
- * `liveness.state` alone is not enough: a peer stays "live" until its last direct success is older
- * than the failover threshold (15 minutes by default), which kept Bring it back here hidden that
- * long after the machine stopped. Bringing back is still the operator's confirmed tap, and a
- * machine that returns is fenced by its lower epoch.
+ * False only on this machine's OWN evidence that it stopped:
+ *  - direct contact succeeded in this process but is older than 2 minutes (pool readiness's rule).
+ *    `liveness.state` alone is not enough: a peer stays "live" until its last direct success is
+ *    older than the failover threshold (15 minutes by default), which hid Bring it back here that long;
+ *  - or this process's direct attempts are failing ("unreachable"), which also covers a holder that
+ *    restarted while the owner was down.
+ * With only relayed or saved evidence, or no reading at all, the answer is unknown, and unknown never
+ * offers Bring it back here: right after the holder restarts, a healthy owner must not look stopped.
+ * Bringing back is still the operator's confirmed tap, and a machine that returns is fenced by its lower epoch.
  */
 export function ownerAnswering(cap: Pick<MachineCapacity, 'liveness'> | null | undefined): boolean {
   const l = cap?.liveness;
-  return !!l && l.source === 'direct' && l.state === 'live'
-    && typeof l.evidenceAgeMs === 'number' && l.evidenceAgeMs <= READINESS_CONTACT_MAX_AGE_MS;
+  if (!l) return true;
+  if (l.state === 'unreachable') return false;
+  if (l.source === 'direct' && l.state === 'live') {
+    return typeof l.evidenceAgeMs === 'number' && l.evidenceAgeMs <= READINESS_CONTACT_MAX_AGE_MS;
+  }
+  return true;
 }
 
 export function bringBackWarning(machineName: string): string {

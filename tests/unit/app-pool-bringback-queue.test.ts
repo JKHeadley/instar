@@ -57,13 +57,32 @@ describe('ownerAnswering: only fresh direct contact means the owner is answering
     expect(ownerAnswering(capSeen(READINESS_CONTACT_MAX_AGE_MS + 1))).toBe(false);
   });
 
-  it('never trusts indirect evidence or a missing reading', () => {
-    const relayed = { liveness: deriveLiveness({ isSelf: false, nowMs: NOW, failoverThresholdMs: FAILOVER_MS, attempts: [], relayedOriginAtMs: NOW - 5_000 }) };
+  it('reads indirect evidence or a missing reading as unknown, which never offers bring-back', () => {
+    const relayed = { liveness: deriveLiveness({ isSelf: false, nowMs: NOW, failoverThresholdMs: FAILOVER_MS, attempts: [], relayedOriginAtMs: NOW - 5 * 60_000 }) };
     expect(relayed.liveness.source).toBe('relayed');
-    expect(ownerAnswering(relayed)).toBe(false);
-    expect(ownerAnswering({ liveness: undefined } as never)).toBe(false);
-    expect(ownerAnswering(null)).toBe(false);
-    expect(ownerAnswering(undefined)).toBe(false);
+    expect(ownerAnswering(relayed)).toBe(true);
+    expect(ownerAnswering({ liveness: undefined } as never)).toBe(true);
+    expect(ownerAnswering(null)).toBe(true);
+    expect(ownerAnswering(undefined)).toBe(true);
+  });
+});
+
+describe('a holder that just restarted judges only from its own direct attempts', () => {
+  it('does not offer bring-back for a healthy owner before its first direct contact', () => {
+    // Only a success saved by the previous process, and no attempt yet in this one.
+    const cap = { liveness: deriveLiveness({ isSelf: false, nowMs: NOW, failoverThresholdMs: FAILOVER_MS, attempts: [], savedDirectAtMs: NOW - 4 * 60_000 }) };
+    expect(cap.liveness.source).toBe('saved');
+    expect(placement(cap)).toMatchObject({ answering: true, bringBack: { can: false } });
+  });
+
+  it('offers it for a dead owner once this process\'s own direct attempts fail', () => {
+    const cap = { liveness: deriveLiveness({ isSelf: false, nowMs: NOW, failoverThresholdMs: FAILOVER_MS, savedDirectAtMs: NOW - 6 * 60_000, attempts: [{ atMs: NOW - 40_000, ok: false }, { atMs: NOW - 10_000, ok: false }] }) };
+    expect(cap.liveness.state).toBe('unreachable');
+    expect(placement(cap)).toMatchObject({ answering: false, bringBack: { can: true } });
+  });
+
+  it('stops offering it as soon as a direct attempt succeeds', () => {
+    expect(placement(capSeen(1_000))).toMatchObject({ answering: true, bringBack: { can: false } });
   });
 });
 

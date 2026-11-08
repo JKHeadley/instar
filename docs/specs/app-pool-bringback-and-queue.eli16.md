@@ -24,6 +24,8 @@ The first real test of moving an app conversation between two machines found two
 
 **Bringing back is still the person's decision.** It is offered sooner, but it only happens when the person taps it and confirms a warning that the other machine's session will be stopped when it reconnects.
 
+**A machine only says "not answering" on its own evidence.** Right after the serving machine restarts, it has not heard from the other machine yet. Until it tries and fails to reach it directly, it reports "don't know" and offers nothing, so a healthy conversation is never offered for takeover by mistake. If the other machine really is down, the first failed attempts show it and the offer appears.
+
 **A machine that comes back cannot take over again.** Its record is older than the holder's, so it closes its stale copy.
 
 **Nothing else moves.** Telegram and Slack messages are delivered exactly as before. Failover keeps its 15-minute window.
