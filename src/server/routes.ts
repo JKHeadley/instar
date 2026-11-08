@@ -1,4 +1,5 @@
 import { topicGoalContext } from '../core/TopicGoalContext.js';
+import { operatorError, storageErrorResponse } from '../core/storageMachineName.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
@@ -3424,7 +3425,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const backupPath = windowStore.backupExisting('pre-compile', windowNow());
       windowStore.save(ledger); initializeShadowCensus(ledger.lifecycleRunId); return res.status(201).json({ ...ledger, compileBackupPath: backupPath });
     }
-    catch (error) { /* @silent-fallback-ok — compilation refusal is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); }
+    catch (error) { /* @silent-fallback-ok — compilation refusal is returned explicitly as HTTP 409 */ return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) }); }
   });
   router.post('/window-lifecycle/evidence', (req, res) => {
     if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' });
@@ -3517,13 +3518,13 @@ export function createRoutes(ctx: RouteContext): Router {
       ctx.windowLifecycleTick?.();
       return res.json(next);
     } catch (error) {
-      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) });
     }
   });
-  router.post('/window-lifecycle/native-admission', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const current = windowStore.load('echo', 'echo-window-lifecycle'); if (!current) return res.status(404).json({ error: 'ledger-not-found' }); if (req.body.windowId !== current.windowId) return res.status(409).json({ error: 'wrong-window' }); const record = runNativeAdmissionAdapter({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: current.windowId, stateDir: ctx.config.stateDir, package: req.body.package, nonce: req.body.nonce }); const ledger = windowStore.appendNativeEvaluation('echo', 'echo-window-lifecycle', record); const admitted = (record.output as { admitted?: boolean }).admitted === true; if (admitted) { const duty = ledger.obligations.find(o => o.id === 'preground.native-structural-preflight'); if (!duty) throw new Error('native-preflight-obligation-missing'); duty.evidence.push({ authority: 'native-local-store-presence', agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: duty.id, sourceHashes: duty.sourceSpans.map(s => s.hash), producer: `native:${record.evaluatorVersion}`, timestamp: record.evaluatedAt, nonce: record.nonce, canonicalPayloadHash: record.inputHash, verifierPassed: true, verifiedPayload: JSON.stringify(record.output), nativeCoordinates: { storePath: record.storePath } }); duty.status = 'satisfied'; windowStore.save(ledger); } ctx.windowLifecycleTick?.(); return res.status(admitted ? 200 : 409).json({ record, state: ledger.state }); } catch (error) { return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
-  router.post('/window-lifecycle/waiver', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const waiver = req.body.waiver as Waiver; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === waiver?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === waiver?.approvalCoordinates?.messageId); const verified = approval ? evidenceAuthority().requery(approval) : null; if (!verified || verified.verifiedPayload?.trim() !== `approve waiver ${waiver.digest}`) return res.status(403).json({ error: 'verified-exact-digest-operator-approval-required' }); try { const next = applyWaiver(ledger, waiver, verified.producer); next.admission = undefined; windowStore.save(next); ctx.windowLifecycleTick?.(); return res.json(next); } catch (error) { /* @silent-fallback-ok — invalid waiver refusal is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
-  router.post('/window-lifecycle/rollback', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const request = req.body.rollback as RollbackRequest; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === request?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === request?.approvalCoordinates?.messageId); if (!approval) return res.status(403).json({ error: 'verified-exact-digest-operator-rollback-required' }); try { return res.json(windowStore.rollback('echo', 'echo-window-lifecycle', request, approval, evidenceAuthority(), windowNow(), candidate => { freezeMatchingWindowLiveness(candidate, 'lifecycle-rolled-back', 'failed'); })); } catch (error) { /* @silent-fallback-ok — refused rollback is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
-  router.post('/window-lifecycle/reenable', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const inventory = [...WINDOW_DRY_RUN_INVENTORY]; return res.json(windowStore.reenable('echo', 'echo-window-lifecycle', path.join(ctx.config.stateDir, 'window-lifecycle', 'fault-fixed-evidence.json'), () => { const runner = path.join(ctx.config.projectDir, 'node_modules', '.bin', 'vitest'); const output = withSyncOp(() => execFileSync(runner, ['run', ...inventory], { cwd: ctx.config.projectDir, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })); return { passed: true, command: `${runner} run ${inventory.join(' ')}`, completedAt: windowNow(), outputHash: createHash('sha256').update(output).digest('hex'), testInventory: inventory }; }, windowNow())); } catch (error) { /* @silent-fallback-ok — refused re-enable is returned explicitly as HTTP 409 */ return res.status(409).json({ error: error instanceof Error ? error.message : String(error) }); } });
+  router.post('/window-lifecycle/native-admission', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const current = windowStore.load('echo', 'echo-window-lifecycle'); if (!current) return res.status(404).json({ error: 'ledger-not-found' }); if (req.body.windowId !== current.windowId) return res.status(409).json({ error: 'wrong-window' }); const record = runNativeAdmissionAdapter({ agentId: 'echo', scope: 'echo-window-lifecycle', windowId: current.windowId, stateDir: ctx.config.stateDir, package: req.body.package, nonce: req.body.nonce }); const ledger = windowStore.appendNativeEvaluation('echo', 'echo-window-lifecycle', record); const admitted = (record.output as { admitted?: boolean }).admitted === true; if (admitted) { const duty = ledger.obligations.find(o => o.id === 'preground.native-structural-preflight'); if (!duty) throw new Error('native-preflight-obligation-missing'); duty.evidence.push({ authority: 'native-local-store-presence', agentId: 'echo', scope: 'echo-window-lifecycle', windowId: ledger.windowId, obligationId: duty.id, sourceHashes: duty.sourceSpans.map(s => s.hash), producer: `native:${record.evaluatorVersion}`, timestamp: record.evaluatedAt, nonce: record.nonce, canonicalPayloadHash: record.inputHash, verifierPassed: true, verifiedPayload: JSON.stringify(record.output), nativeCoordinates: { storePath: record.storePath } }); duty.status = 'satisfied'; windowStore.save(ledger); } ctx.windowLifecycleTick?.(); return res.status(admitted ? 200 : 409).json({ record, state: ledger.state }); } catch (error) { return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) }); } });
+  router.post('/window-lifecycle/waiver', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const waiver = req.body.waiver as Waiver; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === waiver?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === waiver?.approvalCoordinates?.messageId); const verified = approval ? evidenceAuthority().requery(approval) : null; if (!verified || verified.verifiedPayload?.trim() !== `approve waiver ${waiver.digest}`) return res.status(403).json({ error: 'verified-exact-digest-operator-approval-required' }); try { const next = applyWaiver(ledger, waiver, verified.producer); next.admission = undefined; windowStore.save(next); ctx.windowLifecycleTick?.(); return res.json(next); } catch (error) { /* @silent-fallback-ok — invalid waiver refusal is returned explicitly as HTTP 409 */ return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) }); } });
+  router.post('/window-lifecycle/rollback', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); const request = req.body.rollback as RollbackRequest; const approval = ledger.obligations.flatMap(o => o.evidence).find(e => e.authority === 'verified-operator-approval' && e.nativeCoordinates?.topicId === request?.approvalCoordinates?.topicId && e.nativeCoordinates?.messageId === request?.approvalCoordinates?.messageId); if (!approval) return res.status(403).json({ error: 'verified-exact-digest-operator-rollback-required' }); try { return res.json(windowStore.rollback('echo', 'echo-window-lifecycle', request, approval, evidenceAuthority(), windowNow(), candidate => { freezeMatchingWindowLiveness(candidate, 'lifecycle-rolled-back', 'failed'); })); } catch (error) { /* @silent-fallback-ok — refused rollback is returned explicitly as HTTP 409 */ return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) }); } });
+  router.post('/window-lifecycle/reenable', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); try { const inventory = [...WINDOW_DRY_RUN_INVENTORY]; return res.json(windowStore.reenable('echo', 'echo-window-lifecycle', path.join(ctx.config.stateDir, 'window-lifecycle', 'fault-fixed-evidence.json'), () => { const runner = path.join(ctx.config.projectDir, 'node_modules', '.bin', 'vitest'); const output = withSyncOp(() => execFileSync(runner, ['run', ...inventory], { cwd: ctx.config.projectDir, encoding: 'utf8', timeout: 300_000, maxBuffer: 16 * 1024 * 1024 })); return { passed: true, command: `${runner} run ${inventory.join(' ')}`, completedAt: windowNow(), outputHash: createHash('sha256').update(output).digest('hex'), testInventory: inventory }; }, windowNow())); } catch (error) { /* @silent-fallback-ok — refused re-enable is returned explicitly as HTTP 409 */ return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) }); } });
   router.get('/window-lifecycle/enforcement', (_req, res) => ctx.config.projectName === 'echo' ? res.json(loadEnforcementState()) : res.status(404).json({ error: 'echo-scope-required' }));
   router.post('/window-lifecycle/enforcement/record-shadow', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); if (loadEnforcementState().mode !== 'dry-run') return res.status(409).json({ error: 'shadow-recording-requires-dry-run' }); const ledger = windowStore.load('echo', 'echo-window-lifecycle'); if (!ledger) return res.status(404).json({ error: 'ledger-not-found' }); return produceGraduationReports(ledger) ? res.status(201).json({ recorded: true, reports: readGraduationReports() }) : res.status(409).json({ error: 'shadow-lifecycle-incomplete-or-criteria-failed', closure: evaluateClosure(ledger), postLive: runWindowLifecyclePostLiveCheck(ledger) }); });
   router.post('/window-lifecycle/enforcement/graduate', (req, res) => { if (!windowRequestScope(req.body)) return res.status(403).json({ error: 'echo-scope-required' }); const state = loadEnforcementState(); if (state.mode !== 'dry-run') return res.status(409).json({ error: 'graduation-requires-dry-run' }); const reports = readGraduationReports(); if (!reports) return res.status(409).json({ error: 'graduation-authority-evidence-missing-or-invalid' }); const next: WindowEnforcementState = { ...state, mode: 'enforced', graduatedAt: windowNow(), evidenceDigests: [reports.synthetic.signature, reports.real.signature] }; saveEnforcementState(next); return res.json(next); });
@@ -3560,7 +3561,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const state = await ctx.windowRunCadenceExecutor.tick(topicId);
       return state ? res.json(state) : res.status(404).json({ error: 'window run cadence is not registered' });
     } catch (error) {
-      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) });
     }
   });
   // A misnamed field (e.g. runId for autonomousRunId) must be refused by name:
@@ -3609,7 +3610,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       return res.status(201).json(state);
     } catch (error) {
-      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) });
     }
   });
   router.post('/window-run-liveness/tick', async (req, res) => {
@@ -3620,7 +3621,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const state = await ctx.windowRunLivenessAuthority.tick(topicId);
       return state ? res.json(state) : res.status(404).json({ error: 'window run liveness is not registered' });
     } catch (error) {
-      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) });
     }
   });
   router.post('/window-run-liveness/work-advance', async (req, res) => {
@@ -3643,7 +3644,7 @@ export function createRoutes(ctx: RouteContext): Router {
       });
       return res.status(201).json({ receipt });
     } catch (error) {
-      return res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+      return res.status(409).json({ error: operatorError(error, res.app?.locals?.stateDir) });
     }
   });
   router.post('/window-lifecycle/remediation/:obligationId/resolve', (req, res) => {
@@ -3669,7 +3670,7 @@ export function createRoutes(ctx: RouteContext): Router {
         : /^\/autonomous\/(?:evaluate-completion|[^/]+\/run-end)/.test(req.path) ? 'completion-claim' : null;
     if (!action) return next(); const verdict = evaluateLifecycleGuard(ledger, action); if (enforcement.mode === 'dry-run') { if (!verdict.allowed) auditWouldBlock(action, verdict.reasons); return next(); } if (!verdict.allowed) return res.status(409).json({ error: 'window-lifecycle-enforcement', action, reasons: verdict.reasons });
     if (action === 'telegram-send') { const episodes = readRemediationEpisodes(); const corrections = ledger.obligations.filter(item => { if (!['pending', 'unknown', 'open-unexecuted', 'failed', 'blocked', 'expired'].includes(item.status) || !deriveFailureRemediation(item).correctionRequired) return false; const digest = remediationEpisodeDigest(item); return !episodes.some(episode => episode.episodeDigest === digest && episode.disposition === 'resolved-with-live-evidence' && remediationResolutionIsLive(item, episode)); }); const selected = corrections.find(item => { const episode = [...episodes].reverse().find(entry => entry.remediationId === req.body?.remediationId && entry.obligationId === item.id && entry.episodeDigest === remediationEpisodeDigest(item) && entry.disposition === 'awaiting-authoritative-evidence'); if (!episode || typeof req.body?.text !== 'string') return false; return item.failureAction === 'correct-before-report' ? /corrected counts?:/i.test(req.body.text) && /\bsource:/i.test(req.body.text) && /\b[A-Za-z][\w -]*\s*=\s*\d+\b/.test(req.body.text) : isHighLevelSynthesis(req.body.text); }); if (corrections.length && !selected) return res.status(409).json({ error: 'window-lifecycle-correction-required', remediationIds: episodes.filter(episode => corrections.some(item => item.id === episode.obligationId) && episode.disposition === 'awaiting-authoritative-evidence').map(episode => episode.remediationId) }); }
-    if (action === 'telegram-send') { try { const topicMatch = req.path.match(/^\/telegram\/(?:reply|post-update)\/(\d+)/); const topicId = Number(topicMatch?.[1] ?? (req.path === '/telegram/post-update' ? ctx.state.get<number>('agent-updates-topic') : req.body?.topicId)); const text = req.body?.text; const registry = ctx.playwrightRegistry?.() ?? new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] }); const profileId = registry.resolve('telegram').profile?.id; if (profileId !== 'justin-telegram') throw new Error(`send-time-profile-invalid:${profileId ?? 'missing'}`); if (!Number.isSafeInteger(topicId) || typeof text !== 'string') throw new Error(`send-time-payload-invalid:topic=${topicId}:text=${typeof text}`); const identity = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'identity.json'), 'utf8')) as { privateKey?: unknown; privateKeyEncryption?: unknown }; if (identity.privateKeyEncryption && identity.privateKeyEncryption !== 'none' || typeof identity.privateKey !== 'string') throw new Error('send-time-signing-key-unavailable'); const signed = signAgentMessage({ agentId: 'echo', topicId, body: text, privateKey: Buffer.from(identity.privateKey, 'base64'), timestamp: Math.floor(Date.parse(windowNow()) / 1000) }); req.body.text = signed.text; const checked = verifyEchoSignedOutbound({ text: signed.text, topicId, timestamp: windowNow(), fromUser: false, authorship: 'agent-outbound' }); if (!checked) throw new Error('send-time-signature-verification-failed'); } catch (error) { return res.status(409).json({ error: 'window-lifecycle-send-time-guard', reason: error instanceof Error ? error.message : String(error) }); } }
+    if (action === 'telegram-send') { try { const topicMatch = req.path.match(/^\/telegram\/(?:reply|post-update)\/(\d+)/); const topicId = Number(topicMatch?.[1] ?? (req.path === '/telegram/post-update' ? ctx.state.get<number>('agent-updates-topic') : req.body?.topicId)); const text = req.body?.text; const registry = ctx.playwrightRegistry?.() ?? new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] }); const profileId = registry.resolve('telegram').profile?.id; if (profileId !== 'justin-telegram') throw new Error(`send-time-profile-invalid:${profileId ?? 'missing'}`); if (!Number.isSafeInteger(topicId) || typeof text !== 'string') throw new Error(`send-time-payload-invalid:topic=${topicId}:text=${typeof text}`); const identity = JSON.parse(fs.readFileSync(path.join(ctx.config.stateDir, 'identity.json'), 'utf8')) as { privateKey?: unknown; privateKeyEncryption?: unknown }; if (identity.privateKeyEncryption && identity.privateKeyEncryption !== 'none' || typeof identity.privateKey !== 'string') throw new Error('send-time-signing-key-unavailable'); const signed = signAgentMessage({ agentId: 'echo', topicId, body: text, privateKey: Buffer.from(identity.privateKey, 'base64'), timestamp: Math.floor(Date.parse(windowNow()) / 1000) }); req.body.text = signed.text; const checked = verifyEchoSignedOutbound({ text: signed.text, topicId, timestamp: windowNow(), fromUser: false, authorship: 'agent-outbound' }); if (!checked) throw new Error('send-time-signature-verification-failed'); } catch (error) { return res.status(409).json({ error: 'window-lifecycle-send-time-guard', reason: operatorError(error, res.app?.locals?.stateDir) }); } }
     return next();
   });
 
@@ -6101,7 +6102,7 @@ export function createRoutes(ctx: RouteContext): Router {
       } catch (err) {
         res.status(400).json({
           error: 'invalid featurePattern',
-          detail: err instanceof Error ? err.message : String(err),
+          detail: operatorError(err, res.app?.locals?.stateDir),
         });
         return;
       }
@@ -6875,7 +6876,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (scopedSession) for (const field of ['transcript_path', 'agent_transcript_path', 'cwd']) delete (payload as Record<string, unknown>)[field];
     const stored = dispatchHookEvent(hookEventDispatchDeps(), payload, instarSid);
     if (!stored) {
-      res.status(500).json({ error: 'Failed to store event' });
+      res.status(500).json(storageErrorResponse({ error: 'Failed to store event' }, ctx.config.stateDir));
       return;
     }
 
@@ -7093,7 +7094,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const agents = listAgents();
       res.json({ agents });
     } catch {
-      res.status(500).json({ error: 'Failed to load agent registry' });
+      res.status(500).json(storageErrorResponse({ error: 'Failed to load agent registry' }, ctx.config.stateDir));
     }
   });
 
@@ -7156,7 +7157,7 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Cross-agent restart failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Cross-agent restart failed' });
     }
   });
 
@@ -7168,7 +7169,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const manager = new BackupManager(ctx.config.stateDir, ctx.config.backup);
       res.json({ snapshots: manager.listSnapshots() });
     } catch {
-      res.status(500).json({ error: 'Failed to list backups' });
+      res.status(500).json(storageErrorResponse({ error: 'Failed to list backups' }, ctx.config.stateDir));
     }
   });
 
@@ -7179,7 +7180,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const snapshot = manager.createSnapshot('manual');
       res.json(snapshot);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Backup failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Backup failed' });
     }
   });
 
@@ -7220,7 +7221,7 @@ export function createRoutes(ctx: RouteContext): Router {
       manager.restoreSnapshot(id);
       res.json({ restored: id });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Restore failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Restore failed' });
     }
   });
 
@@ -7233,7 +7234,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const manager = new GitStateManager(ctx.config.stateDir, gitConfig);
       res.json(manager.status());
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to get git status' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to get git status' });
     }
   });
 
@@ -7247,7 +7248,7 @@ export function createRoutes(ctx: RouteContext): Router {
       manager.commit(message, files);
       res.json({ committed: true, message });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Commit failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Commit failed' });
     }
   });
 
@@ -7270,7 +7271,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const result = manager.push();
       res.json({ pushed: true, firstPush: result.firstPush });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Push failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Push failed' });
     }
   });
 
@@ -7282,7 +7283,7 @@ export function createRoutes(ctx: RouteContext): Router {
       manager.pull();
       res.json({ pulled: true });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Pull failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Pull failed' });
     }
   });
 
@@ -7294,7 +7295,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const limit = parseInt(req.query.limit as string, 10) || 20;
       res.json({ entries: manager.log(limit) });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to get git log' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to get git log' });
     }
   });
 
@@ -7326,7 +7327,7 @@ export function createRoutes(ctx: RouteContext): Router {
         index.close();
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Search failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Search failed' });
     }
   });
 
@@ -7345,7 +7346,7 @@ export function createRoutes(ctx: RouteContext): Router {
         index.close();
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to get stats' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to get stats' });
     }
   });
 
@@ -7364,7 +7365,7 @@ export function createRoutes(ctx: RouteContext): Router {
         index.close();
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Reindex failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Reindex failed' });
     }
   });
 
@@ -7383,7 +7384,7 @@ export function createRoutes(ctx: RouteContext): Router {
         index.close();
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Sync failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Sync failed' });
     }
   });
 
@@ -7417,7 +7418,7 @@ export function createRoutes(ctx: RouteContext): Router {
       ctx.attribution?.recordInBackground(String(content), { surface: 'memory-route', path: '/semantic/remember' });
       res.json({ id });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remember' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to remember' });
     }
   });
 
@@ -7428,7 +7429,7 @@ export function createRoutes(ctx: RouteContext): Router {
       if (!result) { res.status(404).json({ error: 'Entity not found' }); return; }
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to recall' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to recall' });
     }
   });
 
@@ -7438,7 +7439,7 @@ export function createRoutes(ctx: RouteContext): Router {
       ctx.semanticMemory.forget(req.params.id, req.body?.reason);
       res.json({ deleted: true });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to forget' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to forget' });
     }
   });
 
@@ -7455,7 +7456,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const edgeId = ctx.semanticMemory.connect(fromId, toId, relation, context, weight);
       res.json({ edgeId });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to connect' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to connect' });
     }
   });
 
@@ -7471,7 +7472,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const results = ctx.semanticMemory.search(query, { types: types as any, domain, minConfidence, limit });
       res.json({ query, results, totalResults: results.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Search failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Search failed' });
     }
   });
 
@@ -7488,7 +7489,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const results = await ctx.semanticMemory.searchHybrid(query, { types: types as any, domain, minConfidence, limit });
       res.json({ query, results, totalResults: results.length, vectorSearchActive: ctx.semanticMemory.vectorSearchAvailable });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Hybrid search failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Hybrid search failed' });
     }
   });
 
@@ -7499,7 +7500,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const count = await ctx.semanticMemory.embedAllEntities();
       res.json({ embedded: count, vectorSearchAvailable: ctx.semanticMemory.vectorSearchAvailable });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Embedding migration failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Embedding migration failed' });
     }
   });
 
@@ -7511,7 +7512,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const results = ctx.semanticMemory.explore(req.params.id, { maxDepth, relations: relations as any });
       res.json({ results });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Explore failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Explore failed' });
     }
   });
 
@@ -7521,7 +7522,7 @@ export function createRoutes(ctx: RouteContext): Router {
       ctx.semanticMemory.verify(req.params.id, req.body?.confidence);
       res.json({ verified: true });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Verify failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Verify failed' });
     }
   });
 
@@ -7535,7 +7536,7 @@ export function createRoutes(ctx: RouteContext): Router {
       ctx.semanticMemory.supersede(oldId, newId, reason);
       res.json({ superseded: true });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Supersede failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Supersede failed' });
     }
   });
 
@@ -7545,7 +7546,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const report = ctx.semanticMemory.decayAll();
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Decay failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Decay failed' });
     }
   });
 
@@ -7558,7 +7559,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const results = ctx.semanticMemory.findStale({ maxConfidence, olderThan, limit });
       res.json({ results });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Stale query failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Stale query failed' });
     }
   });
 
@@ -7567,7 +7568,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(ctx.semanticMemory.export());
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Export failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Export failed' });
     }
   });
 
@@ -7577,7 +7578,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const report = ctx.semanticMemory.import(req.body);
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Import failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Import failed' });
     }
   });
 
@@ -7586,7 +7587,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(ctx.semanticMemory.stats());
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Stats failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Stats failed' });
     }
   });
 
@@ -7598,7 +7599,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const context = ctx.semanticMemory.getRelevantContext(query, { maxTokens });
       res.json({ context });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Context generation failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Context generation failed' });
     }
   });
 
@@ -7672,7 +7673,7 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : 'Evidence lookup failed',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Evidence lookup failed',
       });
     }
   });
@@ -7712,7 +7713,7 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     } catch (err) {
       res.status(500).json({
-        error: err instanceof Error ? err.message : 'Citation lookup failed',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Citation lookup failed',
       });
     }
   });
@@ -7761,13 +7762,13 @@ export function createRoutes(ctx: RouteContext): Router {
               domainCount: 0,
               estimatedTokens: Math.ceil(lastGood.length / 4),
               fallback: true,
-              fallbackReason: err instanceof Error ? err.message : 'Export failed',
+              fallbackReason: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Export failed',
             });
             return;
           }
         } catch { /* fallback also failed */ }
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Export failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Export failed' });
     }
   });
 
@@ -7783,7 +7784,7 @@ export function createRoutes(ctx: RouteContext): Router {
         : ctx.semanticMemory.importFromJsonl(jsonlPath);
       res.json({ ...result, mode: full ? 'full-rebuild' : 'incremental-import' });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Rebuild failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Rebuild failed' });
     }
   });
 
@@ -7793,7 +7794,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const result = ctx.semanticMemory.writeSnapshot(req.body?.path);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Snapshot failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Snapshot failed' });
     }
   });
 
@@ -7812,7 +7813,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const report = await migrator.migrateAll({ memoryMdPath });
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Migration failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Migration failed' });
     }
   });
 
@@ -7830,7 +7831,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const report = await migrator.migrateMemoryMd(filePath);
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Migration failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Migration failed' });
     }
   });
 
@@ -7846,7 +7847,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const report = await migrator.migrateRelationships();
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Migration failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Migration failed' });
     }
   });
 
@@ -7862,7 +7863,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const report = await migrator.migrateCanonicalState();
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Migration failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Migration failed' });
     }
   });
 
@@ -7878,7 +7879,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const report = await migrator.migrateDecisionJournal();
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Migration failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Migration failed' });
     }
   });
 
@@ -8572,7 +8573,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       return res.json({ ok: true, topicId, generation: ledger.generationId, preparationState: 'recovering', autonomousRunActive: false });
     } catch (err) {
-      return res.status(409).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+      return res.status(409).json({ ok: false, error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'invalid-request' });
     }
   });
 
@@ -8589,7 +8590,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       return res.json({ ok: true, topicId, generation: ledger.generationId, preparationState: 'promoted', autonomousRunActive: true });
     } catch (err) {
-      return res.status(409).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+      return res.status(409).json({ ok: false, error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'invalid-request' });
     }
   });
 
@@ -8606,7 +8607,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       return res.json({ ok: true, topicId, generation: ledger.generationId, preparationState: 'terminal', autonomousRunActive: false });
     } catch (err) {
-      return res.status(409).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+      return res.status(409).json({ ok: false, error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'invalid-request' });
     }
   });
 
@@ -8651,7 +8652,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const ledger = continuationStore().complete(req.params.topic, ordinal);
       res.json({ ok: true, continuationCount: ledger.continuationCount });
     } catch (err) {
-      res.status(400).json({ ok: false, error: err instanceof Error ? err.message : 'invalid-request' });
+      res.status(400).json({ ok: false, error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'invalid-request' });
     }
   });
 
@@ -9109,7 +9110,7 @@ export function createRoutes(ctx: RouteContext): Router {
       if (verdict.met) markMetTerminal();
       res.json(verdict);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -9152,7 +9153,7 @@ export function createRoutes(ctx: RouteContext): Router {
       );
       res.json({ ...verdict, p13ProtocolVersion: P13_PROTOCOL_VERSION });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err), p13ProtocolVersion: P13_PROTOCOL_VERSION });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir), p13ProtocolVersion: P13_PROTOCOL_VERSION });
     }
   });
 
@@ -9275,7 +9276,7 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({
         error: 'SCAN_FAILED',
-        message: err instanceof Error ? err.message : String(err),
+        message: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -9292,7 +9293,7 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({
         error: 'DRIFT_FAILED',
-        message: err instanceof Error ? err.message : String(err),
+        message: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -9320,7 +9321,7 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({
         error: 'SCAN_FAILED',
-        message: err instanceof Error ? err.message : String(err),
+        message: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -9349,7 +9350,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       res.status(500).json({
         error: 'REFRESH_FAILED',
-        message: err instanceof Error ? err.message : String(err),
+        message: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -9384,7 +9385,7 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({
         error: 'SEARCH_FAILED',
-        message: err instanceof Error ? err.message : String(err),
+        message: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -9402,7 +9403,7 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({
         error: 'VALIDATION_FAILED',
-        message: err instanceof Error ? err.message : String(err),
+        message: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -9442,7 +9443,7 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       res.status(500).json({
         error: 'HEALTH_CHECK_FAILED',
-        message: err instanceof Error ? err.message : String(err),
+        message: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -9908,7 +9909,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!root) return;
     let report: StandardsCoverageReport;
     try { report = conformanceReport(root); }
-    catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
+    catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: operatorError(err, res.app?.locals?.stateDir) }); return; }
 
     let standards = report.standards;
     const family = typeof req.query.family === 'string' ? req.query.family : '';
@@ -9935,7 +9936,7 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!root) return;
     let report: StandardsCoverageReport;
     try { report = conformanceReport(root); }
-    catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: err instanceof Error ? err.message : String(err) }); return; }
+    catch (err) { res.status(500).json({ error: 'coverage compute failed', detail: operatorError(err, res.app?.locals?.stateDir) }); return; }
     // `converged` means ONLY "the deterministic pass is stable" — re-running on
     // unchanged inputs is byte-identical. It has never meant "the standards are
     // healthy", but sitting bare beside `enforcedRatio` it read that way: on
@@ -10162,7 +10163,7 @@ export function createRoutes(ctx: RouteContext): Router {
       });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Assembly failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Assembly failed' });
     }
   });
 
@@ -10388,7 +10389,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json({
         repo,
         status: 'error',
-        message: err instanceof Error ? err.message : 'gh CLI failed',
+        message: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'gh CLI failed',
         runs: [],
       });
     }
@@ -10432,7 +10433,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json(sm.claudeBinaryStatus());
     } catch (err) {
       // @silent-fallback-ok — surfaced as an honest 500 with the error detail, never swallowed.
-      res.status(500).json({ error: 'claude-binary status unavailable', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'claude-binary status unavailable', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
   router.post('/sessions/claude-binary/prune', async (_req, res) => {
@@ -10444,7 +10445,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(await sm.pruneRetainedClaudeBinaries());
     } catch (err) {
-      res.status(500).json({ error: 'claude-binary prune failed', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'claude-binary prune failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -10854,7 +10855,7 @@ export function createRoutes(ctx: RouteContext): Router {
         },
       });
     } catch (err) {
-      res.status(500).json({ error: `external-hog status failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `external-hog status failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -10876,7 +10877,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const marker = armStore(ctx.config.stateDir, snapshot, 'pin', () => new Date().toISOString());
       res.json({ ok: true, armed: true, armEpoch: marker.armEpoch, armedAt: marker.armedAt, armedClasses: Object.keys(snapshot) });
     } catch (err) {
-      res.status(500).json({ error: `external-hog arm failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `external-hog arm failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -10889,7 +10890,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const state = disarmStore(ctx.config.stateDir, () => new Date().toISOString());
       res.json({ ok: true, armed: false, lastDisarmEpoch: state.lastDisarmEpoch, disarmedAt: state.disarmedAt ?? null });
     } catch (err) {
-      res.status(500).json({ error: `external-hog disarm failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `external-hog disarm failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -11314,10 +11315,10 @@ export function createRoutes(ctx: RouteContext): Router {
       res.json(result);
     } catch (err) {
       if (err instanceof InvalidCursorError) {
-        res.status(400).json({ error: err.message });
+        res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
         return;
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -11345,7 +11346,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const outcome = await coordinator.fetchWorkingSet(topic);
       res.status(outcome.skipReason === 'rate-limited' ? 429 : 200).json(outcome);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -11383,7 +11384,7 @@ export function createRoutes(ctx: RouteContext): Router {
       manager.record({ topicId, relPath, producerMachineId });
       res.status(200).json({ recorded: true });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -11942,7 +11943,7 @@ export function createRoutes(ctx: RouteContext): Router {
       fs.writeFileSync(filePath, bytes, { mode: 0o600 });
       res.status(201).json({ ok: true, path: filePath, bytes: bytes.length });
     } catch (err) {
-      res.status(500).json({ error: `Could not save the file: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json(storageErrorResponse({ error: `Could not save the file: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
     }
   });
 
@@ -11966,7 +11967,7 @@ export function createRoutes(ctx: RouteContext): Router {
         const body = await r.json().catch(() => ({ error: `The other machine answered ${r.status}` }));
         res.status(r.status).json(body);
       } catch (err) {
-        res.status(502).json({ error: `The other machine did not answer: ${err instanceof Error ? err.message : String(err)}`, reason: 'peer-unreachable' });
+        res.status(502).json({ error: `The other machine did not answer: ${operatorError(err, res.app?.locals?.stateDir)}`, reason: 'peer-unreachable' });
       }
       return;
     }
@@ -11984,7 +11985,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const clean = req.query.redact === 'device' ? (s: string) => redactForDevice(s, [ctx.config.authToken, ctx.config.dashboardPin]) : undefined;
       res.json({ ok: true, ...readTranscriptPage(filePath, { before, limit, clean }) });
     } catch (err) {
-      res.status(500).json({ error: `Could not read the conversation record: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json(storageErrorResponse({ error: `Could not read the conversation record: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
     }
   });
 
@@ -12044,7 +12045,7 @@ export function createRoutes(ctx: RouteContext): Router {
             : 200;
       res.status(httpStatus).json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -12138,7 +12139,7 @@ export function createRoutes(ctx: RouteContext): Router {
       const local = ctx.topicProfile?.newTopicDefault?.read() ?? null;
       res.json({ ...remote, machine, newTopicDefault: { ...(local ?? { framework: null, model: null }), seedsSinceBoot: newTopicDefaultSeedsSinceBoot } });
     } catch (err) {
-      res.status(502).json({ error: `Couldn't reach that machine: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(502).json({ error: `Couldn't reach that machine: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
   router.get('/topic-profile/options', (_req, res) => {
@@ -12203,7 +12204,7 @@ export function createRoutes(ctx: RouteContext): Router {
       audit({ framework: record.framework, model: record.model });
       res.json({ ok: true, newTopicDefault: record, replication: 'local-only' });
     } catch (err) {
-      res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ ok: false, error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -12321,7 +12322,7 @@ export function createRoutes(ctx: RouteContext): Router {
         pin: ctx.topicProfile?.store.resolve(gate.key) ?? null,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -12366,7 +12367,7 @@ export function createRoutes(ctx: RouteContext): Router {
       // Echo undelivered — tear the slot down (an unseen echo must never be
       // confirmable; matchConfirm would refuse on no-echo-id anyway).
       ctx.topicProfile.confirmSlots.disarm(gate.key);
-      res.status(502).json({ ok: false, error: `Echo delivery failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(502).json({ ok: false, error: `Echo delivery failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -12928,7 +12929,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       res.json({ ok: true, killed: req.params.id });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -13113,7 +13114,7 @@ export function createRoutes(ctx: RouteContext): Router {
           pinRetained = seed.outcome === 'seeded';
           if (pinRetained && source === 'new-topic-default') newTopicDefaultSeedsSinceBoot++;
         } catch (err) {
-          return { status: 500, body: { ok: false, step: 'seed', conversationKey, error: `The conversation was created, but its starting engine couldn't be recorded: ${err instanceof Error ? err.message : String(err)}. Its first message runs on the default.` } };
+          return { status: 500, body: { ok: false, step: 'seed', conversationKey, error: `The conversation was created, but its starting engine couldn't be recorded: ${err instanceof Error ? operatorError(err, ctx.config.stateDir) : operatorError(err, ctx.config.stateDir)}. Its first message runs on the default.` } };
         }
       }
     }
@@ -13260,7 +13261,7 @@ export function createRoutes(ctx: RouteContext): Router {
               verdict = (await r.json().catch(() => ({}))) as typeof verdict;
               if (!r.ok && verdict.ok === undefined) throw new Error(`HTTP ${r.status}`);
             } catch (err) {
-              res.status(502).json({ ok: false, code: 'machine-unreachable', step: 'validate-on-target', error: `Couldn't reach ${choice.nickname} to check the door and model (${err instanceof Error ? err.message : String(err)}), so the topic was not created.` });
+              res.status(502).json({ ok: false, code: 'machine-unreachable', step: 'validate-on-target', error: `Couldn't reach ${choice.nickname} to check the door and model (${operatorError(err, res.app?.locals?.stateDir)}), so the topic was not created.` });
               return;
             }
             if (verdict.ok === true && typeof verdict.framework === 'string') {
@@ -13392,7 +13393,7 @@ export function createRoutes(ctx: RouteContext): Router {
         reused = topic.reused === true;
       } catch (err) {
         if (hasPreference || machineChoice.kind !== 'auto') {
-          res.status(502).json({ ok: false, step: 'create-topic', error: `Telegram topic creation failed: ${err instanceof Error ? err.message : String(err)}` });
+          res.status(502).json({ ok: false, step: 'create-topic', error: `Telegram topic creation failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
           return;
         }
         console.error(`[sessions/create] Telegram topic creation failed, proceeding headless: ${err}`);
@@ -13596,10 +13597,10 @@ export function createRoutes(ctx: RouteContext): Router {
               if (seed.outcome === 'seeded' && source === 'new-topic-default') newTopicDefaultSeedsSinceBoot++;
             } catch (err) {
               const settled = settleDashboardCreatedTopic(claim, key, 'spawn-threw');
-              res.status(500).json({
+              res.status(500).json(storageErrorResponse({
                 ok: false, step: 'seed', topicId, pinRetained: false, placement: settled,
-                error: `Could not record the starting door: ${err instanceof Error ? err.message : String(err)}. The topic exists but is unseeded — its first message runs on the defaults; set the door from the session view after that first message.`,
-              });
+                error: `Could not record the starting door: ${operatorError(err, res.app?.locals?.stateDir)}. The topic exists but is unseeded — its first message runs on the defaults; set the door from the session view after that first message.`,
+              }, ctx.config.stateDir));
               return;
             }
           }
@@ -13620,7 +13621,7 @@ export function createRoutes(ctx: RouteContext): Router {
           const settled = settleDashboardCreatedTopic(claim, key, 'spawn-threw');
           res.status(500).json({
             ok: false, step: 'spawn', topicId, pinRetained, placement: settled,
-            error: `The session failed to start: ${err instanceof Error ? err.message : String(err)}. `
+            error: `The session failed to start: ${operatorError(err, res.app?.locals?.stateDir)}. `
               + (pinRetained
                 ? 'The chosen door was retained on THIS machine — after the topic\'s first message, confirm the door from the session view.'
                 : 'The topic exists; its next message starts a session.'),
@@ -13729,7 +13730,7 @@ export function createRoutes(ctx: RouteContext): Router {
         headless: resolvedPlatform === 'headless',
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -14613,7 +14614,7 @@ export function createRoutes(ctx: RouteContext): Router {
         corrections: correctionAccounting,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute learning velocity' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to compute learning velocity' });
     }
   });
 
@@ -14784,7 +14785,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(await reader.read());
     } catch (err) {
-      res.status(500).json({ error: 'lock-state read failed', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'lock-state read failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -14826,7 +14827,7 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     } catch (err) {
       // Observability must never throw — report an honest error rather than 500.
-      res.status(500).json({ error: 'spawn-limiter status unavailable', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'spawn-limiter status unavailable', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -14883,7 +14884,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       posture = gov.getPosture();
     } catch (err) {
-      res.status(500).json({ error: `self-action governor read failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `self-action governor read failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
       return;
     }
     const selfMachineId = ctx.meshSelfId ?? null;
@@ -14985,7 +14986,7 @@ export function createRoutes(ctx: RouteContext): Router {
       });
     } catch (err) {
       // Observability must never throw — report an honest error rather than 500.
-      res.status(500).json({ error: 'test-runner-limiter status unavailable', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'test-runner-limiter status unavailable', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -15060,7 +15061,7 @@ export function createRoutes(ctx: RouteContext): Router {
         liveTargeted: report.liveTargeted,
       });
     } catch (err) {
-      res.status(500).json({ error: 'test-runner-limiter prune failed', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'test-runner-limiter prune failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -15108,7 +15109,7 @@ export function createRoutes(ctx: RouteContext): Router {
     } catch (err) {
       // The store throws on an internally-inconsistent row (e.g. as-is WITH a
       // divergence, or a change WITHOUT one) — that's a 400, not a 500.
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -15432,7 +15433,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
       res.status(201).json({ issued: true, mandate, delivered: true, deliveryStatus: outcome.status });
     } catch (err) {
-      res.status(502).json({ issued: true, mandate, delivered: false, error: err instanceof Error ? err.message : 'delivery failed' });
+      res.status(502).json({ issued: true, mandate, delivered: false, error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'delivery failed' });
     }
   });
 
@@ -16134,7 +16135,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ctx.feedbackDrain.service.requestRunCancellation(String(req.params.runId));
       res.json({ runId: String(req.params.runId), cancellationRequested: true });
     } catch (error) {
-      res.status(409).json({ error: error instanceof Error ? error.message : 'run cancellation failed' });
+      res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'run cancellation failed' });
     }
   });
 
@@ -16182,7 +16183,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ finalized: true, ...result });
     } catch (error) {
-      res.status(409).json({ error: error instanceof Error ? error.message : 'failover restore finalization failed' });
+      res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'failover restore finalization failed' });
     }
   });
 
@@ -16253,7 +16254,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
     } catch (error) {
-      res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
+      res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'authority mutation failed' });
     }
   });
 
@@ -16267,7 +16268,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (!clusterId || clusterId.length > 200) throw new Error('bounded clusterId required');
       const row = ctx.feedbackDrain.store.holdReadiness(clusterId, reason);
       res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
-    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'hold failed' }); }
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'hold failed' }); }
   });
 
   router.post('/feedback-factory/readiness/release', (req, res) => {
@@ -16293,7 +16294,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         Boolean(ctx.feedbackDrain.store.getAuthority('feedback-readiness-default'));
       const row = ctx.feedbackDrain.store.releaseHeld(clusterId, { revalidated: sourcePresent, reason: 'source-projection-authority-revalidated' });
       res.json({ clusterId: row.clusterId, state: row.state, reasonCode: row.reasonCode });
-    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'release failed' }); }
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'release failed' }); }
   });
 
   router.post('/feedback-factory/consumer/promote', (req, res) => {
@@ -16312,7 +16313,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         throw new Error(`promotion checkpoint failed; consumer returned to simulation: ${backupError instanceof Error ? backupError.message : 'backup unavailable'}`);
       }
       res.json({ promoted: true, approvedBatchBound: record.approvedBatchBound, approvedAt: record.approvedAt });
-    } catch (error) { res.status(409).json({ error: error instanceof Error ? error.message : 'promotion failed' }); }
+    } catch (error) { res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'promotion failed' }); }
   });
 
   router.post('/feedback-factory/consumer/revoke', (req, res) => {
@@ -16323,7 +16324,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const record = ctx.feedbackDrain.promotion.revoke();
       ctx.feedbackDrain.checkpointBackup('promotion');
       res.json({ revoked: true, revokedAt: record.revokedAt });
-    } catch (error) { /* @silent-fallback-ok: error returned to the caller as 409 */ res.status(409).json({ error: error instanceof Error ? error.message : 'revoke failed' }); }
+    } catch (error) { /* @silent-fallback-ok: error returned to the caller as 409 */ res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'revoke failed' }); }
   });
 
   // ── Feedback triage (docs/specs/feedback-triage-and-execution.md, Phase 1) ──
@@ -16340,7 +16341,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       if (triage.isCanonicalOwner()) { res.json(local()); return; }
     } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
-      res.status(500).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'feedback triage read failed' });
+      res.status(500).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir).slice(0, 200) : 'feedback triage read failed' });
       return;
     }
     const owner = triage.ownerMachineId();
@@ -16452,7 +16453,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ authorityId: record.authorityId, generation: record.generation, revoked: record.revoked });
     } catch (error) { // @silent-fallback-ok: not silent — the error is returned to the caller as an HTTP error status
-      res.status(409).json({ error: error instanceof Error ? error.message : 'authority mutation failed' });
+      res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'authority mutation failed' });
     }
   });
 
@@ -16695,7 +16696,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const initiativeId = String(req.body?.initiativeId ?? '');
     if (!/^[\w.:-]{1,120}$/.test(initiativeId)) { res.status(400).json({ error: 'initiativeId required' }); return; }
     try { res.json(ctx.feedbackExecute!.service.release(initiativeId)); } catch (error) { // @silent-fallback-ok: not silent — returned as an HTTP error status
-      res.status(409).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'release failed' });
+      res.status(409).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir).slice(0, 200) : 'release failed' });
     }
   });
 
@@ -16861,7 +16862,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
         return;
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
         return;
       }
     }
@@ -16887,7 +16888,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.orchestratorPoller.tick();
       res.json({ ran: result !== null, tick: result });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -17209,12 +17210,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       await ctx.moneyLayerAudit?.flush();
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      res.status(503).json({ accepted: false, error: 'audit-flush-failed', message: `the restart was NOT initiated because its record could not be flushed first: ${detail}` });
+      res.status(503).json(storageErrorResponse({ accepted: false, error: 'audit-flush-failed', message: `the restart was NOT initiated because its record could not be flushed first: ${detail}` }, ctx.config.stateDir));
       return;
     }
     const initiated = ctx.requestSupervisedRestart ? await ctx.requestSupervisedRestart('money-layer enable — operator-requested restart') : false;
     if (!initiated) {
-      res.status(503).json({ accepted: false, error: 'restart-not-initiated', message: 'the restart request could not be written — the state is unchanged' });
+      res.status(503).json(storageErrorResponse({ accepted: false, error: 'restart-not-initiated', message: 'the restart request could not be written — the state is unchanged' }, ctx.config.stateDir));
       return;
     }
     surface.noteRestartInitiated();
@@ -17339,7 +17340,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       store = ctx.routingSpendCapsStore.read();
     } catch (err) {
       // A corrupt money store is surfaced honestly — the view says so, the gate fails closed.
-      return { ...buildRoutingSpendCaps(), storeError: `caps store unreadable (gate fails closed): ${String(err)}` };
+      return { ...buildRoutingSpendCaps(), storeError: storageErrorResponse({ error: `caps store unreadable (gate fails closed): ${String(err)}` }, ctx.config.stateDir).detail };
     }
     const capsOverride: NonNullable<Parameters<typeof buildRoutingSpendCaps>[0]>['capsOverride'] = {};
     for (const [keyRef, c] of Object.entries(store.caps)) {
@@ -17366,7 +17367,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const action = b.action;
     const storeVersion = ctx.routingSpendCapsStore.version();
     if (storeVersion < 0) {
-      res.status(503).json({ error: 'caps store unreadable — money surfaces fail closed' });
+      res.status(503).json(storageErrorResponse({ error: 'caps store unreadable — money surfaces fail closed' }, ctx.config.stateDir));
       return;
     }
     try {
@@ -17425,7 +17426,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.status(400).json({ error: `unknown plan action '${String(action)}' (caps-adjust | go-live | unfreeze)` });
     } catch (err) {
-      res.status(400).json({ error: String(err instanceof Error ? err.message : err) });
+      res.status(400).json({ error: String(err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : err) });
     }
   });
 
@@ -17478,7 +17479,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       plan = ctx.spendPlanStore.commit(planId, nonce, { capsStore: ctx.routingSpendCapsStore.version() });
     } catch (err) {
       const e = err as { code?: string; message?: string };
-      res.status(e.code === 'version-drift' ? 409 : 400).json({ error: e.message ?? String(err), code: e.code ?? 'plan-error' });
+      res.status(e.code === 'version-drift' ? 409 : 400).json({ error: e.message ?? operatorError(err, res.app?.locals?.stateDir), code: e.code ?? 'plan-error' });
       return;
     }
     if (plan.action !== action) {
@@ -17489,7 +17490,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const after = apply(plan.fields, plan.versionsPinned.capsStore, 'operator-pin');
       res.json({ ok: true, committed: plan.renderedText, store: after });
     } catch (err) {
-      res.status(409).json({ error: String(err instanceof Error ? err.message : err) });
+      res.status(409).json({ error: String(err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : err) });
     }
   }
 
@@ -17527,7 +17528,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ...(recorded === false ? { recordProvisional: true, note: 'the freeze APPLIED; its audit record could not be written and is provisional' } : {}),
       });
     } catch (err) {
-      res.status(500).json({ error: String(err instanceof Error ? err.message : err) });
+      res.status(500).json({ error: String(err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : err) });
     }
   });
 
@@ -18141,7 +18142,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json({ ...result, issue });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -18162,7 +18163,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json(updated);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -18324,7 +18325,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ analysis, actedOn, verified });
     } catch (err) {
       // Fail-open: the analyzer never crashes the caller (job).
-      res.status(200).json({ error: 'analyze failed (logged)', detail: err instanceof Error ? err.message : String(err) });
+      res.status(200).json({ error: 'analyze failed (logged)', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -18379,7 +18380,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       attributionConfidence: verdict.verdict.attributionConfidence,
       provenance: 'unknown',
     });
-    if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    if (!rec) { res.status(500).json(storageErrorResponse({ error: 'failed to record (logged via fail-open path)' }, ctx.config.stateDir)); return; }
     res.status(201).json(FailureLedger.toApiView(rec));
   });
 
@@ -18921,7 +18922,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const report = reconcileAgentMdTree({ stateDir });
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -18953,7 +18954,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         scheduleEntryCount,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -18987,7 +18988,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       );
       res.json({ ok: true, marker: completed });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19009,7 +19010,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const outcome = jobsMigrate({ agentStateDir: stateDir, packageRoot, abandon: true });
       res.json(outcome);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19089,13 +19090,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         manifest: finalManifest,
       });
       if (!result.ok) {
-        res.status(500).json({ error: `atomic save failed at stage ${result.stage}: ${result.reason}`, partial: result.partial });
+        res.status(500).json(storageErrorResponse({ error: `atomic save failed at stage ${result.stage}: ${result.reason}`, partial: result.partial }, ctx.config.stateDir));
         return;
       }
 
       res.json({ ok: true, manifestVersion: nextVersion, ...(created && ctx.telegram?.selectivity ? { reportChoice: jobReportChoice(slug, { enforcing: ctx.telegram.selectivity.isEnforcing(), categoryPush: ctx.telegram.selectivity.categoryPushEnabled('job-status') }) } : {}) });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19123,7 +19124,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json({ ok: true, disabledAtBodyHash: hash });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19146,7 +19147,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       clearDisabledAtBodyHash(stateDir, req.params.slug);
       res.json({ ok: true });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19205,7 +19206,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       res.json({ ok: true, userMd, manifestVersion: nextVersion });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19280,7 +19281,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       res.json({ ok: true, backupPath, manifestVersion: nextVersion });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19313,7 +19314,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         .sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
       res.json({ backups: files });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19338,7 +19339,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json({ slug: req.params.slug, result });
     } catch (err) {
-      res.status(404).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(404).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19428,7 +19429,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(202).json({ status: 'accepted', runId, result, message: 'Job queued for execution' });
     } catch (err) {
       manualTriggerConcurrent = Math.max(0, manualTriggerConcurrent - 1);
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -19477,14 +19478,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }
     } catch (err) {
-      res.status(500).json({ error: `Failed to update job config: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `Failed to update job config: ${operatorError(err, res.app?.locals?.stateDir)}` });
       return;
     }
 
     try {
       ctx.scheduler.refreshJobs();
     } catch (err) {
-      res.status(500).json({ error: `Updated ${slug} on disk, but failed to refresh the live scheduler: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `Updated ${slug} on disk, but failed to refresh the live scheduler: ${operatorError(err, res.app?.locals?.stateDir)}` });
       return;
     }
 
@@ -19945,7 +19946,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         group: space,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -20559,7 +20560,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // caller. The tag exists because the no-silent-fallbacks scanner's fixed 20-line
       // window reaches past this route's end into the next route's `db = null`
       // initializer (pattern-3 false positive after nearby line shifts).
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -20732,7 +20733,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
         res.json({ ok: true, runId, phase, tool, status, elapsedMs });
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
       }
     });
   }
@@ -20824,7 +20825,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // session — resetting stall timers here would mask real hangs elsewhere.
       res.json({ ok: true, topicId: updatesTopicId, ...('recorded' in sent && sent.recorded ? { delivered: false, recorded: true, quietId: sent.quietId } : { delivered: true }) });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -21107,7 +21108,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ scope: wantMesh ? 'mesh' : 'local', conversations: view.rows, partial: view.partial });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -21530,7 +21531,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(r.state === 'unavailable-here' || r.state === 'not-ready-after-restart' ? 409
         : r.state === 'restart-unavailable' ? 503 : r.state === 'ready' ? 200 : 202).json(r);
     } catch (err) {
-      res.status(500).json({ error: `could not switch pairing on: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `could not switch pairing on: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -22071,7 +22072,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         nextCursor: nextCursor ?? null,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -22110,7 +22111,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const settings = ctx.telegramBridgeConfig.update(patch);
       res.json(settings);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -22290,11 +22291,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       // message-origin-all-platforms §3: no origin record, no send. Nothing left; say so plainly.
       if (err instanceof SlackOriginRecordingError) {
-        res.status(503).json({ error: 'origin-recording-unavailable', notSent: true,
-          detail: 'Not sent: this machine could not record which machine and model wrote the reply.' });
+        res.status(503).json(storageErrorResponse({ error: 'origin-recording-unavailable', notSent: true,
+          detail: 'Not sent: this machine could not record which machine and model wrote the reply.' }, ctx.config.stateDir));
         return;
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   };
 
@@ -22429,7 +22430,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         prepared = await prepareReplyFiles(app.media, filePaths, { projectDir: ctx.config.projectDir, outboxDir: app.media.outboxDir }, isNeverServed, detectOutboundCredential);
       } catch (err) {
-        res.status(500).json({ error: 'reply-not-recorded', detail: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: 'reply-not-recorded', detail: operatorError(err, res.app?.locals?.stateDir) });
         return;
       }
       if ('status' in prepared) {
@@ -22485,7 +22486,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     } catch (err) {
       if (preparedFiles) discardPrepared(app.media, preparedFiles);
-      res.status(500).json({ error: 'reply-not-recorded', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'reply-not-recorded', detail: operatorError(err, res.app?.locals?.stateDir) });
       return;
     }
     // Push trigger (§4.7) — the hook point; increment 3 sends the push.
@@ -22577,7 +22578,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ ok: true, channels: channels.channels ?? [] });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -22597,7 +22598,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const channelId = await ctx.slack.createChannel(name, is_private);
       res.json({ ok: true, channelId });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -22773,7 +22774,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.status(201).json(item);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -23375,7 +23376,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.status(201).json(created);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -23871,7 +23872,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(500).json({
           error: 'stage validator wiring failure',
           code: err.code,
-          reason: err.message,
+          reason: operatorError(err, res.app?.locals?.stateDir),
         });
         return;
       }
@@ -23930,7 +23931,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -23951,7 +23952,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json({ id: result.project.id, roundIndex: result.roundIndex, version: result.project.version });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -23988,7 +23989,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -24033,7 +24034,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -24096,7 +24097,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -24245,7 +24246,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         status: rec?.status ?? null,
       });
     } catch (err) {
-      res.status(500).json({ error: `ownership read failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `ownership read failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -24307,7 +24308,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       );
       res.json({ rows: [...rows, ...remote].slice(0, limit * (peers.length + 1)), pool: { peersQueried: peers.length, failed }, status: ctx.judgmentProvenance.status() });
     } catch (err) {
-      res.status(500).json({ error: `provenance read failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `provenance read failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -24585,7 +24586,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           || directJobSupervisionMissing.length > 0
           || remoteDirectJobSupervision.some(row => row.coverageIncomplete === true) });
     } catch (err) {
-      res.status(500).json({ error: `decision-quality read failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `decision-quality read failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -24607,7 +24608,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await audit.runBatch();
       res.json({ ...result, retentionRemoved: sweep.removed });
     } catch (err) {
-      res.status(500).json({ error: `jev-audit batch failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `jev-audit batch failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -24655,7 +24656,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (scriptRunId && !receiptStore?.recordGradePassReceipt(
         scriptRunId, scriptReceiptToken!, result.graded, Object.keys(result.cursors).length,
         Date.now(), checked.idleProofHash ?? undefined)) {
-        res.status(500).json({ error: 'grade-pass receipt could not be recorded' });
+        res.status(500).json(storageErrorResponse({ error: 'grade-pass receipt could not be recorded' }, ctx.config.stateDir));
         return;
       }
       res.json(result);
@@ -24664,7 +24665,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // an HTTP 500 with the error message; nothing is swallowed. (Newly flagged
       // only by the no-silent-fallbacks 20-line-window bleeding into the adjacent
       // benchmark-divergence helper's `return false` inserted just below.)
-      res.status(500).json({ error: `grade-pass failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `grade-pass failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -24769,7 +24770,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         pool: { peersQueried: peers.length, peersOk, failed, suspect },
       });
     } catch (err) {
-      res.status(500).json({ error: `benchmark-divergence read failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `benchmark-divergence read failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -24797,7 +24798,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: `benchmark-divergence analyze failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `benchmark-divergence analyze failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -24816,7 +24817,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json(ctx.benchmarkDivergenceAnalyzer!.rollupAggregates(fromDay, toDay));
     } catch (err) {
-      res.status(500).json({ error: `benchmark-divergence aggregates read failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `benchmark-divergence aggregates read failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -25342,7 +25343,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } catch (err) {
         // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with the
         // reason to the caller (the transfer did not happen), rather than masking the failure.
-        res.status(502).json({ error: `could not reach lease-holder to perform transfer: ${err instanceof Error ? err.message : String(err)}` });
+        res.status(502).json({ error: `could not reach lease-holder to perform transfer: ${operatorError(err, res.app?.locals?.stateDir)}` });
       }
       return;
     }
@@ -25858,7 +25859,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
       } catch (err) {
         // @silent-fallback-ok — NOT silent: an explicit 502 with the reason; nothing was taken over.
-        res.status(502).json({ error: `could not reach lease-holder: ${err instanceof Error ? err.message : String(err)}` });
+        res.status(502).json({ error: `could not reach lease-holder: ${operatorError(err, ctx.config.stateDir)}` });
       }
       return;
     }
@@ -25899,7 +25900,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } catch (err) {
         // @silent-fallback-ok — NOT silent: a failed proxy surfaces an explicit 502 with
         // the reason (the unpin did not happen), never a masked failure.
-        res.status(502).json({ error: `could not reach lease-holder to unpin: ${err instanceof Error ? err.message : String(err)}` });
+        res.status(502).json({ error: `could not reach lease-holder to unpin: ${operatorError(err, res.app?.locals?.stateDir)}` });
       }
       return;
     }
@@ -25911,7 +25912,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       );
       res.json({ topic: topicId, unpinned: true, hadPin: r.hadPin, tombstoneReplicated: r.hlc !== undefined });
     } catch (err) {
-      res.status(500).json({ error: `unpin failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `unpin failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -26000,7 +26001,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const results = await ss.provisionAll();
       res.json({ ok: true, pushed: results.length, results });
     } catch (err) {
-      res.status(500).json({ error: `sync failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `sync failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -26126,7 +26127,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ ok: true, ...activation.status(), result });
     } catch (err) {
       res.status(500).json({
-        error: `session-pool promotion failed: ${err instanceof Error ? err.message : String(err)}`,
+        error: `session-pool promotion failed: ${operatorError(err, res.app?.locals?.stateDir)}`,
       });
     }
   });
@@ -26193,7 +26194,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(r.status).json({ ok: false, reason: r.reason });
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26266,7 +26267,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.identityRecoveryEstablish();
       res.json({ ok: true, machineId: result.identity.machineId, recoveryEpoch: result.identity.recoveryEpoch, peers: result.peers });
     } catch (err) {
-      res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(409).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26283,7 +26284,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.identityRecoveryRotate();
       res.json({ ok: true, machineId: result.identity.machineId, recoveryEpoch: result.identity.recoveryEpoch, peers: result.peers });
     } catch (err) {
-      res.status(409).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(409).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26452,7 +26453,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ verdict, projectId: project.id, roundIndex });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     } finally {
       driftInFlight.delete(project.id);
     }
@@ -26513,7 +26514,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26589,7 +26590,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26638,7 +26639,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(409).json({ error: 'version mismatch', currentVersion: cv });
         return;
       }
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26701,7 +26702,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const created = await createProjectAndChildren(ctx.initiativeTracker, parsed);
       res.status(201).json(created);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26839,7 +26840,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ ok: true, jid });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26977,7 +26978,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const chats = await ctx.imessage.listChats(limit);
       res.json(chats);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -26993,7 +26994,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const history = await ctx.imessage.getChatHistory(chatId, limit);
       res.json(history);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27007,7 +27008,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const stats = ctx.imessage.messageLogger.getStats();
       res.json(stats);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27028,7 +27029,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const results = ctx.imessage.messageLogger.search({ query, limit });
       res.json({ results, count: results.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27232,7 +27233,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           : 'Feedback stored locally. Will retry forwarding later.',
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27254,7 +27255,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.feedback.retryUnforwarded();
       res.json({ ok: true, ...result });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27270,7 +27271,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const info = await ctx.updateChecker.check();
       res.json(info);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27317,7 +27318,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       raw.updates.autoApply = autoApply;
       fs.writeFileSync(configPath, JSON.stringify(raw, null, 2));
     } catch (err) {
-      res.status(500).json({ error: `Failed to persist config: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json(storageErrorResponse({ error: `Failed to persist config: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
       return;
     }
 
@@ -27345,7 +27346,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json(ctx.autoUpdater.getStatus());
       } catch (err) {
         // @silent-fallback-ok — returns HTTP 500 with error details to caller; not a silent degradation
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
       }
       return;
     }
@@ -27360,7 +27361,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.updateChecker.applyUpdate();
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27381,7 +27382,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.updateChecker.rollback();
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27441,7 +27442,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : await ctx.dispatches.check();
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27684,7 +27685,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.quotaManager.triggerMigration({ targetAccount, bypassCooldown });
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27738,7 +27739,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         warning: 'This page is PUBLIC. Anyone with the URL can view it.',
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -27789,7 +27790,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         reason: `Why: ${err instanceof Error ? err.message : String(err)}`,
         impact: 'Page edit failed — user sees error but no system alert for pattern detection',
       });
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -28295,7 +28296,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
       });
     } catch (err) {
-      res.status(429).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(429).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -28339,7 +28340,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         expiresIn: validated.opts.ttlMs || 15 * 60 * 1000,
       });
     } catch (err) {
-      res.status(429).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(429).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -29375,7 +29376,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
         // An app message's delivery started: its outcome is uncertain, never a plain refusal.
         if (trust) throw err;
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
       }
     } else if (ctx.sessionManager) {
       // No TelegramAdapter (--no-telegram mode) — route using topic-session registry on disk
@@ -29792,7 +29793,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ ok: true, topicId, promptId });
     } catch (err) {
       console.error(`[PlanRelay] Failed:`, err instanceof Error ? err.message : err);
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -29899,7 +29900,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ ok: true, mobileDecline: true });
       } catch (err) { // @silent-fallback-ok — not silent: the tap is answered 500 and its claim marked failed
         claimStore.markFailed(callbackQueryId);
-        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ ok: false, error: operatorError(err, res.app?.locals?.stateDir) });
       }
       return;
     }
@@ -29912,7 +29913,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ ok: true, mobileApprove: true });
       } catch (err) { // @silent-fallback-ok — not silent: the tap is answered 500 and its claim marked failed
         claimStore.markFailed(callbackQueryId);
-        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ ok: false, error: operatorError(err, res.app?.locals?.stateDir) });
       }
       return;
     }
@@ -29926,7 +29927,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ ok: true, pairingInvite: true });
       } catch (err) {
         claimStore.markFailed(callbackQueryId);
-        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ ok: false, error: operatorError(err, res.app?.locals?.stateDir) });
       }
       return;
     }
@@ -29947,7 +29948,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       claimStore.markFailed(callbackQueryId);
       console.error(`[telegram-callback] Processing failed:`, err instanceof Error ? err.message : err);
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -29986,7 +29987,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       res.json(ctx.evolution.getArchivePage({kind: kind as typeof kinds[number] | undefined,
         id: req.query.id as string | undefined, offset, limit}));
-    } catch (error) { res.status(503).json({error: String(error), status: 'unknown'}); }
+    } catch (error) { res.status(503).json({error: operatorError(error, res.app?.locals?.stateDir), status: 'unknown'}); }
   });
 
   // Evolution proposals
@@ -30099,14 +30100,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           pendingDocumentRef = built.pendingDocumentRef;
         } catch (err) {
           if (err instanceof LearnEvidenceError) {
-            res.status(400).json({ error: err.message });
+            res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
             return;
           }
           throw err;
         }
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to derive evidence' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to derive evidence' });
       return;
     }
 
@@ -30241,7 +30242,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const entries = ctx.evolution.listArchivedActions();
       res.json({ entries, count: entries.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'archive unreadable' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'archive unreadable' });
     }
   });
 
@@ -30264,7 +30265,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json({ ok: true, action: result });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'restore failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'restore failed' });
     }
   });
 
@@ -30292,7 +30293,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.undatedActionResurfacer.run();
       res.status(result.ran ? 200 : 409).json(result);
     } catch (err) {
-      res.status(503).json({ error: 'undated-action-resurfacer-run-failed', detail: err instanceof Error ? err.message : String(err) });
+      res.status(503).json({ error: 'undated-action-resurfacer-run-failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -30851,7 +30852,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({
         error: 'Failed to apply state change',
-        detail: err instanceof Error ? err.message : String(err),
+        detail: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -30898,7 +30899,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({
         error: 'Failed to sync state',
-        detail: err instanceof Error ? err.message : String(err),
+        detail: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -30964,7 +30965,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({
         error: 'Heartbeat processing failed',
-        detail: err instanceof Error ? err.message : String(err),
+        detail: operatorError(err, res.app?.locals?.stateDir),
       });
     }
   });
@@ -30983,7 +30984,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const entries = journal.read({ days, limit, jobSlug });
       res.json({ entries, count: entries.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read decision journal' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to read decision journal' });
     }
   });
 
@@ -30994,7 +30995,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const stats = journal.stats();
       res.json(stats);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute journal stats' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to compute journal stats' });
     }
   });
 
@@ -31058,13 +31059,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           err instanceof EvidencePolicyError
           || err instanceof DecisionJournalValidationError
         ) {
-          res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+          res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
           return;
         }
         throw err;
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to log decision' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to log decision' });
     }
   });
 
@@ -31077,7 +31078,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const parsed = manager.parse();
       res.json(parsed);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read org intent' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to read org intent' });
     }
   });
 
@@ -31110,7 +31111,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         },
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read org intent' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to read org intent' });
     }
   });
 
@@ -31248,7 +31249,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = manager.sessionContext(maxBytes);
       return { status: 200, body: result as unknown as Record<string, unknown> };
     } catch (err) {
-      return { status: 500, body: { error: err instanceof Error ? err.message : 'Failed to read preferences' } };
+      return { status: 500, body: { error: err instanceof Error ? operatorError(err, ctx.config.stateDir) : 'Failed to read preferences' } };
     }
   }
 
@@ -31308,7 +31309,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json(result);
     } catch (err) {
       featureEvidence.record('selfKnowledge.sessionContext', { kind: 'error', reason: 'build-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build boot self-knowledge' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to build boot self-knowledge' });
     }
   });
 
@@ -31349,7 +31350,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       console.log(`[boot-self-knowledge] fact-added (${fact.slice(0, 60)}${fact.length > 60 ? '…' : ''})`);
       res.json({ success: true, facts: outcome.value });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to add fact' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to add fact' });
     }
   });
 
@@ -31392,7 +31393,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       console.log(`[boot-self-knowledge] fact-removed (${String(outcome.value?.removed ?? '').slice(0, 60)})`);
       res.json({ success: true, ...outcome.value });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remove fact' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to remove fact' });
     }
   });
 
@@ -31534,7 +31535,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ profiles });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to list playwright profiles' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to list playwright profiles' });
     }
   });
 
@@ -31568,7 +31569,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       // An unavailable lease store must not make browser access disappear. The
       // hook treats this as degraded/fail-open; only a positive conflict blocks.
-      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
+      res.status(503).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'playwright seat lease unavailable' });
     }
   });
 
@@ -31590,7 +31591,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json(result);
     } catch (err) {
-      res.status(503).json({ error: err instanceof Error ? err.message : 'playwright seat lease unavailable' });
+      res.status(503).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'playwright seat lease unavailable' });
     }
   });
 
@@ -31606,7 +31607,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ ...result, full });
     } catch (err) {
       // buildSessionContextBlock is fail-open internally; this catch is belt-and-suspenders.
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build playwright boot block' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to build playwright boot block' });
     }
   });
 
@@ -31626,7 +31627,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json(buildPlaywrightRegistry().resolve(service, identity));
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to resolve playwright profile' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to resolve playwright profile' });
     }
   });
 
@@ -31643,7 +31644,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ profile });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to create playwright profile' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to create playwright profile' });
     }
   });
 
@@ -31712,7 +31713,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to provision playwright profile' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to provision playwright profile' });
     }
   });
 
@@ -31734,7 +31735,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ account });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to assign account' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to assign account' });
     }
   });
 
@@ -31784,7 +31785,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ reverted, noPriorMethod, notPasskey });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to revert login method' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to revert login method' });
     }
   });
 
@@ -31975,7 +31976,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         try {
           portable = signPasskeyCellMandate(mintPasskeyCellBody({ principal, canonicalEmail: canonical, targetMachineId, op, args }), auth.selfMachineId, idm.loadSigningKey());
         } catch (err) {
-          res.status(503).json({ op, target: targetMachineId, delivered: false, reason: `sign-failed:${err instanceof Error ? err.message : String(err)}` }); return;
+          res.status(503).json({ op, target: targetMachineId, delivered: false, reason: `sign-failed:${operatorError(err, res.app?.locals?.stateDir)}` }); return;
         }
         const outbox = buildPasskeyRevokeOutbox(auth);
         const entry = outbox.enqueue({ canonicalEmail: canonical, targetMachineId, principal, portable,
@@ -32020,7 +32021,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         issuerBootstrapRequired: passkeyHasActivePeers() && peers.length === 0,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'passkey authority unreadable' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'passkey authority unreadable' });
     }
   });
   // POST /passkeys/grant — PIN. Body { pin, email, googleCreatedAt?, targetMachineId?, principal? }.
@@ -32062,7 +32063,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const entries = buildPasskeyRevokeOutbox(auth).list().map(({ portable: _p, ...rest }) => rest);
       res.json({ machineId: auth.selfMachineId, entries, pending: entries.filter((e) => e.state === 'pending').length, escalated: entries.filter((e) => e.state === 'escalated').length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'outbox unreadable' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'outbox unreadable' });
     }
   });
   // POST /passkeys/outbox/tick — run one re-delivery pass now (Bearer; idempotent; the timer does this every 10 min).
@@ -32072,7 +32073,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const auth = buildPasskeyAuthority();
       res.json(await buildPasskeyRevokeOutbox(auth).tick());
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'outbox tick failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'outbox tick failed' });
     }
   });
   // ── Pool read path (spec §5.1 / §3.7 / §4) ─────────────────────────────────────────────
@@ -32193,7 +32194,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       if (quarantined) { res.status(403).json({ error: 'peer-not-active', status: 'recovery-quarantined' }); return; }
     }
     try { res.json(buildPasskeyLocalState(buildPasskeyAuthority())); }
-    catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'pool state unreadable' }); }
+    catch (err) { res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'pool state unreadable' }); }
   });
   // GET /passkeys — per-cell view of THIS machine; `?scope=pool` merges every peer through the reader's
   // memo (marked with its age): each peer's condition (observed / peer-offline / excluded / partitioned),
@@ -32207,14 +32208,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const { snapshot, ageMs } = await buildPasskeyPoolReader(auth).read();
       res.json({ scope: 'pool', ageMs, ...snapshot, exclusions: new PasskeyPeerExclusions({ stateDir: ctx.config.stateDir }).list() });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'passkey state unreadable' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'passkey state unreadable' });
     }
   });
   // POST /passkeys/pool-state/tick — run one peer query pass now (Bearer; the server timer does this every 5 min).
   router.post('/passkeys/pool-state/tick', async (_req, res) => {
     if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
     try { res.json(await buildPasskeyPoolReader(buildPasskeyAuthority()).tick()); }
-    catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'pool tick failed' }); }
+    catch (err) { res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'pool tick failed' }); }
   });
   // GET /passkeys/admission?action=enroll|prove|canary|repair|revoke&email=… — the §5.1 table + the §3.7
   // rate limit + the §4 same-account gap + active pauses, evaluated over the pool memo for THIS machine.
@@ -32246,7 +32247,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         inputs: { suspension: 'not-published-on-this-build', leaseHolder: 'not-published-on-this-build', peers: snapshot.peers.map((p) => ({ machineId: p.machineId, condition: p.condition })) },
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'admission unreadable' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'admission unreadable' });
     }
   });
   // POST /passkeys/exclude-peer | include-peer — PIN. Body { pin, machineId, targetMachineId? }. Excludes a
@@ -32363,14 +32364,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const ledger = new PasskeyDigestLedger({ stateDir: ctx.config.stateDir }).read();
       res.json({ machineId: auth.selfMachineId, holdsLease: passkeyHoldsLease(), cells: health.list(), digest: { key: PASSKEY_HEALTH_DIGEST_KEY, lastBuzzAt: ledger.lastBuzzAt, lastUpsertAt: ledger.lastUpsertAt, resolvedAt: ledger.resolvedAt } });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'health unreadable' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'health unreadable' });
     }
   });
   // POST /passkeys/health/digest/refresh — run one digest pass now (Bearer; the server timer does this every 5 min).
   router.post('/passkeys/health/digest/refresh', async (req, res) => {
     if (!passkeysFeatureEnabled()) { res.status(503).json({ error: 'passkeys disabled' }); return; }
     try { res.json(await runPasskeyHealthDigestTick(buildPasskeyAuthority(), { force: req.body?.force === true })); }
-    catch (err) { res.status(500).json({ error: err instanceof Error ? err.message : 'digest tick failed' }); }
+    catch (err) { res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'digest tick failed' }); }
   });
   // POST /passkeys/health/outcome — record a proof outcome for a LOCAL cell (Bearer; the proof/repair
   // workers call this funnel; tests drive it). Never accepts a peer's cell: health is per machine.
@@ -32398,7 +32399,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       appendPlaywrightAudit('passkey-health-outcome', 'passkeys', { outcome, origin, transition: r.transition ? `${r.transition.from}->${r.transition.to}` : null, dryRun: false });
       res.json({ cell: r.cell, transition: r.transition, scheduleConfirmAt: r.scheduleConfirmAt });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'outcome not recorded' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'outcome not recorded' });
     }
   });
   // POST /passkeys/attest-google-removed — PIN. Body { pin, email, targetMachineId? }. §3.2 (b).
@@ -32481,7 +32482,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // Honest about the admission inputs this build does not publish yet (same wording as GET /passkeys/admission).
         admissionInputs: { suspension: 'not-published-on-this-build', leaseHolder: 'not-published-on-this-build', memoAgeMs: ageMs } });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'proof failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'proof failed' });
     }
   });
 
@@ -32502,7 +32503,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(outcome.applied ? 200 : 403).json(outcome);
     } catch (err) {
       featureEvidence.record('passkeys', { kind: 'error', reason: 'mandate-authority-unreadable', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
-      res.status(500).json({ applied: false, reason: 'authority-unreadable', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ applied: false, reason: 'authority-unreadable', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -32524,7 +32525,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ profile });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to update profile' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to update profile' });
     }
   });
 
@@ -32549,7 +32550,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ account });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to patch account' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to patch account' });
     }
   });
 
@@ -32566,7 +32567,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ success: true });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete playwright profile' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to delete playwright profile' });
     }
   });
 
@@ -32588,7 +32589,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ success: true });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to delete account' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to delete account' });
     }
   });
 
@@ -32671,7 +32672,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ activated: true, userDataDir: plan.userDataDir, dirExists: plan.dirExists, refresh });
     } catch (err) {
       if (handlePlaywrightError(err, res)) return;
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to activate playwright profile' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to activate playwright profile' });
     }
   });
 
@@ -32864,7 +32865,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }));
       res.json({ mode: grouper?.cachedLookup() ? 'meaning' : 'words', openRecords: all.reduce((n, g) => n + g.length, 0), groupCount: groups.length, groups });
     } catch (err) {
-      res.status(500).json({ error: 'groups failed', detail: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: 'groups failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -32908,7 +32909,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (await correctionProxy(req, res)) return;
     if (!ctx.correctionLedger) { res.status(503).json({ error: 'failure-callouts disabled' }); return; }
     try { res.json({ admission: ctx.correctionLedger.resumeFailureInvestigation(req.params.id, req.body?.evidenceRef) }); }
-    catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'invalid resume evidence' }); }
+    catch (error) { res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'invalid resume evidence' }); }
   });
 
   router.get('/corrections/:id/failure-episodes', async (req, res) => {
@@ -32951,7 +32952,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
       res.json(CorrectionLedger.toApiView(result.record));
-    } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'invalid failure-case update' }); }
+    } catch (error) { res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'invalid failure-case update' }); }
   });
 
   router.post('/corrections', (req, res) => {
@@ -32990,7 +32991,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       llmConfidence: typeof body.llmConfidence === 'number' ? body.llmConfidence : 0,
       topicId: typeof body.topicId === 'number' ? body.topicId : null,
     });
-    if (!rec) { res.status(500).json({ error: 'failed to record (logged via fail-open path)' }); return; }
+    if (!rec) { res.status(500).json(storageErrorResponse({ error: 'failed to record (logged via fail-open path)' }, ctx.config.stateDir)); return; }
     // This bearer-authenticated one-tap is agent-self. The caller cannot
     // elevate origin with a request field; operator-attributed capture uses the
     // authenticated messaging ingress seam.
@@ -33451,7 +33452,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     } catch (err) {
       // Fail-open: the analyzer never crashes the caller (job).
-      res.status(200).json({ error: 'analyze failed (logged)', detail: err instanceof Error ? err.message : String(err) });
+      res.status(200).json({ error: 'analyze failed (logged)', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -33532,7 +33533,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.status(201).json(cycle);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -33665,7 +33666,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         },
       });
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -33693,7 +33694,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.status(201).json(inst);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(400).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -33908,7 +33909,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         hierarchy: parsed ? hierarchy : null,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to resolve tradeoff' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to resolve tradeoff' });
     }
   });
 
@@ -33941,7 +33942,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json(passport);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to build passport' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to build passport' });
     }
   });
 
@@ -33958,7 +33959,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const { permits } = await import('../core/AgentPassport.js');
       res.json(permits(passport, action));
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to verify against passport' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to verify against passport' });
     }
   });
 
@@ -33990,7 +33991,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = hasTask ? scorer.score(task) : scorer.scoreWorkflow(workflow);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to score agent-readiness' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to score agent-readiness' });
     }
   });
 
@@ -34049,7 +34050,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         canGovern: harness.canGovern(),
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to test action against ORG-INTENT' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to test action against ORG-INTENT' });
     }
   });
 
@@ -34104,7 +34105,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
       res.json(analysis);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to analyze drift' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to analyze drift' });
     }
   });
 
@@ -34134,7 +34135,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = manager.validateAgentIntent(agentIntentContent);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to validate intent' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to validate intent' });
     }
   });
 
@@ -34148,7 +34149,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const analysis = detector.analyze(windowDays);
       res.json(analysis);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to analyze drift' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to analyze drift' });
     }
   });
 
@@ -34159,7 +34160,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const score = detector.alignmentScore();
       res.json(score);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to compute alignment score' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to compute alignment score' });
     }
   });
 
@@ -34192,7 +34193,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.triageNurse.triage(topicId, sessionName, '(manual trigger)', Date.now(), 'manual');
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Triage failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Triage failed' });
     }
   });
 
@@ -34682,7 +34683,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json(decision);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Evaluation failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Evaluation failed' });
     }
   });
 
@@ -35655,7 +35656,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         note: 'Some changes may require a server restart to take full effect.',
       });
     } catch (err) {
-      res.status(500).json({ error: `Failed to patch config: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `Failed to patch config: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 
@@ -35701,7 +35702,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         note: 'Restart the server for changes to take effect.',
       });
     } catch (err) {
-      res.status(500).json({ error: `Failed to update config: ${err instanceof Error ? err.message : err}` });
+      res.status(500).json({ error: `Failed to update config: ${err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : err}` });
     }
   });
 
@@ -35771,7 +35772,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     } catch (err) {
       // @silent-fallback-ok — not silent: the failure is answered to the caller as a 500 naming the error.
-      res.status(500).json({ error: `Failed to enable telemetry: ${err instanceof Error ? err.message : err}` });
+      res.status(500).json({ error: `Failed to enable telemetry: ${err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : err}` });
     }
   });
 
@@ -35856,7 +35857,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         message: 'Baseline telemetry disabled. Local identity deleted. Re-enabling will create a new identity.',
       });
     } catch (err) {
-      res.status(500).json({ error: `Failed to disable telemetry: ${err instanceof Error ? err.message : err}` });
+      res.status(500).json({ error: `Failed to disable telemetry: ${err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : err}` });
     }
   });
 
@@ -36393,11 +36394,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json(out);
     } catch (err) {
       if (err instanceof PromiseReviewError) {
-        res.status(err.code === 'bad-request' ? 400 : 409).json({ error: err.code, detail: err.message });
+        res.status(err.code === 'bad-request' ? 400 : 409).json({ error: err.code, detail: operatorError(err, res.app?.locals?.stateDir) });
         return;
       }
       if (err instanceof CommitmentPersistenceError) { res.status(503).json({ error: 'commitment-persistence-unavailable' }); return; }
-      res.status(500).json({ error: err instanceof Error ? err.message : 'apply failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'apply failed' });
     }
   });
 
@@ -36611,7 +36612,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       res.json(await checkInReminderTicker.pass({ quiet: false }));
     } catch (err) {
-      res.status(500).json({ error: 'check-in-reminder-pass-failed', detail: String(err) });
+      res.status(500).json({ error: 'check-in-reminder-pass-failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -37399,7 +37400,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       // Signal-only: never surface a failure as a block. Audit via the 500-free path.
       if (isMinted) featureEvidence.record('messaging.actionClaim.slack', { kind: 'error', reason: 'record-failed', context: { topicId, lane, verb: verb ?? null, errorName: err instanceof Error ? err.name : 'unknown' } });
-      res.json({ observed: true, registered: false, reason: 'record-failed', detail: err instanceof Error ? err.message : String(err) });
+      res.json({ observed: true, registered: false, reason: 'record-failed', detail: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -37546,7 +37547,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       } catch { /* non-fatal */ }
       res.json(updated);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'mutate failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'mutate failed' });
     }
   });
 
@@ -38247,7 +38248,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         restartRequested: result.restartRequested,
       });
     } catch (error) {
-      res.status(500).json({ error: error instanceof Error ? error.message : String(error) });
+      res.status(500).json({ error: operatorError(error, res.app?.locals?.stateDir) });
     }
   });
 
@@ -38331,7 +38332,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }));
       res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown } });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : 'invalid re-login query' });
+      res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'invalid re-login query' });
     }
   });
 
@@ -38346,7 +38347,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
       res.json({ enabled: true, episode, events: ctx.subscriptionRelogin.store.listEvents(episode.id, limit) });
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : 'invalid re-login query' });
+      res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'invalid re-login query' });
     }
   });
 
@@ -38515,7 +38516,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }
     } catch (error) {
-      res.status(500).json({ error: error instanceof Error ? error.message : 'repair authorization failed' });
+      res.status(500).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'repair authorization failed' });
       return;
     }
     try {
@@ -39306,7 +39307,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.proactiveSwapMonitor.tick();
       res.json({ enabled: true, ...result });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'proactive check failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'proactive check failed' });
     }
   });
 
@@ -39336,7 +39337,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         ? 404
         : code === 'subscription-account-identity-provider-unsupported' ? 400 : 409;
       res.status(status).json({
-        error: err instanceof Error ? err.message : 'Account identity could not be repaired.',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Account identity could not be repaired.',
         code,
         repairRequired: true,
         emailReconciliation: subscriptionEmailReconciliation(),
@@ -39416,7 +39417,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const code = err instanceof Error && 'code' in err ? String(err.code) : undefined;
       const isValidation = err instanceof Error && err.name === 'ValidationError';
       res.status(code ? 400 : isValidation ? 400 : 500).json({
-        error: err instanceof Error ? err.message : 'failed to add account',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'failed to add account',
         ...(code ? { code } : {}),
       });
     }
@@ -39468,7 +39469,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       const isValidation = err instanceof Error && err.name === 'ValidationError';
       res.status(isValidation ? 400 : 500).json({
-        error: err instanceof Error ? err.message : 'failed to update account',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'failed to update account',
       });
     }
   });
@@ -39502,7 +39503,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const result = await ctx.quotaPoller.pollAll();
       res.json({ enabled: true, ...result });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'poll failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'poll failed' });
     }
   });
 
@@ -39557,7 +39558,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ enabled: true, ...result });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'swap failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'swap failed' });
     }
   });
 
@@ -39589,7 +39590,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.status(502).json({ error: 'login-did-not-start', retryable: true, message: err.operatorMessage });
         return;
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : 'failed to start enrollment' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'failed to start enrollment' });
     }
   });
 
@@ -39653,7 +39654,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }));
       res.json({ enabled: true, offered: enriched });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me scan failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'follow-me scan failed' });
     }
   });
 
@@ -39805,7 +39806,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
         return;
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : 'follow-me enroll start failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'follow-me enroll start failed' });
     }
   });
 
@@ -40220,7 +40221,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           return;
         }
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : 'matrix start-cell pre-check failed' });
+        res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix start-cell pre-check failed' });
         return;
       }
     }
@@ -40259,7 +40260,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         }
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'matrix mandate issuance failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix mandate issuance failed' });
       return;
     }
 
@@ -40331,7 +40332,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const reissued = await ctx.enrollmentWizard.reissueExpired();
       res.json({ enabled: true, reissued: reissued.map((login) => publicPendingLogin(login)) });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'reissue sweep failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'reissue sweep failed' });
     }
   });
 
@@ -40411,7 +40412,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       const isValidation = err instanceof Error && err.name === 'ValidationError';
       res.status(isValidation ? 400 : 500).json({
-        error: err instanceof Error ? err.message : 'follow-me completion failed',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'follow-me completion failed',
       });
     }
   });
@@ -40756,7 +40757,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const report = await ctx.activitySentinel.scan();
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Scan failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Scan failed' });
     }
   });
 
@@ -40786,7 +40787,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       );
       res.status(201).json(result);
     } catch (err) {
-      res.status(400).json({ error: err instanceof Error ? err.message : 'Send failed' });
+      res.status(400).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Send failed' });
     }
   });
 
@@ -40806,7 +40807,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       // @silent-fallback-ok: the acknowledgement fails closed as HTTP 500;
       // no degraded/default execution continues after this catch.
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Ack failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Ack failed' });
     }
   });
 
@@ -41414,7 +41415,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           dedupReservation.content,
         );
       }
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Relay failed' });
     } finally {
       // A synchronous exit (warrants suppress, a relay() throw into the 500
       // handler, an early return) never leaves a key in flight.
@@ -41441,7 +41442,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const messages = await ctx.messageRouter.getInbox(ctx.config.projectName, filter);
       res.json({ messages, count: messages.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Inbox query failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Inbox query failed' });
     }
   });
 
@@ -41459,7 +41460,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const messages = await ctx.messageRouter.getOutbox(ctx.config.projectName, filter);
       res.json({ messages, count: messages.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Outbox query failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Outbox query failed' });
     }
   });
 
@@ -41477,7 +41478,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const messages = await ctx.messageRouter.getDeadLetters(filter);
       res.json({ messages, count: messages.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Dead-letter query failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Dead-letter query failed' });
     }
   });
 
@@ -41496,7 +41497,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const threads = await ctx.messageRouter.listThreads(status as any);
       res.json({ threads, count: threads.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Thread list failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Thread list failed' });
     }
   });
 
@@ -41576,7 +41577,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Thread query failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Thread query failed' });
     }
   });
 
@@ -41705,7 +41706,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.json({ ok: true });
     } catch (err) {
       res.status(err instanceof Error && err.message.includes('not found') ? 404 : 500)
-        .json({ error: err instanceof Error ? err.message : 'Thread resolve failed' });
+        .json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Thread resolve failed' });
     }
   });
 
@@ -41718,7 +41719,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const stats = await ctx.messageRouter.getStats();
       res.json(stats);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Stats failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Stats failed' });
     }
   });
 
@@ -41804,7 +41805,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.status(result.approved ? 201 : 429).json(result);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Spawn request failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Spawn request failed' });
     }
   });
 
@@ -41818,7 +41819,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const status = ctx.summarySentinel.getStatus();
       res.json({ summaries, status });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Summaries failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Summaries failed' });
     }
   });
 
@@ -41840,7 +41841,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       );
       res.json({ scores, inFallback: ctx.summarySentinel.isInFallbackMode() });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Route scoring failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Route scoring failed' });
     }
   });
 
@@ -41851,7 +41852,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const status = getOutboundQueueStatus();
       res.json(status);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Outbound status failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Outbound status failed' });
     }
   });
 
@@ -41865,7 +41866,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const cleaned = cleanupDeliveredOutbound(machineId, messageId);
       res.json({ cleaned });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Outbound cleanup failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Outbound cleanup failed' });
     }
   });
 
@@ -41876,7 +41877,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const agents = buildAgentList();
       res.json({ agents, machine: ctx.config.projectName });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Agent list failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Agent list failed' });
     }
   });
 
@@ -41900,7 +41901,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.json(envelope);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Message query failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Message query failed' });
     }
   });
 
@@ -41920,7 +41921,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json(report);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Review failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Review failed' });
     }
   });
 
@@ -42353,7 +42354,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return res.json({ ok: true, ...r, posture: rt.notProvisioned() ? 'identity-not-provisioned' : 'provisioned' });
     } catch (err) {
       // @silent-fallback-ok — the lever's failure is returned to the caller as a 500 with the message; nothing is swallowed.
-      return res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+      return res.status(500).json({ ok: false, error: operatorError(err, res.app?.locals?.stateDir) });
     } finally {
       identityReloadInFlight = null;
     }
@@ -43560,7 +43561,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if ((err as { code?: unknown } | null)?.code !== 'encrypted-send-to-pinned-failed') throw err;
         res.status(502).json({
           success: false,
-          error: err instanceof Error ? err.message : String(err),
+          error: operatorError(err, res.app?.locals?.stateDir),
           reason: 'encrypted-send-to-pinned-failed',
           accepted: false,
           delivered: false,
@@ -43824,7 +43825,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : 'Send failed',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Send failed',
       });
     }
   });
@@ -43847,7 +43848,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       res.status(answer.status).json(answer.body);
     } catch (err) {
       console.warn(`[required-ack] acknowledgment not accepted: ${err instanceof Error ? err.message : String(err)}`);
-      res.status(503).json({ sent: false, error: 'The acknowledgment could not be recorded. Try again, or reply on the thread.' });
+      res.status(503).json(storageErrorResponse({ sent: false, error: 'The acknowledgment could not be recorded. Try again, or reply on the thread.' }, ctx.config.stateDir));
     }
   });
 
@@ -43934,7 +43935,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       res.status(500).json({
         success: false,
-        error: err instanceof Error ? err.message : 'Discover failed',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Discover failed',
       });
     }
   });
@@ -44084,7 +44085,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         contextMeta: result._contextMeta ?? null,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Test failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Test failed' });
     }
   });
 
@@ -44106,7 +44107,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const summary = await ctx.reviewCanaryBattery.run();
       res.json(summary);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Battery run failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Battery run failed' });
     }
   });
 
@@ -44257,7 +44258,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         missed: missed.length > 0 ? missed : undefined,
       });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Canary test failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Canary test failed' });
     }
   });
 
@@ -44348,7 +44349,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
         return;
       }
-      res.status(500).json({ ok: false, error: 'internal', message: err instanceof Error ? err.message : 'Unknown error' });
+      res.status(500).json({ ok: false, error: 'internal', message: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Unknown error' });
     }
   });
 
@@ -44433,7 +44434,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }).filter(Boolean);
       res.json({ entries, total: lines.length });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to read audit log' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to read audit log' });
     }
   });
 
@@ -44493,7 +44494,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       fs.writeFileSync(registryPath, JSON.stringify(data, null, 2));
       res.json({ ok: true, topicId, overrides: existing });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save override' });
+      res.status(500).json(storageErrorResponse({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Failed to save override' }, ctx.config.stateDir));
     }
   });
 
@@ -44857,7 +44858,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         cached: false,
         rateLimited: false,
         eligibleCount: 0,
-        error: err instanceof Error ? err.message : 'Unknown error',
+        error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Unknown error',
       });
     }
   });
@@ -44895,7 +44896,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
       res.json({ entries });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -44906,7 +44907,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const rendered = await ctx.sharedStateLedger!.renderForInjection({ limit });
       res.type('text/plain').send(rendered);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -44921,7 +44922,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const chain = await ctx.sharedStateLedger!.walkChain(id);
       res.json({ chain });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -44932,7 +44933,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const stats = await ctx.sharedStateLedger!.stats(rebuild);
       res.json(stats);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -45011,7 +45012,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           result = ctx.ledgerSessionRegistry!.register(sessionId, label);
         } catch (err) {
           res.status(400).json({
-            error: err instanceof Error ? err.message : String(err),
+            error: operatorError(err, res.app?.locals?.stateDir),
           });
           return;
         }
@@ -45028,7 +45029,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       } catch (err) {
         res.status(500).json({
-          error: err instanceof Error ? err.message : String(err),
+          error: operatorError(err, res.app?.locals?.stateDir),
         });
       }
     }
@@ -45383,7 +45384,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }`
         );
         res.status(500).json({
-          error: err instanceof Error ? err.message : String(err),
+          error: operatorError(err, res.app?.locals?.stateDir),
         });
       }
     }
@@ -45480,7 +45481,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         chain = await ctx.sharedStateLedger!.walkChain(commitmentId);
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+        res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
         return;
       }
       const commitmentEntry = chain[0];
@@ -45634,7 +45635,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         res.json({ sessions });
       } catch (err) {
         res.status(500).json({
-          error: err instanceof Error ? err.message : String(err),
+          error: operatorError(err, res.app?.locals?.stateDir),
         });
       }
     }
@@ -45905,7 +45906,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       // @silent-fallback-ok — not silent: the error is surfaced to the
       // caller as an HTTP 500 with the message.
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -45984,7 +45985,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       // Guarded message extraction — an `as Error` cast lies if err isn't an
       // Error (e.g. a thrown string/object); instanceof is the safe form.
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -46634,7 +46635,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       featureEvidence.record('monitoring.liveTestRunner', { kind: 'error', reason: 'capstone-run-failed', context: { targetMachine, errorName: err instanceof Error ? err.name : 'unknown' } });
       // A genuine internal error surfaces LOUDLY as a 500 with the reason — never a
       // fabricated PASS, never a swallowed run. This is the honest error path.
-      res.status(500).json({ error: `capstone run failed: ${err instanceof Error ? err.message : String(err)}` });
+      res.status(500).json({ error: `capstone run failed: ${operatorError(err, res.app?.locals?.stateDir)}` });
     }
   });
 

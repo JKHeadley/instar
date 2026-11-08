@@ -27,6 +27,7 @@
  * with a bug report back to Instar." — Justin, 2026-02-25
  */
 
+import { isStorageError, nameStorageError } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -515,6 +516,9 @@ export class DegradationReporter {
   report(event: Omit<DegradationEvent, 'timestamp' | 'reported' | 'alerted'>): void {
     // The person chose to stop tracking this: no record, no alert, no feedback, no remediation.
     if (this.isIgnored(event.feature)) { this.noteIgnored(event.feature); return; }
+    if (isStorageError(`${event.reason} ${event.primary} ${event.fallback} ${event.impact}`)) {
+      event = { ...event, reason: nameStorageError(event.reason, this.stateDir ?? undefined) };
+    }
     const full: DegradationEvent = {
       ...event,
       timestamp: new Date().toISOString(),
@@ -579,6 +583,12 @@ export class DegradationReporter {
    */
   reportStructured(event: NormalizedDegradationEvent): void {
     if (this.isIgnored(event.subsystem)) { this.noteIgnored(event.subsystem); return; }
+    if (isStorageError(`${event.errorCode} ${event.reason.full} ${event.reason.redacted}`)) {
+      event = { ...event, reason: {
+        full: nameStorageError(event.reason.full, this.stateDir ?? undefined),
+        redacted: nameStorageError(event.reason.redacted, this.stateDir ?? undefined),
+      } };
+    }
     const stamped: NormalizedDegradationEvent = {
       ...event,
       // Preserve caller-provided timestamp/monotonicTs if present; fill if not.

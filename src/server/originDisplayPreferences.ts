@@ -1,3 +1,4 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import { agentDisplaySetting, singleEnabledTelegram } from '../messaging/messageOrigin.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
@@ -86,6 +87,6 @@ export function mountOriginDisplayPreferences(router: Router, ctx: RouteContext)
         }
       }
       res.json({ ok: true, message: 'Display saved. New messages use it after the configuration refresh (normally within a few seconds). Origin recording continues.' });
-    } catch { res.status(503).json({ error: 'origin-display-save-unavailable' }); }
+    } catch { res.status(503).json(storageErrorResponse({ error: 'origin-display-save-unavailable' }, ctx.config.stateDir)); }
   });
 }

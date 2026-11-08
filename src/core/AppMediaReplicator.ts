@@ -347,7 +347,7 @@ export class AppMediaReplicator {
   canFetch(sha: string): { ok: true } | { ok: false; reason: string } {
     if (!this.transport) return { ok: false, reason: 'the agent\'s machines are not connected to each other' };
     if (this.isUnrecoverable(sha)) return { ok: false, reason: 'no machine of this agent has been able to provide it for 7 days' };
-    if (this.d.media.belowDiskFloor()) return { ok: false, reason: 'this machine is nearly out of disk space, so nothing is copied here until space is freed' };
+    if (this.d.media.belowDiskFloor()) return { ok: false, reason: `${this.d.media.machineWords()} is nearly out of disk space, so nothing is copied there until space is freed` };
     if (this.candidatePeers(sha).length === 0) return { ok: false, reason: this.noPeerReason() };
     return { ok: true };
   }
