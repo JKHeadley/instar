@@ -182,6 +182,20 @@ describe('recommended services: production wiring', () => {
     expect(sync.body.error).toBe('not-granted-here');
   });
 
+  it('the Telegram recipe is dark on a fleet agent and reachable on a proving agent through the real wiring', async () => {
+    const plain = boot(true);
+    const plainList = await request(plain.server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(plainList.body.services.find((row: { service: string }) => row.service === 'telegram').available).toBe(false);
+    const { server } = boot(true, { recommendedServices: { provingRecipes: ['telegram-v1'] } });
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.find((row: { service: string }) => row.service === 'telegram').available).toBe(true);
+    const key = await request(app).post('/recommended-services/telegram/key')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').set('X-Telegram-Chat-Id', '-1001234567').type('text/plain').send('123456789:' + 'A'.repeat(35));
+    expect(key.status).toBe(409);
+    expect(key.body.error).toBe('not-granted-here');
+  });
+
   it('an agent proving a recipe (a throwaway under a temp folder) reaches it through the real wiring, beside the proven ones', async () => {
     const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
     const app = server.getApp();

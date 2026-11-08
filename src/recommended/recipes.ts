@@ -8,6 +8,7 @@
  * reach it.
  */
 import { execFile } from 'node:child_process';
+import type { TelegramSetupSurface } from './telegramSetup.js';
 import { DOOR_NAMES, mainDoor, secondDoorCandidates, type AiDoorSurface } from './aiDoors.js';
 import { VOICE_TRANSCRIPTION_SECRET, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import type { CatalogRow } from './catalog.js';
@@ -44,6 +45,8 @@ export interface RecipeDeps {
   agentName?: string;
   /** This agent's AI doors, for the second-subscription recipe. Absent means the recipe can't check. */
   aiDoors?: AiDoorSurface;
+  /** This agent's Telegram entry and the Bot API, for the Telegram recipe. Absent means the recipe can't check. */
+  telegramSetup?: TelegramSetupSurface;
 }
 
 /** What a recipe that keeps a copy elsewhere needs to bring it up to date. */
@@ -262,6 +265,48 @@ ${RULES('second-ai-door', port)}`,
       return { stopped: true, changed: removed.length > 0, detail: removed.length
         ? `${removed.map((d) => DOOR_NAMES[d]).join(' and ')} is taken back out of this agent's settings, and I won't move work there. ${signIn}`
         : `I won't move work to the second provider any more. ${signIn}` };
+    },
+  },
+  {
+    id: 'telegram-v1',
+    service: 'telegram',
+    // The person's own Telegram login is the credential, and it stays in their browser session; the bot token the
+    // recipe produces is written into this agent's messaging config, not the vault's named secrets.
+    secretName: null,
+    brief: ({ port }) => `The person said yes to Telegram. Set it up: a bot of this agent's own and a group with topics, so they can reach the agent from their phone and get its messages there.
+
+What's known, as of 2026-11-08:
+- Check first: call the check below. If it passes, Telegram already works here: say so and change nothing.
+- Everything happens in the person's own Telegram, signed in by them, in a normal browser the agent drives (the agent's browser profiles: GET http://localhost:${port}/playwright-profiles; the normal-chrome browser when automation is refused). Open https://web.telegram.org/k/ and start "Log in by phone number". The person's phone number and the login code Telegram sends them are credentials: ask for each through one Secret Drop, never in chat, and type them yourself. Telegram's terms are theirs already; nothing new is accepted.
+- With BotFather (@BotFather, the verified one): /newbot; display name = this agent's name; username = a lower-case form of it ending in "bot" (append digits if taken, up to five tries). If BotFather says the account has the most bots Telegram allows (20), stop: tell the person in one sentence that Telegram can't be added until a bot is freed, and that the dashboard and the Instar app still work. Never delete any of their bots.
+- BotFather's reply holds the token. Never print it, never put it in a command line or a web address, and never call the Bot API yourself (each shell is fresh, so a variable does not survive, and a token in a URL lands in the transcript). Read it straight from the page into the one call below, through the browser tool's stdin wrapper. Then: /setprivacy → Disable (so the bot reads group messages); /setjoingroups → Enable.
+- Create a new group named "<person> + <agent name>", add the bot, then turn on Topics in the group's settings (that makes it a supergroup with threads). Make the bot an administrator. The group's id is in the browser's address bar once it is open (web.telegram.org/k/#-100…); that -100… number is the chat id.
+- Then hand the channel to the server, with the token as the body and the chat id in the header, and don't print either:
+curl -s -X POST http://localhost:${port}/recommended-services/telegram/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "X-Telegram-Chat-Id: <chat id>" -H "Content-Type: text/plain" --data-binary @-
+The server itself proves the token and the group with the Bot API (it answers telegram-refused with the reason if they don't), stores the entry, asks for a planned restart so the new channel starts polling, and the check passes. Then sign the browser out of Telegram Web (Settings → Devices → log out this device): the person's login must not stay in a browser profile the agent holds. Tell the person their Telegram is ready and that the agent will greet them there after it restarts.
+${RULES('telegram', port)}`,
+    verify: async ({ telegramSetup }) => {
+      if (!telegramSetup) return { result: 'unknown', detail: "This server can't read its Telegram setup." };
+      const entry = telegramSetup.configured();
+      if (!entry) return { result: 'fail', absent: true, detail: 'No Telegram bot is set up for this agent.' };
+      if (!entry.enabled) return { result: 'fail', detail: 'Telegram is set up but switched off for this agent.' };
+      const probe = await telegramSetup.probe(entry.token, entry.chatId);
+      if (probe === 'ok') return { result: 'pass', detail: 'The bot answers and the group with topics is reachable, so Telegram works here.' };
+      if (probe === 'unknown') return { result: 'unknown', detail: 'Telegram did not answer.' };
+      if (probe === 'token-refused') return { result: 'fail', detail: 'Telegram refused the bot token.' };
+      if (probe === 'chat-unreachable') return { result: 'fail', detail: "The bot can't reach the group." };
+      return { result: 'fail', detail: 'The group has no topics turned on.' };
+    },
+    // Switching off disables this agent's entry; the person's bot and group stay theirs, and the entry stays in the
+    // config so a later yes needs no new bot. The routes hold this until another way in works (`wayIn`).
+    stop: async ({ telegramSetup, setUpHere }) => {
+      if (!telegramSetup) return { stopped: false, changed: false, detail: "This server can't change its Telegram setup, so nothing was switched off." };
+      if (!setUpHere) return { stopped: true, changed: false, detail: "Telegram on this agent was yours before I set anything up, so I've left it as it was." };
+      const entry = telegramSetup.configured();
+      if (!entry || !entry.enabled) return { stopped: true, changed: false, detail: 'Telegram was not switched on here, so there was nothing to switch off.' };
+      telegramSetup.disable();
+      telegramSetup.requestRestart('Telegram switched off by the owner');
+      return { stopped: true, changed: true, detail: 'Telegram is switched off for this agent: it stops reading and sending there after its next restart. Your bot and group stay yours; say the word and I’ll remove them.' };
     },
   },
   {

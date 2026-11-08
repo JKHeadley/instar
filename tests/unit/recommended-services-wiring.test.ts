@@ -58,6 +58,11 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('installed: (door) => detectDoorPath(door) !== null,');
     expect(routes).toContain("writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.enabledFrameworks = next; return { value: true }; });");
     expect(routes).toContain('ctx.config.enabledFrameworks = typed;');
+    // Telegram: the real entry reader, the Bot API probe, the config writer, and the planned restart.
+    expect(routes).toContain("configured: () => telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown }),");
+    expect(routes).toContain('probe: (token, chatId) => probeTelegram(token, chatId),');
+    expect(routes).toContain("const entry = { type: 'telegram', enabled: true, config: { token, chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 } };");
+    expect(routes).toContain("requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },");
     const adapter = fs.readFileSync(path.join(root, 'src/messaging/TelegramAdapter.ts'), 'utf8');
     expect(adapter).toContain("if (query.data.startsWith('rs:'))");
     expect(adapter).toContain('this.recommendedOfferHandler({ action: m[1] === \'y\' ? \'yes\' : \'no\', nonce: m[2]!, fromIsOwner })');

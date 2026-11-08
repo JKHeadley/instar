@@ -72,6 +72,7 @@ export interface RecommendedServiceRouteDeps {
   /** GitHub and this agent's state repository, for the private-backup recipe; tests pass a stand-in. */
   github?: GitHubBackupSurface;
   aiDoors?: import('../recommended/aiDoors.js').AiDoorSurface;
+  telegramSetup?: import('../recommended/telegramSetup.js').TelegramSetupSurface;
   /** This agent's name, for things named after it. */
   agentName?: string;
   /** Turns the agent's git backup off in its config (a confirmed no to GitHub). */
@@ -131,7 +132,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const starting = new Set<string>();
   const stopping = new Set<string>();
   const reach = (): boolean => deps.canReachOwner?.() ?? true;
-  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, aiDoors: deps.aiDoors });
+  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, aiDoors: deps.aiDoors, telegramSetup: deps.telegramSetup });
   /** How often a copy kept elsewhere is brought up to date by the regular check, and how long a failed refresh waits before another try. */
   const SYNC_EVERY_MS = 24 * 60 * 60_000;
   const SYNC_RETRY_MS = 6 * 60 * 60_000;
@@ -868,7 +869,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   });
 
   /** Stores the one secret a recipe names, so a session never improvises where a key goes. */
-  router.post('/recommended-services/:id/key', (req, res) => {
+  router.post('/recommended-services/:id/key', async (req, res) => {
     const ledger = ledgerOr503(res);
     if (!ledger) return;
     const row = catalog.find((r) => r.id === req.params.id);
@@ -886,6 +887,45 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     const secretName = recipe.secretName;
+    // Telegram keeps no named secret: its bot token and chat id become this agent's messaging entry.
+    if (!secretName && row.id === 'telegram' && deps.telegramSetup) {
+      const token = typeof req.body === 'string' ? req.body.trim() : '';
+      const chatId = typeof req.headers['x-telegram-chat-id'] === 'string' ? req.headers['x-telegram-chat-id'].trim() : '';
+      if (!/^\d{6,12}:[A-Za-z0-9_-]{30,}$/.test(token)) {
+        res.status(400).json({ error: 'invalid-value' });
+        return;
+      }
+      if (!/^-100\d{5,15}$/.test(chatId)) {
+        res.status(400).json({ error: 'invalid-chat-id', detail: 'The chat id must be a supergroup id (-100…), the one Telegram returns after topics are turned on.' });
+        return;
+      }
+      // A Telegram the person already had is theirs: setup never replaces a working entry.
+      const existing = deps.telegramSetup.configured();
+      const state = readSetupStates(deps.stateDir)[row.id];
+      if (existing?.enabled && !state?.absentBeforeSetup) {
+        res.status(409).json({ error: 'already-held' });
+        return;
+      }
+      // The server proves the token and group itself, so the session never puts the token in a URL; a token
+      // or group Telegram refuses is never written and never restarted into.
+      const probe = await deps.telegramSetup.probe(token, chatId);
+      if (probe !== 'ok') {
+        res.status(409).json({ error: 'telegram-refused', probe, detail: probe === 'unknown' ? 'Telegram did not answer.' : probe === 'token-refused' ? 'Telegram refused the bot token.' : probe === 'chat-unreachable' ? "The bot can't reach that group." : 'That group has no topics turned on.' });
+        return;
+      }
+      try {
+        deps.telegramSetup.write({ token, chatId });
+        // Setup made this channel: the switch-off may disable it.
+        updateSetupState(deps.stateDir, row.id, { signedInBySetup: true });
+        deps.telegramSetup.requestRestart('Telegram set up by the recommended-services recipe');
+      } catch (err) {
+        report('Store the Telegram channel', err, 'The channel was not saved.');
+        res.status(503).json({ error: 'key-not-saved' });
+        return;
+      }
+      res.json({ stored: true, restarting: true });
+      return;
+    }
     if (!secretName) {
       // Tailscale's sign-in is the person's own tap. A recipe that keeps no secret accepts none.
       res.status(409).json({ error: 'no-secret-for-this-service' });

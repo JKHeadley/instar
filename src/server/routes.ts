@@ -343,6 +343,7 @@ import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
+import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
 import {
   readGuardPostureBootSnapshot,
   resolveGuardConfigSnapshot,
@@ -16526,6 +16527,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     fs.mkdirSync(path.dirname(doorsAddedFile), { recursive: true });
     fs.writeFileSync(doorsAddedFile, JSON.stringify(doors));
   };
+  // The Telegram entry this process wrote or disabled, since ctx.config is only read at boot.
+  let telegramWrittenHere: import('../recommended/telegramSetup.js').TelegramEntry | null = null;
   // One writer for this agent's switched-on frameworks: the config file (read at the next boot) and the live copies.
   const setEnabledFrameworks = (next: string[]): void => {
     writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.enabledFrameworks = next; return { value: true }; });
@@ -16609,6 +16612,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return ip ? `http://${ip}:${ctx.config.port}` : null;
     },
     registerOfferTapHandler: (handler) => { ctx.telegram?.setRecommendedOfferHandler?.(handler); },
+    // The Telegram recipe: this agent's messaging entry, the Bot API probe, and a planned restart so a new channel starts polling.
+    telegramSetup: {
+      // ctx.config is read once at boot, so the entry this process wrote (or disabled) is remembered here until the restart.
+      configured: () => telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown }),
+      probe: (token, chatId) => probeTelegram(token, chatId),
+      write: ({ token, chatId }) => {
+        writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => {
+          const list = Array.isArray(cfg.messaging) ? (cfg.messaging as Array<Record<string, unknown>>) : [];
+          // A fresh config object: an old entry's topic ids belong to the old group and must not carry over.
+          const entry = { type: 'telegram', enabled: true, config: { token, chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 } };
+          const i = list.findIndex((m) => m?.type === 'telegram');
+          if (i >= 0) list[i] = entry; else list.push(entry);
+          cfg.messaging = list;
+          return { value: true };
+        });
+        telegramWrittenHere = { token, chatId, enabled: true };
+      },
+      disable: () => {
+        writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => {
+          const list = Array.isArray(cfg.messaging) ? (cfg.messaging as Array<Record<string, unknown>>) : [];
+          const i = list.findIndex((m) => m?.type === 'telegram');
+          if (i >= 0) list[i] = { ...list[i], enabled: false };
+          cfg.messaging = list;
+          return { value: true };
+        });
+        const current = telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown });
+        if (current) telegramWrittenHere = { ...current, enabled: false };
+      },
+      requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },
+    },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.
