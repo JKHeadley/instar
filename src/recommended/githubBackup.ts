@@ -82,13 +82,12 @@ export function realGitHubBackupSurface(stateDir: string, gitConfig: Record<stri
   // A one-shot credential helper: the token travels in the child's environment, never on the command line or in the remote URL.
   const credential = `credential.helper=!f() { echo username=x-access-token; echo "password=$${GITHUB_BACKUP_TOKEN_ENV}"; }; f`;
   // GIT_TERMINAL_PROMPT=0: a helper that yields nothing fails at once instead of waiting on a tty prompt.
-  // `-c` comes before the verb, so the funnel is named explicitly: execSync for the push (a write), readSync for ls-remote.
+  // `-c` comes before the verb, so the funnel is named explicitly: execSync for the push and the fetch that reads it back.
   const gitOpts = (token: string) => ({
     cwd: stateDir, encoding: 'utf-8' as const, stdio: ['pipe', 'pipe', 'pipe'] as Array<'pipe'>, operation: 'src/recommended/githubBackup.ts:git',
     env: { [GITHUB_BACKUP_TOKEN_ENV]: token, GIT_TERMINAL_PROMPT: '0' },
   });
   const gitWrite = (token: string, args: string[]): string => SafeGitExecutor.execSync(['-c', credential, ...args], gitOpts(token));
-  const gitRead = (token: string, args: string[]): string => SafeGitExecutor.readSync(['-c', credential, ...args], gitOpts(token));
   const readRemote = (): string | null => {
     try {
       const url = SafeGitExecutor.run(['remote', 'get-url', 'origin'], { cwd: path.resolve(stateDir), encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], operation: 'src/recommended/githubBackup.ts:remote' }).trim();
@@ -133,12 +132,14 @@ export function realGitHubBackupSurface(stateDir: string, gitConfig: Record<stri
     },
     remoteHead: async (token, cloneUrl) => {
       try {
-        const out = gitRead(token, ['ls-remote', cloneUrl, 'refs/heads/main']).trim();
-        const sha = out.split(/\s+/)[0];
-        return /^[0-9a-f]{40}$/.test(sha ?? '') ? sha : null;
-      } catch {
-        // @silent-fallback-ok: unreachable or refused; the recipe tells the two apart from GitHub's own answer
-        return undefined;
+        // A read surface refuses a credential helper (EVO-029), so the authenticated read is a fetch, which writes only FETCH_HEAD.
+        gitWrite(token, ['fetch', '--no-tags', cloneUrl, 'refs/heads/main']);
+        const sha = SafeGitExecutor.readSync(['rev-parse', 'FETCH_HEAD'], { cwd: stateDir, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'], operation: 'src/recommended/githubBackup.ts:head' }).trim();
+        return /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+      } catch (err) {
+        // git's own text when the repository has no main yet; anything else is unreachable or refused, which the recipe tells apart from GitHub's own answer.
+        const gitOutput = err instanceof Error ? `${err.message} ${(err as { stderr?: unknown }).stderr ?? ''}` : String(err);
+        return /couldn't find remote ref/i.test(gitOutput) ? null : undefined; // @silent-fallback-ok: undefined is the recipe's "could not tell"
       }
     },
     localHead: () => {

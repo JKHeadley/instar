@@ -111,3 +111,8 @@ Independent read (reviewer subagent, 2026-11-07): token flow traced clean (heade
 **Concern raised:** `pushState` unconditionally rewrote the state repository's `origin` (a foreign remote replaced; an SSH GitHub remote converted to credential-less HTTPS), contradicting §1 and §5. **Resolved:** origin is set only when none exists; push and `ls-remote` name the URL; §1/§5 corrected; a real-repository test pins it.
 
 Notes carried: `GIT_TERMINAL_PROMPT=0` added to the child environment (a helper failure errors at once instead of waiting on the 30 s timeout). Recorded, no change: a pass clears the raise mark but does not close the attention item itself (the spec asks for one item; the person resolves it); the privacy notice for an existing public remote needs a stored token first (public repositories could be checked unauthenticated later); the legacy `gitBackup.enabled` switch is read at boot, so an in-process legacy auto-push continues until the next restart while this recipe's own pushes stop at once.
+
+
+## Rebase fix (2026-11-08)
+
+Main's read-surface hardening (EVO-029, #2821) refuses a `-c credential.helper` on `readSync`, so the authenticated `ls-remote` could only ever report "could not tell". The read-back is now a `git fetch` of `refs/heads/main` through the execSync funnel, which writes only FETCH_HEAD, followed by `rev-parse FETCH_HEAD`. A remote with no main still reads as null. The token stays in the child's environment. The agent-name read in the routes wiring also tolerates a config with no project directory.
