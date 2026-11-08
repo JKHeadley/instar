@@ -11,7 +11,7 @@ Tier 2. A per-machine disk watcher (`src/monitoring/DiskSteward.ts`, `diskStewar
 
 Companion fixes:
 - `src/monitoring/agentWorktreeGit.ts` + `AgentWorktreeReaper.ts`: a linked `node_modules` and a provable `dist/` count as regenerable. Inbound-link index. A process command line keeps a checkout. A failed working-folder scan keeps all.
-- `src/localVerify/orchestrator.ts` + `orchestratorSeams.ts` (+ `runVerifyMain.ts`, `LocalVerifyService.ts`, `localVerifyWiring.ts`): an orphan run sweep at run start. A `kept-failed.json` that cannot be parsed is never overwritten, and both readers record a degradation (`LocalVerify.keptList`) that rides the run result to the server's reporter; kept entries are listed with their size; a skipped sweep always says why in the run log; the process view (lsof, ps) is read once per sweep.
+- `src/localVerify/orchestrator.ts` + `orchestratorSeams.ts` (+ `runVerifyMain.ts`, `LocalVerifyService.ts`, `localVerifyWiring.ts`): an orphan run sweep at run start. A `kept-failed.json` that cannot be parsed is never overwritten, and both readers record a degradation (`LocalVerify.keptList`) that rides the run result to the server's reporter; kept entries are listed with their size; a skipped sweep says why in the run log (the one silent return, for a seam absent only in tests, is unreachable in production); the process view (lsof, ps) is read once per sweep and re-read after 10 s on a long one.
 
 Registrations: notification category `disk-steward` + floor envelope factory + lint exception; system-topic key `agent-disk-topic`; config defaults + a dev-agent migration for cleanup; dark-gate exclusion (destructive); machine-local write domain + git-sync exclusion; feature ladder entry; self-action controller (eternal sentinel); CLAUDE.md section, template and migration; Registry First row.
 
@@ -111,6 +111,9 @@ Ready to ship with the declared limits. The deletion surface is two tool caches 
 
 ## Second-pass review
 
+**Reviewer:** independent reviewer subagent spawned by Echo (two rounds 2026-11-07; Local Verify re-reads 2026-11-08, the last one cold at head 81c10992d from the Mac M5 Pro builder session, agent a398d59fdfd0747e0)
+**Independent read of the artifact: concur** (after the concerns below were fixed)
+
 Required: this change touches a watchdog-like monitor and deletion paths.
 
 Independent reviewer (subagent), first pass: Concern raised. (1) The manual route runs regardless of the cleanup switch, and this was undisclosed. (2) The real `node_modules` claim was mis-stated as new. (3) The 15-minute `dist/` window was not listed. All three were fixed in this artifact; no code change was needed.
@@ -132,3 +135,15 @@ Local Verify flagged `independent-review-absent` for `src/localVerify/orchestrat
 
 **Second verdict:** Concern raised again, on the fix for item 2 (the run child writing the server's `degradations.json`); redesigned as described there. **Third verdict: Concur with the review** (orphanSweep 17 passed, LocalVerifyService 143 passed). Its one note, a crash result dropping collected degradations, is applied: a crash result carries them too.
 
+## Second-pass review, cold re-read at head 81c10992d (2026-11-08, Mac M5 Pro)
+
+**Reviewer:** independent reviewer subagent (Echo builder session on the Mac M5 Pro, agent a398d59fdfd0747e0)
+**Independent read of the artifact: concur**
+
+Why again: Local Verify on head 81c10992d (run finished 2026-11-08 11:03 UTC, this machine as the peer) recorded `independent-review-absent`. Its run log names the cause: the newer trace fails `second-pass-reviewer-missing`, because the `## Second-pass review` section above had no `**Reviewer:**` line, which the shared judge (`scripts/lib/instar-dev-trace.mjs`, in force since 2026-10-23) requires; the older trace fails `not-covered` for three of the five flagged files. The review was not stale: no flagged path changed after either trace (`git log 5aa02b95c..81c10992d -- src/localVerify/...` is empty), and the merge's only hand edit, `tests/unit/lint-dev-agent-dark-gate.test.ts`, is not a flagged path. The missing line is added above; rather than only relabel, the review was redone cold at the head.
+
+What the reviewer read before this artifact: the diff of the five Local Verify files and the two test files against merge-base 9a598469d, spec §5 with its multi-machine, rollback and acceptance sections, and `docs/signal-vs-authority.md`. Findings: a directory is removed only when it is a 12-hex-named child of the verifier's own `runs/` (the real `list` seam returns directories only), registered in the verifier's bare clone, not the current run, not in the kept list, and `inUse === false` strictly (null keeps), through a non-forced `git worktree remove` (`orchestrator.ts:1038-1099`; `SafeGitExecutor` independently refuses any force token under the local-verify scope), credited only when git returns 0 and the folder is gone. Every failure path (worktree list, lsof/ps, kept list, du, remove) keeps and logs; the whole body is try/caught, so nothing throws into the verify. The child never writes the server's `degradations.json` (no reporter import in the orchestrator, seams or `runVerifyMain`); crash results carry degradations too; the service-side hand-off is try/caught (`LocalVerifyService.ts:2666-2668`). No lane, record or merge decision reads the sweep's result; its only cost is wall-clock inside the run's active budget. The reviewer also ran `worktree list --porcelain` through `SafeGitExecutor` against this machine's real verify root: allowed; had it been refused, the result is a logged skip, never a deletion. orphanSweep 17 and LocalVerifyService 143 passed locally.
+
+Noted, not a defect: `runVerifyMain.ts` carrying degradations on success and crash results has no direct unit test (a straight pass-through; the service-side hand-off is tested). Two wording nits are applied in the summary above (one unreachable silent return; the process view memo is 10 s). A crash mid-write of `kept-failed.json` now disables sweeping until repaired, surfaced by the degradation, as the spec chose.
+
+**Verdict: Concur with the review.** Gate attempts for this re-review: 1 commit.
