@@ -67,6 +67,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const starved: Array<{ pr: number }> = [];
   const records: LocalVerifyRecord[] = [];
   const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+  const degradations: Array<Record<string, unknown>> = [];
   const priorities: boolean[] = [];
   let holders: number[] = [];
   /** What the verifier files on disk compute right now; null (the default) = unknown, never holds. */
@@ -98,6 +99,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     setSuitePriority: (active) => { priorities.push(active); },
     onStarved: (i) => { starved.push(i); },
     onRecord: (r) => { records.push(r); },
+    onDegradation: (e) => { degradations.push(e as unknown as Record<string, unknown>); },
     signal: (key, detail) => { signals.push({ key, detail }); },
     installedVerifierVersion: () => diskVersion,
     now: () => t,
@@ -120,7 +122,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     await flush();
   };
   return {
-    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, priorities, intentPath,
+    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, degradations, priorities, intentPath,
     setHolders: (h: number[]) => { holders = h; },
     setDiskVersion: (v: string | null) => { diskVersion = v; },
     advance: (ms: number) => { t += ms; },
@@ -135,6 +137,25 @@ const preflightRed = () => record({ outcome: 'failure', lanes: [], preflight: {
   selectedFiles: ['tests/unit/a.test.ts'], selectedCases: 1, repeatedFailedFile: 'tests/unit/a.test.ts',
   headSha: sha('a'), baseSha: sha('b'),
 } });
+
+describe('degradations carried by the run child', () => {
+  it('hands each degradation in the result to the seam, and the record still lands', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    const d = { feature: 'LocalVerify.keptList', primary: 'kept-failed.json names kept runs', fallback: 'left untouched', reason: 'not a JSON array', impact: 'nothing swept' };
+    await h.finish(0, { ...ok(record({ outcome: 'success' })), degradations: [d] });
+    expect(h.degradations).toEqual([d]);
+    expect(h.records).toHaveLength(1);
+  });
+
+  it('a result without degradations calls the seam for none', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(record({ outcome: 'success' })));
+    expect(h.degradations).toEqual([]);
+  });
+});
 
 describe('automatic full-suite replay after enforced preflight red', () => {
   it('bypasses preflight on a fresh-tree retry after a preflight cleanup error', async () => {

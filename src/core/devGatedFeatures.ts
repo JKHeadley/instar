@@ -1038,6 +1038,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'deletes git worktrees; off+dry-run for everyone',
   },
   {
+    configPath: 'monitoring.diskSteward.prune.enabled',
+    category: 'destructive',
+    reason: 'deletes npm cache and Xcode build files; off for everyone, the update migration writes an explicit true on development agents only (docs/specs/disk-steward.md)',
+  },
+  {
     configPath: 'monitoring.mcpProcessReaper.enabled',
     category: 'destructive',
     reason: 'kills MCP processes; off+dry-run for everyone',

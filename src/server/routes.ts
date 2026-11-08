@@ -9,6 +9,7 @@ import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
 import { mountNotificationRoutes } from './notificationRoutes.js';
+import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
 import { jobReportChoice } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
@@ -1944,6 +1945,8 @@ export interface RouteContext {
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** Disk Steward (docs/specs/disk-steward.md); null when turned off. Read lazily. */
+  diskSteward?: (() => DiskStewardRouteDeps | null) | null;
   /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel. Null when not wired
    *  (dev-gated dark). Powers GET /external-hog + the PIN-gated arm/disarm routes (CMT-1901). */
   externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel | null;
@@ -2932,6 +2935,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
   const router = Router();
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
+  mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
     verifyOperator: proof => ctx.verifyDashboardOperatorSession?.(proof) === true,
@@ -10843,11 +10847,12 @@ export function createRoutes(ctx: RouteContext): Router {
   // each kept?": every `.worktrees/` worktree's verdict (active-lock /
   // uncommitted-changes / not-stale / unmerged / reap-eligible) + the reclaimable
   // count + whether reaping is armed (enabled, dryRun). Read-only, Bearer-auth.
-  router.get('/worktrees/agent-reaper', (_req, res) => {
+  router.get('/worktrees/agent-reaper', async (_req, res) => {
     if (!ctx.agentWorktreeReaper) {
       res.status(503).json({ error: 'agent worktree reaper unavailable' });
       return;
     }
+    await ctx.agentWorktreeReaper.prepare();
     res.json(ctx.agentWorktreeReaper.snapshot());
   });
 

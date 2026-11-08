@@ -61,7 +61,7 @@ import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from '
 import { WaitingList, type Waiter } from './waitingList.js';
 import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
-import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult } from './orchestrator.js';
+import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
 import { PREFLIGHT_LIMITS } from './preflight.js';
 import {
   PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
@@ -212,6 +212,12 @@ export interface LocalVerifyServiceSeams {
   onStarved?(info: { pr: number; headSha: string; waitedMs: number; interruptions?: number; reason?: 'waited' | 'interrupted' }): void;
   /** Called by the completion path after a record is journaled (status projection plugs in here later). */
   onRecord?(record: LocalVerifyRecord): void;
+  /**
+   * A degradation the run child carried in its result (disk-steward §5: an unreadable
+   * kept-failed.json). The real seam hands it to this server's DegradationReporter, the
+   * one that reaches /health; the child never writes the server's file itself.
+   */
+  onDegradation?(event: RunDegradation): void;
   /** `git merge-base --is-ancestor` through the verifier's git funnel; null = undecidable (main health stays unhealthy). */
   isAncestor?(ancestor: string, descendant: string): Promise<boolean | null>;
   /** Synchronous hook after every main-health state change (event-driven withdrawal). */
@@ -2779,6 +2785,9 @@ export class LocalVerifyService {
     try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ }
     const result = this.readResult(f.resultPath);
     this.removeRunFiles(f);
+    for (const d of (result && 'degradations' in result && Array.isArray(result.degradations)) ? result.degradations : []) {
+      try { this.seams.onDegradation?.(d); } catch { /* @silent-fallback-ok: the run log still carries the event */ }
+    }
     if (f.entry.peerAttempt) {
       this.publishSuitePriority(false);
       this.finishPeerAttempt(f, result);

@@ -491,6 +491,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       initialPassDelayMs: 900_000,
       maxReapsPerPass: 20,
     },
+    // DiskSteward (docs/specs/disk-steward.md) — every machine watches its own
+    // free space and posts in the "Disk space (all machines)" topic when it gets
+    // low. Watching and posting are on for everyone. The cleanup of two tool
+    // caches (npm cache over 5 GiB, Xcode build files older than a day) deletes
+    // files, so it is OFF by default; the update migration turns it on only for
+    // development agents that have no value set.
+    diskSteward: {
+      enabled: true,
+      sampleIntervalMs: 900_000,
+      warnPercent: 15,
+      warnMinGiB: 100,
+      escalatePercent: 10,
+      escalateMinGiB: 60,
+      forecastEscalateDays: 3,
+      prune: {
+        enabled: false,
+        dryRun: false,
+        minIntervalMs: 21_600_000,
+        npmCacheMaxGiB: 5,
+      },
+    },
     // OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
     // topic 22367): detects an agent worktree with uncommitted work whose owning
     // session is DEAD and that has SETTLED, records it, and raises ONE deduped

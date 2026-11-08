@@ -68,6 +68,7 @@ import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/A
 import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
+import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
@@ -2743,6 +2744,63 @@ const systemTopicAdoption: SelfActionController = {
 };
 
 
+// ── disk steward (docs/specs/disk-steward.md §3.4–§3.5) ──
+// The worst case: a disk stuck below the warn line that cleanup cannot help, and
+// a Telegram send that always fails. Drives the SAME pure cadence functions the
+// DiskSteward calls (repeatDue, sendRetryDelay) and its two brakes: the 6 h
+// cleanup interval with the three-strikes breaker, and the 24 h drop of an unsent
+// post (which counts as attempted, so the next one waits a full repeat window).
+const DISK_TICK_MS = 15 * 60_000;
+const diskStewardNotice: SelfActionController = {
+  id: 'disk-steward',
+  actionVerb: 'notify-disk-space', // 'notify' detector token: the post send attempt (and the cleanup run beside it)
+  models: 'src/monitoring/DiskSteward.ts (tick → cycle: one cleanup per 6 h, breaker after three runs freeing <1%; deliver: send backoff 15m→6h, unsent post dropped after 24 h)',
+  modelsPath: 'src/monitoring/DiskSteward.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Cadence, last cleanup time, breaker count and the due post with its failure count are persisted in the machine-local state file and restored at boot (a restored level is not a rise), so a restart resumes the same brakes rather than resetting them.' },
+  boundK: 60,
+  perTargetBoundK: 60,
+  ticks: 400, // 100 h at 15 min
+  tickMs: DISK_TICK_MS,
+  // A full disk is a fact that stays true until someone acts, so the watcher keeps
+  // telling (Self-Heal Before Notify: an operator-facing notice must never go
+  // silent while the condition holds). Its floor: send attempts never closer than
+  // the first retry step (15 min); each post is given up after 24 h and the next
+  // waits a full repeat window. Cleanup runs are separately capped by the breaker.
+  eternalSentinel: { reason: 'disk-space notices must keep coming while a disk stays low; send retries back off 15 min→6 h and each post is dropped after 24 h', rateFloorMs: DISK_TICK_MS },
+  delegatedGiveUp: 'DiskSteward.applyAck — an unsent post is dropped after 24 h (counted as attempted); cleanup has its own three-strikes breaker',
+  makeUnderPressure(f, sink) {
+    const DAY = 86_400_000;
+    let lastPruneAt: number | null = null;
+    let breaker = 0;
+    const cadence = { lastPostAt: null as number | null, stage: 0, warnBackoff: 1 };
+    let due: { createdAt: number; failures: number; nextAttemptAt: number } | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!due && diskRepeatDue(cadence, 'warn', false, now)) {
+          if (breaker < 3 && (lastPruneAt === null || now - lastPruneAt >= 6 * 3_600_000)) {
+            lastPruneAt = now;
+            breaker += 1; // the pinned case: cleanup frees nothing (the breaker stops it after three)
+          }
+          due = { createdAt: now, failures: 0, nextAttemptAt: now };
+        }
+        if (due && now >= due.nextAttemptAt) {
+          sink.emit({ verb: 'notify-disk-space', target: 'm_self' });
+          if (f.targetAlwaysRejects()) {
+            due.failures += 1;
+            due.nextAttemptAt = now + diskSendRetryDelay(due.failures);
+            if (now - due.createdAt > DAY) { cadence.lastPostAt = now; due = null; }
+          } else {
+            cadence.lastPostAt = now;
+            due = null;
+          }
+        }
+      },
+    };
+  },
+};
+
 // ── local-verify (spec docs/specs/local-verify-merge-authority.md; ACT-147) ──
 // Every model below drives the SAME exported pure decision functions the real
 // LocalVerifyService / StatusReconciler call (decideVerifyRetry, decideStarved,
@@ -5043,6 +5101,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyStatusPost,
   localVerifyStatusPassBackoff,
   systemTopicAdoption,
+  diskStewardNotice,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   overloadAdmissionSelfHelp,
