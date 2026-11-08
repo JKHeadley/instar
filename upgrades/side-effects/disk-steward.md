@@ -147,3 +147,17 @@ What the reviewer read before this artifact: the diff of the five Local Verify f
 Noted, not a defect: `runVerifyMain.ts` carrying degradations on success and crash results has no direct unit test (a straight pass-through; the service-side hand-off is tested). Two wording nits are applied in the summary above (one unreachable silent return; the process view memo is 10 s). A crash mid-write of `kept-failed.json` now disables sweeping until repaired, surfaced by the degradation, as the spec chose.
 
 **Verdict: Concur with the review.** Gate attempts for this re-review: 1 commit.
+
+## Second-pass review, cold re-read after the main merge (2026-11-08, Mac Studio)
+
+**Reviewer:** independent reviewer subagent spawned by Echo on the Mac Studio (cold read of the Local Verify diff against origin/main at head 7c50f02f5, before reading this artifact)
+**Independent read of the artifact: concur**
+
+Why again: merging main into the branch (87a22cc3f) changed flagged Local Verify files after the last trace, so Local Verify recorded `independent-review-absent` (`flagged-changed-after-trace`). The reviewer read `git diff origin/main...HEAD -- src/localVerify` (LocalVerifyService.ts, localVerifyWiring.ts, orchestrator.ts, orchestratorSeams.ts, runVerifyMain.ts) and `docs/signal-vs-authority.md`, then checked: no gate weakened (the sweep never touches a record, outcome or `evaluateRun`, and its body is try/caught, so it can cost time but never turn a run green), no brittle blocking authority (removal only of verifier-owned, clone-registered, not-current, not-kept, `inUse === false` run folders through a non-forced remove; unreadable kept list stops the sweep), no machine broken (a peer without `lsof` or with a different `ps` reads as in use and sweeps nothing), main health and the merge line unchanged. orphanSweep 17/17.
+
+Findings and fixes:
+1. Low: the kept-list degradation put the absolute run path (macOS user name, head SHA prefix) and the kept-list file path into text that reaches the unauthenticated `/health` summary. **Fixed:** both paths are out of the degradation; the run path goes to the run log (`kept-list-unreadable-run`).
+2. Low: the fallback wording read badly inside the "Using … in the meantime" narrative. **Fixed** (reviewer: now only slightly redundant, cosmetic).
+3. Note: degradations from the child's result file are passed on without a shape check; contained by try/catch and written by our own child. Not a defect.
+
+Re-check of the fix diff by the same reviewer: **Concur** for the whole Local Verify change.

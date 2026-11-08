@@ -1103,8 +1103,8 @@ export async function sweepOrphanVerifyRuns(seams: OrchestratorSeams, p: VerifyP
 function degradeKeptList(seams: OrchestratorSeams, p: VerifyPaths, impact: string): void {
   seams.degrade?.({
     feature: 'LocalVerify.keptList',
-    primary: `${p.keptListFile} names the failed runs kept for diagnosis`,
-    fallback: 'the file is left untouched for a person to repair or remove',
+    primary: 'the kept-failed list (kept-failed.json in the verify root) names the failed runs kept for diagnosis',
+    fallback: 'the unreadable list exactly as it is, untouched, until a person repairs or removes it',
     reason: 'kept-failed.json exists but is not a JSON array of paths',
     impact,
   });
@@ -1116,7 +1116,9 @@ export async function keepFailed(seams: OrchestratorSeams, p: VerifyPaths): Prom
   if (!kl.ok) {
     // Never overwrite a list we cannot read: it may name runs someone is keeping.
     seams.log({ event: 'kept-list-unreadable', detail: 'kept-failed.json left as is; this run is kept but not listed' });
-    degradeKeptList(seams, p, `this failed run (${p.runDir}) is kept but not listed; the next sweep removes it once the list parses again`);
+    // The run folder's absolute path stays in the run log; the degradation text reaches /health.
+    seams.log({ event: 'kept-list-unreadable-run', detail: p.runDir });
+    degradeKeptList(seams, p, 'this failed run is kept but not listed; the next sweep removes it once the list parses again');
     return;
   }
   let list = kl.list;
