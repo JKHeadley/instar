@@ -117,12 +117,20 @@ describe('GET /mobile/health-issues', () => {
     expect((await request(app).post(PATH).set('Authorization', 'Bearer tok-1').send({})).status).toBe(404);
   });
 
+  it('a /health that times out says so', async () => {
+    const { app } = setup(async () => { throw new Error('The operation was aborted due to timeout'); });
+    const r = await request(app).get(PATH).set('Authorization', 'Bearer tok-1');
+    expect(r.status).toBe(500);
+    expect(r.body).toMatchObject({ verdict: 'unsure', reason: 'timeout' });
+  });
+
   it('a /health it cannot read is a 500 that says so, and the next read tries again', async () => {
     let up = false;
     const { app } = setup(async () => (up ? { status: 200, body: { status: 'ok' } } : { status: 503, body: null }));
     const down = await request(app).get(PATH).set('Authorization', 'Bearer tok-1');
     expect(down.status).toBe(500);
-    expect(down.body).toEqual({ error: 'health-unavailable' });
+    // The one honest "can't tell": answered, but couldn't read its own health, and why.
+    expect(down.body).toEqual({ error: 'health-unavailable', verdict: 'unsure', reason: 'health-read-failed', detail: 'I couldn’t read my own health just now.' });
     up = true;
     expect((await request(app).get(PATH).set('Authorization', 'Bearer tok-1')).status).toBe(200);
   });

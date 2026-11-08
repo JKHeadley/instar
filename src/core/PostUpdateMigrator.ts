@@ -1113,8 +1113,11 @@ export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native sessio
  * The native Accounts / What thinking costs / Resource usage reads (docs/specs/mobile-native-capacity-screens.md),
  * one bullet in the Mobile app routes block after the probe bullet. Sniff: `GET /mobile/accounts`.
  */
+/** The capacity bullet's old resources clause, and its replacement (resources now cover every machine). */
+export const MOBILE_CAPACITY_SCREENS_RESOURCES_OLD = "Accounts and spend cover every machine that answers (a machine that didn't is named); resources are this machine's.";
+export const MOBILE_CAPACITY_SCREENS_RESOURCES_NEW = "Accounts, spend and resources cover every machine that answers (a machine that didn't is named, never shown as zeros; resources with ?scope=local is the one-machine peer read).";
 export function MOBILE_CAPACITY_SCREENS_LINE(port: number): string {
-  return `- The app's native Accounts, What thinking costs and Resource usage screens read \`GET /mobile/accounts\`, \`GET /mobile/spend?window=today|week|month\` and \`GET /mobile/resources\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Accounts, What thinking costs and Resource usage views show (no login folders, machine or account ids, credential references or raw errors). Accounts and spend cover every machine that answers (a machine that didn't is named); resources are this machine's. Signing in and spending limits stay in the console. When the operator asks "what does my phone show for accounts?" or "why does the app say an account needs signing in?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/accounts\`.`;
+  return `- The app's native Accounts, What thinking costs and Resource usage screens read \`GET /mobile/accounts\`, \`GET /mobile/spend?window=today|week|month\` and \`GET /mobile/resources\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Accounts, What thinking costs and Resource usage views show (no login folders, machine or account ids, credential references or raw errors). Accounts, spend and resources cover every machine that answers (a machine that didn't is named, never shown as zeros; resources with ?scope=local is the one-machine peer read). Signing in and spending limits stay in the console. When the operator asks "what does my phone show for accounts?" or "why does the app say an account needs signing in?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/accounts\`.`;
 }
 export const MOBILE_CAPACITY_SCREENS_MARKER = 'GET /mobile/accounts';
 /**
@@ -1366,6 +1369,10 @@ ${MOBILE_APP_POOL_LINE()}
 `;
 }
 
+/** The shipped v1 sentence of the recommended-services block; a legacy-layout CLAUDE.md still carrying it gets the v2 wording. */
+export const RECOMMENDED_SERVICES_V1_TAIL = 'field says whether it is. Offers are not live yet.';
+export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale and Jev can be set up on every agent: the person says yes or no on the dashboard\'s Services row (`/dashboard/service-yes?service=<id>`, PIN); a yes starts a setup session in its own topic that owns the whole job; a no can also switch a working service off here. I don\'t offer services on my own yet.';
+
 /**
  * CLAUDE.md awareness block for recommended outside services (docs/specs/recommended-services.md).
  * Unique content-sniff marker: `Recommended outside services (`. Kept short on purpose.
@@ -1373,7 +1380,7 @@ ${MOBILE_APP_POOL_LINE()}
 export function RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port: number): string {
   return `\n### Recommended outside services (\`GET /recommended-services\`)
 
-The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` field says whether it is. Offers are not live yet.
+The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V2_TAIL}
 - Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services\`. A no stands until the person confirms a yes, and I never re-offer on my own for now.
 - **The person only approves, asks for changes, or supplies a credential.** After a yes, everything else is mine: research, creating accounts, getting keys, setup. They never open a browser or follow steps.
 - **Whose account is their choice.** I can fully manage their accounts like an executive assistant, use accounts of my own, or both. I make that clear and never recommend against either.
@@ -10043,6 +10050,14 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the native Accounts, Spend and Resource usage line');
     }
 
+    // Resource usage now covers every machine (2026-11-06): an existing capacity bullet that still says
+    // "resources are this machine's" gets the new wording. Idempotent: the old phrase is gone once replaced.
+    if (content.includes(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD)) {
+      content = content.replace(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD, MOBILE_CAPACITY_SCREENS_RESOURCES_NEW);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Resource usage line now covers every machine');
+    }
+
     // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet
     // after the capacity bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_PLANS_PEOPLE_MARKER)) {
@@ -10270,6 +10285,12 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     // Recommended services (docs/specs/recommended-services.md) — Agent Awareness + Migration Parity.
+    // v1 → v2 wording (Tailscale and Jev available on every agent): the shipped sentence is swapped in place, once.
+    if (content.includes('Recommended outside services (') && content.includes(RECOMMENDED_SERVICES_V1_TAIL)) {
+      content = content.replace(RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: recommended services section now says Tailscale and Jev can be set up');
+    }
     if (!content.includes('Recommended outside services (')) {
       content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);
       patched = true;

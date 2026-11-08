@@ -31,7 +31,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
-import { confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
+import { claudeSessionIdFromPidFiles, confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -4487,7 +4487,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       if (!path.isAbsolute(options.accountPin.configHome)) throw new Error('account-pin-config-home-invalid');
     }
-    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
+    // Match interactive spawns: an explicit model (including a tier used by
+    // internal judges) wins; otherwise honor the saved default for the actual
+    // launch framework, after any closed-lane fallback.
+    const requestedModel = options.model ?? this.config.frameworkDefaultModels?.[headlessFramework];
+    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel);
 
 
 
@@ -6368,13 +6372,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * unable to reply. Corroborate the exact main transcript and account home. */
   confirmSessionUsageLimit(tmuxSession: string): string | false {
     const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
-    if (!session?.claudeSessionId || (session.framework ?? 'claude-code') !== 'claude-code') return false;
-    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
+    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    // defaultWhenAbsent: safe here because nothing is believed without the exact session's transcript row.
+    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true, defaultWhenAbsent: true });
     if (!configHome) return false;
+    // No hook has reported the id yet when the very first turn was refused for usage (no tool, no
+    // Stop). Claude Code's own per-process record names it; binding it is what the next hook would do.
+    let claudeSessionId = session.claudeSessionId;
+    if (!claudeSessionId) {
+      claudeSessionId = claudeSessionIdFromPidFiles(configHome, tmuxSession) ?? undefined;
+      if (claudeSessionId) this.setClaudeSessionId(session.id, claudeSessionId);
+    }
+    if (!claudeSessionId) return false;
     return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
-      framework: 'claude-code', sessionId: session.claudeSessionId,
+      framework: 'claude-code', sessionId: claudeSessionId,
       projectDir: session.cwd ?? this.config.projectDir, configHome,
-    }), session.claudeSessionId) ? session.claudeSessionId : false;
+    }), claudeSessionId) ? claudeSessionId : false;
   }
 
   /**
@@ -6741,12 +6754,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return configHome ? { configHome } : {};
   }
 
-  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean }): string | undefined {
+  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean; defaultWhenAbsent?: boolean }): string | undefined {
     try {
       const out = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['show-environment', '-t', `=${tmuxSession}`, 'CLAUDE_CONFIG_DIR'],
-        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
+        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'] },
       )).trim();
       const prefix = 'CLAUDE_CONFIG_DIR=';
       if (out.startsWith('-CLAUDE_CONFIG_DIR') && opts?.defaultWhenUnset) {
@@ -6756,7 +6769,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!out.startsWith(prefix)) return undefined; // unset (tmux prints `-CLAUDE_CONFIG_DIR`) or absent
       const value = out.slice(prefix.length).trim();
       return value.length > 0 ? value : undefined;
-    } catch {
+    } catch (err) {
+      // `defaultWhenAbsent`: the variable was never set in this session at all (tmux exits 1 with
+      // "unknown variable"), as on an agent with one login and no pool (nimbus, 2026-11-07). The
+      // session then runs on the process default, exactly like the explicitly-unset case above.
+      // Only readers that verify what they find there (a transcript row for the exact session id)
+      // opt in; any other tmux failure still yields undefined.
+      const stderr = String((err as { stderr?: unknown })?.stderr ?? '');
+      if (opts?.defaultWhenAbsent && /unknown variable/i.test(stderr)) {
+        return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+      }
       // @silent-fallback-ok — config-home lookup is fail-toward-silence: the
       // detector skips a session it can't place rather than guess a slot.
       return undefined;

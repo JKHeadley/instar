@@ -67,6 +67,22 @@ export function appConversationOfRecord(recordKey: string): string | null {
   return isAppConversationKey(key) ? key : null;
 }
 
+/**
+ * The inbound queue's dispatch by kind (§2.4). An app row goes straight to the app tail; every other
+ * row keeps the local tail. The local tail is wired only where Telegram is, so reaching the app tail
+ * through it left an agent without Telegram unable to deliver any queued app message.
+ */
+export function dispatchQueuedInbound<M extends { sessionKey: string }, H, R>(
+  msg: M,
+  handover: H,
+  tails: { app: ((m: M, h: H) => Promise<R>) | null; local: ((m: M, h: H) => Promise<R>) | null },
+): Promise<R | { kind: 'un-routable'; reason: string }> {
+  if (msg.sessionKey.startsWith('app:')) {
+    return tails.app ? tails.app(msg, handover) : Promise.resolve({ kind: 'un-routable', reason: 'app-tail-not-wired' });
+  }
+  return tails.local ? tails.local(msg, handover) : Promise.resolve({ kind: 'un-routable', reason: 'local-tail-not-wired' });
+}
+
 // ── The forward (§2.4) ──────────────────────────────────────────────────────────────────────────
 
 export type AppUrgent = 'stop' | 'pause';

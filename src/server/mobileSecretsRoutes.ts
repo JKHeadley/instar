@@ -136,14 +136,16 @@ export function summarizeSecrets(s: SecretsSources): Rec {
   return { state: requests.state === 'ok' || keys.state === 'ok' ? 'ok' : 'unavailable', ...headlineFor(requests, keys, [], { unread: 0, offline: 0, peersRead: true }), requests, keys, sync };
 }
 
-interface Coverage { unread: number; offline: number; peersRead: boolean }
+interface Coverage { unread: number; offline: number; peersRead: boolean; selfName?: string | null }
 
 /** Headline order: a vault that won't open, what's waiting, what can't be read, then the all-clear. */
 function headlineFor(requests: Rec, keys: Rec, peers: MobileSecretsPeer[], c: Coverage): { headline: string; tone: 'ok' | 'attn' | 'bad' | 'unknown' } {
   const partial = c.unread > 0 || c.offline > 0 || !c.peersRead;
   const where = partial || requests.state !== 'ok' ? ' on the machines that answered' : '';
   const brokenPeer = peers.find((p) => p.vaultBroken);
-  if (keys.state === 'decrypt-failed') return { headline: 'The saved keys on this machine can\'t be opened.', tone: 'bad' };
+  // The answering machine is named ("on Mac Studio"), never "this machine": the phone talks to the agent.
+  const self = c.selfName ?? null;
+  if (keys.state === 'decrypt-failed') return { headline: self ? `The saved keys on ${self} can't be opened.` : 'The saved keys can\'t be opened.', tone: 'bad' };
   if (brokenPeer) return { headline: `The saved keys on ${brokenPeer.machine} can't be opened.`, tone: 'bad' };
   const mine = requests.waitingCount as number | null;
   const waiting = (mine ?? 0) + peers.reduce((n, p) => n + (p.waitingCount ?? 0), 0);
@@ -152,10 +154,10 @@ function headlineFor(requests: Rec, keys: Rec, peers: MobileSecretsPeer[], c: Co
   const unknownPeer = peers.find((p) => !p.keysKnown);
   if (unknownPeer) return { headline: `Nothing is waiting${where}, but I can't tell how the saved keys on ${unknownPeer.machine} are.`, tone: 'unknown' };
   if (keys.state === 'off') return { headline: `Nothing is waiting${where}. The list of key names is off on this agent.`, tone: partial ? 'unknown' : 'ok' };
-  if (keys.state !== 'ok') return { headline: `Nothing is waiting${where}, but I can't tell which keys this machine holds.`, tone: 'unknown' };
+  if (keys.state !== 'ok') return { headline: `Nothing is waiting${where}, but I can't tell which keys ${self ?? 'the agent'} holds.`, tone: 'unknown' };
   const drops = keys.savedDrops as number;
   return {
-    headline: `Nothing is waiting${where}. This machine holds ${plural(keys.count as number, 'key')}${drops > 0 ? ` and ${plural(drops, 'saved submission')}` : ''}.`,
+    headline: `Nothing is waiting${where}. ${self ?? 'The agent'} holds ${plural(keys.count as number, 'key')}${drops > 0 ? ` and ${plural(drops, 'saved submission')}` : ''}.`,
     tone: partial ? 'unknown' : 'ok',
   };
 }
@@ -193,7 +195,7 @@ export function peerSection(data: unknown, machine: string): MobileSecretsPeer |
   };
 }
 
-export interface MergeOpts { nicknameOf: (id: string) => string | null; offlineMachineIds: string[]; peersRead: boolean }
+export interface MergeOpts { nicknameOf: (id: string) => string | null; offlineMachineIds: string[]; peersRead: boolean; selfName?: string | null }
 
 /** This machine plus each peer that answered, each named; who didn't answer is said, never dropped. */
 export function mergeSecrets(self: Rec, peers: PeerAnswer[], o: MergeOpts): Rec {
@@ -211,7 +213,7 @@ export function mergeSecrets(self: Rec, peers: PeerAnswer[], o: MergeOpts): Rec 
   }
   unread += Math.max(0, peers.length - MAX_PEER_ROWS);
   const offlineNames = o.offlineMachineIds.map(name).filter((n): n is string => !!n);
-  const words = headlineFor(rec(self.requests), rec(self.keys), rows, { unread, offline: o.offlineMachineIds.length, peersRead: o.peersRead });
+  const words = headlineFor(rec(self.requests), rec(self.keys), rows, { unread, offline: o.offlineMachineIds.length, peersRead: o.peersRead, selfName: o.selfName ?? null });
   return {
     ...self, ...words, peers: rows,
     unread: { count: unread, names: unreadNames }, offline: { count: o.offlineMachineIds.length, names: offlineNames }, peersUnknown: !o.peersRead,
@@ -228,6 +230,8 @@ export interface MobileSecretsDeps {
   peers: () => Promise<PeerAnswer[]>;
   offlineMachineIds: () => string[];
   nicknameOf: (id: string) => string | null;
+  /** The answering machine's verified name, or null. */
+  selfName?: () => string | null;
   topicName: (id: number) => string | null | undefined;
   bearerOk: (req: Request) => boolean;
   /** What this caller could do here, shown before any button (the permission reads' `actionsState`). */
@@ -329,7 +333,7 @@ export function mountMobileSecretsRoutes(router: Router, deps: MobileSecretsDeps
       let offline: string[] = [];
       let peersRead = true;
       try { peers = await deps.peers(); offline = deps.offlineMachineIds(); } catch (err) { peersRead = false; reportReadFailure('other machines', err); }
-      res.json({ ...head, ...(deps.actions ? { actions: deps.actions(req) } : {}), ...mergeSecrets(self, peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline, peersRead }) });
+      res.json({ ...head, ...(deps.actions ? { actions: deps.actions(req) } : {}), ...mergeSecrets(self, peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline, peersRead, selfName: cleanText(deps.selfName?.() ?? null, 60) }) });
     } catch (err) {
       reportReadFailure('GET /mobile/secrets', err);
       res.status(500).json({ error: 'secrets-unavailable' });
