@@ -68,4 +68,4 @@ Page detection can miss novel provider wording or over-match a warning. It is a 
 - **dev-agent-live:** After merge, exercise the GitHub development-release workflow for the exact merged source and verify its immutable manifest/package. Existing direct-install mitigations reported in topic 130715 remain independently identifiable.
 - **fleet:** Normal package updates install the shared policy and helper on existing/new agents. Development artifacts stay an explicit per-agent opt-in; no automatic channel switch or fleet account action.
 - **graduation criterion:** Browser advisory/read/ack regressions, migration/new-agent lifecycle tests and release installation tests green; GitHub publishes an installable dev artifact while npm publishing stays unused.
-- **ladder:** not applicable - explicit commands and reviewed per-action browser continuation
+- **ladder:** not applicable: explicit commands and reviewed per-action browser continuation
