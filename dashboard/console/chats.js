@@ -17,7 +17,7 @@ import {
 import {
   parseConversationRef, refString, refFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
-  UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor,
+  UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, blobTypeFor,
 } from './chats-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
@@ -446,7 +446,15 @@ class ChatsPage {
     const { kind, id } = v.ref;
     if (kind === 'app') return `/mobile/chat/app/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
     if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+  }
+  /**
+   * The machine a Slack conversation was listed from (a Slack id is local to it; the routes require it).
+   * The list shows only this machine's own Slack rows, so before the list arrives it is this machine.
+   */
+  slackMachine(ref) {
+    const row = this.rows.find((r) => r.key === refString(ref));
+    return (row && row.machine) || (this.status && this.status.machineId) || null;
   }
   ownCheck() {
     const rec = this.device.record;
@@ -481,9 +489,14 @@ class ChatsPage {
     // A server row replaces this page's own placeholder for the same message.
     const real = new Set(list.filter((b) => !b.id.startsWith('local:') && b.messageId).map((b) => b.messageId));
     const realTexts = list.filter((b) => !b.id.startsWith('local:') && b.side === 'right').map((b) => `${b.text}|${b.at}`);
+    // A row this browser signed, with the placeholder's text, from no earlier than a minute before it:
+    // the server already holds the message, even while the send's own answer is on its way (a Telegram
+    // send answers only after dispatch, so the polled row can arrive first).
+    const ownRows = list.filter((b) => !b.id.startsWith('local:') && b.side === 'right' && b.own);
     v.list = list.filter((b) => {
       if (!b.id.startsWith('local:')) return true;
       if (b.messageId && real.has(b.messageId)) return false;
+      if (ownRows.some((o) => o.text === b.text && Date.parse(o.at || '') >= Date.parse(b.at || '') - 60_000)) return false;
       if (b.final && v.ref.kind !== 'app' && realTexts.some((k) => k.startsWith(`${b.text}|`))) return false;
       return true;
     });
@@ -603,7 +616,7 @@ class ChatsPage {
   // ── composer (§4.8) ──
   composer(v) {
     const canSend = !(v.ref.kind === 'telegram' && this.status && this.status.telegramSend === false);
-    if (!canSend) return el('p', { class: 'card-line chat-readonly', text: 'Sending to Telegram works from the machine serving Telegram.' });
+    if (!canSend) return el('p', { class: 'card-line chat-readonly', text: telegramReadOnlyNote(this.status) });
     const text = el('textarea', { class: 'chat-compose', rows: '2', placeholder: 'Message', 'aria-label': 'Message' });
     const send = el('button', { class: 'btn-primary chat-send', type: 'button', text: 'Send', disabled: true });
     const pick = el('input', { type: 'file', multiple: true, hidden: true, 'aria-label': 'Attach files' });
@@ -684,7 +697,7 @@ class ChatsPage {
     let wait = 2000;
     for (;;) {
       const ref = parseConversationRef(entry.ref);
-      const json = { text: entry.text || '', requestId: entry.requestId, ...(entry.uploads.length ? { attachments: entry.uploads } : {}) };
+      const json = { text: entry.text || '', requestId: entry.requestId, ...(entry.uploads.length ? { attachments: entry.uploads } : {}), ...(ref.kind === 'slack' ? { machine: this.slackMachine(ref) } : {}) };
       const r = await this.call('POST', this.sendPath(ref), { json });
       if (r.gone) { this.finishLocal(v, local, deliveryLabel('unknown')); return; }
       const out = sendOutcome(r.status, r.data);
