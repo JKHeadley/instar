@@ -8,6 +8,7 @@
  * reach it.
  */
 import { execFile } from 'node:child_process';
+import { parseCloudflareSecret, tunnelNameFor, withoutToken, type CloudflareSurface, type CloudflareWork } from './cloudflareDomain.js';
 import type { TelegramSetupSurface } from './telegramSetup.js';
 import { DOOR_NAMES, mainDoor, secondDoorCandidates, type AiDoorSurface } from './aiDoors.js';
 import { VOICE_TRANSCRIPTION_SECRET, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
@@ -43,10 +44,16 @@ export interface RecipeDeps {
   github?: GitHubBackupSurface;
   /** This agent's name, for things named after it (a backup repository). */
   agentName?: string;
+  /** This machine's id, for names that must differ per machine (the Cloudflare tunnel). */
+  machineId?: string;
   /** This agent's AI doors, for the second-subscription recipe. Absent means the recipe can't check. */
   aiDoors?: AiDoorSurface;
   /** This agent's Telegram entry and the Bot API, for the Telegram recipe. Absent means the recipe can't check. */
   telegramSetup?: TelegramSetupSurface;
+  /** Cloudflare's API and this agent's tunnel settings, for the fixed-address recipe. Absent means the recipe can't check. */
+  cloudflare?: CloudflareSurface;
+  /** What the Cloudflare recipe did (tunnel, DNS record, previous settings), so a switch-off undoes exactly that. */
+  cloudflareWork?: { remember(work: CloudflareWork): void; recall(): CloudflareWork | null; forget(): void };
 }
 
 /** What a recipe that keeps a copy elsewhere needs to bring it up to date. */
@@ -119,6 +126,9 @@ Rules that apply whatever you find:
 - If the person says not now to something this job needs, tell them plainly where that leaves things, then call POST http://localhost:${port}/recommended-services/${service}/hold with the header "X-Instar-Request: 1" and stop. Nothing restarts you after that, and their next message reaches you here.
 - If you run out of options, tell them what you tried in plain words, and name the smallest thing you need. Never hand it back as steps.
 `;
+
+/** The vault name the Cloudflare recipe stores its token and host name under (one JSON value). */
+export const CLOUDFLARE_SECRET = 'cloudflare_domain';
 
 export const SETUP_RECIPES: readonly SetupRecipe[] = Object.freeze([
   {
@@ -308,6 +318,107 @@ ${RULES('telegram', port)}`,
       telegramSetup.disable();
       telegramSetup.requestRestart('Telegram switched off by the owner');
       return { stopped: true, changed: true, detail: 'Telegram is switched off for this agent: it stops reading and sending there after its next restart. Your bot and group stay yours; say the word and I’ll remove them.' };
+    },
+  },
+  {
+    id: 'cloudflare-v1',
+    service: 'cloudflare-domain',
+    secretName: CLOUDFLARE_SECRET,
+    brief: ({ port }) => `The person said yes to Cloudflare with their own domain. Set it up: a public address for this agent that never changes, on a domain they control.
+
+What it gives them: a fixed address (for example agent.their-domain.com) that reaches this agent's dashboard and app from anywhere, in place of the temporary address that changes on every restart.
+
+Whose account, and two decisions the person makes (present both options as good, and never recommend against either):
+1. Their own Cloudflare account, with a domain already on it. The agent signs in there in a normal browser with their password and any sign-in code, each through one Secret Drop, creates an API token for this one job (permissions: Zone DNS Edit, Zone Read, Account Cloudflare Tunnel Edit, limited to that zone), stores it, signs the browser out and deletes the profile. The person never opens Cloudflare.
+2. An account of the agent's own with a new domain bought in it. That costs money (about ten dollars a year for an ordinary name), so first tell the person the exact price and wait for their yes, then take their payment card through one Secret Drop. Never buy without the yes.
+Also ask which host name they want (suggest agent.<their domain>); that is a decision, fine in chat.
+
+Store the token together with the host name as one JSON body, and don't print it:
+printf '%s' '{"token":"<token>","hostname":"<host name>"}' | curl -s -X POST http://localhost:${port}/recommended-services/cloudflare-domain/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "Content-Type: text/plain" --data-binary @-
+(Build the JSON through the stdin wrapper, never with the token in a command line.) Then ask the server to make the address:
+curl -s -X POST http://localhost:${port}/recommended-services/cloudflare-domain/sync -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1"
+The server finds the zone, makes a tunnel named after this agent, points it at itself, points the host name at the tunnel, writes the tunnel into this agent's settings and asks for a planned restart. After the restart, call the check; it passes once the agent answers at the new address from the public internet. Then tell the person the address, plainly.
+${RULES('cloudflare-domain', port)}`,
+    verify: async ({ readSecret, cloudflare }) => {
+      if (!cloudflare) return { result: 'unknown', detail: "This server can't read its tunnel settings." };
+      const settings = cloudflare.tunnelConfigured();
+      const named = settings?.enabled && settings.type === 'named' && settings.hostname ? settings : null;
+      if (!named) return { result: 'fail', absent: true, detail: 'No fixed address is set up for this agent.' };
+      const reach = await cloudflare.reachable(named.hostname!);
+      if (reach === 'ok') return { result: 'pass', detail: `This agent answers at ${named.hostname} from the public internet.` };
+      if (reach === 'unknown') return { result: 'unknown', detail: `${named.hostname} could not be checked right now.` };
+      const stored = parseCloudflareSecret(readSecret(CLOUDFLARE_SECRET));
+      if (stored && (await cloudflare.api.verifyToken(stored.token)) === 'refused') return { result: 'fail', detail: 'Cloudflare refused the stored token.' };
+      return { result: 'fail', detail: `${named.hostname} does not answer yet.` };
+    },
+    // The server's part: the Cloudflare work, then this agent's tunnel settings and a restart.
+    sync: async ({ readSecret, cloudflare, agentName, machineId, cloudflareWork }) => {
+      if (!cloudflare) return { ok: false, copied: [], detail: "This server can't reach Cloudflare or its tunnel settings." };
+      const stored = parseCloudflareSecret(readSecret(CLOUDFLARE_SECRET));
+      if (!stored) return { ok: false, copied: [], detail: 'No Cloudflare token and host name are stored yet.' };
+      const { token, hostname } = stored;
+      const tokenState = await cloudflare.api.verifyToken(token);
+      if (tokenState !== 'ok') return { ok: false, copied: [], detail: tokenState === 'refused' ? 'Cloudflare refused the token.' : 'Cloudflare did not answer.' };
+      const zone = await cloudflare.api.zoneFor(token, hostname);
+      if (zone === undefined) return { ok: false, copied: [], detail: 'Cloudflare did not answer.' };
+      if (!zone) return { ok: false, copied: [], detail: `No Cloudflare zone holds ${hostname} for this token.` };
+      const name = tunnelNameFor(agentName ?? 'agent', machineId);
+      let tunnel = await cloudflare.api.tunnelNamed(token, zone.accountId, name);
+      if (tunnel === undefined) return { ok: false, copied: [], detail: 'Cloudflare did not answer.' };
+      let created = false;
+      if (!tunnel) {
+        tunnel = await cloudflare.api.createTunnel(token, zone.accountId, name);
+        if (!tunnel) return { ok: false, copied: [], detail: 'Cloudflare refused to create the tunnel.' };
+        created = true;
+      }
+      if (!(await cloudflare.api.putIngress(token, zone.accountId, tunnel.id, hostname, cloudflare.port))) return { ok: false, copied: [], detail: "Cloudflare refused the tunnel's route to this agent." };
+      const dns = await cloudflare.api.putDns(token, zone.id, hostname, tunnel.id);
+      if (!dns) return { ok: false, copied: [], detail: `Cloudflare refused the DNS record for ${hostname}.` };
+      const runToken = await cloudflare.api.tunnelToken(token, zone.accountId, tunnel.id);
+      if (!runToken) return { ok: false, copied: [], detail: "Cloudflare did not give the tunnel's run token." };
+      // A corrected host name (the key route allows a correction before the first pass) supersedes the record setup
+      // made for the old one; what setup replaced, and whether it made the tunnel, is remembered from the first run.
+      const prior = cloudflareWork?.recall() ?? null;
+      if (prior && prior.createdDns && (prior.dnsRecordId !== dns.id)) await cloudflare.api.deleteDns(token, prior.zoneId, prior.dnsRecordId);
+      // The daily refresh re-runs this; an unchanged block is left alone, so no restart is asked for nothing.
+      const current = cloudflare.tunnelConfigured();
+      const unchanged = current?.enabled && current.type === 'named' && current.token === runToken && current.hostname === hostname;
+      const previous = unchanged ? (prior?.previousTunnel ?? null) : cloudflare.writeNamedTunnel({ token: runToken, hostname });
+      cloudflareWork?.remember({
+        zoneId: zone.id, accountId: zone.accountId, tunnelId: tunnel.id, dnsRecordId: dns.id, hostname,
+        createdDns: prior && prior.dnsRecordId === dns.id ? prior.createdDns : dns.created,
+        createdTunnel: prior && prior.tunnelId === tunnel.id ? prior.createdTunnel : created,
+        previousTunnel: prior ? prior.previousTunnel : withoutToken(previous as never),
+      });
+      if (unchanged) return { ok: true, copied: [hostname], detail: `${hostname} still points at this agent.` };
+      cloudflare.requestRestart('Cloudflare fixed address set up by the recommended-services recipe');
+      return { ok: true, copied: [hostname], detail: `${hostname} now points at this agent; the fixed address is live after the restart.` };
+    },
+    // Switching off undoes exactly setup's work: the DNS name and the tunnel it made, and the previous tunnel settings
+    // come back. The person's Cloudflare account, domain and token stay theirs. The routes hold this while it is the
+    // only way in.
+    stop: async ({ readSecret, deleteSecret, setUpHere, cloudflare, cloudflareWork }) => {
+      if (!setUpHere) return { stopped: true, changed: false, detail: "The fixed address on this agent was yours before I set anything up, so I've left it as it was." };
+      if (!cloudflare) return { stopped: false, changed: false, detail: "This server can't change its tunnel settings, so the address is still up." };
+      const work = cloudflareWork?.recall() ?? null;
+      const stored = parseCloudflareSecret(readSecret(CLOUDFLARE_SECRET));
+      let undone = 'the address is switched off here';
+      if (work && stored) {
+        // Only what setup made goes: a DNS record it created, and the tunnel it created. The tunnel delete usually
+        // fails while this server's own connector is still connected (the restart below is what stops it); the
+        // tunnel then stays in the account, unused and free, and a later yes finds it by name.
+        const dnsGone = work.createdDns ? await cloudflare.api.deleteDns(stored.token, work.zoneId, work.dnsRecordId) : true;
+        const tunnelGone = work.createdTunnel ? await cloudflare.api.deleteTunnel(stored.token, work.accountId, work.tunnelId) : true;
+        undone = `${work.hostname} no longer points here`
+          + (dnsGone ? '' : ', though Cloudflare refused to remove its DNS record, so that record is still in your account')
+          + (work.createdTunnel && !tunnelGone ? '; the tunnel I made (unused and free) stays in your Cloudflare account until you remove it' : '');
+      }
+      if (readSecret(CLOUDFLARE_SECRET)) deleteSecret(CLOUDFLARE_SECRET);
+      cloudflareWork?.forget();
+      // The config write and the restart come last: the restart ends this process.
+      cloudflare.restoreTunnel(work?.previousTunnel ?? null);
+      cloudflare.requestRestart('Cloudflare fixed address switched off by the owner');
+      return { stopped: true, changed: true, detail: `The fixed address is switched off: ${undone}. Your Cloudflare account and domain stay yours; the temporary address comes back after the restart.` };
     },
   },
   {

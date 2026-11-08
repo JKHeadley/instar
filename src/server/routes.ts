@@ -344,6 +344,7 @@ import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../c
 import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
 import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
+import { namedTunnelBlock, realCloudflareApi, restoredTunnelBlock, tunnelSettingsFrom, withoutToken, type TunnelSettings } from '../recommended/cloudflareDomain.js';
 import {
   readGuardPostureBootSnapshot,
   resolveGuardConfigSnapshot,
@@ -16527,6 +16528,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     fs.mkdirSync(path.dirname(doorsAddedFile), { recursive: true });
     fs.writeFileSync(doorsAddedFile, JSON.stringify(doors));
   };
+  // The tunnel block this process wrote or restored for the Cloudflare recipe, since ctx.config is only read at boot.
+  let tunnelWrittenHere: { value: TunnelSettings | null } | null = null;
+  const tunnelFromConfig = (): TunnelSettings | null => tunnelSettingsFrom(ctx.config.tunnel);
   // The Telegram entry this process wrote or disabled, since ctx.config is only read at boot.
   let telegramWrittenHere: import('../recommended/telegramSetup.js').TelegramEntry | null = null;
   // One writer for this agent's switched-on frameworks: the config file (read at the next boot) and the live copies.
@@ -16641,6 +16645,39 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         if (current) telegramWrittenHere = { ...current, enabled: false };
       },
       requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },
+    },
+    // The Cloudflare recipe: Cloudflare's API, this agent's tunnel block, one public read, and a planned restart.
+    cloudflare: {
+      api: realCloudflareApi(),
+      port: ctx.config.port,
+      tunnelConfigured: () => (tunnelWrittenHere ? tunnelWrittenHere.value : tunnelFromConfig()),
+      writeNamedTunnel: ({ token, hostname }) => {
+        const previous = withoutToken(tunnelWrittenHere ? tunnelWrittenHere.value : tunnelFromConfig());
+        writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => {
+          cfg.tunnel = namedTunnelBlock(cfg.tunnel as Record<string, unknown> | undefined, { token, hostname });
+          return { value: true };
+        });
+        tunnelWrittenHere = { value: { enabled: true, type: 'named', token, hostname } };
+        return previous;
+      },
+      restoreTunnel: (previous) => {
+        writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => {
+          cfg.tunnel = restoredTunnelBlock(cfg.tunnel as Record<string, unknown> | undefined, previous);
+          return { value: true };
+        });
+        tunnelWrittenHere = { value: previous ? { ...previous } : { enabled: true, type: 'quick' } };
+      },
+      reachable: async (hostname) => {
+        try {
+          const r = await fetch(`https://${hostname}/health`, { signal: AbortSignal.timeout(8000), redirect: 'manual' });
+          return r.ok ? 'ok' : 'unreachable';
+        } catch (err) {
+          // A name that does not resolve yet is unreachable; anything else (no network here) is unknown.
+          const code = (err as { cause?: { code?: string } })?.cause?.code ?? '';
+          return code === 'ENOTFOUND' || code === 'ECONNREFUSED' ? 'unreachable' : 'unknown';
+        }
+      },
+      requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare'); return r === true; },
     },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     // Setting up Telegram itself needs no Telegram yet: that session runs where the dashboard shows it (startSetup below).
