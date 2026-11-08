@@ -19,6 +19,8 @@ Exactly one machine holds the **router** role at a time, decided by a fenced lea
 
 `LocalLeaseStore` provides the local lease record when git-backed lease storage is unavailable. A local record alone cannot prove a peer has yielded, so the coordinator treats contested ownership as a conflict instead of using the local tie-break as permission to run two routers.
 
+The lease pieces this layer builds on are described in [Multi-machine](/features/multi-machine/): `FencedLease` is the pure lease logic (epoch arithmetic, signing, expiry and the fencing check), `HttpLeaseTransport` carries the low-latency copy of the lease over the authenticated machine-to-machine channel while git stays the durable record, and `LeaseHandbackReconciler` hands the lease back to the preferred captain after a failover once that machine has been healthy long enough. `MachineHeartbeat` is a separate, slower signal: each machine writes a git-synced heartbeat file, and a heartbeat older than the stale threshold lets a project-ownership claim proceed.
+
 ### L2 — Machine pool registry (`MachinePoolRegistry`, `NicknameAssigner`)
 
 The `MachinePoolRegistry` tracks every machine's live capacity — load average, active session count, memory pressure, capabilities, hardware — plus a clock-skew quarantine state machine that pulls a machine with a bad clock out of placement. Each machine gets a friendly, editable nickname (auto-assigned by `NicknameAssigner`, deduplicated against the pool) so you never have to type a raw machine id. The registry and `NicknameAssigner` together back the dashboard's **Machines** tab and the nickname you use in a transfer command.
