@@ -108,6 +108,12 @@ export interface SpawnRequest {
    */
   interactive?: boolean;
   /**
+   * Memory privacy (memory-privacy-agent-places §1): the sender's AUTHENTICATED
+   * fingerprint when this spawn runs in that peer's own place. Keys the queue,
+   * cooldown and in-flight state, and is rebuilt on drain. Absent → today's path.
+   */
+  memoryPeer?: string;
+  /**
    * a2a-required-acknowledgment D3/D5: who to tell about this payload's fate. Carried
    * on the queue entry and on the in-flight reservation. No message content.
    */
@@ -123,6 +129,16 @@ export interface SpawnQueueReceipt {
 }
 
 export type SpawnQueueDropCause = 'expired' | 'evicted';
+
+/**
+ * The key a request's queue, cooldown and in-flight state live under. Another agent's
+ * place keys by its authenticated fingerprint, so two peers sharing a display name never
+ * share a queue or a merged prompt (memory-privacy-agent-places §3).
+ */
+export const PEER_PLACE_QUEUE_PREFIX = 'peer-place:';
+export function spawnAgentKey(request: Pick<SpawnRequest, 'requester' | 'memoryPeer'>): string {
+  return request.memoryPeer ? `${PEER_PLACE_QUEUE_PREFIX}${request.memoryPeer}` : request.requester.agent;
+}
 
 export interface SpawnResult {
   approved: boolean;
@@ -274,6 +290,8 @@ export interface SpawnRequestManagerConfig {
      *  (keep-alive REPL) instead of headless `claude -p`. The prompt becomes
      *  the worker's first turn. Absent on every non-warm spawn. */
     interactive?: boolean;
+    /** Memory privacy: run in this authenticated peer's own place (memory-privacy-agent-places §4). */
+    memoryPeer?: string;
   }) => Promise<string | { sessionId: string; tmuxSession?: string }>;
   /** Function to check memory pressure. Returns true if pressure is too high. */
   isMemoryPressureHigh?: () => boolean;
@@ -288,8 +306,18 @@ export interface SpawnRequestManagerConfig {
    * absent (the default), admission behavior is byte-for-byte unchanged.
    */
   shouldSpawnSession?: (priority?: string) => { allowed: boolean; reason: string };
-  /** A standing refusal, with its reason, or null to continue. */
-  refuseSpawn?: () => string | null;
+  /**
+   * A standing refusal, with its reason, or null to continue. Given the request, so
+   * memory privacy can decide by the authenticated peer it carries (memory-privacy-agent-places §1).
+   */
+  refuseSpawn?: (request: SpawnRequest) => string | null;
+  /**
+   * Memory privacy: a TRANSIENT capacity refusal for a request that runs in another
+   * agent's place (the place cap, or the free slot counting launches in progress).
+   * The payload queues and the drain retries it; the peer is not penalised.
+   * Returns the reason, or null to continue (memory-privacy-agent-places §4).
+   */
+  placeCapacity?: (request: SpawnRequest) => string | null;
   /** Cooldown between spawn requests per agent (ms). Default: 30s */
   cooldownMs?: number;
   /** Max spawn retries before giving up. Default: 3 */
@@ -472,6 +500,10 @@ or end your session if no further action is needed.
 
 Use the threadline_send MCP tool to respond to messages. Include the threadId to maintain conversation context.
 Use threadline_send with the target agentId to send new messages.`;
+
+/** The reply lines for a session in another agent's place, which has no Threadline tools. */
+const PLACE_SPAWN_PROMPT_REPLY = `Reply with: .instar/scripts/threadline-reply.sh --thread <thread id> "your reply" (one argument; no heredoc).
+You cannot start conversations with other agents from here.`;
 
 // ── Implementation ──────────────────────────────────────────────
 
@@ -742,7 +774,7 @@ export class SpawnRequestManager {
     retryAfterMs: number,
     reservedPayload?: QueuedSpawnMessage,
   ): PreservedTransientRefusal {
-    const agent = request.requester.agent;
+    const agent = spawnAgentKey(request);
     let queued = false;
     if (reservedPayload) {
       queued = this.#admitQueuedMessage(agent, reservedPayload);
@@ -1062,9 +1094,9 @@ export class SpawnRequestManager {
    * funnel.
    */
   async #evaluateGuarded(request: SpawnRequest): Promise<GuardedSpawnResult> {
-    const agent = request.requester.agent;
+    const agent = spawnAgentKey(request);
 
-    const standingRefusal = this.#config.refuseSpawn?.();
+    const standingRefusal = this.#config.refuseSpawn?.(request);
     if (standingRefusal) return { approved: false, reason: standingRefusal };
 
     // §4.3: payload byte-size cap. Refuse oversized envelopes at admission so
@@ -1099,7 +1131,18 @@ export class SpawnRequestManager {
     const liveMaxSessions = this.#config.getMaxSessions
       ? this.#config.getMaxSessions()
       : this.#config.maxSessions;
-    if (activeSessions.length >= liveMaxSessions) {
+    // Another agent's place always leaves one slot free, and no priority overrides that
+    // (memory-privacy-agent-places §4).
+    if (request.memoryPeer) {
+      // Another agent's place: capacity is the place's own rule (a live place needs no new
+      // slot; otherwise one slot stays free), and no priority overrides it.
+      const placeCapacityRefusal = this.#config.placeCapacity
+        ? this.#config.placeCapacity(request)
+        : (activeSessions.length >= liveMaxSessions - 1
+          ? `Session limit reached for agent places (${activeSessions.length}/${liveMaxSessions}, one slot kept free).`
+          : null);
+      if (placeCapacityRefusal) return this.#refuseTransiently(request, placeCapacityRefusal, 60_000);
+    } else if (activeSessions.length >= liveMaxSessions) {
       if (request.priority !== 'critical' && request.priority !== 'high') {
         return this.#refuseTransiently(
           request,
@@ -1179,6 +1222,7 @@ export class SpawnRequestManager {
         // Warm-session A2A: route to the interactive keep-alive path when set.
         // Undefined on every non-warm spawn → headless behavior unchanged.
         interactive: request.interactive,
+        ...(request.memoryPeer ? { memoryPeer: request.memoryPeer } : {}),
       });
       // spawnSession's contract is now delivery-truthful: resolution means the
       // prompt reached a live session. Remove only the entries in this prompt;
@@ -1266,7 +1310,12 @@ export class SpawnRequestManager {
 
     const totalPending = (request.pendingMessages?.length ?? 0) + (queuedMessages?.length ?? 0);
 
-    return SPAWN_PROMPT_TEMPLATE
+    // Another agent's place has no Threadline tools: its prompt names the reply script
+    // (memory-privacy-agent-places §5).
+    const template = request.memoryPeer
+      ? SPAWN_PROMPT_TEMPLATE.replace(/Use the threadline_send MCP tool[\s\S]*$/, PLACE_SPAWN_PROMPT_REPLY)
+      : SPAWN_PROMPT_TEMPLATE;
+    return template
       .replace('{requester_agent}', request.requester.agent)
       .replace('{requester_session}', request.requester.session)
       .replace('{requester_machine}', request.requester.machine)

@@ -84,6 +84,7 @@ import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
 import { ensureAppReplyRelay } from '../core/AppReplyRelayInstaller.js';
+import { ensureThreadlineReplyRelay } from '../core/ThreadlineReplyRelayInstaller.js';
 import { verifyBundledStageBReleaseEvidence } from '../core/StageBActivationGate.js';
 
 /**
@@ -5164,6 +5165,13 @@ function installAppRelay(projectDir: string, stateDir: string = path.join(projec
     claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
   });
   if (outcome.errors.length > 0) throw new Error(`App reply relay install failed: ${outcome.errors.join('; ')}`);
+  // Peer-place reply relay (docs/specs/memory-privacy-agent-places.md §5): inert outside a peer place.
+  const peerOutcome = ensureThreadlineReplyRelay({
+    projectDir, stateDir,
+    template: loadRelayTemplate('threadline-reply.sh', 4040),
+    claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
+  });
+  if (peerOutcome.errors.length > 0) throw new Error(`Peer-place reply relay install failed: ${peerOutcome.errors.join('; ')}`);
 }
 
 function installSerendipityCapture(projectDir: string): void {

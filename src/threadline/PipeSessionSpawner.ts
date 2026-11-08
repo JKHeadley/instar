@@ -696,11 +696,13 @@ export class PipeSessionSpawner {
   }
 
   /**
-   * Kill all active pipe sessions (for shutdown).
+   * Kill all active pipe sessions, returning their names. Used at shutdown and, by memory
+   * privacy, on the multi-person flip: a pipe session runs with owner reach
+   * (memory-privacy-agent-places §3).
    */
-  killAll(): void {
-    for (const [name] of this.activeSessions) {
-      this.killPipeSession(name, 'shutdown');
-    }
+  killAll(reason = 'shutdown'): string[] {
+    const names = [...this.activeSessions.keys()];
+    for (const name of names) this.killPipeSession(name, reason);
+    return names;
   }
 }

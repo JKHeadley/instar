@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-// canonical-migration-validator: threadline-inbound-canonical-store@2
+// canonical-migration-validator: threadline-inbound-canonical-store@3
 
 describe('Threadline reap recovery production wiring', () => {
   it('carries canonical message identity from sessionReaped into the shared resume drainer', () => {
@@ -22,6 +22,10 @@ describe('Threadline reap recovery production wiring', () => {
     expect(recovery).toContain('manager.hasCanonicalReplyFor(entry.threadId, inbound.id)');
     expect(recovery).toContain('router.handleInboundMessage(envelope');
     expect(recovery).toContain("preferWarmSession: false");
+    // Memory privacy (memory-privacy-agent-places §1): only a canonical row whose sender was
+    // authenticated when written carries its fingerprint into a peer's place; the relay path flags it.
+    expect(recovery).toContain('inbound.senderAuthenticated === true ? { memoryPeerFingerprint: inbound.from }');
+    expect(source).toContain("...(decision.reason !== 'probe' ? { senderAuthenticated: true } : {})");
     const routes = fs.readFileSync(new URL('../../src/server/routes.ts', import.meta.url), 'utf8');
     expect(routes).toContain('Warm Threadline replies require inReplyTo for the current inbound message.');
     expect(routes).toContain('tryClaimReply(inReplyTo, replyClaimOwner)');

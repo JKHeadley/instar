@@ -825,7 +825,12 @@ export function createThreadlineRoutes(
 
       const chainTicket = ticket;
       chainStarted = true;
-      void threadlineRouter.handleInboundMessage(envelope, undefined, { resentNotice })
+      const memoryPeerFingerprint = (req as VerifiedRequest).threadlineVerifiedFingerprint;
+      void threadlineRouter.handleInboundMessage(envelope, undefined, {
+        resentNotice,
+        // Memory privacy: the signature-verified principal, never the body's `from` (memory-privacy-agent-places §1).
+        ...(memoryPeerFingerprint ? { memoryPeerFingerprint } : {}),
+      })
         .then((result) => {
           chainTicket?.recordRouterResult(result);
           if (result?.error) {

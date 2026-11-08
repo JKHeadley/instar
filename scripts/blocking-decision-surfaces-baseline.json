@@ -209,6 +209,11 @@
       "path": "src/templates/scripts/browser/chrome-unsaved.sh",
       "sha256": "972b35531c891c778af57e5fd9172a055588c662d34693315ea196cb43da70cc",
       "reason": "machine-self-maintenance Part B: a read-only per-tab unsaved-input check; prints yes/no/unreadable per tab and gates nothing itself (the watch-only sweep and chrome-close.sh only record its answer)"
+    },
+    {
+      "path": "src/templates/scripts/threadline-reply.sh",
+      "sha256": "2c24fd497c4e98488e1a120909b4d4330d2aab79672e33077de2f73acfb9ea93",
+      "reason": "memory-privacy-agent-places: a reply relay; it refuses only its own empty input, and every send decision (recipient, thread, ownership) is the server route's, in TypeScript"
     }
   ]
 }

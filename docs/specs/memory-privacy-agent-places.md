@@ -11,6 +11,9 @@ review-iterations: 9
 review-completed-at: "2026-11-08T21:38:53.677Z"
 review-report: "docs/specs/reports/memory-privacy-agent-places-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
+approved: true
+approved-by: "Echo (agent), standing spec-approval grant, 2026-11-08 14:58 PST"
+approval-decisions: "Decision 4 linkedPeerReplies = deliver (default). Machine-local posture for peer place folders and the per-machine refuseAgentSessions switch ratified by Echo (agent) under the standing grant, not by Justin. iOS line approved as written."
 ---
 
 ## Problem statement
@@ -288,7 +291,7 @@ In `docs/specs/memory-privacy.md` section 3, the refusal bullet becomes: "On a m
   - the kill switch refuses the peer;
   - unverified: an untrusted peer is refused;
   - failure: with the sandbox broken, the peer is refused;
-  - lifecycle: a follow-up injects into the same place session;
+  - lifecycle: a second message on the thread is injected into the same place session;
   - concurrency: a second thread from one peer is injected into that peer's live place session. A fourth peer at the cap is queued, and no live session is ended. With `maxSessions` 2 and one session running, a placed spawn is refused;
   - stranger: a first-contact relay key with a `setup-default` profile is refused;
   - thread reuse: B's entry expires, A sends on B's thread id, and A gets a new thread id and a prompt with none of B's text. Same when B's entry is still live (foreign);

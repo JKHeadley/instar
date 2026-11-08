@@ -18,6 +18,7 @@ import { isScopedAudience, memoryScopeEnvValue, type MemoryAudience, type Memory
 import { execFileSync, execFile } from 'node:child_process';
 import { isInstarSourceTree } from './SourceTreeGuard.js';
 import { AdmissionRefusedError, type AdmissionDecision, type AdmissionKind } from './workAdmission.js';
+import { agentSessionsStatus, decidePeerAdmission, type AgentSessionsStatus, type PeerAdmission } from '../users/peerPlaceAdmission.js';
 import { promisify } from 'node:util';
 import { EventEmitter } from 'node:events';
 import { createHash, randomUUID, type KeyObject } from 'node:crypto';
@@ -764,6 +765,17 @@ export class MemoryPrivacyUnavailableError extends Error {
     super(`memory-privacy-unavailable: no working sandbox for ${framework}`);
     this.name = 'MemoryPrivacyUnavailableError';
   }
+}
+
+/**
+ * A session another agent's message started without a place of its own (a cold or drained
+ * A2A spawn, or a warm A2A worker). It has owner reach (memory-privacy-agent-places §3).
+ */
+export function isUnplacedPeerOriginSession(session: Pick<Session, 'triggeredBy' | 'tmuxSession' | 'name' | 'memoryScopeDir'>): boolean {
+  if (session.memoryScopeDir) return false;
+  if (session.triggeredBy === 'spawn-request' || session.triggeredBy === 'spawn-request-drain') return true;
+  const name = session.tmuxSession || session.name || '';
+  return name.includes('msg-warm-') || name.includes('msg-spawn-');
 }
 
 export class SessionManager extends EventEmitter {
@@ -1850,7 +1862,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const wiring = this.memoryPrivacyWiring;
     if (!wiring?.privacy.enabled) return [];
     const retired: string[] = [];
+    const multiPerson = wiring.privacy.isMultiPerson();
     for (const session of this.listRunningSessions()) {
+      // Another agent's session without a place has owner reach and a way to reply to that
+      // agent, so on a multi-person agent it ends too, headless or not (memory-privacy-agent-places §3).
+      if (multiPerson && isUnplacedPeerOriginSession(session)) {
+        if (await this.retireMemorySession(session)) retired.push(session.name);
+        continue;
+      }
       if (session.jobSlug || session.launchLane) continue;
       const input: SessionPlaceInput = session.memoryPlaceInput ?? {
         telegramTopicId: session.telegramTopicId,
@@ -1860,7 +1879,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (expected === (session.memoryAudience ?? 'open')) continue;
       if (await this.retireMemorySession(session)) retired.push(session.name);
     }
+    if (multiPerson) {
+      for (const name of this.peerOriginRetirer?.() ?? []) retired.push(name);
+    }
     return retired;
+  }
+
+  /**
+   * Ends peer-origin work this manager does not track as sessions (pipe-mode sessions),
+   * returning their names. Wired by the server; called on the multi-person flip.
+   */
+  private peerOriginRetirer: (() => string[]) | null = null;
+  setPeerOriginRetirer(fn: (() => string[]) | null): void {
+    this.peerOriginRetirer = fn;
   }
 
   /**
@@ -1983,9 +2014,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /** What the status route reports. No people's names beyond the owner's id. */
-  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean; blocker: string | null; fix: string | null } {
+  memoryPrivacyStatus(): { enabled: boolean; multiPerson: boolean; ownerUserId: string | null; sandboxReady: boolean; blocker: string | null; fix: string | null; agentSessions: AgentSessionsStatus } {
     const wiring = this.memoryPrivacyWiring;
-    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false, blocker: null, fix: null };
+    if (!wiring) return { enabled: false, multiPerson: false, ownerUserId: null, sandboxReady: false, blocker: null, fix: null, agentSessions: 'owner-reach' };
     return {
       enabled: wiring.privacy.enabled,
       multiPerson: wiring.privacy.isMultiPerson(),
@@ -1993,7 +2024,42 @@ rm()  { "${shimRunner}" rm  "$@"; }
       sandboxReady: wiring.sandboxReady(),
       blocker: wiring.blocker?.() ?? null,
       fix: wiring.fix?.() ?? null,
+      agentSessions: agentSessionsStatus({
+        multiPerson: this.isMultiPersonAgent(),
+        refuseAgentSessions: wiring.privacy.refuseAgentSessions(),
+        scopedSessionsReady: this.scopedSessionsReady(),
+      }),
     };
+  }
+
+  /**
+   * Whether another agent's message may run in a place of its own, decided live
+   * (memory-privacy-agent-places §1). `trust` is the peer's trust profile, or null.
+   */
+  peerPlaceAdmission(fingerprint: string | null, trust: { source: string | null; level: string | null } | null): PeerAdmission {
+    return decidePeerAdmission({
+      multiPerson: this.isMultiPersonAgent(),
+      fingerprint,
+      trust,
+      refuseAgentSessions: this.memoryPrivacyWiring?.privacy.refuseAgentSessions() ?? false,
+      scopedSessionsReady: this.scopedSessionsReady(),
+    });
+  }
+
+  /** `memoryPrivacy.linkedPeerReplies`, read live. */
+  linkedPeerReplies(): 'deliver' | 'post-only' {
+    return this.memoryPrivacyWiring?.privacy.linkedPeerReplies() ?? 'deliver';
+  }
+
+  /**
+   * A scoped session can start here: the interactive framework is claude-code and the
+   * sandbox works. The same predicate gates another agent's place (memory-privacy-agent-places §1).
+   */
+  scopedSessionsReady(): boolean {
+    const wiring = this.memoryPrivacyWiring;
+    if (!wiring?.sandboxReady()) return false;
+    const framework = resolveInteractiveFramework({ perCall: undefined, configFramework: this.config.framework, envFramework: frameworkFromEnv() });
+    return framework === 'claude-code';
   }
 
   memoryPrivacyRecovery(): MemoryPrivacyRecovery | null {
@@ -7648,7 +7714,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** Spawn under the conversation's lock when it names one. See `spawnInteractiveSessionUnlocked`. */
   async spawnInteractiveSession(...args: Parameters<SessionManager['spawnInteractiveSessionUnlocked']>): Promise<string> {
     const options = args[2];
-    const ref = conversationRefOf({ telegramTopicId: options?.telegramTopicId, memoryPlaceKey: options?.memoryPlaceKey });
+    const ref = conversationRefOf({ telegramTopicId: options?.telegramTopicId, memoryPlaceKey: options?.memoryPlaceKey, memoryPlace: options?.memoryPlace });
     if (!ref) return this.spawnInteractiveSessionUnlocked(...args);
     return this.withConversationLock(ref, () => this.spawnInteractiveSessionUnlocked(...args));
   }
@@ -7698,6 +7764,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     memoryPlaceKey?: string;
     /** Memory privacy: set by callers that are not a conversation (dashboard, agent-to-agent). */
     memoryPlace?: MemoryPlace;
+    /**
+     * Overload admission class. Defaults to 'operator' (a person's own session). Another
+     * agent's place passes 'automatic', so it never takes the operator's recovery slot
+     * (memory-privacy-agent-places §4).
+     */
+    admissionKind?: AdmissionKind;
   }): Promise<string> {
     const sanitized = name
       ? name.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
@@ -7782,7 +7854,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     }
     // Overload admission (Part C2): while overloaded, an operator session starts
     // only by taking the one host-wide recovery slot.
-    this.checkAdmission('operator', tmuxSession);
+    this.checkAdmission(options?.admissionKind ?? 'operator', tmuxSession);
 
     // Generate session ID before tmux spawn so we can pass it as env var
     const interactiveSessionId = this.generateId();

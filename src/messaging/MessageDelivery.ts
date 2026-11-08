@@ -16,6 +16,7 @@ import type {
 } from './types.js';
 import { ALLOWED_INJECTION_PROCESSES } from './types.js';
 import { MessageFormatter } from './MessageFormatter.js';
+import { PEER_PLACE_SESSION_MARKER } from '../users/peerPlaceAdmission.js';
 
 /** Interface for tmux operations — injectable for testing */
 export interface TmuxOperations {
@@ -90,7 +91,12 @@ export class MessageDelivery implements IMessageDelivery {
     if (safety.contextBudgetExceeded && envelope.message.body.length > 1024) {
       formatted = this.formatter.formatPointer(envelope.message);
     } else {
-      formatted = this.formatter.formatInline(envelope.message);
+      // A session in another agent's place has no Threadline tools (memory-privacy-agent-places §5).
+      formatted = sessionId.includes(PEER_PLACE_SESSION_MARKER)
+        ? this.formatter.formatInline(envelope.message, undefined, {
+          replyHint: `.instar/scripts/threadline-reply.sh --thread ${envelope.message.threadId ?? '<thread id>'} "your reply" (one argument; no heredoc).`,
+        })
+        : this.formatter.formatInline(envelope.message);
     }
 
     // Step 4: Inject via tmux send-keys

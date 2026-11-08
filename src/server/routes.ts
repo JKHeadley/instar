@@ -783,6 +783,7 @@ import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import { refuseUnsupportedFields } from './refuseUnsupportedFields.js';
 import { INITIATIVE_UPDATE_FIELDS } from '../core/InitiativeTracker.js';
 import { telegramTopicRef, topicRef } from '../messaging/shared/topicRef.js';
+import { peerFingerprintOfPlace } from '../users/peerPlaceAdmission.js';
 
 /**
  * Build the /whoami request handler.
@@ -1633,7 +1634,7 @@ export interface RouteContext {
    *  Key: threadId (UUID — unique per conversation, unlike agent names which
    *  can collide when multiple agents share a name). Value: resolve callback
    *  with reply text. */
-  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>;
+  threadlineReplyWaiters: Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null }>;
   /** Threadline MCP over local HTTP (docs/specs/threadline-mcp-local-http.md):
    *  the service behind `POST /mcp/threadline`. Absent ⇒ the route answers 503. */
   threadlineMcpHttp?: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null;
@@ -6868,7 +6869,10 @@ export function createRoutes(ctx: RouteContext): Router {
     // first SessionStart for a session id wins. Read before storing the
     // event so a malformed payload doesn't break the gate.
     if (req.body?.event === 'SessionStart') {
-      const sid = (req.body?.sessionId || req.body?.session_id || '').toString();
+      // A scoped session speaks only for itself: its own session id, never one the body
+      // names (memory-privacy-agent-places §5; the evaluation fails open without it).
+      const ownScopedSid = (res.locals.memorySession as { sessionId?: string } | undefined)?.sessionId;
+      const sid = ownScopedSid ?? (req.body?.sessionId || req.body?.session_id || '').toString();
       if (sid) {
         const startedAt = Date.now();
         recordSessionStart(sid, startedAt);
@@ -41633,7 +41637,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // A recognised ack never reaches here (the ack stage returned before
             // relay()); a message that merely opens like one is still not "the reply".
             const waiter = ctx.threadlineReplyWaiters.get(inboundThreadId);
-            if (waiter && !looksLikeAutoAckText(textContent)) {
+            // Memory privacy: on a multi-person agent only the addressed peer, proven by its
+            // signature, resolves a waiter, and never under post-only (§3).
+            const waiterAllowed = !waiter || !ctx.sessionManager.isMultiPersonAgent()
+              || (ctx.sessionManager.linkedPeerReplies() === 'deliver' && !!waiter.recipientFp && !!provenSenderFp
+                && waiter.recipientFp === provenSenderFp.toLowerCase());
+            if (waiter && waiterAllowed && !looksLikeAutoAckText(textContent)) {
               console.log(`[relay-agent] Resolved reply waiter for thread ${inboundThreadId} (from ${senderAgent ?? 'unknown'})`);
               waiter.resolve(textContent);
             }
@@ -41784,6 +41793,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
               inboundSenderFingerprint,
               resentNotice: ledgerNotice,
               ...(localTrustLevel ? { localTrustLevel } : {}),
+              // Memory privacy: only a signature-proven sender may open a place; never the
+              // name-derived fingerprint (memory-privacy-agent-places §1).
+              ...(provenSenderFp ? { memoryPeerFingerprint: provenSenderFp } : {}),
             })
             .then((threadlineResult) => {
               chainTicket?.recordRouterResult(threadlineResult);
@@ -42841,6 +42853,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     threadId: string,
     timeoutSec?: number,
     onRegistered?: (cancel: () => void) => void,
+    /** Memory privacy: the fingerprint this send addressed (a fingerprint, or an owner-curated nickname). */
+    recipientFp?: string | null,
   ): Promise<string | null> {
     const timeout = Math.min(Math.max(timeoutSec ?? 120, 5), 300) * 1000; // 5s–300s, default 120s
 
@@ -42862,6 +42876,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         threadId,
         senderAgent,
         timer,
+        recipientFp: recipientFp ? recipientFp.toLowerCase() : null,
       };
       routeCtx.threadlineReplyWaiters.set(threadId, entry);
       // Honest delivery (spec §4): a refused send cancels ITS OWN waiter only —
@@ -43095,11 +43110,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // The human-facing display name is preserved separately. Mirrors
     // telegramBridge.mirrorOutbound, which already stores the resolved fingerprint
     // as `remoteAgent` and the raw target as `remoteAgentName`.
+    // The fingerprint this send addressed: a fingerprint given directly, or an owner-curated
+    // nickname (`nicknames.json`, or a standby's forwarded nickname result). Never a directory
+    // or trust-profile name lookup (memory-privacy-agent-places §2).
+    // Read lazily: the nickname is resolved further down this handler.
+    const addressedFpNow = (): string | null => (looksLikeFingerprint ? targetAgent.toLowerCase() : (nicknameResolvedFp ? nicknameResolvedFp.toLowerCase() : null));
     const captureOrigin = async (
       effThreadId: string,
       canonicalRemoteAgent: string,
       displayName?: string,
     ): Promise<void> => {
+      // Memory privacy (memory-privacy-agent-places §2): a send that addressed a fingerprint,
+      // or an owner-curated nickname, owns its thread for that peer. Write-once; a thread
+      // addressed any other way stays unowned.
+      const addressedFp = addressedFpNow();
+      if (ctx.threadResumeMap) {
+        try {
+          if (addressedFp) ctx.threadResumeMap.claimOwner(effThreadId, addressedFp, { hasStoredMessages: false });
+          else ctx.threadResumeMap.markOwnerless(effThreadId);
+        } catch { /* @silent-fallback-ok — an unclaimed thread is unowned: the strict direction */ }
+      }
       if (!ctx.topicLinkageHandler) return;
       if (!resolvedOriginTopicId) return;
       try {
@@ -43729,7 +43759,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
                   // a2a-required-acknowledgment D5: only an accepted send closes a watch.
                   if (accepted) ctx.requiredAck?.onSessionSendAccepted(resolvePeerFingerprint(localTarget) || localTarget.name, effectiveThreadId);
                   if (waitForReply) {
-                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose);
+                    const reply = await waitForThreadlineReply(ctx, localTarget.name, effectiveThreadId, timeoutSeconds, cancelReplyWaitOnClose, addressedFpNow());
                     res.json({
                       success: true,
                       accepted,
@@ -44017,7 +44047,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // budget, and a fast reply can never land in a gap with no listener).
       let cancelReplyWait: (() => void) | undefined;
       const replyPromise = waitForReply
-        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); })
+        ? waitForThreadlineReply(ctx, resolvedId, effectiveRelayThreadId, timeoutSeconds, (c) => { cancelReplyWait = c; cancelReplyWaitOnClose(c); }, addressedFpNow())
         : null;
 
       // Honest delivery (docs/specs/a2a-honest-delivery-outcomes.md §4). Order:
@@ -44254,6 +44284,124 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Under the global Bearer. `threadline_ack` calls this on both transports, because
   // a stdio tool runs in a subprocess with no tracker. Success means the `read` is
   // durably accepted as a pending row, written before the watch closes.
+  // ── Memory privacy: reply from another agent's place ─────────────────────
+  // docs/specs/memory-privacy-agent-places.md §5. A session in a peer's place has no MCP,
+  // so it replies with threadline-reply.sh. The recipient is the fingerprint in the
+  // session token's place key, never the request; the thread must belong to that peer.
+  router.post('/threadline/session-reply', async (req, res) => {
+    const memorySession = res.locals.memorySession as import('../users/MemoryPrivacy.js').SessionTokenRecord | undefined;
+    // Session tokens only: an owner session keeps using the MCP tool.
+    if (!memorySession) { res.status(403).json({ sent: false, error: 'session-token-only' }); return; }
+    const peerFp = peerFingerprintOfPlace(memorySession.placeKey);
+    if (!peerFp) { res.status(403).json({ sent: false, error: 'not-a-peer-place' }); return; }
+    if (req.body?.files !== undefined) { res.status(403).json({ sent: false, error: 'not-available-to-this-session' }); return; }
+    const text = typeof req.body?.text === 'string' ? req.body.text : '';
+    const ackRefs = Array.isArray(req.body?.ackRefs) ? (req.body.ackRefs as unknown[]).filter((r): r is string => typeof r === 'string' && r.length > 0).slice(0, 50) : [];
+    if (!text.trim() && ackRefs.length === 0) { res.status(400).json({ sent: false, error: 'text or ackRefs is required' }); return; }
+    const resumeMap = ctx.threadResumeMap;
+    if (!resumeMap) { res.status(503).json({ sent: false, error: 'Threadline is not available on this agent right now.' }); return; }
+    const session = ctx.sessionManager.listRunningSessions().find(s => s.id === memorySession.sessionId);
+    const sessionName = session?.tmuxSession ?? null;
+
+    // The thread: named and owned by this peer, or the one entry naming this session for this peer.
+    let threadIdFound: string | null = null;
+    if (typeof req.body?.threadId === 'string' && req.body.threadId) {
+      if (resumeMap.ownership(req.body.threadId).owner !== peerFp) {
+        res.status(403).json({ sent: false, error: 'thread-not-this-peers' });
+        return;
+      }
+      threadIdFound = req.body.threadId;
+    } else {
+      const matches = sessionName ? resumeMap.getBySessionName(sessionName).filter(m => resumeMap.ownership(m.threadId).owner === peerFp) : [];
+      if (matches.length !== 1) {
+        res.status(409).json({ sent: false, error: matches.length === 0 ? 'no-thread-for-this-session' : 'several-threads', detail: 'Name the thread with --thread <id>.' });
+        return;
+      }
+      threadIdFound = matches[0].threadId;
+    }
+    const threadId: string = threadIdFound as string;
+
+    const answer: Record<string, unknown> = { threadId };
+    if (ackRefs.length > 0) {
+      if (!ctx.requiredAck) {
+        answer.ack = { sent: false, error: 'Acknowledgments are not available on this agent right now.' };
+      } else {
+        try {
+          answer.ack = (await ctx.requiredAck.acceptSessionAck({ threadId, ackRefs, summary: req.body?.summary, peerFp })).body;
+        } catch (err) {
+          answer.ack = { sent: false, error: err instanceof Error ? err.message : String(err) };
+        }
+      }
+    }
+    if (text.trim()) {
+      // The reply answers the newest message the peer sent on this thread.
+      let inReplyTo: string | undefined;
+      try {
+        const thread = await ctx.messageRouter?.getThread(threadId);
+        const fromPeer = (thread?.messages ?? []).filter(env => env.message.from.agent !== ctx.config.projectName);
+        inReplyTo = fromPeer.length ? fromPeer[fromPeer.length - 1].message.id : undefined;
+      } catch { /* @silent-fallback-ok — inReplyTo is a courtesy; the send stands without it */ }
+      // The routable address for this peer. A co-located agent is reached over the local route
+      // by name, so when a known agent carries exactly this fingerprint, address it as
+      // `name:fingerprint-prefix` (relay-send then matches that one entry); otherwise the bare
+      // fingerprint goes over the relay. The fingerprint, never the name, picks the entry.
+      let target = peerFp;
+      try {
+        const knownPath = path.join(ctx.config.stateDir, 'threadline', 'known-agents.json');
+        const known = JSON.parse(fs.readFileSync(knownPath, 'utf-8')) as { agents?: Array<{ name?: string; fingerprint?: string }> };
+        const match = (known.agents ?? []).filter((a) => typeof a.fingerprint === 'string' && a.fingerprint.toLowerCase() === peerFp.toLowerCase() && typeof a.name === 'string' && a.name);
+        if (match.length === 1) target = `${match[0].name}:${peerFp.slice(0, 16).toLowerCase()}`;
+      } catch { /* @silent-fallback-ok — no known-agents file: the relay route by fingerprint */ }
+      // The same outbound path threadline_send uses: one signing, gating and routing funnel.
+      let sendStatus = 502;
+      let sendBody: Record<string, unknown> = {};
+      const sendOnce = async (withReplyTo: boolean) => {
+        const response = await fetch(`http://127.0.0.1:${ctx.config.port}/threadline/relay-send`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken ?? ''}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            targetAgent: target,
+            message: text,
+            threadId,
+            ...(withReplyTo && inReplyTo ? { inReplyTo } : {}),
+            ...(sessionName ? { originSessionName: sessionName } : {}),
+          }),
+          signal: AbortSignal.timeout(60_000),
+        });
+        sendStatus = response.status;
+        sendBody = await response.json().catch(() => ({})) as Record<string, unknown>;
+      };
+      try {
+        await sendOnce(true);
+        // relay-send refuses an inReplyTo that is not an authenticated inbound on this thread, or
+        // one already being answered, BEFORE it sends anything; the reply then goes without it
+        // (inReplyTo is a courtesy). Any other refusal stands.
+        const replyToRefused = (sendStatus === 400 && /inReplyTo/.test(String(sendBody.error ?? '')))
+          || (sendStatus === 409 && /already in flight/.test(String(sendBody.error ?? '')));
+        if (inReplyTo && replyToRefused) await sendOnce(false);
+      } catch (err) {
+        sendBody = { success: false, error: err instanceof Error ? err.message : String(err) };
+      }
+      answer.sent = sendStatus < 300 && sendBody.success !== false;
+      answer.send = sendBody;
+      if (!answer.sent) { res.status(sendStatus >= 400 ? sendStatus : 502).json(answer); return; }
+      // Bind the thread to this live session so a follow-up injects here. The transcript id is
+      // cleared unless it was written in this same place: the audience key is written only at
+      // spawn and resume, never here, so an older transcript can never be resumed into the place.
+      try {
+        const entry = resumeMap.get(threadId);
+        if (entry && sessionName && entry.sessionName !== sessionName) {
+          const samePlace = entry.audienceKey === `place:${memorySession.placeKey}`;
+          resumeMap.save(threadId, { ...entry, sessionName, ...(samePlace ? {} : { uuid: '' }) });
+          if (!samePlace) resumeMap.clearTranscript(threadId);
+        }
+      } catch { /* @silent-fallback-ok — binding only helps a later inject */ }
+    } else {
+      answer.sent = false;
+    }
+    res.json(answer);
+  });
+
   router.post('/threadline/ack', async (req, res) => {
     if (!ctx.requiredAck) {
       res.status(503).json({ sent: false, error: 'Acknowledgments are not available on this agent right now.' });

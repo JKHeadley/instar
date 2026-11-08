@@ -21,6 +21,7 @@ While mapping how another agent's message reaches a conversation, we found ways 
 - No checked identity, no conversation. A name alone is never enough.
 - Only agents the owner chose to trust, or paired with, get a room. A stranger who just makes a new key gets refused, as today.
 - For now, other agents on the same computer are still refused. They can only prove who they are once message signing between local agents is switched on.
+- An agent with its Threadline relay switched off has no record of whom it trusts, so it refuses every other agent. It never guesses.
 - One agent can't use another agent's thread to reach or close that agent's room.
 - At most three rooms are open at once, one per agent, and one session slot is kept free for people and scheduled jobs. When the rooms are full, a new agent waits its turn. Nobody else's conversation is cut off to make room.
 - A room can't send the owner an access request, and it can't send feedback under the agent's name.

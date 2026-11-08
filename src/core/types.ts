@@ -6046,6 +6046,11 @@ export interface ThreadlineConfig {
   spawn?: ThreadlineSpawnConfig;
   /** Warm-session A2A keep-alive integration (Arch Y). */
   warmSessionA2A?: ThreadlineWarmSessionConfig;
+  /**
+   * Memory privacy: sessions in other agents' places (docs/specs/memory-privacy-agent-places.md §4).
+   * `globalCap` (default 3) places live at once; `idleMs` (default 600000) idle end.
+   */
+  placeSessions?: { globalCap?: number; idleMs?: number };
   /** Secure A2A Verified Pairing — SAS mutual verification + credential-share gate (§3.10). */
   verifiedPairing?: ThreadlineVerifiedPairingConfig;
   /** The owner's name stated in pairing invites. Omitted: the registered users, then the verified Telegram operator. */

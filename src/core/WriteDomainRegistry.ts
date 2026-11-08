@@ -405,6 +405,16 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     note: 'watch and pending rows live in this machine\'s delivery-tracker database; visible pool-wide through the merged ?scope=pool peer-health read',
   } });
 
+  // memory-privacy-agent-places §5: a session in another agent's place replies on the machine
+  // that runs it (the one holding its mps_ token). It binds the thread to that live session and
+  // hands the text to relay-send, which keeps its own write-domain story.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/threadline/session-reply', domain: 'machine-local', story: {
+    logical: 'per-machine-path',
+    onSharedGitSyncedPath: false,
+    fileLevel: 'git-sync-excluded',
+    note: 'the session token map and the thread-to-session binding are this machine\'s; the send itself goes through relay-send',
+  } });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
 
   // POST /hooks/native-events (docs/specs/native-hook-events.md): a Claude Code

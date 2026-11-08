@@ -36,6 +36,10 @@ export interface MemoryPrivacyConfig {
   ownerUserId?: string;
   sharedMemoryPeople?: string[];
   privateGroups?: string[];
+  /** True restores the refusal of agent-to-agent conversations (memory-privacy-agent-places §7). Read live. */
+  refuseAgentSessions?: boolean;
+  /** Whether a peer's reply to a thread an owner or system session started is delivered into it (§3). Read live. */
+  linkedPeerReplies?: 'deliver' | 'post-only';
 }
 
 export interface ReachableLists {
@@ -129,6 +133,16 @@ export class MemoryPrivacy {
     this.file = path.join(deps.stateDir, 'state', 'memory-privacy.json');
     this.now = deps.now ?? Date.now;
     this.state = this.load();
+  }
+
+  /** `memoryPrivacy.refuseAgentSessions`, read live. Anything but exactly true is false. */
+  refuseAgentSessions(): boolean {
+    return this.deps.config().refuseAgentSessions === true;
+  }
+
+  /** `memoryPrivacy.linkedPeerReplies`, read live. Anything but 'post-only' delivers. */
+  linkedPeerReplies(): 'deliver' | 'post-only' {
+    return this.deps.config().linkedPeerReplies === 'post-only' ? 'post-only' : 'deliver';
   }
 
   get enabled(): boolean {
