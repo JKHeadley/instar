@@ -78,6 +78,8 @@ export interface AppConversationServiceDeps {
    * conversations are on, so a machine with the feature off still keeps and purges what it holds.
    */
   mediaMaxStoreBytes?: () => number | undefined;
+  /** Free and total disk for the media store's floor. Absent reads the real disk; tests pass one so they do not depend on the machine. */
+  mediaDiskSpace?: () => { free: number; total: number } | null;
   /** One notice per condition (absent ⇒ degradation reports only). */
   raiseAttention?: (item: { conditionKey: string; title: string; body: string }) => void;
   clearAttention?: (conditionKey: string) => void;
@@ -229,6 +231,7 @@ export class AppConversationService {
     this.media = new AppMediaStore({
       stateDir: deps.stateDir, store: this.store, now: this.now,
       maxStoreBytes: () => deps.mediaMaxStoreBytes?.() ?? DEFAULT_MAX_STORE_BYTES,
+      ...(deps.mediaDiskSpace ? { diskSpace: deps.mediaDiskSpace } : {}),
       reportDegradation: (what, detail) => deps.reportDegradation?.(what, detail),
       onRefused: (error) => this.onMediaRefused(error),
     });
