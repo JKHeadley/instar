@@ -48,6 +48,11 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('ctx.telegram!.sendOfferList(topicId, text, buttons)');
     expect(routes).toContain('registerOfferTapHandler: (handler) => { ctx.telegram?.setRecommendedOfferHandler?.(handler); }');
     expect(routes).toContain('pickPrimaryLanIp(os.networkInterfaces()');
+    // Voice transcription: the vault reader every transcription caller falls back to, registered once by the server.
+    expect(routes).toContain('registerStoredTranscriptionKey(() => {');
+    expect(routes).toContain('.get(VOICE_TRANSCRIPTION_SECRET)');
+    expect(read('src/commands/server.ts')).toContain("(await import('../core/VoiceTranscription.js')).resolveTranscriptionProvider({ explicit, env: {} })");
+    expect(read('src/messaging/backends/BaileysBackend.ts')).toContain('resolveSharedTranscriptionProvider({ env: {} })');
     const adapter = fs.readFileSync(path.join(root, 'src/messaging/TelegramAdapter.ts'), 'utf8');
     expect(adapter).toContain("if (query.data.startsWith('rs:'))");
     expect(adapter).toContain('this.recommendedOfferHandler({ action: m[1] === \'y\' ? \'yes\' : \'no\', nonce: m[2]!, fromIsOwner })');
