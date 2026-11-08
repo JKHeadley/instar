@@ -4909,7 +4909,11 @@ export interface InstarConfig {
   dispatches?: DispatchConfig;
   /** Git backup config (opt-in for standalone agents) */
   /** docs/specs/recommended-services.md: setup recipes this agent is proving. Only a test agent or the development agent sets it. */
-  recommendedServices?: { provingRecipes?: string[] };
+  recommendedServices?: {
+    provingRecipes?: string[];
+    /** The first list of recommended services, sent once per service after a delivered first result. Off by default. */
+    offers?: { enabled?: boolean };
+  };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */
     enabled: boolean;

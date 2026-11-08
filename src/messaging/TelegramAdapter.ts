@@ -997,6 +997,27 @@ export class TelegramAdapter implements MessagingAdapter {
    * trust the click came from the owner.
    */
   private tunnelConsentHandler: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null = null;
+  /** Offer-list buttons (docs/specs/recommended-services.md, Offers). Wired by the recommended-services routes. */
+  private recommendedOfferHandler: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
+  setRecommendedOfferHandler(fn: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.recommendedOfferHandler = fn; }
+
+  /** One offer list with its buttons, in the owner's conversation. The message id is the delivery proof the offer ledger records. */
+  async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
+    try {
+      // Telegram allows up to 8 buttons a row; one per row keeps the names readable on a phone.
+      const result = await this.apiCall('sendMessage', {
+        chat_id: this.config.chatId,
+        message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
+        text,
+        reply_markup: { inline_keyboard: buttons.map((b) => [{ text: b.text, callback_data: b.data }]) },
+      }) as { message_id: number };
+      return typeof result?.message_id === 'number' ? result.message_id : null;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: null means "not delivered", and the offer stays pending
+      console.warn(`[telegram] sendOfferList failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
   /**
    * UNIFIED-SESSION-LIFECYCLE bonus — fired when a Telegram forum topic is
    * renamed. Wired in server.ts to update the bound session's display name
@@ -6689,6 +6710,30 @@ export class TelegramAdapter implements MessagingAdapter {
     // may approve routing private traffic through a third-party relay.
     // We use getOwnerUserId() (the explicit owner principal), NOT the
     // broader authorizedUserIds set.
+    // ── Offer-list buttons (docs/specs/recommended-services.md; telegram-button-approval.md §1).
+    // `rs:n:` is S-class (a no: less action, undoable on the confirm page, bounded per hour by the handler),
+    // so anyone in the owner's conversation may tap it. `rs:y:` is P-class and owner-only; the handler also
+    // limits it to address services. The nonce is single-use on the handler's side.
+    if (query.data.startsWith('rs:')) {
+      const m = /^rs:([ny]):([0-9a-f]{32})$/.exec(query.data);
+      if (!m) {
+        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: 'Invalid button' }).catch(() => {});
+        return;
+      }
+      const approver = this.getConfiguredApprover();
+      const fromIsOwner = approver !== undefined && query.from.id === approver;
+      let statusText = 'My dashboard has the list.';
+      if (this.recommendedOfferHandler) {
+        try {
+          statusText = await this.recommendedOfferHandler({ action: m[1] === 'y' ? 'yes' : 'no', nonce: m[2]!, fromIsOwner });
+        } catch {
+          statusText = 'Could not take that. My dashboard has the list.';
+        }
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: statusText, show_alert: statusText.length > 60 }).catch(() => {});
+      return;
+    }
+
     if (query.data.startsWith('tc:')) {
       const owner = this.getConfiguredApprover();
       if (owner === undefined) this.reportNoCallbackApprover('tunnelConsent');
