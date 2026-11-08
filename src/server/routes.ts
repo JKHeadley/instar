@@ -257,7 +257,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
-import { mountMobileOpsRoutes, machineKey } from './mobileOpsRoutes.js';
+import { mountMobileOpsRoutes, machineKey, summarizeMachines } from './mobileOpsRoutes.js';
 import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
@@ -22502,7 +22502,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!copied && !app.media.locateBlob(attachment.sha256) && await app.replicator.awaitBlob(attachment.sha256, MEDIA_PATH_WAIT_MS)) {
       copied = await app.media.sessionCopy(ref.messageId, attachment);
     }
-    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file is not on this machine yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
+    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file hasn't been copied over yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
     try {
       res.json({ path: app.intoConfinedInbox(key, copied) });
     } catch (err) {
@@ -38828,6 +38828,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { ok: true, data: surface.status() };
       },
       resourceSources: (sinceMs) => (ctx.resourceLedger ? ctx.resourceLedger.summary(sinceMs) : null),
+      // Every machine's resource use (multi-machine posture: proxied-on-read). The machine list is
+      // the same /pool summary the Machines screen shows; a peer is asked for its own local answer.
+      resourceMachines: () => {
+        const pool = poolView();
+        if (!Array.isArray((pool as { machines?: unknown }).machines) || !((pool as { machines: unknown[] }).machines.length)) return [];
+        return summarizeMachines(pool, ProcessIntegrity.getInstance()?.runningVersion ?? ctx.config.version ?? null,
+          (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null).machines
+          .map((m) => ({ key: m.key, name: m.name, isSelf: m.isSelf, leading: m.leading, sessions: m.sessions, maxSessions: m.maxSessions, version: m.version }));
+      },
+      peerResources: async (key) => {
+        const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => machineKey(p.machineId) === key);
+        if (!peer || ctx.machinePoolRegistry?.getCapacity(peer.machineId)?.online === false) return { ok: false, reason: 'offline' };
+        const r = await peerJson(peer, '/mobile/resources?scope=local');
+        return r.ok ? { ok: true, body: r.data } : { ok: false, reason: 'not-answering' };
+      },
       runningSessionNames: () => new Map(ctx.sessionManager.listRunningSessions().map((x) => [x.id, x.name] as [string, string])),
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
@@ -38869,6 +38884,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     };
     mountMobilePlansPeopleRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       initiatives: () => (ctx.initiativeTracker ? ctx.initiativeTracker.list() : null),
       offlineMachineIds: () => {
         if (!ctx.meshSelfId) return [];
@@ -38947,6 +38964,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return [...answers, ...skipped];
     };
     mountMobilePhonesMessagesRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       originStatus: async () => (ctx.telegramOrigin ? { state: 'ok', data: await ctx.telegramOrigin.deliverySummaryInputs() } : { state: 'off' }),
       heldForward: () => ctx.telegramOrigin?.heldForwardHealth() ?? null,
       peerMessages: () => peerSummaries('/mobile/messages?scope=local'),
@@ -38969,6 +38988,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // bearer; waiting requests proxied-on-read across peers, key names this machine's. No value, length,
     // token or Secret Drop link leaves this route.
     mountMobileSecretsRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       pending: () => secretDrop.listPending(),
       keys: async () => {
         const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
@@ -39076,6 +39097,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
     // read-only summaries, owner phone or bearer, proxied-on-read across peers.
     mountMobileProposalsInsideRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       proposals: () => ({ state: 'ok', data: loadAllProposals(ctx.config.stateDir) }),
       peerProposals: () => peerSummaries('/mobile/proposals?scope=local'),
       activity: async () => {
@@ -39145,6 +39168,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     }
     mountMobilePermissionsRoutes(router, {
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       teamAction: async (kind, req, deviceId) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
         return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };

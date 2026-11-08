@@ -116,7 +116,7 @@ export function resolveOpenSession(input: {
       ...(s.startedAt ? { startedAt: s.startedAt } : {}),
       ...(s.framework ? { framework: s.framework } : {}),
       ...base,
-      ...(url ? { dashboardUrl: url } : { reason: 'This machine has no dashboard address the phone can open yet.' }),
+      ...(url ? { dashboardUrl: url } : { reason: `${input.selfNickname ?? 'The machine running this chat'} has no dashboard address the phone can open yet.` }),
     };
   }
   const owner = input.ownerMachineId;

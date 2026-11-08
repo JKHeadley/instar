@@ -573,6 +573,8 @@ export interface MobilePermissionsDeps {
   /** Each online peer's `GET /mobile/permissions/features?scope=local` (read-only here). */
   peerFeatures: () => Promise<Array<PeerSlips | PeerUnreached>>;
   offlineMachineIds?: () => string[];
+  /** The answering machine's verified name, or null. */
+  selfName?: () => string | null;
   nicknameOf: (machineId: string) => string | null;
   features: () => { state: PartState; list: Rec[] };
   /** One registry definition by id (null when unknown), for the disclosure a switch must carry. */
@@ -688,7 +690,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       // @silent-fallback-ok — not silent: reported; offline machines are then not named
       report('MobilePermissions.read', 'the offline machine list', 'offline machines are not named', err);
     }
-    res.json({ ...head(), actions: actionsState(req, deps), state: part.state, features, ...summarizePeerFeatures(peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline }) });
+    // `machine`: the answering machine's name, so the phone titles its switches by name, never "This machine".
+    res.json({ ...head(), actions: actionsState(req, deps), state: part.state, machine: cleanText(deps.selfName?.() ?? null, 60), features, ...summarizePeerFeatures(peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline }) });
   });
 
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */

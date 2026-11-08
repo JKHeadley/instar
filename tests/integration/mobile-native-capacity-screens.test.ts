@@ -153,8 +153,8 @@ describe('owner phone: served, trimmed', () => {
       { name: 'Studio', isSelf: true, state: 'ok', netUsd: 4.2, unpricedTokens: 0 },
       { name: 'Mac Mini', isSelf: false, state: 'unreached', netUsd: null, unpricedTokens: null },
     ]);
-    expect(r.body.limits).toMatchObject({ routesState: 'ok', controlsState: 'ok', storeUnreadable: true, sentence: 'Limits are on and enforcing on this machine.', routesSentence: '1 paid route is open.' });
-    expect(r.body.limits.routes[0]).toMatchObject({ name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: 3, dailyCapUsd: 25, heldBy: 'this machine', committedElsewhere: false });
+    expect(r.body.limits).toMatchObject({ routesState: 'ok', controlsState: 'ok', storeUnreadable: true, sentence: 'Limits are on and enforcing on Studio.', routesSentence: '1 paid route is open.' });
+    expect(r.body.limits.routes[0]).toMatchObject({ name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: 3, dailyCapUsd: 25, heldBy: 'Studio', committedElsewhere: false });
     expect(r.body.conversations.claude).toMatchObject({ count: 4, tokens: 1200000 });
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
@@ -169,6 +169,44 @@ describe('owner phone: served, trimmed', () => {
     expect(r.body.server).toMatchObject({ name: 'The agent server', cpuPercent: 3 });
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
+  });
+
+  it('GET /mobile/resources covers every machine: a combined summary, one block per machine, a silent one never zeros', async () => {
+    const asked: string[] = [];
+    const c = setup({
+      resourceMachines: () => [
+        { key: 'k-self', name: 'Studio', isSelf: true, leading: true, sessions: 3, maxSessions: 10, version: '1.3.1703' },
+        { key: 'k-laptop', name: 'Laptop', isSelf: false, leading: false, sessions: 2, maxSessions: 6, version: '1.3.1702' },
+        { key: 'k-mama', name: 'Mama PC', isSelf: false, leading: false, sessions: null, maxSessions: null, version: null },
+      ],
+      peerResources: async (key) => {
+        asked.push(key);
+        if (key === 'k-mama') return { ok: false, reason: 'not-answering' };
+        return { ok: true, body: { enabled: true, headline: 'peer', total: { key: 'total', name: 'Everything together', cpuPercent: 20, memoryBytes: 2e9, newestAt: new Date(NOW - 30_000).toISOString(), pid: 7, path: '/Users/x' }, sessions: [{ key: 'abc123', name: 'laptop-build', cpuPercent: 9, memoryBytes: 5e8, newestAt: new Date(NOW - 30_000).toISOString() }] } };
+      },
+    });
+    const r = await signedGet(c, '/mobile/resources');
+    expect(r.status).toBe(200);
+    // The older phone's top-level fields are still the answering machine's own.
+    expect(r.body).toMatchObject({ enabled: true, machine: 'Studio', scope: 'pool' });
+    expect(asked.sort()).toEqual(['k-laptop', 'k-mama']);
+    expect(r.body.combined).toMatchObject({ machines: 3, answering: 2, notAnswering: ['Mama PC'], runningSessions: null, busiest: 'Busiest: Laptop, 20% CPU' });
+    expect(r.body.combined.headline).toBe('2 of 3 machines · 3.4 GB of memory');
+    expect(r.body.machines.map((m: { name: string; state: string }) => [m.name, m.state])).toEqual([['Mama PC', 'not-answering'], ['Studio', 'answering'], ['Laptop', 'answering']]);
+    expect(r.body.machines[0]).toMatchObject({ total: null, line: 'Not answering' });
+    expect(r.body.machines[2].sessions[0]).toMatchObject({ name: 'laptop-build', cpuPercent: 9 });
+    const text = JSON.stringify(r.body);
+    for (const leak of [...LEAKS, '"pid"']) expect(text, leak).not.toContain(leak);
+  });
+
+  it('?scope=local answers only the machine asked and never fans out (the peer read)', async () => {
+    let fanned = 0;
+    const c = setup({ resourceMachines: () => { fanned++; return [{ key: 'k', name: 'Studio', isSelf: true, leading: false, sessions: 1, maxSessions: 2, version: null }]; }, peerResources: async () => { fanned++; return { ok: false, reason: 'offline' }; } });
+    const r = await request(c.app).get('/mobile/resources?scope=local').set('Authorization', 'Bearer tok-1');
+    expect(r.status).toBe(200);
+    expect(r.body.machines).toBeUndefined();
+    expect(r.body.machine).toBe('Studio');
+    expect(fanned).toBe(0);
   });
 
   it('the bearer token is served too', async () => {
