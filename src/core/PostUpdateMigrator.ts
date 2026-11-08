@@ -11623,6 +11623,29 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // One-tap repair setting awareness (spec one-tap-unattended-repair §7), content-sniffed.
+    if (
+      content.includes('One-click repair across all machines') &&
+      !content.includes('One-tap repair setting (Accounts page)')
+    ) {
+      const oneClickEnd = 'an unreachable peer is shown honestly and suppresses competing actions until truth returns.';
+      const oneTapBullet = "- **One-tap repair setting (Accounts page)** \u2014 the console Accounts page has an **Automatic sign-in repair** section (direct link: the dashboard URL + `#/capacity/accounts?s=auto-repair`). Each machine's row shows its setting in plain words, the exact accounts its list will hold, accounts not covered yet, and which accounts will still ask and why. After one PIN unlock, **Turn on for ticked machines** sets the operator's own machine to repair without asking and refreshes the account list of any other machine already set that way; **Switch ticked machines back to asking first** undoes it; **Finish restarting** re-queues a restart that did not happen. A machine set to \"asks you first\", watching only, or off is never escalated from another machine. It reads `GET /subscription-relogin?scope=pool` (`pool.configs`) and writes through `POST /subscription-relogin/configure-pool` (recent dashboard unlock only) \u2192 a signed, single-use mandate \u2192 `POST /subscription-relogin/configure-with-mandate` on each target. **When to use** (PROACTIVE): the user wants sign-in repair on everywhere, or an account was added and its machine's row says it isn't covered \u2192 send the direct link to the section. Never call the configure routes yourself; they need the operator's unlock.";
+      if (content.includes(oneClickEnd)) {
+        content = content.replace(oneClickEnd, oneClickEnd + '\n' + oneTapBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added one-tap repair setting awareness');
+      }
+    }
+    // The old "configure this on any machine" sentence now points at the section.
+    {
+      const oldConfigureSentence = "A recent dashboard PIN unlock can safely configure this on any machine with `POST /subscription-relogin/configure`; the endpoint validates exact identities, persists an audit row, and requests a supervised restart so the authority change is actually live.";
+      if (content.includes(oldConfigureSentence)) {
+        content = content.replace(oldConfigureSentence, "The operator switches this on from the Accounts page's **Automatic sign-in repair** section (below), which writes through the PIN-gated configure routes with exact identities, an audit row and a supervised restart; never call those routes yourself.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: pointed sign-in repair configuration at the Accounts section');
+      }
+    }
+
     // Pre-limit (proactive) swap awareness. Existing agents that ALREADY carry the
     // Subscription Pool section won't get the new bullet from the section-install
     // guard above (it skips agents that already have the section). Patch it in

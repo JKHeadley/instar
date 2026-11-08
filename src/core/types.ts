@@ -4984,6 +4984,12 @@ export interface InstarConfig {
         /** Age of the oldest successful repair required in days. Default 30. */
         minimumEvidenceDays?: number;
       };
+      /**
+       * Monotonic write counter for this block (spec one-tap-unattended-repair §1). Incremented by
+       * every operator write (local configure, configure-pool, configure-with-mandate) and folded
+       * into the block's revision so A→B→A content still gets a new revision. Missing ⇒ 0.
+       */
+      generation?: number;
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
       /**

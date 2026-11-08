@@ -394,6 +394,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 import { TopicRef, topicRef, setTopicNameResolver } from '../messaging/shared/topicRef.js';
+import { isConfigureOnlyMandate } from '../coordination/AccountFollowMeMandateDelivery.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -27872,7 +27873,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // enabled on THIS machine AND the sender a registered ACTIVE peer (verifyEnvelope already
             // proved the Ed25519/recipient/nonce). DENY-BY-DEFAULT (dark agent → refused here). The
             // LOAD-BEARING authority is the R4a signature re-verification in the handler below.
-            authorizeMandateDeliver: ({ sender }) => {
+            authorizeMandateDeliver: ({ sender, command }) => {
+              // spec one-tap-unattended-repair §4: a configure-only repair-setting mandate is
+              // admitted from any ACTIVE registered machine whatever follow-me's state; the handler
+              // still re-verifies the signature, target, digest and expiry before persisting it.
+              const portable = (command as { portable?: { mandate?: import('../coordination/types.js').CoordinationMandate } } | undefined)?.portable;
+              if (!meshIdMgr.isMachineActive(sender)) return false;
+              if (isConfigureOnlyMandate(portable?.mandate)) return true;
               const afmEnabled = resolveDevAgentGate(
                 (config as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } })
                   .multiMachine?.accountFollowMe?.enabled,
