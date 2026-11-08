@@ -9,6 +9,8 @@ const BACKUP_WORDS = {
 };
 
 function choiceWord(s) {
+  if (s.stopped) return 'Switched off';
+  if (s.switchingOff) return 'Switching off';
   if (s.stalled) return 'Setup stopped';
   if (s.verified && s.verified.result === 'pass') return 'Working';
   if (s.choice === 'yes') return 'You said yes';

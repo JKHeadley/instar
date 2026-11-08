@@ -1,0 +1,45 @@
+{
+  "ts": "2026-11-07T18:51:59.921Z",
+  "slug": "false-stopped-session-self-recovery",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 532,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/messaging/slack/ChannelManager.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/messaging/slack/SlackApiClient.ts",
+      "src/messaging/userNotices.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/monitoring/SessionMonitor.ts",
+      "src/monitoring/SessionRecovery.ts",
+      "src/monitoring/StallTriageNurse.ts",
+      "src/monitoring/SystemReviewer.ts",
+      "src/monitoring/TriageOrchestrator.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 360,
+    "deletedLines": 172
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "session-monitor-dead-recovery: one fresh restart per unanswered message while that message is under 24 hours old; deadRecoveryDue is the settling brake and the ratchet proves one action under sustained pressure."
+    }
+  },
+  "verdict": "pass"
+}

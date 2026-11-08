@@ -31,10 +31,14 @@ export function buildHealthPage(res) {
   const problems = of('user-affecting');
   const unsorted = of('unclassified');
   const quiet = of('internal');
-  const sub = d.verdict === 'unsure' ? 'It may not affect you. Each one has a way to ask me.'
-      : d.verdict === 'running' ? 'Nothing here affects you.' : '';
+  // An older server sends `unsure` for unsorted notes while answering: read it as running (Justin, 2026-11-07).
+  const notes = unsorted.length;
+  const sub = d.verdict === 'unsure' || (d.verdict === 'running' && notes > 0)
+    ? (notes === 1 ? 'One note I haven’t sorted yet. Nothing is known to affect you; you can ask me about it.' : `${notes} notes I haven’t sorted yet. Nothing is known to affect you; you can ask me about them.`)
+    : d.verdict === 'running' ? 'Nothing here affects you.' : '';
   return {
-    ok: true, verdict: d.verdict, tone: TONE[d.verdict], headline: d.headline, sub, uptime: d.uptime || null,
+    ok: true, verdict: d.verdict === 'unsure' && problems.length === 0 ? 'running' : d.verdict,
+    tone: d.verdict === 'unsure' && problems.length === 0 ? TONE.running : TONE[d.verdict], headline: d.headline, sub, uptime: d.uptime || null,
     problems, unsorted, quiet, truncated: Boolean(d.truncated),
     hidden: Array.isArray(d.hidden) ? d.hidden.filter((h) => h && typeof h.key === 'string') : [],
     hiddenUnreadable: d.hiddenUnreadable === true,

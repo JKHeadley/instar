@@ -328,6 +328,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   };
   // POST /standdown/evaluate — the hook's authoritative verdict + audit row for
   // a session running ON THIS machine (a peer's session can never be listed here).
+  // "Bring it back here" (app-conversations-in-the-pool §2.2): the lease holder's CAS, journaled to every
+  // machine. Shared, as /pool/transfer is by default.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/pool/bring-back', domain: 'cluster-shared' });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 
   // Desktop grants exist only in the target process. A restart destroys every
@@ -712,6 +716,17 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
       logical: 'per-machine-path',
       onSharedGitSyncedPath: false,
       note: 'step 2a of team-roles-and-access: one machine only, a second machine is refused at the join, so the signed access log is this machine\'s; replication is step 2b.',
+    },
+  });
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/team/proposals',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: false,
+      note: 'a request waits on the machine the owner reads it on; it grants nothing, and step 2 keeps team access to one machine for now.',
     },
   });
   reg.add({

@@ -239,6 +239,42 @@ describe('SessionManager behavioral tests', () => {
       expect(session.framework).toBe('claude-code');
     });
 
+    it.each([
+      ['codex-cli', undefined, 'gpt-6-astra'],
+      ['claude-code', undefined, 'opus'],
+      ['codex-cli', 'gpt-6-luna', 'gpt-6-luna'],
+      ['codex-cli', 'balanced', 'gpt-6-sol'],
+    ] as const)('uses the saved default only for omitted models: %s / %s', async (framework, model, expected) => {
+      config.frameworkDefaultModels = { 'codex-cli': 'gpt-6-astra', 'claude-code': 'opus' };
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'default-model', prompt: 'Do work', framework, model });
+      const argv = newSessionArgs();
+      const modelFlag = framework === 'codex-cli' ? '-m' : '--model';
+      expect(argv.slice(argv.indexOf(modelFlag), argv.indexOf(modelFlag) + 2)).toEqual([modelFlag, expected]);
+      expect(session.model).toBe(expected);
+      expect(state.getSession(session.id)?.model).toBe(expected);
+    });
+
+    it('uses the configured framework when the spawn omits framework and model', async () => {
+      config.framework = 'codex-cli';
+      config.frameworkDefaultModels = { 'codex-cli': 'gpt-6-astra', 'claude-code': 'opus' };
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'configured-default', prompt: 'Do work' });
+      const argv = newSessionArgs();
+      expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6-astra']);
+      expect(session.framework).toBe('codex-cli');
+      expect(state.getSession(session.id)?.model).toBe('gpt-6-astra');
+    });
+
+    it('preserves launcher defaults when the selected framework has no saved model', async () => {
+      config.frameworkDefaultModels = { 'claude-code': 'opus' };
+      vi.mocked(execFileSync).mockClear();
+      const session = await manager.spawnSession({ name: 'no-default-model', prompt: 'Do work', framework: 'codex-cli' });
+      const argv = newSessionArgs();
+      expect(argv.slice(argv.indexOf('-m'), argv.indexOf('-m') + 2)).toEqual(['-m', 'gpt-6-sol']);
+      expect(session.model).toBeUndefined();
+    });
+
     it('records the framework-RESOLVED model for a Codex session (not the raw tier)', async () => {
       // Regression for the dashboard model-badge gap: a Codex agent's session
       // showed "haiku"/"sonnet" (Claude tier aliases). It must store the real
@@ -569,8 +605,8 @@ describe('SessionManager behavioral tests', () => {
  *
  * The method resolves the REAL per-framework transcript path (it does not take a
  * home/root override — that override exists only for the resolver's own tests),
- * so this test writes the fixture at the resolved path (a uniquely-named encoded
- * subfolder keyed on a unique tmpDir + UUID — no collision) and removes it after.
+ * so this test supplies a temporary session config home and writes the
+ * fixture at the same resolved path production reads, then removes it after.
  */
 describe('SessionManager.isTranscriptRecentlyActive', () => {
   const SESSION_UUID = 'eeeeeeee-1111-4000-8000-aaaaaaaaaaaa';
@@ -597,6 +633,7 @@ describe('SessionManager.isTranscriptRecentlyActive', () => {
       framework: 'claude-code',
       sessionId: SESSION_UUID,
       projectDir: tmpDir,
+      configHome: tmpDir,
     });
     expect(p).not.toBe('');
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -620,11 +657,13 @@ describe('SessionManager.isTranscriptRecentlyActive', () => {
       framework: 'claude-code',
     };
     sm = new SessionManager(config, new StateManager(stateDir));
+    vi.spyOn(sm, 'configHomeForSession').mockReturnValue(tmpDir);
     writtenPath = null;
     mockTmuxSessions.clear();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     // Remove the fixture transcript + its unique encoded parent dir.
     const op = 'tests/unit/session-manager-behavioral.test.ts: isTranscriptRecentlyActive fixture cleanup';
     try {

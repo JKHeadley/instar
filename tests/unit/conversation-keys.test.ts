@@ -90,7 +90,10 @@ describe('the phone\'s door takes any conversation (§3.5)', () => {
     expect(admits('/mobile/sessions/door/7')).toBe(true);
     expect(admits('/mobile/sessions/door/app%3A1')).toBe(false);
     expect(admits('/mobile/sessions/door/whatsapp:1')).toBe(false);
-    // Moving is still Telegram only in this part.
-    expect(admits(`/mobile/sessions/move/app:${APP}`)).toBe(false);
+    // app-conversations-in-the-pool §2.5: an app conversation moves; Slack stays with its connection.
+    expect(admits(`/mobile/sessions/move/app:${APP}`)).toBe(true);
+    expect(admits('/mobile/sessions/move/slack:T0XYZ:C0ABC')).toBe(false);
+    expect(admits(`/mobile/sessions/bring-back/app:${APP}`)).toBe(true);
+    expect(admits('/mobile/sessions/bring-back/7')).toBe(false);
   });
 });

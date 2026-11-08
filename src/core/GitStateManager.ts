@@ -340,10 +340,9 @@ export class GitStateManager {
       };
     }
 
-    // Force git to re-stat all files (without this, git may miss
-    // modifications that happen in the same second as the last commit)
-    try { this.git('update-index', '--refresh', '-q'); } catch { /* ignore */ }
-
+    // `status` refreshes the index itself and re-checks racily-clean entries
+    // by content. (An `update-index --refresh` that stood here never ran: the
+    // git funnel does not classify update-index — EVO-029.)
     const porcelain = this.git('status', '--porcelain');
     // Split into lines but preserve the 2-char status prefix (leading spaces are significant)
     const lines = porcelain.split('\n').filter(line => line.length >= 2);

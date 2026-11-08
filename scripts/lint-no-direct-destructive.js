@@ -742,11 +742,42 @@ const DESTRUCTIVE_GIT_VERBS = [
   'mv', 'pull', 'push', 'rebase', 'reset', 'restore', 'revert',
   'rm', 'stash', 'submodule', 'switch', 'tag', 'update-ref',
   'worktree', 'prune', 'notes', 'replace', 'filter-branch',
+  // Object-database writers (EVO-029): classified write in SafeGitExecutor.
+  'merge-tree', 'commit-tree', 'write-tree',
 ];
+const SHELL_GIT_PREFIX = String.raw`(?:^|[\s;&|()])git\s+(?:-C\s+\S+\s+|-c\s+\S+\s+)*`;
 const SHELL_GIT_REGEX = new RegExp(
-  String.raw`(?:^|[\s;&|()])git\s+(?:-C\s+\S+\s+|-c\s+\S+\s+)*(${DESTRUCTIVE_GIT_VERBS.join('|')})\b`,
+  String.raw`${SHELL_GIT_PREFIX}(${DESTRUCTIVE_GIT_VERBS.join('|')})(?![\w-])`,
   'g',
 );
+
+// Verbs SafeGitExecutor classifies `shape` that shell scripts commonly use in a
+// read form (`git config --get`, `git remote -v`, `git symbolic-ref HEAD`). A
+// regex is not the classifier, so only their write forms are flagged (EVO-029).
+const SHELL_SHAPE_WRITE_PATTERNS = [
+  { verb: 'remote', re: new RegExp(String.raw`${SHELL_GIT_PREFIX}remote\s+(?:-v\s+|--verbose\s+)*(?:add|remove|rm|rename|set-url|set-head|set-branches|prune|update)(?![\w-])`) },
+  { verb: 'reflog', re: new RegExp(String.raw`${SHELL_GIT_PREFIX}reflog\s+(?:expire|delete)(?![\w-])`) },
+  { verb: 'symbolic-ref', re: new RegExp(String.raw`${SHELL_GIT_PREFIX}symbolic-ref\s+(?:(?:-q|--quiet|--short)\s+)*(?:-d(?![\w-])|--delete(?![\w-])|-m(?![\w-])|\S+\s+refs/)`) },
+  {
+    verb: 'config',
+    re: new RegExp(
+      String.raw`${SHELL_GIT_PREFIX}config\s+(?:(?:--global|--local|--system|--worktree|-f\s+\S+|--file[= ]\S+)\s+)*` +
+        String.raw`(?:--(?:add|unset|unset-all|replace-all|rename-section|remove-section|edit)(?![\w-])|-e(?![\w-])|(?:set|unset|rename-section|remove-section|edit)\s|[A-Za-z0-9_-]+\.[A-Za-z0-9_.-]+\s+(?!\d*>)[^\s|;&<>])`,
+    ),
+  },
+];
+
+/** The first destructive git command in a shell string, or null. */
+function matchDestructiveShellGit(text) {
+  SHELL_GIT_REGEX.lastIndex = 0;
+  const m = SHELL_GIT_REGEX.exec(text);
+  if (m) return { index: m.index || 0, verb: m[1] };
+  for (const { verb, re } of SHELL_SHAPE_WRITE_PATTERNS) {
+    const sm = re.exec(text);
+    if (sm) return { index: sm.index || 0, verb };
+  }
+  return null;
+}
 
 const SHELL_ALLOWLIST = new Set([
   'scripts/setup-imessage-hardlink.sh',
@@ -773,10 +804,9 @@ function lintShellFile(file, text) {
     // Skip comments
     const stripped = line.replace(/^\s*#.*$/, '');
     if (!stripped) continue;
-    SHELL_GIT_REGEX.lastIndex = 0;
-    const m = SHELL_GIT_REGEX.exec(stripped);
+    const m = matchDestructiveShellGit(stripped);
     if (m) {
-      report(file, i + 1, (m.index || 0) + 1, `Shell script invokes destructive 'git ${m[1]}' — port to a Node script using SafeGitExecutor.`);
+      report(file, i + 1, m.index + 1, `Shell script invokes destructive 'git ${m.verb}' — port to a Node script using SafeGitExecutor.`);
     }
   }
 }
@@ -793,10 +823,9 @@ function lintPackageJsonScripts(file, text) {
   const scripts = pkg.scripts || {};
   for (const [name, cmd] of Object.entries(scripts)) {
     if (typeof cmd !== 'string') continue;
-    SHELL_GIT_REGEX.lastIndex = 0;
-    const m = SHELL_GIT_REGEX.exec(cmd);
+    const m = matchDestructiveShellGit(cmd);
     if (m) {
-      report(file, 1, 1, `npm script "${name}" runs destructive 'git ${m[1]}' — refuse.`);
+      report(file, 1, 1, `npm script "${name}" runs destructive 'git ${m.verb}' — refuse.`);
     }
   }
 }

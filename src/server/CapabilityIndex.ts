@@ -73,7 +73,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'teamPeople',
     prefixes: ['/team'],
     description: 'Who can reach this agent, how, and what each person can see. The owner\'s phone gives access; the agent can only take it away.',
-    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy'] }),
+    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'POST /team/proposals', 'GET /mobile/team/requests', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy'] }),
   },
   {
     key: 'capabilityRegistry',
@@ -282,7 +282,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'recommendedServices',
     prefixes: ['/recommended-services'],
-    description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Offers are not live yet, and the route reports what they wait for (`migrationComplete`, `firstResult`). A no needs the dashboard PIN.',
+    description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Tailscale and Jev are available on every agent: a yes is given on the dashboard confirm page (`/dashboard/service-yes?service=<id>`, PIN), which starts a setup session that owns the whole job; a no can also switch a working service off here (`shutdown: authorized`). Offers (the agent asking first) are not live yet, and the route reports what they wait for (`migrationComplete`, `firstResult`). A no needs the dashboard PIN.',
     build: () => ({
       configured: true,
       endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm', 'POST /recommended-services/:id/verify'],
@@ -480,7 +480,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     description: 'The Instar iPhone app\'s session screen controls (docs/specs/mobile-native-session-controls.md): GET /mobile/sessions/controls (machine, door, model and why each can or cannot change), GET /mobile/sessions/new-options, GET /mobile/sessions/history (secrets removed), POST /sessions/:name/key (the keys tray and Stop) and POST /sessions/:name/attachments for owner phones; POST /mobile/sessions/door/:topic, /move/:topic, /close/:id, /new and /default, each with Face ID over a single-use challenge behind mobilePairing.permissionActions. Every control runs the dashboard\'s own route, so its rules stay in force. Sessions on another machine go through the machine the phone reached (pool-token /mobile/sessions/relay/:name/* routes), and typing obeys that machine\'s dashboard.poolStream.allowRemoteInput. Engine and model switching works for every conversation (docs/specs/session-swap-any-conversation.md): the door route takes a conversation reference (telegram:N, app:<key>, slack:<team>:<channel>[:<thread>], or a bare topic id), GET /sessions rows carry conversationRef, and /topic-profile/:key accepts app:<key>; moving machines is still Telegram-only, and a Slack conversation stays with the machine that holds the Slack connection (POST /pool/transfer refuses it, 409 slack-stays-with-connection).',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:conversation', 'POST /mobile/sessions/move/:topic', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
+      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:conversation', 'POST /mobile/sessions/move/:conversation', 'POST /mobile/sessions/bring-back/:conversation', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
     }),
   },
   {

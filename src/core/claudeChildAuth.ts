@@ -94,6 +94,32 @@ export function reportClaudeCallOutcome(outcome: ClaudeCallOutcome): void {
 }
 
 /**
+ * The CLI's limit wording, at the start of its result. A 429 alone can be a server throttle, whose
+ * text reads "not your usage limit". Kept here, not imported from rateLimitDetection, so the model
+ * call path does not take on that module.
+ */
+const USAGE_LIMIT_RESULT = /^\s*(?:api error:\s*)?(?:you['’]ve hit your (?:session |weekly |opus |sonnet |usage )?limit|usage limit reached\b|(?:session|weekly|opus|sonnet) limit reached\b)/i;
+
+/** Whether a `claude -p` stdout says the account is out of usage. */
+export function isUsageLimitOutput(stdout: string): boolean {
+  try {
+    const parsed = JSON.parse(stdout) as { is_error?: unknown; result?: unknown };
+    return parsed?.is_error === true && typeof parsed.result === 'string' && USAGE_LIMIT_RESULT.test(parsed.result);
+  } catch { return false; } // @silent-fallback-ok: unreadable output says nothing about usage
+}
+
+/** Heard by UsageLimitWatch: an internal call was refused for usage. A signal only. */
+let usageLimitedListener: (() => void) | null = null;
+
+export function setClaudeUsageLimitedListener(listener: (() => void) | null): void {
+  usageLimitedListener = listener;
+}
+
+export function reportClaudeUsageLimited(): void {
+  try { usageLimitedListener?.(); } catch { /* @silent-fallback-ok: a signal must never break the model call */ }
+}
+
+/**
  * Write a private file a shell can source to pick up the key, for children started through a shell
  * string or tmux, where an env option cannot reach the child and argv is not acceptable. The caller's
  * shell must delete it right after sourcing. Null when no oauth-token is configured.

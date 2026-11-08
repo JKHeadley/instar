@@ -2508,6 +2508,9 @@ export interface MachineCapacity {
    *  senders never forward to a peer that cannot durably receive; the journal
    *  applier's silently-drop-unknown-kinds behavior is the named skew-failure
    *  mode this gate prevents). Fixed-size values only — never an inventory. */
+  /** RECEIVER-side receipt time (ISO) of the last beat that actually CARRIED seamlessnessFlags. Carry-forward
+   *  on a coarse beat must never impersonate a fresh report (app-conversations-in-the-pool §2.6). */
+  seamlessnessFlagsReceivedAt?: string;
   seamlessnessFlags?: {
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
@@ -2521,6 +2524,11 @@ export interface MachineCapacity {
      *  ABSENT/false → the transfer sender degrades to today's pin-and-
      *  idle-closeout path — never a doomed drain order. */
     ws12DrainReceive?: boolean;
+    /** app-conversations-in-the-pool §2.6: this machine runs that part, with its durable ownership
+     *  store and placement replication both active. ABSENT/false keeps every app record out of the pool. */
+    appConversationsPool?: boolean;
+    /** app-conversations-in-the-pool §2.5: memory privacy is on and its sandbox is ready here. */
+    memoryPrivacyEnforced?: boolean;
     /** WS4.4 (§WS4.4 / F6): this machine can SERVE the holder side of a
      *  cross-machine pool-view-fetch — answer the existence probe AND verify a
      *  pool-link user-auth assertion before serving a held view body. ABSENT/false
@@ -2802,6 +2810,8 @@ export interface MultiMachineConfig {
   };
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
+  /** Independent server-down recovery; requires owner enrollment before any host mutation. */
+  serverDownRecovery?: { enabled?: boolean };
   /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
   mutualSsh?: {
     enabled?: boolean;
@@ -3264,6 +3274,8 @@ export interface WriteAdmissionConfig {
 }
 
 export interface SessionPoolConfig {
+  /** App conversations move between machines (docs/specs/app-conversations-in-the-pool.md). Unset: on for a development agent, off for the fleet (DEV_GATED_FEATURES). */
+  appConversations?: { enabled?: boolean };
   /** Master switch. Default false — the entire session-pool layer is inert when false. */
   enabled?: boolean;
   /**
@@ -7815,6 +7827,35 @@ export interface MonitoringConfig {
      *  infra-gap batch serializes under the route's 10/min IP limit (Slice 2
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
+  };
+  /**
+   * Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3). Ships OFF;
+   * `enabled` is the kill switch (omitted ⇒ off on every agent) and is read at
+   * boot (`restartNeeded`). Slice 0 ships only the repairs (canonical backfill,
+   * telemetry hook); the sentinel itself reads this block from slice 1.
+   */
+  skillLearning?: {
+    /** Kill switch. Default false. */
+    enabled?: boolean;
+    /** `shadow` records what it WOULD do; `live` writes skills. Default shadow. */
+    mode?: 'shadow' | 'live';
+    /** The deterministic evidence floor: count-based, no time bound, never widened by a model. */
+    floor?: { minOccurrences?: number; minCorroboratedCleanRuns?: number };
+    /** The static fallback rung (its recency is its own, not the floor's). */
+    defaultGate?: { minSupport?: number; minDistinctDays?: number; minDistinctSessions?: number; windowDays?: number };
+    /** Evidence floor for admitting any arbiter to act. */
+    shadow?: { minDisagreementsSampled?: number; verdictReaskDays?: number };
+    /** A SIGNAL to the operator, never a refusal. */
+    growthSignals?: { createdPerWeekNotice?: number };
+    evidence?: { runSliceBytesPerRun?: number; promptBudgetBytes?: number; transcriptScanBytes?: number };
+    /** Retire floor + the static defaults the reviewer judges against. */
+    retire?: { minCorroboratedRuns?: number; defaultScoreFloor?: number; defaultMisfireFloor?: number; defaultUnusedDays?: number; measurableFloor?: number };
+    review?: { requireDifferentFamily?: boolean; minCorrectedRunsSameFamily?: number; revertBreakerPer30d?: number };
+    /** The spend ceiling is a money floor (irreversible spend), deliberately static. */
+    llm?: { maxDailyCents?: number; batchSize?: number };
+    tickMinutes?: number;
+    /** Every-machine rendering reconcile of `instar-learned` skills (decision 19). Read live. Default on. */
+    reconcile?: { enabled?: boolean };
   };
   /** Un-gated correction durable-outcome drain; enabled on dev agents via DEV_GATED_FEATURES. */
   correctionClassReview?: {

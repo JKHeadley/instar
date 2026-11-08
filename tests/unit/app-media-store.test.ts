@@ -164,7 +164,7 @@ describe('claims', () => {
     const e = setup();
     const u = await completed(e, png());
     e.media.claimUploads([u.uploadId], 'm-a');
-    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12 });
+    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12, diskSpace: () => ({ free: 1e12, total: 2e12 }) });
     e.clock.t += CLAIM_RECOVERY_AGE_MS + 1;
     restarted.recoverClaims(() => false);
     expect(restarted.getUpload(u.uploadId)!.state).toBe('complete');
@@ -176,7 +176,7 @@ describe('claims', () => {
     const u = await completed(e, bytes);
     e.media.claimUploads([u.uploadId], 'm-a');
     await e.media.publishClaimed([u.uploadId]);
-    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12 });
+    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12, diskSpace: () => ({ free: 1e12, total: 2e12 }) });
     e.clock.t += CLAIM_RECOVERY_AGE_MS + 1;
     restarted.recoverClaims(() => false);
     expect(restarted.getUpload(u.uploadId)).toMatchObject({ state: 'complete', blobReady: 1 });
@@ -192,7 +192,7 @@ describe('claims', () => {
     e.media.claimUploads([u.uploadId], 'm-a');
     await e.media.publishClaimed([u.uploadId]);
     mediaEvent(e, 'm-a', bytes);
-    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12 });
+    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12, diskSpace: () => ({ free: 1e12, total: 2e12 }) });
     e.clock.t += CLAIM_RECOVERY_AGE_MS + 1;
     restarted.recoverClaims((id) => e.store.hasMessage(id));
     expect(restarted.getUpload(u.uploadId)!.state).toBe('sent');
@@ -430,6 +430,8 @@ describe('capacity notices (the service latch)', () => {
       stateDir: dir, machineId: () => 'm1', registry: new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true }),
       requests: new MobileChatRequestStore(dir), holdsLease: () => true, ownerName: () => 'Justin', dispatch: () => null,
       mediaMaxStoreBytes: () => max, raiseAttention: (i) => raised.push(i.conditionKey), clearAttention: (k) => cleared.push(k),
+      // A disk with room, whatever this machine's disk holds.
+      mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
     });
     const start = () => svc.media.startUpload({ deviceId: 'd', conversationRef: `app:${KEY}`, size: 100, sha256: crypto.randomBytes(32).toString('hex'), declaredKind: 'file', declaredType: 't', filename: 'f' });
     // Fill the store past 90% of the cap, then get refused.

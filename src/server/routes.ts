@@ -1,3 +1,7 @@
+import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
+import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
+import { topicGoalContext } from '../core/TopicGoalContext.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
 import { categoryForProducer } from '../messaging/notificationCategories.js';
@@ -60,6 +64,7 @@ import {
   type MaintenancePoolView,
 } from './machineMaintenancePool.js';
 import { getActiveSessionPriorityLowerer } from '../core/sessionPriority.js';
+import { createMandatePinCheck } from './mandatePin.js';
 import { mountOriginDisplayPreferences } from './originDisplayPreferences.js';
 import { sessionDisplayName, type SessionPlatformInfo } from './sessionPlatform.js';
 import { createSessionPresentationResolver } from './sessionPresentation.js';
@@ -89,12 +94,14 @@ import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserM
 import { verifiedChannelIdentity, isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
+import { activeUsageLimitWatch } from '../core/UsageLimitWatch.js';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
-import { cleanConversationTitle, newAppConversationKey } from '../core/appConversationText.js';
-import { requestIdAgeOk } from '../core/MobileChatRequests.js';
 import { isSlackConversationKey } from '../core/SlackForwardBridge.js';
 import { conversationKeys } from '../core/conversationKeys.js';
+import { getAppPoolMoves } from '../core/appConversationMove.js';
+import { cleanConversationTitle, newAppConversationKey } from '../core/appConversationText.js';
+import { requestIdAgeOk } from '../core/MobileChatRequests.js';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
 import { classifyActionClaim, classifyApprovalRequest, excerptAround } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
@@ -255,7 +262,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
-import { mountMobileOpsRoutes, machineKey } from './mobileOpsRoutes.js';
+import { mountMobileOpsRoutes, machineKey, summarizeMachines } from './mobileOpsRoutes.js';
 import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
 import { SLACK_CHANNEL_ID_RE, SLACK_THREAD_TS_RE } from '../core/conversationIdentity.js';
@@ -1536,6 +1543,8 @@ export interface RouteContext {
    *  in-process by checkOutboundMessage so the tone gate sees ArcCheck's
    *  signal alongside junk/jargon/duplicate. Null when disabled. */
   topicIntentArcCheck: import('../core/TopicIntentArcCheck.js').ArcCheck | null;
+  /** Server-owned wider goal context for autonomous scope judgments. */
+  topicIntentStore?: import('../core/TopicIntent.js').TopicIntentStore | null;
   /** Usher signal store (rung 4). Used by the outbound-reply path to credit a
    *  re-surface nudge the agent's reply actually used (precision numerator,
    *  path (a)). Optional/null when the Usher is disabled. */
@@ -2104,7 +2113,7 @@ export interface RouteContext {
    *  topic has a live autonomous run before the holder authorizes a move. */
   autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
   /** Working-set acquire kick for an explicit transfer target. */
-  kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
+  kickWorkingSetOnMachine?: ((machineId: string, topic: number | string) => void) | null;
   /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
    *  option of the same name). Null/absent = not wired (single-machine). */
   claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
@@ -2956,7 +2965,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const fallbackRows = ctx.capabilityRegistry.snapshot();
     const scanState = projection?.scanState ?? (fallbackRows.length ? 'observed' : 'never-observed');
     const capabilities = projection ? classifyProjection(projection) : fallbackRows;
-    return res.status(200).json({ advisory: true, scanState, capabilities });
+    return res.status(200).json({ advisory: true, scanState, capabilities, serverDownRecovery: recoveryPoolView() });
   });
   router.get('/capability-registry/health', (_req, res) => {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
@@ -5635,6 +5644,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (isAuthed) {
       const claudeKey = activeClaudeKeyHealth()?.status();
       if (claudeKey) base.claudeKey = claudeKey;
+      const claudeUsage = activeUsageLimitWatch()?.status();
+      if (claudeUsage) base.claudeUsage = claudeUsage;
       // job-cost-reduction §5.3: the stable feature ids behind degradationSummary.
       // The narrative strings carry per-occurrence values, so they are evidence
       // only; health-check keys its `degradation:<feature>` reasons on these.
@@ -8272,7 +8283,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     scopeAccretionMetric('fired', 'register');
-    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped, initialStatus, preparationRequired: initialStatus === 'preparing' });
+    res.json({ runId: result.runId, endAt: result.endAt, clamped: result.clamped, initialStatus, preparationRequired: initialStatus === 'preparing', topicGoalContext: topicGoalContext(topicId, ctx.topicIntentStore, ctx.initiativeTracker) });
   });
 
   // ── POST /autonomous/:topic/run-end (R44) — every exit surface reports here ──
@@ -9032,6 +9043,13 @@ export function createRoutes(ctx: RouteContext): Router {
           };
         }
       }
+
+      // Client-supplied goal context is never accepted by parseStopSignals.
+      // Resolve fresh server state so a narrowed run charter cannot erase the
+      // user's topic goal. The existing LLM judges relevance and partial scope.
+      const widerGoal = topicGoalContext(resolvedTopic, ctx.topicIntentStore, ctx.initiativeTracker)
+        ?? (resolvedTopic ? JSON.stringify({ availability: 'unavailable-on-this-machine' }) : undefined);
+      if (widerGoal) signals = { ...(signals ?? {}), topicGoalContext: widerGoal };
 
       const verdict = await ctx.completionEvaluator.evaluate(
         effectiveCondition,
@@ -11320,7 +11338,11 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'working-set handoff not enabled (requires coherenceJournal.replication.enabled)' });
       return;
     }
-    const topic = Number(req.body?.topic);
+    // An app conversation's key resolves to this machine's own alias (app-conversations-in-the-pool §2.5).
+    const appRef = conversationKeys(req.body?.topic);
+    const appAlias = appRef?.kind === 'app' ? ctx.conversationRegistry?.appAliasFor(appRef.id) ?? null : null;
+    if (appRef?.kind === 'app' && appAlias === null) { res.json({ topic: appRef.ref, scheduled: false, skipReason: 'no-alias-here' }); return; }
+    const topic = appAlias ?? Number(req.body?.topic);
     if (!Number.isFinite(topic)) {
       res.status(400).json({ error: 'topic (number) is required' });
       return;
@@ -13324,7 +13346,7 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ ok: false, code: 'bad-conversation-name', error: 'An app conversation\'s name must be 80 characters or fewer, and not only quotes or brackets. Give it a shorter name.' });
         return;
       }
-      const served = svc.isOwner();
+      const served = svc.servesNewConversations();
       // A standby's profile store isn't read by the serving machine, so a pick made here would be lost.
       if (!served && hasPreference) {
         res.status(400).json({ ok: false, code: 'engine-choice-needs-serving-machine', error: 'Pick the engine from the machine that runs your app conversations, or leave it on Automatic.' });
@@ -15164,50 +15186,12 @@ export function createRoutes(ctx: RouteContext): Router {
   // PIN verification mirrors /dashboard/unlock: sha256 + timingSafeEqual + a
   // per-IP attempt limit. Read paths + /mandate/evaluate are Bearer-gated.
 
-  const mandatePinAttempts = new Map<string, { count: number; resetAt: number }>();
-  const MANDATE_PIN_MAX_ATTEMPTS = 5;
-  const MANDATE_PIN_WINDOW_MS = 5 * 60 * 1000;
-
-  /** Verify the operator PIN for mandate issuance/revocation. Returns an error
-   *  string (already sent) or null when the PIN is valid.
-   *  S2-1 hardening (routing-control-room-spend): the per-IP lockout counters
-   *  write through to the durable PinAttemptStore when available, so a server
-   *  restart no longer resets brute-force lockout. The in-memory Map remains the
-   *  fallback when stateDir is unavailable. */
+  // The check itself lives in mandatePin.ts (createMandatePinCheck) so route modules
+  // can run the same gate with a route-specific message; this closure keeps the
+  // original (req, res, pinOverride?) signature for every caller in this file.
+  const requireMandatePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
   function checkMandatePin(req: import('express').Request, res: import('express').Response, pinOverride?: string): boolean {
-    if (!ctx.config.dashboardPin) {
-      res.status(503).json({ error: 'PIN authentication not available (no dashboardPin configured)' });
-      return false;
-    }
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    const now = Date.now();
-    if (ctx.pinAttemptStore?.blocked(ip)) {
-      res.status(429).json({ error: 'Too many attempts. Try again later.' });
-      return false;
-    }
-    let entry = mandatePinAttempts.get(ip);
-    if (entry && now > entry.resetAt) { mandatePinAttempts.delete(ip); entry = undefined; }
-    if (entry && entry.count >= MANDATE_PIN_MAX_ATTEMPTS) {
-      res.status(429).json({ error: 'Too many attempts. Try again later.' });
-      return false;
-    }
-    const pin = pinOverride ?? (req.body ?? {}).pin;
-    if (!pin || typeof pin !== 'string') {
-      res.status(403).json({ error: 'Operator PIN required — mandate issuance/revocation is a human action, not an agent action' });
-      return false;
-    }
-    const ha = createHash('sha256').update(pin).digest();
-    const hb = createHash('sha256').update(ctx.config.dashboardPin).digest();
-    if (ha.length !== hb.length || !timingSafeEqual(ha, hb)) {
-      if (!entry) { entry = { count: 0, resetAt: now + MANDATE_PIN_WINDOW_MS }; mandatePinAttempts.set(ip, entry); }
-      entry.count++;
-      const durableRemaining = ctx.pinAttemptStore?.recordFailure(ip);
-      res.status(403).json({ error: 'Incorrect PIN', attemptsRemaining: durableRemaining ?? (MANDATE_PIN_MAX_ATTEMPTS - entry.count) });
-      return false;
-    }
-    mandatePinAttempts.delete(ip);
-    ctx.pinAttemptStore?.recordSuccess(ip);
-    return true;
+    return requireMandatePin(req, res, { pinOverride });
   }
 
   // Evaluate an action against a mandate (the enforcement consumption point).
@@ -16508,6 +16492,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     port: ctx.config.port,
     readSecret: (name) => { const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; },
     writeSecret: (name, value) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).set(name, value); },
+    deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); },
+    // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
+    canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
+    // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.
+    // The channel being switched off never counts as its own backup.
+    otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack),
     // Its own conversation, because setup needs the person: for a credential, a decision, and to say it works.
     startSetup: async (service, name, brief, existingTopic) => {
       if (!ctx.telegram) throw new Error('setup needs a Telegram conversation to reach the person');
@@ -22511,7 +22501,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (!copied && !app.media.locateBlob(attachment.sha256) && await app.replicator.awaitBlob(attachment.sha256, MEDIA_PATH_WAIT_MS)) {
       copied = await app.media.sessionCopy(ref.messageId, attachment);
     }
-    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file is not on this machine yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
+    if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file hasn't been copied over yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
     try {
       res.json({ path: app.intoConfinedInbox(key, copied) });
     } catch (err) {
@@ -24100,6 +24090,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // 200 (Bearer-auth via the global middleware); `enabled:false` + an empty/
   // single-machine view on installs where the pool registry isn't wired (dark).
   // The /pool view, shared with the phone's GET /mobile/machines (mobile-native-ops-screens).
+  function recoveryPoolView(){
+    const membership=Object.fromEntries((ctx.coordinator?.managers?.identityManager?.getActiveMachines()??[]).map(row=>[row.machineId,Date.parse(row.entry.pairedAt)]));
+    return recoveryPoolHealth(ctx.meshSelfId??null,(ctx.listPoolMachines?.()??[]).map(p=>p.machineId),Date.now(),membership);
+  }
   function poolView(): Record<string, unknown> {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     // Rope-condition decoration: the registry's `online` flag feeds placement and
@@ -24134,8 +24128,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : null,
       machines,
       sshEnrollment,
+      serverDownRecovery: recoveryPoolView(),
     };
   }
+
+  const recoverySetup = () => (globalThis as { __instarRecoverySetup?: import('../recovery/RecoverySetupRuntime.js').RecoverySetupRuntime }).__instarRecoverySetup;
+  router.use(createRecoverySetupRoutes({
+    agentId:ctx.config.projectName,
+    verifyOperator:req=>ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))===true,
+    status:()=>recoverySetup()?.status() ?? {state:'setup-required',reason:'recovery-machine-pairing-required',ready:false},
+    relayOrigin:()=>recoverySetup()?.relayOrigin() ?? null,
+    prepare:async()=>{const setup=recoverySetup();if(!setup)throw new Error('recovery-machine-pairing-required');return setup.prepare();},
+    grantRequest:async()=>{const setup=recoverySetup();if(!setup)throw new Error('recovery-machine-pairing-required');return setup.grantRequest();},
+    install:async()=>{const setup=recoverySetup();if(!setup)throw new Error('recovery-machine-pairing-required');return setup.install();},
+  }));
 
   router.get('/pool', (_req, res) => {
     res.json(poolView());
@@ -24156,10 +24162,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/machines/ssh-health', (_req, res) => {
     if (!ctx.mutualSshHealth) {
-      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent' });
+      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent',serverDownRecovery:recoveryPoolView() });
       return;
     }
-    res.json(ctx.mutualSshHealth());
+    res.json({ ...(ctx.mutualSshHealth() as Record<string, unknown> ?? {}), serverDownRecovery: recoveryPoolView() });
   });
 
   // GET /pool/reconciler — Fix #3 observability (Observable Intelligence). The WS1.3
@@ -25459,6 +25465,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       return;
     }
+    // app-conversations-in-the-pool §2.5: an app conversation moves only by a completed drain. Its own
+    // flow on the holder: no pin, no release-then-place tail, a failed drain leaves everything where it was.
+    {
+      const appKeys = conversationKeys(topicId);
+      if (appKeys?.kind === 'app') {
+        const pool = getAppPoolMoves();
+        if (!pool || !pool.active()) { res.status(503).json({ error: 'session pool not available (dark / single-machine install)' }); return; }
+        const answer = await pool.move({
+          conversationKey: appKeys.id, to,
+          confirm: body.confirm === true,
+          ...(typeof body.confirmationChallenge === 'string' ? { confirmationChallenge: body.confirmationChallenge } : {}),
+        });
+        res.status(answer.status).json(answer.body);
+        return;
+      }
+    }
     // We are the holder (or single-machine) — perform authoritatively.
     const self = ctx.meshSelfId ?? null;
     const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
@@ -25931,6 +25953,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...(drainLeg.attempted ? { drain: drainLeg } : {}),
       ...(escalationHintFiled ? { escalationHintFiled: true } : {}),
     });
+  });
+
+  // POST /pool/bring-back — "Bring it back here" (app-conversations-in-the-pool §2.2): the operator's
+  // explicit, confirmed takeover of a moved app conversation whose machine isn't answering. A
+  // non-holder proxies to the holder. Body: { conversation: "app:<key>", confirm? }.
+  router.post('/pool/bring-back', async (req, res) => {
+    const body = (req.body ?? {}) as { conversation?: unknown; confirm?: unknown };
+    const keys = conversationKeys(body.conversation);
+    if (!keys || keys.kind !== 'app') { res.status(400).json({ error: 'conversation must be an app conversation reference, e.g. {"conversation":"app:<key>"}' }); return; }
+    const pool = getAppPoolMoves();
+    if (!pool || !pool.active()) { res.status(503).json({ error: 'session pool not available (dark / single-machine install)' }); return; }
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/bring-back`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation: keys.ref, confirm: body.confirm === true }),
+        });
+        // @silent-fallback-ok — the status is the signal when the holder's body isn't JSON.
+        const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
+      } catch (err) {
+        // @silent-fallback-ok — NOT silent: an explicit 502 with the reason; nothing was taken over.
+        res.status(502).json({ error: `could not reach lease-holder: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+    const answer = pool.bringBack({ conversationKey: keys.id, confirmed: body.confirm === true });
+    res.status(answer.status).json(answer.body);
   });
 
   // POST /pool/unpin — U4.1 §2B: the deliberate UNPIN surface. Body: { topic }.
@@ -38911,6 +38963,21 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { ok: true, data: surface.status() };
       },
       resourceSources: (sinceMs) => (ctx.resourceLedger ? ctx.resourceLedger.summary(sinceMs) : null),
+      // Every machine's resource use (multi-machine posture: proxied-on-read). The machine list is
+      // the same /pool summary the Machines screen shows; a peer is asked for its own local answer.
+      resourceMachines: () => {
+        const pool = poolView();
+        if (!Array.isArray((pool as { machines?: unknown }).machines) || !((pool as { machines: unknown[] }).machines.length)) return [];
+        return summarizeMachines(pool, ProcessIntegrity.getInstance()?.runningVersion ?? ctx.config.version ?? null,
+          (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null).machines
+          .map((m) => ({ key: m.key, name: m.name, isSelf: m.isSelf, leading: m.leading, sessions: m.sessions, maxSessions: m.maxSessions, version: m.version }));
+      },
+      peerResources: async (key) => {
+        const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => machineKey(p.machineId) === key);
+        if (!peer || ctx.machinePoolRegistry?.getCapacity(peer.machineId)?.online === false) return { ok: false, reason: 'offline' };
+        const r = await peerJson(peer, '/mobile/resources?scope=local');
+        return r.ok ? { ok: true, body: r.data } : { ok: false, reason: 'not-answering' };
+      },
       runningSessionNames: () => new Map(ctx.sessionManager.listRunningSessions().map((x) => [x.id, x.name] as [string, string])),
       nicknameOf: (id) => ctx.machinePoolRegistry?.getCapacity(id)?.nickname ?? null,
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
@@ -38952,6 +39019,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     };
     mountMobilePlansPeopleRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       initiatives: () => (ctx.initiativeTracker ? ctx.initiativeTracker.list() : null),
       offlineMachineIds: () => {
         if (!ctx.meshSelfId) return [];
@@ -39030,6 +39099,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return [...answers, ...skipped];
     };
     mountMobilePhonesMessagesRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       originStatus: async () => (ctx.telegramOrigin ? { state: 'ok', data: await ctx.telegramOrigin.deliverySummaryInputs() } : { state: 'off' }),
       heldForward: () => ctx.telegramOrigin?.heldForwardHealth() ?? null,
       peerMessages: () => peerSummaries('/mobile/messages?scope=local'),
@@ -39052,6 +39123,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // bearer; waiting requests proxied-on-read across peers, key names this machine's. No value, length,
     // token or Secret Drop link leaves this route.
     mountMobileSecretsRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       pending: () => secretDrop.listPending(),
       keys: async () => {
         const configPath = path.join(ctx.config.projectDir, '.instar', 'config.json');
@@ -39159,6 +39232,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // Native Proposals and How I'm doing inside (docs/specs/mobile-native-proposals-inside.md): trimmed
     // read-only summaries, owner phone or bearer, proxied-on-read across peers.
     mountMobileProposalsInsideRoutes(router, {
+      // Named wording, never "this machine" (the phone talks to the agent, not one machine).
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       proposals: () => ({ state: 'ok', data: loadAllProposals(ctx.config.stateDir) }),
       peerProposals: () => peerSummaries('/mobile/proposals?scope=local'),
       activity: async () => {
@@ -39228,6 +39303,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     }
     mountMobilePermissionsRoutes(router, {
+      selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       teamAction: async (kind, req, deviceId) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
         return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
@@ -42237,6 +42313,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const relayClient = ctx.threadlineRelayClient;
       const defs = buildChannelDefinitions({
+        serverDownRecovery:()=>{const pool=recoveryPoolView();return {ready:pool.ready,reason:pool.ready?'two-fresh-independent-peer-proofs-on-every-target':'recovery-degraded-or-unknown'};},
         agentRelayStatus: localOnly ? undefined : agentThreadlineStatus,
         relayStatus: () => {
           if (!relayClient) return null;

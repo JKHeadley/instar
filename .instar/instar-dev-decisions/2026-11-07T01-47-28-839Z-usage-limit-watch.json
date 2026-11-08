@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-07T01:47:28.839Z",
+  "slug": "usage-limit-watch",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 11,
+  "loc": 669,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/UsageLimitWatch.ts",
+      "src/core/claudeChildAuth.ts",
+      "src/core/claudeKeyProbe.ts",
+      "src/core/claudeKeyRecovery.ts",
+      "src/monitoring/PresenceProxy.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 664,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "usage-limit-session-refresh is registered: 3 attempts per session per rolling day, persisted; notices bounded by a 1-hour reopen cooldown and a 6-hour operator gap"
+    }
+  },
+  "verdict": "pass"
+}

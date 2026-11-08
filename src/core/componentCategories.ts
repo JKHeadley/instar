@@ -144,6 +144,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
   'telegram-origin-recovery': 'reflector', // diagnose unknown acceptance; never authorizes retries
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
+  'skillLearning.drafter': 'sentinel',   // skill-learning arbiter + drafter (capable tier; docs/specs/skill-learning-sentinel.md §3.3-3.5)
+  'skillLearning.reviewer': 'sentinel',  // skill-learning cross-family v1 reviewer (§3.5 table)
+  'skillLearning.classifier': 'reflector', // skill-learning sentinel: key operator requests + outcomeOfPrevRun (§3.1/§3.6)
 };
 
 /**

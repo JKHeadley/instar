@@ -776,7 +776,7 @@ export class MobilePairingService {
       confirmWith, fingerprint: d.fingerprint ?? null, expiresAt: d.expiresAt ?? null,
       ...(introducers.length > 0 && this.approvable(d) ? { introducers: introducers.map((i) => ({ name: i.name, keyId: i.keyId })) } : {}),
       // Where the code is, when it is held for the pairing page (the code fallback names it).
-      ...(dashboardPending && d.host ? { codeAt: 'pairing-page', codePageUrl: codePageUrlForDevice(d.host, d.id) } : {}),
+      ...(dashboardPending && d.host && d.role !== 'team' ? { codeAt: 'pairing-page', codePageUrl: codePageUrlForDevice(d.host, d.id) } : {}),
     };
   }
 
@@ -1018,6 +1018,11 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       // redeemed on (already checked above: local TLS, an eligible host, the code's bound host).
       featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'redeemed: code held on dashboard', context: { deviceId: device.id, approval: 'dashboard', role: device.role ?? 'owner', routeKind: eligible.kind, codeFormat } });
       svc.notifyOwnerPhones(device);
+      if (device.role === 'team') {
+        // The code is on the inviter's phone, not a page this person could open.
+        res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'inviter', codeFormat, ...svc.waitingFields(device) });
+        return;
+      }
       res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'pending', approval: 'dashboard', codeFormat,
         codePageUrl: codePageUrlForDevice(reqHost!, device.id), ...svc.waitingFields(device) });
       return;
@@ -1222,12 +1227,13 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     res.json({
       status: d.status, deviceName: d.deviceName, approvedAt: d.approvedAt ?? null,
       // A pending dashboard-path phone (§4.4) tells the operator where the code is.
-      ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: 'dashboard' } : {}),
+      ...(d.status === 'pending' && svc.isDashboardPending(d.id) ? { approval: d.role === 'team' ? 'inviter' : 'dashboard' } : {}),
       // Approve instead of a code (mobile-pairing-approve §3.5): this route is the waiting phone's status poll.
       ...(d.status === 'pending' ? svc.waitingFields(d) : {}),
       ...(d.approvedVia ? { approvedVia: d.approvedVia } : {}),
       // People and roles §3.1: whose phone this is (`unassigned` when the person was removed).
       person: personView(svc.personOfDevice(d)),
+      ...standingView(svc, d),
     });
   });
 
@@ -1567,7 +1573,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if ((text.length < 1 && !signedFiles) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
     const store = chatStoreOf();
-    if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read on this machine.' }); return; }
+    if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read right now.' }); return; }
     // The idempotency hash covers the text and, with files, each file's signed fields (§4.3).
     const hash = signedFiles ? payloadHash(topicId, ['\u0000media', text, ...signedFileHashParts(signedFiles)].join('\n')) : payloadHash(topicId, text);
     const answer = (l: ReturnType<MobileChatRequestStore['lookup']>): boolean => {
@@ -1586,7 +1592,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const ingest = poolCtx?.mobileInbound?.ingest;
     const ownerId = tg?.getOwnerUserId?.();
     if (!tg || !ingest || !ownerId) { res.status(503).json({ error: 'chat-unavailable', detail: 'This agent has no Telegram owner to speak as.' }); return; }
-    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'This machine is not receiving messages right now. Try again shortly or use Telegram.' }); return; }
+    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'Messages aren\'t being received right now. Try again shortly or use Telegram.' }); return; }
     const t = Date.now();
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -1815,6 +1821,30 @@ export function principalOf(req: Request): Principal {
 }
 
 /** `{ name, role }` for a resolved person; `{ role, unassigned: true }` for a removed one. */
+/** What each tier's tabs are (§3.4, §3.8). The server still enforces every route. */
+const TIER_SCREENS: Readonly<Record<string, readonly string[]>> = {
+  guest: ['chat', 'my-access'],
+  member: ['chat', 'composer', 'new-conversation', 'my-access'],
+};
+
+/** A team phone's standing, from the log. Only a team phone has one. */
+function standingView(svc: MobilePairingService, d: DeviceRecord): Record<string, unknown> {
+  if (d.role !== 'team' || !d.userId) return {};
+  const s = svc.teamStanding(d.userId);
+  return s ? { standing: { tier: s.tier, screens: TIER_SCREENS[s.tier] ?? TIER_SCREENS.guest } } : {};
+}
+
+/** The plain reason behind a gate refusal, for the phone to show (a machine code alone says nothing). */
+const REFUSAL_DETAIL: Readonly<Record<string, string>> = {
+  'tier-required': 'You do not have access to this.',
+  'person-unknown': 'This phone is no longer linked to anyone on this agent. Ask the owner for a new invite.',
+  'memory-privacy-required': 'Team access needs memory privacy, which is off right now. The owner can turn it back on.',
+  'team-needs-one-machine': 'Team members work on agents running on one machine for now. Support for several machines is the next step.',
+  'read-only-owner-reach': 'You can read this conversation but not send to it, because its session has the owner\'s full access.',
+  'owner-phone-required': 'Only the owner\'s phone can do this.',
+  'unknown-conversation': 'This conversation is not available to you.',
+};
+
 function personView(p: DevicePerson): Record<string, unknown> {
   return p.ok ? { name: p.name, role: p.role } : { role: p.role, unassigned: true };
 }
@@ -1949,6 +1979,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active, conversationRef: true },
     // "Open session": which session drives a conversation on this machine, plus a dashboard link. Read-only.
     { method: 'GET', re: /^\/mobile\/conversations\/session$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'GET', re: /^\/mobile\/conversations\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/placement$/, statuses: active, body: 'none', conversationRef: true },
     // Slack conversations from the app (§4.9): the machine-local negative durable id.
     { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active, conversationRef: true },
@@ -1959,6 +1990,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/team\/people$/, statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/team\/context$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'GET', re: /^\/mobile\/team\/activity$/, statuses: active, body: 'none', ownerOnly: true },
+    { method: 'GET', re: /^\/mobile\/team\/requests$/, statuses: active, body: 'none', ownerOnly: true },
+    { method: 'POST', re: /^\/mobile\/team\/requests\/[^/]{1,128}\/decline$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'GET', re: /^\/mobile\/team\/invites\/[^/]{1,128}$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/team\/invites$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/grants$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
@@ -2081,7 +2114,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Any conversation (session-swap-any-conversation §3.5): the path is lower-cased here, so a Slack
     // reference's uppercase ids match [a-z0-9]; the route re-checks the reference with its real case.
     { method: 'POST', re: /^\/mobile\/sessions\/door\/(?:(?:telegram:)?[1-9][0-9]{0,15}|app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|slack:[a-z0-9._:-]{1,190})$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
-    { method: 'POST', re: /^\/mobile\/sessions\/move\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/move\/(?:[1-9][0-9]{0,15}|app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/bring-back\/app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/close\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/default$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
@@ -2109,7 +2143,11 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     const id = req.headers['x-instar-device'];
     if (id === undefined) return 'none';
     if (!svc.enabled()) return 'none'; // gate off: device headers authenticate nothing
-    const refuse = (status: number, error: string): 'refused' => { res.status(status).json({ error }); return 'refused'; };
+    const refuse = (status: number, error: string): 'refused' => {
+      const detail = REFUSAL_DETAIL[error];
+      res.status(status).json({ error, ...(detail ? { detail } : {}) });
+      return 'refused';
+    };
     const pathNorm = req.path.toLowerCase().replace(/\/+$/, '') || '/';
     // Notification read token (mobile-push §2.2): exactly GET /mobile/attention/<id> or a reply
     // preview (chat-media §4.11), no signature.

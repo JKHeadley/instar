@@ -2,14 +2,16 @@
  * Routes for recommended outside services (docs/specs/recommended-services.md, Surfaces).
  * Reading is open to any session. A no is the operator's act, so it needs the PIN, never a
  * bearer token alone. A yes needs a single-use token and the PIN, and is refused for a service
- * with no proven setup. Absent ledger answers 503.
+ * with no proven setup, or on a machine that can't message the person. A no may also switch a
+ * working service off here (`shutdown: authorized`), which the recipe carries out. Absent ledger
+ * answers 503.
  */
 import type { Request, Response, Router } from 'express';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
-import { recipeFor, type RecipeDeps, type VerifyResult } from '../recommended/recipes.js';
+import { recipeFor, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
@@ -52,16 +54,27 @@ export interface RecommendedServiceRouteDeps {
   fetch?: typeof fetch;
   /** Tests supply Tailscale's answer; real servers let the recipe ask the program on this machine. */
   tailscaleStatus?: RecipeDeps['tailscaleStatus'];
+  /** Tests supply the sign-out; real servers run `tailscale logout` on this machine. */
+  tailscaleLogout?: StopDeps['tailscaleLogout'];
+  /** Removes a key a recipe stored, for a confirmed switch-off. */
+  deleteSecret?: (name: string) => void;
+  /**
+   * True when this machine can message the person right now: it has a channel and holds the lease.
+   * Setup talks to the person, so a yes is refused here when it can't, and a restart waits.
+   */
+  canReachOwner?: () => boolean;
+  /** Before switching a service off: does the person keep another way to reach this agent, not counting the one being switched off? */
+  otherRouteWorks?: (service: string) => Promise<boolean>;
   /** Hands over the check to run once sessions can start, and on a timer after that. */
   onReady?: (reconcile: () => Promise<void>) => void;
-  /** Tests supply a row with a recipe, since no real service has one yet. */
+  /** Tests supply their own rows; real servers use the catalog, plus any recipe this agent is proving. */
   catalog?: readonly CatalogRow[];
   now?: () => number;
 }
 
 /** What the list shows about setup on this machine. */
-function setupView(state: ServiceSetupState | undefined): { verified: ServiceSetupState['verified'] | null; alreadyHeld: boolean; stalled: boolean; held: boolean } {
-  return { verified: state?.verified ?? null, alreadyHeld: !!state?.alreadyHeld, stalled: !!state?.exhausted, held: !!state?.held };
+function setupView(state: ServiceSetupState | undefined): { verified: ServiceSetupState['verified'] | null; alreadyHeld: boolean; stalled: boolean; held: boolean; stopped: ServiceSetupState['stopped'] | null; switchingOff: boolean } {
+  return { verified: state?.verified ?? null, alreadyHeld: !!state?.alreadyHeld, stalled: !!state?.exhausted, held: !!state?.held, stopped: state?.stopped ?? null, switchingOff: !!state?.stopRequestedAt && !state?.stopped };
 }
 
 export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): void {
@@ -69,6 +82,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   let mintLimitReported = false;
   const starting = new Set<string>();
+  const stopping = new Set<string>();
+  const reach = (): boolean => deps.canReachOwner?.() ?? true;
+  const nowIso = (): string => new Date(deps.now?.() ?? Date.now()).toISOString();
   const report = (primary: string, err: unknown, impact: string): void => {
     DegradationReporter.getInstance().report({
       feature: 'RecommendedServices.setup', primary, fallback: 'The choice is saved. This step did not happen.',
@@ -108,14 +124,87 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       report(`End setup of ${service} after a no`, err, 'A setup session or its promise may still be open. The next check tries again, and verifying is refused.');
     }
   };
+  /**
+   * The one positive sign that this machine's own setup made the service work. For a recipe with a key it is
+   * the key route's record, which never overwrites a key that was already here. For one without, it is a pass
+   * through the verify route after the check before setup found nothing here. Anything else is the person's.
+   */
+  const setupDidIt = (secretName: string | null, state: ServiceSetupState | undefined): boolean =>
+    secretName ? !!state?.keyStoredBySetup : !!state?.signedInBySetup;
+  /**
+   * A confirmed no with "switch it off" (`shutdown: authorized`). Undoes only what setup did on this
+   * machine. If the service may be the person's only way in, the switch-off waits for another route,
+   * and the regular check finishes it. Runs on a no here and on a no that arrives from another machine.
+   */
+  const stopService = async (row: CatalogRow, before?: ServiceSetupState): Promise<void> => {
+    const recipe = recipeFor(row);
+    const state = readSetupStates(deps.stateDir)[row.id];
+    if (!recipe || state?.stopped || stopping.has(row.id)) return;
+    stopping.add(row.id);
+    try {
+      // What setup did here is read from the state as it was before the no cleared it. Only positive evidence
+      // counts: a machine with no record did nothing, so nothing is undone there and nobody is told.
+      const was = before ?? state;
+      const setUpHere = setupDidIt(recipe.secretName, was) || setupDidIt(recipe.secretName, state);
+      const hadSomething = !!(was?.verified || was?.alreadyHeld || setUpHere);
+      const waiting = !!state?.stopRequestedAt;
+      // Only a way of reaching the person (an address or a channel) can strand them; Jev cannot.
+      if (row.wayIn && !(await (deps.otherRouteWorks?.(row.id) ?? Promise.resolve(true)))) {
+        if (!waiting) {
+          updateSetupState(deps.stateDir, row.id, { stopRequestedAt: nowIso() });
+          deps.tellOwner(`I've saved your no to ${row.name}. It stays on for now, because it may be the only way I can reach you. As soon as another way works, I'll switch it off here and tell you.`);
+        }
+        return;
+      }
+      const outcome = await recipe.stop({
+        readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, tailscaleLogout: deps.tailscaleLogout,
+        deleteSecret: deps.deleteSecret ?? (() => { throw new Error('this server cannot remove a stored key'); }),
+        setUpHere,
+      });
+      if (outcome.stopped) {
+        updateSetupState(deps.stateDir, row.id, { stopped: { at: nowIso(), detail: outcome.detail }, stopRequestedAt: undefined, verified: undefined, keyStoredBySetup: undefined, signedInBySetup: undefined, absentBeforeSetup: undefined });
+        // Told when something was undone, when something was working here, or when they were promised word.
+        if (outcome.changed || hadSomething || waiting) deps.tellOwner(outcome.detail);
+        return;
+      }
+      // Still on. Say so once; the regular check keeps trying quietly.
+      if (!waiting) {
+        updateSetupState(deps.stateDir, row.id, { stopRequestedAt: nowIso() });
+        deps.tellOwner(`${outcome.detail} I'll keep trying, and tell you when it's off.`);
+      }
+      report(`Switch ${row.id} off after a confirmed no`, new Error(outcome.detail), `${row.name} is still on. The next check tries again.`);
+    } catch (err) {
+      // Said once too, so a machine that can't carry out the switch-off doesn't repeat itself every check.
+      if (!readSetupStates(deps.stateDir)[row.id]?.stopRequestedAt) {
+        updateSetupState(deps.stateDir, row.id, { stopRequestedAt: nowIso() });
+        deps.tellOwner(`I couldn't switch ${row.name} off on this machine just now. I'll keep trying, and tell you when it's off.`);
+      }
+      report(`Switch ${row.id} off after a confirmed no`, err, `${row.name} may still be on. The next check tries again.`);
+    } finally {
+      stopping.delete(row.id);
+    }
+  };
+  /** A fresh yes starts over: an old switch-off record must not hide the new setup or swallow a later switch-off. */
+  const clearStop = (service: string): void => {
+    const state = readSetupStates(deps.stateDir)[service];
+    if (state?.stopped || state?.stopRequestedAt) updateSetupState(deps.stateDir, service, { stopped: undefined, stopRequestedAt: undefined });
+  };
   const recordVerify = (service: string, outcome: VerifyResult, alreadyHeld: boolean): void => {
     const before = readSetupStates(deps.stateDir)[service];
     // An outage says nothing new, so it never takes a pass away. That would restart setup on a working service.
     if (outcome.result === 'unknown' && before?.verified?.result === 'pass') return;
+    // A no that landed during the check wins: a pass is never written beside it.
+    if (outcome.result === 'pass' && !hasGrant(service)) return;
+    const recipe = recipeFor(catalog.find((r) => r.id === service) ?? { id: service, setupRecipe: null } as CatalogRow);
+    const { absent: _absent, ...recorded } = outcome;
     const state = updateSetupState(deps.stateDir, service, {
-      verified: { at: new Date(deps.now?.() ?? Date.now()).toISOString(), ...outcome },
+      verified: { at: new Date(deps.now?.() ?? Date.now()).toISOString(), ...recorded },
       ...(alreadyHeld ? { alreadyHeld: true } : {}),
-      ...(outcome.result === 'pass' ? { held: undefined } : {}),
+      // A pass the session reports is setup's own sign-in only for a keyless recipe, and only when the check
+      // before setup found nothing here. A recipe with a key has the key route's record for this.
+      ...(outcome.result === 'pass' && !alreadyHeld && !before?.alreadyHeld && recipe?.secretName === null && before?.absentBeforeSetup ? { signedInBySetup: true } : {}),
+      // A switch-off record is for the service as it was; a new pass with a standing yes starts over.
+      ...(outcome.result === 'pass' ? { held: undefined, stopped: undefined, stopRequestedAt: undefined } : {}),
     });
     if (outcome.result !== 'pass' || !state.commitmentId) return;
     try {
@@ -144,10 +233,17 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       if (readSetupStates(deps.stateDir)[row.id]?.held) return;
       if (preflight.result === 'pass') {
         recordVerify(row.id, preflight, true);
-        deps.tellOwner(`${row.name} was already working on this machine, so there's nothing for me to set up.`);
+        // The check took a moment; a no in it means nothing is said.
+        if (hasGrant(row.id)) deps.tellOwner(`${row.name} was already working on this machine, so there's nothing for me to set up.`);
         return;
       }
-      updateSetupState(deps.stateDir, row.id, { attempts: (before?.attempts ?? 0) + 1, lastAttemptAt: new Date(deps.now?.() ?? Date.now()).toISOString(), dormant: undefined });
+      updateSetupState(deps.stateDir, row.id, {
+        attempts: (before?.attempts ?? 0) + 1, lastAttemptAt: new Date(deps.now?.() ?? Date.now()).toISOString(), dormant: undefined,
+        // What the check saw before setup ran: nothing here at all, or something here that isn't working. Only the
+        // first makes a later pass setup's own sign-in. The first attempt's reading is the real "before": a restart
+        // after setup's own half-finished sign-in must not overwrite it.
+        absentBeforeSetup: before?.absentBeforeSetup || preflight.absent === true ? true : undefined,
+      });
       const { sessionName, topicId } = await deps.startSetup(row.id, row.name, recipe.brief({ port: deps.port }), before?.topicId);
       updateSetupState(deps.stateDir, row.id, { sessionName, topicId });
       // A no can land while the session starts, when there was nothing yet to stop.
@@ -171,10 +267,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       const state = currentState(row.id);
       if (!hasGrant(row.id)) {
         if (state?.commitmentId || state?.sessionName) endSetup(row.id);
+        // A no with "switch it off", here or on another machine, is obeyed here too.
+        if (ledger.effective(row.id).shutdown === 'authorized' && !state?.stopped) await stopService(row, state);
         continue;
       }
       if (!isServiceAvailable(row) || state?.verified?.result === 'pass' || state?.exhausted || state?.dormant || state?.held) continue;
       if (state?.sessionName && deps.isSetupRunning(state.sessionName)) continue;
+      // Setup talks to the person. While this machine can't, a restart waits and costs no attempt.
+      if (!reach()) continue;
       const decision = decideSetupRestart({ starts: state?.attempts ?? 0, lastStartMs: state?.lastAttemptAt ? Date.parse(state.lastAttemptAt) : null, nowMs });
       if (decision === 'restart') await beginSetup(row);
       else if (decision === 'dormant') updateSetupState(deps.stateDir, row.id, { dormant: true, sessionName: undefined });
@@ -244,8 +344,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     try {
       tokens.invalidateService(req.params.id);
     } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+    const before = readSetupStates(deps.stateDir)[req.params.id];
     endSetup(req.params.id);
-    res.json(ledger.effective(req.params.id));
+    const row = catalog.find((r) => r.id === req.params.id);
+    if (shutdown && row) void stopService(row, before);
+    res.json({ ...ledger.effective(req.params.id), switchingOff: shutdown });
   });
 
   /** Opening the page mints its token. Carries only catalog text, and the token alone grants nothing. */
@@ -294,7 +397,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     const { name, benefit, dataLeaves, cost, account, backup } = row;
-    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, ...minted });
+    const state = readSetupStates(deps.stateDir)[row.id];
+    // The page offers "switch it off" only where this machine's own setup made the service work; a service the
+    // person already had is named as theirs. It also says when a yes can't be taken here.
+    const workingHere = state?.verified?.result === 'pass' && !state.stopped;
+    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...minted });
   });
 
   router.post('/recommended-services/:id/confirm', (req, res) => {
@@ -309,7 +416,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(403).json({ error: 'X-Instar-Request: 1 required' });
       return;
     }
-    const { token, answer, reason = 'none' } = (req.body ?? {}) as { token?: unknown; answer?: unknown; reason?: unknown };
+    const { token, answer, reason = 'none', shutdown = false } = (req.body ?? {}) as { token?: unknown; answer?: unknown; reason?: unknown; shutdown?: unknown };
     if (typeof token !== 'string' || !token || token.length > 128) {
       res.status(400).json({ error: 'token-refused' });
       return;
@@ -322,10 +429,19 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(400).json({ error: 'invalid-reason', valid: NO_REASONS });
       return;
     }
+    if (typeof shutdown !== 'boolean') {
+      res.status(400).json({ error: 'invalid-shutdown' });
+      return;
+    }
     // A PIN is only looked at for a real, live request, so this route can't test PIN guesses for
     // anyone who hasn't a page open, and a mistyped PIN doesn't spend the token.
     if (!isServiceAvailable(row) && answer === 'yes') {
       res.status(409).json({ error: 'not-available' });
+      return;
+    }
+    // Setup talks to the person from this machine. Refused before the token is spent, so the page works again once it can.
+    if (answer === 'yes' && !reach()) {
+      res.status(409).json({ error: 'cannot-reach-you' });
       return;
     }
     if (!tokens.isLive(token, row.id)) {
@@ -339,10 +455,11 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     // A no never needs the page to be current: refusing it over changed text would keep a service
-    // the person just declined. It stops offers and voids grants. It doesn't stop a running service.
+    // the person just declined. It stops offers and voids grants. It switches a running service off
+    // only when the person ticked that too, which this PIN-checked page is the place to confirm.
     if (answer === 'no') {
       try {
-        ledger.recordNo({ service: row.id, reason: reason as NoReason, shutdown: 'none', origin: 'owner-surface', offerTextHash: binding.offerTextHash });
+        ledger.recordNo({ service: row.id, reason: reason as NoReason, shutdown: shutdown ? 'authorized' : 'none', origin: 'owner-surface', offerTextHash: binding.offerTextHash });
       } catch {
         res.status(503).json({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' });
         return;
@@ -350,8 +467,10 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       try {
         tokens.invalidateService(row.id);
       } catch { /* @silent-fallback-ok — nosAtOpen still voids every open page */ }
+      const before = readSetupStates(deps.stateDir)[row.id];
       endSetup(row.id);
-      res.json(ledger.effective(row.id));
+      if (shutdown) void stopService(row, before);
+      res.json({ ...ledger.effective(row.id), switchingOff: shutdown });
       return;
     }
     const refusal = binding.offerTextHash !== offerTextHash(row) ? 'text-changed'
@@ -370,6 +489,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       // The only thing a repeat yes changes: it lifts a hold, because the person has now asked again.
       if (readSetupStates(deps.stateDir)[row.id]?.held) {
         liftHold(row.id);
+        clearStop(row.id);
         void beginSetup(row);
       }
       res.json(ledger.effective(row.id));
@@ -406,6 +526,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       }
     }
     liftHold(row.id);
+    clearStop(row.id);
     void beginSetup(row);
     res.json(ledger.effective(row.id));
   });

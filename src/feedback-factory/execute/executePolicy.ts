@@ -283,6 +283,42 @@ export interface ConfinementPaths {
   testRunnerHoldersFile: string;
   /** The user's home directory (for credential paths). */
   homeDir?: string;
+  /** The Node binary confined commands run (defaults to this process's). Its install is re-allowed for reads when it lives under home. */
+  nodeExecPath?: string;
+}
+
+/**
+ * The Node install a confined command needs to read, when it lives under the read-denied home
+ * (nvm, fnm, volta and similar put it there; the M5 verifier has it at ~/.nvm/versions/node/vX).
+ * Without it, bash's PATH lookup cannot stat `node` or `npm` inside the sandbox and reports
+ * "command not found", although running the binary by its full path works (fb-c238c6c9-f0d).
+ *
+ * The install root is the parent of the binary's `bin` directory, else the binary's own directory.
+ * It is re-allowed only when it is inside home and is not, and does not contain, home, the agent
+ * home, the publish clone or a credential path, and is not inside the agent home or the publish
+ * clone. Anything else returns nothing, so the old behaviour stands. Both the given and the real
+ * path are returned, because PATH can name either spelling.
+ */
+export function nodeInstallReadAllows(p: Pick<ConfinementPaths, 'agentHome' | 'publishClone' | 'homeDir' | 'nodeExecPath'>): string[] {
+  const both = (target: string): string[] => {
+    const out = [path.resolve(target)];
+    try { out.push(fs.realpathSync(target)); } catch { /* @silent-fallback-ok: a missing path only loses its real-path spelling */ }
+    return [...new Set(out)];
+  };
+  const homes = both(p.homeDir ?? os.homedir());
+  const fenced = [...both(p.agentHome), ...both(p.publishClone)];
+  const denied = [...homes, ...fenced, ...homes.flatMap((h) => credentialReadDenies(h).map((c) => path.resolve(c)))];
+  const within = (child: string, parent: string) => child.startsWith(`${parent}${path.sep}`);
+  const out = new Set<string>();
+  for (const bin of both(p.nodeExecPath ?? process.execPath)) {
+    const dir = path.dirname(bin);
+    const root = path.basename(dir) === 'bin' ? path.dirname(dir) : dir;
+    if (!homes.some((h) => within(root, h))) continue; // outside home it is not denied in the first place
+    if (denied.some((d) => d === root || within(d, root))) continue; // would re-open a denied path
+    if (fenced.some((f) => within(root, f))) continue;
+    out.add(root);
+  }
+  return [...out];
 }
 
 /** Credential locations a confined process may never read. */
@@ -317,15 +353,17 @@ export interface SandboxRuntimeSettings {
 export function buildSandboxRuntimeSettings(p: ConfinementPaths, opts: { network?: readonly string[]; extraWrite?: string[]; platform?: NodeJS.Platform } = {}): SandboxRuntimeSettings {
   const workspaceGit = path.join(p.workspace, '.git');
   const platform = opts.platform ?? process.platform;
+  const nodeInstall = nodeInstallReadAllows(p);
   return {
     network: { allowedDomains: [...(opts.network ?? [])], deniedDomains: [], allowLocalBinding: false, allowUnixSockets: [],
       ...(platform === 'darwin' ? { allowMachLookup: ['com.apple.SystemConfiguration.DNSConfiguration'] } : {}) },
     filesystem: {
       // The WHOLE home directory and the shared temp directories are read-denied (other agents'
       // homes, follow-me config homes, sign-in files, shell history, other users' temp files);
-      // only the attempt's own trees are re-allowed. The toolchain lives outside home.
-      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace, p.tmpDir)])],
-      allowRead: [p.workspace, p.depsCache, p.tmpDir],
+      // only the attempt's own trees are re-allowed, plus the Node install when it lives under home
+      // (its global npm config stays denied: it can carry a registry token).
+      denyRead: [...new Set([p.homeDir ?? os.homedir(), p.agentHome, p.publishClone, ...credentialReadDenies(p.homeDir), ...systemTempDenies(p.workspace, p.tmpDir), ...nodeInstall.map((r) => path.join(r, 'etc', 'npmrc'))])],
+      allowRead: [p.workspace, p.depsCache, p.tmpDir, ...nodeInstall],
       allowWrite: [p.workspace, p.tmpDir, ...testRunnerSemaphoreFiles(p.testRunnerHoldersFile), ...(opts.extraWrite ?? [])],
       denyWrite: [workspaceGit, path.join(p.workspace, EVIDENCE_FILE), path.join(p.workspace, PREVIOUS_REVIEW_FILE), path.join(p.workspace, '.claude'), path.join(p.workspace, '.instar'), p.depsCache, p.publishClone, ...systemTempDenies(p.workspace, p.tmpDir)],
     },

@@ -31,7 +31,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
-import { confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
+import { claudeSessionIdFromPidFiles, confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -577,6 +577,15 @@ export interface SessionManagerOptions {
   /** Resolved once at boot. Absence/inactive preserves the legacy injection path byte-for-byte. */
   stageBActivation?: StageBActivationStatus;
   localMachineId?: () => string;
+  /** Skill-learning sentinel slice 0 (decision 18): the machine id from the
+   *  machine identity loader (`.instar/machine/identity.json`), exported to every
+   *  spawned session as `INSTAR_MACHINE_ID` beside `INSTAR_SESSION_NAME` so the
+   *  skill-usage telemetry hook attributes rows per machine. A GETTER because
+   *  the identity resolves after SessionManager construction at server boot.
+   *  Absent, null/undefined, throwing, or an id outside `^[\w-]{1,64}$` ⇒ the
+   *  export is OMITTED (never a blank value). Distinct from `localMachineId`,
+   *  whose production fallback is the hostname — a hostname is not an identity. */
+  machineId?: () => string | null | undefined;
   ownerEpochForConversation?: (conversationId: string) => number;
   /** Exact rollout resolver. Production derives it from the incarnation-bound
    * session id; tests may supply an isolated captured rollout fixture. */
@@ -687,7 +696,10 @@ export type InjectionConfirmation =
  * assert both, and start the CLI from an empty environment plus an allowlist (`env -i`).
  * Returns the tmux `-e` flags for the attempt temp directory.
  */
-export function applyClaudeConfinement(argv: string[], confinement: { tmpDir: string }, ids: { sessionId: string; tmuxSession: string }, configDir: string | undefined): string[] {
+/** Skill-learning slice 0 (decision 18): the shape a machine id must have before it is exported. */
+const TELEMETRY_MACHINE_ID_RE = /^[\w-]{1,64}$/;
+
+export function applyClaudeConfinement(argv: string[], confinement: { tmpDir: string }, ids: { sessionId: string; tmuxSession: string; machineId?: string | null }, configDir: string | undefined): string[] {
   const envFlags = ['-e', `CLAUDE_CODE_TMPDIR=${confinement.tmpDir}`, '-e', `TMPDIR=${confinement.tmpDir}`];
   const dangerous = argv.indexOf('--dangerously-skip-permissions');
   if (dangerous >= 0) argv.splice(dangerous, 1);
@@ -704,6 +716,9 @@ export function applyClaudeConfinement(argv: string[], confinement: { tmpDir: st
     CLAUDE_CONFIG_DIR: configDir,
     CLAUDE_CODE_TMPDIR: confinement.tmpDir, TMPDIR: confinement.tmpDir,
     INSTAR_SESSION_ID: ids.sessionId, INSTAR_SESSION_NAME: ids.tmuxSession,
+    // Telemetry attribution (skill-learning slice 0): the validated machine id, when known.
+    // A confined spawn never carries a topic (cwd-confined spawns refuse `topicId`).
+    INSTAR_MACHINE_ID: ids.machineId ?? undefined,
   };
   const pairs = Object.entries(allow).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== '' && !isCredentialEnvName(e[0])).map(([k, v]) => `${k}=${v}`);
   argv.unshift('/usr/bin/env', '-i', ...pairs);
@@ -1213,6 +1228,7 @@ export class SessionManager extends EventEmitter {
   private codexDeliveryObserver: CodexDeliveryObserver | null = null;
   private stageBActivation: StageBActivationStatus;
   private readonly localMachineId: () => string;
+  private readonly machineIdProvider: (() => string | null | undefined) | null;
   private readonly ownerEpochForConversation: (conversationId: string) => number;
   private readonly codexRolloutPathForSession: (session: Session) => string | null;
   private readonly stageCRecoveryEnabled: boolean;
@@ -1318,6 +1334,7 @@ export class SessionManager extends EventEmitter {
       reason: 'unconfigured-dark', artifactDigest: null,
     };
     this.localMachineId = opts.localMachineId ?? (() => 'local');
+    this.machineIdProvider = opts.machineId ?? null;
     this.ownerEpochForConversation = opts.ownerEpochForConversation ?? (() => 0);
     this.codexRolloutPathForSession = opts.codexRolloutPathForSession ?? ((session) => {
       if (!session.claudeSessionId) return null;
@@ -1845,6 +1862,30 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * Headless lanes are reached only by jobs and agent-token callers, so they run as
    * `system`. Hooks read this: on a multi-person agent, no scope means no injection.
    */
+  /** The validated machine id for the telemetry export, or null when unavailable
+   *  (skill-learning slice 0, decision 18). Validation is `^[\w-]{1,64}$` — the same
+   *  rule the telemetry hook applies on read — so a malformed identity never reaches
+   *  a shell environment. */
+  private telemetryMachineId(): string | null {
+    if (!this.machineIdProvider) return null;
+    let id: string | null | undefined;
+    try { id = this.machineIdProvider(); }
+    catch { return null; /* @silent-fallback-ok — an unreadable identity omits the export; the spawn itself is unaffected */ }
+    return typeof id === 'string' && TELEMETRY_MACHINE_ID_RE.test(id) ? id : null;
+  }
+
+  /** tmux `-e` flags for `INSTAR_MACHINE_ID` (when the provider yields a valid id)
+   *  and `INSTAR_TOPIC_ID` (when the spawn knows a numeric topic). Both are omitted
+   *  rather than exported blank, so a consumer's "absent" branch is the only
+   *  degraded path it needs. */
+  private telemetryIdentityEnvFlags(topicId?: number | 'platform' | null): string[] {
+    const flags: string[] = [];
+    const machineId = this.telemetryMachineId();
+    if (machineId) flags.push('-e', `INSTAR_MACHINE_ID=${machineId}`);
+    if (typeof topicId === 'number' && Number.isSafeInteger(topicId)) flags.push('-e', `INSTAR_TOPIC_ID=${topicId}`);
+    return flags;
+  }
+
   private memorySystemEnvFlags(): string[] {
     const privacy = this.memoryPrivacyWiring?.privacy;
     return privacy?.enabled && privacy.isMultiPerson() ? ['-e', 'INSTAR_MEMORY_SCOPE=system'] : [];
@@ -4487,7 +4528,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       }
       if (!path.isAbsolute(options.accountPin.configHome)) throw new Error('account-pin-config-home-invalid');
     }
-    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, options.model);
+    // Match interactive spawns: an explicit model (including a tier used by
+    // internal judges) wins; otherwise honor the saved default for the actual
+    // launch framework, after any closed-lane fallback.
+    const requestedModel = options.model ?? this.config.frameworkDefaultModels?.[headlessFramework];
+    const launchModel = await this.resolveCodexLaunchModel(headlessFramework, requestedModel);
 
 
 
@@ -4678,7 +4723,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.confinement) {
       // Claude Code's own shell bookkeeping and its default writable temp follow CLAUDE_CODE_TMPDIR:
       // the attempt's temp directory, never the shared system temp.
-      omitAuthEnvFlags.push(...applyClaudeConfinement(headlessSpec.argv, options.confinement, { sessionId, tmuxSession },
+      omitAuthEnvFlags.push(...applyClaudeConfinement(headlessSpec.argv, options.confinement, { sessionId, tmuxSession, machineId: this.telemetryMachineId() },
         headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR));
     }
     try {
@@ -4699,6 +4744,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_ID=${sessionId}`,
         ...originEnvFlags, // Expose instar session ID to hook events
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
+        ...this.telemetryIdentityEnvFlags(options.topicId), // skill-learning slice 0: INSTAR_MACHINE_ID / INSTAR_TOPIC_ID
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${options.omitAuthEnv ? '' : this.config.authToken}`,
         ...this.memorySystemEnvFlags(),
@@ -5118,7 +5164,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // The trust dialog is matched on the exact workspace path, which must be whitespace-free; refuse
       // by name here rather than failing every startup as `dialog-unknown` (spec D2 rule 3).
       if (/\s/.test(resolvedCwd)) throw new Error('confinement-adapter-missing: workspace-path-whitespace — the confined workspace path contains whitespace');
-      confinedEnvFlags.push(...applyClaudeConfinement(launchSpec.argv, confinement, { sessionId, tmuxSession },
+      confinedEnvFlags.push(...applyClaudeConfinement(launchSpec.argv, confinement, { sessionId, tmuxSession, machineId: this.telemetryMachineId() },
         launchSpec.envOverrides.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR));
       confinedPromptPath = path.join(path.resolve(confinement.tmpDir), `confined-prompt-${sessionId}.md`);
       confinedPromptLine(confinedPromptPath); // validates the path shape before anything runs
@@ -5149,6 +5195,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
         '-e', `INSTAR_SESSION_ID=${sessionId}`,
         ...originEnvFlags,
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`,
+        ...this.telemetryIdentityEnvFlags(options.topicId), // skill-learning slice 0: INSTAR_MACHINE_ID / INSTAR_TOPIC_ID
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${omitAuth ? '' : this.config.authToken}`,
         ...this.memorySystemEnvFlags(),
@@ -6368,13 +6415,22 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * unable to reply. Corroborate the exact main transcript and account home. */
   confirmSessionUsageLimit(tmuxSession: string): string | false {
     const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
-    if (!session?.claudeSessionId || (session.framework ?? 'claude-code') !== 'claude-code') return false;
-    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
+    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    // defaultWhenAbsent: safe here because nothing is believed without the exact session's transcript row.
+    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true, defaultWhenAbsent: true });
     if (!configHome) return false;
+    // No hook has reported the id yet when the very first turn was refused for usage (no tool, no
+    // Stop). Claude Code's own per-process record names it; binding it is what the next hook would do.
+    let claudeSessionId = session.claudeSessionId;
+    if (!claudeSessionId) {
+      claudeSessionId = claudeSessionIdFromPidFiles(configHome, tmuxSession) ?? undefined;
+      if (claudeSessionId) this.setClaudeSessionId(session.id, claudeSessionId);
+    }
+    if (!claudeSessionId) return false;
     return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
-      framework: 'claude-code', sessionId: session.claudeSessionId,
+      framework: 'claude-code', sessionId: claudeSessionId,
       projectDir: session.cwd ?? this.config.projectDir, configHome,
-    }), session.claudeSessionId) ? session.claudeSessionId : false;
+    }), claudeSessionId) ? claudeSessionId : false;
   }
 
   /**
@@ -6741,12 +6797,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return configHome ? { configHome } : {};
   }
 
-  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean }): string | undefined {
+  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean; defaultWhenAbsent?: boolean }): string | undefined {
     try {
       const out = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['show-environment', '-t', `=${tmuxSession}`, 'CLAUDE_CONFIG_DIR'],
-        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
+        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'] },
       )).trim();
       const prefix = 'CLAUDE_CONFIG_DIR=';
       if (out.startsWith('-CLAUDE_CONFIG_DIR') && opts?.defaultWhenUnset) {
@@ -6756,7 +6812,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!out.startsWith(prefix)) return undefined; // unset (tmux prints `-CLAUDE_CONFIG_DIR`) or absent
       const value = out.slice(prefix.length).trim();
       return value.length > 0 ? value : undefined;
-    } catch {
+    } catch (err) {
+      // `defaultWhenAbsent`: the variable was never set in this session at all (tmux exits 1 with
+      // "unknown variable"), as on an agent with one login and no pool (nimbus, 2026-11-07). The
+      // session then runs on the process default, exactly like the explicitly-unset case above.
+      // Only readers that verify what they find there (a transcript row for the exact session id)
+      // opt in; any other tmux failure still yields undefined.
+      const stderr = String((err as { stderr?: unknown })?.stderr ?? '');
+      if (opts?.defaultWhenAbsent && /unknown variable/i.test(stderr)) {
+        return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+      }
       // @silent-fallback-ok — config-home lookup is fail-toward-silence: the
       // detector skips a session it can't place rather than guess a slot.
       return undefined;
@@ -7937,6 +8002,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           configHome: this.originConfigHome(framework, launchSpec.envOverrides),
         }), // Expose instar session ID to hook events
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
+        ...this.telemetryIdentityEnvFlags(options?.telegramTopicId), // skill-learning slice 0: INSTAR_MACHINE_ID / INSTAR_TOPIC_ID
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${memoryToken ?? this.config.authToken}`,
         ...(memoryScopeEnv ? ['-e', `INSTAR_MEMORY_SCOPE=${memoryScopeEnv}`] : []),
@@ -8228,17 +8294,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
         await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`]);
       } catch { /* expected if tmux pane is already gone */ }
 
-      // Single fresh-spawn retry. Pass the original `name` parameter through
-      // so the recursive call reconstructs the same tmux name — important
-      // because the bridge's session→topic mapping was registered against
-      // that name. Stripping the project-base prefix from the tmux name
-      // would not preserve the auto-generated `interactive-${ts}` form.
+      // Single fresh-spawn retry. Keep the exact tmux name returned to the
+      // conversation bridge. An unnamed spawn generated its name from Date.now();
+      // passing undefined again generates a NEW name and strands the bridge's
+      // registry on the failed resume while the fresh session answers.
       // resumeSessionId is intentionally omitted to break the bad-UUID cycle.
       try {
         const retryMessage = this.resumeFollowsAccountEnabled() && !initialMessage.startsWith(RESUME_REOPEN_FAILED_NOTE)
           ? `${RESUME_REOPEN_FAILED_NOTE}\n\n${initialMessage}`
           : initialMessage;
-        await this.spawnInteractiveSessionUnlocked(retryMessage, originalName, {
+        const retryName = originalName ?? tmuxSession.slice(path.basename(this.config.projectDir).length + 1);
+        await this.spawnInteractiveSessionUnlocked(retryMessage, retryName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,
@@ -8539,6 +8605,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           nativeSessionId: options.resumeSessionId, configHome: process.env.CLAUDE_CONFIG_DIR,
         }),
         '-e', `INSTAR_SESSION_NAME=${tmuxSession}`, // Threadline binding: attributes a relay-send to its origin session
+        ...this.telemetryIdentityEnvFlags(), // skill-learning slice 0: INSTAR_MACHINE_ID (a triage spawn has no topic)
         '-e', `INSTAR_SERVER_URL=http://localhost:${this.config.port}`,
         '-e', `INSTAR_AUTH_TOKEN=${this.config.authToken}`,
         ...triageThreadline.secretEnvFlags, // threadline-mcp-local-http D2 (flag on only)

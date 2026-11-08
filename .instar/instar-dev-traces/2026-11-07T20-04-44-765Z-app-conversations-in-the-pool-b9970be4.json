@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "app-conversations-in-the-pool",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-07T20:04:44.765Z",
+  "artifactPath": "upgrades/side-effects/app-conversations-in-the-pool.md",
+  "artifactSha256": "5f54245a2ecef945f40f24494b2bcdbd3fab44885ba811d907c10f81e53c6764",
+  "specPath": "docs/specs/app-conversations-in-the-pool.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/appConversationPool.ts",
+    "src/core/appInboundDispatch.ts",
+    "src/server/mobileConversationRoutes.ts",
+    "tests/integration/team-access-guards.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-on to the approved Tier 2 change, keeping team access rules on its forward paths",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

@@ -137,7 +137,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
 
   const ownedUpload = (req: Request, res: Response, deviceId: string): UploadRow | null => {
     const u = svc!.media!.getUpload(String(req.params.uploadId).toLowerCase());
-    if (!u || u.deviceId !== deviceId) { res.status(404).json({ error: 'upload-unknown', detail: 'This machine does not know that upload. Start again.' }); return null; }
+    if (!u || u.deviceId !== deviceId) { res.status(404).json({ error: 'upload-unknown', detail: 'The agent does not know that upload. Start again.' }); return null; }
     return u;
   };
 
@@ -231,14 +231,14 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     if (!att) { notFound(); return; }
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
-    if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on this machine and has been set aside.' }); return; }
+    if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged where it was stored and has been set aside.' }); return; }
     if (!blob) {
       // §4.8/§4.12: start (or hurry) the copy from another machine and tell the app to poll.
       // 202 only when a copy can actually start: a mesh, a machine with disk room, an online peer
       // that could hold it, and not given up on. Otherwise an honest 404 with the reason.
       const rep = svc!.replicator;
       const can = rep.canFetch(sha);
-      if (!can.ok) { res.status(404).json({ error: 'media-unavailable', detail: `This file is not on this machine: ${can.reason}.` }); return; }
+      if (!can.ok) { res.status(404).json({ error: 'media-unavailable', detail: `This file can't be reached right now: ${can.reason}.` }); return; }
       rep.want(sha);
       res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
       return;

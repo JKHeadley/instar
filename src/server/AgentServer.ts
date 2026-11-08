@@ -22,6 +22,7 @@ import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
+import { setAutonomousRunProbe } from '../core/appConversationMove.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
@@ -198,6 +199,8 @@ import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../m
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
+import { createSkillLearningRoutes } from './skillLearningRoutes.js';
+import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
@@ -711,6 +714,8 @@ export class AgentServer {
   private queuePaceLedger: QueuePaceLedger | null = null;
   private queuePaceTuner: QueuePaceTuner | null = null;
   private queuePaceTimers: Array<ReturnType<typeof setInterval>> = [];
+  /** Skill Learning Sentinel (skill-learning-sentinel §3.10): bound by server.ts via setSkillLearningSentinel(); the routes read it through a getter, so a late bind is live at once. */
+  private skillLearningSentinel: SkillLearningSentinelLike | null = null;
   /** The feedback drain's own "may run feedback ticks" predicate (operated host ∧ lease ∧ not restore-pending). */
   private feedbackOwnerServing: (() => boolean) | null = null;
   private feedbackDrainDb: (() => import('better-sqlite3').Database | null) | null = null;
@@ -896,6 +901,11 @@ export class AgentServer {
   private slackAdapter: import('../messaging/slack/SlackAdapter.js').SlackAdapter | null = null;
   /** a2a-single-agent-identity: the agent-identity runtime (detector + audit + lever). */
   private agentIdentityRuntime: AgentIdentityRuntime | null = null;
+
+  /** Bind (or unbind) the running Skill Learning Sentinel; `/skills/learned*` answers 503 `skill-learning-disabled` until one is set. */
+  setSkillLearningSentinel(sentinel: SkillLearningSentinelLike | null): void {
+    this.skillLearningSentinel = sentinel;
+  }
 
   /** Late-bound after the peer-stream reader exists. The ClassReviewStore folds
    * local + peer lifecycle rows at its lowest read primitive. */
@@ -1260,7 +1270,7 @@ export class AgentServer {
     /** WS1.4 consent preflight against the machine that owns the run registry. */
     autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
     /** Kick the working-set carrier on the machine that just acquired a topic. */
-    kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
+    kickWorkingSetOnMachine?: (machineId: string, topic: number | string) => void;
     /** Ownership Follows Live Work Part B for POST /sessions/spawn: record THIS
      *  machine as the topic's owner when a topic-bound session is started here,
      *  so a peer's router never treats the topic as unowned and starts a second
@@ -1465,6 +1475,8 @@ export class AgentServer {
      *  A factory (not a pre-bound runner) so the route can wrap the request-built
      *  RealChannelDriver, sharing the gate's artifact store. Undefined when dark/unwired. */
     liveTestRunnerCtx?: LiveTestRunnerWiring;
+    /** Skill Learning Sentinel (skill-learning-sentinel §3.10) — server.ts binds it via `setSkillLearningSentinel()` right after construction (off the constructor line); the option remains for tests and embedders. */
+    skillLearningSentinel?: SkillLearningSentinelLike | null;
     unifiedTrust?: import('../threadline/UnifiedTrustWiring.js').UnifiedTrustSystem;
     liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
     /** Shared proxy coordinator (PresenceProxy ↔ PromiseBeacon ↔ /build heartbeat). */
@@ -1582,6 +1594,7 @@ export class AgentServer {
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
     this.telegramAdapter = options.telegram ?? null;
+    this.skillLearningSentinel = options.skillLearningSentinel ?? null;
     this.localAttention = this.telegramAdapter ? null : new LocalAttentionItems(options.config.stateDir);
     this.slackAdapter = options.slack ?? null;
     this.startTime = new Date();
@@ -5124,8 +5137,11 @@ export class AgentServer {
           return { goal: job.goal ?? null, remainingMinutes, runKey: job.startedAt ?? null };
         }
       : null);
-    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topic: number) => {
+    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topicRef: number | string) => {
+      // An app conversation's key resolves to this machine's alias here, and to the target's own on arrival.
       if (machineId === options.meshSelfId) {
+        const topic = typeof topicRef === 'number' ? topicRef : options.conversationRegistry?.appAliasFor(topicRef.replace(/^app:/, '')) ?? null;
+        if (topic === null) return;
         const coordinator = options.workingSetPullCoordinator;
         if (!coordinator) return;
         void (async () => {
@@ -5155,7 +5171,7 @@ export class AgentServer {
             const response = await fetch(`${peer.url}/coherence/fetch-working-set`, {
               method: 'POST',
               headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ topic }),
+              body: JSON.stringify({ topic: topicRef }),
               signal: AbortSignal.timeout(5_000),
             });
             if (!response.ok) continue;
@@ -5166,6 +5182,7 @@ export class AgentServer {
       })();
     });
     setMoveAftercare(kickWorkingSetOnMachine);
+    setAutonomousRunProbe(autonomousRunOnMachine);
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
@@ -5591,6 +5608,7 @@ export class AgentServer {
           ? { get: options.liveConfig.get.bind(options.liveConfig) }
           : null,
       topicIntentArcCheck: options.topicIntentArcCheck ?? null,
+      topicIntentStore: options.topicIntentStore ?? null,
       usherSignalStore: options.usherSignalStore ?? null,
       outboundDedupGate: options.outboundDedupGate ?? null,
       telemetryHeartbeat: options.telemetryHeartbeat ?? null,
@@ -6579,6 +6597,9 @@ export class AgentServer {
     // tick) and the bounded triage tuner (its own explicit flag, dry-run by default).
     this.startQueuePace(options);
     this.app.use(createQueuePaceRoutes({ ...routeCtx, queuePace: () => this.queuePaceLedger }));
+    // Skill learning (docs/specs/skill-learning-sentinel.md §3.10): reads for this machine, PIN-gated
+    // proposal taps forwarded to the lease holder; 503 until the flag is on AND server.ts binds the sentinel.
+    this.app.use(createSkillLearningRoutes({ ...routeCtx, skillLearningSentinel: () => this.skillLearningSentinel }));
     // Slack from the app (§4.9): built only when Slack and the conversation registry exist here.
     const slackBridge = this.mobilePairing && options.slack && routeCtx.conversationRegistry
       ? buildMobileSlackBridge({
@@ -6672,7 +6693,11 @@ export class AgentServer {
         ownerMachineFor: (ref) => {
           // A Slack conversation is held by the machine whose registry minted it (checked above).
           if (ref.kind === 'slack') return null;
-          if (ref.kind === 'app') return appSvcForSession?.isOwner() ? null : leaseHolderNow();
+          if (ref.kind === 'app') {
+            if (appSvcForSession?.serves(ref.key)) return null;
+            // A moved conversation lives where its record says (app-conversations-in-the-pool §2.1).
+            return routeCtx.sessionOwnershipRegistry?.ownerOf(`app:${ref.key}`) ?? leaseHolderNow();
+          }
           return routeCtx.sessionOwnershipRegistry?.ownerOf(String(ref.topicId)) ?? leaseHolderNow();
         },
         selfMachineId: selfIdNow,
@@ -6747,6 +6772,12 @@ export class AgentServer {
           return { userId: id, several: owners.length > 1, links: (owner?.telegramUserId ? { telegram: owner.telegramUserId } : {}) as Record<string, string | number> };
         },
         logsDir: path.join(options.config.stateDir, 'logs'),
+        stateDir: options.config.stateDir,
+        conversationTitle: (refOrPlace) => {
+          const topic = /^telegram:(?:topic:)?(\d+)$/.exec(refOrPlace);
+          if (topic) return options.telegram?.getAllTopicMappings().find((m) => m.topicId === Number(topic[1]))?.topicName ?? null;
+          return appStore?.getConversation(refOrPlace.replace(/^app:/, ''))?.title ?? null;
+        },
         restoreRefs: () => {
           const keys = appStore?.liveConversationKeys() ?? [];
           const teamDevices = new Set(pairingSvc.devices.list().filter((d) => d.role === 'team').map((d) => d.id));
@@ -9269,6 +9300,11 @@ export class AgentServer {
       },
       lifelineTopicId: () => tg.getLifelineTopicId(),
     });
+  }
+
+  /** The maturation ladder service (constructed late in boot); null until then or when disabled. */
+  getMaturationLadder(): MaturationLadderService | null {
+    return this.maturationLadder;
   }
 
   getTopicOperatorStore(): TopicOperatorStore | null {
