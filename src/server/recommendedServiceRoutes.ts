@@ -71,6 +71,7 @@ export interface RecommendedServiceRouteDeps {
   bitwarden?: BitwardenSurface;
   /** GitHub and this agent's state repository, for the private-backup recipe; tests pass a stand-in. */
   github?: GitHubBackupSurface;
+  aiDoors?: import('../recommended/aiDoors.js').AiDoorSurface;
   /** This agent's name, for things named after it. */
   agentName?: string;
   /** Turns the agent's git backup off in its config (a confirmed no to GitHub). */
@@ -130,7 +131,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const starting = new Set<string>();
   const stopping = new Set<string>();
   const reach = (): boolean => deps.canReachOwner?.() ?? true;
-  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName });
+  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, aiDoors: deps.aiDoors });
   /** How often a copy kept elsewhere is brought up to date by the regular check, and how long a failed refresh waits before another try. */
   const SYNC_EVERY_MS = 24 * 60 * 60_000;
   const SYNC_RETRY_MS = 6 * 60 * 60_000;
@@ -216,7 +217,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         disableGitBackup: deps.disableGitBackup,
       });
       if (outcome.stopped) {
-        updateSetupState(deps.stateDir, row.id, { stopped: { at: nowIso(), detail: outcome.detail }, stopRequestedAt: undefined, verified: undefined, keyStoredBySetup: undefined, signedInBySetup: undefined, absentBeforeSetup: undefined });
+        updateSetupState(deps.stateDir, row.id, { stopped: { at: nowIso(), detail: outcome.detail }, stopRequestedAt: undefined, verified: undefined, keyStoredBySetup: undefined, signedInBySetup: undefined, absentBeforeSetup: undefined,
+          // A later yes starts the regular refresh afresh, not a day after the last one before this switch-off.
+          lastSyncAt: undefined, lastSyncAttemptAt: undefined, syncFailures: undefined });
         // Told when something was undone, when something was working here, or when they were promised word.
         if (outcome.changed || hadSomething || waiting) deps.tellOwner(outcome.detail);
         return;

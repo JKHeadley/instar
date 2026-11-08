@@ -341,6 +341,8 @@ import { validateWriteToken, canPerformOperation } from '../core/StateWriteAutho
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
+import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
+import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
 import {
   readGuardPostureBootSnapshot,
   resolveGuardConfigSnapshot,
@@ -16515,6 +16517,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return null; // @silent-fallback-ok — an unreadable vault reads as no stored key, and the caller says transcription is unavailable
     }
   });
+  // Which doors the second-AI-subscription setup itself listed, so a switch-off takes back only those.
+  const doorsAddedFile = path.join(ctx.config.stateDir, 'state', 'recommended-services', 'doors-added-by-setup.json');
+  const readDoorsAddedBySetup = (): string[] => {
+    try { const v = JSON.parse(fs.readFileSync(doorsAddedFile, 'utf8')); return Array.isArray(v) ? v.filter((d): d is string => typeof d === 'string') : []; } catch { return []; } // @silent-fallback-ok — no record means setup added nothing, so a switch-off removes nothing
+  };
+  const writeDoorsAddedBySetup = (doors: string[]): void => {
+    fs.mkdirSync(path.dirname(doorsAddedFile), { recursive: true });
+    fs.writeFileSync(doorsAddedFile, JSON.stringify(doors));
+  };
+  // One writer for this agent's switched-on frameworks: the config file (read at the next boot) and the live copies.
+  const setEnabledFrameworks = (next: string[]): void => {
+    writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.enabledFrameworks = next; return { value: true }; });
+    const typed = next as NonNullable<typeof ctx.config.enabledFrameworks>;
+    ctx.config.enabledFrameworks = typed;
+    if (ctx.config.sessions) ctx.config.sessions.enabledFrameworks = typed;
+  };
   registerRecommendedServiceRoutes(router, {
     ledger: () => ctx.recommendedServicesLedger ?? null,
     stateDir: ctx.config.stateDir,
@@ -16541,6 +16559,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     bitwarden: realBitwardenSurface(ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent')),
     github: realGitHubBackupSurface(ctx.config.stateDir, (ctx.config as unknown as { git?: Record<string, unknown> }).git),
     agentName: ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent'),
+    // The second-AI-subscription recipe: this agent's doors. Sign-ins are the machine user's and are never touched here.
+    // Listing a door changes this agent's config file and the server's own copy; SessionManager and the internal
+    // fallback chain read the list at boot, so they pick it up at the next restart.
+    aiDoors: {
+      enabled: () => [...((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[])],
+      installed: (door) => detectDoorPath(door) !== null,
+      signedIn: (door) => proveDoorSignedIn(door),
+      enable: (door) => {
+        const next = withDoor((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[], door);
+        if (!next) return false;
+        setEnabledFrameworks(next);
+        writeDoorsAddedBySetup([...new Set([...readDoorsAddedBySetup(), door])]);
+        return true;
+      },
+      disable: (door) => {
+        if (!readDoorsAddedBySetup().includes(door)) return false;
+        const now = (ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[];
+        if (now.includes(door)) setEnabledFrameworks(withoutDoor(now, door));
+        writeDoorsAddedBySetup(readDoorsAddedBySetup().filter((d) => d !== door));
+        return true;
+      },
+    },
     // A confirmed no to GitHub turns the switch older versions read too, so no machine on an older build keeps pushing.
     disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },
     raiseAttention: async (id, title, text) => {
