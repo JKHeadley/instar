@@ -53,6 +53,11 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('.get(VOICE_TRANSCRIPTION_SECRET)');
     expect(read('src/commands/server.ts')).toContain("(await import('../core/VoiceTranscription.js')).resolveTranscriptionProvider({ explicit, env: {} })");
     expect(read('src/messaging/backends/BaileysBackend.ts')).toContain('resolveSharedTranscriptionProvider({ env: {} })');
+    // A second AI subscription: the real door proofs, and one writer that changes this agent's config and live copy only.
+    expect(routes).toContain('signedIn: (door) => proveDoorSignedIn(door),');
+    expect(routes).toContain('installed: (door) => detectDoorPath(door) !== null,');
+    expect(routes).toContain("writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.enabledFrameworks = next; return { value: true }; });");
+    expect(routes).toContain('ctx.config.enabledFrameworks = typed;');
     const adapter = fs.readFileSync(path.join(root, 'src/messaging/TelegramAdapter.ts'), 'utf8');
     expect(adapter).toContain("if (query.data.startsWith('rs:'))");
     expect(adapter).toContain('this.recommendedOfferHandler({ action: m[1] === \'y\' ? \'yes\' : \'no\', nonce: m[2]!, fromIsOwner })');

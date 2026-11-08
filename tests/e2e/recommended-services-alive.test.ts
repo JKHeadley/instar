@@ -64,9 +64,9 @@ describe('recommended services: production wiring', () => {
     expect(list.body.offersLive).toBe(false);
     expect(list.body).toMatchObject({ migrationComplete: false, firstResult: null });
     const jev = list.body.services.find((row: { service: string }) => row.service === 'jev');
-    // The five live-proven recipes are available on every agent, with no proving list; the other four are not.
+    // The six live-proven recipes are available on every agent, with no proving list; the other three are not.
     expect(jev).toMatchObject({ name: 'Jev (TypeSafe)', backupStatus: 'specified', choice: 'unset', available: true });
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'voice-transcription']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription']);
 
     const noPin = await request(app).post('/recommended-services/jev/no').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noPin.status).toBe(403);
@@ -77,7 +77,7 @@ describe('recommended services: production wiring', () => {
     expect(makeLedger().effective('jev').choice).toBe('no');
 
     // No token is needed to reach the confirm route. A service with no proven setup refuses a yes outright.
-    const unproven = await request(app).get('/recommended-services/second-ai-door/confirm');
+    const unproven = await request(app).get('/recommended-services/cloudflare-domain/confirm');
     expect(unproven.status).toBe(409);
     expect(unproven.body.error).toBe('not-available');
     // Jev's page is reachable through the real wiring; with no verified owner on this bare server it stops at that, never at "not available".
@@ -91,7 +91,7 @@ describe('recommended services: production wiring', () => {
     const verify = await request(app).post('/recommended-services/jev/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);
     expect(verify.body.error).toBe('not-granted-here');
-    const noRecipe = await request(app).post('/recommended-services/second-ai-door/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    const noRecipe = await request(app).post('/recommended-services/cloudflare-domain/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noRecipe.body.error).toBe('no-recipe');
     const pageFile = await request(app).get('/dashboard/service-yes');
     expect(pageFile.status).toBe(200);
@@ -110,7 +110,7 @@ describe('recommended services: production wiring', () => {
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('a-key');
     expect(res.status).toBe(409);
     expect(res.body.error).toBe('not-granted-here');
-    const unproven = await request(server.getApp()).post('/recommended-services/second-ai-door/key')
+    const unproven = await request(server.getApp()).post('/recommended-services/cloudflare-domain/key')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('a-key');
     expect(unproven.status).toBe(404);
     expect(unproven.body.error).toBe('no-recipe');
@@ -122,7 +122,7 @@ describe('recommended services: production wiring', () => {
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(held.status).toBe(200);
     expect(held.body.held).toBe(true);
-    const res = await request(server.getApp()).post('/recommended-services/second-ai-door/hold')
+    const res = await request(server.getApp()).post('/recommended-services/cloudflare-domain/hold')
       .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(res.status).toBe(404);
     expect(res.body.error).toBe('no-recipe');
@@ -172,13 +172,23 @@ describe('recommended services: production wiring', () => {
     expect(key.body.error).toBe('not-granted-here');
   });
 
+  it('the second AI subscription recipe is available through the real wiring, and its server step stops at the missing yes', async () => {
+    const { server } = boot(true);
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.find((row: { service: string }) => row.service === 'second-ai-door')).toMatchObject({ available: true, choice: 'unset' });
+    const sync = await request(app).post('/recommended-services/second-ai-door/sync').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
+    expect(sync.status).toBe(409);
+    expect(sync.body.error).toBe('not-granted-here');
+  });
+
   it('an agent proving a recipe (a throwaway under a temp folder) reaches it through the real wiring, beside the proven ones', async () => {
     const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
     const app = server.getApp();
     const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(list.status).toBe(200);
     expect(list.body.offersLive).toBe(false);
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'voice-transcription']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'second-ai-door', 'voice-transcription']);
     // The recipe is wired: verify gets past "no-recipe" and stops at the missing yes.
     const verify = await request(app).post('/recommended-services/tailscale/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);
