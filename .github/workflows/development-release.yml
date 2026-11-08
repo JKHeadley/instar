@@ -17,6 +17,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: main
+          # npm ci runs dependency install scripts; keep the write token out of .git/config.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
