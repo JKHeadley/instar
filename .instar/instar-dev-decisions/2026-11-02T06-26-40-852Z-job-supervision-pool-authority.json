@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-02T06:26:40.852Z",
+  "slug": "job-supervision-pool-authority",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 33,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/scheduler/JobFixedCertificateRegistry.ts",
+      "src/scheduler/JobFixedRegistryRevocation.ts",
+      "src/scheduler/JobFixedRegistryRevocationDispatcher.ts"
+    ],
+    "addedLines": 21,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The dispatcher processes at most 100 durable outbox rows per tick, backs off repeated failures, and stops retrying each proof only after a fresh signed authority snapshot shows revocation."
+    }
+  },
+  "verdict": "pass"
+}

@@ -112,7 +112,7 @@ describe('authenticated script-result coverage', () => {
       const response = await request(app).get('/jobs/triage').set('Authorization', 'Bearer secret');
       expect(response.status).toBe(200);
       expect(response.body.supervision).toMatchObject({ denominator: 2, decisionCoverage: 0,
-        byStatus: { unchecked: 2 }, coverageIncomplete: false });
+        byStatus: { unchecked: 2 }, coverageIncomplete: false, pendingFixedRevocations: [] });
       expect(ledger.findByRunId(missing)).toMatchObject({ reason: 'missing-record', status: 'unchecked' });
       expect(ledger.findByRunId(canary)).toBeNull();
       ledger.holdSlug('health-check', 'certificate-revoked');

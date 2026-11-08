@@ -17,6 +17,8 @@ export interface FixedResultCertificate {
   observedOutcomes: number;
   gradableOutcomes: number;
   confirmedMisses: number;
+  /** Latest writer-accepted miss epoch for this exact contract that both reviewers considered. */
+  reviewedMissEpoch: number;
   testEvidenceId: string;
   shadowEvidenceId: string;
   canaryAssertionId: string;
@@ -37,6 +39,10 @@ export interface FixedCertificateAuthority {
   now: number;
 }
 
+/** The bounded, scrubbed subset needed to compare an exact result shape. */
+export type FixedShapeObservation = Pick<ParsedScriptRun, 'result' | 'summary' | 'reasonCode' | 'fields'
+  | 'missingResultLine' | 'overCap' | 'ignoredAnomalies' | 'anomalies' | 'droppedFields'>;
+
 export type FixedCertificateDecision =
   | { kind: 'fixed'; certificateId: string }
   | { kind: 'judgment'; reason: string }
@@ -48,15 +54,50 @@ export function fixedCertificateBody(cert: FixedResultCertificate): string {
   return JSON.stringify({ ...body, fields: Object.fromEntries(Object.entries(body.fields).sort(([a], [b]) => a.localeCompare(b))) });
 }
 
-function signatureValid(body: string, signature: string, key: string | undefined): boolean {
+/** The exact semantic contract affected by a confirmed miss. */
+export function fixedContractKey(cert: FixedResultCertificate): string {
+  return crypto.createHash('sha256').update(JSON.stringify({
+    slug: cert.slug, templateDigest: cert.templateDigest,
+    featureStateHash: cert.featureStateHash, result: cert.result,
+    summary: cert.summary, reasonCode: cert.reasonCode,
+    fields: Object.fromEntries(Object.entries(cert.fields).sort(([a], [b]) => a.localeCompare(b))),
+  })).digest('hex');
+}
+
+export function signatureValid(body: string, signature: string, key: string | undefined): boolean {
   if (!key || !/^[A-Za-z0-9+/=]+$/.test(signature)) return false;
   try { return crypto.verify(null, Buffer.from(body), key, Buffer.from(signature, 'base64')); }
   catch { return false; /* @silent-fallback-ok — a signature parse failure denies fixed closure. */ }
 }
 
+/** Issuance check before the single pool writer activates a reviewed shape. */
+export function fixedCertificateIssuanceValid(cert: FixedResultCertificate, input: {
+  epoch: number; ownerPublicKeys: Readonly<Record<string, string>>;
+  reviewerPublicKeys: Readonly<Record<string, string>>; now: number;
+}): boolean {
+  if (!cert || cert.version !== 1 || !Number.isSafeInteger(cert.registryEpoch)
+    || !cert.id || !cert.slug || !cert.templateDigest || !cert.featureStateHash
+    || cert.registryEpoch !== input.epoch || cert.owner === cert.reviewer
+    || !cert.owner || !cert.reviewer || cert.observedOutcomes < 300
+    || cert.gradableOutcomes < 300 || cert.confirmedMisses !== 0
+    || !Number.isSafeInteger(cert.observedOutcomes) || !Number.isSafeInteger(cert.gradableOutcomes)
+    || !Number.isSafeInteger(cert.confirmedMisses)
+    || !Number.isSafeInteger(cert.reviewedMissEpoch) || cert.reviewedMissEpoch < 0
+    || (cert.result !== 'success' && cert.result !== 'skipped')
+    || typeof cert.summary !== 'string' || typeof cert.reasonCode !== 'string'
+    || !cert.fields || typeof cert.fields !== 'object' || Array.isArray(cert.fields)
+    || Object.values(cert.fields).some(value => typeof value !== 'string')
+    || !cert.testEvidenceId || !cert.shadowEvidenceId || !cert.canaryAssertionId) return false;
+  const canaryAge = input.now - Date.parse(cert.canaryPassedAt);
+  if (!Number.isFinite(canaryAge) || canaryAge < 0 || canaryAge > 36 * 60 * 60_000) return false;
+  const body = fixedCertificateBody(cert);
+  return signatureValid(body, cert.ownerSignature, input.ownerPublicKeys[cert.owner])
+    && signatureValid(body, cert.reviewerSignature, input.reviewerPublicKeys[cert.reviewer]);
+}
+
 export function decideFixedResult(input: {
   attempt: SupervisionAttempt;
-  parsed: ParsedScriptRun;
+  parsed: FixedShapeObservation;
   certificate: FixedResultCertificate | null;
   authority: FixedCertificateAuthority;
 }): FixedCertificateDecision {
@@ -68,12 +109,21 @@ export function decideFixedResult(input: {
     return { kind: 'hold', reason: 'stale-certificate' };
   }
   if (cert.owner === cert.reviewer || !cert.owner || !cert.reviewer) return { kind: 'hold', reason: 'reviewers-not-independent' };
+  if (cert.version !== 1 || !Number.isSafeInteger(cert.registryEpoch)
+    || (cert.result !== 'success' && cert.result !== 'skipped')
+    || !cert.fields || typeof cert.fields !== 'object' || Array.isArray(cert.fields)
+    || Object.values(cert.fields).some(value => typeof value !== 'string')) {
+    return { kind: 'hold', reason: 'certificate-schema-invalid' };
+  }
   const body = fixedCertificateBody(cert);
   if (!signatureValid(body, cert.ownerSignature, authority.ownerPublicKeys[cert.owner])
     || !signatureValid(body, cert.reviewerSignature, authority.reviewerPublicKeys[cert.reviewer])) {
     return { kind: 'hold', reason: 'certificate-signature-invalid' };
   }
-  if (cert.observedOutcomes < 300 || cert.gradableOutcomes < 300 || cert.confirmedMisses !== 0
+  if (!Number.isSafeInteger(cert.observedOutcomes) || !Number.isSafeInteger(cert.gradableOutcomes)
+    || !Number.isSafeInteger(cert.confirmedMisses)
+    || cert.observedOutcomes < 300 || cert.gradableOutcomes < 300 || cert.confirmedMisses !== 0
+    || !Number.isSafeInteger(cert.reviewedMissEpoch) || cert.reviewedMissEpoch < 0
     || !cert.testEvidenceId || !cert.shadowEvidenceId || !cert.canaryAssertionId) {
     return { kind: 'hold', reason: 'certificate-evidence-incomplete' };
   }

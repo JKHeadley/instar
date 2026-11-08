@@ -22,7 +22,7 @@ function fixture() {
     id: 'health-ok-v1', version: 1, registryEpoch: 7, slug: 'health-check',
     templateDigest: 'sha256:script-v1', featureStateHash: 'features-v1',
     result: 'success', summary: 'all-clear', reasonCode: 'all-clear', fields: { count: '0' },
-    observedOutcomes: 300, gradableOutcomes: 300, confirmedMisses: 0,
+    observedOutcomes: 300, gradableOutcomes: 300, confirmedMisses: 0, reviewedMissEpoch: 0,
     testEvidenceId: 'unit-boundary-v1', shadowEvidenceId: 'shadow-300-v1',
     canaryAssertionId: 'canary-1', canaryPassedAt: new Date(now - 60_000).toISOString(),
     owner: 'owner-a', reviewer: 'reviewer-b', ownerSignature: '', reviewerSignature: '',
@@ -95,6 +95,35 @@ describe('exact fixed-result certificates', () => {
       expect(store.get(revoked)).toMatchObject({ status: 'unchecked', reason: 'certificate-revoked' });
       expect(store.heldSlugs()).toEqual([expect.objectContaining({ slug: 'health-check', reason: 'certificate-revoked' })]);
       expect(store.isSlugHeld('health-check')).toBe(true);
+    } finally {
+      store.close();
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/job-fixed-result-certificate.test.ts' });
+    }
+  });
+
+  it('rechecks an unreadable registry result and releases only its transient hold after a fresh fixed proof', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fixed-result-recovery-'));
+    const store = new JobSupervisionStore(dir);
+    try {
+      const { cert, authority } = fixture();
+      const id = store.register({ runId: 'fixed-recovery', fireId: 'fixed-recovery-fire', slug: 'health-check',
+        templateDigest: attempt.templateDigest, featureStateHash: attempt.featureStateHash,
+        decisionEligible: true, evidencePolicy: 'structured-v2', now });
+      store.recordResult(id, { result: 'success', completedAt: new Date(now).toISOString() });
+      store.markUncheckedAndHold(id, 'registry-unreadable', now + 1000);
+      expect(store.resolveFixed(id, { parsed, certificate: cert,
+        authority: { ...authority, now: now + 2000 } })).toBe(true);
+      expect(store.get(id)).toMatchObject({ status: 'resolved', provider: 'fixed', verdict: 'routine' });
+      expect(store.isSlugHeld('health-check')).toBe(false);
+      expect(store.gradeOutcome({ attemptId: id, evidenceId: 'independent-false-routine',
+        ruleId: 'manual-independent-grade', gradedBy: 'independent-reviewer',
+        grade: 'incorrect', now: now + 3000 })).toBe(true);
+      expect(store.slugHoldReason('health-check')).toBe('confirmed-false-routine');
+      expect(store.pendingFixedRevocations()).toEqual([expect.objectContaining({
+        attemptId: id, certificateId: cert.id, evidenceId: 'independent-false-routine',
+      })]);
+      expect(store.acknowledgeFixedRevocation(id, 'independent-false-routine', now + 4000)).toBe(true);
+      expect(store.pendingFixedRevocations()).toEqual([]);
     } finally {
       store.close();
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/job-fixed-result-certificate.test.ts' });

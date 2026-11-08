@@ -10,6 +10,8 @@ import { triageQuestions, TRIAGE_JEV_MODEL } from './JobResultTriage.js';
 import { SUPERVISION_EVIDENCE_POLICY } from './JobSupervisionEvidence.js';
 import { buildJobReplacementPrompt, JOB_REPLACEMENT_PROMPT_HASH } from './JobSupervisionReplacementPrompt.js';
 import type { JobSupervisionStore, SupervisionVerdict } from './JobSupervisionStore.js';
+import { selectFixedCertificate } from './JobFixedCertificateRegistry.js';
+import type { JobFixedRegistryReader } from './JobFixedRegistryReader.js';
 
 const JEV_ENDPOINT = 'https://api.typesafe.ai/v1/systemone';
 const DECISION_POINT = 'job-result-supervision-v2';
@@ -42,6 +44,9 @@ export interface JobSupervisionWorkerDeps {
   readJevKey: () => string | null;
   /** Benchmarked Haiku or Luna; absent on one-provider agents without proof. */
   replacement?: () => ReplacementChoice | null;
+  fixedRegistry?: JobFixedRegistryReader;
+  /** Active result cohorts require the pinned authority even when boot could not construct a reader. */
+  fixedRegistryRequired?: boolean;
   /** The caller wires this only when every model call is registered and gradeable. */
   auditReady: () => boolean;
   fetchImpl?: typeof fetch;
@@ -110,6 +115,34 @@ export class JobSupervisionWorker {
     if (!row || !evidence || sha(evidence) !== row.evidenceHash) {
       this.deps.store.markUnchecked(attemptId, 'evidence-withheld', this.now());
       return;
+    }
+    const fixedShape = this.deps.store.fixedShape(attemptId);
+    if (fixedShape && this.deps.fixedRegistryRequired && !this.deps.fixedRegistry) {
+      this.deps.store.markUncheckedAndHold(attemptId, 'registry-unreadable', this.now());
+      this.deps.onAttention?.(attemptId, 'registry-unreadable');
+      return;
+    }
+    if (fixedShape && this.deps.fixedRegistry) {
+      const registry = await this.deps.fixedRegistry.read();
+      if (!registry) {
+        this.deps.store.markUncheckedAndHold(attemptId, 'registry-unreadable', this.now());
+        this.deps.onAttention?.(attemptId, 'registry-unreadable');
+        return;
+      }
+      if (registry) {
+        const selected = selectFixedCertificate(registry, row, fixedShape);
+        if (selected.ambiguous) {
+          this.deps.store.markUncheckedAndHold(attemptId, 'certificate-ambiguous', this.now());
+          this.deps.onAttention?.(attemptId, 'certificate-ambiguous');
+          return;
+        }
+        if (selected.certificate) {
+          if (this.deps.store.resolveFixed(attemptId, { parsed: fixedShape,
+            certificate: selected.certificate, authority: registry.authority })) return;
+          if (this.deps.store.get(attemptId)?.reason !== 'registry-unreadable'
+            && this.deps.store.get(attemptId)?.status === 'unchecked') return;
+        }
+      }
     }
     let key: string | null;
     try { key = this.deps.readJevKey(); } catch { key = null; /* @silent-fallback-ok — provider-unavailable is journaled below. */ }
@@ -230,6 +263,7 @@ export class JobSupervisionWorker {
 
   private afterVerdict(attemptId: string): void {
     const row = this.deps.store.get(attemptId);
+    if (row?.verdict) this.deps.store.clearHoldSlugIfReason(row.slug, 'registry-unreadable', this.now());
     // Only a separately verified empty grade pass can provide a positive
     // production outcome for this first script. The ordinary server receipt
     // is included in Jev's input and is never itself a grade.

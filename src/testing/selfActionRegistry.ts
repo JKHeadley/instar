@@ -41,6 +41,7 @@ import { CHROME_UPGRADE_INTERVAL_MS, MAX_INSTALL_ATTEMPTS, decideProvision, type
 import fs from 'node:fs';
 import os from 'node:os';
 import { checkThrowawayExpiry, MAX_TEARDOWN_ATTEMPTS } from '../core/ThrowawayAgentGuard.js';
+import { fixedRevocationRetryDelay } from '../scheduler/JobSupervisionStore.js';
 import path from 'node:path';
 import { decideConnectEnable, CONNECT_ENABLE_RESTART_COOLDOWN_MS, type ConnectEnableRequestRecord } from '../threadline/connectEnable.js';
 import { EMPTY_KILL_LEDGER, isBreakerTripped, recordKill } from '../monitoring/ExternalHogKillLedger.js';
@@ -3793,6 +3794,32 @@ const jobSupervisionProviderRetry: SelfActionController = {
   makeUnderPressure: (f, sink) => jobSupervisionRetryModel(f, sink),
 };
 
+/** An undeliverable signed revocation keeps one durable proof and one
+ * escalation, then backs off to a daily probe after 20 failures. */
+const jobFixedRevocationDelivery: SelfActionController = {
+  id: 'job-fixed-revocation-delivery', actionVerb: 'retry-fixed-revocation',
+  models: 'src/scheduler/JobFixedRegistryRevocationDispatcher.ts (durable outbox and retry brake)',
+  modelsPath: 'src/scheduler/JobFixedRegistryRevocationDispatcher.ts',
+  boundK: Number.POSITIVE_INFINITY, perTargetBoundK: Number.POSITIVE_INFINITY,
+  ticks: 100, tickMs: 5_000,
+  eternalSentinel: { reason: 'revocation proof must eventually reach the writer; durable backoff becomes one daily probe and one attention item', rateFloorMs: 5_000 },
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => jobFixedRevocationModel(f, sink) },
+  makeUnderPressure: (f, sink) => jobFixedRevocationModel(f, sink),
+};
+
+function jobFixedRevocationModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  return { tick() {
+    sink.considered++;
+    if (!f.targetAlwaysRejects()) return;
+    const due = (f.durableState.get('fixed-revocation-next') as number | undefined) ?? 0;
+    if (f.clock.nowMs() < due) return;
+    const failures = ((f.durableState.get('fixed-revocation-failures') as number | undefined) ?? 0) + 1;
+    f.durableState.set('fixed-revocation-failures', failures);
+    f.durableState.set('fixed-revocation-next', f.clock.nowMs() + fixedRevocationRetryDelay(failures));
+    sink.emit({ verb: 'retry-fixed-revocation', target: 'one-certificate' });
+  } };
+}
+
 function jobSupervisionRetryModel(f: PressureFixture, sink: ActionSink): { tick(): void } {
   return { tick() {
     sink.considered++;
@@ -4322,6 +4349,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   sessionPoolStagePromotion,
   jobSilenceAlert,
   jobSupervisionProviderRetry,
+  jobFixedRevocationDelivery,
   jobSupervisionCensusRepair,
   throwawayExpiryTeardown,
   localVerifyInterruptedResume,

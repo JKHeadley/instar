@@ -11,6 +11,15 @@ Jev, including thousands of identical “OK” lines. Reading the same bare OK
 line cannot show Jev whether the script is secretly broken; a separate test
 that makes the script face a simulated failure is more useful for that.
 
+A fixed result needs a certificate signed by the job owner and an independent
+reviewer. The certificate lives with one pool authority, so a bad result found
+on one machine can revoke the same result everywhere. Before trusting a fixed
+result, each machine reads the authority's fresh signed record. If that record
+is unavailable or the daily failure test is stale, the script route pauses
+or uses its approved older session route. A later independent miss also
+suspends any active certificate for that exact result, including one renewed
+while the miss was still on its way to the authority.
+
 This design makes **every result count**. Each completed script run gets a
 record saying how it was supervised. An exact, well-tested result whose
 meaning is fully known can be handled by fixed rules. Anything new, changed,

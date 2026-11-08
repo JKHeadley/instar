@@ -3694,6 +3694,15 @@ export interface InstarConfig {
       keepProfiles?: string[];
     };
   };
+  /** Explicit, dark-by-default pool writer for reviewed fixed-result certificates.
+   * Every machine in one pool must pin the same paired machine id. */
+  jobResultSupervision?: {
+    fixedRegistry?: {
+      authorityMachineId: string;
+      ownerPublicKeys: Record<string, string>;
+      reviewerPublicKeys: Record<string, string>;
+    };
+  };
   /** Operator-initiated native desktop access. Explicit opt-in on a
    * development agent only; omitted and false both leave every route dark. */
   remoteDesktop?: {

@@ -27,6 +27,8 @@ import { StopGateDb } from '../../src/core/StopGateDb.js';
 import { PreferenceStore } from '../../src/providers/uxConfirm/PreferenceStore.js';
 import { SpawnLedger } from '../../src/threadline/SpawnLedger.js';
 import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
+import { JobFixedRegistryAuthorityStore } from '../../src/scheduler/JobFixedRegistryAuthorityStore.js';
+import { JobFixedRegistryReplica } from '../../src/scheduler/JobFixedRegistryReplica.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = path.join(REPO_ROOT, 'src');
@@ -89,6 +91,10 @@ const LONG_LIVED_STORES = [
   // Script-result supervision keeps its WAL journal open for the scheduler's
   // lifetime and must close before process exit.
   'src/scheduler/JobSupervisionStore.ts',
+  // The signed fixed-result authority and its monotonic peer witness keep
+  // separate WAL handles open for the server lifetime.
+  'src/scheduler/JobFixedRegistryAuthorityStore.ts',
+  'src/scheduler/JobFixedRegistryReplica.ts',
 ];
 
 /**
@@ -197,6 +203,19 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
     db.close();
     fs.writeFileSync(path.join(ledger, 'job-supervision-baseline.json'), JSON.stringify({ at: new Date().toISOString() }));
     expect(() => new JobSupervisionStore(tmp)).toThrow();
+    expect(sqliteRegistrySize()).toBe(0);
+  });
+
+  it('fixed registry writer and replica each register and unregister their own WAL handle', () => {
+    const signer = { machineId: () => 'm-writer', signerKeyHash: () => 'test-key',
+      sign: () => ({ machineId: 'm-writer', signerKeyHash: 'test-key', sig: 'test-only' }) };
+    const writer = new JobFixedRegistryAuthorityStore(tmp, signer, 'm-writer', {}, {});
+    expect(sqliteRegistrySize()).toBe(1);
+    const replica = new JobFixedRegistryReplica(tmp);
+    expect(sqliteRegistrySize()).toBe(2);
+    replica.close();
+    expect(sqliteRegistrySize()).toBe(1);
+    writer.close();
     expect(sqliteRegistrySize()).toBe(0);
   });
 });

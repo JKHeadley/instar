@@ -56,6 +56,7 @@ export interface SupervisionCoverage {
   attempts: SupervisionAttempt[];
   rollout: JobSupervisionRolloutState;
   holds: Array<{ slug: string; reason: string; heldAt: string }>;
+  pendingFixedRevocations: ReturnType<JobSupervisionStore['pendingFixedRevocations']>;
   callAudit: ReturnType<JobSupervisionStore['callSummarySince']>;
 }
 
@@ -129,6 +130,7 @@ export function buildSupervisionCoverage(deps: JobTriageRoutesDeps, sinceHours: 
     coverageIncomplete, reconciliation, attempts,
     rollout: deps.supervisionRollout?.() ?? jobSupervisionRolloutState(),
     holds: store.heldSlugs(),
+    pendingFixedRevocations: store.pendingFixedRevocations(),
     callAudit: store.callSummarySince(since) };
 }
 

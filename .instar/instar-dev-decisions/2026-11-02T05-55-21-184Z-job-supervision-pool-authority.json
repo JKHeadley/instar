@@ -1,0 +1,52 @@
+{
+  "ts": "2026-11-02T05:55:21.184Z",
+  "slug": "job-supervision-pool-authority",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 18,
+  "loc": 1298,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/scheduler/JobFixedCertificateRegistry.ts",
+      "src/scheduler/JobFixedRegistryAuthorityStore.ts",
+      "src/scheduler/JobFixedRegistryReader.ts",
+      "src/scheduler/JobFixedRegistryReplica.ts",
+      "src/scheduler/JobFixedRegistryRevocation.ts",
+      "src/scheduler/JobFixedRegistryRevocationDispatcher.ts",
+      "src/scheduler/JobFixedResultCertificate.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/JobSupervisionStore.ts",
+      "src/scheduler/JobSupervisionWorker.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/jobFixedRegistryRoutes.ts",
+      "src/server/jobTriageRoutes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1267,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The dispatcher processes at most 100 durable outbox rows per tick, backs off repeated failures, and stops retrying each proof only after a fresh signed authority snapshot shows revocation."
+    }
+  },
+  "verdict": "pass"
+}
