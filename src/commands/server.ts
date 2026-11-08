@@ -29684,7 +29684,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           // ── App conversations in the pool (docs/specs/app-conversations-in-the-pool.md) ──
           // The lease gate, the flag, the enforcer and the moves. Every seam is this block's own
           // registry, journal pairing, drain sender and queue. Dark stage ⇒ `active()` false ⇒ today's rule.
-          {
+          // A named function, called at once, not a bare block or an IIFE (which tsc inlines): its own flow
+          // graph keeps startServer under tsc's control-flow depth limit (TS2563), which main sits at.
+          const wireAppConversationsPool = (): void => {
             const appHoldsLease = (): boolean => (coordinator.enabled ? coordinator.holdsLease() : true);
             const appCaps = (): MachineCapacity[] => machinePoolRegistry?.getCapacities() ?? [];
             const appActive = (): boolean => resolveDevAgentGate(config.multiMachine?.sessionPool?.appConversations?.enabled, config) && _sessionPoolStage() !== 'dark' && !!durableOwnershipStore && _placementReplicationOn === true && !!_appConversationService && !!_sessionRouter;
@@ -29861,7 +29863,8 @@ export async function startServer(options: StartOptions): Promise<void> {
             appPoolTick();
             const appPoolTimer = setInterval(appPoolTick, 5_000);
             appPoolTimer.unref?.();
-          }
+          };
+          wireAppConversationsPool();
 
           // ── Ownership-gated spawn seam (ownership-gated-spawn §3.1, Layer A) ──
           // Constructed whenever the mesh block runs; the seam short-circuits
