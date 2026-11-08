@@ -5,3 +5,5 @@
 **Proof:** with the store's real reader forced to report a full disk, all 89 tests in the three files pass; they also pass on the real disk.
 **Behaviour:** none in production. Without `mediaDiskSpace` the store reads the real disk exactly as before.
 **Rollback:** revert; nothing else reads the new option.
+
+**Release note:** `upgrades/next/media-disk-tests.md`.
