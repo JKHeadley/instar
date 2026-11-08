@@ -1,3 +1,6 @@
+import { assertRecoveryBootstrapWrite, preserveRecoveryBootstrap, enrolledRecoveryBootstrapMode } from '../recovery/RecoveryBootstrapBindings.js';
+import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
+import { beginRecoveryAutostartUpdate, beginRecoveryAutostartBindingUpdate } from '../recovery/RecoveryAutostartUpdate.js';
 /**
  * Interactive setup wizard — the one-line onboarding experience.
  *
@@ -823,7 +826,7 @@ export function installAutoStart(
     setLastAutoStartRefusal(refusal);
     if (refusal) return false;
     if (platform === 'darwin') {
-      return installMacOSLaunchAgent(projectName, projectDir, hasTelegram);
+      return installMacOSLaunchAgent(projectName, projectDir, hasTelegram, opts.noStart === true);
     } else if (platform === 'linux') {
       return installLinuxSystemdService(projectName, projectDir, hasTelegram, opts.noStart === true);
     }
@@ -1047,7 +1050,9 @@ function pickDurableNodePath(candidates: string[], nativeModulePath?: string): s
  *
  * Returns the symlink path.
  */
-export function ensureStableNodeSymlink(projectDir: string): string {
+export function ensureStableNodeSymlink(projectDir: string, beforeWrite?:(target:string)=>void): string {
+  if(!beforeWrite&&preserveRecoveryBootstrap(projectDir))return path.join(projectDir,'.instar','bin','node');
+  if(beforeWrite)assertRecoveryBootstrapWrite(projectDir);
   const binDir = path.join(projectDir, '.instar', 'bin');
   const symlinkPath = path.join(binDir, 'node');
 
@@ -1071,6 +1076,7 @@ export function ensureStableNodeSymlink(projectDir: string): string {
     throw new Error(`No real Node binary found outside managed symlink ${symlinkPath}`);
   }
 
+  beforeWrite?.(path.resolve(durablePath));
   // Check if symlink exists and already points to a valid target.
   try {
     const target = fs.readlinkSync(symlinkPath);
@@ -1135,7 +1141,7 @@ function escapeXml(str: string): string {
  * Using node directly as the plist entry point bypasses this because
  * user-installed binaries (homebrew, nvm) are not subject to TCC restrictions.
  */
-export function installBootWrapper(projectDir: string): { sh: string; js: string } {
+export function installBootWrapper(projectDir: string, beforeWrite?:(js:string,sh:string)=>void): { sh: string; js: string } {
   const stateDir = path.join(projectDir, '.instar');
   const shPath = path.join(stateDir, 'instar-boot.sh');
 
@@ -1331,6 +1337,11 @@ const NODE_CANDIDATES_FILE = ${JSON.stringify(nodeCandidatesFile)};
 // NODE_MODULE_VERSION. Switching from v22 -> v25 (or any major bump) breaks
 // native modules and causes server crash-loops / event loop deadlocks.
 function selfHealNodeSymlink() {
+  // Enrolled recovery pins the interpreter and keeps its own validated copy.
+  // Runtime ABI candidate search must not rewrite that approved alias. Missing
+  // bindings restore through recovery/startup admission; legitimate changes use
+  // the trusted installer transaction before any alias bytes are replaced.
+  if (fs.existsSync(${JSON.stringify(path.join(stateDir,'recovery','host.json'))})) return;
   try {
     const currentNode = process.execPath;
     const symlinkDir = path.dirname(NODE_SYMLINK);
@@ -1589,6 +1600,9 @@ child.on('error', (err) => {
 });
 `;
 
+  if(!beforeWrite&&preserveRecoveryBootstrap(projectDir))return {sh:shPath,js:jsPath};
+  if(beforeWrite)assertRecoveryBootstrapWrite(projectDir);
+  beforeWrite?.(jsWrapper,bashWrapper);
   fs.mkdirSync(stateDir, { recursive: true });
   // A promotion can request this regeneration immediately before switching
   // installs. Never leave a half-written launchd wrapper after interruption.
@@ -1624,7 +1638,10 @@ export function ensureBootWrapper(projectDir: string): boolean {
     `[setup] Boot wrapper(s) missing under ${stateDir} — regenerating. ` +
     `If the agent had been restarted by launchd in this state, it would have been permanently dead.`
   );
-  installBootWrapper(projectDir);
+  const enrolled=enrolledRecoveryBootstrapMode(projectDir);
+  if(enrolled){
+    if(!installAutoStart(enrolled.agentId,projectDir,enrolled.hasTelegram,{noStart:true}))throw new Error('recovery-bootstrap-owned-update-required');
+  }else installBootWrapper(projectDir);
   return true;
 }
 
@@ -1644,6 +1661,7 @@ export function ensureBootWrapper(projectDir: string): boolean {
  * Returns true if writes occurred, false if no-op.
  */
 export function installFleetWatchdog(): boolean {
+  let recoveryFleetUpdate:ReturnType<typeof beginRecoveryFleetUpdate>=null;
   if (process.platform !== 'darwin') return false;
 
   const scriptPath = path.join(os.homedir(), '.instar', 'instar-watchdog.sh');
@@ -1700,6 +1718,7 @@ export function installFleetWatchdog(): boolean {
   try {
     fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
     fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+    recoveryFleetUpdate=beginRecoveryFleetUpdate(scriptPath,plistPath,scriptBody,plistBody);
     fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
     fs.writeFileSync(plistPath, plistBody);
 
@@ -1709,9 +1728,12 @@ export function installFleetWatchdog(): boolean {
     } catch (err) {
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
       console.error(`[setup] CRITICAL: watchdog plist failed validation: ${stderr}`);
-      try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:installFleetWatchdog' }); } catch { /* best effort */ }
+      if(recoveryFleetUpdate)recoveryFleetUpdate.rollback();
+      else try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:installFleetWatchdog' }); } catch { /* best effort */ }
       return false;
     }
+
+    recoveryFleetUpdate?.commit();
 
     // Reload (bootout if loaded; bootstrap fresh) — skipped under test.
     if (launchctlLoadAllowed()) {
@@ -1725,21 +1747,26 @@ export function installFleetWatchdog(): boolean {
 
     return true;
   } catch (err) {
+    if(recoveryFleetUpdate){try{recoveryFleetUpdate.rollback();}catch{console.error('[recovery] fleet watchdog rollback incomplete; bindings remain degraded');}}
     console.error(`[setup] installFleetWatchdog: ${err instanceof Error ? err.message : String(err)}`);
     return false;
   }
 }
 
-function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTelegram: boolean): boolean {
+function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTelegram: boolean, noStart = false): boolean {
+  let recoveryUpdate:ReturnType<typeof beginRecoveryAutostartUpdate>=null;
+  let bindingUpdate:ReturnType<typeof beginRecoveryAutostartBindingUpdate>=null;
   const label = `ai.instar.${projectName}`;
   const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
   const plistPath = path.join(launchAgentsDir, `${label}.plist`);
   const logDir = path.join(projectDir, '.instar', 'logs');
 
+  try {
+  bindingUpdate=beginRecoveryAutostartBindingUpdate(projectDir,plistPath);
   // Install boot wrappers that resolve shadow install at startup time.
   // This ensures machine reboots use the auto-updated version, not the version
   // that was global when setup ran. See: github issue / cluster-shadow-install-*
-  const wrappers = installBootWrapper(projectDir);
+  const wrappers = installBootWrapper(projectDir,(js,sh)=>bindingUpdate?.wrappers(js,sh));
 
   // Determine what to start: lifeline if Telegram configured, otherwise just the server
   const command = hasTelegram ? 'lifeline' : 'server';
@@ -1754,7 +1781,7 @@ function installMacOSLaunchAgent(projectName: string, projectDir: string, hasTel
   //
   // We use a stable symlink (.instar/bin/node) so NVM/asdf version switches
   // don't break the plist. The symlink is updated by self-healing on every startup.
-  const nodeSymlink = ensureStableNodeSymlink(projectDir);
+  const nodeSymlink = ensureStableNodeSymlink(projectDir,target=>bindingUpdate?.node(target));
   const programArgs = [nodeSymlink, wrappers.js, ...args];
 
   // Build the plist XML
@@ -1826,7 +1853,6 @@ ${argsXml}
 </dict>
 </plist>`;
 
-  try {
     fs.mkdirSync(launchAgentsDir, { recursive: true });
     fs.mkdirSync(logDir, { recursive: true });
     // RAISE-ONLY on the setup path too (docs/specs/launchd-process-ceiling-floor.md §1,
@@ -1834,7 +1860,10 @@ ${argsXml}
     // REGENERATES this file — so without this, a re-run would silently clobber an operator
     // who deliberately raised their ceiling for a heavy host, and the contract that their
     // change "sticks" would be false. Found in spec review before it shipped, not after.
-    fs.writeFileSync(plistPath, preserveHigherProcessCeiling(plist, readExistingPlist(plistPath)));
+    const nextPlist=preserveHigherProcessCeiling(plist, readExistingPlist(plistPath));
+    recoveryUpdate=bindingUpdate?bindingUpdate.stage(nextPlist):beginRecoveryAutostartUpdate(projectDir,plistPath,nextPlist);
+    const temporary=plistPath+'.'+randomUUID()+'.tmp';
+    fs.writeFileSync(temporary,nextPlist,{mode:0o600,flag:'wx'});fs.renameSync(temporary,plistPath);
 
     // Validate the plist is well-formed XML before loading.
     // A corrupted plist means launchd can't restart the agent after crashes,
@@ -1845,13 +1874,14 @@ ${argsXml}
       const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
       console.error(`[setup] CRITICAL: Generated plist failed validation: ${stderr}`);
       console.error(`[setup] Plist path: ${plistPath}`);
-      // Remove the invalid plist so we don't leave a landmine
-      try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:1195' }); } catch { /* best effort */ }
+      if(recoveryUpdate)recoveryUpdate.rollback();
+      else try { SafeFsExecutor.safeUnlinkSync(plistPath, { operation: 'src/commands/setup.ts:1195' }); } catch { /* best effort */ }
       return false;
     }
 
+    // A trusted promotion can stage bindings without killing its own parent.
     // Load the agent (skipped under test — see launchctlLoadAllowed).
-    if (launchctlLoadAllowed()) {
+    if (!noStart && launchctlLoadAllowed()) {
       const commands = macOSAutoStartLoadCommands(label, plistPath, process.getuid?.() ?? 501);
       try {
         // Unload first if already loaded
@@ -1865,6 +1895,9 @@ ${argsXml}
       execFileSync(commands[2][0], commands[2][1], { stdio: 'ignore' });
     }
 
+    // Admission stays fenced through the exact main-service OS transition.
+    recoveryUpdate?.commit();
+
     // Ensure the user-machine fleet watchdog is installed alongside this agent.
     // Singleton per machine — first agent setup creates it, subsequent setups
     // refresh it from the latest template. Non-fatal if it fails (returns false).
@@ -1872,6 +1905,7 @@ ${argsXml}
 
     return true;
   } catch {
+    if(recoveryUpdate??bindingUpdate){try{(recoveryUpdate??bindingUpdate)!.rollback();}catch{console.error('[recovery] owned service update rollback incomplete; previous recovery state retained');}}
     return false;
   }
 }

@@ -10,3 +10,12 @@ docs
 .DS_Store
 coverage
 .turbo
+.instar
+.instar*
+.ssh
+.npmrc
+*.pem
+*.key
+saved-ssh-change.patch
+# The reviewed recovery public pin is public package trust, never private material.
+!src/scaffold/keys/instar-recovery-certification-root.pem

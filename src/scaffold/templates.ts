@@ -1,3 +1,4 @@
+import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
 import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
 /**
  * Project scaffolding templates for fresh installs.
@@ -2337,6 +2338,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
 (Source: codex-instar audit Item 11, 2026-05-22 confabulation incident where one agent fabricated an ACK from another, then logged its own fabrication as evidence of progress.)
 `;
 
+  content += recoveryAwareness(port);
   content += directJobSupervisionQualityAwareness(port);
   return content;
 }
