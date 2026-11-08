@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-08T00:39:12.912Z",
+  "slug": "storage-refusals-named",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 10,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Dependency classification metadata only; no autonomous actions or runtime decisions change."
+  },
+  "verdict": "pass"
+}

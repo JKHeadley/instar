@@ -10,6 +10,7 @@
  * E2E-PAIRING: tests/e2e/maturation-ladder-alive.test.ts.
  */
 
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { Router, type Request, type Response } from 'express';
 
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
@@ -149,7 +150,7 @@ export function createMaturationLadderRoutes(ctx: MaturationLadderCtx): Router {
     };
     const eventId = log.record(id, input);
     if (!eventId) {
-      res.status(500).json({ error: 'the row could not be written' });
+      res.status(500).json(storageErrorResponse({ error: 'the row could not be written' }, req.app.locals.stateDir));
       return;
     }
     res.json({ eventId });

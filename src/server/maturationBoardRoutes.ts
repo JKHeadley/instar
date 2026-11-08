@@ -16,6 +16,7 @@
  * production path is covered by tests/e2e/maturation-board-alive.test.ts.
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -728,7 +729,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
       res.json(body);
     } catch (err) { // @silent-fallback-ok — logged and answered as an explicit 500, never an empty board
       console.warn('[maturation-board] build failed:', err);
-      res.status(500).json({ error: 'maturation board build failed', detail: err instanceof Error ? err.message.slice(0, 200) : 'unknown' });
+      res.status(500).json({ error: 'maturation board build failed', detail: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir).slice(0, 200) : 'unknown' });
     }
   });
 

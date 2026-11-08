@@ -176,6 +176,7 @@ const ALLOWLIST: Record<string, string> = {
   // Agent's OWN outbound classified (not a user message) — signal-only, high-precision.
   'core/action-claim.ts': 'VERB_LEMMAS/FUTURE_LEAD — classifies the agent\'s own outbound "did I promise a future action"; audit "Related", not user-intent gating.',
   // Process / error-message signature matchers (classify a thrown error, not user text).
+  'core/storageMachineName.ts': 'isStorageError/isStorageFailure — recognizes local OS/SQLite error signatures only to name the originating machine; cosmetic diagnostic formatting, no user-intent or admission decision.',
   'core/crossModelReviewer.ts': 'classifyReviewFailure — classifies an error message (rate-limited/timeout); TIER_WORDS is a structured-output enum (survivor #3).',
   'threadline/requiredAck.ts': 'refusalReason — maps this server\'s own spawn-refusal error text to a closed display reason, like classifyReviewFailure; decides nothing and never reads user or peer text (spec a2a-required-acknowledgment).',
   'core/CliLoginStatus.ts': 'classifyCodexLoginStatus — classifies the `codex login status` CLI process output ("Logged in" / "Not logged in"), a process-signature matcher like classifyReviewFailure; never reads user text (spec skill-driven-signin-repair).',

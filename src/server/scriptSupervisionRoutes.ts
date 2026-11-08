@@ -7,6 +7,7 @@
  * 503 when the supervisor is unwired or its script rollout is inactive.
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import { Router, type Request, type Response } from 'express';
 import type { ScriptJobSupervisor } from '../scheduler/ScriptJobSupervisor.js';
 
@@ -20,7 +21,7 @@ export function createScriptSupervisionRoutes(deps: { supervisor: ScriptJobSuper
       // maps ok:false to JOB_RESULT failed so the failure path alerts.
       return res.json(result);
     } catch (err) {
-      return res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      return res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
   return router;

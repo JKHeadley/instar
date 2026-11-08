@@ -23,8 +23,9 @@
  *    never inside a synchronous per-message CAS (FD-2).
  */
 
-// canonical-migration-producer: threadline-inbound-canonical-store@1
+// canonical-migration-producer: threadline-inbound-canonical-store@2
 
+import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ThreadLog, ThreadLogAuthor, ThreadDirection, ThreadTextRef } from './ThreadLog.js';
@@ -284,7 +285,7 @@ export class ThreadMessageRecorder {
         this.d.attention?.createAttentionItem?.({
           id: `threadline-canonical-append-fail:${threadId}`,
           title: 'Threadline canonical history: append failing',
-          summary: `The canonical log for thread ${threadId} has failed to append ${n} consecutive messages. History for this thread may be incomplete (F3 symptom). Check disk/permissions under threadline/threads/.`,
+          summary: `The canonical log on ${storageMachineName(this.d.logDir ? path.dirname(this.d.logDir) : undefined)} for thread ${threadId} has failed to append ${n} consecutive messages. History for this thread may be incomplete (F3 symptom). Check disk/permissions under threadline/threads/.`,
           category: 'general',
           priority: 'HIGH',
           sourceContext: 'threadline-canonical-append-fail',

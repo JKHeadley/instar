@@ -1,3 +1,4 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { isQuietReceipt, QuietRecordedError, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/mobileMediaSend.ts');
@@ -132,7 +133,7 @@ export async function claimMediaUploads(s: AppConversationService, uploadIds: st
   try { await s.media.verifyClaimed(uploadIds); } catch (err) {
     s.media.releaseClaim(uploadIds, messageId);
     report(err instanceof Error ? err.message : String(err));
-    return { status: 503, body: { error: 'chat-unavailable', detail: 'The files could not be saved, so the message was not sent. Try again.' } };
+    return { status: 503, body: storageErrorResponse({ error: 'chat-unavailable', detail: 'The files could not be saved, so the message was not sent. Try again.' }, s.deps.stateDir) };
   }
   return null;
 }

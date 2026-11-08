@@ -27,6 +27,7 @@
  * machine's device-key ledger and signing-key history: verified / redacted / failed / unknown /
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
@@ -414,7 +415,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (!requestIdAgeOk(requestId, now())) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     let r: ReturnType<typeof store.reserve>;
     try { r = store.reserve(deviceId, requestId, hash, 0, extra); } catch {
-      res.status(503).json({ error: 'conversation-unavailable', detail: 'The request could not be recorded, so nothing was changed. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'conversation-unavailable', detail: 'The request could not be recorded, so nothing was changed. Try again.' }, svc!.deps.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -781,7 +782,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'send', conversationKey: key, messageId }); } catch {
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: request could not be recorded', context: { messageId, deviceId } });
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, svc!.deps.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -805,7 +806,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       s.deps.reportDegradation?.('AppConversations.persist', err instanceof Error ? err.message : String(err));
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'loss: message could not be saved', context: { messageId, deviceId, files: stored.length } });
       if (stored.length > 0) featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'files not published: message could not be saved', context: { messageId, files: stored.length } });
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, svc!.deps.stateDir));
       return;
     }
     for (const a of stored) {
