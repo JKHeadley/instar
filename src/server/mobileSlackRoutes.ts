@@ -68,6 +68,8 @@ export interface SlackAppConversation {
   mintedAt: string | null;
   /** The channel's Slack name (no '#') when known (fb-4db533fa-9d9); null while it is being looked up. */
   channelName?: string | null;
+  /** Channel, DM or group DM, when known: only a channel's title shows '#', as in Slack. */
+  channelKind?: 'channel' | 'dm' | 'group-dm' | null;
 }
 
 /** One Slack history row as the bridge reads it (slack-messages.jsonl and the in-memory ring). */
@@ -169,12 +171,16 @@ export function parseSlackConversationId(raw: string): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
-/** The title the app shows for a Slack conversation: its label, else `#<channel>` (a thread says so). */
+/**
+ * The title the app shows for a Slack conversation, written the way Slack writes it: a channel (public or
+ * private) is `#<name>`, a DM or group DM is its name with no '#'. The name is the label, else the Slack name,
+ * else the id while the name is being looked up. A thread says so.
+ */
 export function slackConversationTitle(c: SlackAppConversation): string {
-  const base = c.label ? c.label.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : '';
-  const channelName = c.channelName ? c.channelName.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : '';
-  // Its label, else `#<name>` from Slack, else the id while the name is being looked up.
-  const name = base || (channelName ? `#${channelName}` : `#${c.channelId}`);
+  const clean = (v: string | null | undefined) => (v ? v.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : '');
+  const shown = (clean(c.label) || clean(c.channelName) || c.channelId).replace(/^#+/, '');
+  const kind = c.channelKind ?? (c.channelId.startsWith('D') ? 'dm' : /^mpdm-/.test(shown) ? 'group-dm' : 'channel');
+  const name = kind === 'channel' ? `#${shown}` : shown;
   return c.threadTs ? `${name} (thread)` : name;
 }
 
@@ -554,6 +560,7 @@ export interface SlackAdapterLike {
   cachedUserName?(userId: string): string | null;
   /** A channel's name from the adapter's cache, or null while it is fetched (fb-4db533fa-9d9). */
   cachedChannelName?(channelId: string): string | null;
+  cachedChannelKind?(channelId: string): 'channel' | 'dm' | 'group-dm' | null;
 }
 
 /** The slice of ConversationRegistry the bridge uses. */
@@ -612,8 +619,9 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
     return out;
   };
   const channelNameOf = (channelId: string): string | null => { try { return d.adapter.cachedChannelName?.(channelId) ?? null; } catch { return null; } }; // @silent-fallback-ok — the title falls back to the id; the adapter logs a failed lookup
+  const channelKindOf = (channelId: string): 'channel' | 'dm' | 'group-dm' | null => { try { return d.adapter.cachedChannelKind?.(channelId) ?? null; } catch { return null; } }; // @silent-fallback-ok — an unknown kind is read from the id and name in slackConversationTitle
   const toConv = (key: string, e: { id: number; channelId: string; threadTs: string | null; mintedAt: string; label?: string }): SlackAppConversation => ({
-    id: e.id, key, channelId: e.channelId, threadTs: e.threadTs, label: e.label ?? null, mintedAt: e.mintedAt ?? null, channelName: channelNameOf(e.channelId),
+    id: e.id, key, channelId: e.channelId, threadTs: e.threadTs, label: e.label ?? null, mintedAt: e.mintedAt ?? null, channelName: channelNameOf(e.channelId), channelKind: channelKindOf(e.channelId),
   });
   /**
    * A row's sender name: the logged name, unless it is missing or is just the user id (the old
@@ -634,7 +642,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
       if (!r || r.platform !== 'slack' || r.origin === 'replicated' || typeof r.key !== 'string' || typeof r.channelId !== 'string' || typeof r.id !== 'number') return null;
       // An alias resolves to its target; the app keeps using the id it was given.
       const listed = d.registry.list({ platform: 'slack', limit: 5000 }).find((x) => x.entry.id === r.id);
-      return { id, key: r.key, channelId: r.channelId, threadTs: r.threadTs ?? null, label: r.label ?? null, mintedAt: listed?.entry.mintedAt ?? null, channelName: channelNameOf(r.channelId) };
+      return { id, key: r.key, channelId: r.channelId, threadTs: r.threadTs ?? null, label: r.label ?? null, mintedAt: listed?.entry.mintedAt ?? null, channelName: channelNameOf(r.channelId), channelKind: channelKindOf(r.channelId) };
     },
     conversations() {
       return d.registry.list({ platform: 'slack', limit: 500 })

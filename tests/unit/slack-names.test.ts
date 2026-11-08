@@ -33,7 +33,7 @@ describe('encodeSlackRequest', () => {
   });
 });
 
-function stub(names: Record<string, string>, channelNames: Record<string, string>) {
+function stub(names: Record<string, string>, channelNames: Record<string, string>, kinds: Record<string, 'channel' | 'dm' | 'group-dm'> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-names-'));
   dirs.push(dir);
   const logPath = path.join(dir, 'slack-messages.jsonl');
@@ -50,6 +50,7 @@ function stub(names: Record<string, string>, channelNames: Record<string, string
     isAuthorized: () => true,
     cachedUserName: (u) => names[u] ?? null,
     cachedChannelName: (c) => channelNames[c] ?? null,
+    cachedChannelKind: (c) => kinds[c] ?? null,
   };
   const registry = {
     list: () => [{ key: 'slack:T0CEF50NAR1:C0CG1C62HUL', entry: { id: -126660833, channelId: 'C0CG1C62HUL', threadTs: null, origin: 'minted-probed', mintedAt: '2026-11-08T18:24:18.000Z' } }],
@@ -79,7 +80,29 @@ describe('the Slack bridge shows names and channel titles', () => {
     expect(slackListRows(bridge)[0]!.title).toBe('#C0CG1C62HUL');
   });
   it('a label still wins over the channel name', () => {
-    expect(slackConversationTitle({ id: -1, key: 'k', channelId: 'C1', threadTs: null, label: 'Ops', mintedAt: null, channelName: 'ops-room' })).toBe('Ops');
+    expect(slackConversationTitle({ id: -1, key: 'k', channelId: 'C1', threadTs: null, label: 'Ops', mintedAt: null, channelName: 'ops-room' })).toBe('#Ops');
+  });
+});
+
+describe('the title is written the way Slack writes it: # for channels only', () => {
+  const t = (over: Record<string, unknown>) => slackConversationTitle({ id: -1, key: 'k', channelId: 'C0CG1C62HUL', threadTs: null, label: null, mintedAt: null, ...over } as never);
+  it('a public or private channel shows #<name>, with one # even when the label already has one', () => {
+    expect(t({ label: 'dcproof-test', channelKind: 'channel' })).toBe('#dcproof-test');
+    expect(t({ channelId: 'G0PRIV123', channelName: 'secret-room', channelKind: 'channel' })).toBe('#secret-room');
+    expect(t({ label: '#dcproof-test' })).toBe('#dcproof-test');
+    expect(t({ label: 'dcproof-test', threadTs: '1.2' })).toBe('#dcproof-test (thread)');
+  });
+  it('a DM never shows #, known from Slack or from its D id', () => {
+    expect(t({ channelId: 'D0DM12345', label: 'Gear Test', channelKind: 'dm' })).toBe('Gear Test');
+    expect(t({ channelId: 'D0DM12345' })).toBe('D0DM12345');
+  });
+  it('a group DM never shows #, known from Slack or from its mpdm- name', () => {
+    expect(t({ channelId: 'G0MPIM123', channelName: 'mpdm-echo--gear-1', channelKind: 'group-dm' })).toBe('mpdm-echo--gear-1');
+    expect(t({ channelId: 'G0MPIM123', label: 'mpdm-echo--gear-1' })).toBe('mpdm-echo--gear-1');
+  });
+  it('the bridge passes the adapter kind through to the list title', () => {
+    const bridge = stub({}, { C0CG1C62HUL: 'dcproof-test' }, { C0CG1C62HUL: 'dm' });
+    expect(slackListRows(bridge)[0]!.title).toBe('dcproof-test');
   });
 });
 
@@ -106,6 +129,26 @@ describe('SlackAdapter cached lookups', () => {
     expect(a.cachedUserName('U0CFA03N5QF')).toBe('Gear Test');
     expect(a.cachedChannelName('C0CG1C62HUL')).toBe('dcproof-test');
     expect(calls.filter((c) => c === 'users.info')).toHaveLength(1);
+  });
+  it('conversations.info also records the kind: channel, DM (no name lookup warning) or group DM', async () => {
+    const a = adapter();
+    (a as unknown as { apiClient: { call: (m: string, p: Record<string, unknown>) => Promise<unknown> } }).apiClient.call = async (_m, p) => {
+      if (p.channel === 'C0CG1C62HUL') return { ok: true, channel: { id: p.channel, name: 'dcproof-test', is_private: false } };
+      if (p.channel === 'G0PRIV123') return { ok: true, channel: { id: p.channel, name: 'secret-room', is_private: true } };
+      if (p.channel === 'G0MPIM123') return { ok: true, channel: { id: p.channel, name: 'mpdm-echo--gear-1', is_mpim: true, is_private: true } };
+      return { ok: true, channel: { id: p.channel, is_im: true, user: 'U0CFA03N5QF' } };
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(a.cachedChannelKind('D0DM12345')).toBe('dm'); // a D id is a DM before any lookup
+    for (const id of ['C0CG1C62HUL', 'G0PRIV123', 'G0MPIM123']) expect(a.cachedChannelKind(id)).toBeNull();
+    a.cachedChannelName('D0DM12345');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(a.cachedChannelKind('C0CG1C62HUL')).toBe('channel');
+    expect(a.cachedChannelKind('G0PRIV123')).toBe('channel');
+    expect(a.cachedChannelKind('G0MPIM123')).toBe('group-dm');
+    expect(a.cachedChannelKind('D0DM12345')).toBe('dm');
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('D0DM12345'))).toBe(false);
+    warn.mockRestore();
   });
   it('a failed lookup is logged with its reason, once, never silently', async () => {
     const a = adapter();
