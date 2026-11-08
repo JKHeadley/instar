@@ -366,7 +366,8 @@ describe('the restart loop, through the real coordinator', () => {
     }
     expect(restartsByRound.slice(-3)).toEqual([0, 0, 0]);
     expect([live.aaa.lc.holdsLease(), live.bbb.lc.holdsLease()].filter(Boolean)).toHaveLength(1);
-  });
+    // ~100 simulated minutes of fake timers: 7s of wall time on an idle machine, over 10s on a loaded CI runner.
+  }, 60_000);
 
   it('a running machine whose lease lapsed names a peer holding at its number, and stops renewing', async () => {
     const h = await boot('aaa');
