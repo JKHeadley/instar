@@ -71,6 +71,7 @@ import {
   choosePerson, devicePerson, isOwnerPerson, mayUseConversation, personLabel,
   type ConversationOwner, type DevicePerson, type OwnerIdentity, type PeopleLookup, type PersonProfile, type ResolvedPerson, type TeamStanding,
 } from '../core/MobilePeople.js';
+import { parseReaderKey } from '../core/ConversationReadMarkers.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -223,6 +224,15 @@ export function isMobileMediaEnabled(config: InstarConfig): boolean {
 export function isMobileNativeEnabled(config: InstarConfig): boolean {
   if (!isMobilePairingEnabled(config)) return false;
   return resolveDevAgentGate(config.mobilePairing?.native?.enabled, config);
+}
+
+/**
+ * Unread counts, read reports and the app badge (docs/specs/mobile-unread-messages.md §3.5):
+ * `mobilePairing.native.unread.enabled`, true when absent, so unread can be switched off alone;
+ * needs native conversations. Read live.
+ */
+export function isMobileUnreadEnabled(config: InstarConfig): boolean {
+  return isMobileNativeEnabled(config) && config.mobilePairing?.native?.unread?.enabled !== false;
 }
 
 /** `mobilePairing.approve.enabled` (docs/specs/mobile-pairing-approve.md §3.6): omitted ⇒ on wherever pairing is on. Read live. */
@@ -1919,6 +1929,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
+  ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/events$`), 'guest'],
@@ -1972,6 +1984,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
+    // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
+    // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
+    { method: 'POST', re: /^\/mobile\/conversations\/read$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 60, bucket: 'read-marks' },
     { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
@@ -2272,6 +2287,42 @@ export function deviceAdmissionIdentity(req: Request): MobileDeviceAdmissionIden
 export function devicePersonOf(req: Request): ResolvedPerson | null {
   const p = (req as unknown as { instarDevicePerson?: ResolvedPerson }).instarDevicePerson;
   return p && p.ok ? p : null;
+}
+
+/**
+ * mobile-unread-messages §3.5 `personOfReaderKey`: a forwarded reader key to a person through THIS
+ * machine's records. `owner` → the owner; `team:<k>` → the team log; `msp:<machineId>:<userId>` →
+ * only when the machine is this one (a same-named user elsewhere is never taken for the same person).
+ */
+export function personOfReaderKey(svc: MobilePairingService, key: string): ResolvedPerson | null {
+  const r = parseReaderKey(key);
+  if (!r) return null;
+  let p: DevicePerson;
+  if (r.role === 'owner') p = devicePerson({ role: 'owner' }, null, svc.ownerIdentity());
+  else if (r.role === 'msp') {
+    if (r.machineId !== svc.machineId()) return null;
+    p = devicePerson({ userId: r.userId, role: 'msp' }, svc.people(), svc.ownerIdentity(), (id) => svc.grants.get(id));
+  } else p = devicePerson({ userId: r.personKey, role: 'team' }, null, svc.ownerIdentity(), undefined, (k) => svc.teamStanding(k));
+  return p.ok ? p : null;
+}
+
+/**
+ * mobile-unread-messages §3.2: positive evidence, stored on THIS machine, that a reader is gone — an
+ * MSP user missing from a readable registry on its own machine, or a team person missing from a
+ * healthy, switched-on team log. An absent or unreadable log, or a key from another machine, is
+ * "not known here yet" and never removal.
+ */
+export function readerRemovedHere(svc: MobilePairingService, key: string): boolean {
+  const r = parseReaderKey(key);
+  if (!r || r.role === 'owner') return false;
+  if (r.role === 'msp') {
+    if (r.machineId !== svc.machineId()) return false;
+    const people = svc.people();
+    return !!people && people.getUser(r.userId) === null;
+  }
+  const log = svc.teamLog();
+  if (!log || log.healthState() !== 'ok' || !log.state().on) return false;
+  return !log.state().people.has(r.personKey);
 }
 
 /**
