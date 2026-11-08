@@ -110,7 +110,8 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       // Server-side diagnosis only; the response body stays the fixed hold code.
       const name = error instanceof Error ? error.constructor.name : typeof error;
       const message = error instanceof Error ? error.message : String(error);
-      console.warn('[telegram-origin] browser snapshot unavailable', { profileId: req.params.profileId, errorClass: name, message: message.slice(0, 200) });
+      // One string: the server's console wrapper prints an object argument as [object Object].
+      console.warn(`[telegram-origin] browser snapshot unavailable: profile=${req.params.profileId} class=${name} message=${message.slice(0, 200)}`);
       res.status(409).json({ error: 'telegram-browser-snapshot-unavailable' });
     }
   });
