@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ClaudeKeyHealth, KEY_WATCH_MS, claudeKeyFingerprint } from '../../src/core/ClaudeKeyHealth.js';
 import { OPERATOR_OK_TEXT, PROBE_START_MS, UsageLimitWatch } from '../../src/core/UsageLimitWatch.js';
 
@@ -307,20 +307,28 @@ describe('a session walled on its very first turn (no hook ever reported its tra
   });
 });
 
+// One private tmux server for the whole block. Killing the server after each test and starting
+// a new one on the same socket raced on the CI runner: the next `new-session` reached the dying
+// server and failed (CI run 42431009814, shard 4/4 on node 20 and 22). The second test does not
+// touch tmux at all, so one server, started once and killed once, is also the honest shape.
+const { execFileSync: realExecFileSync, spawnSync: realSpawnSync } = require('node:child_process') as typeof import('node:child_process');
+// Every lane that runs this file has tmux (CI builds 3.6a; the verifiers run real sessions).
+const realTmux = (() => { const w = realSpawnSync('which', ['tmux'], { encoding: 'utf-8' }); return w.status === 0 && w.stdout.trim() ? w.stdout.trim() : 'tmux'; })();
+
 describe('which Claude home a session runs on, read from real tmux', () => {
   const sock = `ulw-test-${process.pid}-${Date.now()}`;
   let dir: string; let tmuxPath: string;
-  const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
-  const tmux = (...a: string[]) => execFileSync('tmux', ['-L', sock, ...a], { stdio: 'ignore' });
-  beforeEach(() => {
+  // stderr is kept so a failure names tmux's own reason instead of a bare "Command failed".
+  const tmux = (...a: string[]) => realExecFileSync(realTmux, ['-L', sock, '-f', '/dev/null', ...a], { stdio: ['ignore', 'pipe', 'pipe'] });
+  beforeAll(() => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tmux-wrap-'));
     tmuxPath = path.join(dir, 'tmux');
-    fs.writeFileSync(tmuxPath, `#!/bin/sh\nexec tmux -L ${sock} "$@"\n`, { mode: 0o755 });
-    tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'absent', 'sleep 60');
+    fs.writeFileSync(tmuxPath, `#!/bin/sh\nexec ${realTmux} -L ${sock} "$@"\n`, { mode: 0o755 });
+    tmux('new-session', '-d', '-s', 'absent', 'sleep 60');
     tmux('new-session', '-d', '-s', 'removed', 'sleep 60'); tmux('set-environment', '-t', 'removed', '-r', 'CLAUDE_CONFIG_DIR');
     tmux('new-session', '-d', '-s', 'pinned', 'sleep 60'); tmux('set-environment', '-t', 'pinned', 'CLAUDE_CONFIG_DIR', '/x/.claude-acct');
   });
-  afterEach(() => { try { tmux('kill-server'); } catch { /* already gone */ } fs.rmSync(dir, { recursive: true, force: true }); });
+  afterAll(() => { try { tmux('kill-server'); } catch { /* already gone */ } fs.rmSync(dir, { recursive: true, force: true }); });
 
   it('a session that never had CLAUDE_CONFIG_DIR runs on the default home, but only for a reader that opts in', async () => {
     const { SessionManager } = await import('../../src/core/SessionManager.js');
