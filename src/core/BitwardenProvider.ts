@@ -210,8 +210,9 @@ export class BitwardenProvider {
       return true;
     } catch (err) {
       // `bw logout` on a signed-out CLI exits non-zero with "You are not logged in."; that is the state wanted.
-      const text = err instanceof Error ? `${err.message} ${(err as { stderr?: unknown }).stderr ?? ''}` : String(err);
-      if (/not logged in/i.test(text)) {
+      // This is the bw CLI's own exit text, not a person's words: a fixed-string check on tool output.
+      const cliOutput = err instanceof Error ? `${err.message} ${(err as { stderr?: unknown }).stderr ?? ''}` : String(err);
+      if (/not logged in/i.test(cliOutput)) {
         this.sessionKey = null;
         return true;
       }

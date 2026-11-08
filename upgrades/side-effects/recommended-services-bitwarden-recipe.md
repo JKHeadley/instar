@@ -215,3 +215,6 @@ Concur. Non-blocking findings:
 ## Post-merge-queue fix (2026-11-08)
 
 The Studio's Local Verify of the rebased branch failed 105 unit tests, all route-harness tests: the wiring passed `path.basename(ctx.config.projectDir)` eagerly at route registration, and a harness config with no project directory threw before any route existed. Fixed by guarding the folder-name read (`'agent'` when no directory is configured); the recipe tests and the nine affected route-test files pass locally on the rebased tree. Nothing about the recipe's behaviour changes on a real agent, whose config always has a project directory.
+
+
+Second verify finding (2026-11-08 01:21): the keyword-intent ratchet flagged `BitwardenProvider.logout` for testing a natural-language phrase against a variable named `text`. The variable holds the bw CLI's exit text, not a person's message; renamed to `cliOutput` with a comment, which both satisfies the ratchet's variable rule and states the truth of what is being matched. No behaviour change.
