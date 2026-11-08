@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { actionLine, buildAction, type PermissionAction, type SessionAction } from '../../src/server/mobilePermissionsRoutes.js';
 import {
   closeAnswer, createBody, doorRows, machineRows, modelOptionWords, modelWords, moveAnswer, newSessionAnswer, regimeWords, runSessionAction,
-  summarizeControls, summarizeNewOptions, type RouteAnswer, DOOR,
+  summarizeControls, summarizeNewOptions, selfNameOf, type RouteAnswer, DOOR,
 } from '../../src/server/mobileSessionControlsRoutes.js';
 import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 import { AttachmentWindow, DEVICE_KEYS, peerTooOldReason, redactDeep } from '../../src/server/mobileSessionTerminalRoutes.js';
@@ -162,7 +162,9 @@ describe('the words', () => {
   it('machines: fewer than two is none; a machine that can not be picked says why', () => {
     expect(machineRows({ machines: [{ machineId: 'a', nickname: 'A', online: true }] })).toBeNull();
     const rows = machineRows(POOL)!.rows;
-    expect(rows.find((m) => m.machineId === 'm_self')).toMatchObject({ here: true, selectable: true, label: 'Studio (this machine)' });
+    expect(rows.find((m) => m.machineId === 'm_self')).toMatchObject({ here: true, selectable: true, label: 'Studio' });
+    expect(selfNameOf(POOL)).toBe('Studio');
+    expect(selfNameOf({ machines: [] })).toBeNull();
     expect(rows.find((m) => m.machineId === 'm_peer')).toMatchObject({ selectable: true, label: 'Mac Mini (at usage limit)' });
     expect(rows.find((m) => m.machineId === 'm_down')).toMatchObject({ selectable: false, reason: 'not answering' });
     expect(rows.find((m) => m.machineId === 'm_clock')).toMatchObject({ selectable: false, reason: 'clock out of step' });
@@ -173,7 +175,8 @@ describe('the words', () => {
   });
   it('a peer too old names the way forward', () => {
     expect(peerTooOldReason('Mac Mini')).toContain('Mac Mini needs the latest Instar update');
-    expect(peerTooOldReason('Mac Mini')).toContain('move it to this machine');
+    expect(peerTooOldReason('Mac Mini')).toContain('move it to an updated machine');
+    expect(peerTooOldReason('Mac Mini')).not.toMatch(/this machine/i);
   });
 });
 
@@ -236,7 +239,7 @@ describe('the menu', () => {
   });
   it('new session options: the default in words, and a failed read still lets it start', () => {
     const o = summarizeNewOptions(ok(OPTIONS), ok(POOL), {}, 0);
-    expect(o.defaultWords).toBe('New topics start on Codex (not verified) · GPT-6 (this machine only).');
+    expect(o.defaultWords).toBe('New topics start on Codex (not verified) · GPT-6 (on Studio only).');
     expect(o.doorsState).toBe('ok');
     const bad = summarizeNewOptions({ status: 503, body: null }, ok(POOL), {}, 0);
     expect(bad.doorsState).toBe('unavailable');

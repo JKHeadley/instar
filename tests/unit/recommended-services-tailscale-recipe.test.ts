@@ -32,9 +32,12 @@ describe('Tailscale recipe: the check', () => {
     expect(out.detail).not.toMatch(/100\.|fd7a|ts\.net|xxxx|@/);
   });
 
-  it('fails on the REAL captured status of a never-signed-in machine', () => {
+  it('fails on the REAL captured status of a never-signed-in machine, and says nothing of Tailscale is here', () => {
     const out = judgeTailscaleStatus(signedOut);
-    expect(out).toEqual({ result: 'fail', detail: 'This machine is not signed in to Tailscale yet.' });
+    expect(out).toEqual({ result: 'fail', absent: true, detail: 'This machine is not signed in to Tailscale yet.' });
+    // Signed in but stopped or offline: something is here, so a later pass is not setup's own sign-in.
+    expect(judgeTailscaleStatus(JSON.stringify({ BackendState: 'Stopped' })).absent).toBeUndefined();
+    expect(judgeTailscaleStatus(JSON.stringify({ BackendState: 'Running', Self: { Online: false, TailscaleIPs: ['x'] } })).absent).toBeUndefined();
   });
 
   it('fails every other state that is not a working connection', () => {
@@ -93,14 +96,14 @@ describe('Tailscale recipe: reading the program', () => {
 describe('Tailscale recipe: the brief', () => {
   const brief = recipe.brief({ port: 4321 });
 
-  it('is a proving recipe for the Tailscale row, and stores no secret', () => {
+  it('is the Tailscale row\'s proven recipe on every agent, and stores no secret', () => {
     expect(recipe.service).toBe('tailscale');
     expect(recipe.secretName).toBeNull();
     const row = catalogWithProving(['tailscale-v1'], () => true).find((r) => r.id === 'tailscale')!;
     expect(recipeFor(row)?.id).toBe('tailscale-v1');
-    // Not available anywhere it isn't being proven.
-    expect(RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'tailscale')!.setupRecipe).toBeNull();
-    expect(catalogWithProving(['tailscale-v1'], () => false).find((r) => r.id === 'tailscale')!.setupRecipe).toBeNull();
+    // Proven live 2026-11-07, so the catalog itself carries it: a fleet agent with no proving list has it too.
+    expect(RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'tailscale')!.setupRecipe).toBe('tailscale-v1');
+    expect(catalogWithProving(undefined, () => false).find((r) => r.id === 'tailscale')!.setupRecipe).toBe('tailscale-v1');
   });
 
   it('covers the install check, the sign-in link, the status check and the Linux operator step', () => {

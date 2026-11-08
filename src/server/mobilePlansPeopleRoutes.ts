@@ -83,7 +83,7 @@ function mergeByIdentity(sources: Array<{ items: unknown[]; machineId: string | 
 /** Machines that did not answer: counted, named only when a verified name exists. */
 export interface Unread { count: number; names: string[] }
 /** Registered machines the pool does not count as online (not asked): ids, never returned. */
-export interface Coverage { now: number; nicknameOf: (id: string) => string | null; offlineMachineIds?: string[] }
+export interface Coverage { now: number; nicknameOf: (id: string) => string | null; offlineMachineIds?: string[]; selfName?: string | null }
 function unreadOf(ids: string[], nicknameOf: (id: string) => string | null): Unread {
   const uniq = [...new Set(ids)];
   return { count: uniq.length, names: uniq.map((id) => machineWord(id, nicknameOf)).filter((n): n is string => !!n) };
@@ -347,7 +347,7 @@ export function summarizeCorrections(self: Part, peers: PeerList[], opts: Covera
   }));
   const selfState = selfRecords !== null ? 'ok' : !self.ok && self.off ? 'off' : 'unavailable';
   return {
-    state: 'ok', selfState, reason: selfState === 'unavailable' ? 'This machine’s corrections couldn’t be read; other machines’ are shown.' : null,
+    state: 'ok', selfState, reason: selfState === 'unavailable' ? `${opts.selfName ? `${opts.selfName}’s` : 'Some'} corrections couldn’t be read; the other machines’ are shown.` : null,
     watching: rows.filter((x) => x.watching).map((x) => x.row),
     earlier: rows.filter((x) => !x.watching).map((x) => x.row),
     shown: rows.length, unread, offline, truncated: all.length > MAX_CORRECTIONS || fullPage,
@@ -565,6 +565,8 @@ export interface MobilePlansPeopleDeps {
   /** The `/channels` report for this machine. */
   channels: () => Promise<unknown>;
   /** Machine id → registry nickname (unverified; the summarizers verify it). */
+  /** The answering machine's verified name, or null. */
+  selfName?: () => string | null;
   nicknameOf: (machineId: string) => string | null;
   bearerOk: (req: Request) => boolean;
   now?: () => number;
@@ -599,7 +601,7 @@ export function mountMobilePlansPeopleRoutes(router: Router, deps: MobilePlansPe
   const coverage = (): Coverage => {
     let offlineMachineIds: string[] = [];
     try { offlineMachineIds = deps.offlineMachineIds?.() ?? []; } catch (err) { reportReadFailure('offline machine list', err); }
-    return { now: now(), nicknameOf: deps.nicknameOf, offlineMachineIds };
+    return { now: now(), nicknameOf: deps.nicknameOf, offlineMachineIds, selfName: cleanText(deps.selfName?.() ?? null, 60) };
   };
   const head = () => ({ schemaVersion: MOBILE_PLANS_PEOPLE_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString() });
 

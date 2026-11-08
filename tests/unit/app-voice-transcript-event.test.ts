@@ -159,6 +159,8 @@ function service(o: Opts = {}) {
   const svc = new AppConversationService({
     stateDir: dir, machineId: () => m, registry, requests: new MobileChatRequestStore(dir), holdsLease: () => true,
     ownerName: () => 'Justin', dispatch: () => null, reportDegradation: (_w, d) => reports.push(d),
+    // A disk with room, whatever this machine's disk holds.
+    mediaDiskSpace: () => ({ free: 1e12, total: 2e12 }),
     ...(o.transcribe ? { transcribeVoice: o.transcribe } : {}), ...(o.deadlineMs !== undefined ? { transcribeDeadlineMs: o.deadlineMs } : {}),
     ...(o.concurrency !== undefined ? { transcribeConcurrency: o.concurrency } : {}), ...(o.ceilingMs !== undefined ? { transcribeCeilingMs: o.ceilingMs } : {}),
     voiceProviderName: () => 'groq',

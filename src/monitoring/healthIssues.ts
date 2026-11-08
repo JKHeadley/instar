@@ -13,8 +13,9 @@
  * report() of that id. A family (`*`) is for ids that all mean the same; `GitSync.*`, for example, would
  * also cover conflicts that need a person, so only the reviewed members are listed.
  *
- * The safe default: an id the table does not name is `unclassified`. It shows in the details, and the
- * verdict is `unsure`, which never reads as healthy. Adding a row needs an `action`: a place to go, or an
+ * The safe default: an id the table does not name is `unclassified`. It shows as a note, and the verdict is
+ * `running`, never `healthy`. (It used to be `unsure`, which made a healthy, answering agent read "Can't tell";
+ * Justin, 2026-11-07. `unsure` now means only that the agent could not read its own health.) Adding a row needs an `action`: a place to go, or an
  * explicit null, in which case asking the agent is the path.
  */
 import { scrubSecrets } from './scrubSecrets.js';
@@ -303,14 +304,18 @@ export function summarizeHealth(
   };
   // A hidden problem that's happening, or one nobody is tracking, is never "healthy". It doesn't raise anything either.
   const unseen = hidden.filter((r) => r.happening !== false).length;
-  const verdict: HealthVerdict = counts.userAffecting > 0 ? 'attention' : counts.unclassified > 0 ? 'unsure' : counts.internal > 0 || unseen > 0 ? 'running' : 'healthy';
-  const headline = verdict === 'attention'
+  // Answering and running decides the dot; only what affects the person raises it. Unsorted items are notes:
+  // they keep it off "healthy" but never make an answering agent "unsure" (that is for a reading that failed).
+  // The agent's own /health answer couldn't be read: the one case where it truly can't tell.
+  const unreadable = !health || typeof health !== 'object';
+  const verdict: HealthVerdict = counts.userAffecting > 0 ? 'attention' : unreadable ? 'unsure' : counts.unclassified > 0 || counts.internal > 0 || unseen > 0 ? 'running' : 'healthy';
+  const headline = verdict === 'unsure' ? 'I couldn’t read my own health just now.' : verdict === 'attention'
     ? (counts.userAffecting === 1 ? all[0].title + '.' : `${counts.userAffecting} problems are affecting you.`)
-    : verdict === 'unsure'
-      ? (counts.unclassified === 1 ? 'Running, with one thing I haven’t sorted yet.' : `Running, with ${counts.unclassified} things I haven’t sorted yet.`)
-      : verdict === 'running'
-        ? (unseen === 0 ? 'Running normally.' : unseen === 1 ? 'Running, with one thing you’ve hidden.' : `Running, with ${unseen} things you’ve hidden.`)
-        : 'Healthy.';
+    : verdict === 'running'
+      ? (counts.unclassified > 0
+        ? (counts.unclassified === 1 ? 'Running, with one note I haven’t sorted yet.' : `Running, with ${counts.unclassified} notes I haven’t sorted yet.`)
+        : unseen === 0 ? 'Running normally.' : unseen === 1 ? 'Running, with one thing you’ve hidden.' : `Running, with ${unseen} things you’ve hidden.`)
+      : 'Healthy.';
   return {
     verdict,
     headline,

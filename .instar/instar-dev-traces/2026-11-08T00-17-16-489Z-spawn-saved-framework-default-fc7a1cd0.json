@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "spawn-saved-framework-default",
+  "sessionId": "f1f636c6-282d-4bc1-835e-df2ffebddf96",
+  "timestamp": "2026-11-08T00:17:16.489Z",
+  "artifactPath": "upgrades/side-effects/spawn-saved-framework-default.md",
+  "artifactSha256": "0269577ddec179629799d2e37af78c1efe00f830f0d005b608366ed3e3e4a86d",
+  "coveredFiles": [
+    "docs/specs/spawn-saved-framework-default.eli16.md",
+    "src/core/SessionManager.ts",
+    "tests/unit/session-manager-behavioral.test.ts",
+    "upgrades/next/spawn-saved-framework-default.md",
+    "upgrades/side-effects/spawn-saved-framework-default.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible saved-default precedence fix; no new authority or persistent state.",
+  "eli16Path": "docs/specs/spawn-saved-framework-default.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/spawn-saved-framework-default.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "build",
+      "version": null,
+      "verified": false
+    }
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Headless spawning omitted frameworkDefaultModels lookup that interactive spawning already performed; launcher balanced fallback masked saved configuration."
+  }
+}
