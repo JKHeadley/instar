@@ -1594,6 +1594,25 @@ const feedbackTriageSelfHealProbe: SelfActionController = {
  * scheduler and capacity/concurrency brakes; it cannot create an unbounded
  * in-process burst.
  */
+/** Durable four-attempt cycle, fifteen-minute cooling, second-cycle exhaustion.
+ * The real target admission additionally enforces one global mutation budget
+ * across sources; the model below conservatively bounds this source at eight. */
+function recoveryRepairModel(f:PressureFixture,sink:ActionSink):{tick():void} {
+  return {tick(){
+    sink.considered++;
+    const attempts=Number(f.durableState.get('server-down-recovery:attempts')??0);
+    if(attempts>=8)return;
+    f.durableState.set('server-down-recovery:attempts',attempts+1);
+    sink.emit({verb:'repair-restart',target:'unavailable-target'});
+  }};
+}
+const serverDownRecoveryRepair:SelfActionController={
+  id:'server-down-recovery-repair',actionVerb:'repair-restart',
+  models:'src/recovery/RecoveryRepairCoordinator.ts (durable four attempts per cycle, fifteen-minute cooldown, two cycles until terminal exhaustion; target budget survives source handoff)',
+  modelsPath:'src/recovery/RecoveryRepairCoordinator.ts',boundK:8,perTargetBoundK:8,ticks:64,tickMs:60_000,
+  restartPosture:{pressureSurvives:true,restartUnderPressure:recoveryRepairModel},makeUnderPressure:recoveryRepairModel,
+};
+
 const mutualSshRepairSweep: SelfActionController = {
   id: 'mutual-ssh-repair-sweep',
   actionVerb: 'repair-retry',
@@ -5030,6 +5049,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackGeneratedDefaultsHeal,
   feedbackExecute,
   mutualSshRepairSweep,
+  serverDownRecoveryRepair,
   followMeEnrollmentConsumer,
   agentIdentityAdoption,
   agentIdentityCoherenceDetector,

@@ -1,3 +1,7 @@
+import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
+import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
+import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
+import { ACCOUNT_ACTION_SAFETY, ACCOUNT_ACTION_SAFETY_HEADING } from '../data/accountActionSafety.js';
 const NEW_JOB_REPORT_LINE = '2. **Need periodic checks?** Create a job in `.instar/jobs.json`.';
 const NEW_JOB_REPORT_ASK = ' If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.';
 const SCHEDULER_REPORT_CHOICE_HEADING = "## Who sees this job's reports";
@@ -652,7 +656,7 @@ export function NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(): string {
     .replace(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING)
     .replace('is the proven method on macOS AND Windows:', 'is the proven method on macOS, Windows and Linux:')
     .replace('Linux with no Windows underneath is not built (ACT-138): say so plainly.', linux)
-    .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`);
+    .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`) + '\n' + ACCOUNT_ACTION_SAFETY;
 }
 
 /**
@@ -2836,6 +2840,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninApprovalBoundary(result);
     this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
+    this.migrateAccountActionSafetySkill(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -4612,7 +4617,9 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      installBootWrapper(this.config.projectDir);
+      if(fs.existsSync(path.join(this.config.stateDir,'recovery','host.json'))){
+        if(!installAutoStart(this.config.projectName,this.config.projectDir,this.config.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');
+      }else installBootWrapper(this.config.projectDir);
       result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal + version-managed node candidates');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
@@ -5063,8 +5070,12 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
-      fs.writeFileSync(plistPath, next, 'utf-8');
+      const recoveryUpdate=beginRecoveryAutostartUpdate(this.config.projectDir,plistPath,next);
+      try {
+        fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
+        fs.writeFileSync(plistPath, next, 'utf-8');
+        recoveryUpdate?.commit();
+      } catch(error) {recoveryUpdate?.rollback();throw error;}
       const raised = found.filter((v) => v < LAUNCHD_PROCESS_CEILING_FLOOR).join('/');
       result.upgraded.push(
         `launchd process ceiling: raised ${raised} → ${LAUNCHD_PROCESS_CEILING_FLOOR} (applies at next restart)`,
@@ -6107,6 +6118,11 @@ export class PostUpdateMigrator {
 </dict>
 </plist>`;
 
+    // Enrolled agents pin this script's and plist's digests in their recovery
+    // host.json. A plain overwrite here would leave every pin stale: the watchdog
+    // would then skip those agents and repair would refuse to start. Every rewrite
+    // goes through the same transaction as installFleetWatchdog, which rebinds them.
+    let recoveryFleetUpdate: ReturnType<typeof beginRecoveryFleetUpdate> = null;
     try {
       // Compare against current contents to avoid noisy re-installs.
       const scriptCurrent = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf-8') : '';
@@ -6120,6 +6136,7 @@ export class PostUpdateMigrator {
 
       fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
       fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+      recoveryFleetUpdate = beginRecoveryFleetUpdate(scriptPath, plistPath, scriptBody, plistBody);
       if (scriptChanged) fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
       if (plistChanged) fs.writeFileSync(plistPath, plistBody);
 
@@ -6129,8 +6146,14 @@ export class PostUpdateMigrator {
       } catch (err) {
         const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
         result.errors.push(`fleet-watchdog: plist validation failed: ${stderr}`);
+        const failedUpdate = recoveryFleetUpdate;
+        recoveryFleetUpdate = null;
+        failedUpdate?.rollback();
         return;
       }
+
+      recoveryFleetUpdate?.commit();
+      recoveryFleetUpdate = null;
 
       // Reload only if plist changed (script-only changes don't need launchd touch).
       //
@@ -6155,6 +6178,11 @@ export class PostUpdateMigrator {
       );
     } catch (err) {
       result.errors.push(`fleet-watchdog: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        recoveryFleetUpdate?.rollback();
+      } catch (rollbackErr) {
+        result.errors.push(`fleet-watchdog: recovery rollback incomplete: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+      }
     }
   }
 
@@ -6608,6 +6636,19 @@ export class PostUpdateMigrator {
    *    to are in the shipped skill);
    *  - a missing file is left to installBuiltinSkills (fresh installs). Custom skills are never read.
    */
+  private migrateAccountActionSafetySkill(result: MigrationResult): void {
+    const file = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
+    try {
+      if (!fs.existsSync(file)) return;
+      const current = fs.readFileSync(file, 'utf8');
+      if (!current.includes('name: normal-chrome-browser') || current.includes(ACCOUNT_ACTION_SAFETY_HEADING)) return;
+      fs.writeFileSync(file, current.trimEnd() + '\n\n' + ACCOUNT_ACTION_SAFETY);
+      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (account-action safety)');
+    } catch (err) {
+      result.errors.push(`account-action safety skill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateNormalChromeBrowserSkill(result: MigrationResult): void {
     const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
     try {
@@ -9150,6 +9191,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Quiet by Default notifications');
     }
+    if (!content.includes('### Server-down remote recovery')) {
+      content += recoveryAwareness(this.config.port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added server-down recovery setup and proof awareness');
+    }
     if (!content.includes('/notifications/jobs/:slug/push')) {
       const anchor = 'or the PIN-confirmed dashboard toggle.';
       if (content.includes(anchor)) content = content.replace(anchor, `${anchor} ${QUIET_JOB_CHOICE_SENTENCE}`);
@@ -9225,6 +9271,12 @@ setTimeout(() => process.exit(0), 2000);
                 : 'CLAUDE.md: added Normal-Chrome browser section',
         );
       }
+    }
+
+    if (!content.includes(ACCOUNT_ACTION_SAFETY_HEADING)) {
+      content += '\n' + ACCOUNT_ACTION_SAFETY;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: account-action safety');
     }
 
     // A verified display name must follow its routing ID onto existing agents.
@@ -9690,6 +9742,12 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
       patched = true;
       result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — team requests:')) {
+      content += '\n- **Registry First — team requests:** when someone asks me for access, I do not grant it and cannot. I file it with `POST /team/proposals` with a typed `change` (grant, role or invite) and an optional `reason`, and say the owner will see it in the app. The owner approves or declines there. A member gets one open request at a time, and a member who asks who has access gets: "Only the owner can see that."';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team requests Registry First awareness');
     }
 
     if (!content.includes('Registry First — people:')) {
@@ -15973,6 +16031,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // normal-chrome-builtin-skill: the helper scripts are framework-neutral
       // (.instar/scripts/browser/), so a Codex/Gemini agent on macOS uses them too.
       '### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)', // == NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING (a literal so the parity guard can see it)
+      '### Account actions: read before acting', // framework-neutral browser safety, including Codex/Gemini
       // a2a-single-agent-identity: the agent identity + coherence check are server-side and
       // framework-agnostic (a Codex/Gemini agent runs on the same mesh and must explain the
       // not-provisioned posture and the adopt-from-a-sibling path honestly too).
@@ -16099,6 +16158,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Registry First — people:',
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
+      '**Registry First — team requests:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is
@@ -16315,6 +16375,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // will guess. Mirrored like every agent-facing capability.
       '### Mesh Self-Healing: stale-owner release + lease hand-back',
       '### Cold-Start Lifeline Fallback',
+      '### Server-down remote recovery',
       // Durable Conversation Identity: framework-agnostic HTTP surface — a
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.

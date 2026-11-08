@@ -124,6 +124,8 @@ describe('Feature Delivery Completeness', () => {
     // When you add a new CLAUDE.md section to templates.ts, add a key phrase here.
     // The test will verify it exists in both files. If it's only in one, CI fails.
     const featureSections = [
+      '### Server-down remote recovery', // shared recoveryAwareness builder; exact fresh/migrated content and Codex/Gemini marker parity
+
       '### Quiet by Default notifications', // shared template/migrator operational awareness, including confirmed preferences
       '### Who can answer my Telegram buttons', // ACT-115: owner checks fail closed
       '**Memory privacy**', // memory-privacy spec: audience by place
@@ -170,6 +172,7 @@ describe('Feature Delivery Completeness', () => {
       'Registry First — channel registry:',
       'Registry First — people:',
       'Registry First — team access:',
+      'Registry First — team requests:',
       'Decision journal — principle is required:',
       'Decision journal confidence contract:', // ACT-1522: finite [0,1] write contract + legacy-unmeasurable posture; template, existing-agent migrator, and Codex/Gemini shadow parity.
       'Alignment score — N/A means not assessed:',

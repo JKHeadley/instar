@@ -260,6 +260,10 @@ instar dev:ci-failures <pr>     # Print a PR's exact failing tests (file:line + 
 instar dev:post-drive-transcript-audit --topic <id> --start <time> --end <time>
                                 # Audit a supervised topic transcript for operator-seat UX findings and file framework-issue observations
 instar dev:profile-node [pid]   # CPU-profile a running node process (SIGUSR1 + inspector + CDP) and print its hottest JS functions
+instar dev:claim-check [paths...] --keywords <words...>
+                                # Before a build: list open and recently merged PRs touching those paths, and specs matching the keywords
+instar mobile introducer show|add|remove|list
+                                # Choose which agents' owner phones may add this agent with Face ID
 instar jobMigrate               # Migrate jobs between schema versions
 instar ledgerCleanup            # Token ledger cleanup
 instar memoryBackfillEvidence   # Backfill evidence rows into the memory index

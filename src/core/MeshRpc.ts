@@ -144,6 +144,7 @@ export type MeshCommand =
   | { type: 'agent-identity-observe'; agentName: string; requesterNonce: string }
   | { type: 'agent-identity-request'; agentName: string; expectedFingerprint: string; requesterNonce: string }
   | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
+  | { type: 'recovery-enrollment-advert' }
   | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
   | {
       // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
@@ -548,6 +549,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'secret-share':
     case 'ssh-bootstrap-advert':
     case 'ssh-proof-publish':
+    case 'recovery-enrollment-advert':
     case 'a2a-inbox-deliver':
     case 'a2a-relay-forward':
     case 'a2a-relay-forward-ack':

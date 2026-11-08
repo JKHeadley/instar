@@ -327,7 +327,7 @@ describe('app conversations move between machines, on the production components'
     const rec = B.node.registry.read(RK)!;
     const id = crypto.randomUUID();
     const event = { eventId: `op-${id}`, kind: 'message', conversationKey: KEY, messageId: `m-${id}`, role: 'operator', text: 'x', at: new Date().toISOString(), machineId: h.a.machineId, receivedAt: new Date().toISOString() };
-    const ack = B.deliver({ type: 'deliverMessage', session: RK, messageId: event.messageId, payload: buildAppForward({ event: event as never, seed: 's', ownerName: null, memoryPersonId: null }), ownershipEpoch: rec.ownershipEpoch } as never, h.a.machineId) as { accepted: string };
+    const ack = B.deliver({ type: 'deliverMessage', session: RK, messageId: event.messageId, payload: buildAppForward({ event: event as never, seed: 's', ownerName: null, memoryPersonId: null }), ownershipEpoch: rec.ownershipEpoch, senderEnvelope: { via: 'mobile-device', deviceId: 'dev', eventId: event.eventId } } as never, h.a.machineId) as { accepted: string };
     expect(ack.accepted).toBe('not-yet');
   });
 });

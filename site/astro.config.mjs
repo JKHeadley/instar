@@ -133,6 +133,7 @@ export default defineConfig({
           items: [
             { label: 'Agent Communication', slug: 'guides/agent-communication' },
             { label: 'Security Model', slug: 'guides/security' },
+            { label: 'Contributor Checks', slug: 'guides/contributor-checks' },
             { label: 'vs OpenClaw', slug: 'guides/vs-openclaw' },
           ],
         },

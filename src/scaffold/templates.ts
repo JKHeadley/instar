@@ -1,3 +1,4 @@
+import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
 import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
 /**
  * Project scaffolding templates for fresh installs.
@@ -1334,6 +1335,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | Which machine can serve a capability? | **Registry First — capability registry:** \`GET /capability-registry\` distinguishes unavailable, unobserved, stale, and available evidence |
 | Which way of reaching another agent works right now? | **Registry First — channel registry:** \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/channels\` — every peer channel with purpose / when-preferred / cost / live verdict. A channel that failed to start still gets a row; \`unknown\` means undetermined, NEVER healthy. Read it BEFORE reporting that a peer is unreachable |
 | Who gave this person access? / can I add someone to the team? | **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person's phone sees only what they were given. I can read \`GET /team/people\` and I can only take access away (\`POST /team/people/:personKey/lower\`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands. |
+| Someone asks me for access to a conversation | **Registry First — team requests:** when someone asks me for access, I do not grant it and cannot. I file it with \`POST /team/proposals\` with a typed \`change\` (grant, role or invite) and an optional \`reason\`, and say the owner will see it in the app. The owner approves or declines there. A member gets one open request at a time, and a member who asks who has access gets: "Only the owner can see that." |
 | Who can reach this agent? / what can this person see? | **Registry First — people:** before answering who can reach this agent or what someone can see, read \`GET /team/people\` (add \`?scope=pool\` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set \`memoryPrivacy.enabled: true\` in the config on every machine and restart. |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
 | Why do features keep breaking? / our failure rate by build skill? / are our process fixes working? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` + \`/failures\` (Failure-Learning Loop — instar dev-process forensics) — NEVER answer this from memory |
@@ -2339,6 +2341,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
 (Source: codex-instar audit Item 11, 2026-05-22 confabulation incident where one agent fabricated an ACK from another, then logged its own fabrication as evidence of progress.)
 `;
 
+  content += recoveryAwareness(port);
   content += directJobSupervisionQualityAwareness(port);
   return content;
 }

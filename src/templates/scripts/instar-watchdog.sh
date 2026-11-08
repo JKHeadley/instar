@@ -521,16 +521,19 @@ handle_bind_fail() {
   conflict="${probe_out#*	}"
   conflict="${conflict%$'\n'}"
 
+  if recovery_rule_held "$project_dir" "$label"; then return 0; fi
   if ! should_attempt_heal "$label"; then
     $VERBOSE && log "BIND-FAIL: $label — heal attempted recently, waiting"
     return 0
   fi
 
-  if try_self_heal "$project_dir" "$label"; then
+  if $RECOVERY_RULE_GUARDED || try_self_heal "$project_dir" "$label"; then
     log "RECOVERING: $label — self-heal applied for bind-fail, reloading"
     if ! $DRY_RUN; then
       mark_heal_attempt "$label"
-      launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || launchctl unload "$plist" 2>/dev/null || true
+      if recovery_rule_held "$project_dir" "$label"; then return 0; fi
+      if ! recovery_stop_rule "$project_dir" "$label" "$plist"; then return 0; fi
+      record_recovery_rule_stop "$project_dir" "$label"
       sleep 1
       launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
       reset_fail_counter "$label"
@@ -600,7 +603,9 @@ check_stale_lifeline_signal() {
     actionable)
       log "LIFELINE-SIGNAL: $label — stale coordinated-restart signal (>60s, lifeline did not self-restart), forcing"
       if ! $DRY_RUN; then
-        launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || launchctl unload "$plist" 2>/dev/null || true
+        if recovery_rule_held "$project_dir" "$label"; then return 0; fi
+      if ! recovery_stop_rule "$project_dir" "$label" "$plist"; then return 0; fi
+      record_recovery_rule_stop "$project_dir" "$label"
         sleep 1
         launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
         # Delete the signal so the next cycle (and the respawned lifeline)
@@ -621,9 +626,101 @@ check_stale_lifeline_signal() {
   return 1
 }
 
+# A recovery hold pauses ONE enrolled agent's rule, never this fleet service.
+# Both the marker and restart evidence are constrained by the installed config.
+recovery_rule_state() {
+  local mode="$1" project_dir="$2" agent_label="$3" node_bin
+  [ -n "$project_dir" ] && [ -d "$project_dir/.instar/recovery" ] || return 1
+  node_bin=$(resolve_node || true)
+  [ -n "$node_bin" ] || return 1
+  "$node_bin" - "$mode" "$project_dir" "$agent_label" "$0" <<'RECOVERY_RULE_NODE' 2>/dev/null
+const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto'),cp=require('node:child_process');
+try {
+  const [mode,project,label,script]=process.argv.slice(2),directory=path.join(project,'.instar','recovery');
+  const protectedFile=(file,max)=>{const s=fs.lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.uid!==process.getuid()||(s.mode&0o077)||s.size>max)throw Error('untrusted');return fs.readFileSync(file,'utf8');};
+  const d=fs.lstatSync(directory);if(!d.isDirectory()||d.isSymbolicLink()||d.uid!==process.getuid()||(d.mode&0o077))throw Error('untrusted');
+  const c=JSON.parse(protectedFile(path.join(directory,'host.json'),32768)),w=c.watchdog;
+  if(['stop','begin','end'].includes(mode)&&(!w||w.kind!=='agent-rule'))process.exit(4);
+  if(mode==='end'){
+    const e=fs.lstatSync(w.entrypoint);if(!path.isAbsolute(w.entrypoint)||!e.isFile()||e.isSymbolicLink()||![0,process.getuid()].includes(e.uid)||(e.mode&0o022))throw Error('untrusted');
+    const result=JSON.parse(cp.execFileSync(process.execPath,[w.entrypoint,'watchdog-rule-end',path.join(directory,'host.json'),String(process.ppid)],{timeout:10000,killSignal:'SIGKILL',encoding:'utf8',maxBuffer:4096}));
+    process.exit(result.released===true?0:1);
+  }
+  const hash=file=>{const s=fs.lstatSync(file);if(!s.isFile()||s.isSymbolicLink()||s.uid!==process.getuid()||(s.mode&0o022)||s.size>262144)throw Error('untrusted');return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');};
+  if(!w||w.kind!=='agent-rule'||w.label!=='ai.instar.watchdog'||c.serviceLabel!==label||w.targetLabel!==label||label!==`ai.instar.${c.agentId}`
+    ||w.holdFile!==path.join(directory,'watchdog-hold.json')||w.eventsFile!==path.join(directory,'watchdog-events.jsonl')
+    ||path.resolve(script)!==w.script||hash(w.script)!==w.scriptDigest||hash(w.plist)!==w.ownershipDigest)throw Error('untrusted');
+  if(mode==='stop'||mode==='begin') {
+    const e=fs.lstatSync(w.entrypoint);if(!path.isAbsolute(w.entrypoint)||!e.isFile()||e.isSymbolicLink()||![0,process.getuid()].includes(e.uid)||(e.mode&0o022))throw Error('untrusted');
+    const result=JSON.parse(cp.execFileSync(process.execPath,[w.entrypoint,mode==='stop'?'watchdog-rule-stop':'watchdog-rule-begin',path.join(directory,'host.json'),String(process.ppid)],{timeout:10000,killSignal:'SIGKILL',encoding:'utf8',maxBuffer:4096}));
+    if((mode==='stop'?result.stopped:result.admitted)!==true)process.exitCode=2;
+    else if(mode==='begin'&&result.guarded===false)process.exitCode=4;
+  } else if(mode==='check') {
+    const h=JSON.parse(protectedFile(w.holdFile,4096)),now=Date.now(),uptime=Number(process.hrtime.bigint()/1000000n);
+    const boot=process.platform==='darwin'?cp.execFileSync('/usr/sbin/sysctl',['-n','kern.bootsessionuuid'],{timeout:1000,encoding:'utf8'}).trim():fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim();
+    if(h.version!==1||h.label!==label||h.scriptDigest!==w.scriptDigest||h.plistDigest!==w.ownershipDigest||h.bootId!==boot
+      ||!Number.isSafeInteger(h.deadline)||!Number.isSafeInteger(h.monotonicDeadline)||h.deadline<=now||h.deadline-now>60000
+      ||h.monotonicDeadline<=uptime||h.monotonicDeadline-uptime>60000)throw Error('expired');
+  } else if(mode==='record') {
+    try {protectedFile(w.eventsFile,262144);}catch(e){if(e.code!=='ENOENT')throw e;}
+    if(fs.existsSync(w.eventsFile)&&fs.statSync(w.eventsFile).size>131072) {
+      const tail=fs.readFileSync(w.eventsFile,'utf8').trim().split('\n').slice(-128).join('\n')+'\n';
+      const temporary=w.eventsFile+'.'+process.pid+'.tmp';fs.writeFileSync(temporary,tail,{mode:0o600,flag:'wx'});fs.renameSync(temporary,w.eventsFile);
+    }
+    fs.appendFileSync(w.eventsFile,JSON.stringify({version:1,event:'owned-rule-stopped',label,at:Date.now(),pid:process.pid,
+      scriptDigest:w.scriptDigest,plistDigest:w.ownershipDigest})+'\n',{mode:0o600,flag:fs.constants.O_WRONLY|fs.constants.O_APPEND|fs.constants.O_CREAT|fs.constants.O_NOFOLLOW});
+  } else throw Error('mode');
+} catch {process.exitCode=1;}
+RECOVERY_RULE_NODE
+}
+RECOVERY_RULE_PROJECT=""
+RECOVERY_RULE_LABEL=""
+RECOVERY_RULE_GUARDED=false
+recovery_begin_rule() {
+  RECOVERY_RULE_GUARDED=false
+  if $DRY_RUN || [ ! -f "$1/.instar/recovery/host.json" ]; then return 0; fi
+  local verdict
+  if recovery_rule_state begin "$1" "$2"; then
+    RECOVERY_RULE_PROJECT="$1";RECOVERY_RULE_LABEL="$2";RECOVERY_RULE_GUARDED=true;return 0
+  else verdict=$?; fi
+  [ "$verdict" -eq 4 ]
+}
+recovery_end_rule() {
+  if [ -n "$RECOVERY_RULE_PROJECT" ]; then
+    recovery_rule_state end "$RECOVERY_RULE_PROJECT" "$RECOVERY_RULE_LABEL" || true
+    RECOVERY_RULE_PROJECT="";RECOVERY_RULE_LABEL=""
+  fi
+}
+# A live rule owner must never wait forever on launchd while blocking repair.
+launchctl() {
+  if ! ${RECOVERY_RULE_GUARDED:-false}; then command launchctl "$@"; return $?; fi
+  local node_bin
+  node_bin=$(resolve_node || true)
+  [ -n "$node_bin" ] || return 1
+  "$node_bin" - "$@" <<'RECOVERY_LAUNCHCTL_NODE'
+const cp=require('node:child_process');
+const r=cp.spawnSync('/bin/launchctl',process.argv.slice(2),{timeout:5000,killSignal:'SIGKILL',encoding:'utf8',maxBuffer:65536});
+if(r.stdout)process.stdout.write(r.stdout);if(r.stderr)process.stderr.write(r.stderr);
+process.exit(r.error?1:(r.status??1));
+RECOVERY_LAUNCHCTL_NODE
+}
+trap recovery_end_rule EXIT
+recovery_rule_held() { recovery_rule_state check "$1" "$2"; }
+record_recovery_rule_stop() { recovery_rule_state record "$1" "$2" || true; }
+recovery_stop_rule() {
+  if [ -f "$1/.instar/recovery/host.json" ]; then
+    local verdict
+    if recovery_rule_state stop "$1" "$2"; then return 0; else verdict=$?; fi
+    # Preparation alone does not enroll a rule or disable ordinary supervision.
+    [ "$verdict" -eq 4 ] || return 1
+  fi
+  launchctl bootout "gui/$(id -u)" "$3" 2>/dev/null || launchctl unload "$3" 2>/dev/null
+}
+
 recovered=0
 checked=0
 for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
+  recovery_end_rule
   [ -f "$plist" ] || continue
   case "$plist" in *.DISABLED) continue ;; esac
 
@@ -631,6 +728,15 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
   # Don't watchdog the watchdog
   [ "$label" = "ai.instar.watchdog" ] && continue
   checked=$((checked + 1))
+  project_dir=$(get_project_dir "$plist")
+  if ! recovery_begin_rule "$project_dir" "$label"; then
+    $VERBOSE && log "RECOVERY-GUARD: $label — owned repair or update is in progress"
+    continue
+  fi
+  if recovery_rule_held "$project_dir" "$label"; then
+    $VERBOSE && log "RECOVERY-HOLD: $label — this agent rule is temporarily paused"
+    continue
+  fi
 
   if launchctl list "$label" &>/dev/null; then
     pid=$(launchctl list "$label" 2>/dev/null | grep '"PID"' | grep -o '[0-9]*' || true)
@@ -670,11 +776,14 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
 
       if should_attempt_heal "$label"; then
         project_dir=$(get_project_dir "$plist")
-        if try_self_heal "$project_dir" "$label"; then
+        if recovery_rule_held "$project_dir" "$label"; then continue; fi
+        if $RECOVERY_RULE_GUARDED || try_self_heal "$project_dir" "$label"; then
           log "RECOVERING: $label — self-heal applied, reloading"
           if ! $DRY_RUN; then
             mark_heal_attempt "$label"
-            launchctl bootout "gui/$(id -u)" "$plist" 2>/dev/null || launchctl unload "$plist" 2>/dev/null || true
+            if recovery_rule_held "$project_dir" "$label"; then continue; fi
+      if ! recovery_stop_rule "$project_dir" "$label" "$plist"; then continue; fi
+      record_recovery_rule_stop "$project_dir" "$label"
             sleep 1
             launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
             recovered=$((recovered + 1))
@@ -703,7 +812,7 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
     log "RECOVERING: $label (not loaded, reloading)"
     if ! $DRY_RUN; then
       project_dir=$(get_project_dir "$plist")
-      if [ -n "$project_dir" ]; then
+      if [ -n "$project_dir" ] && ! $RECOVERY_RULE_GUARDED; then
         try_self_heal "$project_dir" "$label" || true
       fi
       launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null || launchctl load "$plist" 2>/dev/null || true
@@ -714,6 +823,7 @@ for plist in "$LAUNCH_AGENTS_DIR"/ai.instar.*.plist; do
     fi
   fi
 done
+recovery_end_rule
 
 if [ "$recovered" -gt 0 ]; then
   log "Watchdog complete: $checked checked, $recovered recovered"

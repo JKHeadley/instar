@@ -121,12 +121,15 @@ describe('every other reader (§2.2, §2.7)', () => {
   });
 
   it('the queue\'s local retry never dispatches a message already handled, or one still dispatching', () => {
-    const at = server.indexOf('_appDrainDeliver = async (dmsg, handover) => {');
-    const block = server.slice(at, at + 4600);
-    const check = block.indexOf("appDrainDispatching.has(dmsg.messageId) || (already !== null && already !== 'pending' && already !== 'unknown')");
+    // The drain lives in appConversationPool.ts; its behaviour is tested in team-access-guards ("the drain").
+    expect(server).toMatch(/_appDrainDeliver = createAppDrainDeliver\(/);
+    const pool = fs.readFileSync('src/core/appConversationPool.ts', 'utf-8');
+    const at = pool.indexOf('export function createAppDrainDeliver(');
+    const block = pool.slice(at, at + 4600);
+    const check = block.indexOf("dispatching.has(dmsg.messageId) || (already !== null && already !== 'pending' && already !== 'unknown')");
     expect(check).toBeGreaterThan(-1);
     expect(check).toBeLessThan(block.indexOf('dispatchStoredAppMessage('));
-    expect(block).toContain('appDrainDispatching.delete(dmsg.messageId)');
+    expect(block).toContain('dispatching.delete(dmsg.messageId)');
     expect(block).toContain("r.outcome === 'refused' ? 'unknown' : r.outcome");
   });
 

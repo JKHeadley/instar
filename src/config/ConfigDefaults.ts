@@ -1265,6 +1265,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Shared init + PostUpdateMigrator defaults: setup is visible, host grants
+    // stay inert until an owner enrolls this machine through the phone control.
+    // enabled is omitted: the observer is live on dev agents, fleet-dark.
+    serverDownRecovery: {},
     // Machine identity recovery (machine-self-assertion). All three `enabled`
     // fields are deliberately omitted: live on the development agent, dark on
     // fleet. Dry-run prevents trust/routing mutation during the soak.

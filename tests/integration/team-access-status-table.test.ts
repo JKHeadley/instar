@@ -72,7 +72,7 @@ async function setup() {
     signer: () => signer, applyConversationChange: async (_ref, change) => change(),
     isSystemTopic: () => false, isJobTopic: () => false,
     ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }),
-    logsDir: path.join(dir, 'logs'), restoreRefs: () => ({ teamRefs: [], allRefs: () => [] }), requireMemoryPrivacy: () => true,
+    logsDir: path.join(dir, 'logs'), stateDir: dir, conversationTitle: () => null, restoreRefs: () => ({ teamRefs: [], allRefs: () => [] }), requireMemoryPrivacy: () => true,
   });
   const permissions = express.Router();
   mountMobilePermissionsRoutes(permissions, {

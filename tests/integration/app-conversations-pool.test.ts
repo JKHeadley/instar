@@ -306,7 +306,7 @@ describe('a forwarded send on the owner (§2.4)', () => {
     owner.svc.ingestReplicated(owner === undefined ? [] : [{ eventId: 'cr', kind: 'created', conversationKey: key, title: 'Trip', at: new Date().toISOString(), machineId: 'm_holder' } as never]);
     owner.v.records.set(`app:${key}`, record(key));
     const h = ownerSide(owner);
-    const cmd = { type: 'deliverMessage', session: `app:${key}`, messageId: forward.event.messageId, payload: forward, ownershipEpoch: 5 } as never;
+    const cmd = { type: 'deliverMessage', session: `app:${key}`, messageId: forward.event.messageId, payload: forward, ownershipEpoch: 5, senderEnvelope: { via: 'mobile-device', deviceId: 'd', eventId: 'e' } } as never;
     expect((h(cmd, 'm_holder') as { accepted: string }).accepted).toBe('queued');
     await new Promise((r) => setTimeout(r, 20));
     expect(owner.svc.store.hasEvent(key, forward.event.eventId)).toBe(true);
@@ -321,7 +321,7 @@ describe('a forwarded send on the owner (§2.4)', () => {
     const key = crypto.randomUUID();
     const forward = { kind: 'app-forward', seed: 's', event: { kind: 'message', eventId: 'e1', conversationKey: key, messageId: 'm1', role: 'operator', text: 'x', at: new Date().toISOString(), machineId: 'm_holder', receivedAt: new Date().toISOString() } };
     const h = ownerSide(owner);
-    const a = h({ type: 'deliverMessage', session: `app:${key}`, messageId: 'm1', payload: forward, ownershipEpoch: 5 } as never, 'm_holder') as { accepted: string };
+    const a = h({ type: 'deliverMessage', session: `app:${key}`, messageId: 'm1', payload: forward, ownershipEpoch: 5, senderEnvelope: { via: 'mobile-device', deviceId: 'd', eventId: 'e' } } as never, 'm_holder') as { accepted: string };
     expect(a.accepted).toBe('not-yet');
     expect(owner.svc.store.hasEvent(key, 'e1')).toBe(false);
   });
@@ -335,7 +335,7 @@ describe('a forwarded send on the owner (§2.4)', () => {
     owner.v.records.set(`app:${key}`, record(key, { status: 'transferring', transferTo: 'm_t', ownershipEpoch: 9 }));
     const forward = { kind: 'app-forward', seed: 's', urgent: 'stop', event: { kind: 'message', eventId: 'e1', conversationKey: key, messageId: 'm1', role: 'operator', text: 'stop', at: new Date().toISOString(), machineId: 'm_holder', receivedAt: new Date().toISOString() } };
     const h = ownerSide(owner);
-    const a = h({ type: 'deliverMessage', session: `app:${key}`, messageId: 'm1', payload: forward, ownershipEpoch: 7 } as never, 'm_holder') as { accepted: string };
+    const a = h({ type: 'deliverMessage', session: `app:${key}`, messageId: 'm1', payload: forward, ownershipEpoch: 7, senderEnvelope: { via: 'mobile-device', deviceId: 'd', eventId: 'e' } } as never, 'm_holder') as { accepted: string };
     expect(a.accepted).toBe('queued');
     expect(owner.killed).toEqual(['sess-app']);
     expect(owner.svc.store.deliveryState('m1')).toBe('intercepted');

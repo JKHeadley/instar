@@ -547,18 +547,20 @@ describe('lint-dev-agent-dark-gate', () => {
       // multiMachine. It has no `enabled: false` literal and therefore shifts
       // every subsequent attribution without changing the audited path set.
       // ACT-897 peerExecution adds an 8-line dev-gated dry-run block.
-      '1351': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
-      '1355': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
-      '1362': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
-      '1372': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
+      // Server-down recovery adds four tuning/comment lines with enabled omitted.
+      // Hand-checked each affected enabled:false line below in ConfigDefaults.
+      '1355': 'multiMachine.leaseSelfHeal.staleHolderTakeover.enabled',
+      '1359': 'multiMachine.leaseSelfHeal.silentStandbyRelinquish.enabled',
+      '1366': 'multiMachine.leaseSelfHeal.soloCaptainHold.enabled',
+      '1376': 'multiMachine.leaseSelfHeal.preferredCaptainHandback.enabled',
       // job-claim cutover readiness adds two explanatory lines above sessionPool.
-      '1611': 'multiMachine.sessionPool.enabled',
+      '1615': 'multiMachine.sessionPool.enabled',
       // #1367's moveIntent dev-gated sub-block was inserted under sessionPool
       // (docs/specs/nickname-move-intent-llm-rebuild.md); it OMITS `enabled` (rides
       // resolveDevAgentGate), adds no map row, and shifts the subsequent lines.
-      '1646': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
-      '1656': 'multiMachine.sessionPool.inboundQueue.enabled',
-      '1685': 'multiMachine.sessionPool.holdForStability.enabled',
+      '1650': 'multiMachine.sessionPool.ownershipCheckedSpawn.enabled',
+      '1660': 'multiMachine.sessionPool.inboundQueue.enabled',
+      '1689': 'multiMachine.sessionPool.holdForStability.enabled',
       // replicated-journal-compaction adds a 5-line compaction default block
       // above stateSync. It uses `run:false` (not an `enabled` gate), so the
       // attributed path set is unchanged and the four rows below shift by +5.
@@ -572,7 +574,7 @@ describe('lint-dev-agent-dark-gate', () => {
       // +32 lines, no `enabled:` literals) shift the cartographer rows below.
       // +15 below the #1561 baseline: this row is BELOW the failoverRunner insert,
       // so it carries both the +10 (missingLogin) and +15 (failoverRunner) shifts.
-      '1946': 'multiMachine.stateSync.threadlinePairing.enabled',
+      '1950': 'multiMachine.stateSync.threadlinePairing.enabled',
       // commitment-auto-expiry (2026-07-10): a 6-line `commitments.autoExpiry`
       // default sub-block was inserted above `promiseBeacon`/`cartographer`.
       // Its `enabled: true` literal is an explicit fleet-on default, not a dark
@@ -581,17 +583,17 @@ describe('lint-dev-agent-dark-gate', () => {
       // PromiseBeacon's four-line default-silent user-output boundary adds no
       // `enabled:` row, so only the three cartographer rows below it shift +4.
       // Below the failoverRunner insert → both +10 (missingLogin) and +15 shifts.
-      '2013': 'autonomousSessions.codexTaskContinuation.enabled',
+      '2017': 'autonomousSessions.codexTaskContinuation.enabled',
       // promise-review-and-priority: a 13-line `commitments.promiseReview` block
       // (enabled omitted for the dev gate) shifts the two rows below by +13.
-      '2154': 'cartographer.freshnessSweep.enabled',
+      '2158': 'cartographer.freshnessSweep.enabled',
       // Assisted relogin is intentionally fleet-dark until a per-agent
       // promotion; the exclusion registry classifies it as action-bearing.
       // The default-on subscriptionPool.wallRescue block above it (+9 lines,
       // `enabled: true`, no dark-gate row) shifts it down. Attribution adds
       // seven more lines, without a new enabled:false row: 2202 + 7 = 2209,
       // then +13 for the promiseReview block.
-      '2269': 'subscriptionPool.assistedRelogin.enabled',
+      '2273': 'subscriptionPool.assistedRelogin.enabled',
     };
     const actual = attributeRealConfigDefaults();
     expect(actual).toEqual(EXPECTED);

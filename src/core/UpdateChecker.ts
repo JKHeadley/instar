@@ -15,7 +15,7 @@ import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { UpdateInfo, UpdateResult } from './types.js';
 
@@ -143,14 +143,50 @@ export class UpdateChecker {
    * delays where @latest still resolves to the old version for several minutes
    * after a new version is published. Retries up to 3 times with backoff.
    */
+  /** Install an explicitly selected development artifact through the normal
+   * candidate/native-probe/promotion/migration pipeline. No registry publishing
+   * credentials or recovery codes are involved. The caller supplies a digest
+   * obtained through its trusted release channel, never from an arbitrary URL.
+   */
+  async applyDevelopmentArtifact(artifact: { path: string; version: string; sha512: string }): Promise<UpdateResult> {
+    if (!/^\d+\.\d+\.\d+-dev\.\d+\.[a-f0-9]{12}$/.test(artifact.version)) {
+      throw new Error('Expected a development artifact version');
+    }
+    if (!/^[a-f0-9]{128}$/.test(artifact.sha512)) throw new Error('Expected a SHA-512 digest');
+    const artifactPath = path.resolve(artifact.path);
+    // Snapshot before verification so a changing source file cannot swap the
+    // bytes npm installs after the digest check.
+    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dev-artifact-'));
+    const snapshot = path.join(snapshotDir, 'instar.tgz');
+    try {
+      fs.copyFileSync(artifactPath, snapshot, fs.constants.COPYFILE_EXCL);
+      const hash = createHash('sha512');
+      for await (const chunk of fs.createReadStream(snapshot)) hash.update(chunk);
+      if (hash.digest('hex') !== artifact.sha512) throw new Error('Development artifact checksum mismatch');
+      return await this.applySelectedUpdate({
+        currentVersion: this.getInstalledVersion(), latestVersion: artifact.version,
+        updateAvailable: true, checkedAt: new Date().toISOString(),
+      }, snapshot);
+    } finally {
+      SafeFsExecutor.safeRmSync(snapshotDir, { recursive: true, force: true, operation: 'UpdateChecker.developmentArtifact:cleanup' });
+    }
+  }
+
   async applyUpdate(): Promise<UpdateResult> {
-    const previousVersion = this.getInstalledVersion();
+    return this.applySelectedUpdate(await this.check());
+  }
+
+  private async applySelectedUpdate(info: UpdateInfo, localTarball?: string): Promise<UpdateResult> {
+    // An explicit installer can run from a build checkout for a different
+    // agent. Its module version is not the version being replaced.
+    const previousVersion = localTarball
+      ? this.getShadowInstalledVersion() ?? this.getInstalledVersion()
+      : this.getInstalledVersion();
 
     // Check what the registry has. Note: even if getInstalledVersion() returns
     // the latest (e.g., after a previous install updated files in place),
     // we still need to install+restart since the running process has old code.
     // The caller (AutoUpdater) is responsible for loop prevention.
-    const info = await this.check();
     if (!info.updateAvailable) {
       // Files on disk match the registry — but running code may be stale.
       // Return success with restartNeeded based on whether the process version
@@ -209,7 +245,7 @@ export class UpdateChecker {
         // The cloudflared binary is installed lazily on-demand by TunnelManager when
         // the tunnel feature is first used (via install(bin) from the cloudflared package).
         await this.execAsync('npm', [
-          'install', `instar@${targetVersion}`,
+          'install', localTarball ?? `instar@${targetVersion}`,
           '--ignore-scripts',
           '--prefix', candidateDir,
         ], 120000);
@@ -302,13 +338,13 @@ export class UpdateChecker {
         try {
           const args = [...baseArgs, 'migrate'];
           if (this.migratorConfig.projectDir) args.push('--dir', this.migratorConfig.projectDir);
-          output = await this.execAsync(cmd, args, 30000);
+          output = await this.execAsync(cmd, args, 30000, 64 * 1024 * 1024);
         } catch (dirErr) {
           const dirErrMsg = dirErr instanceof Error ? dirErr.message : String(dirErr);
           const dirErrStderr = (dirErr as Error & { stderr?: string }).stderr || '';
           if (dirErrMsg.includes('unknown option') && dirErrMsg.includes('--dir')) {
             // Old binary — retry without --dir
-            output = await this.execAsync(cmd, [...baseArgs, 'migrate'], 30000);
+            output = await this.execAsync(cmd, [...baseArgs, 'migrate'], 30000, 64 * 1024 * 1024);
           } else if (dirErrStderr.includes('unknown command')) {
             // Very old binary without migrate command — skip CLI migration gracefully.
             // The in-memory migrator still runs as a safety net on server startup.
@@ -453,8 +489,11 @@ export class UpdateChecker {
     if (path.resolve(projectDir, '.instar') !== path.resolve(this.stateDir)) {
       throw new Error('Cannot prepare boot-wrapper recovery for this state directory');
     }
-    const { installBootWrapper } = await import('../commands/setup.js');
-    installBootWrapper(projectDir);
+    const { installBootWrapper,installAutoStart } = await import('../commands/setup.js');
+    const {enrolledRecoveryBootstrapMode}=await import('../recovery/RecoveryBootstrapBindings.js');
+    const enrolled=enrolledRecoveryBootstrapMode(projectDir);
+    if(enrolled){if(!installAutoStart(enrolled.agentId,projectDir,enrolled.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');}
+    else installBootWrapper(projectDir);
     if (!fs.readFileSync(jsPath, 'utf-8').includes(marker) || !fs.readFileSync(shPath, 'utf-8').includes(marker)) {
       throw new Error('Boot wrapper did not acquire interrupted-update recovery');
     }
@@ -721,11 +760,12 @@ export class UpdateChecker {
   /**
    * Run a command asynchronously, returning trimmed stdout.
    */
-  private execAsync(cmd: string, args: string[], timeoutMs: number): Promise<string> {
+  private execAsync(cmd: string, args: string[], timeoutMs: number, maxBuffer = 1024 * 1024): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = execFile(cmd, args, {
         encoding: 'utf-8',
         timeout: timeoutMs,
+        maxBuffer,
       }, (err, stdout, stderr) => {
         if (err) {
           // Attach stderr for richer diagnostics in error handlers
@@ -777,7 +817,11 @@ export class UpdateChecker {
     const dir = path.dirname(this.rollbackFile);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(this.rollbackFile, JSON.stringify({
-      previousVersion,
+      // Development cuts are never on npm. Both another development cut and
+      // the first official update must retain a registry-installable rollback
+      // target rather than recording an unpublished prerelease.
+      previousVersion: previousVersion.replace(/-dev\.\d+\.[a-f0-9]{12}$/, ''),
+      ...(previousVersion.includes('-dev.') ? { previousDevelopmentVersion: previousVersion } : {}),
       updatedVersion,
       updatedAt: new Date().toISOString(),
     }, null, 2));
