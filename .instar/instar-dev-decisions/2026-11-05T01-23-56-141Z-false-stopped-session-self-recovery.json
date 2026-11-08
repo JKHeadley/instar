@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-05T01:23:56.141Z",
+  "slug": "false-stopped-session-self-recovery",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/messaging/slack/SlackApiClient.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

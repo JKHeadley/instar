@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "confined-timeout-capture",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T13:24:36.908Z",
+  "artifactPath": "upgrades/side-effects/confined-timeout-capture.md",
+  "artifactSha256": "4380af9b75687d86fd7ea115aac9fffcb45833555804ad98633bc6b61bc37632",
+  "coveredFiles": [
+    "src/feedback-factory/execute/ConfinedRunner.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/eli16/confined-timeout-capture.md",
+    "upgrades/next/confined-timeout-capture.md",
+    "upgrades/side-effects/confined-timeout-capture.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnostic text at an existing stop; a revert fully undoes it.",
+  "eli16Path": "upgrades/eli16/confined-timeout-capture.md",
+  "sideEffectsPath": "upgrades/side-effects/confined-timeout-capture.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

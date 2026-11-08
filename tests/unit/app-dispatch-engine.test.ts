@@ -70,10 +70,10 @@ describe('an app message spawns on the conversation\'s engine', () => {
   });
 });
 
-const startDeps = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ isOwner: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
+const startDeps = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ serves: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
 
 describe('restarting an app conversation on a new engine (startApp)', () => {
-  const start = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ isOwner: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
+  const start = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ serves: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
   it('starts with history and no new message, on the requested engine, admitted as app-respawn', async () => {
     const d = deps();
     const landed = await createAppSessionStarter(d, start())(KEY, { framework: 'codex', model: null });
@@ -85,7 +85,7 @@ describe('restarting an app conversation on a new engine (startApp)', () => {
     expect(d.channels.getSessionForChannel('-5')).toBe('s1');
   });
   it('starts nothing on a machine that does not serve it, or for a gone conversation', async () => {
-    expect(await createAppSessionStarter(deps(), start({ isOwner: () => false }))(KEY, { framework: 'codex', model: null })).toBeNull();
+    expect(await createAppSessionStarter(deps(), start({ serves: () => false }))(KEY, { framework: 'codex', model: null })).toBeNull();
     expect(await createAppSessionStarter(deps(), start({ titleFor: () => null }))(KEY, { framework: 'codex', model: null })).toBeNull();
     expect(spawns).toHaveLength(0);
   });
@@ -180,7 +180,7 @@ describe('a new session with its own app conversation (session-conversation-for-
   it('every refusal is reported', async () => {
     const seen: string[] = [];
     const on = { onRefused: (_k: string, why: string) => seen.push(why) };
-    await createAppSessionStarter(deps(), startDeps({ ...on, isOwner: () => false }))(KEY, { framework: null, model: null }, { reason: 'new' });
+    await createAppSessionStarter(deps(), startDeps({ ...on, serves: () => false }))(KEY, { framework: null, model: null }, { reason: 'new' });
     await createAppSessionStarter(deps(), startDeps({ ...on, titleFor: () => null }))(KEY, { framework: null, model: null }, { reason: 'new' });
     await createAppSessionStarter(deps({ relayReady: () => ({ ready: false, reason: 'old' }) }), startDeps(on))(KEY, { framework: null, model: null }, { reason: 'new' });
     await createAppSessionStarter(deps({ spawnAdmission: () => ({ admit: () => ({ allow: false, reason: 'cap' }) }) }), startDeps(on))(KEY, { framework: null, model: null }, { reason: 'new' });

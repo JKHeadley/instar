@@ -391,7 +391,7 @@ export const PLATFORMS = [
 
 /** Engine and model can be picked for a Telegram topic or an app conversation (session-conversation-for-every-session §2.3). */
 export function platformAllowsDoor(platform) { return platform !== 'headless' && platform !== 'slack'; }
-/** The machine choice stays Telegram-only until app conversations can move (part 3). */
+/** A new session's machine choice stays Telegram-only: an app conversation starts on the lease holder and moves afterwards. */
 export function platformAllowsMachine(platform) { return platform === 'auto' || platform === 'telegram'; }
 
 /**
