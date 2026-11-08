@@ -17,6 +17,10 @@ import { MobilePairingService, createMobilePairingRouter, deviceAuthenticator, t
 import { createMobileConversationRouter } from '../../src/server/mobileConversationRoutes.js';
 import { createTeamRouter } from '../../src/server/teamRoutes.js';
 import { AppConversationService } from '../../src/core/AppConversationService.js';
+import { actOnUrgent, createAppOwnerReceiver, parseAppForward, type AppPoolHandle } from '../../src/core/appConversationPool.js';
+import type { SessionOwnershipRecord } from '../../src/core/SessionOwnership.js';
+import type { InboundMessage } from '../../src/core/SessionRouter.js';
+import type { AppDispatchInput } from '../../src/core/appInboundDispatch.js';
 import { ConversationRegistry } from '../../src/core/ConversationRegistry.js';
 import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSignatures.js';
@@ -38,7 +42,8 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-guards.test.ts' });
 });
 
-async function setup() {
+async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
+  const machine = opts.machine ?? 'm1';
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-guard-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'mo', name: 'Mo', channels: [], permissions: ['user'] }]));
@@ -49,7 +54,7 @@ async function setup() {
     mobilePairing: { multiRoute: { enabled: false } },
   };
   const spies = { routed: [] as Array<{ content: string; metadata: Record<string, unknown> }>, pushed: [] as string[], stops: [] as string[], disposition: 'route-through' };
-  const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true });
+  const registry = new ConversationRegistry({ stateDir: dir, machineId: () => machine, isRecordingEnabled: () => true });
   const deps = {
     config: config as never, stateDir: dir, holdsLease: () => true, selfMachineId: 'm1', teamGate: () => 'ok',
     tunnel: () => ({ lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' } }), ownerDM: async () => 1, telegramOwnerId: () => 777,
@@ -60,10 +65,12 @@ async function setup() {
   const signer = loadMachineSigner(dir)!;
   pairing.keyLedger = new MobileDeviceKeyLedger({ stateDir: dir, signer, keyLookup: identityKeyLookup(dir) });
   pairing.push = { onAppReply: (k: string) => { spies.pushed.push(k); } } as never;
+  const dispatched: AppDispatchInput[] = [];
   const svc = new AppConversationService({
-    stateDir: dir, machineId: () => 'm1', registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Ann',
+    ...(opts.pool ? { pool: () => opts.pool! } : {}),
+    stateDir: dir, machineId: () => machine, registry, requests: pairing.chatRequests()!, holdsLease: () => true, ownerName: () => 'Ann',
     killSession: () => true, onEmergencyStop: (_alias: unknown, scope?: string) => { spies.stops.push(scope ?? 'all'); },
-    dispatch: () => async (input) => { svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
+    dispatch: () => async (input) => { dispatched.push(input); svc.channels.register(String(input.alias), 'sess-app'); return 'delivered'; },
   });
   pairing.useAppConversationStore(svc.store);
   const session = (id: string, extra: Record<string, unknown>) => ({ id, name: `secret-${id}`, status: 'running', tmuxSession: id, startedAt: new Date().toISOString(), ...extra });
@@ -100,7 +107,7 @@ async function setup() {
     telegramTopics: () => [GRANTED, OTHER].map((topicId) => ({ topicId, topicName: `Topic ${topicId}`, lastActivity: null, lastPreview: `words in ${topicId}` })),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
-  return { app, pairing, svc, spies, dir };
+  return { app, pairing, svc, spies, dir, registry, dispatched };
 }
 type Env = Awaited<ReturnType<typeof setup>>;
 type Phone = { dev: ReturnType<typeof makeDevice>; id: string };
@@ -126,8 +133,8 @@ function send(e: Env, p: Phone, method: 'GET' | 'POST', url: string, body?: unkn
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 
 /** Team access on, Mia a member holding one topic. */
-async function withMember(access: 'read' | 'use' = 'use') {
-  const e = await setup();
+async function withMember(access: 'read' | 'use' = 'use', opts: Parameters<typeof setup>[0] = {}) {
+  const e = await setup(opts);
   const owner = phone(e);
   const r = await send(e, owner, 'POST', '/mobile/team/invites', { events: [
     { type: 'team-on' }, { type: 'owner-pin', personKey: 'owner-1' }, { type: 'person-add', personKey: 'mia', name: 'Mia', role: 'member' },
@@ -253,6 +260,111 @@ describe('a stop word from a phone', () => {
     const own = (await send(e, owner, 'POST', '/mobile/conversations', { title: 'Own', requestId: rid() })).body.conversationKey as string;
     await send(e, owner, 'POST', `/mobile/chat/app/${own}`, { text: 'please stop all of it', requestId: rid() });
     expect(e.spies.stops).toEqual(['conversation', 'all']);
+  });
+});
+
+describe('the same rules through a conversation on another machine (app-conversations-in-the-pool §2.4)', () => {
+  /** The machine that serves the phone, with every conversation owned by `m_owner`, and the owner beside it. */
+  async function moved() {
+    const routed: InboundMessage[] = [];
+    const record = (k: string): SessionOwnershipRecord => ({ sessionKey: k, ownerMachineId: 'm_owner', ownershipEpoch: 5, status: 'active', nonce: 'n', timestamp: Date.now(), updatedBy: 'm_owner' }) as SessionOwnershipRecord;
+    const pool: AppPoolHandle = {
+      active: () => true, read: record, gateOpenFor: () => true, drainRunning: () => false, sessionRunning: () => false,
+      closeLostSession: async () => ({ closed: true }), leaseHeldElsewhere: () => true, dropHeld: () => undefined, hasHeld: () => false,
+      route: async (m) => { routed.push(m); return { action: 'forwarded', owner: 'm_owner', acked: true }; },
+    };
+    const holder = await withMember('use', { pool });
+    const owner = await setup({ machine: 'm_owner' });
+    const verdict = { now: 'deliver' as 'kill' | 'pause' | 'deliver' };
+    const receiver = createAppOwnerReceiver({
+      service: () => owner.svc, storedEpoch: () => 5, markInjected: () => undefined,
+      classify: async () => verdict.now,
+    });
+    /** The forward the route really sent, as a queue row or mesh command carries it, on the owner. */
+    const onOwner = (key: string) => {
+      if (!owner.svc.liveConversation(key)) owner.svc.applyCreate('d', rid(), key, 'Moved');
+      owner.svc.channels.register(String(owner.registry.appAliasFor(key)), 'sess-owner');
+      const m = routed[routed.length - 1];
+      const row = JSON.stringify(m.payload);
+      receiver.accepted(m.sessionKey, m.messageId, row);
+      return parseAppForward(row)!;
+    };
+    return { holder, owner, routed, onOwner, verdict };
+  }
+  const talk = async (m: Awaited<ReturnType<typeof moved>>, who: 'mia' | 'owner', text: string) => {
+    const p = who === 'mia' ? m.holder.mia : m.holder.owner;
+    const key = (await send(m.holder.e, p, 'POST', '/mobile/conversations', { title: 'Mine', requestId: rid() })).body.conversationKey as string;
+    const r = await send(m.holder.e, p, 'POST', `/mobile/chat/app/${key}`, { text, requestId: rid() });
+    return { key, r };
+  };
+
+  it('an exact stop from a team phone ends only that conversation on the owner; the owner\'s own still stops everything', async () => {
+    const m = await moved();
+    const a = await talk(m, 'mia', 'stop');
+    expect(a.r.body).toMatchObject({ deliveryState: 'intercepted', forwarded: true });
+    expect(m.routed[0].appUrgent).toBe('stop');
+    expect(m.onOwner(a.key)).toMatchObject({ urgent: 'stop', stopScope: 'conversation' });
+    expect(m.owner.spies.stops).toEqual(['conversation']);
+    const b = await talk(m, 'owner', 'stop');
+    expect(m.onOwner(b.key).stopScope).toBeUndefined();
+    expect(m.owner.spies.stops).toEqual(['conversation', 'all']);
+    expect(m.holder.e.spies.stops).toEqual([]); // nothing ran on the machine that doesn't own it
+  });
+
+  it('a stop the classifier finds on the serving machine keeps the same rule', async () => {
+    const m = await moved();
+    m.holder.e.spies.disposition = 'kill';
+    const a = await talk(m, 'mia', 'please stop all of it');
+    expect(m.onOwner(a.key)).toMatchObject({ urgent: 'stop', stopScope: 'conversation' });
+    expect(m.owner.spies.stops).toEqual(['conversation']);
+  });
+
+  it('a plain send the owner itself turns into a stop keeps the rule: its classifier, and an exact stop in a held row', async () => {
+    const m = await moved();
+    m.verdict.now = 'kill';
+    const a = await talk(m, 'mia', 'an ordinary sentence');
+    const f = m.onOwner(a.key);
+    expect(f.urgent).toBeUndefined();
+    expect(f.stopScope).toBe('conversation');
+    await vi.waitFor(() => expect(m.owner.spies.stops).toEqual(['conversation']));
+    m.verdict.now = 'deliver';
+    const b = await talk(m, 'owner', 'an ordinary sentence');
+    expect(m.onOwner(b.key).stopScope).toBeUndefined();
+    await vi.waitFor(() => expect(m.owner.dispatched).toHaveLength(1));
+    expect(m.owner.spies.stops).toEqual(['conversation']);
+  });
+
+  it('a held stop acted on by a drain keeps the rule', async () => {
+    const m = await moved();
+    const a = await talk(m, 'mia', 'stop');
+    const f = parseAppForward(JSON.stringify(m.routed[0].payload))!;
+    m.owner.svc.applyCreate('d', rid(), a.key, 'Moved');
+    m.owner.svc.ingestReplicated([f.event as never]);
+    actOnUrgent(m.owner.svc, a.key, f, f.event.messageId);
+    expect(m.owner.spies.stops).toEqual(['conversation']);
+    expect(m.owner.svc.store.deliveryState(f.event.messageId)).toBe('intercepted');
+  });
+
+  it('a team member\'s send reaches the owner as theirs, never as the owner, in the session and in the store', async () => {
+    const m = await moved();
+    const a = await talk(m, 'mia', 'hello from Mia');
+    const f = m.onOwner(a.key);
+    await vi.waitFor(() => expect(m.owner.dispatched).toHaveLength(1));
+    expect(f.memoryPersonId).toBe('mia');
+    expect(m.owner.dispatched[0].memoryPersonId).toBe('mia');
+    expect(m.owner.dispatched[0].ownerName).toBe('Mia');
+    expect(f.event).toMatchObject({ senderName: 'Mia', senderRole: 'team' });
+    expect(m.owner.spies.stops).toEqual([]);
+    const b = await talk(m, 'owner', 'hello from the owner');
+    expect(m.onOwner(b.key).memoryPersonId).toBeNull();
+    await vi.waitFor(() => expect(m.owner.dispatched).toHaveLength(2));
+    expect(m.owner.dispatched[1].memoryPersonId).toBeNull();
+  });
+
+  it('only the one known scope survives parsing', () => {
+    const event = { kind: 'message', conversationKey: 'k', messageId: 'm', eventId: 'e' };
+    expect(parseAppForward({ kind: 'app-forward', event, seed: 's', stopScope: 'conversation' })!.stopScope).toBe('conversation');
+    expect(parseAppForward({ kind: 'app-forward', event, seed: 's', stopScope: 'everything' })!.stopScope).toBeUndefined();
   });
 });
 

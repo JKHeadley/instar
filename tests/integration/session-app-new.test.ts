@@ -140,7 +140,8 @@ function memoryRequests() {
 const rid = () => `${Date.now()}-${'0f9c1d2e-3b4a-4c5d-8e6f-' + Math.floor(Math.random() * 1e12).toString(16).padStart(12, '0')}`;
 function appSvc(owner = true): Svc & Record<string, unknown> {
   const svc: Svc & Record<string, unknown> = { creates: [], owner, deps: { requests: memoryRequests() } };
-  svc.isOwner = () => svc.owner;
+  svc.servesNewConversations = () => svc.owner;
+  svc.serves = () => svc.owner;
   svc.applyCreate = (_d: string, _r: string, key: string, title: string) => { svc.creates.push({ key, title }); return { status: 200, body: { conversationKey: key, title } }; };
   return svc;
 }

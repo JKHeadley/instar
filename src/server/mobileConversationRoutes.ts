@@ -47,6 +47,9 @@ import {
 } from '../core/appMediaTypes.js';
 import { detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { isExactStopMessage } from '../core/MessageSentinel.js';
+import { APP_STOPPED_BEFORE_DELIVERY, STOP_NOT_CONFIRMED, STOPPED_MAYBE_DELIVERED, buildAppForward, dispatchStoredAppMessage, type AppUrgent } from '../core/appConversationPool.js';
+import type { RouteOutcome } from '../core/SessionRouter.js';
+import { getAppPoolMoves } from '../core/appConversationMove.js';
 import { cleanText } from '../core/MobilePairing.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { RouteContext } from './routes.js';
@@ -270,7 +273,10 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
   const verdict = verify(m);
   // How the signing phone was approved (§4.6 display: "approved on dashboard"), only with a good verdict.
   const approvedVia = svc ? svc.originApprovedVia(m, verdict) : null;
+  // Why a send ended as it did (app-conversations-in-the-pool §2.2), from the request record on this machine. Absent once that has aged out.
+  const deliveryDetail = svc && m.role === 'operator' && (m.deliveryState === 'refused' || m.deliveryState === 'unknown') ? svc.deps.requests.detailForMessage(m.messageId) : null;
   return {
+    ...(deliveryDetail ? { deliveryDetail } : {}),
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
     deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}),
     // People and roles §3.3: who sent an operator message, as recorded when it was accepted.
@@ -278,6 +284,40 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
     ...(m.role === 'agent' && originCtx ? { origin: agentOriginRow(m, originCtx) } : {}),
   };
+}
+
+/**
+ * What the phone hears about a send that went through the router (app-conversations-in-the-pool §2.4).
+ * `forwarded` only on the owner's acknowledgement after ingest; a `duplicate` alone never counts.
+ */
+export function answerRouted(s: Pick<AppConversationService, 'appendDelivery' | 'store'>, out: RouteOutcome, m: { key: string; messageId: string; seed: string }): { status: number; body: Record<string, unknown> } {
+  // The owner took it durably. It dispatches next and appends the outcome itself under the same seed, so
+  // nothing here may claim `delivered`: that would hide an `unknown` from a crash before the dispatch.
+  if (out.action === 'forwarded') {
+    return { status: 200, body: { ok: true, outcome: 'forwarded', forwarded: true, deliveryState: s.store.deliveryState(m.messageId) ?? 'pending' } };
+  }
+  if (out.action === 'rejected') {
+    s.appendDelivery(m.key, m.messageId, 'refused', m.seed);
+    return { status: 200, body: { ok: true, outcome: 'refused', deliveryState: 'refused' } };
+  }
+  // A stop arrived while this was on its way: it was never handed over, and it won't run after the stop.
+  if (out.detail === 'app-stopped') {
+    s.appendDelivery(m.key, m.messageId, 'refused', m.seed);
+    return { status: 200, body: { ok: true, outcome: 'refused', deliveryState: 'refused', detail: APP_STOPPED_BEFORE_DELIVERY } };
+  }
+  // The attempt failed with no answer, so the owner may have it. `unknown` yields to the owner's own outcome.
+  if (out.detail === 'app-stopped-unknown') {
+    s.appendDelivery(m.key, m.messageId, 'unknown', m.seed);
+    return { status: 200, body: { ok: true, outcome: 'unknown', deliveryState: 'unknown', detail: STOPPED_MAYBE_DELIVERED } };
+  }
+  const state = s.store.deliveryState(m.messageId);
+  if (out.action === 'duplicate' && (state === 'delivered' || state === 'refused' || state === 'intercepted')) {
+    return { status: 200, body: { ok: true, outcome: state, deliveryState: state } };
+  }
+  if (out.action === 'duplicate' || out.acked) {
+    return { status: 202, body: { ok: true, outcome: 'waiting', deliveryState: 'pending', detail: 'Your message is saved and waiting for the machine that runs this conversation.' } };
+  }
+  return { status: 503, body: { error: 'owner-unavailable', detail: 'Your message is saved, but the machine that runs this conversation is not available right now. Try again shortly.' } };
 }
 
 export function createMobileConversationRouter(deps: MobileConversationRouteDeps): Router {
@@ -537,9 +577,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (prior.kind === 'done' || prior.kind === 'outcome-unknown') {
       featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `duplicate send answered from record: ${prior.kind}`, context: { messageId, deviceId, priorKind: prior.kind } });
       const state = s.store.deliveryState(messageId);
-      if (state === 'delivered' || state === 'refused' || state === 'intercepted') {
-        const recorded = prior.kind === 'done' ? prior.body : {};
-        res.json({ ...recorded, ok: true, conversationKey: key, eventId, messageId, deliveryState: state });
+      const recorded = prior.kind === 'done' ? prior.body : {};
+      // Routed, or finished by the queue: the record was written before the outcome was known.
+      const wasRouted = recorded.outcome === 'waiting' || recorded.outcome === 'forwarded' || recorded.outcome === 'unknown' || recorded.expiredForward === true;
+      const definite = state === 'delivered' || state === 'refused' || state === 'intercepted';
+      // Unchanged since the record was written: replay it below, words and status intact.
+      const unchanged = wasRouted && state === recorded.deliveryState;
+      if (!unchanged && (definite || (state === 'unknown' && wasRouted))) {
+        // It has moved on from the record, so the record's words no longer hold.
+        const settled = wasRouted ? { outcome: state, error: undefined, detail: undefined, expiredForward: undefined } : {};
+        res.json({ ...recorded, ...settled, ok: true, conversationKey: key, eventId, messageId, deliveryState: state });
         return;
       }
     }
@@ -641,20 +688,92 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       res.status(status).json(b);
     };
 
+    const memoryPersonId = sender && sender.role !== 'owner' ? sender.userId : null;
+    // A team member's stop ends their own conversation only, here or on the machine that owns it.
+    const stopScope = sender?.role === 'team' ? 'conversation' : undefined;
+    const router = s.poolRouter();
+    const forwardOf = (urgent?: AppUrgent) => buildAppForward({ event: msg, seed, ownerName: sender?.name ?? null, memoryPersonId, ...(urgent ? { urgent } : {}), ...(stopScope ? { stopScope } : {}) });
+    const envelope = { via: 'mobile-device' as const, deviceId, eventId };
+    const recordKey = `app:${key}`;
+    /** A stop or pause goes to the conversation's current owner (app-conversations-in-the-pool §2.4). True: it ran here. */
+    const urgentRoute = async (urgent: AppUrgent, outcome: string): Promise<boolean> => {
+      if (!router) return true;
+      if (urgent === 'stop' && s.deps.holdsLease()) {
+        try { router.dropHeld(recordKey); } catch (err) { s.deps.reportDegradation?.('AppConversations.stop', err instanceof Error ? err.message : String(err)); } // @silent-fallback-ok — reported; the stop itself still goes out
+      }
+      const here = s.currentOwner(key);
+      if (!s.deps.holdsLease()) {
+        if (here) return true;
+        // A stop that reaches a machine that isn't the holder runs today's local stop, which stops nothing here.
+        if (urgent === 'stop') s.emergencyStop(key, stopScope);
+        finish(503, { error: 'stop-not-confirmed', detail: STOP_NOT_CONFIRMED, conversationKey: key, eventId, messageId, ...extras });
+        return false;
+      }
+      let out: Awaited<ReturnType<typeof router.route>> | null = null;
+      try { out = await router.route({ sessionKey: recordKey, messageId, payload: forwardOf(urgent), senderEnvelope: envelope, appUrgent: urgent }); }
+      catch (err) { s.deps.reportDegradation?.('AppConversations.forward', err instanceof Error ? err.message : String(err)); } // @silent-fallback-ok — reported; the phone hears the stop isn't confirmed
+      if (out?.action === 'handled-locally') return true;
+      // "Intercepted" only on the owner's acknowledgement: `onAccepted` ran before it, so the stop has taken effect.
+      if (out?.action === 'forwarded') {
+        s.appendDelivery(key, messageId, 'intercepted', seed);
+        featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `intercepted on the owner: ${urgent}`, context: { messageId, deviceId } });
+        finish(200, { ok: true, outcome, forwarded: true, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
+        return false;
+      }
+      featureEvidence.record('mobilePairing.native', { kind: 'error', reason: `stop not confirmed: ${urgent}`, context: { messageId, deviceId, action: out?.action ?? 'threw' } });
+      finish(503, { error: 'stop-not-confirmed', detail: STOP_NOT_CONFIRMED, conversationKey: key, eventId, messageId, ...extras });
+      return false;
+    };
+
     if (exactStop) {
-      const stop = s.emergencyStop(key, sender?.role === 'team' ? 'conversation' : undefined);
+      if (!(await urgentRoute('stop', 'sentinel-kill'))) return;
+      s.noteEmergency(key);
+      const stop = s.emergencyStop(key, stopScope);
       s.appendDelivery(key, messageId, 'intercepted', seed);
       featureEvidence.record('mobilePairing.native', { kind: 'held', reason: 'intercepted: exact emergency stop', context: { messageId, deviceId, stopped: typeof stop.stopped === 'number' ? stop.stopped : null } });
       finish(200, { ok: true, outcome: 'sentinel-kill', stopped: stop.stopped, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
       return;
     }
 
-    // Step 5 — ownership (pool dark: the serving-lease holder), the pause intercept, dispatch.
+    // Step 5 — the send goes to the serving-lease holder; a machine that isn't it keeps today's answer (§2.4).
     const alias = s.deps.registry.appAliasFor(key) ?? (() => { const m = s.deps.registry.mintAppAlias(key); return m.ok ? m.id : null; })();
-    if (alias === null || !s.isOwner()) {
+    if (alias === null || !s.deps.holdsLease()) {
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'saved, not delivered: owner unavailable', context: { messageId, deviceId, aliasMinted: alias !== null } });
       finish(503, { error: 'owner-unavailable', detail: 'Your message is saved, but the machine that runs this conversation is not available right now. Try again shortly.', conversationKey: key, eventId, messageId, ...extras });
       return;
+    }
+    if (deps.sentinel && classifiedText) {
+      try {
+        const d = await deps.sentinel.decideInboundDisposition(classifiedText, alias);
+        if (d.disposition === 'kill' || d.disposition === 'pause') {
+          if (!(await urgentRoute(d.disposition === 'kill' ? 'stop' : 'pause', d.disposition === 'kill' ? 'sentinel-kill' : 'sentinel-pause'))) return;
+          s.noteEmergency(key);
+          const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key, stopScope).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
+          s.appendDelivery(key, messageId, 'intercepted', seed);
+          featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `intercepted: sentinel ${d.disposition}`, context: { messageId, deviceId, disposition: d.disposition } });
+          finish(200, { ok: true, ...out, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
+          return;
+        }
+      } catch { /* @silent-fallback-ok — FAIL-OPEN: a classifier error routes the message normally, as on the Telegram path */ }
+    }
+    // Routed (§2.4): a record naming another machine forwards the stored, signed event; a record mid-move
+    // or a closed lease gate holds it; anything else is delivered here. Nothing in this path places.
+    if (router) {
+      let out: Awaited<ReturnType<typeof router.route>>;
+      try {
+        out = await router.route({ sessionKey: recordKey, messageId, payload: forwardOf(), senderEnvelope: envelope, ...(router.hasHeld(recordKey) ? { appBehindHeld: true } : {}) });
+      } catch (err) { // @silent-fallback-ok — reported; the phone hears the outcome is unknown
+        requests.markUnknown(deviceId, requestId);
+        s.deps.reportDegradation?.('AppConversations.forward', err instanceof Error ? err.message : String(err));
+        res.status(409).json({ error: 'outcome-unknown', eventId, messageId, detail: 'This message may or may not have reached the agent. Check the conversation.' });
+        return;
+      }
+      if (out.action !== 'handled-locally') {
+        const answered = answerRouted(s, out, { key, messageId, seed });
+        featureEvidence.record('mobilePairing.native', { kind: answered.status === 200 ? 'fired' : answered.status === 202 ? 'held' : 'error', reason: `routed: ${out.action}`, context: { messageId, deviceId, action: out.action } });
+        finish(answered.status, { ...answered.body, conversationKey: key, eventId, messageId, ...extras });
+        return;
+      }
     }
     try { if (!s.deps.registry.isAppBound(alias)) s.deps.registry.bindApp(alias); } catch (err) {
       // The message is already saved; a failed binding write must not leave the request hanging.
@@ -664,20 +783,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       res.status(409).json({ error: 'outcome-unknown', eventId, messageId, detail: 'This message is saved but may not have reached the agent. Check the conversation.' });
       return;
     }
-    if (deps.sentinel && classifiedText) {
-      try {
-        const d = await deps.sentinel.decideInboundDisposition(classifiedText, alias);
-        if (d.disposition === 'kill' || d.disposition === 'pause') {
-          const out = d.disposition === 'kill' ? { outcome: 'sentinel-kill', stopped: s.emergencyStop(key, sender?.role === 'team' ? 'conversation' : undefined).stopped } : { outcome: 'sentinel-pause', paused: s.pause(key) };
-          s.appendDelivery(key, messageId, 'intercepted', seed);
-          featureEvidence.record('mobilePairing.native', { kind: 'held', reason: `intercepted: sentinel ${d.disposition}`, context: { messageId, deviceId, disposition: d.disposition } });
-          finish(200, { ok: true, ...out, conversationKey: key, eventId, messageId, deliveryState: 'intercepted', ...extras });
-          return;
-        }
-      } catch { /* @silent-fallback-ok — FAIL-OPEN: a classifier error routes the message normally, as on the Telegram path */ }
-    }
-    const dispatch = s.deps.dispatch();
-    if (!dispatch) {
+    if (!s.deps.dispatch()) {
       // Nothing was dispatched: an honest refusal, not an unknown outcome.
       s.appendDelivery(key, messageId, 'refused', seed);
       featureEvidence.record('mobilePairing.native', { kind: 'error', reason: 'saved, not delivered: no dispatcher on this machine', context: { messageId, deviceId } });
@@ -687,18 +793,12 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // §4.5: one line per file before the caption, with a server-chosen path to a private copy.
     // §4.12: a file not on this machine is pulled first (≤ 60 s), else "[file still copying: …]"
     // and one "[file now available: …]" line follows when it lands.
-    let sessionText = delivered;
-    if (stored.length > 0) {
-      const lines = await s.sessionLinesFor(key, messageId, stored, delivered);
-      sessionText = [...lines, ...(delivered ? [delivered] : [])].join('\n');
-    }
-    const pending = s.pendingContext(key);
     let outcome: 'delivered' | 'refused';
     let originVerdict: OriginVerdict = 'unknown';
     try {
-      originVerdict = s.verify(msg);
-      outcome = await dispatch({ conversationKey: key, alias, title: conv.title ?? 'Untitled', text: sessionText, messageId, ownerName: sender?.name ?? s.ownerName(), memoryPersonId: sender && sender.role !== 'owner' ? sender.userId : null, originVerdict, ...(pending.lines.length > 0 ? { notes: pending.lines } : {}) });
-      if (outcome === 'delivered') pending.ack();
+      const r = await dispatchStoredAppMessage(s, { key, alias, title: conv.title ?? 'Untitled', event: msg, ownerName: sender?.name ?? s.ownerName(), memoryPersonId });
+      outcome = r.outcome;
+      originVerdict = r.originVerdict;
     } catch (err) {
       try { s.appendDelivery(key, messageId, 'unknown', seed); } catch { /* @silent-fallback-ok — the request itself is recorded outcome-unknown below */ }
       requests.markUnknown(deviceId, requestId);
@@ -710,6 +810,16 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     s.appendDelivery(key, messageId, outcome, seed);
     featureEvidence.record('mobilePairing.native', { kind: outcome === 'delivered' && originVerdict !== 'failed' ? 'fired' : 'error', reason: originVerdict === 'failed' ? `failed verdict on a message: ${outcome}` : `message ${outcome}`, context: { messageId, deviceId, outcome, originVerdict, files: stored.length, redacted: removedKinds.size > 0, senderRole: sender?.role ?? null } });
     finish(200, { ok: true, outcome, conversationKey: key, eventId, messageId, deliveryState: outcome, ...extras });
+  });
+
+  // Where a conversation runs and whether it can be brought back (app-conversations-in-the-pool §2.2). A
+  // conversation whose machine is down has no session row, so the session menu can't say this.
+  router.get('/mobile/conversations/:key/placement', (req: Request, res: Response) => {
+    if (!readGate(req, res)) return;
+    const key = String(req.params.key);
+    if (!allowed(req, res, key)) return;
+    if (!svc!.liveConversation(key)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    res.json(getAppPoolMoves()?.placement(key) ?? { conversationRef: `app:${key}`, moved: false, bringBack: { can: false } });
   });
 
   // ── Browse ──

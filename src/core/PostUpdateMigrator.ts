@@ -1182,6 +1182,14 @@ export function MOBILE_SESSION_APP_NEW_LINE(port: number): string {
 }
 export const MOBILE_SESSION_APP_NEW_MARKER = `"platform":"app"`;
 /**
+ * App conversations move between machines (docs/specs/app-conversations-in-the-pool.md §7), one bullet
+ * after the New session bullet. Sniff: `POST /pool/transfer\` with \`app:<key>`.
+ */
+export function MOBILE_APP_POOL_LINE(): string {
+  return '- App conversations move like Telegram topics (`POST /pool/transfer` with `app:<key>`, when all your machines are updated). This is on for development agents first: elsewhere that call answers 503 and the conversation stays on the machine holding the lease. Slack conversations stay with the machine that holds the Slack connection.';
+}
+export const MOBILE_APP_POOL_MARKER = 'with `app:<key>`, when all your machines';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1353,6 +1361,7 @@ ${MOBILE_HEALTH_CHOICES_LINE(port)}
 ${MOBILE_SESSION_CONTROLS_LINE(port)}
 ${MOBILE_SESSION_SWAP_ANY_LINE(port)}
 ${MOBILE_SESSION_APP_NEW_LINE(port)}
+${MOBILE_APP_POOL_LINE()}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -10222,6 +10231,20 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the app-conversation New session line');
+    }
+    // App conversations move between machines (docs/specs/app-conversations-in-the-pool.md §7): one
+    // bullet after the New session bullet of an existing Mobile app routes block.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_APP_POOL_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_SESSION_APP_NEW_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_APP_POOL_LINE());
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_APP_POOL_LINE()}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the app conversations move line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
