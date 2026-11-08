@@ -10,6 +10,7 @@
  * Challenges and tickets live only in this process's memory, bound to the device and the Host
  * the request was signed for (machine-local by design: spec, Multi-machine posture).
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -286,7 +287,7 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
     let r: ReturnType<typeof svc.devices.setPresenceKey>;
     try { r = svc.devices.setPresenceKey(deviceId, stored); } catch (err) {
       svc.deps.reportDegradation?.('MobileConsoleTicket.presenceKey', err);
-      res.status(500).json({ error: 'Could not record the key. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the key. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (r === 'conflict') { res.status(409).json({ error: 'presence-key-set', detail: 'This phone already has a sign-in key. Remove and pair the phone again to replace it.' }); return; }

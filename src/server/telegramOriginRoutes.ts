@@ -1,3 +1,4 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import type { Router, Request, Response } from 'express';
 import type { TelegramOriginRuntime } from '../messaging/telegram-origin/TelegramOriginRuntime.js';
@@ -177,8 +178,8 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       // @silent-fallback-ok — not silent: answers 503 origin-store-unavailable (or delivered from the fallback record)
       const verdict = classifyOperationOutcome(operationId, null, captured);
       if (verdict.outcome === 'delivered') { res.json({ ...verdict, storeAvailable: false }); return; }
-      res.status(503).json({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
-        detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' });
+      res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
+        detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' }, req.app.locals.stateDir));
       return;
     }
     const verdict = classifyOperationOutcome(operationId, audit, captured);

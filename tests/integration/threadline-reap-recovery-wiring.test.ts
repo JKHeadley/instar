@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-// canonical-migration-validator: threadline-inbound-canonical-store@1
+// canonical-migration-validator: threadline-inbound-canonical-store@2
 
 describe('Threadline reap recovery production wiring', () => {
   it('carries canonical message identity from sessionReaped into the shared resume drainer', () => {

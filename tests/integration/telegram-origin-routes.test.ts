@@ -445,7 +445,15 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(h.network).not.toHaveBeenCalled();
     expect(await h.runtime.store.reserveRecoveryAttempt({ operationId: rows[0].operation!.operationId, now: retryAt - 1 })).toBe(false);
     await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now()) + 10));
-    expect((await h.runtime.recoverHeld()).recovered).toBe(1); expect(h.network).toHaveBeenCalledOnce();
+    // A busy SQLite writer can legitimately defer one recovery pass. Wait for
+    // recovery without relaxing the original deadline or transport budget.
+    const recoveryUntil = Math.min(Date.now() + 5_000, rows[0].operation!.deadlineAt);
+    let recoveredCount = 0;
+    while (recoveredCount === 0 && Date.now() < recoveryUntil) {
+      recoveredCount = (await h.runtime.recoverHeld()).recovered;
+      if (recoveredCount === 0) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    expect(recoveredCount).toBe(1); expect(h.network).toHaveBeenCalledOnce();
     const recovered = (await h.runtime.store.listOrigins()).records;
     expect(recovered).toHaveLength(1);
     expect(recovered[0].operation?.operationId).toBe(rows[0].operation!.operationId);

@@ -15,6 +15,7 @@
  * Part of Phases 4-5 of the multi-machine spec.
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import type { TelegramHandoverPeople } from '../core/telegramPairHandover.js';
 import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
 import { Router, type Request, type Response } from 'express';
@@ -242,7 +243,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     if (!ctx.onDesktopOperatorBegin) { res.status(503).json({ error: 'Remote desktop is off on this machine' }); return; }
     const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
     try { res.status(201).json(await ctx.onDesktopOperatorBegin(req.body, frontId)); }
-    catch (error) { res.status(403).json({ error: error instanceof Error ? error.message : 'desktop access refused' }); }
+    catch (error) { res.status(403).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'desktop access refused' }); }
   });
 
   router.post('/api/desktop/operator-keepalive', authMiddleware, (req, res) => {
@@ -256,7 +257,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     if (!ctx.onDesktopOperatorLocked) { res.status(503).json({ error: 'Locked-screen access is not available on this machine' }); return; }
     const frontId = (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId;
     try { res.setHeader('Cache-Control', 'no-store'); res.json(await ctx.onDesktopOperatorLocked(req.body, frontId)); }
-    catch (error) { res.status(403).json({ error: error instanceof Error ? error.message : 'desktop request refused' }); }
+    catch (error) { res.status(403).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'desktop request refused' }); }
   });
 
   router.post('/api/desktop/operator-command', authMiddleware, async (req, res) => {
@@ -1278,7 +1279,7 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
         res.status(409).json({ error: 'Relay rejected (loop, duplicate, or invalid signature)' });
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : 'Relay failed' });
+      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'Relay failed' });
     }
   });
 
