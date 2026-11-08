@@ -17,7 +17,7 @@ import {
 import {
   parseConversationRef, refString, refFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
-  UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor,
+  UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, blobTypeFor,
 } from './chats-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
@@ -608,7 +608,7 @@ class ChatsPage {
   // ── composer (§4.8) ──
   composer(v) {
     const canSend = !(v.ref.kind === 'telegram' && this.status && this.status.telegramSend === false);
-    if (!canSend) return el('p', { class: 'card-line chat-readonly', text: 'Sending to Telegram works from the machine serving Telegram.' });
+    if (!canSend) return el('p', { class: 'card-line chat-readonly', text: telegramReadOnlyNote(this.status) });
     const text = el('textarea', { class: 'chat-compose', rows: '2', placeholder: 'Message', 'aria-label': 'Message' });
     const send = el('button', { class: 'btn-primary chat-send', type: 'button', text: 'Send', disabled: true });
     const pick = el('input', { type: 'file', multiple: true, hidden: true, 'aria-label': 'Attach files' });

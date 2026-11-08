@@ -274,6 +274,16 @@ export function unfinishedAction(entry, { deviceId, machineId, nowMs }) {
 }
 
 /** A send's answer → { final, state, label }. Not final: retry later with the same requestId. */
+/**
+ * Why a Telegram topic is read-only here (`telegramSend: false` in the status answer): with an owner
+ * (the approval path is Telegram) it is the serving machine; without one there is no owner to speak as.
+ */
+export function telegramReadOnlyNote(status) {
+  return status && status.approvalPath === 'telegram'
+    ? 'Sending to Telegram works from the machine serving Telegram.'
+    : 'Sending to Telegram from here needs a Telegram owner on this agent; you can read the topic.';
+}
+
 export function sendOutcome(status, data) {
   const d = data || {};
   if (status === 200 || status === 201) {

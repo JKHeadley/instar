@@ -15,7 +15,7 @@
 1. At phone width the open conversation now fits between the top bar and the bottom tab bar. The messages scroll inside it, and the message box always stays on the first screen, however long the conversation is. The desktop layout already worked this way.
 2. When the conversation list arrives, the header picks up the real title.
 3. The page reads a Telegram or Slack send's answer correctly. Once the agent holds a message this browser signed, the "sending" copy goes away right away.
-4. A refusal that names its reason is shown as "not delivered" with that reason, and is not retried. The page is only told that it can send to Telegram when the agent has a Telegram owner to speak as.
+4. A refusal that names its reason is shown as "not delivered" with that reason, and is not retried. The page is only told that it can send to Telegram when the agent has a Telegram owner to speak as, and when it cannot, the note on the topic says the real reason.
 
 ## What stays the same
 

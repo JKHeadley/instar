@@ -6,7 +6,7 @@ Fixes to the dashboard Conversations page (#2966), found by its live proof in a 
 - At phone width a long conversation no longer pushes the message box below the bottom tab bar. The open conversation fits the screen and the messages scroll inside it.
 - A conversation opened from a link shows its real title instead of "Conversation".
 - A message sent into a Telegram or Slack conversation finishes as "delivered". The page now reads those sends' `outcome` field, and the "sending" copy goes away as soon as the agent holds the message.
-- A refusal that names its reason (for example "This agent has no Telegram owner to speak as") is shown as "not delivered" with the reason, instead of retrying forever. `GET /mobile/browser-devices/status` reports `telegramSend: true` only when a Telegram owner is present.
+- A refusal that names its reason (for example "This agent has no Telegram owner to speak as") is shown as "not delivered" with the reason, instead of retrying forever. `GET /mobile/browser-devices/status` reports `telegramSend: true` only when a Telegram owner is present, and the read-only note on a Telegram topic gives the right reason.
 
 ## What to Tell Your User
 
