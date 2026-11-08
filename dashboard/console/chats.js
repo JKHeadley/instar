@@ -446,7 +446,15 @@ class ChatsPage {
     const { kind, id } = v.ref;
     if (kind === 'app') return `/mobile/chat/app/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
     if (kind === 'telegram') return `/telegram/topics/${encodeURIComponent(id)}/messages?limit=50${pool ? '&scope=pool' : ''}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
-    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+    return `/mobile/chat/slack/${encodeURIComponent(id)}/messages?limit=50&machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}${before ? `&before=${encodeURIComponent(before)}` : ''}`;
+  }
+  /**
+   * The machine a Slack conversation was listed from (a Slack id is local to it; the routes require it).
+   * The list shows only this machine's own Slack rows, so before the list arrives it is this machine.
+   */
+  slackMachine(ref) {
+    const row = this.rows.find((r) => r.key === refString(ref));
+    return (row && row.machine) || (this.status && this.status.machineId) || null;
   }
   ownCheck() {
     const rec = this.device.record;
@@ -689,7 +697,7 @@ class ChatsPage {
     let wait = 2000;
     for (;;) {
       const ref = parseConversationRef(entry.ref);
-      const json = { text: entry.text || '', requestId: entry.requestId, ...(entry.uploads.length ? { attachments: entry.uploads } : {}) };
+      const json = { text: entry.text || '', requestId: entry.requestId, ...(entry.uploads.length ? { attachments: entry.uploads } : {}), ...(ref.kind === 'slack' ? { machine: this.slackMachine(ref) } : {}) };
       const r = await this.call('POST', this.sendPath(ref), { json });
       if (r.gone) { this.finishLocal(v, local, deliveryLabel('unknown')); return; }
       const out = sendOutcome(r.status, r.data);
