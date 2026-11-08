@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "dns-sandbox-test-node-path",
+  "sessionId": "5c623401-e6f7-4a07-a977-3f1b368dd0c8",
+  "timestamp": "2026-11-07T22:18:10.887Z",
+  "artifactPath": "upgrades/side-effects/dns-sandbox-test-node-path.md",
+  "artifactSha256": "c3263e66e2a00bd8ad3ceae44a9a88d3319bde64ce2c3139835ff4470aa5bf57",
+  "coveredFiles": [
+    "docs/specs/dns-sandbox-test-node-path.eli16.md",
+    "tests/integration/feedback-execute-dns-sandbox.test.ts",
+    "upgrades/next/dns-sandbox-test-node-path.md",
+    "upgrades/side-effects/dns-sandbox-test-node-path.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One test file; no runtime surface; revert fixes it.",
+  "eli16Path": "docs/specs/dns-sandbox-test-node-path.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dns-sandbox-test-node-path.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
