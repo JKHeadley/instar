@@ -83,3 +83,6 @@ A last reader found that some fixes above went too far, and each is corrected wi
 `upgrades/next/team-access-machines.md`.
 
 The merge rules are listed as outside the Stage-B canary's reach in `src/data/stageBCertifiedSet.ts`, as the rest of team access is.
+
+## Rebased on main, 11-08
+PR 2927's line landed on main, so this branch takes main's version and drops its own duplicate test. Main's server start had grown, and these additions pushed it past the type checker's size limit, so the post-start wiring moved into `wireTeamChecks`.

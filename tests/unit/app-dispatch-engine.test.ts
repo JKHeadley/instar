@@ -96,15 +96,6 @@ describe('restarting an app conversation on a new engine (startApp)', () => {
     expect(all).toContain('Shown to all');
     expect(all).not.toContain('Held from Mia');
   });
-  it('two contexts in one millisecond do not collide', async () => {
-    const now = vi.spyOn(Date, 'now').mockReturnValue(1_794_000_000_000);
-    try {
-      const starter = createAppSessionStarter(deps(), start());
-      await starter(KEY, { framework: 'codex', model: null });
-      running = [];
-      await expect(starter(KEY, { framework: 'codex', model: null })).resolves.toBeTruthy();
-    } finally { now.mockRestore(); }
-  });
   it('starts nothing on a machine that does not serve it, or for a gone conversation', async () => {
     expect(await createAppSessionStarter(deps(), start({ serves: () => false }))(KEY, { framework: 'codex', model: null })).toBeNull();
     expect(await createAppSessionStarter(deps(), start({ titleFor: () => null }))(KEY, { framework: 'codex', model: null })).toBeNull();
