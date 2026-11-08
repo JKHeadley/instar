@@ -17,7 +17,7 @@ import {
 import {
   parseConversationRef, refString, refFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
-  UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS,
+  UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor,
   setupRefusal, approvalWords, blobTypeFor,
 } from './chats-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
@@ -337,7 +337,7 @@ class ChatsPage {
           el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),
         el('span', { class: 'chat-row-side' },
           r.lastActivity ? el('span', { class: 'chat-row-time', text: shortTime(r.lastActivity) }) : null,
-          // The conversation on screen is being read: no badge for it (a browser does not move read markers in this version).
+          // The conversation on screen is being read (and reported read, which clears the count on the phone too): no badge for it.
           r.unread > 0 && r.key !== open ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null))));
     }
     this.moreBtn.hidden = !this.meta.nextCursor;
@@ -482,6 +482,28 @@ class ChatsPage {
       return true;
     });
     this.paintBubbles(v);
+    this.maybeMarkRead(v);
+  }
+
+  /**
+   * Reading here clears the count everywhere (dashboard-read-markers, like Telegram Web and the phone):
+   * the focused, visible tab reports the newest message shown as read, through the same per-person
+   * marker the phone uses. Only when something newer than the last report is shown; one at a time.
+   */
+  async maybeMarkRead(v) {
+    if (!v || !v.live || v.markInFlight || document.visibilityState !== 'visible' || !(document.hasFocus && document.hasFocus())) return;
+    const row = this.rows.find((r) => r.key === refString(v.ref));
+    const mark = readMarkFor(v.ref, v.list, row ? row.machine : null, v.lastMark || null);
+    if (!mark) return;
+    v.markInFlight = true;
+    try {
+      const r = await this.call('POST', '/mobile/conversations/read', { json: { marks: [mark] } });
+      if (r.gone) return;
+      const res = r.ok && r.data && Array.isArray(r.data.results) ? r.data.results[0] : null;
+      // A refused or unknown mark is not retried for this position; a pending one is retried when newer messages arrive.
+      if (r.ok && (!res || res.ok || res.error === 'unknown-conversation')) v.lastMark = { atMs: mark.atMs, id: mark.id };
+      if (r.ok && res && res.ok && v.live) this.loadList(false);
+    } catch { /* @silent-fallback-ok — a read report is best-effort; the next new message reports again */ } finally { v.markInFlight = false; }
   }
 
   paintBubbles(v) {
@@ -820,7 +842,7 @@ class ChatsPage {
       if (document.visibilityState === 'visible') { this.announce(); this.seekLeadership(); }
       else { this.post({ type: 'withdraw', tab: this.tabId }); this.releaseLeadership(); }
     };
-    this.onFocus = () => { this.focusedAt = now(); this.announce(); if (this.view) this.pollNow(this.view); };
+    this.onFocus = () => { this.focusedAt = now(); this.announce(); if (this.view) { this.pollNow(this.view); this.maybeMarkRead(this.view); } };
     document.addEventListener('visibilitychange', this.onVisibility);
     window.addEventListener('focus', this.onFocus);
     this.announceTimer = setInterval(() => { if (this.live && document.visibilityState === 'visible') this.announce(); }, ANNOUNCE_EVERY_MS);
