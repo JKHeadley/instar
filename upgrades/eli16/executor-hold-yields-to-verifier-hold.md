@@ -1,0 +1,9 @@
+# Updates stop waiting on a fix attempt when the test queue needs the restart
+
+The server runs two things that care about restarts. Local Verify runs the test suite for pull requests, one at a time, from a queue. The feedback executor builds fixes for reported bugs, and its setup and final checks run inside the server, so a restart loses them.
+
+When the server's installed test runner changes on disk (an update was installed but the server has not restarted yet), Local Verify stops starting tests: a test started now would refuse to run against the new files. Everything queued waits for the restart. Meanwhile, a fix attempt in setup or final checks asks the updater to wait up to two hours so the attempt is not lost. Put together, the restart that the whole test queue was waiting for could be held back by one attempt. On 2026-11-07 the Studio's test slot sat idle for 16.7 minutes with 11 pull requests queued, and the worst case is about two hours of no local verification.
+
+The change: while Local Verify reports that its queue is waiting for a restart, the fix attempt no longer holds the restart, except during the few seconds it is pushing its branch and opening its pull request, where a restart would leave the outcome unknown and page the operator. The attempt is interrupted by that restart, and that is recorded, not hidden: an attempt in setup is ended as interrupted and can be claimed again on the next pass (it counts as no failure, though it does use one of the day's six starts); an attempt in final checks whose files survived is checked again once; nothing is ever reported as a success. In every other situation the two-hour hold is exactly as before, including when the test runner changed but nothing is queued.
+
+If the executor cannot read Local Verify's state, it keeps holding, so a fault can only delay a restart, never lose an attempt. Nobody has a decision to make, and undoing this is a plain revert.

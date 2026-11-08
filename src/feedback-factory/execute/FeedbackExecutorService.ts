@@ -126,6 +126,13 @@ export interface FeedbackExecutorServiceOptions {
   /** The independent review gate's reviewers; absent → no PR is admitted without the owner's approval. */
   review?: IndependentReviewPort;
   admission: ExecutorAdmission;
+  /**
+   * True while Local Verify holds queued work for a restart (its verifier changed on disk, so no
+   * verify can start until the server restarts). The attempt hold yields to it: deferring that
+   * restart for up to two hours idles the test slot with work waiting (fb-7459b8b6-a7f, 2026-11-07:
+   * 16.7 minutes idle with 11 queued). Absent → the hold never yields.
+   */
+  localVerifyNeedsRestart?: () => boolean;
   identityFacts: () => Omit<AgentIdentityFacts, 'agentGithubLogin' | 'agentGithubAccounts'>;
   /** Ranked `work` items (the triage queue order). */
   rankedWork: () => Array<{ initiativeId: string; clusterId: string }>;
@@ -360,11 +367,40 @@ export class FeedbackExecutorService {
    */
   restartHolds(): RestartHold[] {
     if (!this.running) return [];
-    return this.opts.store.inStates('claimed', 'verifying').map((row) => ({
+    let rows = this.opts.store.inStates('claimed', 'verifying');
+    if (rows.length === 0) return [];
+    if (this.restartHoldYields()) {
+      // The restart this hold would defer is the one Local Verify's queue is waiting for, so the
+      // hold is withdrawn and that is recorded once per attempt. A restart then interrupts the
+      // attempt: the next tick ends a `claimed` row as stopped/interrupted (re-claimable, never a
+      // failure) and re-verifies a `verifying` row once when its trees survived. Nothing is reported
+      // as a success. The publish window keeps its hold: a restart there parks the item
+      // `publish-outcome-unknown` with an operator escalation, and the window is seconds long.
+      const publishing = (row: ExecutionRow) => row.state === 'verifying' && row.reason === 'publishing';
+      for (const row of rows) {
+        if (publishing(row) || this.holdYieldAudited.has(row.attemptId)) continue;
+        this.holdYieldAudited.add(row.attemptId);
+        this.opts.audit.append('execute:restart-hold-withdrawn', { attemptId: row.attemptId, state: row.state, for: 'local-verify:verifier-hold' });
+      }
+      rows = rows.filter(publishing);
+    }
+    return rows.map((row) => ({
       name: `feedback-attempt:${row.attemptId}`,
       until: row.updatedAt + ATTEMPT_RESTART_HOLD_MS,
       reason: 'a feedback fix attempt is in setup or verification and a restart would lose it',
     }));
+  }
+
+  /** Attempts whose withdrawn hold was recorded (in memory; the restart it stood aside for ends the process). */
+  private readonly holdYieldAudited = new Set<string>();
+
+  /**
+   * Whether the attempt hold stands aside for a restart Local Verify's queued work needs. An
+   * unreadable answer keeps the hold (the previous behavior), so a fault here can only make a
+   * restart later, never lose an attempt.
+   */
+  restartHoldYields(): boolean {
+    try { return this.opts.localVerifyNeedsRestart?.() === true; } catch { return false; } // @silent-fallback-ok: an unreadable Local Verify state keeps the hold
   }
 
   acceptTick(): { status: 202 | 409 | 429 | 503; body: Record<string, unknown> } {

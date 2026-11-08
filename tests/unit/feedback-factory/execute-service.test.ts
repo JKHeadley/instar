@@ -641,6 +641,64 @@ describe('verification and publication', () => {
     expect(h.exec.restartHolds()).toEqual([]);
   });
 
+  it('the attempt hold yields while Local Verify holds queued work for a restart, and says so once per attempt', async () => {
+    // fb-7459b8b6-a7f: with a verifier hold and work queued, no verify can start until the server
+    // restarts; the attempt hold deferring that restart (up to 2 h) idled the test slot.
+    h = await createExecHarness();
+    const initiativeId = await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n', 'tests/fix.test.ts': "import { it } from 'vitest';\nit('fixes it', () => {});\n" });
+    const scripted = h.runScript.fn;
+    const seen: Array<{ needs: boolean; holds: number }> = [];
+    let needs = false;
+    h.localVerifyNeedsRestart.fn = () => needs;
+    h.runScript.fn = (cmd) => {
+      // Both sides of the decision, read during setup of the same attempt: the hold stands while
+      // Local Verify needs no restart, and yields the moment it does.
+      for (const n of [false, true, false]) { needs = n; seen.push({ needs: n, holds: h.exec.restartHolds().length }); }
+      return scripted(cmd);
+    };
+    await h.exec.tick();
+    expect(seen.slice(0, 3)).toEqual([{ needs: false, holds: 1 }, { needs: true, holds: 0 }, { needs: false, holds: 1 }]);
+    const rows = fs.readFileSync(h.audit.path(), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const yielded = rows.filter((r) => r.event === 'execute:restart-hold-withdrawn');
+    expect(yielded).toHaveLength(1); // once per attempt, however often the updater re-reads the hold
+    expect(yielded[0]).toMatchObject({ attemptId: h.execStore.latestFor(initiativeId)!.attemptId, state: 'claimed', for: 'local-verify:verifier-hold' });
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('running'); // the yield itself changes nothing about the attempt
+  });
+
+  it('the publish window keeps its hold even while Local Verify needs the restart (a restart there escalates to the operator)', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.localVerifyNeedsRestart.fn = () => true;
+    const scripted = h.runScript.fn;
+    let duringVerify: ReturnType<typeof h.exec.restartHolds> | null = null;
+    let duringPublish: ReturnType<typeof h.exec.restartHolds> = [];
+    h.runScript.fn = (cmd) => { duringVerify = h.exec.restartHolds(); return scripted(cmd); };
+    h.onPush.fn = () => { duringPublish = h.exec.restartHolds(); };
+    finishSessions(h);
+    await h.exec.tick();
+    expect(h.pushes).toHaveLength(1);
+    expect(duringVerify).toEqual([]); // the checks before the push stood aside
+    expect(duringPublish).toHaveLength(1);
+    expect(duringPublish[0].name).toContain(initiativeId);
+    const rows = fs.readFileSync(h.audit.path(), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    // The verification stage before the push did withdraw its hold; the publish window never did.
+    expect(rows.filter((r) => r.event === 'execute:restart-hold-withdrawn').map((r) => r.state)).toEqual(['verifying']);
+  });
+
+  it('an unreadable Local Verify answer keeps the attempt hold (a fault can only delay a restart, never lose an attempt)', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.fixWith({ 'src/thing.ts': 'export const thing = 2;\n', 'tests/fix.test.ts': "import { it } from 'vitest';\nit('fixes it', () => {});\n" });
+    const scripted = h.runScript.fn;
+    h.localVerifyNeedsRestart.fn = () => { throw new Error('local verify not built'); };
+    let duringSetup = -1;
+    h.runScript.fn = (cmd) => { duringSetup = h.exec.restartHolds().length; return scripted(cmd); };
+    await h.exec.tick();
+    expect(duringSetup).toBe(1);
+    expect(h.exec.restartHoldYields()).toBe(false);
+  });
+
   it('a failed check run records its OWN output, so the failure is diagnosable after the clones are gone', async () => {
     h = await createExecHarness();
     const { initiativeId } = await startOne();

@@ -3916,6 +3916,8 @@ export class AgentServer {
                 updatePending: () => {
                   try { return executorUpdatePending(options.autoUpdater?.getStatus()); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
                 },
+                // The attempt hold yields to a restart Local Verify's queued work is waiting for.
+                localVerifyNeedsRestart: () => options.localVerify?.restartNeededForQueuedWork() === true,
                 raiseAttention: async (item) => {
                   const enqueue = this.telegramAdapter?.createAttentionItem;
                   if (!enqueue) throw new Error('durable attention enqueue unavailable');

@@ -36,6 +36,10 @@ export interface ExecHarness extends Harness {
   repo: { createdBodies: string[]; info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
   identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
   admission: { saturated: boolean; shedding: boolean; updatePending: boolean; rerouteSaturated?: boolean };
+  /** Local Verify's answer to "does queued work need a restart?" (the attempt hold yields while true). */
+  localVerifyNeedsRestart: { fn: () => boolean };
+  /** Called inside the publish push (the attempt is `verifying` / `publishing` at that moment). */
+  onPush: { fn: () => void };
   /** When set, the next confined spawns throw this (e.g. a RerouteRefusedError from a full reroute lane). */
   spawnError: { value: Error | null };
   pushes: PushRecord[];
@@ -108,6 +112,8 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.repo = { createdBodies: [], info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
   h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
   h.admission = { saturated: false, shedding: false, updatePending: false, rerouteSaturated: false };
+  h.localVerifyNeedsRestart = { fn: () => false };
+  h.onPush = { fn: () => {} };
   h.spawnError = { value: null };
   h.pushes = [];
   h.prs = new Map();
@@ -149,6 +155,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
         }
       };
       walk(clone);
+      h.onPush.fn();
       h.pushes.push({ branch: input.branch, message: input.message, remoteUrl: input.remoteUrl, files, credentialHelper: input.credentialHelper });
       return HEAD_SHA;
     },
@@ -253,6 +260,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     processing: { activeClusters: () => [...h.clusters.values()], feedbackByCluster: () => new Map([...h.reports].map(([k, v]) => [k, v.map((r) => ({ ...r }))])) },
     initiatives: h.tracker, git, github, runner, deps: depsPort, sessions,
     admission: { spawnLimiterSaturated: () => h.admission.saturated, quotaShedding: () => h.admission.shedding, updatePending: () => h.admission.updatePending, rerouteSaturated: () => h.admission.rerouteSaturated === true },
+    localVerifyNeedsRestart: () => h.localVerifyNeedsRestart.fn(),
     identityFacts: () => ({ profileAccounts: h.identity.profileAccounts, ownedIdentities: h.identity.ownedIdentities, vaultNames: h.identity.vaultNames }),
     rankedWork: () => h.service.queue().map((i) => ({ initiativeId: String(i.initiativeId), clusterId: String(i.clusterId) })),
     enabled: () => h.enabled.value,
