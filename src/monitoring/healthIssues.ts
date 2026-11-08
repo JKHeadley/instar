@@ -144,6 +144,105 @@ export function ruleFor(id: string): HealthRule | null {
   return exactRules.get(id) ?? familyRules.find((f) => id.startsWith(f.prefix))?.rule ?? null;
 }
 
+// ── Plain names for rows no rule names (the owner's screen, 2026-11-06) ──
+// Two different unsorted problems both read "Something inside me used a backup path", and their own words
+// showed internals ("verifyInjection", "sentinel", "tick"). Every row the table doesn't name now gets a title
+// of its own: a known subsystem's plain name first, then the reporter's own impact line when it is already
+// plain words, then the subsystem named in plain words. Deterministic; no model call.
+
+/** Known subsystems by id prefix (case-insensitive, longest first): a plain title and, where its own words are internal, plain words. */
+export const SUBSYSTEM_NAMES: ReadonlyArray<{ prefix: string; title: string; words?: string }> = [
+  { prefix: 'StuckInputSentinel', title: 'I pressed Enter for a stuck session', words: 'A message sat unsent at a session’s prompt, so I pressed Enter for it. I check a moment later whether it went through.' },
+  { prefix: 'SessionManager.verifyInjection', title: 'I pressed Enter for a stuck message' },
+  { prefix: 'SessionManager.spawn', title: 'A background job waited for a free session', words: 'All session slots were busy, so a background job waited its turn. It tries again on its own.' },
+  { prefix: 'SessionManager', title: 'Session handling used a backup path' },
+  { prefix: 'feedback-execute', title: 'Feedback fixes are waiting' },
+  { prefix: 'feedback-triage', title: 'Sorting new feedback used a backup path' },
+  { prefix: 'FeedbackFactory', title: 'Feedback handling used a backup path' },
+  { prefix: 'GitSync', title: 'Background sync used a backup path' },
+  { prefix: 'Threadline', title: 'Messaging with other agents used a backup path' },
+  { prefix: 'JobScheduler', title: 'The job scheduler used a backup path' },
+  { prefix: 'TelegramLifeline', title: 'My Telegram relay used a backup path' },
+  { prefix: 'TelegramAdapter', title: 'My Telegram connection used a backup path' },
+  { prefix: 'telegram-origin', title: 'Telling who sent a Telegram message used a backup path' },
+  { prefix: 'Telegram', title: 'My Telegram connection used a backup path' },
+  { prefix: 'RecommendedServices', title: 'Recommended services used a backup path' },
+  { prefix: 'unjustifiedStopGate', title: 'A self-check on my stopping had a problem' },
+  { prefix: 'TopicMemory', title: 'Conversation memory used a backup path' },
+  { prefix: 'StateManager', title: 'Saving my state used a backup path' },
+  { prefix: 'SessionMigrator', title: 'Moving a session used a backup path' },
+  { prefix: 'QuotaManager', title: 'Usage-limit tracking used a backup path' },
+  { prefix: 'OutboundDedupStore', title: 'Duplicate-message checking used a backup path' },
+  { prefix: 'SecretStore', title: 'My secret storage used a backup path' },
+  { prefix: 'MultiMachine', title: 'Working across my machines used a backup path' },
+  { prefix: 'HandoffManager', title: 'Handing work between sessions used a backup path' },
+  { prefix: 'DesktopLocked', title: 'Remote Desktop’s locked-screen access used a backup path' },
+  { prefix: 'CartographerSweep', title: 'My code map used a backup path' },
+  { prefix: 'CapabilityRegistry', title: 'Tracking what each machine can do used a backup path' },
+  { prefix: 'promiseReview', title: 'Reviewing my promises used a backup path' },
+  { prefix: 'commitments', title: 'Tracking my promises used a backup path' },
+  { prefix: 'sessionPool', title: 'Sharing sessions across machines used a backup path' },
+  { prefix: 'lease', title: 'Deciding which machine leads used a backup path' },
+  { prefix: 'MobileHealthIssues', title: 'Reading my own health used a backup path' },
+  { prefix: 'MobileOwnerPresence', title: 'Face ID sign-in from the app used a backup path' },
+].slice().sort((a, b) => b.prefix.length - a.prefix.length);
+
+/** Internal words the owner's screen never shows (they mean nothing outside the code). */
+const JARGON_WORDS = /\b(sentinel|tick|ticks|verifyInjection|mutex|reaper|shard|payload|enum|null|undefined|regex|stdout|stderr|pid|tmux|sqlite|json|jsonl|cas|lease|rope|spawn(?:ed)?|refused|caller|in-process|repo)\b/i;
+/** A code-shaped token: camelCase, dotted or snake_case ids, key:value ids, backticks, braces, all-caps flags. */
+const CODE_TOKEN = /([a-z][A-Z])|\b\w+[._:/]\w+\b|`|[{}<>[\]=]|\b[A-Z]{3,}\b|\b[a-z]+_[a-z]+\b|\d{4,}/;
+
+/** True when `t` is plain words a person can read: no code tokens, no internal words. */
+export function isPlainWords(t: string): boolean {
+  return !CODE_TOKEN.test(t) && !JARGON_WORDS.test(t);
+}
+
+function subsystemOf(id: string): { known: (typeof SUBSYSTEM_NAMES)[number] | null; words: string } {
+  const lower = id.toLowerCase();
+  const known = SUBSYSTEM_NAMES.find((n) => lower.startsWith(n.prefix.toLowerCase())) ?? null;
+  const head = id.split(/[.:]/)[0] ?? id;
+  const words = head
+    .replace(/^health$/i, 'health check')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\bsentinel\b/gi, 'watcher')
+    .toLowerCase()
+    .trim();
+  return { known, words: words || 'part' };
+}
+
+/** The reporter's own impact line as a title, only when it is short plain words; otherwise null. */
+function titleFromImpact(impact: unknown): string | null {
+  if (typeof impact !== 'string') return null;
+  const first = impact.split(/[;.]/)[0]?.trim() ?? '';
+  const n = first.split(/\s+/).filter(Boolean).length;
+  if (n < 2 || n > 8 || first.length > 60 || !/^[A-Za-z][A-Za-z ,'’-]*$/.test(first) || !isPlainWords(first)) return null;
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
+/** The title for a row no rule names. */
+export function plainTitleFor(id: string, impact: unknown, internal: boolean): string {
+  const { known, words } = subsystemOf(id);
+  if (known) return known.title;
+  const fromImpact = titleFromImpact(impact);
+  if (fromImpact) return fromImpact;
+  return internal ? `A background step in my ${words} used its backup` : `Something in my ${words} used a backup path`;
+}
+
+/**
+ * "In the agent's words", in plain words or not at all. A known subsystem's own plain words replace internal ones.
+ * Otherwise the reporter's "Using … in the meantime — everything else is working fine." tail is dropped, and the
+ * rest is kept only when it reads as plain words.
+ */
+export function plainEvidence(id: string, narrative: string | null): string | null {
+  const { known } = subsystemOf(id);
+  if (known?.words) return known.words;
+  if (!narrative) return null;
+  const kept = narrative.replace(/\s*Using [^]*? in the meantime\s*[—-]\s*everything else is working fine\.?/i, '').trim();
+  if (!kept || !isPlainWords(kept)) return null;
+  return kept;
+}
+
 /** One reason /health is not plainly ok. `id` is a degradation's feature, or a `health:` id for the other checks. */
 export interface HealthSignal {
   id: string;
@@ -152,6 +251,8 @@ export interface HealthSignal {
   /** Replaces the rule's detail with the numbers of this occurrence. */
   detail?: string;
   evidence?: string | null;
+  /** The reporter's own one-line impact, for a title when it is already plain words. */
+  impactWords?: string | null;
   at?: string | null;
   internalOnly?: boolean;
 }
@@ -220,7 +321,7 @@ const IMPACT_ORDER: Record<HealthImpact, number> = { 'user-affecting': 0, unclas
  */
 export function summarizeHealth(
   health: unknown,
-  events: ReadonlyArray<{ feature?: unknown; timestamp?: unknown; internalOnly?: unknown; narrative?: unknown }>,
+  events: ReadonlyArray<{ feature?: unknown; timestamp?: unknown; internalOnly?: unknown; narrative?: unknown; impact?: unknown }>,
   current: HealthCurrentState = {},
   choices?: HealthChoiceView,
 ): HealthIssuesSummary {
@@ -234,6 +335,7 @@ export function summarizeHealth(
       return {
         id: named ? (e.feature as string) : 'health:unnamed-event',
         evidence: typeof e.narrative === 'string' ? e.narrative : null,
+        impactWords: typeof e.impact === 'string' ? e.impact : null,
         at: typeof e.timestamp === 'string' ? e.timestamp : null,
         internalOnly: e.internalOnly === true,
       };
@@ -256,9 +358,12 @@ export function summarizeHealth(
     const impact: HealthImpact = rule ? rule.impact : s.internalOnly ? 'internal' : 'unclassified';
     // A self-marked internal event's narrative is written for logs; only an unsorted one needs its own words as a title.
     // Never the reporter's own words as a title: they can hold setting names and session ids. They stay in `evidence`.
-    const title = rule?.title ?? (impact === 'internal' ? 'A background step used its backup' : s.plainTitle) ?? 'Something inside me used a backup path';
+    // Its own plain title: a rule's, a title written here, or one made from the subsystem (never a shared catch-all).
+    const title = rule?.title ?? s.plainTitle ?? plainTitleFor(s.id, s.impactWords, impact === 'internal');
     const seen = groups.get(key);
-    const evidence = text(s.evidence, EVIDENCE_MAX);
+    // A rule's row shows its reporter's words as they are; a row no rule names shows them only in plain words.
+    // Scrubbed first (secrets, local paths), then judged as plain words.
+    const evidence = rule ? text(s.evidence, EVIDENCE_MAX) : text(plainEvidence(s.id, text(s.evidence, EVIDENCE_MAX * 4)), EVIDENCE_MAX);
     if (seen) {
       seen.count += 1;
       if (!seen.keys.includes(s.id)) seen.keys.push(s.id);
@@ -294,6 +399,20 @@ export function summarizeHealth(
   if (h.status !== 'ok' && h.status !== 'healthy' && groups.size === 0 && !cleared && !hidNow) {
     const title = 'The agent reports a problem I can’t name';
     groups.set('health:unnamed', { id: 'health:unnamed', impact: 'unclassified', title, detail: 'The health check says something is off but didn’t say what. Ask me and I’ll look into it.', evidence: null, count: 1, lastAt: null, action: null, ask: askFor(title, 'health:unnamed'), keys: ['health:unnamed'], choices: [], ignoreSays: null, choiceNote: null, returnNote: null });
+  }
+  // No two different rows share a title: a later unnamed row with a taken title names its own part, then a number.
+  const taken = new Set<string>();
+  for (const g of groups.values()) if (ruleFor(g.id)) taken.add(g.title);
+  for (const g of groups.values()) {
+    if (ruleFor(g.id)) continue;
+    if (taken.has(g.title)) {
+      const second = (g.id.split(/[.:]/)[1] ?? '').replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]+/g, ' ').toLowerCase().trim();
+      let next = second && isPlainWords(second) ? `${g.title} (${second})` : g.title;
+      for (let n = 2; taken.has(next); n++) next = `${g.title} (${n})`;
+      g.title = next;
+      g.ask = askFor(g.title, g.keys[0] ?? g.id);
+    }
+    taken.add(g.title);
   }
   for (const g of groups.values()) Object.assign(g, offerFor(g.keys, g.impact === 'unclassified'));
   const all = [...groups.values()].sort((a, b) => IMPACT_ORDER[a.impact] - IMPACT_ORDER[b.impact] || (b.lastAt ?? '').localeCompare(a.lastAt ?? '') || a.id.localeCompare(b.id));
