@@ -16,6 +16,7 @@ const REFUSED = {
   'wrong-machine': 'This page belongs to a different machine. Nothing changed. Open it again.',
   'too-many-pages': 'This page has been opened too many times in a short while. Nothing changed. Wait a minute, then open it again.',
   'recommended-services-unavailable': 'I can’t save a choice on this machine right now. Nothing changed.',
+  'cannot-reach-you': 'This machine can’t message you right now, so it can’t take a yes: setting up means talking to you. Nothing changed. A no still works here. Try again in a little while, or from the machine that answers your messages.',
 };
 
 const REASONS = [['none', 'No particular reason'], ['cost', 'The cost'], ['privacy', 'Privacy'], ['not-needed', 'I don’t need it'], ['have-another', 'I use something else'], ['other', 'Something else']];
@@ -42,7 +43,10 @@ function page(d) {
   const button = el('button', { class: 'pair-button', type: 'button', text: `Yes, set up ${d.name}` });
   const reason = el('select', { 'aria-label': 'Why not? This is optional.' },
     ...REASONS.map(([value, text]) => el('option', { value, text })));
-  const noButton = el('button', { class: 'pair-link-button', type: 'button', text: `No, don’t set up ${d.name}` });
+  const noButton = el('button', { class: 'pair-link-button', type: 'button', text: d.workingHere ? `No, I don’t want ${d.name}` : `No, don’t set up ${d.name}` });
+  // Only where this machine's own setup made the service work: a no can also switch it off here. Unticked by
+  // default, so a no alone changes nothing that runs. A service the person already had is theirs to switch off.
+  const switchOff = d.switchOffHere ? el('input', { type: 'checkbox', id: 'switch-off' }) : null;
   const send = async (answer) => {
     error.textContent = '';
     button.disabled = true;
@@ -51,11 +55,14 @@ function page(d) {
       const r = await fetch(`/recommended-services/${encodeURIComponent(service)}/confirm`, {
         method: 'POST', cache: 'no-store',
         headers: { 'Content-Type': 'application/json', 'X-Instar-Request': '1' },
-        body: JSON.stringify({ token: d.token, pin: pin.value, answer, reason: answer === 'no' ? reason.value : 'none' }),
+        body: JSON.stringify({ token: d.token, pin: pin.value, answer, reason: answer === 'no' ? reason.value : 'none', shutdown: answer === 'no' && !!(switchOff && switchOff.checked) }),
       });
       const body = await r.json().catch(() => ({}));
       if (r.ok && answer === 'no') {
-        message('Got it', `I won’t set up ${d.name} or bring it up again, unless a real problem comes up that it would help with, something changes that matters to you, or a long time has passed and there’s good reason to think you’d answer differently. If it’s already running, it stays on until you ask me to stop it.`);
+        const again = `I won’t set up ${d.name} or bring it up again, unless a real problem comes up that it would help with, something changes that matters to you, or a long time has passed and there’s good reason to think you’d answer differently.`;
+        message('Got it', body.switchingOff
+          ? `${again} I’m switching it off on this machine now, and I’ll tell you when that’s done.`
+          : `${again} ${d.switchOffHere ? 'It stays on here, since you didn’t ask me to switch it off.' : d.workingHere ? `I’ll stop relying on ${d.name} here; it stays on, as it was yours before.` : 'If it’s already running, it stays on until you ask me to stop it.'}`);
         return;
       }
       if (r.ok) {
@@ -79,7 +86,9 @@ function page(d) {
   noButton.addEventListener('click', () => send('no'));
   button.addEventListener('click', () => send('yes'));
   // Enter does nothing: someone typing their PIN to say no must never record a yes by pressing Go.
-  const form = el('form', { class: 'pair-pin', onsubmit: (e) => e.preventDefault() }, pin, error, button);
+  // Where this machine can't message the person, the yes button is replaced by the reason, and the no still works.
+  const form = el('form', { class: 'pair-pin', onsubmit: (e) => e.preventDefault() }, pin, error,
+    d.canSetUp === false ? el('p', { class: 'pair-hint', role: 'status', text: REFUSED['cannot-reach-you'] }) : button);
   show(
     el('div', { class: 'pair-head' }, el('h1', { text: `Set up ${d.name}?` })),
     line('What you get', d.benefit),
@@ -90,7 +99,15 @@ function page(d) {
     line('If you say no', d.backup || 'There’s no backup yet.'),
     el('section', {}, el('h2', { text: 'After you say yes' }), el('p', { text: 'Setup is my job. I’ll only ask you for a decision, such as a payment, or a credential.' })),
     form,
-    el('section', {}, el('h2', { text: 'Or say no' }), el('p', { class: 'pair-hint', text: 'Type your PIN above first. The reason is optional. Saying no stops me setting this up or offering it. If it’s already running, it stays on until you ask me to stop it.' }), reason, noButton),
+    el('section', {}, el('h2', { text: d.canSetUp === false ? 'Say no' : 'Or say no' }),
+      el('p', { class: 'pair-hint', text: d.switchOffHere
+        ? `Type your PIN above first. The reason is optional. Saying no stops me offering this. ${d.name} is working on this machine; it stays on unless you also tick the box.`
+        : d.workingHere
+          ? `Type your PIN above first. The reason is optional. Saying no stops me offering this, and I’ll stop relying on ${d.name} here. It was already yours before I set anything up, so switching it off is yours to do.`
+          : 'Type your PIN above first. The reason is optional. Saying no stops me setting this up or offering it. If it’s already running, it stays on until you ask me to stop it.' }),
+      reason,
+      switchOff ? el('label', { class: 'pair-hint', for: 'switch-off' }, switchOff, el('span', { text: ` Also switch ${d.name} off on this machine` })) : null,
+      noButton),
     el('p', { class: 'pair-hint', text: 'If you’re not sure yet, just close this page. Nothing changes.' }),
   );
 }
@@ -100,6 +117,7 @@ async function start() {
     const r = await fetch(`/recommended-services/${encodeURIComponent(service)}/confirm`, { cache: 'no-store' });
     const d = await r.json().catch(() => ({}));
     if (r.ok && d.token) { page(d); return; }
+    // Without a token nothing can be confirmed. "cannot-reach-you" never comes from opening the page: the page is still served so a no can be given.
     message('This can’t be set up right now', REFUSED[d.error] || 'Something went wrong on my side. Nothing changed.');
   } catch {
     message('This can’t be set up right now', 'I couldn’t reach your agent. Nothing changed.');

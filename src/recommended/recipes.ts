@@ -14,6 +14,8 @@ import { RECOMMENDED_SERVICE_CATALOG } from './catalog.js';
 export interface VerifyResult {
   result: 'pass' | 'fail' | 'unknown';
   detail: string;
+  /** On a fail: nothing of the service is here at all (no key, not signed in, not installed), as opposed to one that is here but not working. */
+  absent?: boolean;
 }
 
 /** What reading `tailscale status --json` gave: no program at all, a program that answered with an error, a reading, or no answer in time. */
@@ -30,6 +32,22 @@ export interface RecipeDeps {
   tailscaleStatus?: () => Promise<TailscaleStatusRead>;
 }
 
+/** What a confirmed no with "switch it off" has to work with. */
+export interface StopDeps extends RecipeDeps {
+  deleteSecret: (name: string) => void;
+  /** True only on positive evidence that this machine's own setup made the service work here (its key, or its sign-in). Never assumed. */
+  setUpHere: boolean;
+  /** Tests pass their own; the default runs `tailscale logout` on this machine. */
+  tailscaleLogout?: () => Promise<boolean>;
+}
+
+/** `stopped` false means the service is still on; `changed` says whether anything on this machine was undone; `detail` is for the person, in plain words. */
+export interface StopResult {
+  stopped: boolean;
+  changed: boolean;
+  detail: string;
+}
+
 export interface SetupRecipe {
   id: string;
   service: string;
@@ -37,6 +55,11 @@ export interface SetupRecipe {
   secretName: string | null;
   brief: (context: { port: number }) => string;
   verify: (deps: RecipeDeps) => Promise<VerifyResult>;
+  /**
+   * Switches the service off on this machine after the person confirmed a no with "switch it off"
+   * (the spec's `shutdown: authorized`). Undoes only what setup did here, never the person's own.
+   */
+  stop: (deps: StopDeps) => Promise<StopResult>;
 }
 
 /** Exported so tests can check every recipe carries the shared rules. */
@@ -76,7 +99,7 @@ As of 2026-11-05 a new account opens at no cost, but TypeSafe refuses to create 
 ${RULES('jev', port)}`,
     verify: async ({ readSecret, fetch: doFetch = fetch }) => {
       const key = readSecret('typesafe_api_key');
-      if (!key) return { result: 'fail', detail: 'No key is stored yet.' };
+      if (!key) return { result: 'fail', absent: true, detail: 'No key is stored yet.' };
       try {
         const res = await doFetch('https://api.typesafe.ai/v1/models', { headers: { Authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(15_000) });
         if (res.ok) return { result: 'pass', detail: 'TypeSafe accepted the key.' };
@@ -85,6 +108,15 @@ ${RULES('jev', port)}`,
       } catch {
         return { result: 'unknown', detail: 'TypeSafe could not be reached.' };
       }
+    },
+    // The key is what makes Jev work here, so removing it switches Jev off for every feature at once. Like
+    // Tailscale, setup undoes only its own work: a key that was here before setup is the person's, and stays.
+    // The TypeSafe account and its credits are the person's too.
+    stop: async ({ readSecret, deleteSecret, setUpHere }) => {
+      if (!readSecret('typesafe_api_key')) return { stopped: true, changed: false, detail: 'Jev was not switched on here, so there was nothing to switch off.' };
+      if (!setUpHere) return { stopped: true, changed: false, detail: "The TypeSafe key on this machine was yours before I set anything up, so I've left it in place and will just stop relying on Jev. Say the word and I'll remove it for you." };
+      deleteSecret('typesafe_api_key');
+      return { stopped: true, changed: true, detail: 'Jev is switched off on this machine: its key is removed, so nothing here uses it any more. The TypeSafe account and any credits on it stay yours; say the word and I\'ll close them.' };
     },
   },
   {
@@ -109,10 +141,24 @@ What's known, as of 2026-11-06:
 ${RULES('tailscale', port)}`,
     verify: async ({ tailscaleStatus = readTailscaleStatus }) => {
       const read = await tailscaleStatus();
-      if (read.kind === 'missing') return { result: 'fail', detail: "Tailscale isn't installed on this machine." };
+      if (read.kind === 'missing') return { result: 'fail', absent: true, detail: "Tailscale isn't installed on this machine." };
       if (read.kind === 'failed') return { result: 'fail', detail: "Tailscale isn't running on this machine." };
       if (read.kind === 'timeout') return { result: 'unknown', detail: 'Tailscale did not answer in time.' };
       return judgeTailscaleStatus(read.stdout);
+    },
+    // Setup never signs a machine out that it didn't sign in (see the brief). So a switch-off signs
+    // out only when this machine's setup did the sign-in; a Tailscale the person already had stays.
+    stop: async ({ setUpHere, tailscaleStatus = readTailscaleStatus, tailscaleLogout = runTailscaleLogout }) => {
+      if (!setUpHere) return { stopped: true, changed: false, detail: "Tailscale was already yours before I set anything up, so I've left it exactly as it was. I just won't rely on it." };
+      const before = await tailscaleStatus();
+      if (before.kind === 'missing') return { stopped: true, changed: false, detail: "Tailscale isn't installed on this machine, so there was nothing to switch off." };
+      if (before.kind !== 'ok' || judgeTailscaleStatus(before.stdout).result !== 'pass') return { stopped: true, changed: false, detail: 'This machine was not signed in to Tailscale, so there was nothing to switch off.' };
+      if (!(await tailscaleLogout())) return { stopped: false, changed: false, detail: 'I tried to sign this machine out of Tailscale and it refused. It is still signed in.' };
+      const after = await tailscaleStatus();
+      const stillIn = after.kind === 'ok' && judgeTailscaleStatus(after.stdout).result === 'pass';
+      return stillIn
+        ? { stopped: false, changed: false, detail: 'I asked Tailscale to sign this machine out, but it still shows as signed in.' }
+        : { stopped: true, changed: true, detail: 'This machine is signed out of Tailscale. Your Tailscale account and your other devices are untouched.' };
     },
   },
 ]);
@@ -143,6 +189,22 @@ export async function readTailscaleStatus(programs: readonly string[] = TAILSCAL
   return sawFailure ? { kind: 'failed' } : { kind: 'missing' };
 }
 
+/** Signs this machine out with the first tailscale program that answers. True when the command succeeded. */
+export async function runTailscaleLogout(programs: readonly string[] = TAILSCALE_PROGRAMS): Promise<boolean> {
+  for (const program of programs) {
+    const outcome = await new Promise<'ok' | 'missing' | 'failed'>((resolve) => {
+      execFile(program, ['logout'], { timeout: 20_000 }, (err) => {
+        if (!err) return resolve('ok');
+        const e = err as NodeJS.ErrnoException;
+        resolve(e.code === 'ENOENT' || e.code === 'EACCES' ? 'missing' : 'failed');
+      });
+    });
+    if (outcome === 'ok') return true;
+    if (outcome === 'failed') return false;
+  }
+  return false;
+}
+
 /** Pass only when this machine is signed in and online. The detail names no address, device or account. */
 export function judgeTailscaleStatus(raw: string): VerifyResult {
   let body: { BackendState?: unknown; Self?: { Online?: unknown; TailscaleIPs?: unknown } };
@@ -160,7 +222,7 @@ export function judgeTailscaleStatus(raw: string): VerifyResult {
     if (body.Self?.Online === false) return { result: 'fail', detail: "This machine is signed in to Tailscale but isn't online." };
     return { result: 'pass', detail: 'This machine is signed in to Tailscale and online.' };
   }
-  if (state === 'NeedsLogin') return { result: 'fail', detail: 'This machine is not signed in to Tailscale yet.' };
+  if (state === 'NeedsLogin') return { result: 'fail', absent: true, detail: 'This machine is not signed in to Tailscale yet.' };
   if (state === 'NeedsMachineAuth') return { result: 'fail', detail: "This machine is waiting for the tailnet's administrator to approve it." };
   if (state === 'Stopped') return { result: 'fail', detail: 'Tailscale is installed but switched off on this machine.' };
   return { result: 'fail', detail: `Tailscale is not ready on this machine (${state}).` };
