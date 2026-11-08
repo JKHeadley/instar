@@ -1,0 +1,38 @@
+name: Development release (no npm publishing)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: development-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build and pack the pinned main revision
+        run: node scripts/development-release.mjs pack "$RUNNER_TEMP/development-release"
+      - name: Publish opt-in development assets on GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sha=$(git rev-parse HEAD)
+          tag="dev-$sha"
+          notes="Temporary development build from $sha. Not an npm release. See docs/development-releases.md for checksum verification, installation and return to stable."
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release already exists; immutable artifacts will not be replaced."
+            exit 0
+          fi
+          gh release create "$tag" "$RUNNER_TEMP"/development-release/* --target "$sha" --prerelease --title "Development build ${sha:0:12}" --notes "$notes"

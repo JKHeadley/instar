@@ -1,3 +1,4 @@
+import { ACCOUNT_ACTION_SAFETY, ACCOUNT_ACTION_SAFETY_HEADING } from '../data/accountActionSafety.js';
 const NEW_JOB_REPORT_LINE = '2. **Need periodic checks?** Create a job in `.instar/jobs.json`.';
 const NEW_JOB_REPORT_ASK = ' If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.';
 const SCHEDULER_REPORT_CHOICE_HEADING = "## Who sees this job's reports";
@@ -651,7 +652,7 @@ export function NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION(): string {
     .replace(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING)
     .replace('is the proven method on macOS AND Windows:', 'is the proven method on macOS, Windows and Linux:')
     .replace('Linux with no Windows underneath is not built (ACT-138): say so plainly.', linux)
-    .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`);
+    .replace(/\n- \*\*When to use\*\*/, `\n- ${always}\n- **When to use**`) + '\n' + ACCOUNT_ACTION_SAFETY;
 }
 
 /**
@@ -2687,6 +2688,7 @@ export class PostUpdateMigrator {
     this.migrateSubscriptionSigninApprovalBoundary(result);
     this.migrateSubscriptionSigninDeviceLimit(result);
     this.migrateNormalChromeBrowserSkill(result);
+    this.migrateAccountActionSafetySkill(result);
     this.migrateAgentOwnedMemory(result);
     this.migrateTestAsSelfSkill(result);
     this.migrateInstarDevBuildLocationRegrounding(result);
@@ -6246,6 +6248,19 @@ export class PostUpdateMigrator {
    *    to are in the shipped skill);
    *  - a missing file is left to installBuiltinSkills (fresh installs). Custom skills are never read.
    */
+  private migrateAccountActionSafetySkill(result: MigrationResult): void {
+    const file = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
+    try {
+      if (!fs.existsSync(file)) return;
+      const current = fs.readFileSync(file, 'utf8');
+      if (!current.includes('name: normal-chrome-browser') || current.includes(ACCOUNT_ACTION_SAFETY_HEADING)) return;
+      fs.writeFileSync(file, current.trimEnd() + '\n\n' + ACCOUNT_ACTION_SAFETY);
+      result.upgraded.push('skills/normal-chrome-browser/SKILL.md (account-action safety)');
+    } catch (err) {
+      result.errors.push(`account-action safety skill: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   private migrateNormalChromeBrowserSkill(result: MigrationResult): void {
     const skillFile = path.join(this.config.projectDir, '.claude', 'skills', 'normal-chrome-browser', 'SKILL.md');
     try {
@@ -8863,6 +8878,12 @@ setTimeout(() => process.exit(0), 2000);
                 : 'CLAUDE.md: added Normal-Chrome browser section',
         );
       }
+    }
+
+    if (!content.includes(ACCOUNT_ACTION_SAFETY_HEADING)) {
+      content += '\n' + ACCOUNT_ACTION_SAFETY;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: account-action safety');
     }
 
     // A verified display name must follow its routing ID onto existing agents.
@@ -15574,6 +15595,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // normal-chrome-builtin-skill: the helper scripts are framework-neutral
       // (.instar/scripts/browser/), so a Codex/Gemini agent on macOS uses them too.
       '### Normal-Chrome browser (account-bound web tasks, macOS + Windows + Linux)', // == NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING (a literal so the parity guard can see it)
+      '### Account actions: read before acting', // framework-neutral browser safety, including Codex/Gemini
       // a2a-single-agent-identity: the agent identity + coherence check are server-side and
       // framework-agnostic (a Codex/Gemini agent runs on the same mesh and must explain the
       // not-provisioned posture and the adopt-from-a-sibling path honestly too).
