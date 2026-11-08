@@ -31,7 +31,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
-import { confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
+import { claudeSessionIdFromPidFiles, confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -6368,13 +6368,21 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * unable to reply. Corroborate the exact main transcript and account home. */
   confirmSessionUsageLimit(tmuxSession: string): string | false {
     const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
-    if (!session?.claudeSessionId || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return false;
     const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
     if (!configHome) return false;
+    // No hook has reported the id yet when the very first turn was refused for usage (no tool, no
+    // Stop). Claude Code's own per-process record names it; binding it is what the next hook would do.
+    let claudeSessionId = session.claudeSessionId;
+    if (!claudeSessionId) {
+      claudeSessionId = claudeSessionIdFromPidFiles(configHome, tmuxSession) ?? undefined;
+      if (claudeSessionId) this.setClaudeSessionId(session.id, claudeSessionId);
+    }
+    if (!claudeSessionId) return false;
     return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
-      framework: 'claude-code', sessionId: session.claudeSessionId,
+      framework: 'claude-code', sessionId: claudeSessionId,
       projectDir: session.cwd ?? this.config.projectDir, configHome,
-    }), session.claudeSessionId) ? session.claudeSessionId : false;
+    }), claudeSessionId) ? claudeSessionId : false;
   }
 
   /**

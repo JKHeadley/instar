@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "usage-limit-key-pickup",
+  "sessionId": "36583859-381c-4e27-85c7-6b88829e66ec",
+  "timestamp": "2026-11-08T00:14:55.228Z",
+  "artifactPath": "upgrades/side-effects/usage-limit-key-pickup.md",
+  "artifactSha256": "62e741c69da7a71f97b2ced06cb42e93e1358f53b535ea0cf33ff24a7ab02d45",
+  "coveredFiles": [
+    "docs/specs/usage-limit-key-pickup.eli16.md",
+    "src/core/SessionManager.ts",
+    "src/monitoring/sessionUsageLimitEvidence.ts",
+    "tests/unit/usage-limit-key-pickup.test.ts",
+    "upgrades/next/usage-limit-key-pickup.md",
+    "upgrades/side-effects/usage-limit-key-pickup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow fallback inside an existing evidence check: read the id Claude Code records for exactly this tmux session when no hook has reported one, and bind it. No new authority; revert undoes it fully.",
+  "eli16Path": "docs/specs/usage-limit-key-pickup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-limit-key-pickup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

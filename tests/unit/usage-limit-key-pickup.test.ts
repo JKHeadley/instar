@@ -242,3 +242,67 @@ describe('reading the saved key for the watch', () => {
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+describe('a session walled on its very first turn (no hook ever reported its transcript id)', () => {
+  // Shapes measured on nimbus 2026-11-07, Claude Code 2.1.319.
+  const SID = '4ae633ea-8857-4fe2-a302-453a5c6bf1b8';
+  const TMUX = 'nimbus-interactive-1794095060111';
+  let home: string;
+  beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-')); fs.mkdirSync(path.join(home, 'sessions')); });
+  afterEach(() => { fs.rmSync(home, { recursive: true, force: true }); });
+  const pidFile = (pid: number, row: Record<string, unknown>) =>
+    fs.writeFileSync(path.join(home, 'sessions', `${pid}.json`), JSON.stringify({ pid, cwd: '/home/agent/.instar/agents/nimbus', kind: 'interactive', ...row }));
+  const alive = (pids: number[]) => (pid: number) => pids.includes(pid);
+
+  it('reads the id Claude Code recorded for exactly this tmux session', async () => {
+    const { claudeSessionIdFromPidFiles } = await import('../../src/monitoring/sessionUsageLimitEvidence.js');
+    pidFile(2326605, { sessionId: SID, tmux: `${TMUX}:@0.%0`, startedAt: 1794095061775 });
+    pidFile(2326735, { sessionId: 'aaaaaaaa-0000-0000-0000-000000000000', tmux: 'nimbus-interactive-1794095062106:@0.%0', startedAt: 1794095063000 });
+    expect(claudeSessionIdFromPidFiles(home, TMUX, alive([2326605, 2326735]))).toBe(SID);
+  });
+
+  it('never guesses: a name that only shares a prefix, a dead process, an unsafe id, a renamed file, no folder', async () => {
+    const { claudeSessionIdFromPidFiles } = await import('../../src/monitoring/sessionUsageLimitEvidence.js');
+    pidFile(11, { sessionId: SID, tmux: `${TMUX}0:@0.%0` }); // nimbus-interactive-...1110
+    expect(claudeSessionIdFromPidFiles(home, TMUX, alive([11]))).toBeNull();
+    pidFile(12, { sessionId: SID, tmux: `${TMUX}:@0.%0` });
+    expect(claudeSessionIdFromPidFiles(home, TMUX, alive([]))).toBeNull();
+    pidFile(13, { sessionId: '--resume', tmux: `${TMUX}:@0.%0` });
+    pidFile(14, { pid: 99, sessionId: SID, tmux: `${TMUX}:@0.%0` });
+    expect(claudeSessionIdFromPidFiles(home, TMUX, alive([13, 14, 99]))).toBeNull();
+    expect(claudeSessionIdFromPidFiles(path.join(home, 'nope'), TMUX, alive([12]))).toBeNull();
+  });
+
+  it('the newest live process wins when a pane was relaunched', async () => {
+    const { claudeSessionIdFromPidFiles } = await import('../../src/monitoring/sessionUsageLimitEvidence.js');
+    pidFile(20, { sessionId: 'old-11111111', tmux: `${TMUX}:@0.%0`, startedAt: 1 });
+    pidFile(21, { sessionId: SID, tmux: `${TMUX}:@0.%0`, startedAt: 2 });
+    expect(claudeSessionIdFromPidFiles(home, TMUX, alive([20, 21]))).toBe(SID);
+  });
+
+  it('SessionManager proves the wall from the transcript and binds the id; without the record it still says no', async () => {
+    const { SessionManager } = await import('../../src/core/SessionManager.js');
+    const projectDir = '/home/agent/.instar/agents/nimbus';
+    const projects = path.join(home, 'projects', projectDir.replace(/[^A-Za-z0-9]/g, '-'));
+    fs.mkdirSync(projects, { recursive: true });
+    fs.writeFileSync(path.join(projects, `${SID}.jsonl`), [
+      { type: 'user', sessionId: SID, message: { role: 'user', content: '[slack:D0CEF9FC8UB] Proof 2, Echo: reply with exactly ECHO-USE.' } },
+      { type: 'assistant', sessionId: SID, isApiErrorMessage: true, error: 'rate_limit', apiErrorStatus: 429, message: { content: [{ type: 'text', text: "You've hit your weekly limit · resets 11am (UTC)" }] } },
+    ].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    pidFile(process.pid, { sessionId: SID, tmux: `${TMUX}:@0.%0`, startedAt: 1 }); // this test process is alive
+    const bound: Array<[string, string]> = [];
+    const fake = {
+      listRunningSessions: () => [{ id: 'inst-1', tmuxSession: TMUX, framework: 'claude-code', cwd: projectDir }],
+      configHomeForSession: () => home,
+      config: { projectDir },
+      setClaudeSessionId: (a: string, b: string) => { bound.push([a, b]); },
+    };
+    const confirm = (SessionManager.prototype as unknown as { confirmSessionUsageLimit: (this: unknown, t: string) => string | false }).confirmSessionUsageLimit;
+    expect(confirm.call(fake, TMUX)).toBe(SID);
+    expect(bound).toEqual([['inst-1', SID]]);
+    fs.rmSync(path.join(home, 'sessions', `${process.pid}.json`));
+    bound.length = 0;
+    expect(confirm.call(fake, TMUX)).toBe(false);
+    expect(bound).toEqual([]);
+  });
+});

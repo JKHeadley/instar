@@ -10,10 +10,15 @@ In the live test on the nimbus test machine on November 7, it did not. A working
 
 The part of the server that copies a newly saved key into use only ran while the server already believed the key itself was broken, or when a conversation was stuck at a sign-in screen. Running out of usage is neither of those, so the new key sat in the config file unused. The sessions and the check that asks "is usage back?" both kept using the old, empty account. Each check said "still out", so the agent never noticed usage was back, and no conversation was restarted.
 
+## A second gap, found by the live re-run
+
+With the first fix installed on nimbus, the new key was picked up within seconds and the agent noticed usage was back. But the two waiting conversations still did not restart. To prove a conversation is stuck on the usage limit, Instar reads that conversation's own Claude log. It learns which log belongs to which conversation only after the conversation does some work. A conversation whose very first message is refused for usage has done no work yet, so Instar never knew its log, could not prove it was stuck, and skipped it. Claude Code itself keeps a small record per running conversation that names its log. Instar now reads that record when it doesn't know the log yet, using only a record that names exactly that conversation.
+
 ## What changes
 
 - The server now checks the saved key every minute, whatever state it is in, and puts a changed key into use straight away.
 - While the agent is out of usage, the usage check reads the saved key first. A new key is tested on the very next pass (within a minute), not after a 10 to 30 minute wait.
+- A conversation stuck on its very first message is now recognised, so it is restarted when usage is back.
 - Each usage check writes one line to the log, so if this ever goes wrong again the cause can be read from the log.
 
 ## Safeguards
