@@ -22894,6 +22894,9 @@ export async function startServer(options: StartOptions): Promise<void> {
           key: () => configuredClaudeOauthKey(),
           baseUrl: () => config.sessions.anthropicBaseUrl,
         }),
+        // A key put in during the limit goes into use first, so the probe and the restarted
+        // conversations run on it, not on the old walled key (2026-11-07 live proof).
+        syncKey: () => claudeKeyHealth.refreshKeyFromDisk(),
         keyFingerprint: () => { const k = configuredClaudeOauthKey(); return k ? claudeKeyFingerprint(k) : null; },
         isKeyAgent: () => Boolean(configuredClaudeOauthKey()),
         listWalledSessions: async () => {
