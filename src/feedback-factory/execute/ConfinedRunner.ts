@@ -7,7 +7,7 @@
  * Refuse-if-unenforceable: when the runtime cannot be resolved, or its version is not the pinned
  * one, `available()` says so and the executor refuses to start (`profile-unenforceable`).
  */
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -98,6 +98,19 @@ export function shortTmpDir(): string {
  * A descendant can retain stdout/stderr after the direct child exits, even if it leaves
  * the original process group. Limit paths settle independently of the `close` event.
  */
+/** What a timed-out run was doing: when it first printed, and its process tree. Best effort and bounded. */
+export function timeoutDiagnosis(pid: number | undefined, group: boolean, elapsedMs: number, firstOutputAfterMs: number | null): string {
+  const first = firstOutputAfterMs === null ? 'no output at all' : `first output after ${Math.round(firstOutputAfterMs / 1000)} s`;
+  let tree = 'process tree unavailable';
+  if (group && pid) {
+    try {
+      tree = execFileSync('ps', ['-o', 'pid=,ppid=,etime=,stat=,pcpu=,command=', '-g', String(pid)], { encoding: 'utf8', timeout: 2_000, stdio: ['ignore', 'pipe', 'ignore'] })
+        .split('\n').filter(Boolean).slice(0, 12).map((line) => line.trim().slice(0, 160)).join('\n');
+    } catch { /* @silent-fallback-ok: a failed snapshot must not change the timeout outcome */ }
+  }
+  return `\n[time limit after ${Math.round(elapsedMs / 1000)} s: ${first}]\n${tree}\n`;
+}
+
 export function runCapped(bin: string, args: string[], command: Pick<ConfinedCommand, 'cwd' | 'env' | 'timeoutMs'>): Promise<ConfinedResult> {
   return new Promise((resolve) => {
     const group = process.platform !== 'win32';
@@ -114,6 +127,8 @@ export function runCapped(bin: string, args: string[], command: Pick<ConfinedCom
     let capped = false;
     let timedOut = false;
     let settled = false;
+    const startedAt = Date.now();
+    let firstOutputAfterMs: number | null = null;
     let timer: ReturnType<typeof setTimeout>;
     const settle = (exitCode: number | null, signal: string | null) => {
       if (settled) return;
@@ -130,6 +145,7 @@ export function runCapped(bin: string, args: string[], command: Pick<ConfinedCom
       settle(null, 'SIGKILL');
     };
     const take = (which: 'out' | 'err') => (chunk: Buffer) => {
+      if (firstOutputAfterMs === null) firstOutputAfterMs = Date.now() - startedAt;
       if (capped) return;
       size += chunk.length;
       if (size > CONFINED_OUTPUT_CAP_BYTES) { capped = true; stopAtLimit(); return; }
@@ -137,7 +153,13 @@ export function runCapped(bin: string, args: string[], command: Pick<ConfinedCom
     };
     child.stdout?.on('data', take('out'));
     child.stderr?.on('data', take('err'));
-    timer = setTimeout(() => { timedOut = true; stopAtLimit(); }, Math.max(1, command.timeoutMs));
+    timer = setTimeout(() => {
+      timedOut = true;
+      // The tree is about to be killed, and its clones are deleted with the attempt: this is the
+      // only chance to see what a silent run was stuck on.
+      stderr += timeoutDiagnosis(child.pid, group, Date.now() - startedAt, firstOutputAfterMs);
+      stopAtLimit();
+    }, Math.max(1, command.timeoutMs));
     child.on('error', (error) => {
       stderr += `\n[spawn error: ${error.message}]`;
       settle(null, null);

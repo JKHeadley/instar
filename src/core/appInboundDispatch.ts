@@ -210,7 +210,7 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
     fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
     // A confined session can write to its inbox, so a file for it goes through the safe path.
     const fileFor = (name: string) => (confinedInbox ? safeInboxTarget(confinedInbox, name) : path.join(tmpDir, name));
-    // The write below refuses an existing file, and a start and a message can land in the same millisecond.
+    // Exclusive write, so two starts in one millisecond need different names.
     const ctxPath = fileFor(`ctx-${input.alias}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
     fs.writeFileSync(ctxPath, contextData, { mode: 0o600, flag: 'wx' }); /* state-registry: app-conversations */
     return { ctxPath, contextData, fileFor };
@@ -299,8 +299,8 @@ function reportSpawned(deps: AppInboundDispatchDeps, conversationKey: string, tm
 
 /** What `startApp` needs beyond the dispatch's own deps. */
 export interface AppStartDeps {
-  /** True when this machine serves the conversation. */
-  isOwner: () => boolean;
+  /** True when this machine serves the conversation (app-conversations-in-the-pool §2.1). */
+  serves: (conversationKey: string) => boolean;
   /** The conversation's local alias, or null when it has none here. */
   aliasFor: (conversationKey: string) => number | null;
   /** The conversation's title (null when it is gone). */
@@ -347,7 +347,7 @@ export function createAppSessionStarter(deps: AppInboundDispatchDeps, start: App
     return null;
   };
   return async (conversationKey, resolved, opts) => {
-    if (!start.isOwner()) return refuse(conversationKey, 'not-served', 'not served on this machine');
+    if (!start.serves(conversationKey)) return refuse(conversationKey, 'not-served', 'not served on this machine');
     const alias = start.aliasFor(conversationKey);
     const title = start.titleFor(conversationKey);
     if (alias === null || title === null) return refuse(conversationKey, 'gone', 'the conversation is gone');

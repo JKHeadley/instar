@@ -23,6 +23,7 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
@@ -33,6 +34,8 @@ import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, d
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
+import { AppFlagTracker, AppPoolEnforcer } from '../core/appConversationPool.js';
+import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { CHROME_UPGRADE_INTERVAL_MS, MAX_INSTALL_ATTEMPTS, decideProvision, type BackoffRecord, type MachineFacts, type ProvisionRecord } from '../core/linuxBrowserProvision.js';
 import fs from 'node:fs';
@@ -54,6 +57,7 @@ import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMain
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
 import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js';
+import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
@@ -380,6 +384,33 @@ const reachSecondPersonNotice: SelfActionController = {
         if (!reachNoticeDue(steadyCount, heldAt)) return;
         sink.emit({ verb: 'notify', target: 'team:second-person' });
         heldAt = steadyCount;
+      },
+    };
+  },
+};
+
+/** session-monitor-dead-recovery: a dead conversation never comes back and the same
+ * message stays unanswered, so the monitor keeps polling it. One restart, then quiet. */
+const sessionMonitorDeadRecovery: SelfActionController = {
+  id: 'session-monitor-dead-recovery',
+  actionVerb: 'restart',
+  models: 'src/monitoring/SessionMonitor.ts (dead case — deadRecoveryDue, one fresh restart per unanswered message)',
+  modelsPath: 'src/monitoring/SessionMonitor.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: `The attempt is held in memory, so a server restart allows one more for the same message, and only within ${DEAD_RECOVERY_MAX_AGE_MS / 3_600_000} hours of it. The failure notice stays deduplicated on disk.` },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60,
+  tickMs: 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    const userMessageAt = f.clock.nowMs();
+    let attempted: number | undefined;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!deadRecoveryDue(attempted, userMessageAt, f.clock.nowMs())) return;
+        attempted = userMessageAt;
+        sink.emit({ verb: 'restart', target: 'dead-conversation' });
       },
     };
   },
@@ -3308,6 +3339,37 @@ const claudeKeySessionRefresh: SelfActionController = {
 };
 
 /**
+ * usage-limit-session-refresh — when Claude usage comes back, a conversation with messages waiting is
+ * restarted. Worst case, the probe keeps passing while the session keeps hitting the limit (say it
+ * sits on another account). The REAL brake is `decideLimitRefresh`: 3 restarts per session in a
+ * rolling day, then it is left as it is and reported.
+ */
+const usageLimitSessionRefresh: SelfActionController = {
+  id: 'usage-limit-session-refresh',
+  actionVerb: 'session-refresh',
+  models: 'src/core/UsageLimitWatch.ts (decideLimitRefresh: 3 restarts per session per rolling day)',
+  modelsPath: 'src/core/UsageLimitWatch.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Restart times are persisted, so a server restart resets nothing, and a server restart is never caused by this controller.' },
+  boundK: REFRESH_MAX_PER_DAY,
+  perTargetBoundK: REFRESH_MAX_PER_DAY,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'walled-session';
+    let recent = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideLimitRefresh({ recentRefreshes: recent }) !== 'attempt') return;
+        recent += 1;
+        sink.emit({ verb: 'session-refresh', target: TARGET });
+        if (!f.targetAlwaysRejects()) { recent = 0; } // it answered (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
  * slack-refused-hold-retry — a refused Slack conversation start is retried. Under the pinned fixture
  * every retry is refused. The REAL brake is `decideRefusedRetry`: a fixed schedule of 6 tries over
  * about two hours, then the person is asked to resend and the messages are dropped. Nothing re-adds
@@ -4184,6 +4246,62 @@ const failureCalloutInvestigation: SelfActionController = {
   },
 };
 
+/**
+ * app-pool-enforcer — keeps older machines out of app conversations in the pool
+ * (docs/specs/app-conversations-in-the-pool.md §2.5, §2.6). Runs the REAL enforcer under the pinned
+ * worst case: an unflagged machine online forever, and an owner that refuses every drain home. The
+ * force-claim happens once (the record then names this machine), one notice is latched per episode, and
+ * each refused drain waits BRING_HOME_RETRY_MS, so one hour is at most 13 drains per conversation. The
+ * close-on-loss rule retries a local, refusable close each reconcile; it sends nothing and starts nothing.
+ */
+const appPoolEnforcer: SelfActionController = {
+  id: 'app-pool-enforcer',
+  actionVerb: 'restart-drain-home',
+  models: 'src/core/appConversationPool.ts (AppPoolEnforcer: homeDrains in-flight latch + BRING_HOME_RETRY_MS per conversation; noticeRaised latch per episode)',
+  modelsPath: 'src/core/appConversationPool.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The retry times and notice latch are in memory. A restart allows one more drain per conversation and one more notice; each drain is refused or moves the conversation home, and the attention item is keyed by its condition.' },
+  boundK: 16,
+  perTargetBoundK: 14,
+  ticks: 720,
+  tickMs: 5_000,
+  makeUnderPressure(f, sink) {
+    const self = 'm_self';
+    const rec = (sessionKey: string, owner: string): SessionOwnershipRecord => ({ sessionKey, ownerMachineId: owner, ownershipEpoch: 3, status: 'active', nonce: 'n', timestamp: 0, updatedAt: '' });
+    const records = [rec('app:drain-refused', 'm_flagged'), rec('app:on-the-old-machine', 'm_old')];
+    let reports = 0;
+    const capacities = (): MachineCapacity[] => {
+      reports += 1;
+      const at = new Date(f.clock.nowMs() + reports).toISOString();
+      return [
+        { machineId: 'm_old', online: true, seamlessnessFlags: {}, seamlessnessFlagsReceivedAt: at } as MachineCapacity,
+        { machineId: 'm_flagged', online: true, seamlessnessFlags: { appConversationsPool: true }, seamlessnessFlagsReceivedAt: at } as MachineCapacity,
+      ];
+    };
+    const enforcer = new AppPoolEnforcer({
+      selfId: () => self, active: () => true, selfFlagged: () => true, holdsLease: () => true, leaseHolderId: () => self,
+      capacities, records: () => records,
+      cas: (k, a) => {
+        if (a.type !== 'force-claim') return { ok: false };
+        sink.emit({ verb: 'restart-drain-home', target: k });
+        const r = records.find((x) => x.sessionKey === k);
+        if (r) { r.ownerMachineId = 'gone'; r.status = 'released'; }
+        return { ok: true };
+      },
+      drainRunning: () => false, moveInFlight: () => false, restoreDeliveryLedger: () => undefined,
+      sendDrain: async (_o, k) => { sink.emit({ verb: 'restart-drain-home', target: k }); return { ok: false, status: 'refused-close-failed' }; },
+      raiseAttention: (i) => { sink.emit({ verb: 'restart-drain-home', target: i.conditionKey }); },
+      clearAttention: () => undefined, nicknameOf: () => null, now: () => f.clock.nowMs(), transferDeadlineMs: 45_000,
+      flags: new AppFlagTracker({ now: () => f.clock.nowMs(), holdsLease: () => true, selfId: () => self }),
+    });
+    return {
+      tick() {
+        sink.considered += 1;
+        enforcer.tick();
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   failureCalloutInvestigation,
   attributionAuditRetry,
@@ -4194,9 +4312,11 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobCoverageAlertRetry,
   profileReconciliationNotice,
   linuxBrowserInstallRetry,
+  sessionMonitorDeadRecovery,
   codex429ExitNotice,
   claudeKeySessionRefresh,
   slackRefusedHoldRetry,
+  usageLimitSessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
@@ -4283,4 +4403,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   machineWedgeNotice,
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
+  appPoolEnforcer,
 ];

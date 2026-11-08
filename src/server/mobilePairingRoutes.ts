@@ -1567,7 +1567,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if ((text.length < 1 && !signedFiles) || text.length > 4000) { res.status(400).json({ error: 'text must be 1-4000 characters' }); return; }
     if (typeof requestId !== 'string' || requestIdTime(requestId) === null) { res.status(400).json({ error: 'bad-request-id' }); return; }
     const store = chatStoreOf();
-    if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read on this machine.' }); return; }
+    if (!store) { res.status(503).json({ error: 'chat-unavailable', detail: 'The message record could not be read right now.' }); return; }
     // The idempotency hash covers the text and, with files, each file's signed fields (§4.3).
     const hash = signedFiles ? payloadHash(topicId, ['\u0000media', text, ...signedFileHashParts(signedFiles)].join('\n')) : payloadHash(topicId, text);
     const answer = (l: ReturnType<MobileChatRequestStore['lookup']>): boolean => {
@@ -1586,7 +1586,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const ingest = poolCtx?.mobileInbound?.ingest;
     const ownerId = tg?.getOwnerUserId?.();
     if (!tg || !ingest || !ownerId) { res.status(503).json({ error: 'chat-unavailable', detail: 'This agent has no Telegram owner to speak as.' }); return; }
-    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'This machine is not receiving messages right now. Try again shortly or use Telegram.' }); return; }
+    if (!svc.holdsLease()) { res.status(409).json({ error: 'not-serving', detail: 'Messages aren\'t being received right now. Try again shortly or use Telegram.' }); return; }
     const t = Date.now();
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -1949,6 +1949,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/events$`), statuses: active, conversationRef: true },
     // "Open session": which session drives a conversation on this machine, plus a dashboard link. Read-only.
     { method: 'GET', re: /^\/mobile\/conversations\/session$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'GET', re: /^\/mobile\/conversations\/[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\/placement$/, statuses: active, body: 'none' },
     // Slack conversations from the app (§4.9): the machine-local negative durable id.
     { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active, conversationRef: true },
@@ -2081,7 +2082,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Any conversation (session-swap-any-conversation §3.5): the path is lower-cased here, so a Slack
     // reference's uppercase ids match [a-z0-9]; the route re-checks the reference with its real case.
     { method: 'POST', re: /^\/mobile\/sessions\/door\/(?:(?:telegram:)?[1-9][0-9]{0,15}|app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|slack:[a-z0-9._:-]{1,190})$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
-    { method: 'POST', re: /^\/mobile\/sessions\/move\/[1-9][0-9]{0,15}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/move\/(?:[1-9][0-9]{0,15}|app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/sessions\/bring-back\/app:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/close\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/default$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },

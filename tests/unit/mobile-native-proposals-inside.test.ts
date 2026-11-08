@@ -250,8 +250,10 @@ describe('headline', () => {
     expect(insideHeadline(a, { ...clearP, weekUnread: true }, clearC, { state: 'unavailable' })).toMatchObject({ tone: 'unknown', sub: "Couldn't read: this week's total, correction reviews." });
   });
   it('never all clear when nothing was measured', () => {
-    expect(insideHeadline({ state: 'off' }, { state: 'off' }, { state: 'off' }, { state: 'off' })).toMatchObject({ tone: 'unknown', headline: 'None of these checks are on for this machine.' });
-    expect(insideHeadline({ state: 'off' }, { state: 'off' }, { state: 'off' }, rv)).toMatchObject({ tone: 'unknown', headline: 'Only correction reviews are on for this machine.' });
+    expect(insideHeadline({ state: 'off' }, { state: 'off' }, { state: 'off' }, { state: 'off' })).toMatchObject({ tone: 'unknown', headline: 'None of these checks are on.' });
+    expect(insideHeadline({ state: 'off' }, { state: 'off' }, { state: 'off' }, rv)).toMatchObject({ tone: 'unknown', headline: 'Only correction reviews are on.' });
+    // Named when the machine is known ("for Mac Studio"), never "this machine".
+    expect(insideHeadline({ state: 'off' }, { state: 'off' }, { state: 'off' }, { state: 'off' }, 'Mac Studio').headline).toBe('None of these checks are on for Mac Studio.');
     expect(insideHeadline(a, { state: 'off' }, { state: 'off' }, rv)).toMatchObject({ tone: 'unknown', headline: a.line });
     expect(insideHeadline(a, { state: 'off' }, { state: 'ok', contradicted: 0, checked: 0 }, rv).tone).toBe('unknown');
   });

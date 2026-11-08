@@ -228,6 +228,8 @@ export class MachinePoolRegistry {
        *  carry-forward must never impersonate freshness (git beats refresh
        *  liveness without an advert; the evaluator needs the REAL advert age). */
       coherence?: { advert: NonNullable<MachineCapacity['coherenceAdvert']>; receivedAtMs: number };
+      /** When a beat last actually carried seamlessnessFlags; the same pattern as `coherence.receivedAtMs`. */
+      flagsReceivedAtMs?: number;
       /** Clamp-rejection marker (spec M4): REPLACES the advert for evaluation
        *  purposes while set (the last good advert above is retained for
        *  forensics only); cleared by the next clean advert. */
@@ -350,7 +352,8 @@ export class MachinePoolRegistry {
         obsToStore = { ...obsToStore, selfReportedLastSeen: prev.obs.selfReportedLastSeen };
       }
     }
-    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture, coherence, coherenceRejected, load });
+    const flagsReceivedAtMs = obs.seamlessnessFlags !== undefined ? nowMs : prev?.flagsReceivedAtMs;
+    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, flagsReceivedAtMs, obs: obsToStore, skew: next, posture, coherence, coherenceRejected, load });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
         obs.machineId,
@@ -392,6 +395,11 @@ export class MachinePoolRegistry {
 
   private selfId(): string | null | undefined {
     try { return this.d.selfMachineId?.(); } catch { return undefined; /* @silent-fallback-ok — unresolved self id: treat every machine as a peer (display only) */ }
+  }
+
+  /** This process's recent direct attempts to a machine (a copy, oldest first), for callers that weigh failures. */
+  directAttempts(machineId: string): DirectAttempt[] {
+    return [...(this.attempts.get(machineId) ?? [])];
   }
 
   /** Record a failed direct attempt and its shape (A1 `lastDirectFailure`). */
@@ -549,6 +557,7 @@ export class MachinePoolRegistry {
       // withdrawal flips a boolean inside a still-present object and DOES
       // propagate.
       seamlessnessFlags: live?.obs.seamlessnessFlags,
+      ...(live?.flagsReceivedAtMs !== undefined ? { seamlessnessFlagsReceivedAt: new Date(live.flagsReceivedAtMs).toISOString() } : {}),
       // Machine-coherence advert (§3.2): rejection REPLACES the advert for
       // evaluation purposes (M4 — rejected ≠ absent; the evaluator classifies
       // `advert-rejected`, a loud named condition). The receipt time is the

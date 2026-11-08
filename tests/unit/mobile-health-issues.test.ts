@@ -112,7 +112,9 @@ describe('summarizeHealth', () => {
 
   it('an unknown id shows in the details and never reads as healthy or as running normally', () => {
     const s = summarizeHealth(degraded, [ev('SomethingNew.happened'), ev('GitSync.gitHygiene')]);
-    expect(s.verdict).toBe('unsure');
+    // An unsorted item is a note on a running agent, never "can't tell" (Justin, 2026-11-07).
+    expect(s.verdict).toBe('running');
+    expect(s.headline).toBe('Running, with one note I haven’t sorted yet.');
     expect(s.headline).not.toMatch(/healthy|normally/i);
     expect(s.issues[0]).toMatchObject({ id: 'SomethingNew.happened', impact: 'unclassified', action: null });
     expect(s.issues[0].evidence).toContain('SomethingNew.happened used a backup.');
@@ -148,16 +150,26 @@ describe('summarizeHealth', () => {
     expect(summarizeHealth(degraded, [ev('iMessage', { internalOnly: true })]).verdict).toBe('attention');
   });
 
+  it('many unsorted notes still read running, with a count; one that affects you raises it', () => {
+    const s = summarizeHealth(degraded, [ev('New.a'), ev('New.b'), ev('New.c')]);
+    expect(s.verdict).toBe('running');
+    expect(s.headline).toBe('Running, with 3 notes I haven’t sorted yet.');
+    expect(summarizeHealth(degraded, [ev('New.a'), ev('iMessage')]).verdict).toBe('attention');
+  });
+
   it('degraded with nothing to explain it says so', () => {
     const s = summarizeHealth(degraded, []);
-    expect(s.verdict).toBe('unsure');
+    expect(s.verdict).toBe('running');
     expect(s.issues[0].id).toBe('health:unnamed');
-    expect(summarizeHealth(null, []).verdict).toBe('unsure');
+    // Only an unreadable /health answer is "can't tell", and it says why.
+    const u = summarizeHealth(null, []);
+    expect(u.verdict).toBe('unsure');
+    expect(u.headline).toBe('I couldn’t read my own health just now.');
   });
 
   it('an LLM component outside the table is unclassified, with its numbers and no component name in the words', () => {
     const s = summarizeHealth({ ...degraded, llmReliability: { status: 'degraded', components: [{ feature: 'outbound-review', errors: 9, realCalls: 30 }] } }, []);
-    expect(s.verdict).toBe('unsure');
+    expect(s.verdict).toBe('running');
     expect(s.issues[0].detail).toBe('9 of its last 30 calls failed in the past day.');
     expect(s.issues[0].title).not.toContain('outbound-review');
     expect(s.issues[0].ask).toContain('health:llm:outbound-review');
