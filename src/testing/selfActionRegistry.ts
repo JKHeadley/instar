@@ -26,6 +26,8 @@ import { WorkAdmission } from '../core/workAdmission.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
+import { markerEmitDue, EMIT_THROTTLE_MS } from '../core/ConversationReadMarkers.js';
+import { catchUpAttemptDue, CATCH_UP_MAX_FAILURES, CATCH_UP_RETRY_MS } from '../core/ConversationUnreadService.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
 import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
@@ -4889,6 +4891,73 @@ const appPoolEnforcer: SelfActionController = {
   },
 };
 
+
+/**
+ * read-marker-emit-coalesce — the read-marker outbox (mobile-unread-messages §3.3). A key whose
+ * position is past what was shared is emitted at most once per EMIT_THROTTLE_MS; a refused emit (the
+ * journal's rate bucket) leaves the key due, so under a journal that refuses forever the loop is a
+ * constant-cost eternal sentinel: one append attempt per key per 10 s, never more, never accelerating.
+ * The real brake is `markerEmitDue` (one decision, one window), modelled with one always-refused key.
+ */
+const readMarkerEmitCoalesce: SelfActionController = {
+  id: 'read-marker-emit-coalesce',
+  actionVerb: 'retry',
+  models: 'src/core/ConversationReadMarkers.ts (ConversationReadMarkerStore.flushEmits — markerEmitDue, one attempt per key per EMIT_THROTTLE_MS)',
+  modelsPath: 'src/core/ConversationReadMarkers.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart re-reads the state file (the outbox) and emits each due key once at boot, then the same window applies; the last-attempt map is in memory only, so at worst one extra attempt per key per restart.' },
+  boundK: 100,
+  perTargetBoundK: 100,
+  ticks: 100,
+  tickMs: EMIT_THROTTLE_MS,
+  eternalSentinel: { reason: 'The state file is the outbox: a refused key must be offered again, at a floor of one attempt per key per 10 s, until the journal accepts it.', rateFloorMs: EMIT_THROTTLE_MS },
+  delegatedGiveUp: 'The coherence journal\'s per-kind rate bucket (CoherenceJournal rateCap) refuses the append; the store never spawns, kills or notifies, it only holds the key due',
+  makeUnderPressure(f, sink) {
+    let lastEmitAt: number | undefined;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!markerEmitDue(lastEmitAt, now)) return;
+        sink.emit({ verb: 'retry', target: 'read-marker:owner:telegram:1' });
+        lastEmitAt = now;
+        // f.targetAlwaysRejects(): the journal refuses, the key stays due, the window is the only pacing.
+      },
+    };
+  },
+};
+
+/**
+ * read-marker-catch-up-retry — the boot catch-up of read markers from a peer (mobile-unread-messages
+ * §3.3). A peer whose pages fail is asked again every CATCH_UP_RETRY_MS, and after CATCH_UP_MAX_FAILURES
+ * consecutive failures not at all until it comes back online (onPeerOnline resets the count) or the
+ * next boot. Under a peer that fails forever the total settles at 12, horizon-independent.
+ */
+const readMarkerCatchUpRetry: SelfActionController = {
+  id: 'read-marker-catch-up-retry',
+  actionVerb: 'retry',
+  models: 'src/core/ConversationUnreadService.ts (ConversationUnreadService.catchUp — catchUpAttemptDue, CATCH_UP_MAX_FAILURES then wait for onPeerOnline)',
+  modelsPath: 'src/core/ConversationUnreadService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The per-peer cursor, last attempt and failure count are in the state file; a restart resumes the same schedule and the same brake.' },
+  boundK: CATCH_UP_MAX_FAILURES,
+  perTargetBoundK: CATCH_UP_MAX_FAILURES,
+  ticks: 48,
+  tickMs: CATCH_UP_RETRY_MS,
+  makeUnderPressure(f, sink) {
+    const state = { cursor: null as string | null, done: false, lastAttemptAt: null as number | null, failures: 0 };
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!catchUpAttemptDue(state, now)) return;
+        sink.emit({ verb: 'retry', target: 'peer:m2' });
+        state.lastAttemptAt = now;
+        if (f.targetAlwaysRejects()) state.failures += 1;
+        else state.done = true;
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   skillLearningHealRevertFirst,
   skillLearningHealIndexRetire,
@@ -5005,4 +5074,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
   appPoolEnforcer,
+  readMarkerEmitCoalesce,
+  readMarkerCatchUpRetry,
 ];

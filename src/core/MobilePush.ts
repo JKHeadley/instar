@@ -80,6 +80,11 @@ export interface MobilePushDeps {
   receivesNotices?: (deviceId: string) => boolean;
   /** Is this phone's person still here? A held aggregate is dropped if not. */
   phoneStillCounts?: (deviceId: string) => boolean;
+  /**
+   * Unread (mobile-unread-messages §3.6): the receiving phone's unread total over app conversations,
+   * carried as `aps.badge` on a reply push. Null (or absent) ⇒ no badge; the push still sends.
+   */
+  badgeFor?: (deviceId: string, conversationKey: string, messageId: string | undefined) => number | null;
 }
 
 const emptyDevice = (): DeviceState => ({ sendLog: [], urgentLog: [], lastSendAt: null, pending: null, dueAt: null, backoffUntil: null, lastSend: null });
@@ -256,7 +261,11 @@ export class MobilePushService {
     ds.sendLog.push(t0); ds.lastSendAt = t0;
     if (urgentBypass) ds.urgentLog.push(t0);
     this.save();
-    const body = JSON.stringify(buildPayload(this.deps.agentName, this.deps.agentId, deviceId, p));
+    let badge: number | null = null;
+    if (p.kind === 'reply' && p.conversationKey && this.deps.badgeFor) {
+      try { badge = this.deps.badgeFor(deviceId, p.conversationKey, p.messageId); } catch { badge = null; } // @silent-fallback-ok — a badge that cannot be computed is left out; the push still sends
+    }
+    const body = JSON.stringify(buildPayload(this.deps.agentName, this.deps.agentId, deviceId, badge === null ? p : { ...p, badge }));
     let outcome = await this.attempt(cred, d.pushEnvironment, d.pushToken, body, false);
     if (outcome.kind === 'jwt-retry') outcome = await this.attempt(cred, d.pushEnvironment, d.pushToken, body, true);
     switch (outcome.kind) {
@@ -336,7 +345,7 @@ function prune(ds: DeviceState, t0: number): void {
   if (ds.backoffUntil && ds.backoffUntil <= t0) ds.backoffUntil = null;
 }
 
-export interface PushPayloadInput { kind: 'item' | 'notice' | 'reply' | 'aggregate'; itemId?: string; conversationKey?: string; messageId?: string; machine?: string; count: number }
+export interface PushPayloadInput { kind: 'item' | 'notice' | 'reply' | 'aggregate'; itemId?: string; conversationKey?: string; messageId?: string; machine?: string; count: number; /** The app-conversation unread total for this phone (mobile-unread-messages §3.6). */ badge?: number }
 
 export function buildPayload(agentName: string, agentId: string, deviceId: string, p: PushPayloadInput): Record<string, unknown> {
   const body = p.kind === 'aggregate' ? `${p.count} more ${p.count === 1 ? 'thing needs' : 'things need'} you`
@@ -349,8 +358,9 @@ export function buildPayload(agentName: string, agentId: string, deviceId: strin
     // Lets the phone fetch the preview from the agent; the text itself never goes through Apple.
     if (p.messageId && /^[a-z0-9._:-]{1,128}$/.test(p.messageId)) { instar.messageId = p.messageId; instar.machine = p.machine; }
   }
+  const badge = p.kind === 'reply' && typeof p.badge === 'number' && Number.isSafeInteger(p.badge) && p.badge >= 0 ? { badge: p.badge } : {};
   return {
-    aps: { alert: { title: agentName, body }, sound: 'default', 'mutable-content': 1, 'thread-id': agentName },
+    aps: { alert: { title: agentName, body }, sound: 'default', 'mutable-content': 1, 'thread-id': agentName, ...badge },
     instar,
   };
 }

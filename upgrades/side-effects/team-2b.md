@@ -86,3 +86,10 @@ The merge rules are listed as outside the Stage-B canary's reach in `src/data/st
 
 ## Rebased on main, 11-08
 PR 2927's line landed on main, so this branch takes main's version and drops its own duplicate test. Main's server start had grown, and these additions pushed it past the type checker's size limit, so the post-start wiring moved into `wireTeamChecks`.
+
+## Merged with requests and unread counts, 11-08
+Main gained requests to the owner (PR 2923) and unread counts (PR 2958). Both survive the merge: the owner's team screen carries open requests beside the held rows and the machines still being waited on, and a grant made through a request still passes the version floor first. Unread counts walked every message of a conversation, so a message held from a team member would have raised her badge although she cannot open it. The count now leaves out rows held from that reader, and a grant that shows them brings them into the count. Owners, MSP phones and agents with no team count as before.
+**Signal vs authority:** a count is a signal; this only stops it pointing at a row the read paths already refuse.
+
+## Live run on two machines, 11-08
+Two throwaway agents on the Studio and the M5 Pro, paired with the real pair and join, passed nine scenarios through the phone routes: invite and pairing, the record reaching the other machine on its own, an owner phone on each machine, member and agent limits, simultaneous writes on both machines, a replayed write, a stopped machine catching up, and a removal on one machine stopping a phone on the other. The only override was the pairing address check, because a throwaway has no tunnel. The run used the build before the unread merge.
