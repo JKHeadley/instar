@@ -340,6 +340,7 @@ import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
+import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import {
   readGuardPostureBootSnapshot,
   resolveGuardConfigSnapshot,
@@ -16500,6 +16501,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ action: 'ignore-live', ...plan });
   });
 
+  // The voice-transcription recipe stores its key in the vault; every transcription caller (Telegram, Slack,
+  // WhatsApp, the app) reads it from there when the environment has none.
+  registerStoredTranscriptionKey(() => {
+    try {
+      const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(VOICE_TRANSCRIPTION_SECRET);
+      return typeof v === 'string' && v ? v : null;
+    } catch {
+      return null; // @silent-fallback-ok — an unreadable vault reads as no stored key, and the caller says transcription is unavailable
+    }
+  });
   registerRecommendedServiceRoutes(router, {
     ledger: () => ctx.recommendedServicesLedger ?? null,
     stateDir: ctx.config.stateDir,

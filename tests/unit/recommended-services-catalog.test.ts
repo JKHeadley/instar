@@ -67,14 +67,14 @@ describe('recommended services catalog', () => {
     expect(isServiceAvailable({ ...rows[0], setupRecipe: 'tailscale-v1' })).toBe(true);
     expect(isServiceAvailable({ ...rows[0], setupRecipe: null })).toBe(false);
     // Giving a real service a recipe opens the confirm page to the public and promises setup. Tailscale and Jev
-    // got theirs on 2026-11-07 (topic 135786), and Bitwarden and GitHub private backup the same day, after each was proven live on a test agent, with what the earlier
+    // got theirs on 2026-11-07 (topic 135786), and Bitwarden, GitHub private backup and voice transcription the same day or the next, after each was proven live on a test agent, with what the earlier
     // comment here asked for: the switch-off route for a working service (`shutdown: authorized`, carried out by
     // the recipe), a key route that keeps the key out of the session, and a yes refused on a machine that can't
     // message the person. The owner-only Telegram button and the "an address comes first" row belong to the
     // offer list, which is not live, so they ship with it. Every other row stays unavailable until its recipe
     // has its own live proof, so this assertion must change only with such a proof.
-    expect(rows.filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup']);
-    expect(rows.filter(isServiceAvailable).map((r) => r.setupRecipe)).toEqual(['tailscale-v1', 'jev-v1', 'bitwarden-v1', 'github-v1']);
+    expect(rows.filter(isServiceAvailable).map((r) => r.id)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'voice-transcription']);
+    expect(rows.filter(isServiceAvailable).map((r) => r.setupRecipe)).toEqual(['tailscale-v1', 'jev-v1', 'bitwarden-v1', 'github-v1', 'voice-v1']);
   });
 
   it('a row never gives the person a task', () => {

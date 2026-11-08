@@ -17,6 +17,7 @@
  */
 
 import fs from 'node:fs';
+import { resolveTranscriptionProvider as resolveSharedTranscriptionProvider } from '../../core/VoiceTranscription.js';
 import path from 'node:path';
 import type { WhatsAppAdapter, BaileysConfig, ConnectionState, BackendCapabilities } from '../WhatsAppAdapter.js';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
@@ -441,6 +442,8 @@ export class BaileysBackend {
       const p = providers[explicit];
       const apiKey = process.env[p.envKey];
       if (!apiKey) {
+        const stored = resolveSharedTranscriptionProvider({ explicit, env: {} });
+        if (stored) return { apiKey: stored.apiKey, baseUrl: stored.baseUrl, model: stored.model };
         console.warn(`[baileys] ${p.envKey} not set — required for ${explicit} voice transcription`);
         return null;
       }
@@ -456,7 +459,9 @@ export class BaileysBackend {
       }
     }
 
-    return null;
+    // A key the voice-transcription setup stored in the vault (docs/specs/recommended-services.md).
+    const stored = resolveSharedTranscriptionProvider({ env: {} });
+    return stored ? { apiKey: stored.apiKey, baseUrl: stored.baseUrl, model: stored.model } : null;
   }
 
   /**
