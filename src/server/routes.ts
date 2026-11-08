@@ -16511,7 +16511,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name);
       return typeof v === 'string' && v ? v : null;
     },
-    bitwarden: realBitwardenSurface(ctx.config.projectName ?? path.basename(ctx.config.projectDir)),
+    // The folder name is guarded: a route harness may build a config with no project directory.
+    bitwarden: realBitwardenSurface(ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent')),
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.

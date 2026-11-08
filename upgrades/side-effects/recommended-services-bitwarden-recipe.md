@@ -210,3 +210,8 @@ Concur. Non-blocking findings:
 6. **Non-blocking — the Live proof section should say what the lane holds and what it does not.** Add to the lane a status-word-only capture after the sign-out (the one claim with no record), the message id of the delivered stop notice and that it was held first, and that the yes was Echo's; drop or source the "by hand and through the provider path" sentence. The release fragment's "five items" (copies) and the section's "six items" (with the marker) are both right; say so in one of them.
 
 7. **Non-blocking, parent branch — the agent's own awareness.** `src/scaffold/templates.ts` carries no recommended-services entry (the spec's Surfaces section names `generateClaudeMd` and `CapabilityIndex` entries), so an agent on which Bitwarden is now available learns of the Services list only through the dashboard. Out of this change's scope; noting it because the flip is what makes it reach people.
+
+
+## Post-merge-queue fix (2026-11-08)
+
+The Studio's Local Verify of the rebased branch failed 105 unit tests, all route-harness tests: the wiring passed `path.basename(ctx.config.projectDir)` eagerly at route registration, and a harness config with no project directory threw before any route existed. Fixed by guarding the folder-name read (`'agent'` when no directory is configured); the recipe tests and the nine affected route-test files pass locally on the rebased tree. Nothing about the recipe's behaviour changes on a real agent, whose config always has a project directory.
