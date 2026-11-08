@@ -15,6 +15,7 @@
  * code holds the credentials and never runs git or any tool in the session's workspace after
  * creating it: it reads the change set as bytes and publishes from its own clone.
  */
+import { storageMachineName } from '../../core/storageMachineName.js';
 import { groupTestFilesByConfig } from '../../localVerify/inventory.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -1010,7 +1011,7 @@ export class FeedbackExecutorService {
     if (alive) {
       if (row.workspace && row.tmpDir && treeBytes(row.workspace, WORKSPACE_DISK_CAP_BYTES) + treeBytes(row.tmpDir, WORKSPACE_DISK_CAP_BYTES) > WORKSPACE_DISK_CAP_BYTES) {
         await this.stopSession(row);
-        this.endAttempt(row, epoch, 'failed', 'limit:workspace-disk');
+        this.endAttempt(row, epoch, 'failed', `limit:workspace-disk on ${storageMachineName(this.opts.paths.stateDir)}`);
         await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       }
       return;
@@ -1254,7 +1255,7 @@ export class FeedbackExecutorService {
       if (limit(head)) return limited('head', head);
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
-      if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
+      if (!diskOk(p.headClone)) return { ok: false, reason: `limit:workspace-disk on ${storageMachineName(this.opts.paths.stateDir)}` };
       // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
       // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
       // runs only the base tooling), then the unit tests related to the changed sources.

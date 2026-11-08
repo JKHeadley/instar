@@ -121,6 +121,17 @@ describe('media in app conversations — production wiring', () => {
     expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
     const key = (await send('POST', '/mobile/conversations', { title: 'Trip', requestId: rid() })).body.conversationKey as string;
 
+    // Regression fb-30fc4ffb-e4a: the 507 seen on a phone names the machine's nickname.
+    const identity = new MachineIdentityManager(stateDir);
+    identity.updateNickname(identity.loadIdentity().machineId, 'Mac Studio');
+    const disk = vi.spyOn(server.appConversations!.media! as any, 'diskSpace').mockReturnValue({ free: 1, total: 1e12 });
+    const refused = await send('POST', '/mobile/media/uploads', {
+      requestId: rid(), conversationRef: `app:${key}`, size: 10, sha256: 'd'.repeat(64), declaredKind: 'file', declaredType: 'text/plain', filename: 'note.txt',
+    });
+    expect(refused.status).toBe(507);
+    expect(refused.body).toMatchObject({ error: 'media-disk-floor', detail: "Mac Studio is nearly out of disk space, so the file wasn't stored." });
+    disk.mockRestore();
+
     // A photo (two chunks) and a voice note, uploaded through the production raw-body parser.
     const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(1024 * 1024 + 500)]);
     const voice = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypM4A '), crypto.randomBytes(3000)]);
