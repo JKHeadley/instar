@@ -16,6 +16,7 @@
  * Part of Phase 1-6 of the multi-machine spec.
  */
 
+import { TEAM_ENFORCEMENT_VERSION } from '../core/TeamAccessSync.js';
 import fs from 'node:fs';
 import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.js';
 import os from 'node:os';
@@ -676,6 +677,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
             pairingCode: options.code,
             machineIdentity: identity,
             ephemeralPublicKey: identity.encryptionPublicKey,
+            teamEnforcement: TEAM_ENFORCEMENT_VERSION,
             ...(advertisedUrl ? { advertisedUrl } : {}),
             ...(ownLasting.length > 0 ? { endpoints: ownLasting } : {}),
           }),

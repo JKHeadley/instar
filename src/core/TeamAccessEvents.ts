@@ -14,14 +14,18 @@ export type RequestEvent =
   | { type: 'person-set'; personKey: string; role: OrgRole }
   | { type: 'person-remove'; personKey: string }
   | { type: 'grant'; personKey: string; ref: string; access: GrantAccess }
-  | { type: 'grant-remove'; personKey: string; ref: string };
+  | { type: 'grant-remove'; personKey: string; ref: string }
+  /** The owner settles a gap: this machine's rows past `throughSeq` count only if they narrow. */
+  | { type: 'origin-gone'; machine: string; incarnation: string; throughSeq: number };
 
 export type MachineEvent =
   | { type: 'phone-bind'; keyHash: string; deviceId: string; boundTo: string }
   | { type: 'conversation-own'; ref: string; personKey: string }
   | { type: 'lower'; personKey: string; ref?: string; role?: OrgRole; remove?: boolean }
   /** The owner accepted the log as it stood after a restore, gaps included, through this row. */
-  | { type: 'restored'; throughSeq: number };
+  | { type: 'restored'; throughSeq: number }
+  /** A conversation is locked to its audience, on every machine. A restore's sweep is never one of these. */
+  | { type: 'confine'; ref: string; placeKey?: string; personKey?: string };
 
 const MAX_EVENTS = 50;
 const str = (v: unknown, max = 256): v is string => typeof v === 'string' && v.length > 0 && v.length <= max;
@@ -68,6 +72,9 @@ export function validateRequestEvent(raw: unknown): RequestEvent | null {
       return { type: 'grant', personKey: e.personKey, ref: e.ref, access: e.access };
     case 'grant-remove':
       return str(e.personKey) && str(e.ref) ? { type: 'grant-remove', personKey: e.personKey, ref: e.ref } : null;
+    case 'origin-gone':
+      if (!str(e.machine) || !str(e.incarnation) || !Number.isSafeInteger(e.throughSeq) || (e.throughSeq as number) < 0) return null;
+      return { type: 'origin-gone', machine: e.machine, incarnation: e.incarnation, throughSeq: e.throughSeq as number };
     default: return null;
   }
 }
@@ -93,6 +100,9 @@ export function validateMachineEvent(raw: unknown): MachineEvent | null {
       return str(e.keyHash) && str(e.deviceId) && str(e.boundTo) ? { type: 'phone-bind', keyHash: e.keyHash, deviceId: e.deviceId, boundTo: e.boundTo } : null;
     case 'conversation-own':
       return str(e.ref) && str(e.personKey) ? { type: 'conversation-own', ref: e.ref, personKey: e.personKey } : null;
+    case 'confine':
+      if (!str(e.ref) || (e.placeKey !== undefined && !str(e.placeKey)) || (e.personKey !== undefined && !str(e.personKey))) return null;
+      return { type: 'confine', ref: e.ref, ...(e.placeKey ? { placeKey: e.placeKey as string } : {}), ...(e.personKey ? { personKey: e.personKey as string } : {}) };
     case 'restored':
       return Number.isInteger(e.throughSeq) && (e.throughSeq as number) >= 0 ? { type: 'restored', throughSeq: e.throughSeq as number } : null;
     case 'lower':

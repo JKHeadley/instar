@@ -43,7 +43,8 @@ import { requestIdAgeOk, requestIdTime, type ChatLookup } from '../core/MobileCh
 import {
   cleanConversationTitle, derivedEventId, isAppConversationKey, newAppConversationKey, removeAuthorityTokens,
 } from '../core/appConversationText.js';
-import type { BrowsedMessage, DeviceSignedOrigin, MachineReceipt, MediaMessageEvent, MessageEvent } from '../core/AppConversationStore.js';
+import { isOwnerPerson } from '../core/MobilePeople.js';
+import { messagePreview, type BrowsedMessage, type DeviceSignedOrigin, type MachineReceipt, type MediaMessageEvent, type MessageEvent } from '../core/AppConversationStore.js';
 import { signReceipt, signRedaction, signRedactionV2, sha256Hex, type MachineSigner, type OriginVerdict } from '../core/AppRecordSignatures.js';
 import {
   MAX_ATTACHMENTS, pushPreviewBody, type AppAttachment,
@@ -531,11 +532,18 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const ownerNote = local.slackOwnerUnset && deviceMayUse(deps.pairing, req, 'slack:') ? { slackOwnerUnset: true } : {};
     // People and roles §3.4: an MSP phone sees Telegram topics and its own app conversations only
     // (filtered after the merge, so the cursor still advances over rows it does not see).
+    const person = devicePersonOf(req);
+    /** A team phone's list line is the newest message it may read, so a held one is not shown there. */
+    const shownPreview = (r: ConversationListRow): ConversationListRow => {
+      if (person?.role !== 'team' || r.platform !== 'app') return r;
+      const newest = svc!.store.browseMessages(String(r.id), null, 100).messages.filter((m) => deps.pairing.mayReadStored(person, String(r.id), m)).pop();
+      return { ...r, lastPreview: newest ? messagePreview(newest) : null };
+    };
     const visible = (rows: ConversationListRow[]): ConversationListRow[] => rows.filter((r) => {
       if (r.platform === 'telegram') return deviceMayUse(deps.pairing, req, `telegram:${String(r.id)}`);
       if (r.platform === 'slack') return deviceMayUse(deps.pairing, req, 'slack:');
       return deviceMayUse(deps.pairing, req, String(r.id));
-    });
+    }).map(shownPreview);
     // Unread (§3.5): read fields for a reader on every visible row, the page total, and whether
     // anything after the page is unread. A Bearer read without a forwarded reader gets none.
     const unread = unreadOn();
@@ -568,7 +576,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
         return !!f && f.hasUnread;
       });
     };
-    if (req.query.scope !== 'pool') {
+    // A peer's preview cannot be judged here, so a team phone lists what this machine holds.
+    if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
       const rows = withFields(visible(m.rows), false);
       res.json({ conversations: rows, nextCursor: m.nextCursor, ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
@@ -963,7 +972,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const key = String(req.params.key);
     if (!allowed(req, res, key)) return;
-    const pool = req.query.scope === 'pool';
+    const reader = devicePersonOf(req);
+    // A peer's rows cannot be judged here, so a team phone reads what this machine holds.
+    const pool = req.query.scope === 'pool' && reader?.role !== 'team';
     const live = svc!.liveConversation(key);
     // §4.8: a pool read also covers what has not replicated here yet, so a conversation this
     // machine has never seen is read from the peers. One it knows is deleted stays a 404.
@@ -972,12 +983,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const limit = Math.max(1, Math.min(100, Number(req.query.limit) || 100));
     const before = typeof req.query.before === 'string' ? req.query.before : null;
     const page = live ? svc!.store.browseMessages(key, before, limit) : { messages: [], nextBefore: null };
+    const shown = page.messages.filter((m) => deps.pairing.mayReadStored(reader, key, m));
     const display = deps.originDisplay?.() ?? { ...DEFAULT_ORIGIN_DISPLAY };
     const originCtx = { display, selfMachineId: deps.machineId() };
-    const rows = page.messages.map((m) => historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx));
+    const rows = shown.map((m) => {
+      const row = historyRow(m, (x) => svc!.verify({ ...x, conversationKey: key }), svc!, originCtx);
+      const heldFrom = reader === null || isOwnerPerson(reader) ? deps.pairing.heldFrom(key, m) : [];
+      return heldFrom.length > 0 ? { ...row, heldFrom } : row;
+    });
     // Unread (§3.5): a device reader's effective position, for the "Unread messages" divider.
-    const reader = principalOf(req).kind === 'device' ? readerOf(req) : null;
-    const readUpTo = reader && unreadOn() ? { readUpTo: unreadOn()!.readUpTo(reader, `app:${key.toLowerCase()}`) } : {};
+    const unreadReader = principalOf(req).kind === 'device' ? readerOf(req) : null;
+    const readUpTo = unreadReader && unreadOn() ? { readUpTo: unreadOn()!.readUpTo(unreadReader, `app:${key.toLowerCase()}`) } : {};
     if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
@@ -1031,7 +1047,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // A deleted conversation, or a reply not replicated to this machine yet: the phone keeps the generic text.
     const ev = svc.liveConversation(key) ? svc.store.getMessageEvent(key, messageId) : null;
     const m = ev as unknown as { role?: string; text?: unknown; attachments?: AppAttachment[] } | null;
-    if (!m || m.role !== 'agent') { res.status(404).json({ error: 'not-found' }); return; }
+    if (!m || m.role !== 'agent' || !deps.pairing.mayReadMessageId(devicePersonOf(req), key, messageId)) { res.status(404).json({ error: 'not-found' }); return; }
     const name = deps.config.projectName ?? 'agent';
     res.json({ title: name.charAt(0).toUpperCase() + name.slice(1), body: pushPreviewBody(m.attachments ?? [], typeof m.text === 'string' ? m.text : '') });
   });
@@ -1046,7 +1062,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const page = svc!.store.syncEvents(key, typeof req.query.cursor === 'string' ? req.query.cursor : null, limit);
     res.json({
       conversationKey: key,
-      events: page.events.map((e) => {
+      events: page.events.filter((e) => {
+        // A message, and anything about one, such as its transcript.
+        const about = (e as { messageId?: unknown }).messageId;
+        // Text about a message that has not reached this machine waits for it.
+        if (typeof about !== 'string' || (e.kind !== 'transcript' && !svc!.store.hasMessage(about))) return true;
+        return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
+      }).map((e) => {
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };
         return {
           ...rest,
