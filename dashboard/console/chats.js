@@ -337,7 +337,8 @@ class ChatsPage {
           el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),
         el('span', { class: 'chat-row-side' },
           r.lastActivity ? el('span', { class: 'chat-row-time', text: shortTime(r.lastActivity) }) : null,
-          r.unread > 0 ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null))));
+          // The conversation on screen is being read: no badge for it (a browser does not move read markers in this version).
+          r.unread > 0 && r.key !== open ? el('span', { class: 'chat-unread', text: String(r.unread), 'aria-label': `${r.unread} unread` }) : null))));
     }
     this.moreBtn.hidden = !this.meta.nextCursor;
     const failed = this.meta.failed || [];
@@ -666,7 +667,9 @@ class ChatsPage {
         this.refreshOpen(v);
         return;
       }
-      if (r.ok) { dropUnfinished(entry.requestId); this.finishLocal(v, local, out.label, true); this.refreshOpen(v); return; }
+      // 202 in-progress: the server is still delivering the first copy of this requestId (a reload or a
+      // lost answer); ask again with the same requestId until a final answer names the message.
+      if (r.ok && r.status !== 202) { dropUnfinished(entry.requestId); this.finishLocal(v, local, out.label, true); this.refreshOpen(v); return; }
       if (!this.live || !v.live) return; // kept in sessionStorage: retried when this conversation opens again here
       const ms = r.retryAfterMs || wait;
       wait = Math.min(wait * 2, 30_000);

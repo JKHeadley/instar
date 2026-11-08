@@ -207,6 +207,7 @@ export class BrowserDeviceController {
     const withIntent = this.svc.devices.get(deviceId)!;
     // 10.2 — the ledger row, with client: 'browser' inside the signed payload.
     try { ledger.recordActivation(withIntent, via, at); } catch (err) {
+      // @silent-fallback-ok — not silent: reported through deps.reportDegradation (DegradationReporter in production); the intent stays and recovery expires it
       this.svc.deps.reportDegradation?.('MobilePairing.keyLedger', err);
       featureEvidence.record(BROWSER_FEATURE, { kind: 'error', reason: 'activation failed: key ledger write', context: { deviceId } });
       return 'failed';
@@ -499,6 +500,7 @@ export function mountBrowserDeviceRoutes(
     const kh = keyHashOf(publicKey);
     let ledgerHasKey = false;
     try { ledgerHasKey = !!svc.keyLedger && svc.keyLedger.rows().some((r) => r.keyHash === kh); } catch (err) {
+      // @silent-fallback-ok — not silent: reported through deps.reportDegradation (DegradationReporter in production), and the setup is refused 503
       svc.deps.reportDegradation?.('MobilePairing.keyLedger', err);
       res.status(503).json({ error: 'ledger-unreadable', detail: 'This agent could not read its device-key record. Try again shortly.' });
       return;

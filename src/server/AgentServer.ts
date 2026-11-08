@@ -716,6 +716,7 @@ export class AgentServer {
         category: 'security', sourceContext: 'browser-device' } as never);
       return true;
     } catch (error) {
+      // @silent-fallback-ok — not dropped: the caller (BrowserDeviceController.runEffects) retries with backoff and reports through DegradationReporter after 24 attempts
       console.warn(`[instar] browser-device security notice could not be raised (${error instanceof Error ? error.message : String(error)}); it is retried`);
       return false;
     }

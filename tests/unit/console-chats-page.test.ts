@@ -168,6 +168,42 @@ describe('Conversations page', () => {
     expect(JSON.parse(sent!.body!).requestId).toMatch(/^\d{13}-/);
   });
 
+  it('a 202 in-progress answer is asked again with the same requestId, and the message shows once (live proof finding)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const posts: Call[] = [];
+    let delivered = false;
+    const at = new Date().toISOString();
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: at, lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [{ eventId: 'e1', messageId: 'msg-1', role: 'agent', text: 'hello', at }], nextBefore: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) {
+        return { status: 200, body: { events: delivered ? [{ kind: 'message', eventId: 'e9', messageId: 'msg-9', role: 'operator', text: 'only once please', at: new Date().toISOString(), deliveryState: 'delivered', originVerified: 'verified' }] : [], cursor: 'c1' } };
+      }
+      if (c.url === `/mobile/chat/app/${UUID}` && c.method === 'POST') {
+        posts.push(c);
+        if (posts.length === 1) return { status: 202, body: { state: 'in-progress' } };
+        delivered = true;
+        return { status: 200, body: { ok: true, messageId: 'msg-9', deliveryState: 'delivered' } };
+      }
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const box = doc.querySelector('textarea.chat-compose') as HTMLTextAreaElement;
+    box.value = 'only once please';
+    box.dispatchEvent(new dom.window.Event('input'));
+    (doc.querySelector('button.chat-send') as HTMLButtonElement).click();
+    for (let i = 0; i < 40 && posts.length < 2; i++) await flush(100);
+    for (let i = 0; i < 20; i++) await flush(50);
+    expect(posts.length).toBe(2);
+    expect(JSON.parse(posts[1]!.body!).requestId).toBe(JSON.parse(posts[0]!.body!).requestId);
+    const copies = [...doc.querySelectorAll('.chat-bubble .chat-text')].filter((n) => n.textContent === 'only once please');
+    expect(copies).toHaveLength(1);
+  }, 15_000);
+
   it('a 401 answered "unknown" by the status route keeps the key', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');

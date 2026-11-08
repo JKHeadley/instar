@@ -124,6 +124,15 @@ Noted by the reviewer and accepted:
 
 ---
 
+## Follow-up fixes (Local Verify and the live rehearsal, 2026-11-08)
+
+- **Local Verify** (#2966 at 62225e901): `no-silent-fallbacks` counted 498 > 494. Four catches that do report (through `deps.reportDegradation`, which is DegradationReporter in production, or through the effect retry that reports after 24 attempts) were not recognised by the heuristic, which reads only the catch body for `DegradationReporter` / `@silent-fallback-ok`. Each now carries an in-brace `@silent-fallback-ok` with the reason; one of them (the redeem cleanup) was only newly flagged because its neighbouring tagged catch moved into the shared `deliverOwnerDM` helper.
+- **Live rehearsal on a throwaway agent** (real dashboard, Playwright, 1280×728 and 390×844) found three page defects, fixed here:
+  1. The composer's message box was squeezed to one character wide and Send ran past the right edge (the shared `.btn-primary` is full width) → the composer buttons size to their label.
+  2. At 1280×728 the composer sat below the first screen → the open conversation fits the window; messages scroll inside it.
+  3. A reload while a send was in flight showed the message twice (the retry got `202 in-progress` and was treated as done, so the placeholder never learned its messageId) → a 202 is asked again with the same requestId until a final answer; regression test in `tests/unit/console-chats-page.test.ts` (fails without the fix).
+  Also: the unread badge (from the unread work on main) is not shown for the conversation that is open, since a browser does not move read markers in this version.
+
 ## Evidence pointers
 
 - `tests/unit/mobile-browser-devices.test.ts` — acceptance 1–3, activation/effects, authenticator, setup and status routes.

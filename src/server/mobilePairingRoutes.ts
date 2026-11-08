@@ -1253,7 +1253,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
       if (now?.status === 'active') { res.json({ deviceId: device.id, agentName: svc.deps.config.projectName, status: 'active', approval: 'telegram', codeFormat }); return; }
       svc.confirm.drop(device.id);
       svc.declineNonces.delete(nonce);
-      try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); }
+      try { svc.devices.remove(device.id); } catch (err) { svc.deps.reportDegradation?.('MobilePairing.registryWrite', err); } // @silent-fallback-ok — reported through deps.reportDegradation (DegradationReporter in production); the pending device expires on its own
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: confirmation code not delivered', context: { deviceId: device.id, routeKind: eligible.kind } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the confirmation code in Telegram. Open a private chat with the bot and send it any message, then ask me for a new link.' });
       return;
