@@ -140,7 +140,8 @@ describe('a read with something hidden', () => {
   it('a real unnamed problem still shows, with nothing to hide it by', () => {
     const r = summarizeHealth({ status: 'degraded' }, [], {}, store().s);
     expect(r.issues[0]).toMatchObject({ id: 'health:unnamed', choices: [] });
-    expect(r.verdict).toBe('unsure');
+    // A note on a running agent, never healthy and never "can't tell".
+    expect(r.verdict).toBe('running');
   });
   it('iMessage down with no event in the window can still be hidden, and is never healthy', () => {
     const { s } = store();

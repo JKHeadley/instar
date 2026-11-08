@@ -29,6 +29,18 @@ describe('health-model', () => {
     expect(healthNeedRows({ ok: true, data: {} })).toBeNull();
   });
 
+  it('an answering agent with only unsorted notes reads running, even from an older server that says unsure', async () => {
+    const { buildHealthPage } = await model();
+    for (const verdict of ['unsure', 'running']) {
+      const p = buildHealthPage(answer(verdict, [issue({ id: 'a', impact: 'unclassified' }), issue({ id: 'b', impact: 'unclassified' })]));
+      expect(p.verdict).toBe('running');
+      expect(p.tone).toBe('ok');
+      expect(p.sub).toContain('2 notes I haven’t sorted yet');
+    }
+    // A problem that affects the person still raises it.
+    expect(buildHealthPage(answer('attention', [issue()])).tone).toBe('attn');
+  });
+
   it('Home gets only what affects the person', async () => {
     const { healthNeedRows } = await model();
     expect(healthNeedRows(answer('running', [issue({ impact: 'internal' })]))).toEqual([]);
