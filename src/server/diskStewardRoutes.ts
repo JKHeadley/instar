@@ -9,6 +9,7 @@
  */
 import type { Router } from 'express';
 import type { DiskSteward } from '../monitoring/DiskSteward.js';
+import { operatorError } from '../core/storageMachineName.js';
 import type { PruneRunner } from '../monitoring/diskSteward/pruneRunner.js';
 
 export interface DiskStewardRouteDeps {
@@ -80,7 +81,7 @@ export function mountDiskStewardRoutes(router: Router, get: () => DiskStewardRou
         });
         res.status(r.status).json(await r.json().catch(() => ({})));
       } catch (e) {
-        res.status(502).json({ error: 'Could not reach that machine', detail: e instanceof Error ? e.message : String(e) });
+        res.status(502).json({ error: 'Could not reach that machine', detail: operatorError(e, res.app?.locals?.stateDir) });
       }
       return;
     }
