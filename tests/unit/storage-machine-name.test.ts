@@ -43,7 +43,7 @@ describe('storage errors identify their origin machine', () => {
     expect(fs.existsSync(path.join(dir, 'missing'))).toBe(false);
   });
 
-  it.each(['ENOSPC', 'EDQUOT', 'SQLITE_FULL', 'SQLITE_IOERR', 'EIO', 'disk full', 'storage-error', 'filesystem error'])('recognizes %s without controlling admission', (text) => {
+  it.each(['ENOSPC', 'EDQUOT', 'SQLITE_FULL', 'SQLITE_IOERR', 'SQLITE_BUSY', 'SQLITE_READONLY', 'SQLITE_NOTADB', 'database is locked', 'ENOENT', 'ENOTDIR', 'EMFILE', 'EIO', 'disk full', 'storage-error', 'filesystem error'])('recognizes %s without controlling admission', (text) => {
     expect(isStorageError(text)).toBe(true);
     expect(isStorageError('provider quota exhausted')).toBe(false);
   });
@@ -53,6 +53,8 @@ describe('storage errors identify their origin machine', () => {
     expect(operatorError(new Error('ENOSPC: write failed'), dir)).toBe('Mac Studio: ENOSPC: write failed');
     expect(operatorError(Object.assign(new Error('write failed'), { code: 'EDQUOT' }), dir)).toBe('Mac Studio: write failed');
     expect(operatorError(new Error('SQLITE_IOERR_WRITE'), dir)).toBe('Mac Studio: SQLITE_IOERR_WRITE');
+    expect(operatorError(Object.assign(new Error('uncommon filesystem failure'), { code: 'EINVAL', syscall: 'write' }), dir)).toBe('Mac Studio: uncommon filesystem failure');
+    expect(operatorError(Object.assign(new Error('process failure'), { code: 'EINVAL', syscall: 'kill' }), dir)).toBe('process failure');
     expect(operatorError(new Error('provider unavailable'), dir)).toBe('provider unavailable');
   });
 

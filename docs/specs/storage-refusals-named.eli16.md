@@ -11,3 +11,5 @@ The error still means exactly what it meant before. The amount of required free 
 Tests cover the original phone upload, both storage-capacity branches, paste limits, write failures, health messages, live nickname changes and a broken registry. This is a small reversible bug fix; reverting it requires no state migration. It adds no disk-watch job: that work is tracked separately by the operator.
 
 Release checks also list the new naming helpers explicitly as diagnostic code: they choose words and read names. They do not change the certified delivery or recovery code, whose file hashes and signed test evidence remain unchanged.
+
+The naming also applies when storage is unavailable for reasons beyond free space: a database is locked or read-only, a directory is missing, or a file cannot be opened. These errors still keep their original meaning and code.

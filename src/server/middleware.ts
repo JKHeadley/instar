@@ -2,7 +2,7 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
-import { isStorageError, storageMachineName, operatorError } from '../core/storageMachineName.js';
+import { isStorageFailure, storageMachineName, operatorError } from '../core/storageMachineName.js';
 import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
@@ -957,7 +957,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   console.error(`[server] Error: ${message}` + (stack ? `\n${stack}` : ''));
   // Never leak internal error details to clients
   res.status(500).json({
-    error: isStorageError(message) ? `Storage error on ${storageMachineName(req.app?.locals?.stateDir)}. Please check available space and storage permissions.` : 'Internal server error',
+    error: isStorageFailure(err) ? `Storage error on ${storageMachineName(req.app?.locals?.stateDir)}. Please check available space and storage permissions.` : 'Internal server error',
     timestamp: new Date().toISOString(),
   });
 }
