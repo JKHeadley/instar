@@ -53,6 +53,8 @@ Load is compared per core, so a big machine and a small one at the same raw load
 - **Test runs.** When `LocalVerifyService` hands a full verify to another machine, it drops peers that are too small, too busy or unmeasurable and tries the rest least-loaded first. Repeated skips of the same peer for the same reason are recorded at most once every ten minutes.
 - **Helper work.** `GET /pool/placement/preview` answers "where would this heavy work go?" without changing anything, and `POST /pool/heavy-work/spawn` starts a background helper session on the machine the preview picks.
 
+Two neighbouring readers stay out of the decision. `MachineLoadAssessor` is an advisory, shadow-first check: when a machine's own load verdict and the outside view of it disagree, a fast model labels the snapshot and grades that label fifteen minutes later, but nothing in placement reads its output. `PlacementResponderReader` answers the opposite question after the fact — which machine actually served a reply — by reading the topic's current `owner` from `GET /pool/placement`, so live cross-machine proofs can check that work landed where placement said it would.
+
 Spec: `docs/specs/resource-aware-placement.md`.
 
 ## Rollout and rebalance (`StageAdvancer`, `SessionPoolE2EResultStore`, `RebalancePlanner`)
