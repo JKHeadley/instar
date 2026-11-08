@@ -7,6 +7,8 @@ Tier 1. Two defects found by the first real two-machine move of an app conversat
 1. **Bring it back here appears once the owner stops answering, not 15 minutes later.** Placement and the bring-back guard both asked `ownerOnline`, which read the owner's `liveness.state === 'live'`. `deriveLiveness` keeps a peer `live` until its last direct success is older than `failoverTimeoutMinutes` (15 by default), so with the owner stopped for 6 minutes, placement still read `answering: true, bringBack.can: false`. The new `ownerAnswering` in `appConversationMove.ts` reads the owner as NOT answering only on this machine's own evidence: direct contact in this process that is older than `READINESS_CONTACT_MAX_AGE_MS` (2 minutes, the rule pool readiness already uses), or direct attempts in this process that are failing (`unreachable`). If this process has never reached the owner (a restarted or new lease holder), that needs at least two failures spread over 2 minutes, so one busy timeout cannot make a healthy owner look stopped (re-review finding a). The attempts come from a new read-only `MachinePoolRegistry.directAttempts`. With only relayed or saved evidence, or no reading, it is unknown, and unknown never offers Bring it back here (independent review finding 1: right after the holder restarts, a healthy owner must not look stopped).
 2. **A queued app message is delivered on an agent without Telegram.** The inbound queue handed every row to `_drainLocalDeliver`, which only `wireTelegramRouting` assigns, so on an app-only agent each attempt for an app row failed with `un-routable: local-tail-not-wired` until the row expired. The new `dispatchQueuedInbound` in `appConversationPool.ts` sends `app:` rows straight to the app tail and every other row to the local tail, as before.
 
+3. **A held app message survives its own holder's restart.** Step 8 of the proof held a message on the holder while the owner was down, then restarted the holder (3 seconds). `QueueDrainLoop.dispatchOne` clamps any row from a previous boot to `staleCustodyTtlMs` (2 minutes from enqueue), so the message expired with `stale-custody-reboot` and was never delivered, although the phone showed it saved and waiting. An `app:` row from a previous boot of the SAME tenure now keeps the normal `entryTtlMs` (30 minutes): the restart does not change where it must go, the app tail re-reads the owner on every attempt, and the owner dedupes by message id. A tenure change (the lease moved to another machine) keeps the clamp, as does every non-app row. A row that reaches its TTL still ends as `ttl-expired`, which the app records as refused ("the machine didn't answer"), not "may not have reached".
+
 ## 1. Over-block
 
 None. Neither change refuses anything new.
@@ -15,7 +17,7 @@ None. Neither change refuses anything new.
 
 A holder that just restarted, or a new lease holder, offers nothing until its own direct attempts say the owner is down: at least two failures spread over 2 minutes. A holder that never pulls the owner directly stays unknown and never offers it (re-review finding b, filed rather than widened here). Bring it back here can now be offered while the owner is alive but has not been reached directly for over 2 minutes (for example, a network partition between the two machines). That is the case the feature is for: the operator confirms the warning ("its session will be stopped as soon as it reconnects"), and a returning owner is fenced by its lower epoch. A real flap still needs the operator's confirmed tap; nothing is taken over automatically.
 
-Slack rows keep the old dependency on the Telegram-wired local tail. That is a separate defect, filed as fb-45347657-351, not widened into this change.
+Across a lease handover (a different tenure) an app row still takes the 2-minute clamp; whether it should survive there too depends on the new holder's custody of the old holder's rows, which is outside this change. Slack rows keep the old dependency on the Telegram-wired local tail. That is a separate defect, filed as fb-45347657-351, not widened into this change.
 
 ## 3. Level-of-abstraction fit
 
@@ -42,11 +44,18 @@ No new authority. `ownerAnswering` only decides whether an explicit, operator-co
 
 Both changes are the lease holder's view of a peer and the holder's own queue. Machine-local by design: each holder decides from its own direct contact.
 
+## 7b. Queue semantics
+
+Only `app:` rows change, and only across a reboot of the same holder within the same tenure. The TTL sweep (`expireWithClamps`, run by the backstop tick) is unchanged and applies to them as to any row.
+
 ## 8. Rollback cost
 
 Revert. No data, migration or state to repair.
 
 ## Tests
+
+`tests/unit/queue-drain-loop.test.ts`, tenure clamp: an app message survives its own holder's reboot past the clamp and is delivered (no loss reported); a non-app message still expires `stale-custody-reboot`; an app message past its TTL after a reboot still expires `ttl-expired` with a loss report. Removing the app exception fails the first.
+
 
 `tests/unit/app-pool-bringback-queue.test.ts` (18 cases):
 - The incident: a peer last reached 6 minutes ago still derives `live` but is not answering, and placement offers Bring it back here at 3 minutes.

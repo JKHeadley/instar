@@ -19,6 +19,7 @@ The first real test of moving an app conversation between two machines found two
 
 - The holder now treats the other machine as answering only if it reached it directly within the last 2 minutes, the same rule the pool's readiness check already uses. "Bring it back here" appears about 2 minutes after a machine stops answering.
 - Saved app messages now go straight to the app's own delivery step, whether or not the agent uses Telegram.
+- A saved app message now survives a restart of the serving machine. Before, a restart dropped any message that had waited more than 2 minutes, even though the phone still showed it as saved and waiting. It now keeps its normal 30-minute limit, and if it does run out, the app says the machine didn't answer.
 
 ## The safeguards
 
