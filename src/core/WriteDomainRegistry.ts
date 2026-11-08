@@ -328,6 +328,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   };
   // POST /standdown/evaluate — the hook's authoritative verdict + audit row for
   // a session running ON THIS machine (a peer's session can never be listed here).
+  // "Bring it back here" (app-conversations-in-the-pool §2.2): the lease holder's CAS, journaled to every
+  // machine. Shared, as /pool/transfer is by default.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/pool/bring-back', domain: 'cluster-shared' });
+
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/standdown/', domain: 'machine-local', story: standDownStory });
 
   // Desktop grants exist only in the target process. A restart destroys every

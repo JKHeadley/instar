@@ -7,10 +7,11 @@
  * re-derivation at boot, `bind-app`/`unbind-app` on lease changes, boot recovery of interrupted
  * requests, the emergency-stop/pause effects and the reply-side hook point.
  *
- * Ownership (increment 1): the owner is the machine holding the serving lease (single machine:
- * always this one). Pool placement for app conversations, and forwarding a send accepted on a
- * non-owner, are later work: a non-owner answers `503 owner-unavailable` AFTER the message is
- * persisted (§4.8's fallback), so nothing typed is lost.
+ * Ownership: an unmoved conversation's owner is the machine holding the serving lease (single
+ * machine: always this one). A moved one has a fenced record naming its machine
+ * (docs/specs/app-conversations-in-the-pool.md): `serves`, `mayReply` and `currentOwner` below. A
+ * machine that isn't the lease holder answers a phone's send `503 owner-unavailable` AFTER the
+ * message is persisted (§4.8's fallback), so nothing typed is lost.
  */
 import { safeInboxTarget } from './memorySessionPolicy.js';
 import type { ConversationRegistry } from './ConversationRegistry.js';
@@ -26,10 +27,13 @@ import { AppMediaStore, DEFAULT_MAX_STORE_BYTES } from './AppMediaStore.js';
 import { MAX_PURGE_BATCH, MAX_TRANSCRIPT_CHARS, displayName, sessionLine, type AppAttachment } from './appMediaTypes.js';
 import { TranscriptionUnavailableError } from './VoiceTranscription.js';
 import { AppMediaReplicator, OWNER_PULL_WAIT_MS, PENDING_DELIVERY_TTL_MS } from './AppMediaReplicator.js';
+import { MAY_NOT_BE_DELIVERED, type AppPoolHandle } from './appConversationPool.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
 export const STRANDED_REQUEST_AGE_MS = 5 * 60_000;
+/** Past the queue's 30-minute limit, with room for a drain pass: a `waiting` send here has lost its row. */
+export const WAITING_OVERDUE_MS = 45 * 60_000;
 
 interface PendingRow { attachmentId: string; messageId: string; conversationKey: string; sha256: string; displayName: string; caption: string; createdAt: number; state: 'waiting' | 'ready' | 'expired'; path: string | null }
 
@@ -49,6 +53,8 @@ export interface AppConversationServiceDeps {
   requests: MobileChatRequestStore;
   store?: AppConversationStore;
   holdsLease: () => boolean;
+  /** The session pool (app-conversations-in-the-pool). Absent, or `active()` false: the lease holder serves every conversation, as before. */
+  pool?: () => AppPoolHandle | null;
   ownerName: () => string;
   dispatch: () => AppInboundDispatch | null;
   /** Stop / pause the session serving an app conversation (by tmux name). */
@@ -216,6 +222,12 @@ export class AppConversationService {
   private transcribeActive = 0;
   private readonly transcribeWaiters: Array<() => void> = [];
   private inboundScan: ((text: string) => void) | null = null;
+  /** Conversations created here while this machine held the lease: no other machine can own one yet. */
+  private readonly createdHere = new Set<string>();
+  /** Stop or pause reached this owner while a drain ran for the conversation (§2.4). The drain aborts. */
+  private readonly emergencyMarks = new Set<string>();
+  /** Closes in flight, so a slow close isn't started twice. */
+  private readonly closing = new Set<string>();
   /** Increment 3 fills this in (push without Telegram); increment 1 records the hook only. */
   pushHook: ((conversationKey: string, messageId: string) => void) | null = null;
 
@@ -715,33 +727,129 @@ export class AppConversationService {
     }
     if (ev.kind !== 'created') return;
     const r = this.deps.registry.mintAppAlias(ev.conversationKey);
-    if (r.ok && this.deps.holdsLease()) this.deps.registry.bindApp(r.id);
+    if (r.ok && this.mayReply(ev.conversationKey)) this.deps.registry.bindApp(r.id);
   }
 
-  /** On gaining the serving lease, bind every live conversation; on losing it, unbind them. */
+  /** Each lease tick: the binding reconcile (§2.1), and aliases when the lease is gained. */
   leaseTick(): void {
     const holds = this.deps.holdsLease();
-    if (holds === this.lastLease) return;
+    const changed = holds !== this.lastLease;
     this.lastLease = holds;
+    if (!holds) this.createdHere.clear();
     try {
-      if (holds) {
-        this.reconcileAliases();
-        for (const key of this.store.liveConversationKeys()) {
-          const id = this.deps.registry.appAliasFor(key);
-          if (id !== null) this.deps.registry.bindApp(id);
-        }
-      } else {
-        for (const id of this.deps.registry.appBoundIds()) this.deps.registry.unbindApp(id);
-      }
-    } catch (err) { this.report('lease binding', err); } // @silent-fallback-ok — reported through the injected DegradationReporter (deps.reportDegradation); the next lease change retries
+      if (changed && holds) this.reconcileAliases();
+      this.reconcileBindings();
+    } catch (err) { this.report('lease binding', err); } // @silent-fallback-ok — reported through the injected DegradationReporter (deps.reportDegradation); the next tick repeats it
   }
 
-  /** This machine currently owns the conversation behind `alias` (§4.8, pool dark). */
+  /** The pool, when it is on. Null means the lease holder serves everything, as before this part. */
+  private activePool(): AppPoolHandle | null {
+    try { const p = this.deps.pool?.() ?? null; return p && p.active() ? p : null; } catch { return null; } // @silent-fallback-ok — an unreadable pool reads as dark: today's lease-holder rule
+  }
+
+  private recordOf(p: AppPoolHandle, conversationKey: string) {
+    const r = p.read(`app:${conversationKey}`);
+    return r && r.status !== 'released' ? r : null;
+  }
+
+  /**
+   * This machine serves the conversation (§2.1): it starts sessions for it and takes its messages.
+   * An `active` record naming it; or no record, the lease here, and the lease gate open.
+   */
+  serves(conversationKey: string): boolean {
+    const p = this.activePool();
+    if (!p) return this.deps.holdsLease();
+    const r = this.recordOf(p, conversationKey);
+    if (r) return r.status === 'active' && r.ownerMachineId === this.deps.machineId();
+    if (!this.deps.holdsLease()) return false;
+    return this.createdHere.has(conversationKey) || p.gateOpenFor(conversationKey);
+  }
+
+  /** May a reply land from here (§2.1): it serves, or it is the drain's last turn. The runner bounds that window. */
+  mayReply(conversationKey: string): boolean {
+    if (this.serves(conversationKey)) return true;
+    const p = this.activePool();
+    if (!p) return false;
+    const r = this.recordOf(p, conversationKey);
+    return r?.status === 'transferring' && r.ownerMachineId === this.deps.machineId() && p.drainRunning(`app:${conversationKey}`);
+  }
+
+  /** Where a stop or pause goes (§2.4): the owner named by the record, draining or not; else whoever serves it. */
+  currentOwner(conversationKey: string): boolean {
+    const p = this.activePool();
+    if (!p) return this.serves(conversationKey);
+    const r = this.recordOf(p, conversationKey);
+    if (!r) return this.serves(conversationKey);
+    return (r.status === 'active' || r.status === 'transferring') && r.ownerMachineId === this.deps.machineId();
+  }
+
+  /** New conversations start on the lease holder: nothing can own one yet, so the gate doesn't apply. */
+  servesNewConversations(): boolean { return this.deps.holdsLease(); }
+
+  /** The pool is on, so a send goes through the router. */
+  poolRouter(): AppPoolHandle | null { return this.activePool(); }
+
+  /**
+   * A desired-set reconcile, not a reaction to lease changes (§2.1): every conversation for which
+   * `mayReply` holds here is bound, the rest are not. A machine that learns it lost a conversation
+   * closes its copy, and a refused close is retried on the next reconcile.
+   */
+  reconcileBindings(): void {
+    const p = this.activePool();
+    const self = this.deps.machineId();
+    const live = this.store.liveConversationKeys().filter(isAppConversationKey);
+    const want = new Set(live.filter((k) => this.mayReply(k)));
+    for (const key of want) {
+      const id = this.deps.registry.appAliasFor(key) ?? (() => { const m = this.deps.registry.mintAppAlias(key); return m.ok ? m.id : null; })();
+      if (id !== null && !this.deps.registry.isAppBound(id)) this.deps.registry.bindApp(id);
+    }
+    for (const id of this.deps.registry.appBoundIds()) {
+      const key = this.deps.registry.appConversationFor(id);
+      if (!key || !want.has(key)) this.deps.registry.unbindApp(id);
+    }
+    if (!p) return;
+    for (const key of live) {
+      if (want.has(key) || this.closing.has(key)) continue;
+      const r = this.recordOf(p, key);
+      // With no record, only another machine being named holder is the lease moving: a suspended lease or a missed renewal closes nothing.
+      const lost = r ? r.ownerMachineId !== self : !this.deps.holdsLease() && p.leaseHeldElsewhere();
+      if (!lost) continue;
+      const session = this.sessionFor(key);
+      if (!session || !p.sessionRunning(session)) continue;
+      this.closing.add(key);
+      void p.closeLostSession(key, session)
+        .then((out) => { if (!out.closed) this.report('close after losing a conversation', new Error(`${key}: ${out.detail ?? 'refused'}; retried on the next reconcile`)); })
+        .catch((err: unknown) => this.report('close after losing a conversation', err))
+        .finally(() => this.closing.delete(key));
+    }
+  }
+
+  /** A stop or pause reached this owner: a drain running for the conversation aborts on its next check. */
+  noteEmergency(conversationKey: string): void {
+    const p = this.activePool();
+    const rk = `app:${conversationKey}`;
+    if (p?.drainRunning(rk)) this.emergencyMarks.add(rk);
+  }
+
+  emergencyMarked(recordKey: string): boolean { return this.emergencyMarks.has(recordKey); }
+
+  /** The drain ended, whichever way: a later move isn't aborted by an old stop. */
+  clearEmergency(recordKey: string): void { this.emergencyMarks.delete(recordKey); }
+
+  /** This machine owns the conversation behind `alias` right now: replies may land (§2.1). */
   ownsAlias(alias: number): boolean {
-    return this.deps.holdsLease() && this.deps.registry.isAppBound(alias);
+    const key = this.deps.registry.appConversationFor(alias);
+    return !!key && this.mayReply(key) && this.deps.registry.isAppBound(alias);
   }
 
-  isOwner(): boolean { return this.deps.holdsLease(); }
+  /** What stays behind on this machine when its conversation moves (§2.5): named in the move's answer. */
+  leftBehind(conversationKey: string): { files: number; notes: number } {
+    try {
+      const files = this.media.indexDb.prepare(`SELECT COUNT(*) AS n FROM pending_deliveries WHERE conversationKey = ?`).get(conversationKey) as { n: number };
+      const notes = this.media.indexDb.prepare('SELECT COUNT(*) AS n FROM transcript_notes WHERE conversationKey = ?').get(conversationKey) as { n: number };
+      return { files: files.n, notes: notes.n };
+    } catch (err) { this.report('left-behind count', err); return { files: 0, notes: 0 }; } // @silent-fallback-ok — reported; the move still answers, without the count
+  }
 
   /** The live conversation (null when unknown or deleted). */
   liveConversation(key: string) {
@@ -785,6 +893,38 @@ export class AppConversationService {
   }
 
   /**
+   * The queue gave up on a held send (app-conversations-in-the-pool §2.2): the phone's request record is
+   * finished in words, as `refused` or `unknown` (appLossState). Nothing re-places the conversation.
+   */
+  finishExpiredForward(conversationKey: string, messageId: string, words: string, state: 'refused' | 'unknown' = 'refused'): void {
+    const rec = this.deps.requests.findSendByMessage(messageId);
+    // Separate steps: the row is already gone, so nothing retries this. A failed event must not leave the request reading `waiting`.
+    try {
+      this.appendDelivery(conversationKey, messageId, state, rec ? `${rec.deviceId}\u0000${rec.requestId}` : `expired\u0000${messageId}`);
+    } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the request below still gets its words
+    try {
+      if (rec) this.deps.requests.finish(rec.deviceId, rec.requestId, { status: 409, body: { error: state === 'unknown' ? 'outcome-unknown' : 'not-delivered', outcome: state, expiredForward: true, conversationKey, messageId, deliveryState: state, detail: words } });
+    } catch (err) { this.report('expired forward', err); } // @silent-fallback-ok — reported; the message stays stored
+  }
+
+  /**
+   * A send still reading `waiting` past the queue's limits has lost its row some way the queue never
+   * reported: a quarantined store, an engine that never started (app-conversations-in-the-pool §2.2). It
+   * can't be known whether the owner took it, so it reads `unknown`, which yields to the owner's outcome.
+   */
+  private settleOverdueWaiting(): void {
+    if (!this.activePool()) return;
+    for (const w of this.deps.requests.waitingOlderThan(WAITING_OVERDUE_MS)) {
+      if (this.store.deliveryState(w.messageId) === 'pending') {
+        this.finishExpiredForward(w.conversationKey, w.messageId, MAY_NOT_BE_DELIVERED, 'unknown');
+      } else {
+        // It settled by replication: nothing to say beyond what the retry answers from the current state.
+        this.deps.requests.finish(w.deviceId, w.requestId, { status: 200, body: { ok: true, outcome: 'settled', expiredForward: true, conversationKey: w.conversationKey, messageId: w.messageId } });
+      }
+    }
+  }
+
+  /**
    * Boot recovery (§4.2 step 8 and §4.1): `entered` requests older than 5 minutes that no live
    * handler owns. A send whose message row is missing was never dispatched → `not-delivered`; a
    * send whose message exists with no delivery event → an `unknown` delivery and
@@ -792,6 +932,7 @@ export class AppConversationService {
    * event from the reservation (same event id, so it merges away) and records `done`.
    */
   recoverStranded(): void {
+    try { this.settleOverdueWaiting(); } catch (err) { this.report('overdue waiting', err); } // @silent-fallback-ok — reported; the next tick repeats it
     try { this.media.recoverClaims((id) => this.store.hasMessage(id)); } catch (err) { this.report('media claims', err); } // @silent-fallback-ok — reported; the next tick repeats it
     for (const rec of this.deps.requests.stranded(STRANDED_REQUEST_AGE_MS)) {
       const x = rec.extra;
@@ -843,7 +984,10 @@ export class AppConversationService {
       at: new Date(this.now()).toISOString(), machineId: this.deps.machineId(),
       ...(ownerPerson ? { ownerPerson } : {}),
     });
-    if (this.deps.holdsLease()) this.deps.registry.bindApp(mint.id);
+    if (this.deps.holdsLease()) {
+      this.createdHere.add(conversationKey);
+      this.deps.registry.bindApp(mint.id);
+    }
     const c = this.store.getConversation(conversationKey);
     return { status: 200, body: { conversationKey, title: c?.title ?? title } };
   }

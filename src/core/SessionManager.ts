@@ -8272,17 +8272,17 @@ rm()  { "${shimRunner}" rm  "$@"; }
         await execFileAsync(this.config.tmuxPath, ['kill-session', '-t', `=${tmuxSession}`]);
       } catch { /* expected if tmux pane is already gone */ }
 
-      // Single fresh-spawn retry. Pass the original `name` parameter through
-      // so the recursive call reconstructs the same tmux name — important
-      // because the bridge's session→topic mapping was registered against
-      // that name. Stripping the project-base prefix from the tmux name
-      // would not preserve the auto-generated `interactive-${ts}` form.
+      // Single fresh-spawn retry. Keep the exact tmux name returned to the
+      // conversation bridge. An unnamed spawn generated its name from Date.now();
+      // passing undefined again generates a NEW name and strands the bridge's
+      // registry on the failed resume while the fresh session answers.
       // resumeSessionId is intentionally omitted to break the bad-UUID cycle.
       try {
         const retryMessage = this.resumeFollowsAccountEnabled() && !initialMessage.startsWith(RESUME_REOPEN_FAILED_NOTE)
           ? `${RESUME_REOPEN_FAILED_NOTE}\n\n${initialMessage}`
           : initialMessage;
-        await this.spawnInteractiveSessionUnlocked(retryMessage, originalName, {
+        const retryName = originalName ?? tmuxSession.slice(path.basename(this.config.projectDir).length + 1);
+        await this.spawnInteractiveSessionUnlocked(retryMessage, retryName, {
           telegramTopicId: options.telegramTopicId,
           slackChannelId: options.slackChannelId,
           slackThreadTs: options.slackThreadTs,

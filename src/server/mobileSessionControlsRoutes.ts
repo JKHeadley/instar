@@ -168,8 +168,9 @@ function chatWords(row: Rec): string {
 }
 
 const NOT_A_TOPIC = `${DOOR.Word} and machine can be changed for a session that has a conversation. This session has none, so there is nothing to switch.`;
-/** Moving app and Slack conversations between machines is part 3 of session-swap-any-conversation. */
-const MOVE_TELEGRAM_ONLY = 'Moving to another machine works for Telegram conversations today. App conversations get it next; until then this one stays on its machine.';
+/** app-conversations-in-the-pool §2.6: an older machine keeps every app conversation where it is. */
+const MOVE_NOT_ON = 'Moving app conversations to another machine isn\'t turned on for this agent yet, so this one stays on its machine.';
+const MOVE_NEEDS_UPDATE = 'Your machines need the latest Instar update before app conversations can move.';
 /** A Slack conversation stays with its Slack connection (slack-conversations-stay-with-connection §2.4). */
 const SLACK_STAYS = 'This Slack conversation stays on the machine that holds your Slack connection.';
 const ONE_MACHINE = 'This agent runs on one machine, so there is nowhere to move it.';
@@ -186,6 +187,31 @@ export interface ControlsParts {
   pool: RouteAnswer;
   /** The other machine's own rule about typing from another machine; null = it did not say (older, or not answering). */
   peerInput: boolean | null;
+}
+
+/**
+ * The Move row for an app conversation (app-conversations-in-the-pool §2.5, §2.6): flagged targets only,
+ * and "Bring it back here" when the machine running it isn't answering. A conversation's memory scope
+ * doesn't follow it, so the row says so.
+ */
+function appMoveRow(ref: string, rows: MobileMachine[], pool: unknown, owner: string | null): Rec {
+  const raw = (Array.isArray(rec(pool).machines) ? rec(pool).machines as unknown[] : []).map(rec);
+  const flagged = (id: string) => rec(raw.find((m) => m.machineId === id)?.seamlessnessFlags).appConversationsPool === true;
+  const everyOnlineFlagged = raw.filter((m) => m.online === true).every((m) => flagged(String(m.machineId)));
+  const ownerRow = owner ? rows.find((m) => m.machineId === owner) : undefined;
+  // Direct contact, not `online`: a lingering beat keeps that true for up to an hour on a dead machine.
+  const ownerLiveness = rec(rec(raw.find((m) => m.machineId === owner)).liveness).state;
+  const ownerGone = !!ownerRow && !ownerRow.here && (!ownerRow.selectable || ownerLiveness === 'unreachable' || ownerLiveness === 'stale');
+  const bringBack = ownerGone ? { can: true, confirm: `If ${ownerRow.label} is actually still running this conversation, its session will be stopped as soon as it reconnects.` } : { can: false };
+  // No machine flagged: the feature is off on this agent, and an update wouldn't change that.
+  if (!raw.some((m) => flagged(String(m.machineId)))) return { state: 'not-yet', reason: MOVE_NOT_ON, topic: ref, choices: [], bringBack: { can: false } };
+  if (!everyOnlineFlagged) return { state: 'not-yet', reason: MOVE_NEEDS_UPDATE, topic: ref, choices: [], bringBack };
+  return {
+    state: 'ok', reason: null, topic: ref,
+    choices: rows.filter((m) => m.machineId !== owner && flagged(m.machineId)),
+    note: 'What the agent has learned in this conversation stays on this machine; its memory for this conversation starts empty on the new one.',
+    bringBack,
+  };
 }
 
 /** The menu's answer. Pure, so the decisions are tested on both sides. */
@@ -215,9 +241,10 @@ export function summarizeControls(parts: ControlsParts, actions: unknown, now: n
   let move: Rec;
   if (conv === null) move = { state: 'not-this-chat', reason: NOT_A_TOPIC, choices: [] };
   else if (conv.kind === 'slack') move = { state: 'stays', reason: SLACK_STAYS, choices: [] };
-  else if (topic === null) move = { state: 'not-yet', reason: MOVE_TELEGRAM_ONLY, choices: [] };
+  else if (conv.kind === 'telegram' && topic === null) move = { state: 'not-this-chat', reason: NOT_A_TOPIC, choices: [] };
   else if (parts.pool.status !== 200) move = { state: 'unavailable', reason: CANT_READ_MACHINES, choices: [] };
   else if (!machines) move = { state: 'one-machine', reason: ONE_MACHINE, choices: [] };
+  else if (conv.kind === 'app') move = appMoveRow(conv.ref, machines.rows, parts.pool.body, machineId);
   else move = { state: 'ok', reason: null, topic: String(topic), choices: machines.rows.filter((m) => m.machineId !== machineId) };
 
   // A session here takes typing, keys and files. On another machine, that machine's rule decides.
@@ -294,11 +321,14 @@ export function moveAnswer(r: RouteAnswer, machineLabel: string): ActionResult {
     if (b.action === 'noop') return { status: 200, body: { ok: true, moved: true, message: `It is already on ${name}.` } };
     if (b.seatMoved !== true) return { status: 200, body: { ok: true, moved: false, message: `It is set to move to ${name}, but the move hasn't finished. Your next message there finishes it, or try again.` } };
     const paused = b.autonomousRunSuspended === true ? ' Its autonomous run was paused for the move and carries on there.' : '';
-    return { status: 200, body: { ok: true, moved: true, message: `Moved to ${name}. The conversation carries on there with your next message.${paused}` } };
+    const left = str(b.leftBehindWords) ? ` ${str(b.leftBehindWords)}` : '';
+    return { status: 200, body: { ok: true, moved: true, message: `Moved to ${name}. The conversation carries on there with your next message.${paused}${left}` } };
   }
   if (r.status === 409 && b.needsConfirmation === true) {
     return { status: 409, body: { ok: false, error: 'needs-confirmation', message: str(b.prompt) ?? `Move to ${machineLabel} anyway?`, confirmationChallenge: b.confirmationChallenge } };
   }
+  if (r.status === 409 && (b.code === 'needs-update' || b.code === 'memory-privacy' || b.code === 'target-offline')) return fail(409, str(b.code) as string, str(b.error) ?? 'It stayed where it is.');
+  if (r.status === 409 && b.stillMayComplete === true) return fail(409, 'retry', str(b.error) ?? 'The move may still complete; check in a moment.');
   if (r.status === 409 && b.rejectReason === 'rate-limited') return fail(409, 'rate-limited', 'This conversation moved a moment ago. Wait a minute and try again.');
   if (r.status === 409 && b.retryRequired === true) return fail(409, 'retry', 'Something else moved this conversation while checking. Try again.');
   if (r.status === 409 && b.failedNeedsRetry === true) return fail(409, 'retry', 'It stayed where it is: the machine it runs on could not close it for the move. Try again in a moment.');
@@ -393,6 +423,15 @@ export async function runSessionAction(a: SessionAction, deps: Pick<MobileSessio
       if (!row.selectable) return fail(409, 'machine-not-available', `It stayed where it is: that machine can't take it (${row.reason}).`);
       const r = await deps.call('POST', '/pool/transfer', { topic: a.target, to: a.to, ...(a.confirmation ? { confirm: true, confirmationChallenge: a.confirmation } : {}) });
       return moveAnswer(r, row.label.replace(/ \(.*\)$/, ''));
+    }
+    case 'session-bring-back': {
+      const keys = conversationKeys(a.target);
+      if (keys?.kind !== 'app') return fail(400, 'bad-target', 'It stayed where it is: this conversation can\'t be named here.');
+      const r = await deps.call('POST', '/pool/bring-back', { conversation: keys.ref, confirm: a.confirmed });
+      const b = rec(r.body);
+      if (r.status === 409 && b.needsConfirmation === true) return { status: 409, body: { ok: false, error: 'needs-confirmation', message: str(b.prompt) ?? 'Bring it back anyway?', confirmationChallenge: 'confirmed' } };
+      if (r.status >= 200 && r.status < 300) return { status: 200, body: { ok: true, message: str(b.message) ?? 'It\'s back on this machine.' } };
+      return fail(r.status || 502, 'not-moved', str(b.error) ?? `It stayed where it is: ${couldNotReach(r.status)}. Try again in a moment.`);
     }
     case 'session-close': {
       const remote = elsewhere(a.machine);

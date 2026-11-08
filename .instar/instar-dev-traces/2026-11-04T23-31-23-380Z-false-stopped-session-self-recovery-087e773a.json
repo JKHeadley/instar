@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "slug": "false-stopped-session-self-recovery",
+  "sessionId": "4a8f59a4-f2e6-4539-afd4-21ad5a331e88",
+  "timestamp": "2026-11-04T23:31:23.380Z",
+  "artifactPath": "upgrades/side-effects/false-stopped-session-self-recovery.md",
+  "artifactSha256": "a2955fefcf1453bfdb0762fe902c25740dcbaeb9f62b4abc46c4d850108a5c92",
+  "specPath": "docs/specs/resume-follows-account.md",
+  "coveredFiles": [
+    "src/monitoring/StallTriageNurse.ts",
+    "tests/unit/StallTriageNurse.test.ts",
+    "upgrades/side-effects/false-stopped-session-self-recovery.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "One-voice dead-session recovery changes a fleet notification decision; approved spec and independent review apply.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/resume-follows-account-convergence.md",
+      "iterations": 4,
+      "verified": true
+    }
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/SessionMonitor.test.ts",
+      "howCaught": "A fresh restart is bounded to one attempt per user message within the process; failed recovery sends one persisted failure notice, and the regression test proves the second death does not restart again."
+    }
+  },
+  "causalAutopsy": {
+    "origin": "prior-pr",
+    "relatedPrs": [
+      2601,
+      2672
+    ],
+    "notes": "Prior fixes covered only individual senders and did not preserve the channel registration across resume fallback. Indra logs show a live fallback under a different name while both watchers followed the dead registered name."
+  }
+}
