@@ -6385,7 +6385,7 @@ export class TelegramAdapter implements MessagingAdapter {
       const errMsg = err instanceof Error ? err.message : String(err);
       const isNotConfigured = errMsg.includes('No voice transcription provider configured');
       const replyText = isNotConfigured
-        ? '\ud83c\udfa4 Voice transcription is not configured. To enable it, set GROQ_API_KEY or OPENAI_API_KEY in your environment.'
+        ? "\ud83c\udfa4 I can't read voice notes yet: no transcription service is set up. Ask me to set up voice transcription and I'll do it, with one yes from you."
         : `(Voice message received but transcription failed: ${errMsg})`;
       await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, replyText)).catch(() => {});
     } finally {

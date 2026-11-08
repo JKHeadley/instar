@@ -64,9 +64,9 @@ describe('recommended services: production wiring', () => {
     expect(list.body.offersLive).toBe(false);
     expect(list.body).toMatchObject({ migrationComplete: false, firstResult: null });
     const jev = list.body.services.find((row: { service: string }) => row.service === 'jev');
-    // The four live-proven recipes are available on every agent, with no proving list; the other five are not.
+    // The five live-proven recipes are available on every agent, with no proving list; the other four are not.
     expect(jev).toMatchObject({ name: 'Jev (TypeSafe)', backupStatus: 'specified', choice: 'unset', available: true });
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'voice-transcription']);
 
     const noPin = await request(app).post('/recommended-services/jev/no').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(noPin.status).toBe(403);
@@ -161,13 +161,24 @@ describe('recommended services: production wiring', () => {
     else expect(page.body.copies).toBeUndefined();
   });
 
+  it('the voice transcription recipe is available on a fleet agent through the real wiring, and its key route stops at the missing yes', async () => {
+    const { server } = boot(true);
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.find((row: { service: string }) => row.service === 'voice-transcription')).toMatchObject({ available: true, choice: 'unset' });
+    const key = await request(app).post('/recommended-services/voice-transcription/key')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send('gsk_example');
+    expect(key.status).toBe(409);
+    expect(key.body.error).toBe('not-granted-here');
+  });
+
   it('an agent proving a recipe (a throwaway under a temp folder) reaches it through the real wiring, beside the proven ones', async () => {
     const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
     const app = server.getApp();
     const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
     expect(list.status).toBe(200);
     expect(list.body.offersLive).toBe(false);
-    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup']);
+    expect(list.body.services.filter((row: { available: boolean }) => row.available).map((row: { service: string }) => row.service)).toEqual(['tailscale', 'jev', 'bitwarden', 'github-state-backup', 'voice-transcription']);
     // The recipe is wired: verify gets past "no-recipe" and stops at the missing yes.
     const verify = await request(app).post('/recommended-services/tailscale/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({});
     expect(verify.status).toBe(409);
