@@ -106,7 +106,13 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
     try {
       const result = await runtime.service.runWithSessionToken(req.get('X-Instar-Origin-Session') ?? '', () => browser.executor.broker.readSnapshot());
       res.json(result);
-    } catch { res.status(409).json({ error: 'telegram-browser-snapshot-unavailable' }); }
+    } catch (error) {
+      // Server-side diagnosis only; the response body stays the fixed hold code.
+      const name = error instanceof Error ? error.constructor.name : typeof error;
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn('[telegram-origin] browser snapshot unavailable', { profileId: req.params.profileId, errorClass: name, message: message.slice(0, 200) });
+      res.status(409).json({ error: 'telegram-browser-snapshot-unavailable' });
+    }
   });
   router.get('/telegram/origins/status', async (req, res) => {
     if (!operator(req, res)) return;
