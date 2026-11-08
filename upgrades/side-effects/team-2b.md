@@ -93,3 +93,4 @@ Main gained requests to the owner (PR 2923) and unread counts (PR 2958). Both su
 
 ## Live run on two machines, 11-08
 Two throwaway agents on the Studio and the M5 Pro, paired with the real pair and join, passed nine scenarios through the phone routes: invite and pairing, the record reaching the other machine on its own, an owner phone on each machine, member and agent limits, simultaneous writes on both machines, a replayed write, a stopped machine catching up, and a removal on one machine stopping a phone on the other. The only override was the pairing address check, because a throwaway has no tunnel. The run used the build before the unread merge.
+**Recorded separately:** the unread change arrived inside a merge commit, which skips the pre-commit gate, so it is recorded in its own commit to keep the decision-audit record complete.

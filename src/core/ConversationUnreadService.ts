@@ -82,8 +82,9 @@ export interface ConversationUnreadDeps {
   /** The one shared conversation access check (`MobilePairingService.mayUse`). */
   mayUse: (person: ResolvedPerson, ref: string, op?: 'read') => boolean;
   /**
-   * Team access 2b: whether this reader may see one stored app message (a row held from them is
-   * not counted, so a count never announces it). Absent ⇒ every row of a readable conversation counts.
+   * Team access 2b (team-roles-and-access, "A cut-off machine's words are held back"): whether this
+   * reader may see one stored app message. A row held from them is not counted, so a count never
+   * announces it. Absent ⇒ every row of a readable conversation counts.
    */
   mayReadMessage?: (person: ResolvedPerson, conversationKey: string, m: BrowsedMessage) => boolean;
   /** The pool's peers, for forwarding a mark and for the boot catch-up. Absent ⇒ one machine. */
