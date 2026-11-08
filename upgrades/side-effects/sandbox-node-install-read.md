@@ -62,6 +62,8 @@ Fixes the cause of the M5-only failure and the matching real-executor break on n
 
 ## Second-pass review
 
+**Reviewer:** independent general-purpose reviewer subagent, 2026-11-07 (given the diff, asked to break the guards)
+
 Independent reviewer, given the diff and asked to break the guards. Concur. No ordinary input re-opens home, the agent home, the publish clone, sibling worktrees or a credential path (checked `~/bin`, `~/node`, `~/.local/bin`, `~/.instar/bin`, `/` as home, trailing slashes, `..`, both spellings of `/var` and `/tmp`); a differently-capitalised agent home on case-insensitive APFS is the only fail-open and is far-fetched. Two items, both acted on: the global `etc/npmrc` exposure (now denied, with a sandbox test), and the publish-clone guard was never isolated (now a case with the clone outside the agent home). Its own test runs did not finish in its window.
 
 ## Evidence pointers
