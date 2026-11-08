@@ -46,10 +46,12 @@ Revert. No data, migration or state to repair.
 
 ## Tests
 
-`tests/unit/app-pool-bringback-queue.test.ts` (10 cases):
+`tests/unit/app-pool-bringback-queue.test.ts` (14 cases):
 - The incident: a peer last reached 6 minutes ago still derives `live` but is not answering, and placement offers Bring it back here at 3 minutes.
 - The 2-minute boundary, and that relayed or missing evidence never counts.
 - App rows reach the app tail with no local tail wired, other rows keep the local tail, and the missing tail is named.
+- An owner that returns inside the 2-minute window never flaps the offer: a 90-second gap with failed pulls still reads as answering, and a fresh contact after a 4-minute outage withdraws the offer on the next read.
+- An agent without Telegram, end to end through the real `PendingInboundStore` and `QueueDrainLoop`: with no local tail wired, an app row queued while its owner is down stays queued, then is delivered once the owner answers. The old wiring, reproduced in the same rig, never reaches the app tail.
 - The server wires both.
 
-Each fix was undone in turn: restoring the old `ownerAnswering` fails 4 cases, sending app rows to the local tail fails 2, and the old server expression fails 1. Affected set: 292 unit tests (10 files), 56 integration (pool, team guards, inbound queue) and 10 e2e (two-node pool) pass.
+Each fix was undone in turn: restoring the old `ownerAnswering` fails 4 cases, sending app rows to the local tail fails 3 (including the end-to-end case), and the old server expression fails 1. Affected set: 292 unit tests (10 files), 56 integration (pool, team guards, inbound queue) and 10 e2e (two-node pool) pass.

@@ -5,9 +5,14 @@
  *  2. On an agent without Telegram, no queued app message could be delivered: the queue reached the
  *     app tail only through the local tail, which only the Telegram wiring sets.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { PendingInboundStore } from '../../src/core/PendingInboundStore.js';
+import { QueueDrainLoop, type QueueDrainLoopDeps, type DrainDispatchResult, type DrainMessage } from '../../src/core/QueueDrainLoop.js';
+import { DEFAULT_INBOUND_QUEUE_CONFIG, DEFAULT_HOLD_FOR_STABILITY_CONFIG } from '../../src/core/inboundQueueConfig.js';
 import { appPlacement, ownerAnswering } from '../../src/core/appConversationMove.js';
 import { dispatchQueuedInbound } from '../../src/core/appConversationPool.js';
 import { deriveLiveness, type DirectAttempt } from '../../src/core/machineLiveness.js';
@@ -94,6 +99,102 @@ describe('dispatchQueuedInbound: app rows reach the app tail without Telegram', 
   it('names the missing tail', async () => {
     expect(await dispatchQueuedInbound({ sessionKey: `app:${KEY}` }, h, { app: null, local: null })).toEqual({ kind: 'un-routable', reason: 'app-tail-not-wired' });
     expect(await dispatchQueuedInbound({ sessionKey: '13481' }, h, { app: null, local: null })).toEqual({ kind: 'un-routable', reason: 'local-tail-not-wired' });
+  });
+});
+
+describe('a returning owner inside the 2-minute window never flaps the offer', () => {
+  it('keeps answering through a gap shorter than 2 minutes, and stays answering when contact resumes', () => {
+    // Contact lapses for 90 s (with failed pulls), then a pull succeeds again.
+    const failedPulls: DirectAttempt[] = [{ atMs: NOW - 60_000, ok: false }, { atMs: NOW - 30_000, ok: false }];
+    expect(ownerAnswering(capSeen(90_000, failedPulls))).toBe(true);
+    expect(placement(capSeen(90_000, failedPulls))).toMatchObject({ answering: true, bringBack: { can: false } });
+    expect(placement(capSeen(1_000))).toMatchObject({ answering: true, bringBack: { can: false } });
+  });
+
+  it('withdraws the offer as soon as the owner is reached again after a longer outage', () => {
+    expect(placement(capSeen(4 * 60_000))).toMatchObject({ answering: false, bringBack: { can: true } });
+    // The next direct success resets the age: the offer is gone on the very next read.
+    expect(placement(capSeen(2_000))).toMatchObject({ answering: true, bringBack: { can: false } });
+  });
+});
+
+describe('an agent without Telegram delivers a queued app message, end to end through the queue', () => {
+  let qdir: string;
+  let qstore: PendingInboundStore;
+  let wall: number;
+  let mono: number;
+  let ownerUp: boolean;
+  const appTailCalls: string[] = [];
+
+  /** The app tail as the server's: owner unreachable → the message waits; owner back → forwarded. */
+  const appTail = async (msg: DrainMessage): Promise<DrainDispatchResult> => {
+    appTailCalls.push(msg.messageId);
+    return ownerUp ? { kind: 'remote-delivered' } : { kind: 'un-routable', reason: 'queued' };
+  };
+
+  function loopWith(dispatchInbound: QueueDrainLoopDeps['dispatchInbound']): QueueDrainLoop {
+    const loop = new QueueDrainLoop({
+      store: qstore,
+      qcfg: { ...DEFAULT_INBOUND_QUEUE_CONFIG, enabled: true, dryRun: false, minInterPassMs: 0 },
+      hcfg: { ...DEFAULT_HOLD_FOR_STABILITY_CONFIG, enabled: true },
+      selfMachineId: SELF,
+      holdsLease: () => true,
+      isStopped: () => false,
+      dispatchInbound,
+      forceReplace: async () => false,
+      holdVerdict: () => 'deliver',
+      clearPisRecord: () => {},
+      reportLoss: () => {},
+      reportPossiblyNotInjected: () => {},
+      log: () => {},
+      reportDegradation: () => {},
+      now: () => wall,
+      mono: () => mono,
+      bootSessionId: 'boot-1',
+    });
+    loop.onLeaseAcquired(null);
+    return loop;
+  }
+
+  async function passAfter(loop: QueueDrainLoop, ms: number): Promise<void> {
+    wall += ms; mono += ms;
+    await loop.runDrainPass('test');
+  }
+
+  beforeEach(() => {
+    qdir = fs.mkdtempSync(path.join(os.tmpdir(), 'app-only-queue-'));
+    qstore = PendingInboundStore.open('proof', qdir);
+    wall = NOW; mono = 1_000_000; ownerUp = false; appTailCalls.length = 0;
+  });
+  afterEach(() => {
+    qstore.close();
+    SafeFsExecutor.safeRmSync(qdir, { recursive: true, force: true, operation: 'app-pool-bringback-queue.test.ts' });
+  });
+
+  it('holds "five" while the owner is down and delivers it once the owner answers (no local tail wired)', async () => {
+    const loop = loopWith((m, h) => dispatchQueuedInbound(m, h, { app: (mm) => appTail(mm), local: null }));
+    const out = loop.enqueueLive({ sessionKey: `app:${KEY}`, messageId: 'five', payload: '{}', senderEnvelope: null }, 'app-owner-unreachable');
+    expect(out.result).toBe('queued');
+    const seq = (out as { seq: number }).seq;
+
+    await passAfter(loop, 0);
+    expect(qstore.getRow(seq)?.state).toBe('queued'); // waiting, not lost
+    ownerUp = true;
+    await passAfter(loop, 5 * 60_000);
+    expect(qstore.getRow(seq)?.state).toBe('delivered');
+    expect(appTailCalls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('reproduces the incident with the old wiring: the row never reaches the app tail', async () => {
+    const oldWiring: QueueDrainLoopDeps['dispatchInbound'] = async () => ({ kind: 'un-routable', reason: 'local-tail-not-wired' });
+    const loop = loopWith(oldWiring);
+    const out = loop.enqueueLive({ sessionKey: `app:${KEY}`, messageId: 'five', payload: '{}', senderEnvelope: null }, 'app-owner-unreachable');
+    const seq = (out as { seq: number }).seq;
+    ownerUp = true;
+    await passAfter(loop, 0);
+    await passAfter(loop, 5 * 60_000);
+    expect(qstore.getRow(seq)?.state).toBe('queued');
+    expect(appTailCalls).toEqual([]);
   });
 });
 
