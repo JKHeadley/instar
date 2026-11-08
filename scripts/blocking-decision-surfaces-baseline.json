@@ -132,8 +132,8 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-js.sh",
-      "sha256": "034db30dd4d962f9376ed690fc8e3e55e1b11a9f81848ddeb99316f325064fbd",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+      "sha256": "ab24f08d352b983068fb8869b9ffa45eb3db0109461e3a12041739dc8bc2fb06",
+      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto."
     },
     {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
@@ -142,8 +142,8 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-mainworld.sh",
-      "sha256": "94463cecf72307831390ee8e94355cda9f50d41c262c40efd21ba91f9d843342",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+      "sha256": "4a484b7ad45716ea932f529f04a9e79cbfede1c9e08d8bb91182e62f08f2f3bd",
+      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto."
     },
     {
       "path": "src/templates/scripts/browser/native-drive.ps1",
