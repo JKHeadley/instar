@@ -765,6 +765,24 @@ export class JobScheduler {
    * Set local machine identity for machine-scoped job filtering.
    * Jobs with a `machines` field will only run on machines whose ID or name matches.
    */
+  /**
+   * Resource-aware placement §5: this machine's own heavy-work profile (null = unknown
+   * ⇒ the gate does not apply, today's behaviour). Read at trigger time.
+   */
+  private selfHeavyProfile?: (() => { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null) | null;
+  setSelfHeavyProfile(fn: (() => { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null) | null): void {
+    this.selfHeavyProfile = fn;
+  }
+
+  /** True when the job's `machines` list explicitly names this machine (the author's explicit placement). */
+  private jobNamesThisMachine(job: JobDefinition): boolean {
+    if (!job.machines || job.machines.length === 0) return false;
+    return job.machines.some((m) => {
+      const lower = m.toLowerCase();
+      return (!!this.machineId && lower === this.machineId.toLowerCase()) || (!!this.machineName && lower === this.machineName.toLowerCase());
+    });
+  }
+
   setMachineIdentity(machineId: string, machineName: string): void {
     this.machineId = machineId;
     this.machineName = machineName;
@@ -1051,6 +1069,23 @@ export class JobScheduler {
         metadata: { slug, reason, machines: job.machines },
       });
       return 'skipped';
+    }
+
+    // Resource-aware placement §5: a declared-heavy job never runs on a machine below
+    // the heavy-work size floor, unless its `machines` list names this machine.
+    if (job.workWeight === 'heavy' && this.selfHeavyProfile && !this.jobNamesThisMachine(job)) {
+      let prof: { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null = null;
+      try { prof = this.selfHeavyProfile(); } catch { prof = null; /* @silent-fallback-ok — an unreadable profile keeps today's behaviour (the job runs); the gate only narrows on measured size */ }
+      if (prof && !prof.heavyCapable) {
+        this.skipLedger.recordSkip(slug, 'machine-too-small');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — it is marked heavy and this machine is below the heavy-work size (${prof.cores ?? '?'} cores, ${prof.memGiB ?? '?'} GB)`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, workWeight: 'heavy', profileReason: prof.reason, cores: prof.cores, memGiB: prof.memGiB },
+        });
+        return 'skipped';
+      }
     }
 
     // WS4.3 role-guard-at-spawn (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
@@ -3840,7 +3875,7 @@ export class JobScheduler {
 
   /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
   private observeContinuitySkip(slug: string, reason: SkipReason): void {
-    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'definition-changed')) return;
+    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'machine-too-small' && reason !== 'definition-changed')) return;
     const job = this.jobs.find((candidate) => candidate.slug === slug);
     if (!job?.enabled) return;
     const key = `job-silence-${slug}`;
@@ -3849,7 +3884,12 @@ export class JobScheduler {
     const count = (previous?.count ?? 0) + 1;
     const next = { count, lastSkip: now, lastNotified: previous?.lastNotified, recordedAt: previous?.recordedAt, lastAttemptAt: previous?.lastAttemptAt };
     this.state.set(key, next);
-    if (count >= 3) this.raiseContinuityAlert(job, `${count} scheduled attempts were skipped (${reason})`, key);
+    if (count >= 3) {
+      const detail = reason === 'machine-too-small'
+        ? `${count} scheduled runs were skipped because this job is marked heavy and the machine running jobs is too small for heavy work. To run it, name this machine in the job's machines list, or let a larger machine take over running jobs`
+        : `${count} scheduled attempts were skipped (${reason})`;
+      this.raiseContinuityAlert(job, detail, key);
+    }
   }
 
   /** A completed success closes the silence episode; a skip never does. */

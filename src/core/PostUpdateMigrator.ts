@@ -281,6 +281,7 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
 
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
  *  add/update migrations so the three cannot drift. */
+export const RESOURCE_PLACEMENT_CLAUDE_MD_LINE = `- **Resource-aware placement (heavy work goes to big machines with room):** placement compares machines by per-core load from FRESH evidence (a load number older than a minute does not count, and a machine with none never wins by default). A machine counts as big enough for heavy work (builds, full test runs, simulators) at 12+ cores and 32+ GB; heavy work goes only to such a machine with headroom right now (fresh verdict not saturated/impaired, under 1.0 load per core including heavy helpers it just accepted), otherwise it waits with a named reason. Local Verify peer hand-offs follow the same rule, so a small machine like a Mac Mini no longer receives full verifies. A job can declare \`workWeight: "heavy"\`; it then skips a machine below that size while another online big machine exists (the job-silence alert explains it). Per machine, \`multiMachine.placement.heavyWork\`: \`allow\` lifts the size rule for that machine, \`deny\` keeps heavy work off it (\`auto\` = by size); it is advertised in that machine's load report. **Before running heavy helper work in an in-session subagent** (a subagent always runs on THIS machine), read \`GET /pool/placement/preview?workWeight=heavy\` (read-only: the choice and one row per machine with size, fresh per-core load, headroom and why). If it picks another machine, or this one has no headroom, start a headless helper instead: \`POST /pool/heavy-work/spawn\` with header \`X-Instar-Request: 1\` and \`{ "name": "...", "prompt": "..." }\` — it picks the machine and starts the helper there through that machine's own \`/sessions/spawn\`. The helper works in THAT machine's agent home: its prompt must fetch its inputs from a shared source (a pushed git branch into a fresh worktree there) and return results through a shared channel (a pushed branch or PR, or a message to my session). Outcomes: 201 started; 409 \`heavy-work-no-machine\` (nothing big enough has room: wait, or run locally only if the preview shows this machine has headroom); 502 \`target-refused\`; 504 \`target-unconfirmed\` — never retry it: read that machine's sessions, finished ones included (\`GET /sessions\` with \`scope=pool\` and \`include=all\`), and check the work's shared results and side effects before ever starting it again.`;
 export const OVERLOAD_SHED_CLAUDE_MD_LINE = `- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
 
 /**
@@ -11640,6 +11641,29 @@ Rule: I do not state that work landed inside another agent's state unless I have
       }
     }
 
+    // One-tap repair setting awareness (spec one-tap-unattended-repair §7), content-sniffed.
+    if (
+      content.includes('One-click repair across all machines') &&
+      !content.includes('One-tap repair setting (Accounts page)')
+    ) {
+      const oneClickEnd = 'an unreachable peer is shown honestly and suppresses competing actions until truth returns.';
+      const oneTapBullet = "- **One-tap repair setting (Accounts page)** \u2014 the console Accounts page has an **Automatic sign-in repair** section (direct link: the dashboard URL + `#/capacity/accounts?s=auto-repair`). Each machine's row shows its setting in plain words, the exact accounts its list will hold, accounts not covered yet, and which accounts will still ask and why. After one PIN unlock, **Turn on for ticked machines** sets the operator's own machine to repair without asking and refreshes the account list of any other machine already set that way; **Switch ticked machines back to asking first** undoes it; **Finish restarting** re-queues a restart that did not happen. A machine set to \"asks you first\", watching only, or off is never escalated from another machine. It reads `GET /subscription-relogin?scope=pool` (`pool.configs`) and writes through `POST /subscription-relogin/configure-pool` (recent dashboard unlock only) \u2192 a signed, single-use mandate \u2192 `POST /subscription-relogin/configure-with-mandate` on each target. **When to use** (PROACTIVE): the user wants sign-in repair on everywhere, or an account was added and its machine's row says it isn't covered \u2192 send the direct link to the section. Never call the configure routes yourself; they need the operator's unlock.";
+      if (content.includes(oneClickEnd)) {
+        content = content.replace(oneClickEnd, oneClickEnd + '\n' + oneTapBullet);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added one-tap repair setting awareness');
+      }
+    }
+    // The old "configure this on any machine" sentence now points at the section.
+    {
+      const oldConfigureSentence = "A recent dashboard PIN unlock can safely configure this on any machine with `POST /subscription-relogin/configure`; the endpoint validates exact identities, persists an audit row, and requests a supervised restart so the authority change is actually live.";
+      if (content.includes(oldConfigureSentence)) {
+        content = content.replace(oldConfigureSentence, "The operator switches this on from the Accounts page's **Automatic sign-in repair** section (below), which writes through the PIN-gated configure routes with exact identities, an audit row and a supervised restart; never call those routes yourself.");
+        patched = true;
+        result.upgraded.push('CLAUDE.md: pointed sign-in repair configuration at the Accounts section');
+      }
+    }
+
     // Pre-limit (proactive) swap awareness. Existing agents that ALREADY carry the
     // Subscription Pool section won't get the new bullet from the section-install
     // guard above (it skips agents that already have the section). Patch it in
@@ -13335,6 +13359,16 @@ ${OVERLOAD_SHED_CLAUDE_MD_LINE}
       content += '\n' + shedLine + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added overload shed line');
+    }
+
+    // Resource-aware placement (2026-11-07, docs/specs/resource-aware-placement.md): agents
+    // that carry the pool section learn heavy-work placement, the read-only preview and the
+    // placed-helper route. Idempotent via the unique 'Resource-aware placement (heavy work'
+    // marker (deliberately not containing '/pool/placement', an older migration's marker).
+    if (content.includes('Multi-Machine Session Pool (active-active') && !content.includes('Resource-aware placement (heavy work')) {
+      content += '\n' + RESOURCE_PLACEMENT_CLAUDE_MD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added resource-aware placement line');
     }
 
     // Post-transfer closeout awareness (2026-06-05): agents that already carry

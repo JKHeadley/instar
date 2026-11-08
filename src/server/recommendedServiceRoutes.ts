@@ -13,6 +13,7 @@ import { NO_REASONS, type NoReason, type RecommendedServicesLedger } from '../re
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
 import { recipeFor, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
+import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
 import { isMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
@@ -59,6 +60,12 @@ export interface RecommendedServiceRouteDeps {
   tailscaleLogout?: StopDeps['tailscaleLogout'];
   /** Removes a key a recipe stored, for a confirmed switch-off. */
   deleteSecret?: (name: string) => void;
+  /** The names of this agent's stored secrets (never values), for a recipe that keeps a copy elsewhere. */
+  readSecretNames?: () => string[];
+  /** The value behind one of those names, wherever it lives (the vault, or the config file on a fresh agent). Defaults to readSecret. */
+  readCopyValue?: (name: string) => string | null;
+  /** This machine's Bitwarden, scoped to the agent's folder; tests pass a stand-in. */
+  bitwarden?: BitwardenSurface;
   /**
    * True when this machine can message the person right now: it has a channel and holds the lease.
    * Setup talks to the person, so a yes is refused here when it can't, and a restart waits.
@@ -85,6 +92,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const starting = new Set<string>();
   const stopping = new Set<string>();
   const reach = (): boolean => deps.canReachOwner?.() ?? true;
+  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden });
+  /** How often a copy kept elsewhere is brought up to date by the regular check, and how long a failed refresh waits before another try. */
+  const SYNC_EVERY_MS = 24 * 60 * 60_000;
+  const SYNC_RETRY_MS = 6 * 60 * 60_000;
+  /** After this many failed refreshes in a row the check is re-run: its fail restarts setup, which asks the person for what changed. */
+  const SYNC_FAILURES_BEFORE_RECHECK = 3;
   const nowIso = (): string => new Date(deps.now?.() ?? Date.now()).toISOString();
   const report = (primary: string, err: unknown, impact: string): void => {
     DegradationReporter.getInstance().report({
@@ -158,9 +171,10 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         return;
       }
       const outcome = await recipe.stop({
-        readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, tailscaleLogout: deps.tailscaleLogout,
+        ...recipeDeps(), tailscaleLogout: deps.tailscaleLogout,
         deleteSecret: deps.deleteSecret ?? (() => { throw new Error('this server cannot remove a stored key'); }),
         setUpHere,
+        absentBefore: !!(was?.absentBeforeSetup || state?.absentBeforeSetup),
       });
       if (outcome.stopped) {
         updateSetupState(deps.stateDir, row.id, { stopped: { at: nowIso(), detail: outcome.detail }, stopRequestedAt: undefined, verified: undefined, keyStoredBySetup: undefined, signedInBySetup: undefined, absentBeforeSetup: undefined });
@@ -184,6 +198,20 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     } finally {
       stopping.delete(row.id);
     }
+  };
+  /**
+   * Brings a copy kept elsewhere up to date. Only the names of what was copied are recorded or returned;
+   * values stay inside the recipe. Quiet on the regular check; the session hears the answer on its own call.
+   */
+  const syncCopy = async (row: CatalogRow): Promise<{ ok: boolean; copied: string[]; detail: string } | null> => {
+    const recipe = recipeFor(row);
+    if (!recipe?.sync) return null;
+    const outcome = await recipe.sync({ ...recipeDeps(), readSecret: (name) => (deps.readCopyValue ?? deps.readSecret)(name), secretNames: () => deps.readSecretNames?.() ?? [] });
+    const before = readSetupStates(deps.stateDir)[row.id];
+    updateSetupState(deps.stateDir, row.id, outcome.ok
+      ? { lastSyncAt: nowIso(), lastSyncAttemptAt: nowIso(), copies: outcome.copied.length, syncFailures: undefined }
+      : { lastSyncAttemptAt: nowIso(), syncFailures: (before?.syncFailures ?? 0) + 1 });
+    return outcome;
   };
   /** A fresh yes starts over: an old switch-off record must not hide the new setup or swallow a later switch-off. */
   const clearStop = (service: string): void => {
@@ -228,7 +256,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (before?.sessionName && deps.isSetupRunning(before.sessionName)) return;
     starting.add(row.id);
     try {
-      const preflight = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus });
+      const preflight = await recipe.verify(recipeDeps());
       if (!hasGrant(row.id) || preflight.result === 'unknown') return;
       // The check takes a moment, and a stop can land in it.
       if (readSetupStates(deps.stateDir)[row.id]?.held) return;
@@ -272,7 +300,50 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         if (ledger.effective(row.id).shutdown === 'authorized' && !state?.stopped) await stopService(row, state);
         continue;
       }
-      if (!isServiceAvailable(row) || state?.verified?.result === 'pass' || state?.exhausted || state?.dormant || state?.held) continue;
+      if (!isServiceAvailable(row)) continue;
+      // A working copy kept elsewhere is refreshed on a schedule, so a secret stored after setup reaches it too.
+      // A failed refresh waits hours, not minutes, and after a few in a row the check is re-run, so a changed
+      // password or a revoked login ends in setup asking the person, never in a row that says "working" for ever.
+      const copyRecipe = recipeFor(row);
+      if (state?.verified?.result === 'pass' && copyRecipe?.sync) {
+        const last = (state.lastSyncAt && Date.parse(state.lastSyncAt)) || 0;
+        const lastTry = (state.lastSyncAttemptAt && Date.parse(state.lastSyncAttemptAt)) || 0;
+        const failures = state.syncFailures ?? 0;
+        if (failures >= SYNC_FAILURES_BEFORE_RECHECK && nowMs - lastTry >= SYNC_RETRY_MS) {
+          // The stamp moves first, so a re-check that itself fails waits the same six hours instead of every tick.
+          updateSetupState(deps.stateDir, row.id, { syncFailures: undefined, lastSyncAttemptAt: nowIso() });
+          try {
+            const recheck = await copyRecipe.verify(recipeDeps());
+            recordVerify(row.id, recheck, false);
+            if (recheck.result === 'fail') {
+              // Something only the person can give has changed (a new master password, a revoked login). The old
+              // session is long gone, so the restart budget starts over and setup comes back to ask them for it.
+              updateSetupState(deps.stateDir, row.id, { attempts: undefined, lastAttemptAt: undefined, dormant: undefined, exhausted: undefined });
+              // The repair is a promise too: it stays open until the check passes again or the person says no.
+              try {
+                const commitmentId = deps.openCommitment(row.name, row.id);
+                if (commitmentId) updateSetupState(deps.stateDir, row.id, { commitmentId });
+              } catch (err) {
+                report(`Open the repair commitment for ${row.id}`, err, 'The repair runs, but its promise is not tracked.');
+              }
+              deps.tellOwner(`${row.name} stopped working on this machine: ${recheck.detail} I'll come back to you for what I need to fix it.`);
+            }
+          } catch {
+            report(`Re-check ${row.name} after failed refreshes`, new Error('the check could not run'), 'The copy stays behind until the next check.');
+          }
+          // The rest of this row waits for the next tick, which reads the fresh result: a fail restarts setup then.
+          continue;
+        } else if (nowMs - last >= SYNC_EVERY_MS && nowMs - lastTry >= (failures > 0 ? SYNC_RETRY_MS : 0)) {
+          try {
+            const outcome = await syncCopy(row);
+            // A fixed reason: nothing downstream of the CLI, whose text can carry a command line, reaches a log.
+            if (outcome && !outcome.ok) report(`Refresh the ${row.name} copy`, new Error('the copy could not be written'), 'The copy is behind until the next check.');
+          } catch {
+            report(`Refresh the ${row.name} copy`, new Error('the refresh failed'), 'The copy is behind until the next check.');
+          }
+        }
+      }
+      if (state?.verified?.result === 'pass' || state?.exhausted || state?.dormant || state?.held) continue;
       if (state?.sessionName && deps.isSetupRunning(state.sessionName)) continue;
       // Setup talks to the person. While this machine can't, a restart waits and costs no attempt.
       if (!reach()) continue;
@@ -402,7 +473,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     // The page offers "switch it off" only where this machine's own setup made the service work; a service the
     // person already had is named as theirs. It also says when a yes can't be taken here.
     const workingHere = state?.verified?.result === 'pass' && !state.stopped;
-    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...minted });
+    // A recipe that keeps a copy elsewhere says on the page which secrets it would copy: names only, never values.
+    const copies = recipeFor(row)?.sync ? (deps.readSecretNames?.() ?? []) : undefined;
+    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...minted });
   });
 
   router.post('/recommended-services/:id/confirm', (req, res) => {
@@ -555,7 +628,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     try {
-      const outcome = await recipe.verify({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus });
+      const outcome = await recipe.verify(recipeDeps());
       // A no can land during the call. It wins, and nothing is recorded.
       if (!ledger.activeGrant(row.id, ledger.machineId())) {
         res.status(409).json({ error: 'not-granted-here' });
@@ -566,6 +639,42 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     } catch (err) {
       report(`Verify ${row.id}`, err, 'The check could not run.');
       res.status(503).json({ error: 'verify-failed' });
+    }
+  });
+
+  /** The session's way to have this server write the copy a recipe keeps elsewhere. Returns names, never values. */
+  router.post('/recommended-services/:id/sync', async (req, res) => {
+    const ledger = ledgerOr503(res);
+    if (!ledger) return;
+    const row = catalog.find((r) => r.id === req.params.id);
+    const recipe = row ? recipeFor(row) : null;
+    if (!row || !recipe) {
+      res.status(404).json({ error: 'no-recipe' });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+      return;
+    }
+    if (!recipe.sync) {
+      res.status(409).json({ error: 'no-copy-for-this-service' });
+      return;
+    }
+    if (!ledger.activeGrant(row.id, ledger.machineId())) {
+      res.status(409).json({ error: 'not-granted-here' });
+      return;
+    }
+    try {
+      const outcome = await syncCopy(row);
+      if (!outcome) {
+        res.status(409).json({ error: 'no-copy-for-this-service' });
+        return;
+      }
+      res.status(outcome.ok ? 200 : 503).json(outcome);
+    } catch {
+      // A fixed reason: the CLI's own error text can carry a command line.
+      report(`Write the ${row.name} copy`, new Error('the copy could not be written'), 'The copy was not written.');
+      res.status(503).json({ error: 'sync-failed' });
     }
   });
 
@@ -594,8 +703,9 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     // Plain text, parsed by its own route-level parser: a JSON slip here would put part of the key in a parse-error log.
+    // Trimmed, then only control characters are refused: a Bitwarden master passphrase has spaces in it.
     const value = typeof req.body === 'string' ? req.body.trim() : '';
-    if (!value || value.length > 4096 || /[\s\p{Cc}]/u.test(value)) {
+    if (!value || value.length > 4096 || /\p{Cc}/u.test(value)) {
       res.status(400).json({ error: 'invalid-value' });
       return;
     }

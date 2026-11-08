@@ -17,6 +17,7 @@ import { validMaturationOutcomeDetail } from '../monitoring/MaturationOutcome.js
 import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
+import { configHeldSecrets, copySourceNames, realBitwardenSurface } from '../recommended/bitwardenVault.js';
 import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
 import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserProvision.js';
 import { holdSetupForSession } from '../recommended/setupState.js';
@@ -135,7 +136,7 @@ import { decideNobodyPollingClaim, sharedG2NobodyPollingLedger } from '../core/n
 import { canonicalPushKey } from '../core/PrHandLease.js';
 import { enrollPaneSessionName } from '../core/FrameworkLoginDriver.js';
 import { QUOTA_SNAPSHOT_STALE_AFTER_MS } from '../core/QuotaPoller.js';
-import { SubscriptionAccountEmailRegistrar } from '../core/SubscriptionPool.js';
+import { SubscriptionAccountEmailRegistrar, normalizeSubscriptionEmail } from '../core/SubscriptionPool.js';
 import { CredentialIdentityOracle } from '../core/CredentialIdentityOracle.js';
 import {
   CompositeCredentialIdentityOracle,
@@ -227,8 +228,16 @@ import type { SessionRefresh } from '../core/SessionRefresh.js';
 import type { StateManager } from '../core/StateManager.js';
 import {
   applySubscriptionReloginOperatorConfig,
+  describeSubscriptionReloginConfig,
+  readOnDiskSubscriptionReloginBlock,
+  subscriptionReloginConfigureDigest,
   validateSubscriptionReloginOperatorInput,
+  writeSubscriptionReloginRestartRequest,
+  subscriptionReloginFinishRestartDigest,
 } from '../core/SubscriptionReloginOperatorConfig.js';
+import { evaluateConfigureRequest } from '../core/SubscriptionReloginRemoteConfigure.js';
+import { acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
+import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
@@ -345,6 +354,8 @@ import { GuardRegistry } from '../monitoring/GuardRegistry.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { persistDiskTopicSessionBinding, resolveSessionSpawnTopicBinding, resolveTopicSpawnProfile } from './sessionSpawnTopicBinding.js';
+import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacement, heavyPlacementExecutor, forwardHeavySpawn } from '../core/heavyWorkPlacement.js';
+import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
 import { decorateWithRopeCondition } from './poolRopeCondition.js';
@@ -12477,7 +12488,13 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, workWeight } = req.body;
+    // resource-aware placement §6: a heavy helper forwarded by POST /pool/heavy-work/spawn
+    // says so, and this machine counts it in its advertised `heavyPending`.
+    if (workWeight !== undefined && workWeight !== 'light' && workWeight !== 'standard' && workWeight !== 'heavy') {
+      res.status(400).json({ error: '"workWeight" must be "light", "standard" or "heavy"' });
+      return;
+    }
 
     if (!name || !prompt) {
       res.status(400).json({ error: '"name" and "prompt" are required' });
@@ -12655,11 +12672,20 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       }
+      if (workWeight === 'heavy') acceptedHeavy.record('self');
       res.status(201).json({
         ...session,
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
       });
     } catch (err) {
+      // resource-aware placement §6: a DEFINITE refusal is a 409 with a code, so a caller
+      // (the heavy-work forwarder) can tell "refused" from "outcome unknown" (any other 5xx).
+      const refusal = classifySpawnRefusal(err);
+      if (refusal) {
+        // #2184: never echo credential-bearing spawn argv back to the caller.
+        res.status(409).json({ error: redactSpawnError(err), code: refusal });
+        return;
+      }
       // #2184: never echo credential-bearing spawn argv back to the caller.
       res.status(500).json({ error: redactSpawnError(err) });
     }
@@ -16484,6 +16510,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     readSecret: (name) => { const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; },
     writeSecret: (name, value) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).set(name, value); },
     deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); },
+    // Names only: the Bitwarden recipe's copy is written inside the recipe, and the confirm page lists what it would copy.
+    // A fresh agent still keeps its first secrets in the config file, so the copy covers those too.
+    readSecretNames: () => copySourceNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), ctx.config as unknown as Record<string, unknown>),
+    readCopyValue: (name) => {
+      // A config-held name first; anything else, and a `config.`-prefixed name the config does not know, from the vault.
+      const held = name.startsWith('config.') ? configHeldSecrets(ctx.config as unknown as Record<string, unknown>)[name] : undefined;
+      if (held) return held;
+      const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(name);
+      return typeof v === 'string' && v ? v : null;
+    },
+    // The folder name is guarded: a route harness may build a config with no project directory.
+    bitwarden: realBitwardenSurface(ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent')),
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.
@@ -16528,7 +16566,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     clearStuck: (service) => { void ctx.telegram?.updateAttentionStatus(`recommended-service-setup:${service}`, 'DONE', { silent: true }).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Close the stopped notice for ${service}`, fallback: 'The notice stays open.', reason: err instanceof Error ? err.message : String(err), impact: 'An old notice may still show.' }); }); },
     tellOwner: (text) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
-      if (topicId !== undefined) void withNotificationEnvelope(stampNotification(), async () => ctx.telegram?.sendToTopic(topicId, text)).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner a service was already working', fallback: 'The dashboard row still shows it.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told.' }); });
+      if (topicId !== undefined) void withNotificationEnvelope(stampNotification(), async () => ctx.telegram?.sendToTopic(topicId, text)).catch((err) => { DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: 'Tell the owner about a service (already working, switched off, or stopped working)', fallback: 'The dashboard row still shows the state.', reason: err instanceof Error ? err.message : String(err), impact: 'The person was not told by message.' }); });
     },
     finishCommitment: (id) => { ctx.commitmentTracker?.deliver(id); },
     withdrawCommitment: (id, reason) => { ctx.commitmentTracker?.withdraw(id, reason); },
@@ -25257,6 +25295,126 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...pinnedByBlock,
       ...(ownershipLeaseState ? { ownershipLeaseState } : {}),
       answeredBy: holderUrl ? 'local-fallback' : 'local',
+    });
+  });
+
+  // GET /pool/placement/preview — resource-aware placement §6: a READ-ONLY dry run of
+  // PlacementExecutor.decide() for a piece of work of the given weight, on this
+  // machine's pool view, with one evidence row per machine. Writes nothing, claims
+  // nothing. `command` (≤ 2,000 chars) adds the signal-only weight guess; the command
+  // text is never logged or echoed.
+  router.get('/pool/placement/preview', (req, res) => {
+    if (!ctx.machinePoolRegistry) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    const w = typeof req.query.workWeight === 'string' ? req.query.workWeight.trim() : 'standard';
+    if (!isWorkWeight(w)) {
+      res.status(400).json({ error: 'workWeight must be "light", "standard" or "heavy"' });
+      return;
+    }
+    const command = typeof req.query.command === 'string' ? req.query.command : undefined;
+    if (command !== undefined && command.length > 2000) {
+      res.status(400).json({ error: 'command must be 2,000 characters or fewer' });
+      return;
+    }
+    res.json(previewPlacement({
+      capacities: ctx.machinePoolRegistry.getCapacities(),
+      selfMachineId: ctx.meshSelfId ?? null,
+      workWeight: w,
+      ...(command !== undefined ? { command } : {}),
+    }));
+  });
+
+  // POST /pool/heavy-work/spawn — resource-aware placement §6: place and start a
+  // HEADLESS helper session (no Telegram topic) on the machine the decision picks, via
+  // that machine's own POST /sessions/spawn (this machine too, over loopback), so the
+  // target's validation, rate limit, caps and admission always apply. Outcomes:
+  // started (201) / refused (502) / unconfirmed (504, never auto-retried) / queued (409).
+  // @write-domain:none — dispatch only: an in-memory reservation, then the target's own
+  // POST /sessions/spawn performs (and owns) the write.
+  router.post('/pool/heavy-work/spawn', spawnLimiter, async (req, res) => {
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'Starting a placed helper requires the X-Instar-Request: 1 intent header' });
+      return;
+    }
+    if (!ctx.machinePoolRegistry) {
+      res.status(503).json({ error: 'session pool not available (dark / single-machine install)' });
+      return;
+    }
+    if (refuseUnsupportedFields(res, req.body, ['name', 'prompt', 'workWeight', 'framework', 'model'])) return;
+    const { name, prompt, framework, model } = (req.body ?? {}) as Record<string, unknown>;
+    const weight = (req.body ?? {}).workWeight ?? 'heavy';
+    if (weight !== 'heavy' && weight !== 'standard') {
+      res.status(400).json({ error: 'workWeight must be "heavy" (default) or "standard"' });
+      return;
+    }
+    // The target's own request checks, applied up front so nothing passes here and fails there.
+    if (typeof name !== 'string' || !SESSION_NAME_RE.test(name)) {
+      res.status(400).json({ error: '"name" must contain only letters, numbers, hyphens, underscores (max 200)' });
+      return;
+    }
+    if (typeof prompt !== 'string' || prompt.length === 0 || prompt.length > 500_000) {
+      res.status(400).json({ error: '"prompt" is required and must be a string under 500KB' });
+      return;
+    }
+    const binding = resolveSessionSpawnTopicBinding({ name });
+    if (!binding.ok) {
+      res.status(400).json({ error: `${binding.error} — a placed helper is headless, so use a name that needs no topic` });
+      return;
+    }
+    if (framework !== undefined && !(SUPPORTED_FRAMEWORKS as readonly string[]).includes(framework as string)) {
+      res.status(400).json({ error: `"framework" must be one of: ${SUPPORTED_FRAMEWORKS.join(', ')}` });
+      return;
+    }
+    if (model !== undefined) {
+      const allowed = typeof model === 'string' ? spawnModelAllowlist((framework as string | undefined) ?? 'claude-code') : [];
+      if (typeof model !== 'string' || !allowed.includes(model)) {
+        res.status(400).json({ error: `"model" must be one of: ${allowed.join(', ')}` });
+        return;
+      }
+    }
+    const capacities = ctx.machinePoolRegistry.getCapacities();
+    const selfId = ctx.meshSelfId ?? null;
+    const preview = previewPlacement({ capacities, selfMachineId: selfId, workWeight: weight, executor: heavyPlacementExecutor() });
+    const d = preview.decision;
+    if (d.outcome !== 'placed' || !d.chosenMachine) {
+      res.status(409).json({ ok: false, code: 'heavy-work-no-machine', decision: d, machines: preview.machines });
+      return;
+    }
+    const target = d.chosenMachine;
+    const isSelf = target === selfId;
+    // Self goes over loopback to this server's own bind address (a specific non-
+    // wildcard host when configured); a peer goes through poolPeerFetch so a dead
+    // rope is recorded (a POST never falls through to a second path).
+    const selfHost = ctx.config.host && ctx.config.host !== '0.0.0.0' && ctx.config.host !== '::' ? ctx.config.host : '127.0.0.1';
+    const peerTarget = isSelf ? null : (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === target) ?? null;
+    const url = isSelf ? `http://${selfHost.includes(':') ? `[${selfHost}]` : selfHost}:${ctx.config.port}` : peerTarget?.url ?? null;
+    if (!url) {
+      res.status(502).json({ ok: false, code: 'target-unreachable', error: `No address is known for ${d.chosenNickname ?? target}, so nothing was sent.`, decision: d });
+      return;
+    }
+    const token = weight === 'heavy' ? heavyReservations.record(target) : null;
+    const out = await forwardHeavySpawn({
+      url,
+      authHeader: `Bearer ${ctx.config.authToken}`,
+      headers: { 'X-Instar-AgentId': ctx.config.projectName },
+      body: { name, prompt, workWeight: weight, ...(framework !== undefined ? { framework } : {}), ...(model !== undefined ? { model } : {}) },
+      ...(peerTarget ? { dial: (init: RequestInit) => poolPeerFetch(ctx.recordRopeResult ?? undefined, peerTarget, '/sessions/spawn', init) } : {}),
+    });
+    const who = { machine: target, nickname: d.chosenNickname };
+    if (out.kind === 'started') {
+      res.status(201).json({ ok: true, outcome: 'started', ...who, sessionName: (out.body as { tmuxSession?: string }).tmuxSession ?? (out.body as { name?: string }).name ?? name, decision: d });
+      return;
+    }
+    if (out.kind === 'refused') {
+      if (token !== null) heavyReservations.release(token);
+      res.status(502).json({ ok: false, outcome: 'refused', code: 'target-refused', ...who, targetStatus: out.status, targetCode: out.code, targetError: typeof out.body.error === 'string' ? out.body.error.slice(0, 500) : null, decision: d });
+      return;
+    }
+    res.status(504).json({
+      ok: false, outcome: 'unconfirmed', code: 'target-unconfirmed', ...who, sessionName: name, detail: out.detail, decision: d,
+      next: 'Do not retry. Read GET /sessions?scope=pool&include=all for this machine to learn whether the helper started.',
     });
   });
 
@@ -38248,9 +38406,229 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
   });
 
+  // spec one-tap-unattended-repair §1 — this machine's closed repair setting, read from the
+  // ON-DISK block (the same read the compare-and-set uses), plus whether the running server has
+  // picked it up yet and this machine's own pool emails. Null when config.json is unreadable.
+  const reloginBootRevision = describeSubscriptionReloginConfig(ctx.config.subscriptionPool?.assistedRelogin).revision;
+  const reloginVerifiedPoolEmails = (): string[] | null => {
+    if (!ctx.subscriptionPool) return [];
+    try {
+      const keys = new Set<string>();
+      for (const account of ctx.subscriptionPool.list()) {
+        try {
+          const key = normalizeSubscriptionEmail(account.email).key;
+          if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(key)) keys.add(key);
+        } catch { /* @silent-fallback-ok — a malformed stored email is simply not offered */ }
+      }
+      return [...keys].sort();
+    } catch { return null; } // @silent-fallback-ok — pool unreadable ⇒ explicit unknown (null), never "no accounts"
+  };
+  const localReloginConfig = () => {
+    const machineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    try {
+      const view = describeSubscriptionReloginConfig(readOnDiskSubscriptionReloginBlock(ctx.config.stateDir));
+      return { machineId, ...view, activationPending: view.revision !== reloginBootRevision, verifiedPoolEmails: reloginVerifiedPoolEmails() };
+    } catch {
+      return null; // @silent-fallback-ok — unreadable config.json ⇒ no config field (the card shows "couldn't read")
+    }
+  };
+
+  // ── One-tap repair setting (spec docs/specs/one-tap-unattended-repair.md) ─────────────────
+  type ConfigureTargetResult = { machineId: string; ok: boolean; mode?: string; changed?: boolean;
+    restartRequested?: boolean; revision?: string; error?: string };
+  const reloginSelfMachineId = () => ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+
+  /** Apply one request on THIS machine (local = the operator is unlocked here; remote = a verified
+   *  mandate from another machine). Synchronous from the on-disk read to the write, so no other
+   *  write through this process can interleave (§3 steps 2–6). */
+  const applyConfigureHere = (args: { action: 'configure' | 'finish-restart'; rawConfig?: unknown; expectedRevision: string;
+    remote: boolean; provenance: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigProvenance;
+    consume?: () => boolean }): { status: number; body: Record<string, unknown> } => {
+    let current: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigView;
+    try { current = describeSubscriptionReloginConfig(readOnDiskSubscriptionReloginBlock(ctx.config.stateDir)); }
+    catch { return { status: 500, body: { error: 'apply-failed', detail: 'config.json could not be read' } }; }
+    const activationPending = current.revision !== reloginBootRevision;
+    if (args.action === 'finish-restart') {
+      if (args.consume && !args.consume()) return { status: 403, body: { error: 'not-authorized' } };
+      if (current.revision !== args.expectedRevision) return { status: 409, body: { error: 'stale-config', revision: current.revision } };
+      if (!activationPending) return { status: 200, body: { ok: true, changed: false, restartRequested: false, revision: current.revision } };
+      writeSubscriptionReloginRestartRequest(ctx.config.stateDir, new Date(), process.pid);
+      return { status: 202, body: { ok: true, changed: false, restartRequested: true, revision: current.revision } };
+    }
+    const evaluation = evaluateConfigureRequest({ current, rawConfig: args.rawConfig, expectedRevision: args.expectedRevision,
+      verifiedPoolEmails: reloginVerifiedPoolEmails(), remote: args.remote });
+    if (!evaluation.ok) return { status: evaluation.status, body: { error: evaluation.error, ...(evaluation.detail ? { detail: evaluation.detail } : {}) } };
+    if (args.consume && !args.consume()) return { status: 403, body: { error: 'not-authorized' } };
+    if (evaluation.alreadyApplied) {
+      const restartRequested = activationPending ? writeSubscriptionReloginRestartRequest(ctx.config.stateDir, new Date(), process.pid) : false;
+      return { status: 200, body: { ok: true, mode: current.mode, changed: false, restartRequested, revision: current.revision } };
+    }
+    try {
+      const result = applySubscriptionReloginOperatorConfig({ stateDir: ctx.config.stateDir, runtimeConfig: ctx.config,
+        requested: evaluation.config, provenance: args.provenance, bootRevision: reloginBootRevision });
+      const after = describeSubscriptionReloginConfig(result.config);
+      return { status: 202, body: { ok: true, mode: after.mode, changed: result.changed, restartRequested: result.restartRequested, revision: after.revision } };
+    } catch (error) {
+      return { status: 500, body: { error: 'apply-failed', detail: operatorError(error, ctx.config.stateDir) } };
+    }
+  };
+
+  // Fronting route: a recent dashboard unlock (header only — never a PIN in the body), then each
+  // ticked machine: peers first with a signed single-use mandate, this machine last.
+  router.post('/subscription-relogin/configure-pool', async (req, res) => {
+    if (!ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))) {
+      res.status(401).json({ error: 'recent dashboard PIN unlock required' });
+      return;
+    }
+    const body = (req.body ?? {}) as { action?: unknown; mode?: unknown; targets?: unknown };
+    const action = body.action === undefined ? 'configure' : body.action;
+    if (action !== 'configure' && action !== 'finish-restart') { res.status(400).json({ error: 'action must be configure or finish-restart' }); return; }
+    if (action === 'configure' && body.mode !== 'unattended' && body.mode !== 'approval') { res.status(400).json({ error: 'mode must be unattended or approval' }); return; }
+    if (!Array.isArray(body.targets) || body.targets.length === 0) { res.status(400).json({ error: 'at least one target is required' }); return; }
+    const targets = body.targets as Array<Record<string, unknown>>;
+    const ids = targets.map((t) => (typeof t?.machineId === 'string' ? t.machineId : ''));
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) { res.status(400).json({ error: 'each target needs a unique machineId' }); return; }
+    if (targets.some((t) => typeof t.expectedRevision !== 'string' || !/^sha256:[0-9a-f]{64}$/.test(t.expectedRevision as string))) {
+      res.status(400).json({ error: 'each target needs the expectedRevision it was read at' }); return;
+    }
+    const selfId = reloginSelfMachineId();
+    const mode = body.mode as 'unattended' | 'approval' | undefined;
+    const buildConfig = (t: Record<string, unknown>, isSelf: boolean) => ({
+      enabled: true, mode, dryRun: false,
+      unattendedPolicy: {
+        identities: Array.isArray(t.identities) ? t.identities : [],
+        // The card sends 0/0 when it turns this machine on, and the current waits otherwise; the
+        // point-of-use rules refuse any other value (spec §2, §3 step 4).
+        minimumSuccessfulRepairs: t.minimumSuccessfulRepairs,
+        minimumEvidenceDays: t.minimumEvidenceDays,
+      },
+    });
+    const peers = new Map((ctx.resolvePeerUrls?.() ?? []).map((p) => [p.machineId, p]));
+    const results: ConfigureTargetResult[] = [];
+    const startedAt = Date.now();
+    const PEER_DEADLINE_MS = 75_000;
+
+    const runPeer = async (t: Record<string, unknown>): Promise<ConfigureTargetResult> => {
+      const machineId = t.machineId as string;
+      const expectedRevision = t.expectedRevision as string;
+      const peer = peers.get(machineId);
+      if (!peer) return { machineId, ok: false, error: 'target-unreachable' };
+      if (!ctx.coordination || !ctx.packageMandateForDelivery || !ctx.deliverMandateToMachine) return { machineId, ok: false, error: 'delivery-failed' };
+      let rawConfig: unknown;
+      let configDigest: string;
+      if (action === 'finish-restart') {
+        configDigest = subscriptionReloginFinishRestartDigest(expectedRevision);
+      } else {
+        rawConfig = buildConfig(t, false);
+        const parsed = validateSubscriptionReloginOperatorInput(rawConfig);
+        if (!parsed.ok) return { machineId, ok: false, error: 'invalid-config' };
+        rawConfig = parsed.value;
+        configDigest = subscriptionReloginConfigureDigest(parsed.value, expectedRevision);
+      }
+      let mandateId: string;
+      try {
+        const mandate = ctx.coordination.store.issue({
+          scope: 'subscription-relogin',
+          agents: [resolveAgentFingerprint(ctx), resolveAgentFingerprint(ctx)],
+          authorities: [{ action: SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, bounds: { targetMachineId: machineId, configDigest } }],
+          // The mandate records what was verified (a recent dashboard PIN unlock), never a guessed name.
+          author: 'dashboard-pin-operator', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+        });
+        mandateId = mandate.id;
+        const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable: ctx.packageMandateForDelivery(mandate) });
+        if (!outcome.ok) {
+          const reason = outcome.reason ?? '';
+          return { machineId, ok: false, error: reason === 'not-an-account-follow-me-mandate' ? 'route-missing'
+            : reason === 'mandate-deliver-unauthorized' ? 'delivery-refused' : 'delivery-failed' };
+        }
+      } catch {
+        return { machineId, ok: false, error: 'delivery-failed' };
+      }
+      try {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/subscription-relogin/configure-with-mandate', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mandateId, action, config: rawConfig, expectedRevision }), signal: AbortSignal.timeout(15_000),
+        });
+        if (response.status === 404) return { machineId, ok: false, error: 'route-missing' };
+        const r = await response.json().catch(() => ({})) as Record<string, unknown>;
+        if (!response.ok) return { machineId, ok: false, error: typeof r.error === 'string' ? r.error : 'apply-failed' };
+        return { machineId, ok: true, mode: r.mode as string | undefined, changed: r.changed === true,
+          restartRequested: r.restartRequested === true, revision: typeof r.revision === 'string' ? r.revision : undefined };
+      } catch (error) {
+        const name = error instanceof Error ? error.name : '';
+        return { machineId, ok: false, error: name === 'TimeoutError' || name === 'AbortError' ? 'outcome-unknown' : 'target-unreachable' };
+      }
+    };
+
+    // Peers first, at most 4 at once, with a 75 s peer deadline (outcome-unknown after it).
+    const peerTargets = targets.filter((t) => t.machineId !== selfId);
+    const queue = [...peerTargets];
+    const pending = new Set(peerTargets.map((t) => t.machineId as string));
+    const worker = async () => {
+      while (queue.length > 0) {
+        const t = queue.shift()!;
+        const result = await runPeer(t);
+        if (pending.has(result.machineId)) { pending.delete(result.machineId); results.push(result); }
+      }
+    };
+    const deadline = new Promise<void>((resolve) => { const timer = setTimeout(resolve, Math.max(0, PEER_DEADLINE_MS - (Date.now() - startedAt))); timer.unref?.(); });
+    await Promise.race([Promise.all(Array.from({ length: Math.min(4, peerTargets.length) }, worker)), deadline]);
+    for (const machineId of pending) results.push({ machineId, ok: false, error: 'outcome-unknown' });
+    pending.clear();
+    queue.length = 0;
+
+    // This machine last (its own restart can then never cut off the fan-out or the response).
+    const selfTarget = targets.find((t) => t.machineId === selfId);
+    if (selfTarget) {
+      const local = applyConfigureHere({ action, rawConfig: action === 'configure' ? buildConfig(selfTarget, true) : undefined,
+        expectedRevision: selfTarget.expectedRevision as string, remote: false, provenance: { via: 'configure-pool-self' } });
+      results.push(local.status < 300
+        ? { machineId: selfId, ok: true, mode: local.body.mode as string | undefined, changed: local.body.changed === true,
+          restartRequested: local.body.restartRequested === true, revision: local.body.revision as string | undefined }
+        : { machineId: selfId, ok: false, error: String(local.body.error ?? 'apply-failed') });
+    }
+    res.json({ ok: results.every((r) => r.ok), results });
+  });
+
+  // Target point of use (§3): verify the delivered mandate FIRST, then the setting checks.
+  router.post('/subscription-relogin/configure-with-mandate', (req, res) => {
+    const body = (req.body ?? {}) as { mandateId?: unknown; action?: unknown; config?: unknown; expectedRevision?: unknown };
+    const mandateId = typeof body.mandateId === 'string' ? body.mandateId : '';
+    const action = body.action === undefined ? 'configure' : body.action;
+    const expectedRevision = typeof body.expectedRevision === 'string' ? body.expectedRevision : '';
+    if (!mandateId || !expectedRevision || (action !== 'configure' && action !== 'finish-restart')) {
+      res.status(400).json({ error: 'mandateId, expectedRevision and a valid action are required' });
+      return;
+    }
+    const store = ctx.deliveredMandateStore;
+    const record = store?.get(mandateId);
+    if (!store || !record) { res.status(403).json({ error: 'not-authorized' }); return; }
+    const accepted = acceptDeliveredMandate({ portable: record.portable, operatorEd25519PublicKey: record.operatorPublicKeyPem,
+      expectedOperatorMachineFingerprint: record.deliveredBy });
+    if (!accepted.accepted || accepted.mandate.revoked || Date.now() > Date.parse(accepted.mandate.expiresAt)) {
+      res.status(403).json({ error: 'not-authorized' }); return;
+    }
+    const bounds = readConfigureBounds(accepted.mandate);
+    if (!bounds || bounds.targetMachineId !== reloginSelfMachineId()) { res.status(403).json({ error: 'not-authorized' }); return; }
+    let digest: string;
+    if (action === 'finish-restart') digest = subscriptionReloginFinishRestartDigest(expectedRevision);
+    else {
+      const parsed = validateSubscriptionReloginOperatorInput(body.config);
+      if (!parsed.ok) { res.status(403).json({ error: 'config-mismatch' }); return; }
+      digest = subscriptionReloginConfigureDigest(parsed.value, expectedRevision);
+    }
+    if (digest !== bounds.configDigest) { res.status(403).json({ error: 'config-mismatch' }); return; }
+    const result = applyConfigureHere({ action, rawConfig: body.config, expectedRevision, remote: true,
+      provenance: { via: 'mandate', mandateId, deliveredBy: record.deliveredBy },
+      consume: () => !!store.consume(mandateId) });
+    res.status(result.status).json(result.body);
+  });
+
   router.get('/subscription-relogin', async (req, res) => {
     if (!ctx.subscriptionRelogin && req.query.scope !== 'pool') {
-      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured' });
+      const config = localReloginConfig();
+      res.status(503).json({ enabled: false, error: 'subscription re-login is not configured', ...(config ? { config } : {}) });
       return;
     }
     try {
@@ -38263,12 +38641,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }) ?? [];
       // A blocker read that fails leaves `blockers` absent (unknown), never an empty "nothing blocked".
       const localBlockers = await ctx.subscriptionRelogin?.blockers?.().catch(() => undefined);
+      const ownConfig = localReloginConfig();
       if (req.query.scope !== 'pool') {
         res.json({ enabled: true, episodes: localEpisodes,
           ...(localBlockers ? { blockers: localBlockers } : {}),
+          ...(ownConfig ? { config: ownConfig } : {}),
           lastResort: ctx.subscriptionRelogin!.lastResortStatus?.() ?? { available: false } });
         return;
       }
+      const configs: Array<Record<string, unknown>> = ownConfig ? [{ ...ownConfig, machineNickname: ctx.machinePoolRegistry?.getCapacity(ownConfig.machineId)?.nickname, remote: false }] : [];
+      const configsMissing: string[] = [];
       const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
       const selfMachineNickname = ctx.machinePoolRegistry?.getCapacity(selfMachineId)?.nickname;
       const failed: Array<{ machineId: string; error: string }> = [];
@@ -38297,8 +38679,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             headers: { Authorization: `Bearer ${ctx.config.authToken}` },
             signal: AbortSignal.timeout(5_000),
           });
+          const takeConfig = (body: { config?: unknown } | null) => {
+            const c = body?.config;
+            if (c && typeof c === 'object' && !Array.isArray(c)) {
+              configs.push({ ...(c as Record<string, unknown>), machineId: peer.machineId,
+                machineNickname: ctx.machinePoolRegistry?.getCapacity(peer.machineId)?.nickname, remote: true });
+            } else configsMissing.push(peer.machineId);
+          };
           if (!response.ok) {
             if (response.status === 503) {
+              takeConfig(await response.json().catch(() => null) as { config?: unknown } | null);
               unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
               return;
             }
@@ -38306,7 +38696,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             return;
           }
           const body = await response.json() as { enabled?: boolean; episodes?: Array<Record<string, unknown>>;
-            blockers?: Array<Record<string, unknown>> };
+            blockers?: Array<Record<string, unknown>>; config?: unknown };
+          takeConfig(body);
           if (body.enabled === false) {
             unavailable.push({ machineId: peer.machineId, reason: 'feature-unavailable' });
             return;
@@ -38326,7 +38717,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           failed.push({ machineId: peer.machineId, error: name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'unreachable' });
         }
       }));
-      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown } });
+      res.json({ enabled: true, episodes, blockers, scope: 'pool', pool: { failed, unavailable, blockersUnknown, configs, configsMissing } });
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir) : 'invalid re-login query' });
     }

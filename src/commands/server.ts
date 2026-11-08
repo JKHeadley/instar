@@ -137,6 +137,8 @@ import {
   type TopicProfileOrchestratorDeps,
 } from '../core/TopicProfileOrchestrator.js';
 import { TopicSpawnBriefStore, formatCarriedBriefBlock } from '../core/TopicSpawnBriefStore.js';
+import { effectivePending, heavyFit, selfHeavyJobProfile } from '../core/machineResourceProfile.js';
+import { acceptedHeavy, heavyReservations } from '../core/heavyWorkPlacement.js';
 import { CodexResumeMap, type CodexSpawnFence } from '../core/CodexResumeMap.js';
 import { resolveStageBProductionActivation } from '../core/StageBActivationGate.js';
 import { createInboundDeliveryTransferHandler, createInboundDeliveryTransferStep, writeStageCActivationLease } from '../core/CodexLifecycleProductionComposition.js';
@@ -394,6 +396,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
 import { TopicRef, topicRef, setTopicNameResolver } from '../messaging/shared/topicRef.js';
+import { isConfigureOnlyMandate } from '../coordination/AccountFollowMeMandateDelivery.js';
 // setup.ts uses @inquirer/prompts which requires Node 20.12+
 // Dynamic import to avoid breaking the server on older Node versions
 // import { installAutoStart } from './setup.js';
@@ -853,6 +856,8 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** Resource-aware placement: the pool registry, late-bound for consumers built before it (the scheduler). */
+let _resourcePoolRegistryRef: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | undefined;
 /** G3 lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3). "Do I hold the fenced
  *  awake-lease?" — null = single-machine / no lease coordinator → the gate is a
  *  strict no-op (always spawn locally, byte-for-byte legacy). Set in startServer's
@@ -8800,6 +8805,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Wire machine identity for machine-scoped job filtering
       if (coordinator.identity) {
         scheduler.setMachineIdentity(coordinator.identity.machineId, coordinator.identity.name);
+        // Resource-aware placement §5: a declared-heavy job skips a machine below the
+        // heavy-work floor while another online heavy-capable machine exists.
+        {
+          const selfId = coordinator.identity.machineId;
+          scheduler.setSelfHeavyProfile(() => {
+            const reg = _resourcePoolRegistryRef;
+            if (!reg) return null;
+            return selfHeavyJobProfile(reg.getCapacities(), selfId, liveConfig.get<unknown>('multiMachine.placement.heavyWork', 'auto'));
+          });
+        }
         scheduler.setPromotionLeaseProvider(() => ({
           leaseEpoch: coordinator.getLeaseEpoch(), machineId: coordinator.identity!.machineId,
           holdsLease: coordinator.holdsLease(),
@@ -25077,6 +25092,16 @@ export async function startServer(options: StartOptions): Promise<void> {
             // client uses the agent's own token; the lease decides coordinator vs peer role.
             wiring.wireLocalVerifyPeers(svc, {
               liveConfig,
+              // Resource-aware placement §4: a full verify is heavy work — skip a peer the
+              // pool cannot size, or that is below the floor, busy or unmeasured.
+              peerFit: (machineId) => {
+                // No pool registry at all (pool dark): today's behaviour, no filter.
+                if (!_resourcePoolRegistryRef) return { eligible: true, reason: 'pool-unavailable', score: null };
+                const cap = _resourcePoolRegistryRef.getCapacity(machineId);
+                if (!cap) return { eligible: false, reason: 'not-in-pool', score: null };
+                const fit = heavyFit(cap, effectivePending(cap, heavyReservations.count(machineId)));
+                return { eligible: fit.eligible, reason: fit.reason, score: fit.loadPerCore };
+              },
               authToken: String(config.authToken ?? ''),
               agentId: config.projectName,
               lease: coordinator.enabled
@@ -25204,7 +25229,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const failoverThresholdMs = (config.multiMachine?.failoverTimeoutMinutes ?? 15) * 60_000;
         const clockSkewToleranceMs =
           (config.multiMachine?.sessionPool as { clockSkewToleranceMs?: number } | undefined)?.clockSkewToleranceMs ?? 300_000;
-        machinePoolRegistry = new poolMod.MachinePoolRegistry({
+        machinePoolRegistry = _resourcePoolRegistryRef = new poolMod.MachinePoolRegistry({
           // Durable last-known posture (GUARD-POSTURE-ENDPOINT-SPEC §2.3(c)) —
           // survives local restarts so a dark peer renders with its real age.
           postureStore: new GuardPostureStore(config.stateDir),
@@ -25256,6 +25281,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // advertised in the report (late-bound; null until constructed below).
             onSample: (v) => _workAdmission?.observe(v),
             admission: () => _workAdmission?.advert() ?? null,
+            // Resource-aware placement §1/§3: this machine's heavy-work override and the
+            // heavy helper spawns it accepted, read live at every report.
+            heavyWork: () => {
+              const v = liveConfig.get<unknown>('multiMachine.placement.heavyWork', 'auto');
+              return v === 'allow' || v === 'deny' ? v : 'auto';
+            },
+            heavyPending: () => acceptedHeavy.count('self'),
           });
           await _machineLoadSampler.start();
           console.log(pc.dim(`  [load-report] sampler started (verdict: ${_machineLoadSampler.verdict()})`));
@@ -26930,6 +26962,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 isTopicBusy: (key) => currentInboundByTopic?.has(key) ?? false,
                 placement: new shedPlaceMod.PlacementExecutor(undefined, {
                   sustainedOnline: (m) => (_ws13SustainedOnline ? _ws13SustainedOnline(m) : true),
+                  pendingHeavy: (m) => heavyReservations.count(m), // resource-aware placement §1
                 }),
                 hasLiveAutonomousRun: (sessionKey) => {
                   try {
@@ -27975,7 +28008,13 @@ export async function startServer(options: StartOptions): Promise<void> {
             // enabled on THIS machine AND the sender a registered ACTIVE peer (verifyEnvelope already
             // proved the Ed25519/recipient/nonce). DENY-BY-DEFAULT (dark agent → refused here). The
             // LOAD-BEARING authority is the R4a signature re-verification in the handler below.
-            authorizeMandateDeliver: ({ sender }) => {
+            authorizeMandateDeliver: ({ sender, command }) => {
+              // spec one-tap-unattended-repair §4: a configure-only repair-setting mandate is
+              // admitted from any ACTIVE registered machine whatever follow-me's state; the handler
+              // still re-verifies the signature, target, digest and expiry before persisting it.
+              const portable = (command as { portable?: { mandate?: import('../coordination/types.js').CoordinationMandate } } | undefined)?.portable;
+              if (!meshIdMgr.isMachineActive(sender)) return false;
+              if (isConfigureOnlyMandate(portable?.mandate)) return true;
               const afmEnabled = resolveDevAgentGate(
                 (config as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } })
                   .multiMachine?.accountFollowMe?.enabled,
@@ -29675,6 +29714,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           _sessionRouter = new routerMod.SessionRouter({
             selfMachineId: meshSelfId,
             placement: new placeMod.PlacementExecutor(undefined, {
+              pendingHeavy: (m) => heavyReservations.count(m), // resource-aware placement §1
               // U4.1 §2E (i): hard-pin fulfilment requires the pinned machine
               // SUSTAINED-online (late-bound; absent/boot window ⇒ plain-online).
               sustainedOnline: (m) => (_ws13SustainedOnline ? _ws13SustainedOnline(m) : true),
