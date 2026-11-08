@@ -187,6 +187,7 @@ import { SessionStartFailureTracker } from '../core/startFailureTracker.js';
 import { isClaudeForbidden } from '../core/claudeForbiddenGuard.js';
 import { SUPPORTED_FRAMEWORKS } from '../core/TopicFrameworksStore.js';
 import type { IntelligenceFramework } from '../core/intelligenceProviderFactory.js';
+import { lastInternalCodexAccountId, resolveInternalCodexAccount, setInternalCodexAccountSource } from '../core/internalCodexAccount.js';
 import { FeedbackManager } from '../core/FeedbackManager.js';
 import { FeedbackAnomalyDetector } from '../monitoring/FeedbackAnomalyDetector.js';
 import { lifelineOwnsPoll as lifelineOwnsTelegramPoll } from '../lifeline/TelegramPollOwnerLease.js';
@@ -7808,6 +7809,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           configuredFramework: config.sessions.framework,
         }) ?? undefined,
         ...(resolveCodexExecJson ? { resolveExecJson: resolveCodexExecJson } : {}),
+        resolveAccount: resolveInternalCodexAccount, // codex-cli only; see internalCodexAccount.ts
         ...(subscriptionPathOption ? { subscriptionPath: subscriptionPathOption } : {}),
         ...(framework === 'gemini-cli' && config.monitoring?.quotaTracking
           ? {
@@ -7933,6 +7935,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // The per-component routing path is the one the cartographer sweep actually
           // uses — the kill-switch must reach it too.
           ...(fw === 'codex-cli' && resolveCodexExecJson ? { resolveExecJson: resolveCodexExecJson } : {}),
+          resolveAccount: resolveInternalCodexAccount, // codex-cli only
           ...(fw === 'claude-code' && subscriptionPathOption
             ? { subscriptionPath: subscriptionPathOption }
             : {}),
@@ -15886,7 +15889,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Subscription & Auth Standard). Always instantiated; ships DARK because an
     // empty pool is a pure no-op (no background loop, no cost) until an operator
     // enrolls an account. Stores each account's login LOCATION, never tokens.
-    const { SubscriptionPool, requiresOwnerRelogin, eligibleSiblingAccounts } = await import(
+    const { SubscriptionPool, requiresOwnerRelogin, eligibleSiblingAccounts, pickInternalCallAccount } = await import(
       '../core/SubscriptionPool.js'
     );
     let subscriptionPoolMachineId: string | null = null;
@@ -15918,7 +15921,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // next failure. Until this line runs the router's resolver sees null and returns no
     // siblings, so a failure during boot walks exactly the tail it always did.
     siblingAccountResolver = (framework, failedAccountId) =>
-      eligibleSiblingAccounts(subscriptionPool.list(), framework, failedAccountId, {
+      // An internal codex call names no account; the pick it was given is the one that failed.
+      eligibleSiblingAccounts(subscriptionPool.list(), framework, failedAccountId ?? (framework === 'codex-cli' ? lastInternalCodexAccountId() : null), {
         // Internal calls run on the AMBIENT login today, so `failedAccountId` is almost
         // always null and the id-based self-exclusion cannot fire. The ambient home is
         // how we identify which enrolled account actually ran. Same derivation the
@@ -15930,6 +15934,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             ? process.env['CODEX_HOME'] || path.join(os.homedir(), '.codex')
             : null,
       });
+    // Internal Codex calls run on the Codex account with the most room, not only the ambient
+    // login (fb-feb1652a-948). intelligence.codexAccountSelection.enabled=false ⇒ ambient.
+    setInternalCodexAccountSource(config.intelligence?.codexAccountSelection?.enabled === false
+      ? null : () => pickInternalCallAccount(subscriptionPool.list(), 'codex-cli'));
     if (subscriptionPool.getAvailability().state === 'ready' && subscriptionPool.size() > 0) {
       console.log(pc.green(`  Subscription pool: ${subscriptionPool.size()} account(s) registered`));
     }

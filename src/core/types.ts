@@ -4607,6 +4607,13 @@ export interface InstarConfig {
      */
     nonGatingFailureSwap?: { enabled?: boolean; maxAttempts?: number };
     /**
+     * Internal Codex calls (sentinels, gates, extractors) pick the pool Codex account
+     * with the most room by its last reading, instead of only the machine's ambient
+     * login. Default ON; `{ enabled: false }` keeps every call on the ambient login.
+     * The framework and model never change, only which Codex login answers.
+     */
+    codexAccountSelection?: { enabled?: boolean };
+    /**
      * Unified self-action backpressure — the SelfActionGovernor (Increment B,
      * docs/specs/unified-self-action-backpressure.md; the companion doc is the
      * implementation authority). Ships OBSERVE-ONLY on every class,
