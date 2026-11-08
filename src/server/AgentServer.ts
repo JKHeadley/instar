@@ -203,11 +203,14 @@ import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
 import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, slackMediaConversationKey, slackPlatformMessageId } from '../core/appPlatformMedia.js';
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
-import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, isMobileUnreadEnabled, personOfReaderKey, readerRemovedHere, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
+import { ConversationUnreadService, type TelegramRowLike } from '../core/ConversationUnreadService.js';
+import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
+import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
-import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
+import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId, slackUnreadSource } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
 import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
@@ -475,6 +478,8 @@ export class AgentServer {
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
+  conversationUnread: ConversationUnreadService | null = null;
   private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
@@ -1228,6 +1233,10 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    /** The read-marker store (mobile-unread-messages §3.3), built by server.ts on the replication path. */
+    readMarkers?: ConversationReadMarkerStore | null;
+    /** The machine's hybrid logical clock in ms, for a baseline that never runs behind a peer's time (§3.2). */
+    readMarkersHlcNowMs?: () => number;
     /** The bootstrap-built idea ledger (server.ts), already hooked to replication. Absent ⇒ built here. */
     ecosystemLedger?: import('../ecosystem/EcosystemLedger.js').EcosystemLedger;
     /** docs/specs/recommended-services.md: the bootstrap-built choice ledger. Absent means the routes answer 503. */
@@ -1890,6 +1899,16 @@ export class AgentServer {
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
+        // Unread (mobile-unread-messages §3.6): the phone's app-conversation unread as the badge; app conversations only.
+        badgeFor: (deviceId, conversationKey, messageId) => {
+          const u = this.conversationUnread;
+          if (!u || !u.enabled() || !isAppConversationKey(conversationKey)) return null;
+          const d = mp.devices.get(deviceId);
+          const person = d ? mp.personOfDevice(d) : null;
+          if (!person || !person.ok) return null;
+          const reader = u.resolveReader({ person, viaDevice: true });
+          return reader ? u.badgeFor(reader, messageId ? { conversationKey, messageId } : undefined) : null;
+        },
         phoneStillCounts: (deviceId) => {
           const d = mp.devices.get(deviceId);
           return !!d && mp.personOfDevice(d).ok;
@@ -2074,7 +2093,10 @@ export class AgentServer {
         onLeaseReceived: options.leaseTransport
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
           : undefined, // returns the resulting observed epoch → accept-ack (Decision 9)
-        onLeasePullRequest: options.onLeasePullRequest,
+        onLeasePullRequest: () => {
+          options.coordinator?.noteLeasePeerPull();
+          return options.onLeasePullRequest?.() ?? null;
+        },
         onLiveTailReceived: options.liveTailReceiver,
         onHandoffAck: options.handoffWireTransport
           ? (ack: unknown) => options.handoffWireTransport!.recordAck(ack)
@@ -6617,8 +6639,43 @@ export class AgentServer {
         holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
       })
       : null;
+    // Unread (docs/specs/mobile-unread-messages.md): the service over the replicated marker store and the
+    // three message sources the list already loads. Built only when server.ts built the store (native
+    // chat on and the flag on); `enabled()` is read live so the flag can switch unread off alone.
+    if (this.mobilePairing && this.appConversations && options.readMarkers) {
+      const mp = this.mobilePairing;
+      const appSvc = this.appConversations;
+      const telegram = options.telegram;
+      this.conversationUnread = new ConversationUnreadService({
+        store: options.readMarkers,
+        enabled: () => mp.nativeOn && isMobileUnreadEnabled(this.config),
+        machineId: () => appSvc.deps.machineId(),
+        app: appSvc.store,
+        telegram: telegram ? {
+          history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
+          version: (topicId) => telegram.getTopicContentVersion(topicId),
+          exists: (topicId) => telegram.getAllTopicMappings().some((m) => m.topicId === topicId),
+        } : null,
+        slack: slackBridge ? slackUnreadSource(() => slackBridge) : null,
+        ownerIdentity: () => mp.ownerIdentity(),
+        personOfReaderKey: (key) => personOfReaderKey(mp, key),
+        readerRemoved: (key) => readerRemovedHere(mp, key),
+        mayUse: (person, ref, op) => mp.mayUse(person, ref, op ?? 'read'),
+        peers: () => routeCtx.resolvePeerUrls?.() ?? [],
+        peerAllowlist: () => (options.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
+        authToken: () => this.config.authToken ?? '',
+        recordRope: routeCtx.recordRopeResult ?? undefined,
+        hlcNowMs: options.readMarkersHlcNowMs,
+        report: (what, detail) => DegradationReporter.getInstance().report({
+          feature: what, primary: 'unread counts and read markers for app conversations',
+          fallback: 'a count reads unknown or a marker is shared later', reason: detail, impact: 'An unread count in the app may lag.',
+        }),
+      });
+      routeCtx.conversationUnread = this.conversationUnread;
+    }
     if (this.mobilePairing) {
       this.app.use(createMobileSlackRouter({
+        unread: this.conversationUnread,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         slack: slackBridge ? () => slackBridge : null, sentinel: options.sentinel ?? null,
         // The same machine id the conversation list puts on its rows.
@@ -6633,6 +6690,7 @@ export class AgentServer {
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
       this.app.use(createMobileConversationRouter({
+        unread: this.conversationUnread,
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         mediaEnabled: isMobileMediaEnabled(options.config),
@@ -6772,6 +6830,12 @@ export class AgentServer {
           return { userId: id, several: owners.length > 1, links: (owner?.telegramUserId ? { telegram: owner.telegramUserId } : {}) as Record<string, string | number> };
         },
         logsDir: path.join(options.config.stateDir, 'logs'),
+        stateDir: options.config.stateDir,
+        conversationTitle: (refOrPlace) => {
+          const topic = /^telegram:(?:topic:)?(\d+)$/.exec(refOrPlace);
+          if (topic) return options.telegram?.getAllTopicMappings().find((m) => m.topicId === Number(topic[1]))?.topicName ?? null;
+          return appStore?.getConversation(refOrPlace.replace(/^app:/, ''))?.title ?? null;
+        },
         restoreRefs: () => {
           const keys = appStore?.liveConversationKeys() ?? [];
           const teamDevices = new Set(pairingSvc.devices.list().filter((d) => d.role === 'team').map((d) => d.id));
@@ -8692,11 +8756,26 @@ export class AgentServer {
     });
   }
 
+  /**
+   * Unread (mobile-unread-messages §3.3): start the retry and gc timers and the boot catch-up from any
+   * reachable peer, after the pool registry has had a moment to name them. Phones get no baseline
+   * until it settles. Returns the service for the boot's late-bound references, or null when off.
+   */
+  startConversationUnread(delayMs = process.env.VITEST ? 0 : 15_000): ConversationUnreadService | null {
+    const svc = this.conversationUnread;
+    if (!svc) return null;
+    svc.start();
+    const t = setTimeout(() => { void svc.catchUp().catch(() => { /* @silent-fallback-ok — the 5-minute retry resumes it */ }); }, delayMs);
+    t.unref?.();
+    return svc;
+  }
+
   async stop(): Promise<void> {
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
+    this.conversationUnread?.stop();
     this.appConversations?.stop();
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();

@@ -76,8 +76,8 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
 
     expect(res.status).toBe(200);
     expect(res.body.channels.map((c: { id: string }) => c.id).sort())
-      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay', 'user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
-    expect(res.body.summary.total).toBe(8);
+      .toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'server-down-recovery', 'threadline-relay', 'user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
+    expect(res.body.summary.total).toBe(9);
   });
 
   /**
@@ -95,7 +95,7 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
       res.body.channels.filter((c: { audience: string }) => c.audience === a)
         .map((c: { id: string }) => c.id).sort();
 
-    expect(byAudience('peer')).toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'threadline-relay']);
+    expect(byAudience('peer')).toEqual(['a2a-telegram', 'mutual-ssh', 'peer-http', 'server-down-recovery', 'threadline-relay']);
     expect(byAudience('user')).toEqual(['user-imessage', 'user-slack', 'user-telegram', 'user-whatsapp']);
     // Every row must declare one; an untagged channel is not a third state, it is a bug.
     for (const c of res.body.channels) expect(['peer', 'user']).toContain(c.audience);
@@ -110,6 +110,16 @@ describe('GET /channels (integration — the wiring, not just the resolver)', ()
       expect(c.detail?.length, `${c.id} detail`).toBeGreaterThan(0);
       expect(typeof c.state).toBe('string');
     }
+  });
+
+  it('recovery is a peer channel and remains explicitly unknown without verified route evidence', async () => {
+    const res=await request(mount(tmpDir)).get('/channels').set('Authorization',`Bearer ${AUTH}`);
+    expect(res.status).toBe(200);
+    const recovery=res.body.channels.find((c:{id:string})=>c.id==='server-down-recovery');
+    expect(recovery).toMatchObject({id:'server-down-recovery',audience:'peer',state:'unknown',direction:'none',detail:'recovery-degraded-or-unknown'});
+    expect(recovery.cost).toContain('owner enrollment');
+    expect(recovery.cost).toContain('two fresh independent source-verified recovery routes');
+    expect(res.body.summary.working).toBe(0);
   });
 
   it('with NO relay client, the local view reports not-configured rather than working', async () => {

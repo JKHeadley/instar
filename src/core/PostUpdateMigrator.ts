@@ -1,3 +1,6 @@
+import { beginRecoveryAutostartUpdate } from '../recovery/RecoveryAutostartUpdate.js';
+import { beginRecoveryFleetUpdate } from '../recovery/RecoveryFleetUpdate.js';
+import { recoveryAwareness } from '../recovery/RecoveryAwareness.js';
 import { ACCOUNT_ACTION_SAFETY, ACCOUNT_ACTION_SAFETY_HEADING } from '../data/accountActionSafety.js';
 const NEW_JOB_REPORT_LINE = '2. **Need periodic checks?** Create a job in `.instar/jobs.json`.';
 const NEW_JOB_REPORT_ASK = ' If it reports to the user, ask whether they want to see its reports; otherwise they stay quiet.';
@@ -1109,6 +1112,8 @@ export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or hi
 /** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
 export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
 /** The native session screen (docs/specs/mobile-native-session-screen.md), inserted after the "Open session" bullet. Sniff: "native session screen". */
+/** Unread counts (docs/specs/mobile-unread-messages.md): the bullet after the native session screen line. */
+export const APP_CONVERSATIONS_UNREAD_LINE = '- The app shows per-person unread counts: a read marker per person per conversation (replicated across my machines) plus "your own reply marks everything before it as read"; Telegram and Slack give a bot no per-user read state, so the marker here is the source. Phones report what they read with `POST /mobile/conversations/read`; my own Bearer reads of the list and history carry NO read fields (`hasUnread`, `unreadCount`, `readUpTo` appear only for a phone). When the operator asks "why does the app say N unread?" read `GET /mobile/conversations` as the phone would, never guess from Telegram. Off switch: `mobilePairing.native.unread.enabled: false`.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -1254,6 +1259,7 @@ The session's bind token is the only destination; the script takes no conversati
 ${APP_CONVERSATIONS_POOL_LINE}
 ${APP_CONVERSATIONS_OPEN_SESSION_LINE}
 ${APP_CONVERSATIONS_NATIVE_SESSION_LINE}
+${APP_CONVERSATIONS_UNREAD_LINE}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
@@ -4597,7 +4603,9 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      installBootWrapper(this.config.projectDir);
+      if(fs.existsSync(path.join(this.config.stateDir,'recovery','host.json'))){
+        if(!installAutoStart(this.config.projectName,this.config.projectDir,this.config.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');
+      }else installBootWrapper(this.config.projectDir);
       result.upgraded.push('boot-wrapper ABI-check: regenerated instar-boot.cjs with ABI-aware node self-heal + version-managed node candidates');
     } catch (err) {
       result.errors.push(`boot-wrapper ABI-check regen: ${err instanceof Error ? err.message : String(err)}`);
@@ -5048,8 +5056,12 @@ export class PostUpdateMigrator {
       return;
     }
     try {
-      fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
-      fs.writeFileSync(plistPath, next, 'utf-8');
+      const recoveryUpdate=beginRecoveryAutostartUpdate(this.config.projectDir,plistPath,next);
+      try {
+        fs.writeFileSync(`${plistPath}.bak-${Date.now()}`, content, 'utf-8');
+        fs.writeFileSync(plistPath, next, 'utf-8');
+        recoveryUpdate?.commit();
+      } catch(error) {recoveryUpdate?.rollback();throw error;}
       const raised = found.filter((v) => v < LAUNCHD_PROCESS_CEILING_FLOOR).join('/');
       result.upgraded.push(
         `launchd process ceiling: raised ${raised} → ${LAUNCHD_PROCESS_CEILING_FLOOR} (applies at next restart)`,
@@ -6092,6 +6104,11 @@ export class PostUpdateMigrator {
 </dict>
 </plist>`;
 
+    // Enrolled agents pin this script's and plist's digests in their recovery
+    // host.json. A plain overwrite here would leave every pin stale: the watchdog
+    // would then skip those agents and repair would refuse to start. Every rewrite
+    // goes through the same transaction as installFleetWatchdog, which rebinds them.
+    let recoveryFleetUpdate: ReturnType<typeof beginRecoveryFleetUpdate> = null;
     try {
       // Compare against current contents to avoid noisy re-installs.
       const scriptCurrent = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf-8') : '';
@@ -6105,6 +6122,7 @@ export class PostUpdateMigrator {
 
       fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
       fs.mkdirSync(path.dirname(plistPath), { recursive: true });
+      recoveryFleetUpdate = beginRecoveryFleetUpdate(scriptPath, plistPath, scriptBody, plistBody);
       if (scriptChanged) fs.writeFileSync(scriptPath, scriptBody, { mode: 0o755 });
       if (plistChanged) fs.writeFileSync(plistPath, plistBody);
 
@@ -6114,8 +6132,14 @@ export class PostUpdateMigrator {
       } catch (err) {
         const stderr = err instanceof Error && 'stderr' in err ? String((err as any).stderr) : '';
         result.errors.push(`fleet-watchdog: plist validation failed: ${stderr}`);
+        const failedUpdate = recoveryFleetUpdate;
+        recoveryFleetUpdate = null;
+        failedUpdate?.rollback();
         return;
       }
+
+      recoveryFleetUpdate?.commit();
+      recoveryFleetUpdate = null;
 
       // Reload only if plist changed (script-only changes don't need launchd touch).
       //
@@ -6140,6 +6164,11 @@ export class PostUpdateMigrator {
       );
     } catch (err) {
       result.errors.push(`fleet-watchdog: ${err instanceof Error ? err.message : String(err)}`);
+      try {
+        recoveryFleetUpdate?.rollback();
+      } catch (rollbackErr) {
+        result.errors.push(`fleet-watchdog: recovery rollback incomplete: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`);
+      }
     }
   }
 
@@ -9148,6 +9177,11 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Quiet by Default notifications');
     }
+    if (!content.includes('### Server-down remote recovery')) {
+      content += recoveryAwareness(this.config.port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added server-down recovery setup and proof awareness');
+    }
     if (!content.includes('/notifications/jobs/:slug/push')) {
       const anchor = 'or the PIN-confirmed dashboard toggle.';
       if (content.includes(anchor)) content = content.replace(anchor, `${anchor} ${QUIET_JOB_CHOICE_SENTENCE}`);
@@ -9694,6 +9728,12 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
       patched = true;
       result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — team requests:')) {
+      content += '\n- **Registry First — team requests:** when someone asks me for access, I do not grant it and cannot. I file it with `POST /team/proposals` with a typed `change` (grant, role or invite) and an optional `reason`, and say the owner will see it in the app. The owner approves or declines there. A member gets one open request at a time, and a member who asks who has access gets: "Only the owner can see that."';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team requests Registry First awareness');
     }
 
     if (!content.includes('Registry First — people:')) {
@@ -10381,6 +10421,17 @@ setTimeout(() => process.exit(0), 2000);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the native session screen line');
+      }
+    }
+    // Unread counts (docs/specs/mobile-unread-messages.md): the bullet after the native session screen line.
+    if (content.includes(APP_CONVERSATIONS_NATIVE_SESSION_LINE) && !content.includes('per-person unread counts')) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_NATIVE_SESSION_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_UNREAD_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the app unread counts line');
       }
     }
 
@@ -16118,6 +16169,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Registry First — people:',
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
+      '**Registry First — team requests:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is
@@ -16334,6 +16386,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // will guess. Mirrored like every agent-facing capability.
       '### Mesh Self-Healing: stale-owner release + lease hand-back',
       '### Cold-Start Lifeline Fallback',
+      '### Server-down remote recovery',
       // Durable Conversation Identity: framework-agnostic HTTP surface — a
       // Codex/Gemini agent seeing a negative topicId must know it is a minted
       // conversation id resolvable at GET /conversations/:id, or it will guess.

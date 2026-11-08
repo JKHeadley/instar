@@ -1,3 +1,6 @@
+import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
+import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
 import { slackSessionMetadata, slackSessionMetadataAllowed } from './slackSessionMetadata.js';
 import type { SourceChannel } from '../core/attribution/marker.js';
@@ -26,7 +29,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
-import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures } from './mobilePairingRoutes.js';
+import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
@@ -1146,6 +1149,8 @@ export interface RouteContext {
   mobileInbound?: { ingest: (req: any, res: any, trust: MobileInboundTrust) => Promise<void> } | null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); absent/null when off. */
   appConversations?: import('../core/AppConversationService.js').AppConversationService | null;
+  /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
+  conversationUnread?: import('../core/ConversationUnreadService.js').ConversationUnreadService | null;
   /** Echo W28 lifecycle controller installed by createRoutes. AgentServer calls
    * this from its owned timer; tests may invoke it deterministically. */
   windowLifecycleTick?: (() => void) | null;
@@ -2968,7 +2973,7 @@ export function createRoutes(ctx: RouteContext): Router {
     const fallbackRows = ctx.capabilityRegistry.snapshot();
     const scanState = projection?.scanState ?? (fallbackRows.length ? 'observed' : 'never-observed');
     const capabilities = projection ? classifyProjection(projection) : fallbackRows;
-    return res.status(200).json({ advisory: true, scanState, capabilities });
+    return res.status(200).json({ advisory: true, scanState, capabilities, serverDownRecovery: recoveryPoolView() });
   });
   router.get('/capability-registry/health', (_req, res) => {
     const cfg = (ctx.config as InstarConfig & { capabilityRegistry?: { enabled?: boolean } }).capabilityRegistry;
@@ -11565,12 +11570,12 @@ export function createRoutes(ctx: RouteContext): Router {
     // JSONL file; probe I/O is fail-open and cannot break this read route.
     if (!explicitStatus && !includeAll && ctx.sessionReaper) {
       try {
-        const reaperSessions = ctx.sessionReaper.snapshot().sessions;
+        const reaperSessionIds = ctx.sessionReaper.trackedSessionIds();
         recordSessionsReadDiscrepancy(ctx.config.stateDir, {
           sessionsCount: sessions.length,
-          reaperCount: reaperSessions.length,
+          reaperCount: reaperSessionIds.length,
           sessionIds: sessions.map((s) => s.id),
-          reaperSessionIds: reaperSessions.map((s) => s.sessionId),
+          reaperSessionIds,
         });
       } catch { /* @silent-fallback-ok — an observability probe must not break the read it observes */ }
     }
@@ -20938,10 +20943,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // message-origin-all-platforms §4: agent rows carry `origin` for a device, and for a Bearer read
     // that asks (`includeOrigin=1`, set by the pool fan-out so each peer answers with its own join).
     const withOrigin = isDevice || req.query.includeOrigin === '1';
+    // Unread (mobile-unread-messages §3.5): a device reader's effective position, for the "Unread messages" divider.
+    const readUpToField = (): Record<string, unknown> => {
+      const unread = ctx.conversationUnread;
+      if (!isDevice || !unread || !unread.enabled()) return {};
+      const reader = unread.resolveReader({ person: ctx.mobilePairingService ? devicePersonOf(req) : null, viaDevice: true });
+      return reader ? { readUpTo: unread.readUpTo(reader, `telegram:${topicId}`) } : {};
+    };
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped });
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, ...readUpToField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -21000,7 +21012,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) } });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -24078,6 +24090,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // 200 (Bearer-auth via the global middleware); `enabled:false` + an empty/
   // single-machine view on installs where the pool registry isn't wired (dark).
   // The /pool view, shared with the phone's GET /mobile/machines (mobile-native-ops-screens).
+  function recoveryPoolView(){
+    const membership=Object.fromEntries((ctx.coordinator?.managers?.identityManager?.getActiveMachines()??[]).map(row=>[row.machineId,Date.parse(row.entry.pairedAt)]));
+    return recoveryPoolHealth(ctx.meshSelfId??null,(ctx.listPoolMachines?.()??[]).map(p=>p.machineId),Date.now(),membership);
+  }
   function poolView(): Record<string, unknown> {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     // Rope-condition decoration: the registry's `online` flag feeds placement and
@@ -24112,8 +24128,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         : null,
       machines,
       sshEnrollment,
+      serverDownRecovery: recoveryPoolView(),
     };
   }
+
+  const recoverySetup = () => (globalThis as { __instarRecoverySetup?: import('../recovery/RecoverySetupRuntime.js').RecoverySetupRuntime }).__instarRecoverySetup;
+  router.use(createRecoverySetupRoutes({
+    agentId:ctx.config.projectName,
+    verifyOperator:req=>ctx.verifyDashboardOperatorSession?.(req.get('X-Instar-Operator-Session'))===true,
+    status:()=>recoverySetup()?.status() ?? {state:'setup-required',reason:'recovery-machine-pairing-required',ready:false},
+    relayOrigin:()=>recoverySetup()?.relayOrigin() ?? null,
+    prepare:async()=>{const setup=recoverySetup();if(!setup)throw new Error('recovery-machine-pairing-required');return setup.prepare();},
+    grantRequest:async()=>{const setup=recoverySetup();if(!setup)throw new Error('recovery-machine-pairing-required');return setup.grantRequest();},
+    install:async()=>{const setup=recoverySetup();if(!setup)throw new Error('recovery-machine-pairing-required');return setup.install();},
+  }));
 
   router.get('/pool', (_req, res) => {
     res.json(poolView());
@@ -24134,10 +24162,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
 
   router.get('/machines/ssh-health', (_req, res) => {
     if (!ctx.mutualSshHealth) {
-      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent' });
+      res.status(503).json({ error: 'mutual SSH subsystem is dark on this agent',serverDownRecovery:recoveryPoolView() });
       return;
     }
-    res.json(ctx.mutualSshHealth());
+    res.json({ ...(ctx.mutualSshHealth() as Record<string, unknown> ?? {}), serverDownRecovery: recoveryPoolView() });
   });
 
   // GET /pool/reconciler — Fix #3 observability (Observable Intelligence). The WS1.3
@@ -42398,6 +42426,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       const relayClient = ctx.threadlineRelayClient;
       const defs = buildChannelDefinitions({
+        serverDownRecovery:()=>{const pool=recoveryPoolView();return {ready:pool.ready,reason:pool.ready?'two-fresh-independent-peer-proofs-on-every-target':'recovery-degraded-or-unknown'};},
         agentRelayStatus: localOnly ? undefined : agentThreadlineStatus,
         relayStatus: () => {
           if (!relayClient) return null;

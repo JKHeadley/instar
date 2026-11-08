@@ -26,6 +26,8 @@ For several agents, each agent stays independent, with no central service. Your 
 ## Safeguards
 
 - **The agent can take access away but can never give it.** Every change is a request signed by a person's phone, and the signed request itself is kept in a log copied to all the agent's machines. A forged entry is ignored. So nobody can talk the agent into giving them more. If someone asks the agent for access, the owner gets an Approve button instead.
+- **A refusal says why, in words.** Every time a phone is turned away it gets a plain reason, never a raw error.
+- **Anyone can ask, and asking gives nothing.** When someone asks the agent for access, the owner sees a request and approves or declines it. What the owner approves is exactly what the request named, whatever words came with it.
 - **Only the owner's phone can make someone an admin,** and that also needs Face ID. Admins can add members, but only to conversations they can read themselves.
 - **Everyone on the team needs memory privacy on.** Their chats run in a locked-down session. Without that, one person could ask the agent to read files they shouldn't see, and the roles would mean nothing. If privacy goes off, those phones stop working until it's back.
 - **A shared conversation stops using the owner's private memory.** Once someone else can read a conversation, the agent treats it as a shared place, and that person can read it only after this has taken effect. The owner is told before sharing.

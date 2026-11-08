@@ -2118,6 +2118,13 @@ export class SessionReaper extends EventEmitter {
     };
   }
 
+  /** The ids the reaper is watching, with no per-session evaluation. snapshot() runs sync child
+   *  processes for every session, so a read that only needs the ids (the GET /sessions
+   *  discrepancy probe) must use this: that probe held the event loop on 2026-11-07. */
+  trackedSessionIds(): string[] {
+    return this.#deps.listRunningSessions().map(s => s.id);
+  }
+
   /** Sync in-memory runtime read for the GuardRegistry (GET /guards).
    *  Cheap property read ONLY — snapshot() is the heavy surface. */
   guardStatus(): { enabled: boolean; dryRun: boolean; lastTickAt: number } {

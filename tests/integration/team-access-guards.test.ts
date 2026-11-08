@@ -97,7 +97,7 @@ async function setup(opts: { machine?: string; pool?: AppPoolHandle } = {}) {
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(pairing)));
   app.use(createTeamRouter(pairing, {
     signer: () => signer, applyConversationChange: async (_r, c) => c(), isSystemTopic: () => false, isJobTopic: () => false,
-    ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }), logsDir: path.join(dir, 'logs'),
+    ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }), logsDir: path.join(dir, 'logs'), stateDir: dir, conversationTitle: () => null,
     restoreRefs: () => ({ teamRefs: [], allRefs: () => [] }), requireMemoryPrivacy: () => true,
   }));
   app.use(createRoutes(ctx));
@@ -574,6 +574,16 @@ describe('with no access log able to open', () => {
     e.pairing.keyLedger = null;
     expect(e.pairing.teamLog()).toBeNull();
     expect(e.pairing.teamOn()).toBe(true);
+  });
+});
+
+describe('a phone reading its own standing', () => {
+  it('a team phone gets its tier and tabs, from the log; a guest has no composer; the owner has no standing', async () => {
+    const { e, mia, owner } = await withMember();
+    expect((await send(e, mia, 'GET', '/mobile/device')).body.standing).toEqual({ tier: 'member', screens: ['chat', 'composer', 'new-conversation', 'my-access'] });
+    await send(e, owner, 'POST', '/mobile/team/people/mia', { events: [{ type: 'person-set', personKey: 'mia', role: 'guest' }] });
+    expect((await send(e, mia, 'GET', '/mobile/device')).body.standing).toEqual({ tier: 'guest', screens: ['chat', 'my-access'] });
+    expect((await send(e, owner, 'GET', '/mobile/device')).body.standing).toBeUndefined();
   });
 });
 
