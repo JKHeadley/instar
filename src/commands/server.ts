@@ -240,8 +240,8 @@ import { decideLeaseGatedSpawn, sharedG3SoakLedger, applyBindingCleanupOnKill } 
 import { isSlackSessionKey, isSlackConversationKey, reconstructSlackMessage } from '../core/SlackForwardBridge.js';
 import { tokenMayWriteConversation } from '../core/conversationKeys.js';
 import { createConversationPorts, conversationResumeViews } from '../core/conversationPorts.js';
-import { actOnUrgent, AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossState, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
-import { appPlacement, runAppMove, runBringBack, setAppPoolMoves } from '../core/appConversationMove.js';
+import { actOnUrgent, AppFlagTracker, AppLeaseGate, AppPoolEnforcer, LEASE_GATE_BOUND_MS, appLossState, appLossWords, appForwardSenderValid, createAppOwnerReceiver, dispatchQueuedInbound, dispatchStoredAppMessage, parseAppForward, type StatusAnswer } from '../core/appConversationPool.js';
+import { appPlacement, ownerAnswering, runAppMove, runBringBack, setAppPoolMoves } from '../core/appConversationMove.js';
 import { DEFAULT_DRAIN_CLAIM_GRACE_MS } from '../core/SessionDrainRunner.js';
 import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
 import type { MachineCapacity } from '../core/types.js';
@@ -29707,10 +29707,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                   // defaults true (the single-router topology).
                   holdsLease: () => (leaseCoordinatorRef ? leaseCoordinatorRef.holdsLease() : true),
                   isStopped: (sk) => stoppedTopics.has(sk),
-                  dispatchInbound: async (msg, handover) => {
-                    if (!_drainLocalDeliver) return { kind: 'un-routable', reason: 'local-tail-not-wired' };
-                    return _drainLocalDeliver(msg, handover);
-                  },
+                  // App rows reach the app tail whether or not Telegram wired the local tail.
+                  dispatchInbound: (msg, handover) => dispatchQueuedInbound(msg, handover, { app: _appDrainDeliver, local: _drainLocalDeliver }),
                   forceReplace: async (msg) => {
                     // At stage 'dark' no forced cross-machine re-place (CMT-1117):
                     // false ⇒ attempts-exhausted + the loss notice, never a
@@ -29980,8 +29978,8 @@ export async function startServer(options: StartOptions): Promise<void> {
               selfId: meshSelfId,
               holdsLease: appHoldsLease,
               read: (rk: string) => ownReg.read(rk),
-              // Direct contact, not `online`: a lingering git-synced beat keeps that true for up to an hour on a dead machine.
-              ownerOnline: (m: string) => { const c = appCaps().find((x) => x.machineId === m); return c?.liveness ? c.liveness.state === 'live' : c?.online === true; },
+              // Fresh direct contact only: neither `online` (a lingering beat) nor a "live" kept for the 15-minute failover window.
+              ownerOnline: (m: string) => ownerAnswering(appCaps().find((x) => x.machineId === m)),
               nicknameOf: appNick,
             };
             setAppPoolMoves({

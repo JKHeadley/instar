@@ -8,6 +8,7 @@ import { planTransferByNickname } from './TransferByNickname.js';
 import type { OwnershipAction, SessionOwnershipRecord } from './SessionOwnership.js';
 import { BRING_BACK_EPOCH_MARGIN, MEMORY_STARTS_EMPTY, NEEDS_UPDATE, NO_PRIVATE_MEMORY, appRecordKey } from './appConversationPool.js';
 import type { MachineCapacity } from './types.js';
+import { READINESS_CONTACT_MAX_AGE_MS } from './poolReadiness.js';
 
 export interface AppMoveAnswer { status: number; body: Record<string, unknown> }
 
@@ -199,6 +200,20 @@ export interface AppBringBackDeps {
   ownerOnline(machineId: string): boolean;
   cas(recordKey: string, action: OwnershipAction, why: 'failover'): { ok: boolean; record?: SessionOwnershipRecord };
   nicknameOf(machineId: string): string | null;
+}
+
+/**
+ * Whether a moved conversation's machine is answering, for its placement and for Bring it back here.
+ * Only fresh DIRECT contact counts, by the same 2-minute rule as pool readiness. Reading
+ * `liveness.state` alone is not enough: a peer stays "live" until its last direct success is older
+ * than the failover threshold (15 minutes by default), which kept Bring it back here hidden that
+ * long after the machine stopped. Bringing back is still the operator's confirmed tap, and a
+ * machine that returns is fenced by its lower epoch.
+ */
+export function ownerAnswering(cap: Pick<MachineCapacity, 'liveness'> | null | undefined): boolean {
+  const l = cap?.liveness;
+  return !!l && l.source === 'direct' && l.state === 'live'
+    && typeof l.evidenceAgeMs === 'number' && l.evidenceAgeMs <= READINESS_CONTACT_MAX_AGE_MS;
 }
 
 export function bringBackWarning(machineName: string): string {
