@@ -285,6 +285,9 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
       size: (p) => { try { const st = fs.statSync(p); return st.isFile() ? st.size : null; } catch { return null; } }, // @silent-fallback-ok: absent or unreadable ⇒ no history
       mkdtemp: (prefix) => fs.mkdtempSync(path.join(localVerifyTempRoot(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),
       removeTree: (p) => removeScopedTree(p, verifyRoot),
+      list: (p) => { try { return fs.readdirSync(p); } catch { return null; } }, // @silent-fallback-ok: unreadable ⇒ nothing to sweep
+      realpath: (p) => { try { return fs.realpathSync(p); } catch { return null; } }, // @silent-fallback-ok: unresolvable ⇒ compare the literal path
+      inUse: (dir) => runCheckoutInUse(dir),
     },
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
@@ -364,5 +367,30 @@ async function holdSuiteSlot(log: (event: Record<string, unknown>) => void): Pro
     try { sem.setMergeGatePriority(priorityKey, false); } catch (e) {
       log({ event: 'suite-priority-error', detail: e instanceof Error ? e.message.slice(0, 200) : String(e) });
     }
+  }
+}
+
+/**
+ * Whether a running process uses a run checkout: its working folder is inside
+ * it (lsof) or its command line names it (ps). null when either cannot be read,
+ * which the orphan sweep treats as in use (disk-steward §5).
+ */
+export function runCheckoutInUse(dir: string): boolean | null {
+  let real = dir;
+  try { real = fs.realpathSync(dir); } catch { /* @silent-fallback-ok: compare the literal path */ }
+  try {
+    const cwds = execFileSync('lsof', ['-w', '-d', 'cwd', '-Fn'], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
+    for (const line of cwds.split('\n')) {
+      if (line.charCodeAt(0) !== 110) continue;
+      const p = line.slice(1);
+      if (p === real || p.startsWith(real + path.sep) || p === dir || p.startsWith(dir + path.sep)) return true;
+    }
+    const cmds = execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
+    for (const c of cmds.split('\n')) {
+      if (c.includes(real + path.sep) || c.includes(dir + path.sep) || c.endsWith(real) || c.endsWith(dir)) return true;
+    }
+    return false;
+  } catch {
+    return null; // @silent-fallback-ok — no process view ⇒ the sweep keeps the checkout
   }
 }

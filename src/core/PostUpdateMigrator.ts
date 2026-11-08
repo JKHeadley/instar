@@ -1626,6 +1626,23 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 }
 
 /**
+ * The Disk Steward section, one definition for fresh agents and updated ones.
+ * Sniff key for the migrator: `/disk-steward`. Spec: docs/specs/disk-steward.md
+ */
+export function DISK_STEWARD_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Disk Steward
+
+Every machine watches its own free space (every 15 minutes, inside the agent server, standbys included) and posts in the "Disk space (all machines)" topic when it gets low: under 15% or 100 GiB free (capped at 30% of small disks), more often under 10% or 60 GiB or when it is on track to fill within 3 days, and always when it reaches the 5% line where uploads are refused. Before warning it clears two tool caches if its cleanup is on (npm cache over 5 GiB, Xcode build files older than a day) and stays quiet if that fixed it. Only the awake machine posts, for every machine; each post names the machine. Cleanup is off by default and on for development agents; it never touches worktrees, agent state or the operator's files.
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
+- **When to use** (PROACTIVE): someone asks how full a machine is, why an upload was refused, or what is taking the space → read \`/disk-steward?scope=pool\` and answer from it in plain words.
+- Someone replies "clear disk on <machine>" in the Disk space topic → find that machine's id in \`/disk-steward?scope=pool\`, then \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/disk-steward/prune -d '{"machineId":"<id>","requestedBy":{"topicId":<topic>}}'\` (202 with a run id; \`GET /disk-steward/prune/<runId>\` for the result). It clears only the two caches, on that machine, and posts what it freed.
+- Someone asks to turn on the worktree cleaner on a machine → set \`monitoring.agentWorktreeReaper\` to \`{ "enabled": true, "dryRun": false }\` in that machine's config, restart it, and report its first pass (\`GET /worktrees/agent-reaper\`). It keeps any worktree that is in use, linked to by another checkout, or holds anything it cannot prove is rebuildable.
+- Disk posts follow the "Disk space" notification choice (quiet by default); the operator turns pushes on through the category push route with their own recent message. Floor posts always come through. Audit: \`logs/disk-steward.jsonl\`.
+`;
+}
+
+/**
  * The machine self-maintenance section, one definition for fresh agents and updated
  * ones. It describes the watch-only build only, and says so: a card claiming restarts
  * would be false until the later increments ship. Sniff key: `/machine-maintenance`.
@@ -13319,6 +13336,15 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
     }
 
+    // Disk Steward (disk-steward spec). Idempotent via content-sniffing on the route path.
+    if (!content.includes('/disk-steward')) {
+      content += '\n' + DISK_STEWARD_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Disk Steward section');
+    } else {
+      result.skipped.push('CLAUDE.md: Disk Steward section already present');
+    }
+
     // Machine self-maintenance, watch-only (machine-self-maintenance spec). Idempotent
     // via content-sniffing on the route path.
     if (!content.includes('/machine-maintenance')) {
@@ -17287,6 +17313,24 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
       patched = true;
       result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
+    // Disk Steward cleanup (docs/specs/disk-steward.md): on for development agents
+    // first. Runs BEFORE applyDefaults so the default `false` cannot pre-empt it;
+    // writes an explicit value the operator can see and flip, and never changes a
+    // value that is already set (idempotent).
+    if ((config as { developmentAgent?: unknown }).developmentAgent === true) {
+      const monitoring = (config.monitoring && typeof config.monitoring === 'object') ? config.monitoring as Record<string, unknown> : {};
+      const ds = (monitoring.diskSteward && typeof monitoring.diskSteward === 'object') ? monitoring.diskSteward as Record<string, unknown> : {};
+      const prune = (ds.prune && typeof ds.prune === 'object') ? ds.prune as Record<string, unknown> : {};
+      if (prune.enabled === undefined) {
+        prune.enabled = true;
+        ds.prune = prune;
+        monitoring.diskSteward = ds;
+        config.monitoring = monitoring;
+        patched = true;
+        result.upgraded.push('config.json: disk steward cache cleanup turned on for this development agent');
+      }
     }
 
     // Apply defaults from the canonical ConfigDefaults registry.

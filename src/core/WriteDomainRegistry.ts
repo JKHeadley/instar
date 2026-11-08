@@ -148,6 +148,21 @@ export interface DirectWriteFileEntry {
 }
 
 export const MACHINE_LOCAL_DIRECT_WRITE_FILES: ReadonlyArray<DirectWriteFileEntry> = [
+  // disk-steward §3.1: samples, level/cadence state, prune run records and child
+  // results describe THIS machine's disk and processes; a copy elsewhere would
+  // watch the wrong disk or recover the wrong process group. Pool-wide view is a
+  // live read (GET /disk-steward?scope=pool).
+  {
+    path: '.instar/state/disk-steward/',
+    domain: 'machine-local',
+    justification: 'hardware-bound-resource',
+    story: {
+      logical: 'pool-scope-read-merge',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-machine disk samples, cadence and prune runs; read live pool-wide by GET /disk-steward?scope=pool; file-level arm in FileClassifier sync exclusions',
+    },
+  },
   // job-cost-reduction §5.4/§13: an episode is a live observation of THIS
   // machine's disk, sessions and server; a copy elsewhere describes the wrong
   // hardware. Visible pool-wide through GET /jobs?scope=pool.

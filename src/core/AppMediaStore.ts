@@ -36,6 +36,10 @@ const DEVICE_MAX_STAGED = 256 * 1024 * 1024;
 const MACHINE_MAX_STAGED = 1024 * 1024 * 1024;
 const FLOOR_ABS_BYTES = 2 * 1024 * 1024 * 1024;
 const FLOOR_FRACTION = 0.05;
+/** Free bytes below which media uploads are refused. The disk steward imports this so the two never disagree. */
+export function mediaDiskFloorBytes(totalBytes: number): number {
+  return Math.max(FLOOR_FRACTION * totalBytes, FLOOR_ABS_BYTES);
+}
 export const UPLOAD_TTL_MS = 24 * 60 * 60_000;
 const EXPIRED_ROW_KEEP_MS = 7 * 24 * 60 * 60_000;
 export const CLAIM_RECOVERY_AGE_MS = 5 * 60_000;
@@ -229,7 +233,7 @@ export class AppMediaStore {
 
   belowDiskFloor(): boolean {
     const d = this.diskSpace();
-    return !!d && d.free < Math.max(FLOOR_FRACTION * d.total, FLOOR_ABS_BYTES);
+    return !!d && d.free < mediaDiskFloorBytes(d.total);
   }
 
   /** Whether this hash already counts against the cap, so admitting it adds nothing. */
