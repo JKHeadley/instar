@@ -105,7 +105,7 @@ async function boot() {
       const svc = server.appConversations!;
       starter ??= createAppSessionStarter(
         { sessions: sessionManager, channels: svc.channels, store: svc.store, stateDir },
-        { isOwner: () => svc.isOwner(), aliasFor: (k) => svc.deps.registry.appAliasFor(k), titleFor: (k) => (svc.liveConversation(k) as { title?: string } | null)?.title ?? null, ownerName: () => 'Justin' },
+        { serves: (k) => svc.serves(k), aliasFor: (k) => svc.deps.registry.appAliasFor(k), titleFor: (k) => (svc.liveConversation(k) as { title?: string } | null)?.title ?? null, ownerName: () => 'Justin' },
       );
       const landed = await starter(key, { framework: null, model: null }, { reason: 'new' });
       return landed ? { session: svc.sessionFor(key), refusal: null } : { session: null, refusal: 'spawn-failed' };

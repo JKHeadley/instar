@@ -43,7 +43,7 @@ export const PEER_LOOKUP_MAX = 16;
 export const AUDIT_ROTATE_BYTES = 2 * 1024 * 1024;
 
 export const NOT_RUNNING_REASON = 'This session is not running any more. It may have finished or been closed.';
-export const LOCATION_UNKNOWN_REASON = 'This session is not running on this machine, and I could not reach your other machines to check where it is.';
+export const LOCATION_UNKNOWN_REASON = 'I could not find which machine runs this session: the other machines did not answer.';
 export const BAD_TEXT_REASON = 'Only plain text can be typed into a session from the phone.';
 export const SEND_FAILED_REASON = 'The session could not take your text right now. It may be starting or restarting; try again in a moment.';
 export const OWNER_ONLY_REASON = "Only the owner's phone can open sessions.";
@@ -73,11 +73,11 @@ export class AttachmentWindow {
   }
 }
 export const BAD_KEY_REASON = 'That key cannot be sent from the phone.';
-export const REMOTE_INPUT_OFF_REASON = 'Typing into sessions from another machine is switched off on that machine. To type to it, move this session to this machine from its menu.';
+export const REMOTE_INPUT_OFF_REASON = 'Typing into sessions from another machine is switched off on that machine. To type to it, move this session to another machine from its menu.';
 
 /** A session on a machine that has not updated yet: it can't be opened through this one. */
 export function peerTooOldReason(nickname: string | null): string {
-  return `${nickname ?? 'That machine'} needs the latest Instar update before this phone can open its sessions. It updates by itself soon. To open it now, move it to this machine from its menu.`;
+  return `${nickname ?? 'That machine'} needs the latest Instar update before this phone can open its sessions. It updates by itself soon. To open it now, move it to an updated machine from its menu.`;
 }
 export function peerUnreachableReason(nickname: string | null): string {
   return `${nickname ?? 'That machine'} isn't answering right now. It will keep trying.`;
@@ -120,8 +120,8 @@ export const REPLAY_RECORD_REASON = 'The agent could not record this request saf
 /** The plain reason for a session another machine runs (the "Open session" sentence shape). */
 export function otherMachineReason(nickname: string | null): string {
   return nickname
-    ? `This session runs on ${nickname}, not on this machine. Open it from ${nickname}.`
-    : 'This session runs on another of your machines, whose name I could not confirm, not on this machine.';
+    ? `This session runs on ${nickname}. Open it from ${nickname}.`
+    : 'This session runs on another of your machines, whose name I could not confirm.';
 }
 
 /** Any control character other than newline and tab: C0, DEL, C1. */

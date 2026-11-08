@@ -22,6 +22,7 @@ import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
+import { setAutonomousRunProbe } from '../core/appConversationMove.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
@@ -1260,7 +1261,7 @@ export class AgentServer {
     /** WS1.4 consent preflight against the machine that owns the run registry. */
     autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
     /** Kick the working-set carrier on the machine that just acquired a topic. */
-    kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
+    kickWorkingSetOnMachine?: (machineId: string, topic: number | string) => void;
     /** Ownership Follows Live Work Part B for POST /sessions/spawn: record THIS
      *  machine as the topic's owner when a topic-bound session is started here,
      *  so a peer's router never treats the topic as unowned and starts a second
@@ -5124,8 +5125,11 @@ export class AgentServer {
           return { goal: job.goal ?? null, remainingMinutes, runKey: job.startedAt ?? null };
         }
       : null);
-    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topic: number) => {
+    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topicRef: number | string) => {
+      // An app conversation's key resolves to this machine's alias here, and to the target's own on arrival.
       if (machineId === options.meshSelfId) {
+        const topic = typeof topicRef === 'number' ? topicRef : options.conversationRegistry?.appAliasFor(topicRef.replace(/^app:/, '')) ?? null;
+        if (topic === null) return;
         const coordinator = options.workingSetPullCoordinator;
         if (!coordinator) return;
         void (async () => {
@@ -5155,7 +5159,7 @@ export class AgentServer {
             const response = await fetch(`${peer.url}/coherence/fetch-working-set`, {
               method: 'POST',
               headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ topic }),
+              body: JSON.stringify({ topic: topicRef }),
               signal: AbortSignal.timeout(5_000),
             });
             if (!response.ok) continue;
@@ -5166,6 +5170,7 @@ export class AgentServer {
       })();
     });
     setMoveAftercare(kickWorkingSetOnMachine);
+    setAutonomousRunProbe(autonomousRunOnMachine);
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
@@ -6674,7 +6679,11 @@ export class AgentServer {
         ownerMachineFor: (ref) => {
           // A Slack conversation is held by the machine whose registry minted it (checked above).
           if (ref.kind === 'slack') return null;
-          if (ref.kind === 'app') return appSvcForSession?.isOwner() ? null : leaseHolderNow();
+          if (ref.kind === 'app') {
+            if (appSvcForSession?.serves(ref.key)) return null;
+            // A moved conversation lives where its record says (app-conversations-in-the-pool §2.1).
+            return routeCtx.sessionOwnershipRegistry?.ownerOf(`app:${ref.key}`) ?? leaseHolderNow();
+          }
           return routeCtx.sessionOwnershipRegistry?.ownerOf(String(ref.topicId)) ?? leaseHolderNow();
         },
         selfMachineId: selfIdNow,

@@ -373,3 +373,29 @@ describe('a Slack conversation caught mid-transfer goes back to its owner (slack
     } finally { rig.cleanup(); }
   });
 });
+
+describe('nothing in the reconciler places an app conversation (app-conversations-in-the-pool §2.2)', () => {
+  const RK = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
+  it('a leftover pin never moves one: no transfer, claim or adoption', () => {
+    const rig = mkRig();
+    try {
+      ownActive(rig, RK);
+      rig.pins.set(RK, PEER);
+      const rep = rig.tick();
+      expect(rep.transfers).toBe(0);
+      expect(rep.examined).toBe(0);
+      expect(rig.reg.read(RK)).toMatchObject({ ownerMachineId: SELF, status: 'active' });
+    } finally { rig.cleanup(); }
+  });
+  it('a `transferring` record is left to its own owner: never claimed by the target, never aborted here', () => {
+    const rig = mkRig();
+    try {
+      ownActive(rig, RK, PEER);
+      expect(rig.reg.cas({ type: 'transfer', to: SELF, drain: true }, { sessionKey: RK, sender: PEER, nonce: 't-1' }).ok).toBe(true);
+      const rep = rig.tick();
+      expect(rep.claims).toBe(0);
+      expect(rep.aborts).toBe(0);
+      expect(rig.reg.read(RK)).toMatchObject({ ownerMachineId: PEER, status: 'transferring' });
+    } finally { rig.cleanup(); }
+  });
+});

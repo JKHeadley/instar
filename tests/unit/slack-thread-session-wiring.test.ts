@@ -112,10 +112,10 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
     // owned by THIS machine → reconstruct the Message and replay it.
     const acceptStart = SERVER_TS.indexOf('onAccepted: (cmd) => {');
     expect(acceptStart).toBeGreaterThan(-1);
-    const acceptBlock = SERVER_TS.slice(acceptStart, acceptStart + 4000);
+    const acceptBlock = SERVER_TS.slice(acceptStart, acceptStart + 5000);
     expect(acceptBlock).toContain('_slackInboundDispatch');
     // Slack keys are non-numeric; Telegram topic keys are pure numbers.
-    expect(acceptBlock).toContain('isSlackSessionKey(slackKey)');
+    expect(acceptBlock).toContain('isSlackConversationKey(slackKey)');
     expect(acceptBlock).toContain('reconstructSlackMessage(');
   });
 });

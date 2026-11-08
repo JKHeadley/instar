@@ -165,7 +165,7 @@ describe('claims', () => {
     const e = setup();
     const u = await completed(e, png());
     e.media.claimUploads([u.uploadId], 'm-a');
-    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12 });
+    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12, diskSpace: () => ({ free: 1e12, total: 2e12 }) });
     e.clock.t += CLAIM_RECOVERY_AGE_MS + 1;
     restarted.recoverClaims(() => false);
     expect(restarted.getUpload(u.uploadId)!.state).toBe('complete');
@@ -177,7 +177,7 @@ describe('claims', () => {
     const u = await completed(e, bytes);
     e.media.claimUploads([u.uploadId], 'm-a');
     await e.media.publishClaimed([u.uploadId]);
-    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12 });
+    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12, diskSpace: () => ({ free: 1e12, total: 2e12 }) });
     e.clock.t += CLAIM_RECOVERY_AGE_MS + 1;
     restarted.recoverClaims(() => false);
     expect(restarted.getUpload(u.uploadId)).toMatchObject({ state: 'complete', blobReady: 1 });
@@ -193,7 +193,7 @@ describe('claims', () => {
     e.media.claimUploads([u.uploadId], 'm-a');
     await e.media.publishClaimed([u.uploadId]);
     mediaEvent(e, 'm-a', bytes);
-    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12 });
+    const restarted = new AppMediaStore({ stateDir: e.dir, store: e.store, now: () => e.clock.t, maxStoreBytes: () => 1e12, diskSpace: () => ({ free: 1e12, total: 2e12 }) });
     e.clock.t += CLAIM_RECOVERY_AGE_MS + 1;
     restarted.recoverClaims((id) => e.store.hasMessage(id));
     expect(restarted.getUpload(u.uploadId)!.state).toBe('sent');

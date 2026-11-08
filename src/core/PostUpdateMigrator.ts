@@ -1113,8 +1113,11 @@ export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native sessio
  * The native Accounts / What thinking costs / Resource usage reads (docs/specs/mobile-native-capacity-screens.md),
  * one bullet in the Mobile app routes block after the probe bullet. Sniff: `GET /mobile/accounts`.
  */
+/** The capacity bullet's old resources clause, and its replacement (resources now cover every machine). */
+export const MOBILE_CAPACITY_SCREENS_RESOURCES_OLD = "Accounts and spend cover every machine that answers (a machine that didn't is named); resources are this machine's.";
+export const MOBILE_CAPACITY_SCREENS_RESOURCES_NEW = "Accounts, spend and resources cover every machine that answers (a machine that didn't is named, never shown as zeros; resources with ?scope=local is the one-machine peer read).";
 export function MOBILE_CAPACITY_SCREENS_LINE(port: number): string {
-  return `- The app's native Accounts, What thinking costs and Resource usage screens read \`GET /mobile/accounts\`, \`GET /mobile/spend?window=today|week|month\` and \`GET /mobile/resources\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Accounts, What thinking costs and Resource usage views show (no login folders, machine or account ids, credential references or raw errors). Accounts and spend cover every machine that answers (a machine that didn't is named); resources are this machine's. Signing in and spending limits stay in the console. When the operator asks "what does my phone show for accounts?" or "why does the app say an account needs signing in?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/accounts\`.`;
+  return `- The app's native Accounts, What thinking costs and Resource usage screens read \`GET /mobile/accounts\`, \`GET /mobile/spend?window=today|week|month\` and \`GET /mobile/resources\` (read-only; an owner phone or my token; an MSP phone gets 403 \`owner-phone-required\`): trimmed summaries of what the console's Accounts, What thinking costs and Resource usage views show (no login folders, machine or account ids, credential references or raw errors). Accounts, spend and resources cover every machine that answers (a machine that didn't is named, never shown as zeros; resources with ?scope=local is the one-machine peer read). Signing in and spending limits stay in the console. When the operator asks "what does my phone show for accounts?" or "why does the app say an account needs signing in?", read the same answer: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/accounts\`.`;
 }
 export const MOBILE_CAPACITY_SCREENS_MARKER = 'GET /mobile/accounts';
 /**
@@ -1181,6 +1184,14 @@ export function MOBILE_SESSION_APP_NEW_LINE(port: number): string {
   return `- A New session can start with its own Instar app conversation: \`POST /sessions/create\` with \`{"name":"…","platform":"app"}\` on http://localhost:${port} creates the conversation, sets its engine and model if you pick them, and starts a session attached to it (\`conversationKey\` in the answer; \`started:false\` with a reason when the session couldn't start yet). With no Telegram or Slack it is the automatic choice; terminal-only stays available as \`platform:"headless"\`. Jobs and helper sessions never get one. **When to use**: the operator wants a new session they can talk to from the app — start it this way rather than terminal-only.`;
 }
 export const MOBILE_SESSION_APP_NEW_MARKER = `"platform":"app"`;
+/**
+ * App conversations move between machines (docs/specs/app-conversations-in-the-pool.md §7), one bullet
+ * after the New session bullet. Sniff: `POST /pool/transfer\` with \`app:<key>`.
+ */
+export function MOBILE_APP_POOL_LINE(): string {
+  return '- App conversations move like Telegram topics (`POST /pool/transfer` with `app:<key>`, when all your machines are updated). This is on for development agents first: elsewhere that call answers 503 and the conversation stays on the machine holding the lease. Slack conversations stay with the machine that holds the Slack connection.';
+}
+export const MOBILE_APP_POOL_MARKER = 'with `app:<key>`, when all your machines';
 /**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
@@ -1353,6 +1364,7 @@ ${MOBILE_HEALTH_CHOICES_LINE(port)}
 ${MOBILE_SESSION_CONTROLS_LINE(port)}
 ${MOBILE_SESSION_SWAP_ANY_LINE(port)}
 ${MOBILE_SESSION_APP_NEW_LINE(port)}
+${MOBILE_APP_POOL_LINE()}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -10034,6 +10046,14 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added the native Accounts, Spend and Resource usage line');
     }
 
+    // Resource usage now covers every machine (2026-11-06): an existing capacity bullet that still says
+    // "resources are this machine's" gets the new wording. Idempotent: the old phrase is gone once replaced.
+    if (content.includes(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD)) {
+      content = content.replace(MOBILE_CAPACITY_SCREENS_RESOURCES_OLD, MOBILE_CAPACITY_SCREENS_RESOURCES_NEW);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: Resource usage line now covers every machine');
+    }
+
     // Native Plans / Learned / Other agents reads (docs/specs/mobile-native-plans-people.md): one bullet
     // after the capacity bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_PLANS_PEOPLE_MARKER)) {
@@ -10222,6 +10242,20 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the app-conversation New session line');
+    }
+    // App conversations move between machines (docs/specs/app-conversations-in-the-pool.md §7): one
+    // bullet after the New session bullet of an existing Mobile app routes block.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_APP_POOL_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_SESSION_APP_NEW_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_APP_POOL_LINE());
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_APP_POOL_LINE()}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the app conversations move line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.

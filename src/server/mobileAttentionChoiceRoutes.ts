@@ -32,7 +32,7 @@ export interface AttentionChoiceDeps {
 export function choiceAnswer(choice: AttentionChoice, r: { status: number; body: unknown }): { status: number; body: Record<string, unknown> } {
   if (r.status >= 200 && r.status < 300) return { status: 200, body: { ok: true, message: choice === 'done' ? 'Marked done.' : 'Ignored. It won\'t ask again.' } };
   if (r.status === 404) return { status: 404, body: { ok: false, error: 'not-found', message: 'This is already gone. Pull to refresh.' } };
-  if (r.status === 503 || r.status === 409) return { status: r.status, body: { ok: false, error: 'not-here', message: 'This machine can\'t change it right now. Try again in a moment.' } };
+  if (r.status === 503 || r.status === 409) return { status: r.status, body: { ok: false, error: 'not-here', message: 'The agent can\'t change it right now. Try again in a moment.' } };
   return { status: r.status || 502, body: { ok: false, error: 'not-changed', message: r.status ? `Not changed: the agent answered ${r.status}. Try again.` : 'Not changed: the agent couldn\'t be reached. Try again.' } };
 }
 

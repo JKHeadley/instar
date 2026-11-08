@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { actionLine, buildAction, type PermissionAction, type SessionAction } from '../../src/server/mobilePermissionsRoutes.js';
 import {
   closeAnswer, createBody, doorRows, machineRows, modelOptionWords, modelWords, moveAnswer, newSessionAnswer, regimeWords, runSessionAction,
-  summarizeControls, summarizeNewOptions, type RouteAnswer, DOOR,
+  summarizeControls, summarizeNewOptions, selfNameOf, type RouteAnswer, DOOR,
 } from '../../src/server/mobileSessionControlsRoutes.js';
 import { DEVICE_ALLOWLIST } from '../../src/server/mobilePairingRoutes.js';
 import { AttachmentWindow, DEVICE_KEYS, peerTooOldReason, redactDeep } from '../../src/server/mobileSessionTerminalRoutes.js';
@@ -162,7 +162,9 @@ describe('the words', () => {
   it('machines: fewer than two is none; a machine that can not be picked says why', () => {
     expect(machineRows({ machines: [{ machineId: 'a', nickname: 'A', online: true }] })).toBeNull();
     const rows = machineRows(POOL)!.rows;
-    expect(rows.find((m) => m.machineId === 'm_self')).toMatchObject({ here: true, selectable: true, label: 'Studio (this machine)' });
+    expect(rows.find((m) => m.machineId === 'm_self')).toMatchObject({ here: true, selectable: true, label: 'Studio' });
+    expect(selfNameOf(POOL)).toBe('Studio');
+    expect(selfNameOf({ machines: [] })).toBeNull();
     expect(rows.find((m) => m.machineId === 'm_peer')).toMatchObject({ selectable: true, label: 'Mac Mini (at usage limit)' });
     expect(rows.find((m) => m.machineId === 'm_down')).toMatchObject({ selectable: false, reason: 'not answering' });
     expect(rows.find((m) => m.machineId === 'm_clock')).toMatchObject({ selectable: false, reason: 'clock out of step' });
@@ -173,7 +175,8 @@ describe('the words', () => {
   });
   it('a peer too old names the way forward', () => {
     expect(peerTooOldReason('Mac Mini')).toContain('Mac Mini needs the latest Instar update');
-    expect(peerTooOldReason('Mac Mini')).toContain('move it to this machine');
+    expect(peerTooOldReason('Mac Mini')).toContain('move it to an updated machine');
+    expect(peerTooOldReason('Mac Mini')).not.toMatch(/this machine/i);
   });
 });
 
@@ -194,12 +197,12 @@ describe('the menu', () => {
     expect((c.door as { reason: string }).reason).not.toContain('Telegram');
     expect(c.typing).toEqual({ can: true, reason: null });
   });
-  it('an app or Slack conversation gets the engine switch; app moving waits for part 3b, Slack stays with its connection, said plainly', () => {
+  it('an app or Slack conversation gets the engine switch; an app conversation says moving is off where it is off, Slack stays with its connection, said plainly', () => {
     const app = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
     const c = summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined, conversationRef: app } }), {}, 0);
     expect(c.door).toMatchObject({ state: 'ok', topic: app });
     expect(c.move).toMatchObject({ state: 'not-yet' });
-    expect((c.move as { reason: string }).reason).toContain('App conversations get it next');
+    expect((c.move as { reason: string }).reason).toContain('isn\'t turned on for this agent yet');
     const slack = summarizeControls(parts({ row: { ...ROW, platform: 'slack', platformId: 'C0ABC', conversationRef: 'slack:T0XYZ:C0ABC' } }), {}, 0);
     expect(slack.door).toMatchObject({ state: 'ok', topic: 'slack:T0XYZ:C0ABC' });
     // slack-conversations-stay-with-connection §2.4: a Slack conversation stays with its connection.
@@ -236,7 +239,7 @@ describe('the menu', () => {
   });
   it('new session options: the default in words, and a failed read still lets it start', () => {
     const o = summarizeNewOptions(ok(OPTIONS), ok(POOL), {}, 0);
-    expect(o.defaultWords).toBe('New topics start on Codex (not verified) · GPT-6 (this machine only).');
+    expect(o.defaultWords).toBe('New topics start on Codex (not verified) · GPT-6 (on Studio only).');
     expect(o.doorsState).toBe('ok');
     const bad = summarizeNewOptions({ status: 503, body: null }, ok(POOL), {}, 0);
     expect(bad.doorsState).toBe('unavailable');

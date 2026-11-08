@@ -213,7 +213,7 @@ describe('copying between machines over signed MeshRpc', () => {
     b.svc.replicator.attachTransport({ peers: () => [{ machineId: 'A', nickname: 'the mini', online: false }], send: async () => ({ ok: false }) });
     const r = await signed(b, 'GET', `/mobile/media/${sha(bytes)}?ref=app:${key}`);
     expect(r.status).toBe(404);
-    expect(r.body).toEqual({ error: 'media-unavailable', detail: 'This file is not on this machine: the mini is not reachable.' });
+    expect(r.body).toEqual({ error: 'media-unavailable', detail: "This file can't be reached right now: the mini is not reachable." });
   }, 30_000);
 
   it('a corrupted slice is never kept, and the failure is counted for that peer', async () => {
@@ -320,7 +320,7 @@ describe('the owner delivers media it does not hold yet', () => {
     const token = b.bindAuth.mint('sess-app', [alias]) as string;
     const r = await request(b.app).get(`/app/media-path/${ev.attachments[0].attachmentId}?conversationId=${alias}`).set('Authorization', 'Bearer tok-1').set('X-Instar-Bind-Token', token);
     expect(r.status).toBe(404);
-    expect(r.body.detail).toMatch(/not on this machine yet; this machine is not connected/);
+    expect(r.body.detail).toMatch(/hasn't been copied over yet; the agent's machines are not connected to each other/);
   }, 30_000);
 });
 

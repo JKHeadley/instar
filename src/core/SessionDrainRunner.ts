@@ -103,7 +103,7 @@ export interface SessionDrainRunnerDeps {
    *  `true` when there is no local session at all — nothing to drain. */
   sessionQuiet: (sessionKey: string) => boolean;
   /** The emergency-stop flag (checked EVERY poll — user safety preempts the move). */
-  emergencyStopActive: () => boolean;
+  emergencyStopActive: (sessionKey: string) => boolean;
   /** Close the topic's local session. `force` at the bound (the session did not
    *  reach a boundary in time); implementations escalate to hard-kill if wedged. */
   terminateSession: (
@@ -126,6 +126,8 @@ export interface SessionDrainRunnerDeps {
     sessionKey: string; transferEpoch: number; activeEpoch: number;
   }) => void;
   audit?: (event: Record<string, unknown>) => void;
+  /** The drain for this key ended, aborted or completed: a per-conversation emergency flag clears here. */
+  onDrainEnded?: (sessionKey: string) => void;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   nonce: () => string;
@@ -153,13 +155,31 @@ export const DEFAULT_DRAIN_CLAIM_GRACE_MS = DEFAULT_DRAIN_RUNNER_CONFIG.drainBou
 export class SessionDrainRunner {
   private readonly deps: SessionDrainRunnerDeps;
   private readonly cfg: SessionDrainRunnerConfig;
+  /** Drains running now, by key. Bounded by the runner's own bound. */
+  private readonly running = new Map<string, number>();
 
   constructor(deps: SessionDrainRunnerDeps, cfg: Partial<SessionDrainRunnerConfig> = {}) {
     this.deps = deps;
     this.cfg = mergeDefaults(DEFAULT_DRAIN_RUNNER_CONFIG, cfg);
   }
 
+  /** Is a drain for this key running on this machine right now? (The app reply window, §2.1.) */
+  isRunning(sessionKey: string): boolean {
+    return (this.running.get(sessionKey) ?? 0) > 0;
+  }
+
   async run(req: DrainRequest): Promise<DrainOutcome> {
+    this.running.set(req.sessionKey, (this.running.get(req.sessionKey) ?? 0) + 1);
+    try {
+      return await this.runInner(req);
+    } finally {
+      const n = (this.running.get(req.sessionKey) ?? 1) - 1;
+      if (n > 0) this.running.set(req.sessionKey, n); else this.running.delete(req.sessionKey);
+      try { this.deps.onDrainEnded?.(req.sessionKey); } catch { /* @silent-fallback-ok — bookkeeping; the drain's outcome stands */ }
+    }
+  }
+
+  private async runInner(req: DrainRequest): Promise<DrainOutcome> {
     const d = this.deps;
     const audit = (event: string, detail: Record<string, unknown> = {}) =>
       d.audit?.({ event, sessionKey: req.sessionKey, target: req.target, ...detail });
@@ -301,7 +321,7 @@ export class SessionDrainRunner {
     const startedAt = d.now();
     let interrupted = false;
     for (;;) {
-      if (d.emergencyStopActive()) {
+      if (d.emergencyStopActive(req.sessionKey)) {
         return abortTransfer(autonomousRunSuspended, 'aborted-emergency-stop');
       }
       if (d.sessionQuiet(req.sessionKey)) break;
@@ -360,7 +380,7 @@ export class SessionDrainRunner {
     // Termination is awaited and may take long enough for the operator's
     // emergency stop to arrive. Recheck at the final authority boundary,
     // immediately before the target claim CAS.
-    if (d.emergencyStopActive()) {
+    if (d.emergencyStopActive(req.sessionKey)) {
       return abortTransfer(autonomousRunSuspended, 'aborted-emergency-stop');
     }
     if (interrupted) {
