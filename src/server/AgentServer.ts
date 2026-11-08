@@ -2074,7 +2074,10 @@ export class AgentServer {
         onLeaseReceived: options.leaseTransport
           ? (lease: unknown) => options.leaseTransport!.recordObserved(lease as any)
           : undefined, // returns the resulting observed epoch → accept-ack (Decision 9)
-        onLeasePullRequest: options.onLeasePullRequest,
+        onLeasePullRequest: () => {
+          options.coordinator?.noteLeasePeerPull();
+          return options.onLeasePullRequest?.() ?? null;
+        },
         onLiveTailReceived: options.liveTailReceiver,
         onHandoffAck: options.handoffWireTransport
           ? (ack: unknown) => options.handoffWireTransport!.recordAck(ack)

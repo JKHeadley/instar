@@ -54,6 +54,11 @@ export interface LeaseStore {
    */
   forceLocalExpiry?(): void;
   /**
+   * True when this store is only this machine's own copy, so nothing durable tells it what a
+   * peer did while it was down. A takeover made meanwhile can then only be learned by asking.
+   */
+  hasNoSharedMedium?(): boolean;
+  /**
    * Pull the latest durable state into the local view WITHOUT writing.
    * Used to prime a freshly-booted/joined machine with fresh data before its
    * first failover-eligibility decision — otherwise it evaluates
@@ -394,6 +399,20 @@ export class LeaseCoordinator {
   }
 
   /**
+   * On a store holding only this machine's copy, nothing durable says what a peer did meanwhile,
+   * so one number can be reached by both machines. Our copy at that number, once expired, says
+   * nothing: a peer's later-expiring lease there is the truth. Without this the machine would
+   * keep naming itself, serve its dead copy to the live holder, and read as a tie.
+   */
+  private peerOutranksLapsedSelf(peer: LeaseRecord, stored: LeaseRecord | null): boolean {
+    if (!this.d.store.hasNoSharedMedium?.()) return false;
+    if (peer.holder === this.selfMachineId || peer.released) return false;
+    const own = this.selfIssued?.epoch === peer.epoch ? this.selfIssued : stored;
+    if (!own || own.holder !== this.selfMachineId || !this.fl.isExpired(own, this.now())) return false;
+    return new Date(peer.expiresAt).getTime() > new Date(own.expiresAt).getTime();
+  }
+
+  /**
    * Compute the current effective epoch = max(tunnel-observed accepted, git).
    * A tunnel lease is folded in only if acceptTunnelLease passes (valid sig,
    * ≥ git floor, fresh nonce).
@@ -402,6 +421,7 @@ export class LeaseCoordinator {
     const git = this.d.store.read();
     let bestLease = git.lease;
     let epoch = git.epoch;
+    let peerOutranksSelf = false;
     if (this.d.tunnel) {
       const obs = this.d.tunnel.observed();
       if (obs.lease) {
@@ -444,6 +464,9 @@ export class LeaseCoordinator {
           if (obs.lease.epoch > epoch) {
             bestLease = obs.lease;
             epoch = obs.lease.epoch;
+          } else if (obs.lease.epoch === epoch && this.peerOutranksLapsedSelf(obs.lease, bestLease)) {
+            bestLease = obs.lease;
+            peerOutranksSelf = true;
           }
         }
       }
@@ -458,7 +481,10 @@ export class LeaseCoordinator {
     }
     // Fold in our own freshest self-issued lease (a renewal's new expiry lives
     // here, not in coarse git). Only while not superseded by a higher epoch.
-    if (this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch) {
+    if (
+      this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch &&
+      !(peerOutranksSelf && this.selfIssued.epoch === epoch)
+    ) {
       bestLease = this.selfIssued;
       epoch = this.selfIssued.epoch;
     }
@@ -794,6 +820,17 @@ export class LeaseCoordinator {
     return peer.epoch > ourEpoch;
   }
 
+  /** The store is only this machine's copy: see LeaseStore.hasNoSharedMedium. */
+  hasNoSharedMedium(): boolean {
+    return !!this.d.store.hasNoSharedMedium?.();
+  }
+
+  /** A peer's expired or released record proves nothing is being held, so it cannot be a tie. */
+  observedPeerLeaseLive(): boolean {
+    const peer = this.observedPeerLease();
+    return !!peer && !peer.released && !this.fl.isExpired(peer, this.now());
+  }
+
   /**
    * Whether the current peer-held effective lease is takeable by the normal
    * fenced acquisition rules right now. This is a scheduling hint only: callers
@@ -881,11 +918,15 @@ export class LeaseCoordinator {
         return false;
       }
       // Taking back our own lapsed lease (restart, wake): ask the peers first, once, so a
-      // takeover that happened meanwhile is seen rather than tied at the same epoch.
+      // takeover that happened meanwhile is seen rather than tied at the same epoch. A store
+      // holding only this machine's copy always asks: its lease says nothing about the peer,
+      // and claiming without asking is what made a pair restart each other for good. What the
+      // ask brings back lands in the view, so the check above refuses the claim on the next pass.
+      const ownLapse = view.lease?.holder === this.selfMachineId;
       if (
         !askedPeers &&
-        view.lease?.holder === this.selfMachineId &&
-        this.d.soloCaptainHold?.()?.enabled &&
+        (ownLapse || !view.lease) &&
+        ((ownLapse && this.d.soloCaptainHold?.()?.enabled) || this.d.store.hasNoSharedMedium?.()) &&
         this.d.survivorMayHold?.() &&
         this.canPullPeers()
       ) {
@@ -1058,9 +1099,43 @@ export class LeaseCoordinator {
    * Returns false (and self-suspends) if the tunnel medium is configured but
    * has been unreachable for longer than the lease TTL.
    */
+  /**
+   * On a store holding only this machine's copy, a peer that just reached us over signed RPC and
+   * is reading this lease proves the link as well as a push would. It also covers the case a push
+   * cannot: a peer that is booting pulls long before it listens, and if our lease ran out in that
+   * window it would claim, swap the roles, and restart a machine. A peer that is really gone sends
+   * no pulls, so this never keeps a lease alive past a dead link. Re-signs only in the second half
+   * of the lease, so a steady 5-second pull does not churn nonces.
+   */
+  confirmHoldOnPeerPull(): void {
+    if (!this.hasNoSharedMedium() || !this.holdsLease()) return;
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) return;
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId) return;
+    if (new Date(view.lease.expiresAt).getTime() - this.now() > this.fl.ttlMs / 2) return;
+    this.selfIssued = this.fl.signLease(
+      view.epoch,
+      view.lease.acquiredAt,
+      new Date(this.now() + this.fl.ttlMs).toISOString(),
+      this.nextNonce(),
+    );
+    this.markRenewOk();
+  }
+
+  /** A slow broadcast must not replace a newer lease signed while it waited (a peer's pull). */
+  private installRenewal(renewed: LeaseRecord): void {
+    if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce > renewed.nonce) return;
+    this.selfIssued = renewed;
+  }
+
   async renew(): Promise<boolean> {
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId) return false;
+    // A holder never reaches acquireIfEligible's release once something keeps renewing it.
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) {
+      await this.relinquishAndBroadcast('identity-not-provisioned: a live sibling holds the agent identity');
+      return false;
+    }
     // Superseded: a peer verified a higher epoch. Never renew or hold the older one.
     if (this.higherEpochEvidence() > view.epoch) {
       if (this.soloHoldEvidenceEpoch !== null) {
@@ -1100,7 +1175,7 @@ export class LeaseCoordinator {
     }
 
     if (confirmed) {
-      this.selfIssued = renewed;
+      this.installRenewal(renewed);
       this.markRenewOk();
       if (this.soloHoldEvidenceEpoch !== null) {
         featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
@@ -1126,7 +1201,7 @@ export class LeaseCoordinator {
     // skips the preferred and presumed-gone gates, so during a cut both machines may believe
     // they hold until reconnect, when the higher epoch wins.
     if (this.soloCaptainHoldEligible(view.epoch)) {
-      this.selfIssued = renewed;
+      this.installRenewal(renewed);
       this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
       if (this.soloHoldEvidenceEpoch !== view.epoch) {
         // Once per hold, not once per 30-second renewal: a machine can hold for days.
