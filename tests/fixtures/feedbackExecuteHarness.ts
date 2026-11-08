@@ -33,7 +33,7 @@ export interface ExecHarness extends Harness {
   enabled: { value: boolean };
   epoch: { value: number };
   canonical: { value: boolean };
-  repo: { info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
+  repo: { createdBodies: string[]; info: RepoInfo | null; viewer: string | null; accounts: string[] | null };
   identity: { profileAccounts: Array<{ service: string; identity: string; vaultRefs: string[] }>; ownedIdentities: Array<{ service: string; identity: string }>; vaultNames: string[] | null };
   admission: { saturated: boolean; shedding: boolean; updatePending: boolean; rerouteSaturated?: boolean };
   /** When set, the next confined spawns throw this (e.g. a RerouteRefusedError from a full reroute lane). */
@@ -105,7 +105,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
   h.cfg = { dryRun: false, sourceRepoPath: h.sourceRepo, maxConcurrent: 2, maxStartsPerDay: 6, maxOpenPrs: 4, lintCommand: 'npm run lint', baseSmokeTests: ['tests/unit/smoke.test.ts'], maxDurationMinutes: 300, publishRepo: 'agent-bot/repo', reviewGate: 'independent', reviewFailedGraceHours: 24, ...(opts.config ?? {}) };
   h.enabled = { value: true };
   h.epoch = { value: 1 }; h.canonical = { value: true };
-  h.repo = { info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
+  h.repo = { createdBodies: [], info: { ownerLogin: 'Owner', ownerType: 'User', allowAutoMerge: true }, viewer: 'agent-bot', accounts: ['agent-bot'] };
   h.identity = { profileAccounts: [], ownedIdentities: [], vaultNames: [] };
   h.admission = { saturated: false, shedding: false, updatePending: false, rerouteSaturated: false };
   h.spawnError = { value: null };
@@ -161,6 +161,7 @@ export async function createExecHarness(opts: { config?: Partial<ExecuteLiveConf
     viewerLogin: async () => h.repo.viewer,
     authAccounts: async () => h.repo.accounts,
     createPr: async (input) => {
+      h.repo.createdBodies.push(input.body);
       const number = nextPr++;
       h.prs.set(number, { state: 'OPEN', mergedAt: null, headRefOid: HEAD_SHA, mergeCommit: null, author: 'agent-bot', headRefName: input.head.replace(/^[^:]+:/, ''), createHead: input.head, labels: [input.label], title: input.title, body: input.body });
       return { number };

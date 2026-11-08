@@ -1769,6 +1769,58 @@ describe('focused review round regressions', () => {
     expect(h.execStore.latestFor(c.initiativeId)).toMatchObject({ state: 'merge-armed', disarmFailed: true });
   });
 
+  it('a related-tests run that hits its time limit is inconclusive and the fix still reaches a PR', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: null, signal: 'SIGKILL', timedOut: true } : scripted(cmd));
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('pr-open');
+    const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8');
+    expect(audit).toContain('execute:related-tests-inconclusive');
+    expect(h.repo.createdBodies.at(-1)).toContain('ran out of time');
+  });
+
+  it('a failure printed before the related-tests time limit still stops the fix', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    const scripted = h.runScript.fn;
+    h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: null, signal: 'SIGKILL', timedOut: true, stdout: ' FAIL  tests/x.test.ts > breaks' } : scripted(cmd));
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+  });
+
+  it('a related-tests run that fails or floods its output still stops the fix', async () => {
+    for (const [result, reason] of [
+      [{ exitCode: 1, stdout: 'FAIL tests/x.test.ts' }, 'gate:related-tests'],
+      [{ exitCode: null, signal: 'SIGKILL', outputCapped: true }, 'limit:output'],
+    ] as const) {
+      h = await createExecHarness();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? result : scripted(cmd));
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason });
+      h.cleanup();
+    }
+  });
+
+  it('other checks that hit their time limit still stop the fix', async () => {
+    h = await createExecHarness();
+    const { initiativeId } = await startOne();
+    h.runScript.fn = (cmd) => (cmd.command === 'npm run lint' && /-gate$/.test(cmd.cwd) ? { exitCode: null, signal: 'SIGKILL', timedOut: true } : null);
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'limit:command-wall-clock' });
+  });
+
   it('8: lint and the related tests run in a fresh third clone, never the clone the head run\'s test code could rewrite; each run has its own temp directory', async () => {
     h = await createExecHarness();
     await toPrOpen('c1');
