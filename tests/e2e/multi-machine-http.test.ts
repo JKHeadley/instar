@@ -254,7 +254,12 @@ describe('Multi-Machine HTTP E2E', () => {
     const headers = signRequest(envB.machineId, envB.signingKeys.privateKey, body, 77);
     const ok = await fetch(`${baseA}/api/team-access/rows`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
     expect(ok.ok).toBe(true);
-    expect(await ok.json()).toEqual({ rows: [], vector: {} }); // two real servers: a new agent's log is empty
+    const page = await ok.json() as { rows: unknown[]; vector: Record<string, number>; starts?: Record<string, number>; standing?: Record<string, unknown> };
+    // Two real servers: a new agent's log is empty. The page also carries this machine's standing and stream starts.
+    expect(page.rows).toEqual([]);
+    expect(page.vector).toEqual({});
+    expect(page.starts).toEqual({});
+    expect(page.standing).toEqual(expect.objectContaining({ enforcement: expect.any(Number) }));
   });
 
   it('rows can be pushed only by an authenticated machine, and only as a list', async () => {
