@@ -186,3 +186,29 @@ describe('skillLearningEnv', () => {
     expect(env.slack).toEqual({ onMessageLogged: null });
   });
 });
+
+describe('bootReconcileLearnedSkills (the boot pass kept out of startServer)', () => {
+  it('reports a pass that rendered or locked something', async () => {
+    const { bootReconcileLearnedSkills } = await import('../../src/monitoring/skillLearning/wire.js');
+    const info: string[] = []; const warn: string[] = [];
+    const reconciler = { reconcileAll: async () => ({ rendered: 2, conflicts: 1 }) } as never;
+    await bootReconcileLearnedSkills(reconciler, { info: (m) => info.push(m), warn: (m) => warn.push(m) });
+    expect(info).toEqual(['Learned skills: 2 rendered, 1 locked (user edit)']);
+    expect(warn).toEqual([]);
+  });
+
+  it('stays quiet on a pass with nothing to do', async () => {
+    const { bootReconcileLearnedSkills } = await import('../../src/monitoring/skillLearning/wire.js');
+    const info: string[] = [];
+    await bootReconcileLearnedSkills({ reconcileAll: async () => ({ rendered: 0, conflicts: 0 }) } as never, { info: (m) => info.push(m), warn: () => {} });
+    expect(info).toEqual([]);
+  });
+
+  it('never throws when the pass fails, and says why', async () => {
+    const { bootReconcileLearnedSkills } = await import('../../src/monitoring/skillLearning/wire.js');
+    const warn: string[] = [];
+    const reconciler = { reconcileAll: async () => { throw new Error('disk full'); } } as never;
+    await expect(bootReconcileLearnedSkills(reconciler, { info: () => {}, warn: (m) => warn.push(m) })).resolves.toBeUndefined();
+    expect(warn).toEqual(['Learned-skill reconcile at boot: disk full']);
+  });
+});

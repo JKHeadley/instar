@@ -312,7 +312,7 @@ import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } fr
 import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { skillLearningSlackLink, skillLearningTelegramLink } from '../monitoring/skillLearning/SeamFilter.js';
-import { startSkillLearning, skillLearningEnv } from '../monitoring/skillLearning/wire.js';
+import { startSkillLearning, skillLearningEnv, createLearnedSkillReconciler, bootReconcileLearnedSkills } from '../monitoring/skillLearning/wire.js';
 import { SkillLearningSentinel } from '../monitoring/SkillLearningSentinel.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
 import { resolveStableNodeBinary } from '../utils/resolveNodeBinary.js';
@@ -6223,19 +6223,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // deferred design); `monitoring.skillLearning.reconcile.enabled: false` is
     // the live kill switch. Constructed before the git substrate so the boot
     // pull can hand it its first 'pull'.
-    const { LearnedSkillReconciler } = await import('../monitoring/LearnedSkillReconciler.js');
-    const learnedSkillReconciler = new LearnedSkillReconciler({
-      projectDir: config.projectDir,
-      stateDir: config.stateDir,
-      machineId: coordinator.identity?.machineId ?? os.hostname(),
-      enabledFrameworks: () => config.enabledFrameworks ?? config.sessions?.enabledFrameworks,
-      reconcileEnabled: () => liveConfig.get<boolean>('monitoring.skillLearning.reconcile.enabled', true) !== false,
-      tickMinutes: liveConfig.get<number>('monitoring.skillLearning.tickMinutes', 10),
-      // Every reconcile pass waits until startSkillLearning (below) has run the commit journal's own
-      // recovery and released the gate: recovery always precedes the boot pass (slice 2).
-      holdUntilReleased: true,
-      logger: (m) => console.log(pc.dim(`  ${m}`)),
-    });
+    const learnedSkillReconciler = await createLearnedSkillReconciler({ config, liveConfig, machineId: coordinator.identity?.machineId ?? os.hostname(), log: (m) => console.log(pc.dim(`  ${m}`)) });
     // Construct gitSync for BOTH roles when this is a git-backed mesh machine:
     // a standby needs it to pull, and a standby that later self-elects to awake
     // (the Phase-0 scenario) must ALREADY have it so its role-change push fires.
@@ -15732,15 +15720,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Learned-skill rendering reconcile — the boot pass (after the post-update migrations, the boot
     // pull above, and the commit journal recovery startSkillLearning started: the reconciler's gate
     // releases when that recovery finishes) and the 10-minute tick.
-    try {
-      const bootReconcile = await learnedSkillReconciler.reconcileAll('boot');
-      if (bootReconcile.rendered > 0 || bootReconcile.conflicts > 0) {
-        console.log(pc.dim(`  Learned skills: ${bootReconcile.rendered} rendered, ${bootReconcile.conflicts} locked (user edit)`));
-      }
-    } catch (err) {
-      // @silent-fallback-ok — the reconcile counts its own errors; boot continues.
-      console.log(pc.yellow(`  Learned-skill reconcile at boot: ${err instanceof Error ? err.message : String(err)}`));
-    }
+    await bootReconcileLearnedSkills(learnedSkillReconciler, { info: (m) => console.log(pc.dim(`  ${m}`)), warn: (m) => console.log(pc.yellow(`  ${m}`)) });
 
     // Helper Watchdog — detects subagent stalls and rate-limit failures,
     // surfacing them back into the parent session's stdin so the agent

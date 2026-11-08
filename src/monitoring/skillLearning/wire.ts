@@ -34,6 +34,8 @@ import { WriterFence, type WriterFenceDeps } from './WriterFence.js';
 import { VersionStore } from './VersionStore.js';
 import { CommitProtocol } from './CommitProtocol.js';
 import { Retirer } from './Retirer.js';
+import type { LiveConfig } from '../../config/LiveConfig.js';
+import type { LearnedSkillReconciler as LearnedSkillReconcilerType } from '../LearnedSkillReconciler.js';
 
 /** What the commit protocol needs from the reconciler (LearnedSkillReconciler satisfies it). */
 export interface ReconcilerForCommit {
@@ -257,5 +259,46 @@ export function startSkillLearning(
       input.degradationReporter?.report({ feature: 'monitoring.skillLearning', primary: 'SkillLearningSentinel', fallback: 'dark (not constructed)', reason, impact: 'skill learning observes nothing on this machine until the next boot' });
     } catch { /* @silent-fallback-ok — reporting is best-effort */ }
     return null;
+  }
+}
+
+/**
+ * Builds the learned-skill reconciler for server.ts. It lives here, not in `startServer`, because that
+ * function sits at TypeScript's control-flow-analysis limit (TS2563).
+ */
+export async function createLearnedSkillReconciler(a: {
+  config: InstarConfig;
+  liveConfig: Pick<LiveConfig, 'get'>;
+  machineId: string;
+  log: (message: string) => void;
+}): Promise<LearnedSkillReconcilerType> {
+  const { LearnedSkillReconciler } = await import('../LearnedSkillReconciler.js');
+  return new LearnedSkillReconciler({
+    projectDir: a.config.projectDir,
+    stateDir: a.config.stateDir,
+    machineId: a.machineId,
+    enabledFrameworks: () => a.config.enabledFrameworks ?? a.config.sessions?.enabledFrameworks,
+    reconcileEnabled: () => a.liveConfig.get<boolean>('monitoring.skillLearning.reconcile.enabled', true) !== false,
+    tickMinutes: a.liveConfig.get<number>('monitoring.skillLearning.tickMinutes', 10),
+    // Every reconcile pass waits until startSkillLearning has run the commit journal's own recovery and
+    // released the gate: recovery always precedes the boot pass (slice 2).
+    holdUntilReleased: true,
+    logger: a.log,
+  });
+}
+
+/** The boot reconcile pass for server.ts; never throws, because a failed pass must not fail boot. */
+export async function bootReconcileLearnedSkills(
+  reconciler: Pick<LearnedSkillReconcilerType, 'reconcileAll'>,
+  log: { info: (message: string) => void; warn: (message: string) => void },
+): Promise<void> {
+  try {
+    const result = await reconciler.reconcileAll('boot');
+    if (result.rendered > 0 || result.conflicts > 0) {
+      log.info(`Learned skills: ${result.rendered} rendered, ${result.conflicts} locked (user edit)`);
+    }
+  } catch (err) {
+    // @silent-fallback-ok — the reconcile counts its own errors; boot continues.
+    log.warn(`Learned-skill reconcile at boot: ${err instanceof Error ? err.message : String(err)}`);
   }
 }

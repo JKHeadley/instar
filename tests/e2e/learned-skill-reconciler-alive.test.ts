@@ -86,15 +86,19 @@ describe('LearnedSkillReconciler E2E — alive on the production init path', () 
 describe('LearnedSkillReconciler E2E — WIRED into the boot path (dead-code guard)', () => {
   const serverSrc = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
   const orchestratorSrc = fs.readFileSync(path.join(process.cwd(), 'src/core/SyncOrchestrator.ts'), 'utf-8');
+  // The reconciler is built and boot-reconciled by helpers in wire.ts, so startServer stays under TS2563's limit.
+  const wireSrc = fs.readFileSync(path.join(process.cwd(), 'src/monitoring/skillLearning/wire.ts'), 'utf-8');
 
   it('server.ts constructs the reconciler with the live kill switch and the tick knob', () => {
-    expect(serverSrc).toContain('new LearnedSkillReconciler({');
-    expect(serverSrc).toContain("'monitoring.skillLearning.reconcile.enabled'");
-    expect(serverSrc).toContain("'monitoring.skillLearning.tickMinutes'");
+    expect(serverSrc).toContain('const learnedSkillReconciler = await createLearnedSkillReconciler({ config, liveConfig,');
+    expect(wireSrc).toContain('new LearnedSkillReconciler({');
+    expect(wireSrc).toContain("'monitoring.skillLearning.reconcile.enabled'");
+    expect(wireSrc).toContain("'monitoring.skillLearning.tickMinutes'");
   });
 
   it('server.ts runs the boot pass and starts the tick', () => {
-    expect(serverSrc).toMatch(/learnedSkillReconciler\.reconcileAll\('boot'\)/);
+    expect(serverSrc).toMatch(/await bootReconcileLearnedSkills\(learnedSkillReconciler,/);
+    expect(wireSrc).toMatch(/reconciler\.reconcileAll\('boot'\)/);
     // Slice 1: the reconciler's start() moved inside the one-expression skill-learning wiring (TS2563 budget);
     // wire.ts calls `reconciler.start()` unconditionally before the enabled check (tests/unit/skill-learning-wire.test.ts).
     expect(serverSrc).toMatch(/startSkillLearning\(\{ reconciler: learnedSkillReconciler/);

@@ -267,11 +267,13 @@ describe('skill-learning live write path — WIRED into the production server (d
   });
 
   it('server.ts constructs the reconciler with holdUntilReleased: true and runs the boot reconcile AFTER startSkillLearning (recovery first)', () => {
-    const ctor = serverSrc.indexOf('const learnedSkillReconciler = new LearnedSkillReconciler({');
+    const ctor = serverSrc.indexOf('const learnedSkillReconciler = await createLearnedSkillReconciler({');
     expect(ctor).toBeGreaterThan(0);
-    expect(serverSrc.slice(ctor, ctor + 1200)).toContain('holdUntilReleased: true');
+    const helper = wireSrc.indexOf('export async function createLearnedSkillReconciler(');
+    expect(helper).toBeGreaterThan(0);
+    expect(wireSrc.slice(helper, helper + 1400)).toContain('holdUntilReleased: true');
     const start = serverSrc.indexOf('startSkillLearning({ reconciler: learnedSkillReconciler');
-    const boot = serverSrc.indexOf("learnedSkillReconciler.reconcileAll('boot')");
+    const boot = serverSrc.indexOf('await bootReconcileLearnedSkills(learnedSkillReconciler,');
     expect(start).toBeGreaterThan(ctor);
     expect(boot).toBeGreaterThan(start);
   });
