@@ -24,6 +24,9 @@ vi.mock('node:worker_threads', async importOriginal => {
 });
 let worker: URL;
 beforeAll(async () => { worker = await compileOriginConfigWorker(); });
+// The timed-out reads below are forced by the blocked stat, not by the clock, so the budget only
+// needs to be long enough for a read that should succeed, worker start included, on a loaded host.
+const BUDGET_MS = 2_000;
 const readers: OriginConfigReader[] = [];
 afterEach(() => { control.release?.(); for (const reader of readers.splice(0)) reader.close(); control.path = ''; });
 describe('config reader owns actual source work beyond caller timeout', () => {
@@ -34,7 +37,7 @@ describe('config reader owns actual source work beyond caller timeout', () => {
       config: { token: '123:fixture', chatId: '-100123' } }] }));
     migrateSecrets(filename, stateDir);
     control.path = filename; control.started = 0; control.workers = 0;
-    const reader = new OriginConfigReader(stateDir, worker, 300); readers.push(reader);
+    const reader = new OriginConfigReader(stateDir, worker, BUDGET_MS); readers.push(reader);
     const first = reader.read();
     await expect(first).rejects.toThrow('origin-config-reader-timeout');
     const retryWhileBlocked = reader.read(); expect(retryWhileBlocked).toBe(first);
@@ -46,7 +49,7 @@ describe('config reader owns actual source work beyond caller timeout', () => {
     const next = await reader.read();
     expect(next.config.messaging[0].config.chatId).toBe('-100123');
     expect(control.started).toBe(2); expect(control.workers).toBe(1);
-  });
+  }, 15_000);
   it('gives a read 10 seconds by default, so a saturated host is not read as a config failure', () => {
     const reader = new OriginConfigReader(temporaryState(), worker); readers.push(reader);
     expect(reader.readBudgetMs).toBe(10_000);
@@ -55,7 +58,7 @@ describe('config reader owns actual source work beyond caller timeout', () => {
     const stateDir = temporaryState(); await mkdir(path.join(stateDir, 'state'), { recursive: true });
     const filename = path.join(stateDir, 'config.json');
     await writeFile(filename, JSON.stringify({ messaging: [] }));
-    const reader = new OriginConfigReader(stateDir, worker, 300); readers.push(reader);
+    const reader = new OriginConfigReader(stateDir, worker, BUDGET_MS); readers.push(reader);
     const invalidated = vi.fn(); reader.onInvalidated(invalidated);
     const good = await reader.read();
     await new Promise(resolve => setTimeout(resolve, 30));
@@ -73,5 +76,5 @@ describe('config reader owns actual source work beyond caller timeout', () => {
     await expect(reader.read()).rejects.toThrow();
     expect(reader.revision).toBeGreaterThan(good.revision);
     expect(invalidated).toHaveBeenCalled();
-  });
+  }, 15_000);
 });
