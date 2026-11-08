@@ -121,6 +121,8 @@ describe('team access — production wiring', () => {
     const miaDev = makeDevice();
     const redeemed = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code, deviceName: 'Mia phone', devicePublicKey: miaDev.publicKey, appCaps: ['standing'] });
     expect(redeemed.status).toBe(200);
+    expect(redeemed.body.approval).toBe('inviter');
+    expect(redeemed.body.codePageUrl).toBeUndefined();
     const mia = client(app, redeemed.body.deviceId, miaDev);
     const waiting = await owner('GET', '/mobile/team/invites/mia');
     expect(waiting.body.waiting).toHaveLength(1);
@@ -134,6 +136,9 @@ describe('team access — production wiring', () => {
     expect(context.body.machinesBelowFloor).toEqual([]);
     // A machine cannot declare the stream it is writing as gone.
     expect(server.mobilePairing!.teamLog()!.currentIncarnation()).toMatch(/^[0-9a-f]{16}$/);
+
+    expect((await mia('GET', '/mobile/device')).body.standing.tier).toBe('member');
+    expect((await owner('GET', '/mobile/team/context')).body.record.restoreNeeded).toBe(false);
     // She sees and talks only in what she was given.
     const list = await mia('GET', '/mobile/conversations');
     expect(list.status).toBe(200);
@@ -172,6 +177,14 @@ describe('team access — production wiring', () => {
     expect((await owner('POST', '/mobile/team/grants', { events: [{ type: 'grant', personKey: 'mia', ref: shared, access: 'use' }] })).status).toBe(200);
     expect(JSON.stringify((await mia('GET', `/mobile/chat/app/${shared}/messages`)).body)).toContain('Words from before');
     expect(server.mobilePairing!.deviceMayReadMessage(redeemed.body.deviceId, shared, 'held-msg')).toBe(true);
+
+    // Someone asks: it reaches the owner and gives nothing until the owner signs exactly that.
+    const asked = await auth(request(app).post('/team/proposals')).send({ change: { kind: 'grant', personKey: 'mia', ref: secret, access: 'read' }, reason: 'Needs the notes' });
+    expect(asked.status).toBe(201);
+    const waitingRequests = await owner('GET', '/mobile/team/requests');
+    expect(waitingRequests.body.requests[0].summary).toContain('My notes');
+    expect((await mia('GET', `/mobile/chat/app/${secret}/messages`)).status).toBe(404);
+    expect((await owner('POST', `/mobile/team/requests/${asked.body.id}/decline`, {})).status).toBe(200);
 
     // The agent can take access away, and it is gone at once.
     const lowered = await auth(request(app).post('/team/people/mia/lower')).send({ remove: true });

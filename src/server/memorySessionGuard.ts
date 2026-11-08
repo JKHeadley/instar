@@ -52,6 +52,8 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   { method: 'POST', pattern: /^\/internal\/stop-gate\/evaluate$/, limit: 'any' },
   { method: 'GET', pattern: /^\/identity\/soul\/integrity$/, limit: 'any' },
   { method: 'POST', pattern: /^\/feedback$/, limit: 'any' },
+  // Asking the owner for something: the requester comes from the session, and it gives nothing by itself.
+  { method: 'POST', pattern: /^\/team\/proposals$/, limit: 'any' },
 ];
 
 const REPLY_ROUTE = /^\/(?:(telegram|slack|imessage)\/reply\/[^/]+|(whatsapp)\/send\/[^/]+|(slack|app)\/session-reply)$/;

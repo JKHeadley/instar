@@ -102,6 +102,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // Team access: the owner's phone writes, and reads the whole team (team-roles-and-access §4.1).
       ['GET', '/mobile/team/context'],
       ['GET', '/mobile/team/activity'],
+      ['GET', '/mobile/team/requests'],
+      ['POST', '/mobile/team/requests/abc/decline'],
       ['GET', '/mobile/team/invites/mia'],
       ['POST', '/mobile/team/invites'],
       ['POST', '/mobile/team/grants'],

@@ -489,8 +489,11 @@ export class UpdateChecker {
     if (path.resolve(projectDir, '.instar') !== path.resolve(this.stateDir)) {
       throw new Error('Cannot prepare boot-wrapper recovery for this state directory');
     }
-    const { installBootWrapper } = await import('../commands/setup.js');
-    installBootWrapper(projectDir);
+    const { installBootWrapper,installAutoStart } = await import('../commands/setup.js');
+    const {enrolledRecoveryBootstrapMode}=await import('../recovery/RecoveryBootstrapBindings.js');
+    const enrolled=enrolledRecoveryBootstrapMode(projectDir);
+    if(enrolled){if(!installAutoStart(enrolled.agentId,projectDir,enrolled.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');}
+    else installBootWrapper(projectDir);
     if (!fs.readFileSync(jsPath, 'utf-8').includes(marker) || !fs.readFileSync(shPath, 'utf-8').includes(marker)) {
       throw new Error('Boot wrapper did not acquire interrupted-update recovery');
     }

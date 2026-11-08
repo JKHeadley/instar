@@ -1,0 +1,99 @@
+name: Deploy Threadline relay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-threadline-relay
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: relay-production
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build relay without deployment credentials
+        run: >-
+          docker build --file Dockerfile.relay
+          --build-arg RELAY_BUILD_REVISION="$GITHUB_SHA"
+          --tag "threadline-relay:$GITHUB_SHA" .
+
+      - name: Start isolated relay and verify this revision
+        run: |
+          export RELAY_ADMIN_KEY="$(openssl rand -hex 32)"
+          docker run --detach --name relay-smoke --publish 127.0.0.1:18787:8787 \
+            --env RELAY_ADMIN_KEY "threadline-relay:$GITHUB_SHA"
+          trap 'docker rm --force relay-smoke >/dev/null' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18787/health > "$RUNNER_TEMP/relay-health.json"; then
+              jq --exit-status --arg sha "$GITHUB_SHA" \
+                '.status == "ok" and .registry.status == "healthy" and .buildRevision == $sha' \
+                "$RUNNER_TEMP/relay-health.json"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo 'The isolated relay did not become healthy.' >&2
+          exit 1
+
+      - name: Install Fly CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/flyctl"
+          gh release download v0.5.4 --repo superfly/flyctl \
+            --pattern flyctl_0.5.4_Linux_x86_64.tar.gz \
+            --pattern flyctl_0.5.4_checksums.txt --dir "$RUNNER_TEMP/flyctl"
+          cd "$RUNNER_TEMP/flyctl"
+          sha256sum --check --ignore-missing flyctl_0.5.4_checksums.txt
+          tar -xzf flyctl_0.5.4_Linux_x86_64.tar.gz
+          echo "$RUNNER_TEMP/flyctl" >> "$GITHUB_PATH"
+
+      # The token must be scoped to the existing threadline-relay app. Its admin
+      # secret stays on Fly; neither this job nor Docker needs its value.
+      - name: Check host prerequisites and deploy the tested image
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          DOCKER_CONFIG: ${{ runner.temp }}/relay-docker
+          FLY_CONFIG_DIR: ${{ runner.temp }}/relay-fly
+        run: |
+          test -n "$FLY_API_TOKEN" || { echo 'Missing app-scoped FLY_API_TOKEN.' >&2; exit 1; }
+          flyctl secrets list --app threadline-relay --json > "$RUNNER_TEMP/relay-secrets.json"
+          jq --exit-status 'any(.[]; .name == "RELAY_ADMIN_KEY")' "$RUNNER_TEMP/relay-secrets.json"
+          flyctl volumes list --app threadline-relay --json > "$RUNNER_TEMP/relay-volumes.json"
+          jq --exit-status 'any(.[]; .name == "threadline_data" and .region == "sjc" and .state == "created")' \
+            "$RUNNER_TEMP/relay-volumes.json"
+          flyctl auth docker
+          docker tag "threadline-relay:$GITHUB_SHA" "registry.fly.io/threadline-relay:$GITHUB_SHA"
+          docker push "registry.fly.io/threadline-relay:$GITHUB_SHA"
+          flyctl deploy --app threadline-relay --config fly.toml \
+            --image "registry.fly.io/threadline-relay:$GITHUB_SHA" --wait-timeout 180s
+
+      - name: Verify the deployed revision
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --max-time 10 https://threadline-relay.fly.dev/health \
+                > "$RUNNER_TEMP/relay-deployed-health.json"; then
+              if jq --exit-status --arg sha "$GITHUB_SHA" \
+                  '.status == "ok" and .registry.status == "healthy" and .buildRevision == $sha' \
+                  "$RUNNER_TEMP/relay-deployed-health.json"; then
+                exit 0
+              fi
+            fi
+            sleep 2
+          done
+          echo 'The deployed relay did not report the tested revision.' >&2
+          exit 1
+
+      - name: Remove temporary registry credentials
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/relay-docker" "$RUNNER_TEMP/relay-fly"

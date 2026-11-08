@@ -167,8 +167,8 @@
     },
     {
       "path": "src/templates/scripts/instar-watchdog.sh",
-      "sha256": "207d3cf08ac5bd1030dd35f6d30f472aef9c087e5635e23d92bd574d6291af6b",
-      "reason": "monitors/self-heals/escalates; recovery, not refusal of a user or tool action"
+      "sha256": "26d825029b02c4232077dc337c1e0d42fa98760bd746cb74604e50860ebc033d",
+      "reason": "Re-reviewed 2026-11-06: finite exact-agent holds and shared rule ownership constrain only internal owned watchdog actions. Active enrolled rules perform bounded fixed stop/bootstrap and skip npm, interpreter and wrapper rewrites; inactive agents keep ordinary supervision. Typed admission serializes mutation/update authority, not user or tool decisions. Real shell regression covers scope, expiry and tamper refusal."
     },
     {
       "path": "src/templates/scripts/instar-worktree-create.sh",

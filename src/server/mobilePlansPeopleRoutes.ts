@@ -424,6 +424,7 @@ export function healthWords(p: Rec, now: number): { kind: string; words: string;
 
 const CHANNEL_NAMES: Record<string, string> = {
   'threadline-relay': 'Agent network relay', 'a2a-telegram': 'Agent messages through Telegram', 'mutual-ssh': 'Machine-to-machine SSH', 'peer-http': 'Direct peer HTTP',
+  'server-down-recovery': 'Machine recovery',
   'user-telegram': 'Telegram', 'user-slack': 'Slack', 'user-whatsapp': 'WhatsApp', 'user-imessage': 'iMessage',
 };
 const CHANNEL_STATE: Record<string, { words: string; tone: 'ok' | 'attn' | 'bad' | 'unknown' | 'off' }> = {
