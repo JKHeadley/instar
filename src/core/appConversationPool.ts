@@ -21,6 +21,7 @@ import { isExactStopMessage } from './MessageSentinel.js';
 import { isAppConversationKey } from './appConversationText.js';
 import type { AppAttachment } from './appMediaTypes.js';
 import type { MachineCapacity } from './types.js';
+import type { DrainDispatchResult } from './QueueDrainLoop.js';
 
 // ── Words the person reads ──────────────────────────────────────────────────────────────────────
 
@@ -98,7 +99,8 @@ export interface AppForwardPayload {
   /**
    * A team member's stop ends their own conversation, not the agent's resume queue, on whichever machine
    * acts on it (team-roles-and-access §4.1). It travels on every forward, because the owner can turn a
-   * plain send into a stop: an exact stop text, or the classifier.
+   * plain send into a stop: an exact stop text, or the classifier. A forward whose event names a team
+   * sender reads as scoped whatever it says, so an older holder or a queued row can't widen a stop.
    */
   stopScope?: 'conversation';
 }
@@ -116,14 +118,14 @@ export function parseAppForward(payload: unknown): AppForwardPayload | null {
   if (!v || typeof v !== 'object') return null;
   const p = v as Record<string, unknown>;
   if (p.kind !== 'app-forward' || !p.event || typeof p.event !== 'object' || typeof p.seed !== 'string') return null;
-  const ev = p.event as { kind?: unknown; conversationKey?: unknown; messageId?: unknown };
+  const ev = p.event as { kind?: unknown; conversationKey?: unknown; messageId?: unknown; senderRole?: unknown };
   if ((ev.kind !== 'message' && ev.kind !== 'media-message') || typeof ev.conversationKey !== 'string' || typeof ev.messageId !== 'string') return null;
   return {
     kind: 'app-forward', event: p.event as MessageEvent | MediaMessageEvent, seed: p.seed,
     ownerName: typeof p.ownerName === 'string' ? p.ownerName : null,
     memoryPersonId: typeof p.memoryPersonId === 'string' ? p.memoryPersonId : null,
     ...(p.urgent === 'stop' || p.urgent === 'pause' ? { urgent: p.urgent } : {}),
-    ...(p.stopScope === 'conversation' ? { stopScope: p.stopScope } : {}),
+    ...(p.stopScope === 'conversation' || ev.senderRole === 'team' ? { stopScope: 'conversation' as const } : {}),
   };
 }
 
@@ -582,25 +584,116 @@ export function createAppOwnerReceiver(d: AppOwnerReceiverDeps) {
 
 /** A forwarded stop or pause, acted on here: the one place the owner and a drain's last resort do this. */
 export function actOnUrgent(s: AppConversationService, key: string, f: AppForwardPayload, messageId: string): void {
+  if (teamSignatureFailed(s, f)) { refuseForward(s, key, f, messageId, 'a team event whose signature failed'); return; }
   s.noteEmergency(key);
   if (f.urgent === 'pause') s.pause(key);
   else s.emergencyStop(key, f.stopScope);
   s.appendDelivery(key, messageId, 'intercepted', f.seed);
 }
 
+/** A team event this machine can show was not signed by the phone it names. `unknown` is not failed: a key may not have reached here yet. */
+function teamSignatureFailed(s: AppConversationService, f: AppForwardPayload): boolean {
+  return (f.event as { senderRole?: unknown }).senderRole === 'team' && s.verify(f.event) === 'failed';
+}
+
+/** A team send with no person would be remembered as the owner's words, so it does not run. */
+function teamPersonMissing(f: AppForwardPayload): boolean {
+  return (f.event as { senderRole?: unknown }).senderRole === 'team' && !f.memoryPersonId;
+}
+
+function refuseForward(s: AppConversationService, key: string, f: AppForwardPayload, messageId: string, why: string): void {
+  s.appendDelivery(key, messageId, 'refused', f.seed);
+  s.deps.reportDegradation?.('AppConversations.forward', `refused ${why}: ${messageId}`);
+}
+
+/** Who a forward's words came from. Only the owner's own message may fall back to the owner's name. */
+export function forwardSpeakerName(s: AppConversationService, f: AppForwardPayload): string {
+  const ev = f.event as { senderRole?: unknown; senderName?: unknown };
+  if (f.ownerName) return f.ownerName;
+  if (ev.senderRole !== 'team' && ev.senderRole !== 'msp') return s.ownerName();
+  return typeof ev.senderName === 'string' && ev.senderName ? ev.senderName : 'Another person';
+}
+
 async function deliverForwarded(s: AppConversationService, key: string, f: AppForwardPayload, d: AppOwnerReceiverDeps): Promise<void> {
   const conv = s.liveConversation(key);
   const alias = s.deps.registry.appAliasFor(key);
   if (!conv || alias === null) { s.appendDelivery(key, f.event.messageId, 'refused', f.seed); return; }
+  if (teamSignatureFailed(s, f)) { refuseForward(s, key, f, f.event.messageId, 'a team event whose signature failed'); return; }
   if (!s.deps.registry.isAppBound(alias)) s.deps.registry.bindApp(alias);
   if (d.classify && f.event.text) {
     let verdict: 'kill' | 'pause' | 'deliver' = 'deliver';
     try { verdict = await d.classify(f.event.text, alias); } catch { /* @silent-fallback-ok — FAIL-OPEN: a classifier error routes the message normally, as on the Telegram path */ }
     if (verdict !== 'deliver') { actOnUrgent(s, key, { ...f, urgent: verdict === 'kill' ? 'stop' : 'pause' }, f.event.messageId); return; }
   }
+  if (teamPersonMissing(f)) { refuseForward(s, key, f, f.event.messageId, 'a team send with no person'); return; }
   const r = await dispatchStoredAppMessage(s, {
     key, alias, title: conv.title ?? 'Untitled', event: f.event,
-    ownerName: f.ownerName ?? s.ownerName(), memoryPersonId: f.memoryPersonId,
+    ownerName: forwardSpeakerName(s, f), memoryPersonId: f.memoryPersonId,
   });
   s.appendDelivery(key, f.event.messageId, r.outcome, f.seed);
+}
+
+// ── The inbound queue's app tail (§2.4) ─────────────────────────────────────────────────────────
+
+export interface AppDrainDeps {
+  service(): AppConversationService | null;
+  route(msg: InboundMessage): Promise<RouteOutcome>;
+  routerReady(): boolean;
+}
+export interface AppDrainRow { sessionKey: string; messageId: string; payload: string; senderEnvelope?: InboundMessage['senderEnvelope'] }
+export interface AppDrainHandover { commitReceipt(): boolean; stopRecheck(): boolean }
+
+/** A held message routes again; when it lands here it delivers like the send route. */
+export function createAppDrainDeliver(d: AppDrainDeps) {
+  const dispatching = new Set<string>();
+  return async (dmsg: AppDrainRow, handover: AppDrainHandover): Promise<DrainDispatchResult> => {
+    const svc = d.service();
+    const f = parseAppForward(dmsg.payload);
+    if (!svc || !f || !d.routerReady()) return { kind: 'failed', error: new Error('app forward could not be read') };
+    const key = f.event.conversationKey;
+    const out = await d.route({
+      sessionKey: dmsg.sessionKey, messageId: dmsg.messageId, payload: f,
+      // The envelope stored at the send, so the owner's sender check sees what the phone's request carried.
+      senderEnvelope: dmsg.senderEnvelope,
+      ...(f.urgent ? { appUrgent: f.urgent } : {}),
+    });
+    if (out.action === 'rejected') { svc.appendDelivery(key, dmsg.messageId, 'refused', f.seed); return { kind: 'sender-rejected' }; }
+    if (out.action === 'queued' || out.action === 'placement-blocked') return { kind: 'un-routable', reason: out.detail ?? out.action };
+    if (out.action === 'forwarded') {
+      // The owner appends a message's outcome itself after dispatching. A stop has taken effect by its acknowledgement.
+      if (f.urgent) svc.appendDelivery(key, dmsg.messageId, 'intercepted', f.seed);
+      return { kind: 'remote-delivered' };
+    }
+    if (out.action !== 'handled-locally') return { kind: 'remote-delivered' };
+    // An earlier forward may have reached a machine with only its answer lost, and a drain past its
+    // deadline is still running. Either way this message has been handled: never a second dispatch.
+    const already = svc.store.deliveryState(dmsg.messageId);
+    if (dispatching.has(dmsg.messageId) || (already !== null && already !== 'pending' && already !== 'unknown')) return { kind: 'local-delivered' };
+    const conv = svc.liveConversation(key);
+    const alias = svc.deps.registry.appAliasFor(key);
+    if (!conv || alias === null) { svc.appendDelivery(key, dmsg.messageId, 'unknown', f.seed); return { kind: 'local-delivered', injectError: 'conversation-gone' }; }
+    if (!handover.commitReceipt()) return { kind: 'handover-refused' };
+    if (handover.stopRecheck()) return { kind: 'stopped-before-inject' };
+    dispatching.add(dmsg.messageId);
+    try {
+      if (f.urgent) {
+        actOnUrgent(svc, key, f, dmsg.messageId);
+        return { kind: 'local-delivered' };
+      }
+      // These two are decided here, so a plain refusal is the honest answer rather than `unknown`.
+      if (teamSignatureFailed(svc, f)) { refuseForward(svc, key, f, dmsg.messageId, 'a team event whose signature failed'); return { kind: 'local-delivered' }; }
+      if (teamPersonMissing(f)) { refuseForward(svc, key, f, dmsg.messageId, 'a team send with no person'); return { kind: 'local-delivered' }; }
+      if (!svc.deps.registry.isAppBound(alias)) svc.deps.registry.bindApp(alias);
+      const r = await dispatchStoredAppMessage(svc, { key, alias, title: conv.title ?? 'Untitled', event: f.event, ownerName: forwardSpeakerName(svc, f), memoryPersonId: f.memoryPersonId });
+      // A refusal here says nothing about an earlier attempt that may have reached a machine:
+      // `unknown` yields to its outcome, where a refusal could override it.
+      svc.appendDelivery(key, dmsg.messageId, r.outcome === 'refused' ? 'unknown' : r.outcome, f.seed);
+      return { kind: 'local-delivered' };
+    } catch (err) { // @silent-fallback-ok — the message reads `unknown` in the app, and the queue reports it as possibly not injected
+      svc.appendDelivery(key, dmsg.messageId, 'unknown', f.seed);
+      return { kind: 'local-delivered', injectError: err instanceof Error ? err.message : String(err) };
+    } finally {
+      dispatching.delete(dmsg.messageId);
+    }
+  };
 }

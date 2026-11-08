@@ -128,6 +128,12 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
     // message must never be recorded as received (recording first would dedupe
     // the redelivery's NACK into a 'duplicate' ack).
     const envelope = (command as { senderEnvelope?: { userId?: string | number } }).senderEnvelope;
+    // An app forward always names the device that sent it (app-conversations-in-the-pool §2.4), so one
+    // without an envelope has no sender to check. A Telegram or Slack command keeps today's rule.
+    if (appCommand && !envelope) {
+      try { deps.onRejected?.({ reason: 'sender-rejected', session: command.session, messageId: command.messageId, senderUid: undefined }); } catch { /* @silent-fallback-ok — a trace fault never changes the NACK */ }
+      return { messageId: command.messageId, accepted: 'sender-rejected' };
+    }
     if (envelope && deps.validateSender) {
       const suppressKey = `${command.session}\u0000${command.messageId}`;
       const nowMs = Date.now();
