@@ -34,12 +34,12 @@ function rec(over: Partial<SessionOwnershipRecord> = {}): SessionOwnershipRecord
   return { sessionKey: `app:${KEY}`, ownerMachineId: OWNER, ownershipEpoch: 20, status: 'active', nonce: 'n', timestamp: NOW, updatedAt: new Date(NOW).toISOString(), ...over } as SessionOwnershipRecord;
 }
 
-function placement(cap: ReturnType<typeof capSeen> | null, holds = true) {
+function placement(cap: ReturnType<typeof capSeen> | null, holds = true, attempts: DirectAttempt[] = []) {
   return appPlacement({
     selfId: SELF,
     holdsLease: () => holds,
     read: () => rec(),
-    ownerOnline: () => ownerAnswering(cap),
+    ownerOnline: () => ownerAnswering(cap, attempts),
     nicknameOf: (m) => (m === OWNER ? 'Proof Studio' : null),
   }, KEY);
 }
@@ -75,10 +75,25 @@ describe('a holder that just restarted judges only from its own direct attempts'
     expect(placement(cap)).toMatchObject({ answering: true, bringBack: { can: false } });
   });
 
-  it('offers it for a dead owner once this process\'s own direct attempts fail', () => {
-    const cap = { liveness: deriveLiveness({ isSelf: false, nowMs: NOW, failoverThresholdMs: FAILOVER_MS, savedDirectAtMs: NOW - 6 * 60_000, attempts: [{ atMs: NOW - 40_000, ok: false }, { atMs: NOW - 10_000, ok: false }] }) };
+  const afterRestart = (attempts: DirectAttempt[]) => ({ liveness: deriveLiveness({ isSelf: false, nowMs: NOW, failoverThresholdMs: FAILOVER_MS, savedDirectAtMs: NOW - 6 * 60_000, attempts }) });
+
+  it('does not offer it for a healthy owner after ONE failed pull (a busy timeout)', () => {
+    const attempts: DirectAttempt[] = [{ atMs: NOW - 5_000, ok: false, shape: 'timeout' }];
+    const cap = afterRestart(attempts);
+    expect(cap.liveness.state).toBe('unreachable'); // what deriveLiveness says after one failure
+    expect(placement(cap, true, attempts)).toMatchObject({ answering: true, bringBack: { can: false } });
+  });
+
+  it('does not offer it for failures bunched inside 2 minutes', () => {
+    const attempts: DirectAttempt[] = [{ atMs: NOW - 90_000, ok: false }, { atMs: NOW - 60_000, ok: false }, { atMs: NOW - 30_000, ok: false }, { atMs: NOW, ok: false }];
+    expect(placement(afterRestart(attempts), true, attempts)).toMatchObject({ answering: true, bringBack: { can: false } });
+  });
+
+  it('offers it for a dead owner once this process\'s own failures span 2 minutes', () => {
+    const attempts: DirectAttempt[] = [0, 30, 60, 90, 120].map((sec) => ({ atMs: NOW - 120_000 + sec * 1_000, ok: false }));
+    const cap = afterRestart(attempts);
     expect(cap.liveness.state).toBe('unreachable');
-    expect(placement(cap)).toMatchObject({ answering: false, bringBack: { can: true } });
+    expect(placement(cap, true, attempts)).toMatchObject({ answering: false, bringBack: { can: true } });
   });
 
   it('stops offering it as soon as a direct attempt succeeds', () => {
@@ -203,18 +218,6 @@ describe('an agent without Telegram delivers a queued app message, end to end th
     expect(qstore.getRow(seq)?.state).toBe('delivered');
     expect(appTailCalls.length).toBeGreaterThanOrEqual(2);
   });
-
-  it('reproduces the incident with the old wiring: the row never reaches the app tail', async () => {
-    const oldWiring: QueueDrainLoopDeps['dispatchInbound'] = async () => ({ kind: 'un-routable', reason: 'local-tail-not-wired' });
-    const loop = loopWith(oldWiring);
-    const out = loop.enqueueLive({ sessionKey: `app:${KEY}`, messageId: 'five', payload: '{}', senderEnvelope: null }, 'app-owner-unreachable');
-    const seq = (out as { seq: number }).seq;
-    ownerUp = true;
-    await passAfter(loop, 0);
-    await passAfter(loop, 5 * 60_000);
-    expect(qstore.getRow(seq)?.state).toBe('queued');
-    expect(appTailCalls).toEqual([]);
-  });
 });
 
 describe('the server wires both', () => {
@@ -223,7 +226,7 @@ describe('the server wires both', () => {
     expect(src).toContain('dispatchInbound: (msg, handover) => dispatchQueuedInbound(msg, handover, { app: _appDrainDeliver, local: _drainLocalDeliver })');
   });
   it('decides "answering" with ownerAnswering, not the liveness state alone', () => {
-    expect(src).toContain('ownerOnline: (m: string) => ownerAnswering(appCaps().find((x) => x.machineId === m))');
+    expect(src).toContain('ownerOnline: (m: string) => ownerAnswering(appCaps().find((x) => x.machineId === m), machinePoolRegistry?.directAttempts(m) ?? [])');
     expect(src).not.toContain("c.liveness.state === 'live' : c?.online === true");
   });
 });

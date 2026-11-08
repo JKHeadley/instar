@@ -208,20 +208,23 @@ export interface AppBringBackDeps {
  *  - direct contact succeeded in this process but is older than 2 minutes (pool readiness's rule).
  *    `liveness.state` alone is not enough: a peer stays "live" until its last direct success is
  *    older than the failover threshold (15 minutes by default), which hid Bring it back here that long;
- *  - or this process's direct attempts are failing ("unreachable"), which also covers a holder that
- *    restarted while the owner was down.
+ *  - or this process's direct attempts are failing ("unreachable"). If this process has never
+ *    reached the owner (a holder that just restarted, or a new lease holder), that needs at least two
+ *    failures spread over 2 minutes: one busy timeout must not make a healthy owner look stopped.
  * With only relayed or saved evidence, or no reading at all, the answer is unknown, and unknown never
- * offers Bring it back here: right after the holder restarts, a healthy owner must not look stopped.
- * Bringing back is still the operator's confirmed tap, and a machine that returns is fenced by its lower epoch.
+ * offers Bring it back here. Bringing back is still the operator's confirmed tap, and a machine that
+ * returns is fenced by its lower epoch.
  */
-export function ownerAnswering(cap: Pick<MachineCapacity, 'liveness'> | null | undefined): boolean {
+export function ownerAnswering(cap: Pick<MachineCapacity, 'liveness'> | null | undefined, attempts: ReadonlyArray<{ atMs: number; ok: boolean }> = []): boolean {
   const l = cap?.liveness;
   if (!l) return true;
-  if (l.state === 'unreachable') return false;
   if (l.source === 'direct' && l.state === 'live') {
     return typeof l.evidenceAgeMs === 'number' && l.evidenceAgeMs <= READINESS_CONTACT_MAX_AGE_MS;
   }
-  return true;
+  if (l.state !== 'unreachable') return true;
+  if (l.source === 'direct') return false;
+  const failures = attempts.filter((a) => !a.ok);
+  return !(failures.length >= 2 && failures[failures.length - 1].atMs - failures[0].atMs >= READINESS_CONTACT_MAX_AGE_MS);
 }
 
 export function bringBackWarning(machineName: string): string {

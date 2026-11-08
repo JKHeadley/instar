@@ -29979,7 +29979,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               holdsLease: appHoldsLease,
               read: (rk: string) => ownReg.read(rk),
               // Fresh direct contact only: neither `online` (a lingering beat) nor a "live" kept for the 15-minute failover window.
-              ownerOnline: (m: string) => ownerAnswering(appCaps().find((x) => x.machineId === m)),
+              ownerOnline: (m: string) => ownerAnswering(appCaps().find((x) => x.machineId === m), machinePoolRegistry?.directAttempts(m) ?? []),
               nicknameOf: appNick,
             };
             setAppPoolMoves({
