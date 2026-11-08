@@ -445,7 +445,8 @@ export function mountBrowserDeviceRoutes(
     res.json({
       enabled: true, machineId, nickname: machineNickname(svc, machineId) ?? svc.deps.config.projectName ?? null,
       serverTime: Date.now(), approvalPath: svc.approvalPath(), approveEnabled: isPairingApproveEnabled(svc.deps.config),
-      telegramSend: !!opts.telegramConfigured?.() && svc.holdsLease(),
+      // Sending into Telegram from the app speaks as the Telegram owner and needs the serving lease.
+      telegramSend: !!opts.telegramConfigured?.() && svc.holdsLease() && (svc.deps.telegramOwnerPresent ? svc.deps.telegramOwnerPresent() : true),
       limits: { maxFiles: MAX_ATTACHMENTS, maxMessageBytes: MAX_MESSAGE_BYTES, maxFileBytes: MAX_FILE_BYTES, chunkBytes: CHUNK_BYTES },
       ...(kh ? { key: browserKeyState(svc, kh) } : {}),
     });

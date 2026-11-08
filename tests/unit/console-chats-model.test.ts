@@ -130,6 +130,14 @@ describe('unfinished sends', () => {
     expect(m.sendOutcome(200, { deliveryState: 'delivered' })).toMatchObject({ final: true, state: 'delivered' });
     expect(m.sendOutcome(200, { deliveryState: 'pending' }).final).toBe(false);
     expect(m.sendOutcome(404, {})).toMatchObject({ final: true, state: 'gone' });
+    // Live proof findings: a Telegram send answers `outcome`, and a 503 that names its reason is final.
+    expect(m.sendOutcome(200, { ok: true, outcome: 'delivered', eventId: 'op-1', mirrored: true })).toMatchObject({ final: true, state: 'delivered' });
+    expect(m.sendOutcome(200, { ok: true, outcome: 'refused' })).toMatchObject({ final: true, state: 'refused' });
+    expect(m.sendOutcome(503, { error: 'chat-unavailable', detail: 'This agent has no Telegram owner to speak as.' })).toMatchObject({ final: true, state: 'refused', label: { label: 'not delivered — This agent has no Telegram owner to speak as.' } });
+    expect(m.sendOutcome(503, {}).final).toBe(false);
+    // The read-only note names the right reason (live proof finding).
+    expect(m.telegramReadOnlyNote({ approvalPath: 'telegram', telegramSend: false })).toBe('Sending to Telegram works from the machine serving Telegram.');
+    expect(m.telegramReadOnlyNote({ approvalPath: 'dashboard', telegramSend: false })).toMatch(/needs a Telegram owner/);
     expect(m.sendOutcome(403, {}).final).toBe(true);
     expect(m.sendOutcome(409, {}).label.label).toBe('unknown — check the conversation');
     expect(m.sendOutcome(409, { error: 'not-serving' }).label.label).toBe('Sending to Telegram works from the machine serving Telegram');

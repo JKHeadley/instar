@@ -47,6 +47,27 @@ const PERMANENT_ERRORS = new Set([
 
 const FETCH_FAILURES_BEFORE_TRANSPORT_RESET = 3;
 
+/**
+ * Slack methods that do not read a JSON body (verified 2026-11-08 against the live API: with
+ * `application/json` they answer `user_not_found` / `invalid_arguments` as if no argument was sent).
+ * They take form encoding, which every Slack method accepts. Before this, every user-name and
+ * channel-name lookup failed and fell back to the raw id (fb-4db533fa-9d9).
+ */
+export const FORM_ENCODED_METHODS: ReadonlySet<string> = new Set([
+  'users.info', 'conversations.info', 'conversations.replies', 'conversations.members', 'files.info',
+]);
+
+/** The request body for one Slack Web API call: form encoding for FORM_ENCODED_METHODS, JSON otherwise. */
+export function encodeSlackRequest(method: string, params: Record<string, unknown>): { contentType: string; body: string } {
+  if (!FORM_ENCODED_METHODS.has(method)) return { contentType: 'application/json; charset=utf-8', body: JSON.stringify(params) };
+  const form = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v === undefined || v === null) continue;
+    form.set(k, typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v));
+  }
+  return { contentType: 'application/x-www-form-urlencoded; charset=utf-8', body: form.toString() };
+}
+
 export class SlackApiClient {
   private botToken: string;
   private appToken: string | null;
@@ -102,13 +123,14 @@ export class SlackApiClient {
     // Use the package fetch with its matching Agent. Node's built-in fetch may
     // bundle a different undici version and reject this dispatcher at runtime.
     // Keep the recovery pool scoped to Slack requests.
+    const encoded = encodeSlackRequest(method, params);
     const init: Parameters<typeof undiciFetch>[1] = {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Type': encoded.contentType,
       },
-      body: JSON.stringify(params),
+      body: encoded.body,
       dispatcher: this.dispatcher,
     };
     try {

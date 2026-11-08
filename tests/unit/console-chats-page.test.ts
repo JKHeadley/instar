@@ -233,6 +233,41 @@ describe('Conversations page', () => {
     expect(doc.querySelector('.chat-title')?.textContent).toBe('Plans for Saturday');
   }, 15_000);
 
+  it('a Slack conversation names its machine on the history read and the send (live proof finding)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const at = new Date().toISOString();
+    const reads: string[] = [];
+    let sent: Call | null = null;
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: -126660833, platform: 'slack', title: '#proof', lastActivity: at, lastPreview: 'hi', machine: 'm_slack' }], nextCursor: null } };
+      if (c.url.startsWith('/mobile/chat/slack/-126660833/messages')) {
+        reads.push(c.url);
+        if (!/[?&]machine=m_slack(&|$)/.test(c.url)) return { status: 400, body: { error: 'machine-required' } };
+        return { status: 200, body: { conversationKey: 'slack:T1:C1', messages: [{ eventId: 'slack:1.1', role: 'operator', text: 'Slack inbound', at }] } };
+      }
+      if (c.url === '/mobile/chat/slack/-126660833' && c.method === 'POST') { sent = c; return { status: 200, body: { ok: true, outcome: 'delivered', eventId: 'op-1' } }; }
+      return undefined;
+    }, '#/work/chats', idb);
+    for (let i = 0; i < 10; i++) await flush();
+    (doc.querySelector('.chat-row') as HTMLAnchorElement).click();
+    dom.window.location.hash = `#/work/chats?c=${encodeURIComponent('slack:-126660833')}`;
+    for (let i = 0; i < 20; i++) await flush();
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.every((u) => u.includes('machine=m_slack'))).toBe(true);
+    expect([...doc.querySelectorAll('.chat-bubble .chat-text')].map((n) => n.textContent)).toContain('Slack inbound');
+    const box = doc.querySelector('textarea.chat-compose') as HTMLTextAreaElement;
+    box.value = 'from the dashboard';
+    box.dispatchEvent(new dom.window.Event('input'));
+    (doc.querySelector('button.chat-send') as HTMLButtonElement).click();
+    for (let i = 0; i < 20; i++) await flush();
+    expect(sent).not.toBeNull();
+    expect(JSON.parse(sent!.body!).machine).toBe('m_slack');
+  });
+
   it('a 401 answered "unknown" by the status route keeps the key', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');
