@@ -2066,6 +2066,23 @@
       }
     },
     {
+      "category": "local-verify-waiting",
+      "description": "local-verify waiting list (fb-7fde7f49-8ee): PRs refused because the verify queue was full, keyed by PR with the first refusal time, last offer time and refusal count, so a freed slot goes to the PR refused earliest. A waiter not offered for 30 minutes of healthy running time reserves nothing; one idle for 6 hours, closed, merged or recorded is removed. Rewritten atomically on change (plus a 5-minute heartbeat while non-empty) and restored at boot with downtime added back. Machine-local: it describes this machine's queue.",
+      "scope": "machine-local",
+      "freshness": "live",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/local-verify/waiting.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 200,
+        "note": "At most WAITING_LIST_LIMITS.maxWaiters (200) waiters; the longest-idle are removed past it. Replaced in place, never appended. An unreadable file is moved aside once to waiting.json.corrupt-<ts> (operator-cleared; one per corruption event)."
+      }
+    },
+    {
       "category": "local-verify-flaky",
       "description": "local-verify flaky-file history: per file, the times an isolation re-run passed it in the last 7 days and when its repeat escalation was last raised; plus this machine's last green `main` record (head, finish time, files not clean on it), which a PR verify's isolation re-run requires. Machine-local: it describes this machine's own runs.",
       "scope": "machine-local",

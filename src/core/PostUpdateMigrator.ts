@@ -460,6 +460,7 @@ export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify th
  * section (`migrateClaudeMd`, content-sniffed on the config key).
  */
 export const LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE = '- Local Verify fail-fast: in a PR verify, once one lane (unit, integration or e2e) ends with a failure its isolation re-run did not clear, the lanes still running are stopped (the verdict is already failure) and reported as `lane-stopped-early:<lane>`, so a doomed run frees the slot minutes sooner. A `main` verify always runs every lane. A test file that was itself re-run-passed on the last green `main` (flaky on `main`) now gets the same one isolation re-run as any other file, unless the PR changed it or a file it imports. Off switch: `monitoring.localVerify.failFast: false` (read at each start). When the user asks "why did my PR\'s run stop early / show only one lane\'s failures?" → this; fix the reported failure and re-request the verify.';
+export const LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE = '- Local Verify waiting list: a PR refused because the queue is full (`queue-full`, HTTP 429) keeps its place on a waiting list, ordered by when it was first refused. When a slot frees, the PR refused earliest gets it; a newer PR asking first is refused again with the audit row `queue-full-waiting`. A waiter keeps its place only while it keeps being offered (within 30 minutes of running time while `main` is healthy); one that stops being offered, closes or merges gives the place up, so a waiter can never hold a slot empty. A pushed head keeps the place. The read surface (`GET /local-verify` → `waiting`) lists the waiters; the admitted entry carries `firstRefusedAt`, so the wait before entering the queue can be measured. A `merge-throughput` PR, a repair while `main` is red, and a re-queued head are admitted exactly as before. When the user asks "why is my PR still not in the verify queue?" → read `waiting` for its place in line.';
 
 /**
  * Local Verify balanced shards — the awareness line appended to an existing CLAUDE.md's Local
@@ -12602,6 +12603,12 @@ The server runs the full test suite on the exact code a pull request would merge
       content += '\n' + LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE + '\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify fail-fast awareness');
+    }
+    // local-verify waiting list (fb-7fde7f49-8ee): a queue-full refusal keeps its place in line.
+    if (content.includes('/local-verify') && !content.includes('Local Verify waiting list')) {
+      content += '\n' + LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify waiting-list awareness');
     }
     // local-verify balanced shards: more processes for the slow lanes, planned from history.
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.laneShards')) {
