@@ -6391,6 +6391,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             commitAndPush: (msg, paths) => gs.commitAndPush(msg, paths),
             localCommitIsFinal: () => !!config.multiMachine?.leaseSelfHeal?.soloCaptainHold?.enabled
               && survivorMayHold() && gitLeaseHasNoRemote(config.projectDir) === true,
+            hasNoRemote: () => gitLeaseHasNoRemote(config.projectDir),
             logger: (m) => console.log(pc.dim(m)),
           });
         } else {
