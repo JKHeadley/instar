@@ -4052,6 +4052,11 @@ export interface InstarConfig {
        * `maxStoreBytes` (default 20 GiB, read live) is the agent-wide admission cap.
        */
       media?: { enabled?: boolean; maxStoreBytes?: number };
+      /**
+       * Unread counts, read reports and the app badge (docs/specs/mobile-unread-messages.md).
+       * `enabled` omitted ⇒ true wherever native conversations are on; `false` turns unread off alone. Read live.
+       */
+      unread?: { enabled?: boolean };
     };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
