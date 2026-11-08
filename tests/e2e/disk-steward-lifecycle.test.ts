@@ -100,8 +100,16 @@ describe('Disk Steward E2E lifecycle', () => {
     expect(fs.readFileSync(input.auditPath, 'utf8')).toContain('"event":"prune-run"');
     const byCat = Object.fromEntries(result.categories.map((c: { category: string }) => [c.category, c]));
     if (npmOk) {
-      expect(byCat['npm-cache'].removedItems).toBe(1);
-      expect(fs.existsSync(path.join(npmCache, '_cacache', 'content-v2', 'blob'))).toBe(false);
+      const blob = path.join(npmCache, '_cacache', 'content-v2', 'blob');
+      // The real machine may have run npm in the last 30 minutes (another session, the verify run
+      // itself): the steward then refuses on purpose. That refusal must leave the cache untouched.
+      if (byCat['npm-cache'].skipped === 'npm-busy') {
+        expect(byCat['npm-cache'].removedItems).toBe(0);
+        expect(fs.existsSync(blob)).toBe(true);
+      } else {
+        expect(byCat['npm-cache'].removedItems).toBe(1);
+        expect(fs.existsSync(blob)).toBe(false);
+      }
     }
     if (process.platform === 'darwin') {
       const xcodeRunning = (() => { try { return /\b(xcodebuild|XCBBuildService|SourceKitService|Xcode)\b/.test(execFileSync('ps', ['-axo', 'comm'], { encoding: 'utf-8' })); } catch { return true; } })();
