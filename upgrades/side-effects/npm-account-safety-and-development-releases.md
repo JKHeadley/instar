@@ -36,7 +36,7 @@ Initial design used the legacy document's irreversible-action exception. Final i
 
 ## 4b. Judgment-point check
 
-Account action is a judgment point: the matcher informs, the context-rich session agent decides. The mechanical floor keeps first advisory calls non-mutating and requires exact current-page review plus a reason to continue; fixed read-only mode remains available. Pack/install are explicit one-shot commands; identity/digest/manifest validation is enumerable. Output chunk size paginates data and does not authorize actions. Package JSON capture is bounded at 64 MiB and fails loudly on overflow.
+Account action is a judgment point: the matcher informs, the context-rich session agent decides. The mechanical floor keeps first advisory calls non-mutating and requires exact current-page review plus a reason to continue; fixed read-only mode remains available. Pack/install are explicit one-shot commands; identity/digest/manifest validation is enumerable. Output chunk size paginates data and does not authorize actions. Package JSON capture and CLI migration output are bounded at 64 MiB and fail loudly on overflow. A full-package rehearsal found migration output exceeded the old 1 MiB default; a red/green real-install regression now verifies direct migration completion with 1.2 MiB JSON, without falling back.
 
 ## 5. Interactions
 

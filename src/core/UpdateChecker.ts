@@ -338,13 +338,13 @@ export class UpdateChecker {
         try {
           const args = [...baseArgs, 'migrate'];
           if (this.migratorConfig.projectDir) args.push('--dir', this.migratorConfig.projectDir);
-          output = await this.execAsync(cmd, args, 30000);
+          output = await this.execAsync(cmd, args, 30000, 64 * 1024 * 1024);
         } catch (dirErr) {
           const dirErrMsg = dirErr instanceof Error ? dirErr.message : String(dirErr);
           const dirErrStderr = (dirErr as Error & { stderr?: string }).stderr || '';
           if (dirErrMsg.includes('unknown option') && dirErrMsg.includes('--dir')) {
             // Old binary — retry without --dir
-            output = await this.execAsync(cmd, [...baseArgs, 'migrate'], 30000);
+            output = await this.execAsync(cmd, [...baseArgs, 'migrate'], 30000, 64 * 1024 * 1024);
           } else if (dirErrStderr.includes('unknown command')) {
             // Very old binary without migrate command — skip CLI migration gracefully.
             // The in-memory migrator still runs as a safety net on server startup.
@@ -757,11 +757,12 @@ export class UpdateChecker {
   /**
    * Run a command asynchronously, returning trimmed stdout.
    */
-  private execAsync(cmd: string, args: string[], timeoutMs: number): Promise<string> {
+  private execAsync(cmd: string, args: string[], timeoutMs: number, maxBuffer = 1024 * 1024): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = execFile(cmd, args, {
         encoding: 'utf-8',
         timeout: timeoutMs,
+        maxBuffer,
       }, (err, stdout, stderr) => {
         if (err) {
           // Attach stderr for richer diagnostics in error handlers

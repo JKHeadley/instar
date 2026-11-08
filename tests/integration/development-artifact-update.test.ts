@@ -53,7 +53,8 @@ describe('development artifact through the real npm installation pipeline', () =
         else if (process.argv.includes('migrate')) {
           const home=process.argv[process.argv.indexOf('--dir')+1];
           fs.writeFileSync(path.join(home, 'development-migration-ran'), ${JSON.stringify(version)});
-          console.log(JSON.stringify({upgraded: ['development-migration-ran'], errors: []}));
+          // Real migration output can exceed execFile's default 1 MiB.
+          console.log(JSON.stringify({upgraded: ['development-migration-ran'], errors: [], details: 'm'.repeat(1_200_000)}));
         } else process.exitCode=1;
       `);
       const packed = JSON.parse(execFileSync('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', temp],
@@ -69,6 +70,7 @@ describe('development artifact through the real npm installation pipeline', () =
       expect(result.success, result.message).toBe(true);
       expect(result.previousVersion).toBe('1.3.1700');
       expect(result.restartNeeded).toBe(true);
+      expect(result.message).toContain('Intelligence download: 1 files upgraded (development-migration-ran)');
       expect(checker.getShadowInstalledVersion()).toBe(version);
       expect(fs.readFileSync(path.join(agentHome, 'development-migration-ran'), 'utf8')).toBe(version);
       expect(checker.getRollbackInfo()?.previousVersion).toBe('1.3.1700');
