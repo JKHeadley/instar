@@ -1,0 +1,34 @@
+{
+  "ts": "2026-11-07T06:40:32.483Z",
+  "slug": "app-conversations-in-the-pool",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 22,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/MobileChatRequests.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/data/feature-ladders.json",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/mobileSessionControlsRoutes.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-pool-enforcer runs the real enforcer under an always-older machine and an always-refusing owner: one force-claim per record, one notice per episode, each refused drain home waits five minutes. The overdue-waiting sweep settles each send once."
+    }
+  },
+  "verdict": "pass"
+}

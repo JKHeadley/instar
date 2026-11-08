@@ -113,6 +113,8 @@ import {
   INTERACTIVE_LOGIN_EXPIRED_MARKER,
   CLAUDE_KEY_HEALTH_BULLET,
   CLAUDE_KEY_HEALTH_MARKER,
+  USAGE_LIMIT_WATCH_BULLET,
+  USAGE_LIMIT_WATCH_MARKER,
   STANDING_SESSIONS_BULLET,
   STANDING_SESSIONS_MARKER,
   CONSOLE_BULLET,
@@ -1183,6 +1185,14 @@ export function MOBILE_SESSION_APP_NEW_LINE(port: number): string {
 }
 export const MOBILE_SESSION_APP_NEW_MARKER = `"platform":"app"`;
 /**
+ * App conversations move between machines (docs/specs/app-conversations-in-the-pool.md §7), one bullet
+ * after the New session bullet. Sniff: `POST /pool/transfer\` with \`app:<key>`.
+ */
+export function MOBILE_APP_POOL_LINE(): string {
+  return '- App conversations move like Telegram topics (`POST /pool/transfer` with `app:<key>`, when all your machines are updated). This is on for development agents first: elsewhere that call answers 503 and the conversation stays on the machine holding the lease. Slack conversations stay with the machine that holds the Slack connection.';
+}
+export const MOBILE_APP_POOL_MARKER = 'with `app:<key>`, when all your machines';
+/**
  * The native Proposals / How I'm doing inside screens (docs/specs/mobile-native-proposals-inside.md),
  * one bullet in the Mobile app routes block after the permissions bullet. Sniff: `GET /mobile/proposals`.
  */
@@ -1354,6 +1364,7 @@ ${MOBILE_HEALTH_CHOICES_LINE(port)}
 ${MOBILE_SESSION_CONTROLS_LINE(port)}
 ${MOBILE_SESSION_SWAP_ANY_LINE(port)}
 ${MOBILE_SESSION_APP_NEW_LINE(port)}
+${MOBILE_APP_POOL_LINE()}
 - **When to use** (PROACTIVE): "why can't the app reach you?" / "does the app work without Cloudflare?" → read \`/health\` \`mobileRoutes\` and name the missing or failing route and its reason; never guess.
 `;
 }
@@ -9353,6 +9364,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added channel registry Registry First awareness');
     }
 
+    if (!content.includes('Registry First — team access:')) {
+      content += '\n- **Registry First — team access:** the owner gives access only from their own phone in the Instar app, and each change is a signed record. On a one-machine agent the owner can invite people, share chosen conversations and set a role (member or guest); a person\'s phone sees only what they were given. I can read `GET /team/people` and I can only take access away (`POST /team/people/:personKey/lower`), never give it. Tell people plainly: scheduled jobs run for the owner and can read messages in shared conversations; once a conversation has been shared it stays locked to that audience; and an agent that has had team members cannot add a second machine until multi-machine team support lands.';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team access Registry First awareness');
+    }
+
     if (!content.includes('Registry First — people:')) {
       content += '\n- **Registry First — people:** before answering who can reach this agent or what someone can see, read `GET /team/people` (add `?scope=pool` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set `memoryPrivacy.enabled: true` in the config on every machine and restart.\n';
       patched = true;
@@ -10245,6 +10262,20 @@ setTimeout(() => process.exit(0), 2000);
       }
       patched = true;
       result.upgraded.push('CLAUDE.md: added the app-conversation New session line');
+    }
+    // App conversations move between machines (docs/specs/app-conversations-in-the-pool.md §7): one
+    // bullet after the New session bullet of an existing Mobile app routes block.
+    if (content.includes('Mobile app routes') && !content.includes(MOBILE_APP_POOL_MARKER)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.includes(MOBILE_SESSION_APP_NEW_MARKER));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, MOBILE_APP_POOL_LINE());
+        content = lines.join('\n');
+      } else {
+        content = `${content.replace(/\n*$/, '\n')}${MOBILE_APP_POOL_LINE()}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the app conversations move line');
     }
 
     // Mobile app routes (docs/specs/mobile-multi-route.md) — Agent Awareness + Migration Parity.
@@ -13720,6 +13751,16 @@ A silent **decision audit** records every keep/kill decision *change* (logged on
     } else {
       result.skipped.push('CLAUDE.md: sign-in key health bullet already present');
     }
+    if (!content.includes(USAGE_LIMIT_WATCH_MARKER)) {
+      const keyIdx = content.indexOf(CLAUDE_KEY_HEALTH_BULLET);
+      content = keyIdx >= 0
+        ? content.slice(0, keyIdx + CLAUDE_KEY_HEALTH_BULLET.length) + '\n' + USAGE_LIMIT_WATCH_BULLET + content.slice(keyIdx + CLAUDE_KEY_HEALTH_BULLET.length)
+        : content + '\n' + USAGE_LIMIT_WATCH_BULLET + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added usage limit bullet');
+    } else {
+      result.skipped.push('CLAUDE.md: usage limit bullet already present');
+    }
 
     // Self-Heal: Update Restart Behavior — explains restart-cascade dampener
     // and lifeline drift auto-promote. Complementary to Version-Skew Self-
@@ -15711,6 +15752,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Registry First — channel registry:',
       // team-roles-and-access: the question "who has access?" is framework-agnostic.
       '**Registry First — people:',
+      // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
+      '**Registry First — team access:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is

@@ -18,6 +18,7 @@ import { MemoryInboundTracker } from './MemoryInboundTracker.js';
 import { memoryFixText, MemoryPrivacyRecovery, type RecoveryFacts } from './MemoryPrivacyRecovery.js';
 import { MemoryPrivacy, type MemoryPrivacyConfig, type ReachableLists } from './MemoryPrivacy.js';
 import { ReachablePeople, type PhoneFact } from './ReachablePeople.js';
+import { TeamConfinement } from './TeamConfinement.js';
 
 /** The oldest Claude Code these session settings were verified on. */
 export const MEMORY_PRIVACY_CLAUDE_FLOOR = '2.1.316';
@@ -66,6 +67,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   users: () => UserProfile[];
   ready: Promise<void>;
   recovery: MemoryPrivacyRecovery;
+  sandboxReady: () => boolean;
   reachablePeople: ReachablePeople;
 } {
   const users = (): UserProfile[] => readJson(path.join(input.stateDir, 'users.json'), input.initialUsers ?? []);
@@ -82,7 +84,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     imessageAuthorizedContacts: (entry('imessage').authorizedContacts as string[] | undefined) ?? [],
     mspDeviceUserIds: readJson<{ devices?: Array<{ role?: string; status?: string; userId?: string }> }>(
       path.join(input.stateDir, 'state', 'mobile-devices.json'), {},
-    ).devices?.filter((d) => d.role === 'msp' && d.status === 'active' && d.userId).map((d) => d.userId as string) ?? [],
+    ).devices?.filter((d) => (d.role === 'msp' || d.role === 'team') && d.status === 'active' && d.userId).map((d) => d.userId as string) ?? [],
     telegramOwnerId: input.telegramOwnerId?.()
       ?? (entry('telegram').ownerUserId as number | undefined)
       ?? ((entry('telegram').promptGate as { ownerId?: number } | undefined)?.ownerId)
@@ -118,18 +120,22 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     ).devices ?? []).filter((d) => d.status === 'active').map((d): PhoneFact => {
       const person = d.userId ? users().find((u) => u.id === d.userId) : undefined;
       return {
-        userId: d.userId ?? null, role: d.role === 'msp' ? 'msp' : 'owner',
+        userId: d.userId ?? null, role: d.role === 'msp' || d.role === 'team' ? d.role : 'owner',
         name: person?.name ?? d.personName ?? d.userId ?? 'Unknown person',
         deviceName: d.label || d.deviceName || 'Phone',
       };
     }),
   });
 
+  const confinement = new TeamConfinement(input.stateDir);
+  privacy.confinement = confinement;
+
   let sandboxReady = false;
   let claudePath = input.claudePath;
   let blockerFacts: RecoveryFacts | null = null;
   input.sessionManager.setMemoryPrivacy({
     privacy,
+    confinement,
     telegramGroupKey: () => telegramKey(),
     slackChannelForSession: input.slackChannelForSession,
     sandboxReady: () => sandboxReady,
@@ -221,5 +227,5 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     });
   });
 
-  return { privacy, tracker, users, ready, recovery, reachablePeople };
+  return { privacy, tracker, users, ready, recovery, reachablePeople, sandboxReady: () => sandboxReady };
 }

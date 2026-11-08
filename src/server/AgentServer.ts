@@ -2,6 +2,7 @@ import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/AgentServer.ts');
 const stampSpendNotification = notificationStamper('src/server/AgentServer.ts', 'spend-alert-dispatcher');
+import { TeamConfinement } from '../users/TeamConfinement.js';
 import { requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { decisionQualityMachineSegment } from '../core/decisionQualityTypes.js';
 import { readMeasurementTargets } from './measurementCoverageRead.js';
@@ -21,6 +22,7 @@ import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
+import { setAutonomousRunProbe } from '../core/appConversationMove.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
 import type { Server } from 'node:http';
 import fs from 'node:fs';
@@ -201,6 +203,8 @@ import { recordPlatformMedia, deviceTextForRow, slackConversationHeldLocally, sl
 import { mountConsoleTicketRedeemRoute } from './mobileConsoleTicket.js';
 import { MobilePairingService, mountPublicMobilePairingRoutes, createMobilePairingRouter, deviceAuthenticator, isMobileNativeEnabled, isMobileMediaEnabled, fanOutPushTrigger, isMobilePushEnabled, APPROVE_REFUSAL } from './mobilePairingRoutes.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
+import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId } from './mobileSlackRoutes.js';
 import { buildSlackHolderRead } from './mobileSlackHolderProxy.js';
 import { buildMediaHolderStream, holderBearerOk } from './mobileMediaHolderProxy.js';
@@ -1257,7 +1261,7 @@ export class AgentServer {
     /** WS1.4 consent preflight against the machine that owns the run registry. */
     autonomousRunOnMachine?: (machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>;
     /** Kick the working-set carrier on the machine that just acquired a topic. */
-    kickWorkingSetOnMachine?: (machineId: string, topic: number) => void;
+    kickWorkingSetOnMachine?: (machineId: string, topic: number | string) => void;
     /** Ownership Follows Live Work Part B for POST /sessions/spawn: record THIS
      *  machine as the topic's owner when a topic-bound session is started here,
      *  so a peer's router never treats the topic as unowned and starts a second
@@ -1783,6 +1787,20 @@ export class AgentServer {
     // Mobile pairing links (docs/specs/mobile-pairing-link.md): the public redeem + ping are
     // registered here, before the bearer gate; mint + devices mount on the authed router below.
     this.mobilePairing = new MobilePairingService({
+      // Team phones need the sandbox on, and one machine until multi-machine support lands (§3.6, §4.1).
+      teamGate: () => {
+        const status = options.sessionManager.memoryPrivacyStatus?.();
+        if (!status?.enabled || !status.sandboxReady) return 'memory-privacy-required';
+        try {
+          const identity = options.coordinator?.managers?.identityManager;
+          const self = options.coordinator?.identity?.machineId;
+          if (identity?.getActiveMachines().some((m) => m.machineId !== self)) return 'team-needs-one-machine';
+        } catch {
+          // @silent-fallback-ok — an unreadable registry counts as several machines, the strict direction.
+          return 'team-needs-one-machine';
+        }
+        return 'ok';
+      },
       config: this.config,
       stateDir: options.config.stateDir,
       tunnel: () => options.tunnel,
@@ -1859,6 +1877,11 @@ export class AgentServer {
         enabled: () => isMobilePushEnabled(this.config),
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey) => mp.deviceMayUseConversation(deviceId, conversationKey),
+        receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
+        phoneStillCounts: (deviceId) => {
+          const d = mp.devices.get(deviceId);
+          return !!d && mp.personOfDevice(d).ok;
+        },
         credentials: () => {
           const keyPem = pushKeys.get('apns_key_p8');
           const keyId = pushKeys.get('apns_key_id');
@@ -2067,6 +2090,11 @@ export class AgentServer {
           ? options.config.multiMachine?.identityReannounce?.sharedBearerToken
           : undefined,
         resolveIdentityReannounceContext: options.resolveIdentityReannounceContext,
+      };
+      machineRouteContext.teamJoinBlocked = () => {
+        if (this.mobilePairing) return this.mobilePairing.teamJoinBlocked();
+        const entries = new TeamConfinement(options.config.stateDir).entries();
+        return entries === null || entries.size > 0;
       };
       this.machineRouteContext = machineRouteContext;
       const machineRoutes = createMachineRoutes(machineRouteContext);
@@ -5097,8 +5125,11 @@ export class AgentServer {
           return { goal: job.goal ?? null, remainingMinutes, runKey: job.startedAt ?? null };
         }
       : null);
-    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topic: number) => {
+    const kickWorkingSetOnMachine = options.kickWorkingSetOnMachine ?? ((machineId: string, topicRef: number | string) => {
+      // An app conversation's key resolves to this machine's alias here, and to the target's own on arrival.
       if (machineId === options.meshSelfId) {
+        const topic = typeof topicRef === 'number' ? topicRef : options.conversationRegistry?.appAliasFor(topicRef.replace(/^app:/, '')) ?? null;
+        if (topic === null) return;
         const coordinator = options.workingSetPullCoordinator;
         if (!coordinator) return;
         void (async () => {
@@ -5128,7 +5159,7 @@ export class AgentServer {
             const response = await fetch(`${peer.url}/coherence/fetch-working-set`, {
               method: 'POST',
               headers: { Authorization: `Bearer ${authToken}`, 'Content-Type': 'application/json' },
-              body: JSON.stringify({ topic }),
+              body: JSON.stringify({ topic: topicRef }),
               signal: AbortSignal.timeout(5_000),
             });
             if (!response.ok) continue;
@@ -5139,6 +5170,7 @@ export class AgentServer {
       })();
     });
     setMoveAftercare(kickWorkingSetOnMachine);
+    setAutonomousRunProbe(autonomousRunOnMachine);
     const resolveWindowFirstUnreceiptedTask = (state: Readonly<import('../core/WindowRunLivenessAuthority.js').WindowRunLivenessDocument>): string | null => {
       const localPath = path.join(options.config.stateDir, 'autonomous', `${state.topicId}.local.md`);
       const content = fs.readFileSync(localPath, 'utf8');
@@ -6025,6 +6057,7 @@ export class AgentServer {
           const keyLedger = signer ? new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup }) : null;
           svc = new AppConversationService({
             signer, keyLookup, keyLedger,
+            confineStranded: () => { throw new Error('pairing-not-ready'); },
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
             registry: routeCtx.conversationRegistry!,
@@ -6034,8 +6067,8 @@ export class AgentServer {
             dispatch: () => dispatch,
             killSession: (name) => sm?.killSessionByTmuxName?.(name) === true,
             pauseSession: (name) => { sm?.sendKey?.(name, 'Escape'); },
-            onEmergencyStop: (alias) => {
-              try { options.resumeQueue?.pause('message-sentinel emergency stop'); options.resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ }
+            onEmergencyStop: (alias, scope) => {
+              try { if (scope !== 'conversation') options.resumeQueue?.pause('message-sentinel emergency stop'); options.resumeQueue?.cancelByTopic(alias); } catch { /* @silent-fallback-ok — the stop itself already ran */ }
               try { stopAutonomousTopic(options.config.stateDir, String(alias)); } catch { /* @silent-fallback-ok — best-effort, as on the Telegram path */ }
               try { options.operatorStopRecorder?.(alias); } catch { /* @silent-fallback-ok — the stop record is observability */ }
             },
@@ -6069,6 +6102,11 @@ export class AgentServer {
         this.mobilePairing.keyLedger = keyLedger;
         // People and roles §3.4: who owns each app conversation (undefined ⇒ no such conversation).
         this.mobilePairing.useAppConversationStore(svc.store);
+        // Set here on every path: production builds the service before this server exists.
+        const pairingForRecovery = this.mobilePairing;
+        svc.deps.confineStranded = (key, personKey, deviceId) => {
+          if (pairingForRecovery.devices.get(deviceId)?.role === 'team') pairingForRecovery.confineOwnConversation(key, personKey);
+        };
         if (keyLedger) {
           try {
             const rec = keyLedger.reconcile(this.mobilePairing.devices);
@@ -6639,7 +6677,11 @@ export class AgentServer {
         ownerMachineFor: (ref) => {
           // A Slack conversation is held by the machine whose registry minted it (checked above).
           if (ref.kind === 'slack') return null;
-          if (ref.kind === 'app') return appSvcForSession?.isOwner() ? null : leaseHolderNow();
+          if (ref.kind === 'app') {
+            if (appSvcForSession?.serves(ref.key)) return null;
+            // A moved conversation lives where its record says (app-conversations-in-the-pool §2.1).
+            return routeCtx.sessionOwnershipRegistry?.ownerOf(`app:${ref.key}`) ?? leaseHolderNow();
+          }
           return routeCtx.sessionOwnershipRegistry?.ownerOf(String(ref.topicId)) ?? leaseHolderNow();
         },
         selfMachineId: selfIdNow,
@@ -6692,6 +6734,51 @@ export class AgentServer {
       }
       this.mobilePairing.pushPoolCtx = routeCtx;
       this.app.use(createMobilePairingRouter(this.mobilePairing, this.mobilePairing.deps, routeCtx));
+      const pairingSvc = this.mobilePairing;
+      const appStore = this.appConversations?.store ?? null;
+      const topicNumber = (key: string) => options.state.get<number>(key) ?? null;
+      const isSystemTopicHere = (id: number) => id === topicNumber('agent-attention-topic') || id === topicNumber('agent-updates-topic') || id === options.telegram?.getLifelineTopicId();
+      const isJobTopicHere = (id: number) => Object.values(options.state.get<Record<string, number>>('job-topic-mappings') ?? {}).includes(id);
+      this.app.use(createTeamRouter(pairingSvc, {
+        signer: () => loadMachineSigner(options.config.stateDir),
+        applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),
+        isSystemTopic: isSystemTopicHere,
+        isJobTopic: isJobTopicHere,
+        isUnconfinableTopic: (id) => {
+          const framework = options.topicProfile?.store.resolve(id)?.framework;
+          return !!framework && framework !== 'claude-code';
+        },
+        ownerProfile: () => {
+          const users = new UserManager(options.config.stateDir, options.config.users).listUsers();
+          const owners = users.filter((u) => deriveRole(u.permissions ?? [], u.orgRole) === 'owner');
+          const id = options.sessionManager.memoryPrivacyStatus?.().ownerUserId ?? owners[0]?.id ?? null;
+          const owner = users.find((u) => u.id === id);
+          return { userId: id, several: owners.length > 1, links: (owner?.telegramUserId ? { telegram: owner.telegramUserId } : {}) as Record<string, string | number> };
+        },
+        logsDir: path.join(options.config.stateDir, 'logs'),
+        restoreRefs: () => {
+          const keys = appStore?.liveConversationKeys() ?? [];
+          const teamDevices = new Set(pairingSvc.devices.list().filter((d) => d.role === 'team').map((d) => d.id));
+          const holdsTeamWords = (key: string): boolean => {
+            let cursor: string | null = null;
+            for (;;) {
+              const page = appStore!.syncEvents(key, cursor, 500);
+              if (page.events.some((e) => 'origin' in e && teamDevices.has((e as { origin?: { deviceId?: string } }).origin?.deviceId ?? ''))) return true;
+              if (page.events.length === 0 || page.cursor === cursor) return false;
+              cursor = page.cursor;
+            }
+          };
+          return {
+            teamRefs: keys.filter(holdsTeamWords).map(confinedEntryFor),
+            // System and job topics are never shared, so a sweep leaves them alone (§3.3).
+            allRefs: () => [...keys, ...(options.telegram?.getAllTopicMappings() ?? []).filter((m) => !isSystemTopicHere(m.topicId) && !isJobTopicHere(m.topicId)).map((m) => `telegram:${m.topicId}`)].map(confinedEntryFor),
+          };
+        },
+        requireMemoryPrivacy: () => {
+          options.liveConfig?.set('memoryPrivacy.enabled', true);
+          return this.requestSupervisedRestart('memory privacy turned on for team members', 'team-memory-privacy');
+        },
+      }));
     }
 
     // File viewer routes (after auth middleware)

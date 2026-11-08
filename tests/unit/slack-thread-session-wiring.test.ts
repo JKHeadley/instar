@@ -112,10 +112,10 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
     // owned by THIS machine → reconstruct the Message and replay it.
     const acceptStart = SERVER_TS.indexOf('onAccepted: (cmd) => {');
     expect(acceptStart).toBeGreaterThan(-1);
-    const acceptBlock = SERVER_TS.slice(acceptStart, acceptStart + 4000);
+    const acceptBlock = SERVER_TS.slice(acceptStart, acceptStart + 5000);
     expect(acceptBlock).toContain('_slackInboundDispatch');
     // Slack keys are non-numeric; Telegram topic keys are pure numbers.
-    expect(acceptBlock).toContain('isSlackSessionKey(slackKey)');
+    expect(acceptBlock).toContain('isSlackConversationKey(slackKey)');
     expect(acceptBlock).toContain('reconstructSlackMessage(');
   });
 });
@@ -129,6 +129,27 @@ describe('thread→session: SessionManager carries the thread_ts', () => {
   });
   it('the resume-failed fallback propagates slackThreadTs', () => {
     expect(SESSION_MANAGER_TS).toContain('slackThreadTs: options.slackThreadTs');
+  });
+});
+
+describe('thread→session: dead-session recovery stays in the conversation', () => {
+  it('the monitor reads the raw channel and filters to the registered thread', () => {
+    const start = SERVER_TS.indexOf('sessionMonitor = new SessionMonitor(');
+    const block = SERVER_TS.slice(start, start + 5500);
+    expect(start).toBeGreaterThan(-1);
+    expect(block).toContain('parseRoutingKey(slackChId)');
+    expect(block).toContain('getChannelMessages(target.channelId');
+    expect(block).toContain('resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === slackChId');
+  });
+
+  it('fresh Slack recovery excludes other channel threads from its bootstrap', () => {
+    const start = SERVER_TS.indexOf('respawnSessionFresh: async (topicId');
+    const end = SERVER_TS.indexOf('if (telegram) {', start);
+    const block = SERVER_TS.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(block).toContain('parseRoutingKey(slackChId)');
+    expect(block).toContain('getConversationMessagesWithFallback(slackChId, 30)');
+    expect(block).toContain('registerChannelSession(slackChId, newSessionName)');
   });
 });
 

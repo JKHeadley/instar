@@ -35,6 +35,7 @@ import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { APP_CONVERSATION_KEY_PATTERN } from './appConversationText.js';
 import { coerceHlc, serializeHlcKey } from './HybridLogicalClock.js';
 import {
   validateReplicatedEnvelope,
@@ -188,7 +189,14 @@ export interface PlacementData {
   timestamp?: number;
   /** Whether a SessionDrainRunner is still draining the source (drain-grace input). */
   drainInFlight?: boolean;
+  /** App conversations (app-conversations-in-the-pool §2.7): the row's key. Such a row has no numeric topic. */
+  sessionKey?: string;
+  /** The row was written by the operator's "bring it back here"; it wins an equal-epoch tie. */
+  takeover?: boolean;
 }
+
+/** The ownership key grammar an app placement row may carry. */
+export const APP_PLACEMENT_KEY = new RegExp(`^app:${APP_CONVERSATION_KEY_PATTERN}$`);
 
 export interface SessionLifecycleData {
   sessionId: string;
@@ -848,6 +856,14 @@ export class CoherenceJournal {
     this.emit('topic-placement', topic, data as unknown as Record<string, unknown>, `${topic}:${data?.epoch}`);
   }
 
+  /**
+   * The key-typed form for an app conversation (app-conversations-in-the-pool §2.7): topic absent,
+   * `data.sessionKey` the key, op key `<sessionKey>:<epoch>`. Older readers skip it (no numeric topic).
+   */
+  emitAppPlacement(sessionKey: string, data: PlacementData): void {
+    this.emit('topic-placement', undefined, { ...data, sessionKey } as unknown as Record<string, unknown>, `${sessionKey}:${data?.epoch}`);
+  }
+
   /** session-lifecycle (§3.2). Op key: (sessionId, status). topic optional. */
   emitLifecycle(data: SessionLifecycleData, topic?: number): void {
     this.emit(
@@ -1065,7 +1081,15 @@ export class CoherenceJournal {
       const reasons: PlacementReason[] = ['user-move', 'placed', 'failover', 'released', 'quota-block-move', 'reconcile'];
       if (typeof reason !== 'string' || !reasons.includes(reason as PlacementReason)) return null;
       out = { owner, epoch, reason };
-      known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
+      known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight', 'sessionKey', 'takeover'];
+      if (raw.sessionKey !== undefined) {
+        if (typeof raw.sessionKey !== 'string' || !APP_PLACEMENT_KEY.test(raw.sessionKey)) return null;
+        out.sessionKey = raw.sessionKey;
+      }
+      if (raw.takeover !== undefined) {
+        if (raw.takeover !== true) return null;
+        out.takeover = true;
+      }
       if (raw.prevOwner !== undefined) {
         if (typeof raw.prevOwner !== 'string') return null;
         out.prevOwner = raw.prevOwner;
@@ -1523,6 +1547,7 @@ export class CoherenceJournal {
   private opKeyOf(kind: JournalKind, entry: JournalEntry): string | null {
     const d = entry.data as Record<string, unknown>;
     if (kind === 'topic-placement') {
+      if (typeof d.sessionKey === 'string' && typeof d.epoch === 'number') return `${d.sessionKey}:${d.epoch}`;
       if (typeof entry.topic !== 'number' || typeof d.epoch !== 'number') return null;
       return `${entry.topic}:${d.epoch}`;
     }

@@ -194,12 +194,12 @@ describe('the menu', () => {
     expect((c.door as { reason: string }).reason).not.toContain('Telegram');
     expect(c.typing).toEqual({ can: true, reason: null });
   });
-  it('an app or Slack conversation gets the engine switch; app moving waits for part 3b, Slack stays with its connection, said plainly', () => {
+  it('an app or Slack conversation gets the engine switch; an app conversation says moving is off where it is off, Slack stays with its connection, said plainly', () => {
     const app = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
     const c = summarizeControls(parts({ row: { ...ROW, platform: 'headless', platformId: undefined, conversationRef: app } }), {}, 0);
     expect(c.door).toMatchObject({ state: 'ok', topic: app });
     expect(c.move).toMatchObject({ state: 'not-yet' });
-    expect((c.move as { reason: string }).reason).toContain('App conversations get it next');
+    expect((c.move as { reason: string }).reason).toContain('isn\'t turned on for this agent yet');
     const slack = summarizeControls(parts({ row: { ...ROW, platform: 'slack', platformId: 'C0ABC', conversationRef: 'slack:T0XYZ:C0ABC' } }), {}, 0);
     expect(slack.door).toMatchObject({ state: 'ok', topic: 'slack:T0XYZ:C0ABC' });
     // slack-conversations-stay-with-connection §2.4: a Slack conversation stays with its connection.

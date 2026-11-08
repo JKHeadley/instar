@@ -383,10 +383,23 @@ export class TelegramOriginService {
     sealOriginAdmission(operation, this.options.signingKey, this.#now());
     return operation;
   }
+  /** Who may hold the reply floor. A direct session send proves itself with its
+   * credential. An imported queue row names a session only when recovery matched
+   * the digest the reply script recorded to a credential this registry issued to
+   * a still-live session (attributeLegacy); a row with no digest, a foreign
+   * digest, or a dead session stays unattributed and automated. Job sessions
+   * are excluded from the server's own session record in both cases. */
+  private sessionAuthored(producer: Pick<TelegramOriginProducer, 'producerKind' | 'sessionId'>): boolean {
+    return producer.producerKind === 'session' || producer.producerKind === 'imported-legacy' && producer.sessionId !== null;
+  }
   notificationForCurrentProducer(): import('../NotificationSelectivityGate.js').OutboundEnvelope {
     const producer = this.currentProducer();
-    let notification = notificationContext.getStore() ?? (producer.producerKind === 'session' && !this.notificationJobSession(producer.sessionId)
-      ? verifiedReplyEnvelope('origin-session') : { origin: 'automated' as const, category: categoryForProducer(producer.producerId), sourceContext: producer.producerId });
+    // An imported row's provenance is the row's own; the scope recovery happens
+    // to run in says nothing about who wrote it.
+    const ambient = producer.producerKind === 'imported-legacy' ? undefined : notificationContext.getStore();
+    let notification = ambient ?? (this.sessionAuthored(producer) && !this.notificationJobSession(producer.sessionId)
+      ? verifiedReplyEnvelope(producer.producerKind === 'session' ? 'origin-session' : 'imported-origin-session')
+      : { origin: 'automated' as const, category: categoryForProducer(producer.producerId), sourceContext: producer.producerId });
     if (producer.producerKind === 'session' && this.notificationPromotedUpgradeSession(producer.sessionId)) return { origin: 'automated', category: 'update-announcement', sourceContext: 'release-upgrade-notify', releaseAudiencePromoted: true };
     if (notification.origin === 'verified-reply' && !isVerifiedReplyEnvelope(notification)) notification = { origin: 'automated', category: 'uncategorized', sourceContext: producer.producerId };
     if (notification.origin === 'automated' && notification.category === 'uncategorized') notification = { ...notification, category: categoryForProducer(producer.producerId) };
@@ -642,8 +655,11 @@ export class TelegramOriginService {
       const topicId = operation.record.notification?.contextTopicId ?? this.notificationTopicId(operation.record.destination.chatId, operation.record.destination.topicId);
       let envelope = operation.record.notification;
       // Older signed records retain the reply floor for genuine session authors.
-      const sessionReply = !this.notificationJobSession(operation.record.sessionId) && (envelope?.origin === 'verified-reply'
-        || !envelope && operation.record.producerKind === 'session');
+      // An imported row keeps it only when its sealed record names the session
+      // recovery attributed it to; an unattributed import never gains it here.
+      const sessionReply = !this.notificationJobSession(operation.record.sessionId)
+        && !(operation.record.producerKind === 'imported-legacy' && operation.record.sessionId === null)
+        && (envelope?.origin === 'verified-reply' || !envelope && operation.record.producerKind === 'session');
       if (sessionReply) envelope = verifiedReplyEnvelope('origin-session');
       else if (envelope?.origin === 'verified-reply') envelope = { ...envelope, origin: 'automated', category: 'job-status' };
       if (envelope && operation.record.originMachineId !== this.options.identity.originMachineId) envelope = { ...envelope, relayedOrigin: true };

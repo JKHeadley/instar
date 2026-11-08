@@ -28,7 +28,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
-import { stripViewSignatures } from './mobilePairingRoutes.js';
+import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
@@ -92,12 +92,14 @@ import { emergencyStopUserMessage } from '../messaging/shared/emergencyStopUserM
 import { verifiedChannelIdentity, isVerifiedChannelName, verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 import { execFileSync } from 'node:child_process';
+import { activeUsageLimitWatch } from '../core/UsageLimitWatch.js';
 import { activeClaudeKeyHealth } from '../core/ClaudeKeyHealth.js';
 import { createHash, createHmac, timingSafeEqual, randomBytes, randomUUID } from 'node:crypto';
-import { cleanConversationTitle, newAppConversationKey } from '../core/appConversationText.js';
-import { requestIdAgeOk } from '../core/MobileChatRequests.js';
 import { isSlackConversationKey } from '../core/SlackForwardBridge.js';
 import { conversationKeys } from '../core/conversationKeys.js';
+import { getAppPoolMoves } from '../core/appConversationMove.js';
+import { cleanConversationTitle, newAppConversationKey } from '../core/appConversationText.js';
+import { requestIdAgeOk } from '../core/MobileChatRequests.js';
 import { governor as selfActionGovernorSurface } from '../monitoring/selfaction/governor.js';
 import { classifyActionClaim, classifyApprovalRequest, excerptAround } from '../core/action-claim.js';
 import { sharedG3SoakLedger, decideLeaseGatedSpawn } from '../core/leaseGatedSpawn.js';
@@ -1124,7 +1126,7 @@ export interface MobileInboundTrust {
    * People and roles (docs/specs/mobile-app-people-and-roles.md): the authenticated phone's role and
    * registry person (MSP only, namespaced by machine). Absent ⇒ an owner phone (older callers).
    */
-  sender?: { role: 'owner' | 'msp'; person?: { machineId: string; userId: string } };
+  sender?: { role: 'owner' | 'msp' | 'team'; person?: { machineId: string; userId: string } };
 }
 
 export interface RouteContext {
@@ -2105,7 +2107,7 @@ export interface RouteContext {
    *  topic has a live autonomous run before the holder authorizes a move. */
   autonomousRunOnMachine?: ((machineId: string, topic: string) => Promise<{ goal: string | null; remainingMinutes: number | null; runKey?: string | null } | null>) | null;
   /** Working-set acquire kick for an explicit transfer target. */
-  kickWorkingSetOnMachine?: ((machineId: string, topic: number) => void) | null;
+  kickWorkingSetOnMachine?: ((machineId: string, topic: number | string) => void) | null;
   /** Ownership Follows Live Work Part B for POST /sessions/spawn (see AgentServer
    *  option of the same name). Null/absent = not wired (single-machine). */
   claimTopicOwnershipOnSpawn?: ((topicId: number) => import('../core/ownershipFollowsLiveWork.js').ClaimOnSpawnOutcome) | null;
@@ -5636,6 +5638,8 @@ export function createRoutes(ctx: RouteContext): Router {
     if (isAuthed) {
       const claudeKey = activeClaudeKeyHealth()?.status();
       if (claudeKey) base.claudeKey = claudeKey;
+      const claudeUsage = activeUsageLimitWatch()?.status();
+      if (claudeUsage) base.claudeUsage = claudeUsage;
       // job-cost-reduction §5.3: the stable feature ids behind degradationSummary.
       // The narrative strings carry per-occurrence values, so they are evidence
       // only; health-check keys its `degradation:<feature>` reasons on these.
@@ -11321,7 +11325,11 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'working-set handoff not enabled (requires coherenceJournal.replication.enabled)' });
       return;
     }
-    const topic = Number(req.body?.topic);
+    // An app conversation's key resolves to this machine's own alias (app-conversations-in-the-pool §2.5).
+    const appRef = conversationKeys(req.body?.topic);
+    const appAlias = appRef?.kind === 'app' ? ctx.conversationRegistry?.appAliasFor(appRef.id) ?? null : null;
+    if (appRef?.kind === 'app' && appAlias === null) { res.json({ topic: appRef.ref, scheduled: false, skipReason: 'no-alias-here' }); return; }
+    const topic = appAlias ?? Number(req.body?.topic);
     if (!Number.isFinite(topic)) {
       res.status(400).json({ error: 'topic (number) is required' });
       return;
@@ -11805,7 +11813,7 @@ export function createRoutes(ctx: RouteContext): Router {
       }
 
       res.json({
-        sessions: allSessionsMerged,
+        sessions: maskSessionsForPhone(ctx.mobilePairingService, req, allSessionsMerged as unknown as Array<Record<string, unknown>>),
         pool: {
           enabled: !!ctx.machinePoolRegistry,
           selfMachineId,
@@ -11826,7 +11834,7 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
-    res.json(enriched);
+    res.json(maskSessionsForPhone(ctx.mobilePairingService, req, enriched as Array<Record<string, unknown>>));
   });
 
   router.post('/sessions/cleanup-stale', (_req, res) => {
@@ -13310,7 +13318,7 @@ export function createRoutes(ctx: RouteContext): Router {
         res.status(400).json({ ok: false, code: 'bad-conversation-name', error: 'An app conversation\'s name must be 80 characters or fewer, and not only quotes or brackets. Give it a shorter name.' });
         return;
       }
-      const served = svc.isOwner();
+      const served = svc.servesNewConversations();
       // A standby's profile store isn't read by the serving machine, so a pick made here would be lost.
       if (!served && hasPreference) {
         res.status(400).json({ ok: false, code: 'engine-choice-needs-serving-machine', error: 'Pick the engine from the machine that runs your app conversations, or leave it on Automatic.' });
@@ -19803,7 +19811,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     const local = ctx.telegram?.getAllTopicMappings() ?? [];
     if (req.query.scope !== 'pool') {
-      res.json({ topics: local, serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
+      res.json({ topics: filterTopicsForTeam(ctx.mobilePairingService, req, local, (t) => (t as { topicId?: unknown }).topicId), serving: ctx.telegramOrigin?.options.holdsLease?.() === true });
       return;
     }
     // A session can run on a standby whose local registry still says
@@ -19856,7 +19864,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
     }
     res.json({
-      topics: [...named.values()].sort((a, b) => a.topicId - b.topicId),
+      topics: filterTopicsForTeam(ctx.mobilePairingService, req, [...named.values()].sort((a, b) => a.topicId - b.topicId), (t) => t.topicId),
       pool: { failed, unresolved: [...knownIds].filter(id => !named.has(id)).sort((a, b) => a - b) },
     });
   });
@@ -20035,6 +20043,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   });
 
   router.post('/telegram/reply/:topicId', async (req, res) => {
+    // A reply that went out tells the team phones holding this topic (team-roles-and-access §4.1).
+    res.on('finish', () => {
+      const id = parseInt(req.params.topicId, 10);
+      if (res.statusCode < 300 && id > 0) ctx.mobilePairingService?.teamTopicReply(id);
+    });
     if (!ctx.telegram) {
       res.status(503).json({ error: 'Telegram not configured' });
       return;
@@ -20907,6 +20920,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const topicId = parseInt(req.params.topicId, 10);
     if (isNaN(topicId)) {
       res.status(400).json({ error: 'topicId must be a number' });
+      return;
+    }
+    // The gate checked the path; this checks the number the handler will actually serve (§3.5).
+    if (ctx.mobilePairingService && !deviceMayUse(ctx.mobilePairingService, req, `telegram:${topicId}`, 'read')) {
+      res.status(404).json({ error: 'unknown-conversation' });
       return;
     }
     if (req.query.scope !== undefined && req.query.scope !== 'pool') {
@@ -22488,7 +22506,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       copied = await app.media.sessionCopy(ref.messageId, attachment);
     }
     if (!copied) { res.status(404).json({ error: 'not-on-this-machine', detail: `this file is not on this machine yet; ${app.replicator.whyNotHere(attachment.sha256)}` }); return; }
-    res.json({ path: copied });
+    try {
+      res.json({ path: app.intoConfinedInbox(key, copied) });
+    } catch (err) {
+      console.warn(`[app-media] copy refused: ${err instanceof Error ? err.message : String(err)}`);
+      res.status(409).json({ error: 'copy-refused', detail: 'This file could not be placed where the session can read it.' });
+    }
   });
 
   router.post('/internal/slack-forward', async (req, res) => {
@@ -22937,7 +22960,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const localStatus = requestedStatus ? (normalizeAttentionStatus(requestedStatus) ?? requestedStatus) : undefined;
         const localLimit = parseAttentionLimit(req.query as Record<string, unknown>);
         const all = ctx.localAttention.list(localStatus).map((it) => ({ ...it, machineId: ctx.meshSelfId ?? undefined }));
-        const items = localLimit === undefined ? all : all.slice(0, localLimit);
+        const shown = filterAttentionForPhone(ctx.mobilePairingService, req, all);
+        const items = localLimit === undefined ? shown : shown.slice(0, localLimit);
         res.json({ items, count: items.length, surface: 'local' });
         return;
       }
@@ -22980,16 +23004,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         });
       }
       const merged = await attentionPoolMerge(localItems, status);
+      const shown = filterAttentionForPhone(ctx.mobilePairingService, req, merged.items as Array<Record<string, unknown>>);
       if (limit === undefined) {
-        res.json(merged);
+        res.json({ ...merged, items: shown, count: shown.length });
       } else {
-        const items = (merged.items as Array<Record<string, unknown>>).slice(0, limit);
+        const items = shown.slice(0, limit);
         res.json({ ...merged, items, count: items.length });
       }
       return;
     }
 
-    const items = limit === undefined ? localItems : localItems.slice(0, limit);
+    const shownLocal = filterAttentionForPhone(ctx.mobilePairingService, req, localItems);
+    const items = limit === undefined ? shownLocal : shownLocal.slice(0, limit);
     res.json({ items, count: items.length });
   });
 
@@ -25323,6 +25349,22 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       return;
     }
+    // app-conversations-in-the-pool §2.5: an app conversation moves only by a completed drain. Its own
+    // flow on the holder: no pin, no release-then-place tail, a failed drain leaves everything where it was.
+    {
+      const appKeys = conversationKeys(topicId);
+      if (appKeys?.kind === 'app') {
+        const pool = getAppPoolMoves();
+        if (!pool || !pool.active()) { res.status(503).json({ error: 'session pool not available (dark / single-machine install)' }); return; }
+        const answer = await pool.move({
+          conversationKey: appKeys.id, to,
+          confirm: body.confirm === true,
+          ...(typeof body.confirmationChallenge === 'string' ? { confirmationChallenge: body.confirmationChallenge } : {}),
+        });
+        res.status(answer.status).json(answer.body);
+        return;
+      }
+    }
     // We are the holder (or single-machine) — perform authoritatively.
     const self = ctx.meshSelfId ?? null;
     const caps = ctx.machinePoolRegistry?.getCapacities() ?? [];
@@ -25795,6 +25837,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       ...(drainLeg.attempted ? { drain: drainLeg } : {}),
       ...(escalationHintFiled ? { escalationHintFiled: true } : {}),
     });
+  });
+
+  // POST /pool/bring-back — "Bring it back here" (app-conversations-in-the-pool §2.2): the operator's
+  // explicit, confirmed takeover of a moved app conversation whose machine isn't answering. A
+  // non-holder proxies to the holder. Body: { conversation: "app:<key>", confirm? }.
+  router.post('/pool/bring-back', async (req, res) => {
+    const body = (req.body ?? {}) as { conversation?: unknown; confirm?: unknown };
+    const keys = conversationKeys(body.conversation);
+    if (!keys || keys.kind !== 'app') { res.status(400).json({ error: 'conversation must be an app conversation reference, e.g. {"conversation":"app:<key>"}' }); return; }
+    const pool = getAppPoolMoves();
+    if (!pool || !pool.active()) { res.status(503).json({ error: 'session pool not available (dark / single-machine install)' }); return; }
+    const holderUrl = ctx.resolveRouterUrl?.() ?? null;
+    if (holderUrl) {
+      try {
+        const r = await fetch(`${holderUrl}/pool/bring-back`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation: keys.ref, confirm: body.confirm === true }),
+        });
+        // @silent-fallback-ok — the status is the signal when the holder's body isn't JSON.
+        const j = (await r.json().catch(() => ({}))) as Record<string, unknown>;
+        res.status(r.status).json({ ...j, handledBy: 'holder-proxy' });
+      } catch (err) {
+        // @silent-fallback-ok — NOT silent: an explicit 502 with the reason; nothing was taken over.
+        res.status(502).json({ error: `could not reach lease-holder: ${err instanceof Error ? err.message : String(err)}` });
+      }
+      return;
+    }
+    const answer = pool.bringBack({ conversationKey: keys.id, confirmed: body.confirm === true });
+    res.status(answer.status).json(answer.body);
   });
 
   // POST /pool/unpin — U4.1 §2B: the deliberate UNPIN surface. Body: { topic }.
@@ -29035,7 +29107,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             // topic's queued resumes — the killed session must not be
             // auto-resurrected out from under the user's explicit stop.
             try {
-              ctx.resumeQueue?.pause('message-sentinel emergency stop');
+              // A team phone's stop is for its own conversation: it never pauses the agent's queue.
+              if (trust?.sender?.role !== 'team') ctx.resumeQueue?.pause('message-sentinel emergency stop');
               ctx.resumeQueue?.cancelByTopic(Number(topicId));
               ctx.operatorStopRecorder?.(Number(topicId));
             } catch { /* the stop must succeed regardless */ }
@@ -29082,6 +29155,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         senderName: fromFirstName,
         senderUsername: fromUsername,
         telegramUserId: fromUserId,
+        ...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),
         // BIAS-TO-ACTION-SPEC D10: persist the lifeline's forward marker so the
         // standing-authorization resolver can prove non-forwarded provenance.
         // An app message is recorded with forwarded UNKNOWN, so no durable-evidence
@@ -29265,6 +29339,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           messageThreadId: topicId,
           viaLifeline: !trust,
           ...(trust ? { viaMobileDevice: true, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
+          // A team phone's words are never a command (team-roles-and-access §4.1). Set only here, from
+          // the authenticated phone: onTopicMessage reads it to skip every intercept.
+          ...(trust?.sender?.role === 'team' ? { teamPhone: true } : {}),
           // Explicit, so the message pipeline can refuse authority by the
           // flag as well as by the missing id.
           ...(senderUntrusted ? { senderUnverified: true } : {}),
@@ -30576,13 +30653,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    * List all topics with metadata.
    * GET /topic/list
    */
-  router.get('/topic/list', (_req, res) => {
+  router.get('/topic/list', (req, res) => {
     if (!ctx.topicMemory) {
       res.status(503).json({ error: 'TopicMemory not initialized' });
       return;
     }
 
-    const topics = ctx.topicMemory.listTopics();
+    const topics = filterTopicsForTeam(ctx.mobilePairingService, req, ctx.topicMemory.listTopics(), (t) => (t as { topicId?: unknown }).topicId);
     res.json({ topics, total: topics.length });
   });
 
@@ -39087,6 +39164,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       });
     }
     mountMobilePermissionsRoutes(router, {
+      teamAction: async (kind, req, deviceId) => {
+        const run = ctx.mobilePairingService?.teamActionRunner;
+        return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
+      },
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {
         const r = await runSessionAction(action, { call: sessionControlCall, selfMachineId: () => ctx.meshSelfId ?? null });

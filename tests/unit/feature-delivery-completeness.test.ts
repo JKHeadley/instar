@@ -171,6 +171,7 @@ describe('Feature Delivery Completeness', () => {
       // channel-registry: which peer channels work right now (templates.ts + migrator parity).
       'Registry First — channel registry:',
       'Registry First — people:',
+      'Registry First — team access:',
       'Decision journal — principle is required:',
       'Decision journal confidence contract:', // ACT-1522: finite [0,1] write contract + legacy-unmeasurable posture; template, existing-agent migrator, and Codex/Gemini shadow parity.
       'Alignment score — N/A means not assessed:',

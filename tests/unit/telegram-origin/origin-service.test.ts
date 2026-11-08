@@ -501,6 +501,80 @@ describe('origin service durable delivery', () => {
         .rejects.toThrow(/legacy-origin-required/);
     } finally { queue.close(); }
   });
+  describe('an imported queue row under the notification gate', () => {
+    const beacon = '{"status":"warming","phase":"booting"}';
+    async function gated() {
+      const h = await harness(), queue = PendingRelayStore.open('echo', h.stateDir);
+      const gate = new NotificationSelectivityGate(h.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+      // An automated notice is moved to this hub topic when it is prepared.
+      gate.pushDestination = () => ({ chatId: '-100123', topicId: 7000 });
+      h.service.notificationGate = gate;
+      h.service.notificationJobSession = id => id === 'job-session';
+      const enroll = async (sessionId: string) => {
+        const token = await h.service.options.sessions.issue({ sessionId, harnessId: 'claude-code', projectDir: h.stateDir });
+        h.service.options.observer.track(h.service.options.sessions.getBinding(sessionId)!);
+        return createHash('sha256').update(token).digest('hex');
+      };
+      const snapshotOf = async (deliveryId: string) => (await h.store.legacyCandidates()).find(row => row.deliveryId === deliveryId)!;
+      const imported = async (deliveryId: string) => {
+        const snapshot = await snapshotOf(deliveryId);
+        const operation = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
+        expect(await h.store.importLegacy({ snapshot, admission: operation.admission })).toBe(true);
+        return operation;
+      };
+      const entryState = (deliveryId: string) => queue.findByDeliveryId(deliveryId)?.state;
+      const close = async () => { queue.close(); await gate.close(); };
+      return { h, queue, gate, enroll, snapshotOf, imported, entryState, close };
+    }
+    it('a reply queued by a live session is retried as a reply, in its own topic', async () => {
+      const t = await gated();
+      try {
+        const digest = await t.enroll('instar-app');
+        t.queue.enqueue({ delivery_id: 'session-reply', topic_id: 42, text_hash: 'h1', text: 'Here is your answer', http_code: 503,
+          error_body: beacon, origin_session_digest: digest });
+        // The scope recovery happens to run in never decides a row's standing.
+        const operation = await withNotificationEnvelope({ origin: 'automated', category: 'job-status', sourceContext: 'ambient' }, () => t.imported('session-reply'));
+        expect(operation.record).toMatchObject({ producerKind: 'imported-legacy', sessionId: 'instar-app',
+          notification: { origin: 'verified-reply', sourceContext: 'imported-origin-session' }, destination: { topicId: '42' } });
+        await t.h.service.executePreparedBot(operation, t.h.network);
+        expect(t.h.network).toHaveBeenCalledOnce();
+        expect((await t.h.store.getOrigin(operation.record.originId))?.operation?.state).not.toBe('suppressed');
+      } finally { await t.close(); }
+    });
+    it("a job session's row and an unattributed row stay quiet, and the entry is not labelled delivered", async () => {
+      const t = await gated();
+      try {
+        const digest = await t.enroll('job-session');
+        t.queue.enqueue({ delivery_id: 'job-row', topic_id: 42, text_hash: 'h1', text: 'Nightly report', http_code: 503,
+          error_body: beacon, origin_session_digest: digest });
+        t.queue.enqueue({ delivery_id: 'no-session-row', topic_id: 42, text_hash: 'h2', text: 'Old script row', http_code: 503, error_body: beacon });
+        t.queue.enqueue({ delivery_id: 'foreign-row', topic_id: 42, text_hash: 'h3', text: 'Unknown credential', http_code: 503,
+          error_body: beacon, origin_session_digest: 'f'.repeat(64) });
+        for (const id of ['job-row', 'no-session-row', 'foreign-row']) {
+          const operation = await t.imported(id);
+          expect(operation.record.sessionId).toBe(id === 'job-row' ? 'job-session' : null);
+          expect(operation.record.notification?.origin).toBe('automated');
+          await expect(t.h.service.executePreparedBot(operation, t.h.network)).rejects.toBeInstanceOf(QuietRecordedError);
+          expect((await t.h.store.getOrigin(operation.record.originId))?.operation).toMatchObject({ state: 'suppressed', holdReason: 'quiet-notification-recorded' });
+          expect(t.entryState(id)).toBe('quiet-recorded');
+        }
+        expect(t.h.network).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+    it('a reply claim on an imported row that names no session is not a reply at the last hop', async () => {
+      const t = await gated();
+      try {
+        t.queue.enqueue({ delivery_id: 'claimed-reply', topic_id: 42, text_hash: 'h1', text: 'Claims to be a reply', http_code: 503, error_body: beacon });
+        const operation = await t.imported('claimed-reply');
+        // The store refuses a changed seal (origin-store:digest-mismatch), so the
+        // claim can only be tried in memory against the last-hop classifier.
+        operation.record.notification = { origin: 'verified-reply', category: 'command-response', sourceContext: 'imported-origin-session' };
+        const stored = (await t.h.store.getOrigin(operation.record.originId))!;
+        await expect(t.h.service.classifyPreparedNotification(operation, stored)).rejects.toBeInstanceOf(QuietRecordedError);
+        expect(t.h.network).not.toHaveBeenCalled();
+      } finally { await t.close(); }
+    });
+  });
   it('isBootBeaconBody accepts only the beacon body', () => {
     expect(isBootBeaconBody('{"status":"warming","phase":"booting"}')).toBe(true);
     expect(isBootBeaconBody('{"phase":"booting","status":"warming"}')).toBe(true);
