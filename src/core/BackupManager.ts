@@ -212,6 +212,8 @@ const DEFAULT_CONFIG: BackupConfig = {
     'skill-learning/',
     'skill-telemetry/',
     'state/skill-learning.db*',
+    // Read markers (mobile-unread-messages §3.3): what each person has read, replicated; small.
+    'state/conversation-read-markers.json',
   ],
 };
 

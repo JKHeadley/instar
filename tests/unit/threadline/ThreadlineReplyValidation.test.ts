@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { isAuthenticatedThreadlineInbound } from '../../../src/threadline/ThreadlineReplyValidation.js';
 
-// canonical-migration-validator: threadline-inbound-canonical-store@1
+// canonical-migration-validator: threadline-inbound-canonical-store@2
 
 const THREAD = 'cfe01486-a896-4357-88a8-0251aacd2979';
 const MESSAGE = 'msg-1784436346759-dvffo8';

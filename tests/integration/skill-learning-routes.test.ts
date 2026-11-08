@@ -7,9 +7,13 @@
  * PIN check) and never to itself; an unreachable holder is a visible 503 `lease-holder-unreachable`.
  */
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import request from 'supertest';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { createSkillLearningRoutes, SKILL_LEARNING_DISABLED, LEASE_HOLDER_UNREACHABLE, SKILL_LEARNING_PIN_MESSAGE, FORWARDED_HEADER } from '../../src/server/skillLearningRoutes.js';
 import type { SkillLearningSentinelLike, SkillLearningStatus, ProposalSummary, LearnedSkillSummary } from '../../src/monitoring/skillLearning/types.js';
 
@@ -53,9 +57,9 @@ function fakeSentinel() {
 }
 
 /** The production pipeline in miniature: JSON body, bearer gate (as middleware.ts answers), then the module. */
-function app(opts: { enabled?: boolean; sentinel?: SkillLearningSentinelLike | null; holderUrl?: string | null; dashboardPin?: string | null; port?: number } = {}) {
+function app(opts: { enabled?: boolean; sentinel?: SkillLearningSentinelLike | null; holderUrl?: string | null; dashboardPin?: string | null; port?: number; stateDir?: string } = {}) {
   const ctx = {
-    config: { authToken: TOKEN, dashboardPin: opts.dashboardPin === undefined ? PIN : opts.dashboardPin ?? undefined, port: opts.port ?? 4042, monitoring: { skillLearning: { enabled: opts.enabled ?? true } } },
+    config: { authToken: TOKEN, dashboardPin: opts.dashboardPin === undefined ? PIN : opts.dashboardPin ?? undefined, port: opts.port ?? 4042, stateDir: opts.stateDir, monitoring: { skillLearning: { enabled: opts.enabled ?? true } } },
     meshSelfId: 'm_self',
     machinePoolRegistry: { getCapacity: (id: string) => ({ nickname: id === 'm_self' ? 'Studio' : 'Laptop' }) },
     resolveRouterUrl: () => opts.holderUrl ?? null,
@@ -72,6 +76,36 @@ function app(opts: { enabled?: boolean; sentinel?: SkillLearningSentinelLike | n
   return a;
 }
 const auth = { Authorization: `Bearer ${TOKEN}` };
+
+describe('forwarding error machine identity', () => {
+  it.each(['proposals/weekly-ci-health/agree', 'pending/weekly-ci-health/confirm'])('%s qualifies local storage failures and preserves peer responses', async (route) => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'skill-storage-http-'));
+    fs.mkdirSync(path.join(stateDir, 'machine'));
+    fs.mkdirSync(path.join(stateDir, 'machines'));
+    fs.writeFileSync(path.join(stateDir, 'machine/identity.json'), JSON.stringify({ machineId: 'm_self' }));
+    fs.writeFileSync(path.join(stateDir, 'machines/registry.json'), JSON.stringify({ version: 1, machines: { m_self: { nickname: 'Studio' } } }));
+    const a = app({ stateDir, holderUrl: 'http://holder.invalid', sentinel: fakeSentinel().sentinel });
+    const transport = vi.spyOn(globalThis, 'fetch');
+    const tap = () => request(a).post(`/skills/learned/${route}`).set(auth).send({ pin: PIN });
+    try {
+      transport.mockRejectedValueOnce(Object.assign(new Error('ENOSPC: write failed'), { code: 'ENOSPC' }));
+      const local = await tap();
+      expect(local.status).toBe(503);
+      expect(local.body).toMatchObject({ error: LEASE_HOLDER_UNREACHABLE, detail: 'Studio: ENOSPC: write failed' });
+
+      transport.mockRejectedValueOnce(new Error('fetch failed'));
+      expect((await tap()).body.detail).toBe('fetch failed');
+
+      transport.mockResolvedValueOnce(new Response(JSON.stringify({ error: 'storage-full', detail: 'Laptop: disk full' }), { status: 507 }));
+      const peer = await tap();
+      expect(peer.status).toBe(507);
+      expect(peer.body).toEqual({ error: 'storage-full', detail: 'Laptop: disk full', handledBy: 'holder-proxy' });
+    } finally {
+      transport.mockRestore();
+      SafeFsExecutor.safeRmSync(stateDir, { recursive: true, force: true, operation: 'tests/integration/skill-learning-routes.test.ts:storage-cleanup' });
+    }
+  });
+});
 
 async function holder(handler: express.RequestHandler): Promise<{ url: string; calls: Array<{ path: string; body: unknown; headers: http.IncomingHttpHeaders }> }> {
   const calls: Array<{ path: string; body: unknown; headers: http.IncomingHttpHeaders }> = [];

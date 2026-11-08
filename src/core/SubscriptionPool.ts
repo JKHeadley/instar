@@ -244,7 +244,7 @@ export function eligibleSiblingAccounts(
   accounts: readonly SubscriptionAccount[],
   framework: SubscriptionFramework,
   failedAccountId: string | null,
-  opts: { ambientConfigHome?: string | null; limit?: number } = {},
+  opts: { ambientConfigHome?: string | null; limit?: number; nowMs?: number } = {},
 ): Array<{ accountId: string; configHome: string }> {
   const limit = opts.limit ?? 1;
   const ambient = opts.ambientConfigHome;
@@ -252,21 +252,109 @@ export function eligibleSiblingAccounts(
   if (!Array.isArray(accounts) || limit <= 0) return [];
   // Neither identifier ⇒ we cannot tell a sibling from the account that just failed.
   if (failedAccountId === null && !hasAmbient) return [];
-  return accounts
-    .filter(
-      (a) =>
-        !!a &&
-        a.framework === framework &&
-        a.status === 'active' &&
-        typeof a.configHome === 'string' &&
-        a.configHome.length > 0 &&
-        typeof a.id === 'string' &&
-        a.id.length > 0 &&
-        a.id !== failedAccountId &&
-        !(hasAmbient && a.configHome === ambient),
-    )
+  const nowMs = opts.nowMs ?? Date.now();
+  // The login that just failed, when it is enrolled. Two rows can hold the SAME login
+  // under different slots (seen 2026-11-06: ~/.codex and a follow-me slot both justin@);
+  // retrying the twin is retrying the failure, so the email is excluded too.
+  // A known id is the account that RAN; the ambient home only identifies it when no id is
+  // known. When a call ran on a named account, the ambient login never ran and stays a
+  // valid sibling — it may be the one healthy login left.
+  const excludeAmbient = failedAccountId === null && hasAmbient;
+  const failed = accounts.find(
+    (a) => !!a && (failedAccountId !== null ? a.id === failedAccountId : a.configHome === ambient),
+  );
+  const failedEmail = normalizedEmail(failed?.email);
+  const eligible = accounts.filter(
+    (a) =>
+      !!a &&
+      a.framework === framework &&
+      a.status === 'active' &&
+      typeof a.configHome === 'string' &&
+      a.configHome.length > 0 &&
+      typeof a.id === 'string' &&
+      a.id.length > 0 &&
+      a.id !== failedAccountId &&
+      !(excludeAmbient && a.configHome === ambient) &&
+      !(failedEmail !== null && normalizedEmail(a.email) === failedEmail) &&
+      // A sibling whose own fresh reading says it is at a usage wall is a known-bad
+      // attempt, even though the pool still calls it `active`.
+      !accountRoom(a, nowMs).walled,
+  );
+  return orderByRoom(eligible, nowMs)
     .slice(0, limit)
     .map((a) => ({ accountId: a.id, configHome: a.configHome }));
+}
+
+function normalizedEmail(email: unknown): string | null {
+  return typeof email === 'string' && email.trim().length > 0 ? email.trim().toLowerCase() : null;
+}
+
+/**
+ * What an account's last quota reading says about room right now.
+ *
+ * A window counts only while its reset is still ahead: once `resetsAt` has passed the
+ * reading describes a window that no longer exists, so it says nothing (neither walled
+ * nor roomy). `usedPct` is the fullest live window, or null when no live window was read.
+ */
+export function accountRoom(
+  a: SubscriptionAccount,
+  nowMs: number = Date.now(),
+): { walled: boolean; usedPct: number | null } {
+  const q = a?.lastQuota;
+  if (!q) return { walled: false, usedPct: null };
+  let used: number | null = null;
+  let walled = false;
+  for (const w of [q.fiveHour, q.sevenDay]) {
+    if (!w || typeof w.utilizationPct !== 'number' || !Number.isFinite(w.utilizationPct)) continue;
+    const reset = Date.parse(w.resetsAt);
+    if (Number.isFinite(reset) && reset <= nowMs) continue;
+    used = used === null ? w.utilizationPct : Math.max(used, w.utilizationPct);
+    if (w.utilizationPct >= 100) walled = true;
+  }
+  return { walled, usedPct: used };
+}
+
+/** Most room first; accounts with no live reading after every measured one. Stable. */
+function orderByRoom(accounts: SubscriptionAccount[], nowMs: number): SubscriptionAccount[] {
+  return accounts
+    .map((a, i) => ({ a, i, used: accountRoom(a, nowMs).usedPct }))
+    .sort((x, y) => {
+      if (x.used === null && y.used === null) return x.i - y.i;
+      if (x.used === null) return 1;
+      if (y.used === null) return -1;
+      return x.used - y.used || x.i - y.i;
+    })
+    .map((r) => r.a);
+}
+
+/**
+ * Which pool account an INTERNAL call (sentinels, gates, extractors) should run under,
+ * or null to keep the ambient login.
+ *
+ * Internal calls used to run only on the machine's ambient login, so when that one login
+ * hit its weekly wall every background check failed until it reset, while other enrolled
+ * accounts of the same framework sat with room (Mama PC, 2026-11-06 20:49 PST). This picks
+ * the account with the MOST room among those with a fresh reading that says it has some.
+ *
+ * Deliberately conservative: only `active` accounts with a local login and no identity
+ * drift, only a live reading below 100% on every window. No such account ⇒ null ⇒ the
+ * ambient login, exactly the previous behavior. The framework (and so the model the
+ * provider chooses) never changes; only which login of that framework answers.
+ */
+export function pickInternalCallAccount(
+  accounts: readonly SubscriptionAccount[],
+  framework: SubscriptionFramework,
+  nowMs: number = Date.now(),
+): { accountId: string; configHome: string } | null {
+  if (!Array.isArray(accounts)) return null;
+  const candidates = accounts.filter((a) => {
+    if (!a || a.framework !== framework || a.status !== 'active') return false;
+    if (!isLocallyExecutable(a) || typeof a.id !== 'string' || a.id.length === 0) return false;
+    const room = accountRoom(a, nowMs);
+    return !room.walled && room.usedPct !== null;
+  });
+  const best = orderByRoom(candidates, nowMs)[0];
+  return best ? { accountId: best.id, configHome: best.configHome } : null;
 }
 
 /**

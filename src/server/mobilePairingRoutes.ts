@@ -1,3 +1,4 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/mobilePairingRoutes.ts');
@@ -71,6 +72,7 @@ import {
   choosePerson, devicePerson, isOwnerPerson, mayUseConversation, personLabel,
   type ConversationOwner, type DevicePerson, type OwnerIdentity, type PeopleLookup, type PersonProfile, type ResolvedPerson, type TeamStanding,
 } from '../core/MobilePeople.js';
+import { parseReaderKey } from '../core/ConversationReadMarkers.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -225,6 +227,15 @@ export function isMobileNativeEnabled(config: InstarConfig): boolean {
   return resolveDevAgentGate(config.mobilePairing?.native?.enabled, config);
 }
 
+/**
+ * Unread counts, read reports and the app badge (docs/specs/mobile-unread-messages.md §3.5):
+ * `mobilePairing.native.unread.enabled`, true when absent, so unread can be switched off alone;
+ * needs native conversations. Read live.
+ */
+export function isMobileUnreadEnabled(config: InstarConfig): boolean {
+  return isMobileNativeEnabled(config) && config.mobilePairing?.native?.unread?.enabled !== false;
+}
+
 /** `mobilePairing.approve.enabled` (docs/specs/mobile-pairing-approve.md §3.6): omitted ⇒ on wherever pairing is on. Read live. */
 export function isPairingApproveEnabled(config: InstarConfig): boolean {
   return isMobilePairingEnabled(config) && config.mobilePairing?.approve?.enabled !== false;
@@ -249,7 +260,7 @@ export const APPROVE_REFUSAL: Record<Exclude<ApproveOutcome, 'approved'>, { stat
 export function approveAnswer(res: Response, outcome: ApproveOutcome, deviceId: string): void {
   if (outcome === 'approved') { res.json({ status: 'active', deviceId }); return; }
   const r = APPROVE_REFUSAL[outcome];
-  res.status(r.status).json({ error: r.error, detail: r.detail });
+  res.status(r.status).json(outcome === 'failed' ? storageErrorResponse({ error: r.error, detail: r.detail }, res.app?.locals?.stateDir) : { error: r.error, detail: r.detail });
 }
 
 export class MobilePairingService {
@@ -994,7 +1005,7 @@ export function mountPublicMobilePairingRoutes(app: Application, svc: MobilePair
     } catch (err) {
       svc.deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'redeem failed: registry write', context: { routeKind: eligible.kind } });
-      res.status(500).json({ error: 'Could not record the device. Ask for a new link.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the device. Ask for a new link.' }, svc.deps.stateDir));
       return;
     }
     if (!created.ok) {
@@ -1292,7 +1303,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let g: ReturnType<typeof svc.grants.set>;
     try { g = svc.grants.set(userId, change, deviceId); } catch (err) {
       deps.reportDegradation?.('MobilePeople.grantWrite', err);
-      res.status(500).json({ error: 'Could not record the change. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the change. Try again.' }, svc.deps.stateDir));
       return;
     }
     res.json({ userId, name: choice.name, grants: { ownerConversations: g.ownerConversations, slack: g.slack } });
@@ -1320,7 +1331,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let d: DeviceRecord | null;
     try { d = svc.devices.setPerson(String(req.params.id), { userId: choice.userId, role: 'msp' }); } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
-      res.status(500).json({ error: 'Could not record the assignment. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the assignment. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (!d) { res.status(404).json({ error: 'unknown-device' }); return; }
@@ -1360,7 +1371,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       try { svc.keyLedger.recordActivation(d, approvedVia, approvedAt); } catch (err) {
         deps.reportDegradation?.('MobilePairing.keyLedger', err);
         featureEvidence.record('mobilePairing', { kind: 'error', reason: 'confirm failed: key ledger write', context: { deviceId: d.id, approvedVia } });
-        res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
+        res.status(500).json(storageErrorResponse({ error: 'Could not record the confirmation. Try again.' }, svc.deps.stateDir));
         return;
       }
     }
@@ -1369,7 +1380,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'confirm failed: registry write', context: { deviceId: d.id, approvedVia } });
-      res.status(500).json({ error: 'Could not record the confirmation. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the confirmation. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (check.result === 'ok') {
@@ -1438,7 +1449,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     } catch (err) {
       deps.reportDegradation?.('MobilePairing.registryWrite', err);
       featureEvidence.record('mobilePairing', { kind: 'error', reason: 'revoke failed: registry write', context: { deviceId: id, by: p.kind } });
-      res.status(500).json({ error: 'Could not record the revocation. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the revocation. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (held) { svc.confirm.drop(id); featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'revoked here', context: { deviceId: id, by: p.kind, heldHere: true, ...(requestedBy && requestedBy !== id ? { requestedBy } : {}) } }); res.json({ revoked: true, machine: deps.selfMachineId ?? null }); return; }
@@ -1468,7 +1479,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let r: ReturnType<typeof svc.devices.setPush>;
     try { r = svc.devices.setPush(p.deviceId, reg); } catch (err) {
       deps.reportDegradation?.('MobilePush.registryWrite', err);
-      res.status(500).json({ error: 'Could not record the registration. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the registration. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (!r.ok) { res.status(r.reason === 'not-active' ? 403 : 409).json({ error: r.reason }); return; }
@@ -1684,7 +1695,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     let r: ReturnType<MobileChatRequestStore['reserve']>;
     try { r = store.reserve(p.deviceId, requestId, hash, topicId, app ? { op: 'send', conversationKey: storeKey, messageId: storeMessageId } : undefined); } catch (err) {
       deps.reportDegradation?.('MobileChat.requestStore', err);
-      res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' });
+      res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be recorded, so it was not sent. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (r.kind === 'full') { res.status(429).json({ error: 'too-many-requests' }); return; }
@@ -1702,7 +1713,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       } catch (err) {
         store.release(p.deviceId, requestId);
         deps.reportDegradation?.('MobileChat.persist', err);
-        res.status(503).json({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' });
+        res.status(503).json(storageErrorResponse({ error: 'chat-unavailable', detail: 'The message could not be saved, so it was not sent. Try again.' }, svc.deps.stateDir));
         return;
       }
     }
@@ -1919,6 +1930,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
+  ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/messages$`), 'guest'],
   ['GET', new RegExp(`^/mobile/chat/app/${UUID}/events$`), 'guest'],
@@ -1972,6 +1985,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
+    // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
+    // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
+    { method: 'POST', re: /^\/mobile\/conversations\/read$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 60, bucket: 'read-marks' },
     { method: 'PATCH', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'DELETE', re: new RegExp(`^/mobile/conversations/${UUID}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}$`), statuses: active, sendRoute: true, conversationRef: true },
@@ -2272,6 +2288,42 @@ export function deviceAdmissionIdentity(req: Request): MobileDeviceAdmissionIden
 export function devicePersonOf(req: Request): ResolvedPerson | null {
   const p = (req as unknown as { instarDevicePerson?: ResolvedPerson }).instarDevicePerson;
   return p && p.ok ? p : null;
+}
+
+/**
+ * mobile-unread-messages §3.5 `personOfReaderKey`: a forwarded reader key to a person through THIS
+ * machine's records. `owner` → the owner; `team:<k>` → the team log; `msp:<machineId>:<userId>` →
+ * only when the machine is this one (a same-named user elsewhere is never taken for the same person).
+ */
+export function personOfReaderKey(svc: MobilePairingService, key: string): ResolvedPerson | null {
+  const r = parseReaderKey(key);
+  if (!r) return null;
+  let p: DevicePerson;
+  if (r.role === 'owner') p = devicePerson({ role: 'owner' }, null, svc.ownerIdentity());
+  else if (r.role === 'msp') {
+    if (r.machineId !== svc.machineId()) return null;
+    p = devicePerson({ userId: r.userId, role: 'msp' }, svc.people(), svc.ownerIdentity(), (id) => svc.grants.get(id));
+  } else p = devicePerson({ userId: r.personKey, role: 'team' }, null, svc.ownerIdentity(), undefined, (k) => svc.teamStanding(k));
+  return p.ok ? p : null;
+}
+
+/**
+ * mobile-unread-messages §3.2: positive evidence, stored on THIS machine, that a reader is gone — an
+ * MSP user missing from a readable registry on its own machine, or a team person missing from a
+ * healthy, switched-on team log. An absent or unreadable log, or a key from another machine, is
+ * "not known here yet" and never removal.
+ */
+export function readerRemovedHere(svc: MobilePairingService, key: string): boolean {
+  const r = parseReaderKey(key);
+  if (!r || r.role === 'owner') return false;
+  if (r.role === 'msp') {
+    if (r.machineId !== svc.machineId()) return false;
+    const people = svc.people();
+    return !!people && people.getUser(r.userId) === null;
+  }
+  const log = svc.teamLog();
+  if (!log || log.healthState() !== 'ok' || !log.state().on) return false;
+  return !log.state().people.has(r.personKey);
 }
 
 /**

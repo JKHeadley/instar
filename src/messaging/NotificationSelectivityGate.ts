@@ -1,3 +1,4 @@
+import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
@@ -326,7 +327,7 @@ export class NotificationSelectivityGate {
           const persistent = this.failureEpisodes.length === 3;
           const failurePermit = `${this.machineId}:failure:${this.now()}:${Math.random()}`;
           this.permits.set(failurePermit, this.now() + 120000);
-          try { await this.onStoreFailure?.(`My notification records cannot be saved. ${this.activeLost} automated notices could not be recorded.${persistent ? ' This is persistent.' : ''} Please check available disk space in the dashboard.`, {
+          try { await this.onStoreFailure?.(`My notification records on ${storageMachineName(this.root)} cannot be saved. ${this.activeLost} automated notices could not be recorded.${persistent ? ' This is persistent.' : ''} Please check available disk space in the dashboard.`, {
             origin: 'automated', category: 'attention-item', sourceContext: 'selectivity-store-failure', significantClass: 'data-loss', localPermit: failurePermit,
           }); } catch (noticeError) { console.error('[selectivity] store-failure escalation unavailable:', noticeError); }
         }
