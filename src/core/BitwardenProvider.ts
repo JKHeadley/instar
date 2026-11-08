@@ -17,6 +17,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 import fs from 'node:fs';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -43,6 +44,19 @@ export interface BitwardenStatus {
 
 const BW_TIMEOUT = 15000; // 15 second timeout for CLI calls
 const FOLDER_PREFIX = 'instar';
+/** The variable `bw --passwordenv` reads the master password from. Set on the child only, never on this process. */
+export const BW_PASSWORD_ENV = 'INSTAR_BW_MASTER_PASSWORD';
+
+/** The bin folders of every Node version under the user's nvm, newest first; empty when there is no nvm. */
+function nvmBins(home: string): string[] {
+  try {
+    const root = `${home}/.nvm/versions/node`;
+    return fs.readdirSync(root).sort().reverse().map((v) => `${root}/${v}/bin/bw`);
+  } catch {
+    // @silent-fallback-ok: no nvm here
+    return [];
+  }
+}
 
 // ── Provider ─────────────────────────────────────────────────────────
 
@@ -88,6 +102,25 @@ export class BitwardenProvider {
     }
   }
 
+  /**
+   * The status with its third state kept: `missing` (no program), `failed` (the program did not answer,
+   * or answered badly, so nothing is known), or a reading. `getStatus()` folds `failed` into "not logged
+   * in", which a caller that must not act on a guess cannot use.
+   */
+  statusRead(): { kind: 'missing' } | { kind: 'failed' } | { kind: 'ok'; loggedIn: boolean; unlocked: boolean; email?: string } {
+    const bw = this.findBw();
+    if (!bw) return { kind: 'missing' };
+    try {
+      const output = withSyncOp(() => execFileSync(bw, ['status', '--raw'], { encoding: 'utf-8', timeout: BW_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'] })).trim();
+      const status = JSON.parse(output) as { status?: unknown; userEmail?: unknown };
+      if (typeof status.status !== 'string') return { kind: 'failed' };
+      return { kind: 'ok', loggedIn: status.status !== 'unauthenticated', unlocked: status.status === 'unlocked', email: typeof status.userEmail === 'string' ? status.userEmail : undefined };
+    } catch {
+      // @silent-fallback-ok: reported as a failed read, which the caller treats as unknown
+      return { kind: 'failed' };
+    }
+  }
+
   /** Whether Bitwarden is ready to use (installed, logged in, unlocked). */
   isReady(): boolean {
     const status = this.getStatus();
@@ -112,12 +145,14 @@ export class BitwardenProvider {
         return this.sessionKey !== null;
       }
 
-      // Unlock with password
-      const session = execFileSync(bw, ['unlock', masterPassword, '--raw'], {
+      // Unlock with the password in the child's environment, never on its command line: a process list
+      // (`ps`, a crash report, a shell history) shows arguments to every user on the machine.
+      const session = withSyncOp(() => execFileSync(bw, ['unlock', '--passwordenv', BW_PASSWORD_ENV, '--raw'], {
         encoding: 'utf-8',
         timeout: BW_TIMEOUT,
         stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
+        env: { ...process.env, [BW_PASSWORD_ENV]: masterPassword },
+      })).trim();
 
       this.sessionKey = session;
       return true;
@@ -146,16 +181,41 @@ export class BitwardenProvider {
     const bw = this.requireBw();
 
     try {
-      const session = execFileSync(bw, ['login', email, masterPassword, '--raw'], {
+      // The email is an identifier; the password rides in the environment, as in unlock().
+      const session = withSyncOp(() => execFileSync(bw, ['login', email, '--passwordenv', BW_PASSWORD_ENV, '--raw'], {
         encoding: 'utf-8',
         timeout: 30000, // Login can be slower
         stdio: ['pipe', 'pipe', 'pipe'],
-      }).trim();
+        env: { ...process.env, [BW_PASSWORD_ENV]: masterPassword },
+      })).trim();
 
       this.sessionKey = session;
       return true;
     } catch {
       // @silent-fallback-ok — vault locked or key not found — caller handles missing secret
+      return false;
+    }
+  }
+
+  /**
+   * Sign this machine out of Bitwarden and forget the session. True when the CLI accepted it or was
+   * already signed out.
+   */
+  logout(): boolean {
+    const bw = this.findBw();
+    if (!bw) return true;
+    try {
+      withSyncOp(() => execFileSync(bw, ['logout'], { encoding: 'utf-8', timeout: BW_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'] }));
+      this.sessionKey = null;
+      return true;
+    } catch (err) {
+      // `bw logout` on a signed-out CLI exits non-zero with "You are not logged in."; that is the state wanted.
+      // This is the bw CLI's own exit text, not a person's words: a fixed-string check on tool output.
+      const cliOutput = err instanceof Error ? `${err.message} ${(err as { stderr?: unknown }).stderr ?? ''}` : String(err);
+      if (/not logged in/i.test(cliOutput)) {
+        this.sessionKey = null;
+        return true;
+      }
       return false;
     }
   }
@@ -218,9 +278,10 @@ export class BitwardenProvider {
     const bw = this.requireBw();
     const session = this.requireSession();
     const itemName = this.scopedName(key);
-    const folderId = this.getOrCreateFolderId();
 
     try {
+      // Inside the try: a failed folder lookup must never escape, because the CLI's error text carries the command line.
+      const folderId = this.getOrCreateFolderId();
       // Check if item already exists
       const existingId = this.findItemId(itemName, folderId);
 
@@ -239,15 +300,16 @@ export class BitwardenProvider {
         const existing = JSON.parse(existingJson);
         existing.notes = value;
 
+        // The item (with the secret in it) goes to bw on stdin, never as an argument: a process list shows arguments to every user.
         const encoded = Buffer.from(JSON.stringify(existing)).toString('base64');
         execFileSync(bw, [
           'edit', 'item', existingId,
-          encoded,
           '--session', session,
         ], {
           encoding: 'utf-8',
           timeout: BW_TIMEOUT,
           stdio: ['pipe', 'pipe', 'pipe'],
+          input: encoded,
         });
       } else {
         // Create new secure note
@@ -262,12 +324,12 @@ export class BitwardenProvider {
         const encoded = Buffer.from(JSON.stringify(item)).toString('base64');
         execFileSync(bw, [
           'create', 'item',
-          encoded,
           '--session', session,
         ], {
           encoding: 'utf-8',
           timeout: BW_TIMEOUT,
           stdio: ['pipe', 'pipe', 'pipe'],
+          input: encoded,
         });
       }
 
@@ -355,6 +417,33 @@ export class BitwardenProvider {
     }
   }
 
+  /**
+   * The names of this agent's items, read-only: never creates the folder. Returns [] when the folder does
+   * not exist yet, and THROWS when the vault can't be read (a locked session, a timeout, a CLI failure), so a
+   * caller can tell "no copy" from "could not look". The thrown error carries no command line.
+   */
+  listOwnItemNames(): string[] {
+    const bw = this.requireBw();
+    const session = this.requireSession();
+    const folderName = `${FOLDER_PREFIX}/${this.agentName}`;
+    const run = (args: string[]): string => {
+      try {
+        return withSyncOp(() => execFileSync(bw, [...args, '--session', session, '--raw'], { encoding: 'utf-8', timeout: BW_TIMEOUT, stdio: ['pipe', 'pipe', 'pipe'] })).trim();
+      } catch {
+        // @silent-fallback-ok: the CLI's own message would carry the session; a fixed message is thrown instead
+        throw new Error(`Bitwarden could not be read (${args[0]} ${args[1]})`);
+      }
+    };
+    const folders = JSON.parse(run(['list', 'folders'])) as Array<{ id?: unknown; name?: unknown }>;
+    const folder = folders.find((f) => f.name === folderName);
+    if (!folder || typeof folder.id !== 'string') return [];
+    const items = JSON.parse(run(['list', 'items', '--folderid', folder.id])) as Array<{ name?: unknown; type?: unknown }>;
+    const prefix = this.scopedName('');
+    return items
+      .filter((item) => typeof item.name === 'string' && item.name.startsWith(prefix) && item.type === 2)
+      .map((item) => (item.name as string).substring(prefix.length));
+  }
+
   // ── Folder Management ─────────────────────────────────────────────
 
   private getOrCreateFolderId(): string {
@@ -383,19 +472,20 @@ export class BitwardenProvider {
       const encoded = Buffer.from(JSON.stringify(folderData)).toString('base64');
       const created = execFileSync(bw, [
         'create', 'folder',
-        encoded,
         '--session', session,
         '--raw',
       ], {
         encoding: 'utf-8',
         timeout: BW_TIMEOUT,
         stdio: ['pipe', 'pipe', 'pipe'],
+        input: encoded,
       }).trim();
 
       const result = JSON.parse(created);
       return result.id;
-    } catch (err) {
-      throw new Error(`Failed to get/create Bitwarden folder: ${err instanceof Error ? err.message : err}`);
+    } catch {
+      // @silent-fallback-ok: a fixed message, because the CLI's own text carries the session on its command line
+      throw new Error('Failed to get/create the Bitwarden folder');
     }
   }
 
@@ -439,10 +529,15 @@ export class BitwardenProvider {
     // Cached from previous detection
     if (this.bwPath) return this.bwPath;
 
+    // A server started by launchd or the lifeline has a short PATH, so the user's own installs are
+    // looked in directly: Homebrew, the usual system folders, then the user's local bin and Node installs.
+    const home = process.env.HOME || '';
     const candidates = [
       '/opt/homebrew/bin/bw',
       '/usr/local/bin/bw',
       '/usr/bin/bw',
+      '/snap/bin/bw',
+      ...(home ? [`${home}/.local/bin/bw`, `${home}/.npm-global/bin/bw`, `${home}/.volta/bin/bw`, ...nvmBins(home)] : []),
     ];
 
     for (const candidate of candidates) {

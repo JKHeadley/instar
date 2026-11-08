@@ -101,7 +101,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'On a single machine, losing that machine loses the secrets.',
     gapSpec: OFF_MACHINE_SPEC,
-    setupRecipe: null,
+    // Proven live 2026-11-07 (topic 135786): a test agent took the person's yes, received the login through Secret Drop, had the server write the copy, and its check passed.
+    setupRecipe: 'bitwarden-v1',
   },
   {
     id: 'github-state-backup',

@@ -97,6 +97,10 @@ function page(d) {
     line('Account', d.account),
     el('section', {}, el('h2', { text: 'Whose accounts' }), el('p', { text: 'I can fully manage your own accounts, use accounts of my own, or both. That’s your choice, and you can tell me in chat.' })),
     line('If you say no', d.backup || 'There’s no backup yet.'),
+    // A service that keeps a copy of the agent's secrets names what it would copy. Names only; values never reach a page.
+    Array.isArray(d.copies) ? el('section', {}, el('h2', { text: 'What gets copied' }), el('p', { text: d.copies.length
+      ? `A copy of ${d.copies.length} stored secret${d.copies.length === 1 ? '' : 's'}, by name: ${d.copies.join(', ')}. Only the names are shown here; the values go straight from this machine to your vault.`
+      : 'Nothing yet: this agent has no stored secrets to copy. New ones are copied as they appear.' })) : null,
     el('section', {}, el('h2', { text: 'After you say yes' }), el('p', { text: 'Setup is my job. I’ll only ask you for a decision, such as a payment, or a credential.' })),
     form,
     el('section', {}, el('h2', { text: d.canSetUp === false ? 'Say no' : 'Or say no' }),

@@ -31,6 +31,12 @@ export interface ServiceSetupState {
   stopped?: { at: string; detail: string };
   /** The switch-off is confirmed but waits, because this service may be the person's only way in. */
   stopRequestedAt?: string;
+  /** For a recipe that keeps a copy elsewhere (Bitwarden): when the copy was last brought up to date, and how many items it holds. */
+  lastSyncAt?: string;
+  copies?: number;
+  /** The last time a refresh was tried, and how many refreshes in a row have failed (a failed refresh waits before trying again). */
+  lastSyncAttemptAt?: string;
+  syncFailures?: number;
 }
 
 export function setupStateFile(stateDir: string): string {
