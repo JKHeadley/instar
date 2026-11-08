@@ -65,10 +65,7 @@ describe('Session-listing hygiene E2E lifecycle (feature is alive)', () => {
     state.saveSession(mk({ name: 'job-health-check-1', status: 'completed', jobSlug: 'health-check', endedAt: new Date().toISOString() }));
 
     const mismatchingReaper = {
-      snapshot: () => ({ sessions: [
-        { sessionId: 'e2e-live-task' },
-        { sessionId: 'reaper-only-session' },
-      ] }),
+      trackedSessionIds: () => ['e2e-live-task', 'reaper-only-session'],
     };
     server = new AgentServer({
       config,
