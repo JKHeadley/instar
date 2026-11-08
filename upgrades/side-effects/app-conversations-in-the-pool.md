@@ -161,3 +161,13 @@ Tests: six new cases in `tests/integration/team-access-guards.test.ts` send a re
 Over-block: none; the scope only narrows a stop. Under-block: a peer forging or dropping the field could widen a stop, but peers are already trusted to deliver stops, and an older machine would ignore the field, which the whole-pool flag gate prevents. Interactions: the owner's stop is unchanged, as the tests show. Rollback: revert with the rest of this PR; the flag is off for the fleet.
 
 Also fixed: #2916's exclusive write of `ctx-<alias>-<ms>.txt` threw `EEXIST` when a start and a message landed in the same millisecond, which failed `tests/unit/app-dispatch-engine.test.ts`. The name now has a random part, like the message file beside it.
+
+## The build failed merged with main (Local Verify, 2026-11-07)
+
+Local Verify failed at `e0508d57b` in 29 seconds. Merged with main at `8d81ecb24`, `tsc` refuses `src/commands/server.ts` with TS2563, "The containing function or module body is too large for control flow analysis". Main alone builds, but `startServer` is at tsc's flow-depth limit, and this change's pool wiring block (about 230 lines) pushed it over. The branch alone built, so nothing here showed it until it was merged.
+
+The fix runs that block as a named local function called straight after it is defined, where it was a bare block. A function body has its own flow graph, so `startServer`'s graph no longer contains it. (An immediately invoked function would not help: tsc inlines its flow.) The block has no top-level `await` and declares nothing used after it, so it runs at the same moment with the same effects.
+
+Checked: `tsc` is clean on the branch, on the branch merged with main, and on that merge with the follow-up #2931 added. The pool unit, integration and e2e tests, including every test that quotes this block's source, pass.
+
+Over-block, under-block, interactions: none; nothing runs differently. External surfaces: none. Rollback: revert. Main itself remains at the limit, so the next large addition to `startServer` from any PR can hit the same error.
