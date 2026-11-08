@@ -70,7 +70,7 @@ function startTimeOf(pid: number): string | null {
 }
 
 function pidAlive(pid: number): boolean {
-  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
+  try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; } // @silent-fallback-ok — EPERM means the pid exists; any other error means it does not
 }
 
 /**

@@ -22,7 +22,7 @@ import { SafeGitExecutor, isLocalVerifyClonePath } from '../core/SafeGitExecutor
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { getHostTestRunnerSemaphore, TestRunnerCapacityTimeoutError, TestRunnerStormCeilingError } from '../core/hostTestRunnerSemaphore.js';
 import { fileURLToPath } from 'node:url';
-import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams } from './orchestrator.js';
+import type { ExecResult, GitCallOpts, GitResult, OrchestratorSeams, RunDegradation } from './orchestrator.js';
 import { localImportGraph } from './verifierVersion.js';
 
 /** The trusted unhandled-errors reporter installed next to this module (dist), or null. */
@@ -273,7 +273,7 @@ export function realExec(
 }
 
 /** `verifyRoot` is `<agentHome>/.worktrees/.verify` of the agent running the verify. */
-export function realSeams(log: (event: Record<string, unknown>) => void, verifyRoot: string): OrchestratorSeams {
+export function realSeams(log: (event: Record<string, unknown>) => void, verifyRoot: string, opts?: { onDegrade?: (event: RunDegradation) => void }): OrchestratorSeams {
   return {
     git: (args, opts) => realGit(args, opts, verifyRoot),
     exec: realExec,
@@ -285,10 +285,24 @@ export function realSeams(log: (event: Record<string, unknown>) => void, verifyR
       size: (p) => { try { const st = fs.statSync(p); return st.isFile() ? st.size : null; } catch { return null; } }, // @silent-fallback-ok: absent or unreadable ⇒ no history
       mkdtemp: (prefix) => fs.mkdtempSync(path.join(localVerifyTempRoot(), prefix.startsWith(TEMP_PREFIX) ? prefix : TEMP_PREFIX + prefix)),
       removeTree: (p) => removeScopedTree(p, verifyRoot),
-      list: (p) => { try { return fs.readdirSync(p); } catch { return null; } }, // @silent-fallback-ok: unreadable ⇒ nothing to sweep
+      // Directories only: a stray file in runs/ (a .DS_Store) is not a checkout to keep and list.
+      list: (p) => { try { return fs.readdirSync(p, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return null; } }, // @silent-fallback-ok: unreadable ⇒ nothing to sweep
       realpath: (p) => { try { return fs.realpathSync(p); } catch { return null; } }, // @silent-fallback-ok: unresolvable ⇒ compare the literal path
-      inUse: (dir) => runCheckoutInUse(dir),
+      // One process view for the whole sweep: the scans (lsof, ps) are taken once and reused
+      // for every candidate within the next 10 s, not once per candidate.
+      inUse: (dir) => runCheckoutInUse(dir, processView()),
+      treeSize: (dir) => {
+        try {
+          const out = execFileSync('du', ['-sk', dir], { encoding: 'utf-8', timeout: 15_000, stdio: ['ignore', 'pipe', 'ignore'] });
+          const kib = parseInt(out.split(/\s/)[0], 10);
+          return Number.isFinite(kib) ? kib * 1024 : null;
+        } catch { return null; } // @silent-fallback-ok: unreadable ⇒ listed without a size
+      },
     },
+    // The run child owns no DegradationReporter (a second process writing the server's
+    // degradations.json would race it, and the server never reads that file): the event
+    // goes to the run log here and, through onDegrade, into the result the server reads.
+    degrade: (event) => { log({ event: 'degradation', ...event }); opts?.onDegrade?.(event); },
     now: () => Date.now(),
     sleep: (ms) => new Promise((r) => { setTimeout(r, ms); }),
     foreignSuiteHolders: (ours) => {
@@ -375,22 +389,43 @@ async function holdSuiteSlot(log: (event: Record<string, unknown>) => void): Pro
  * it (lsof) or its command line names it (ps). null when either cannot be read,
  * which the orphan sweep treats as in use (disk-steward §5).
  */
-export function runCheckoutInUse(dir: string): boolean | null {
-  let real = dir;
-  try { real = fs.realpathSync(dir); } catch { /* @silent-fallback-ok: compare the literal path */ }
+export interface ProcessView {
+  /** `lsof -w -d cwd -Fn` output: one `n<path>` line per process working folder. */
+  cwds: string;
+  /** `ps -axww -o command=` output: one command line per process. */
+  cmds: string;
+}
+
+/** The running processes' working folders and command lines; null when either cannot be read. */
+export function readProcessView(): ProcessView | null {
   try {
     const cwds = execFileSync('lsof', ['-w', '-d', 'cwd', '-Fn'], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
-    for (const line of cwds.split('\n')) {
-      if (line.charCodeAt(0) !== 110) continue;
-      const p = line.slice(1);
-      if (p === real || p.startsWith(real + path.sep) || p === dir || p.startsWith(dir + path.sep)) return true;
-    }
     const cmds = execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 64 * 1024 * 1024 });
-    for (const c of cmds.split('\n')) {
-      if (c.includes(real + path.sep) || c.includes(dir + path.sep) || c.endsWith(real) || c.endsWith(dir)) return true;
-    }
-    return false;
+    return { cwds, cmds };
   } catch {
-    return null; // @silent-fallback-ok — no process view ⇒ the sweep keeps the checkout
+    return null; // @silent-fallback-ok — no process view ⇒ the sweep keeps every checkout
   }
+}
+
+const PROCESS_VIEW_TTL_MS = 10_000;
+let cachedProcessView: { at: number; view: ProcessView | null } | null = null;
+/** The process view, read at most once per 10 s so one sweep scans once for all its candidates. */
+function processView(): ProcessView | null {
+  if (!cachedProcessView || Date.now() - cachedProcessView.at > PROCESS_VIEW_TTL_MS) cachedProcessView = { at: Date.now(), view: readProcessView() };
+  return cachedProcessView.view;
+}
+
+export function runCheckoutInUse(dir: string, view: ProcessView | null = readProcessView()): boolean | null {
+  if (view === null) return null;
+  let real = dir;
+  try { real = fs.realpathSync(dir); } catch { /* @silent-fallback-ok: compare the literal path */ }
+  for (const line of view.cwds.split('\n')) {
+    if (line.charCodeAt(0) !== 110) continue;
+    const p = line.slice(1);
+    if (p === real || p.startsWith(real + path.sep) || p === dir || p.startsWith(dir + path.sep)) return true;
+  }
+  for (const c of view.cmds.split('\n')) {
+    if (c.includes(real + path.sep) || c.includes(dir + path.sep) || c.endsWith(real) || c.endsWith(dir)) return true;
+  }
+  return false;
 }

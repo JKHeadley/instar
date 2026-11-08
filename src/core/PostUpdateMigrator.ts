@@ -16328,6 +16328,10 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // job-cost-reduction §8 item 6: script jobs and triage are server-side, so a
       // Codex/Gemini agent needs the same read surfaces.
       '### Scheduled jobs run as scripts',
+      // disk-steward: the steward, its pool read and the prune route are server-side and
+      // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
+      // the disk?" and "clear disk on <machine>" from the same section.
+      '## Disk Steward',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming

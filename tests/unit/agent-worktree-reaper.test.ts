@@ -550,19 +550,18 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     // Commit a tracked file on the merged branch and fast-forward main to it. The
     // repo is promoted to an instar source tree in beforeEach (guarded), so the
     // commit runs with the promotion briefly removed, as afterEach does.
-    const commitOnMerged = (mergedPath: string, file: string, body: string) => {
+    const withoutPromotion = <T,>(fn: () => T): T => {
       const cfgPath = path.join(repo, '.git', 'config');
       const saved = fs.readFileSync(cfgPath, 'utf-8');
       fs.writeFileSync(cfgPath, saved.replace(/\[remote "origin"\][\s\S]*?(?=\n\[|$)/g, ''));
-      try {
-        fs.writeFileSync(path.join(mergedPath, file), body);
-        g(mergedPath, ['add', file]);
-        g(mergedPath, ['commit', '-qm', file]);
-        g(repo, ['merge', '-q', '--ff-only', 'feat-merged']);
-      } finally {
-        fs.writeFileSync(cfgPath, saved);
-      }
+      try { return fn(); } finally { fs.writeFileSync(cfgPath, saved); }
     };
+    const commitOnMerged = (mergedPath: string, file: string, body: string) => withoutPromotion(() => {
+      fs.writeFileSync(path.join(mergedPath, file), body);
+      g(mergedPath, ['add', file]);
+      g(mergedPath, ['commit', '-qm', file]);
+      g(repo, ['merge', '-q', '--ff-only', 'feat-merged']);
+    });
 
     it('a node_modules symlink does not keep a merged checkout, and removal leaves its target intact', () => {
       const mergedPath = path.join(worktreesDir, 'merged');
@@ -615,12 +614,16 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
       commitOnMerged(mergedPath, 'tsconfig.json', '{\n  // build\n  "compilerOptions": { "outDir": "./dist/", "rootDir": "src" }\n}\n');
       expect(deps.isClean(mergedPath)).toBe(true);
       // A hand-placed file with no source behind it keeps the checkout.
+      // The fixture repo is promoted to an instar source tree (beforeEach), so the
+      // SafeFsExecutor funnel rightly refuses to delete inside it. These two files are
+      // the test's own fixture residue, removed with the promotion briefly lifted, as
+      // commitOnMerged does; the reaper's own removal path is exercised at the end.
       fs.writeFileSync(path.join(mergedPath, 'dist', 'hotfix.js'), 'hand written');
       expect(deps.isClean(mergedPath)).toBe(false);
-      SafeFsExecutor.safeUnlinkSync(path.join(mergedPath, 'dist', 'hotfix.js'), { operation: 'tests/unit/agent-worktree-reaper.test.ts' });
+      withoutPromotion(() => SafeFsExecutor.safeUnlinkSync(path.join(mergedPath, 'dist', 'hotfix.js'), { operation: 'tests/unit/agent-worktree-reaper.test.ts' }));
       fs.writeFileSync(path.join(mergedPath, 'dist', 'notes.txt'), 'hand written');
       expect(deps.isClean(mergedPath)).toBe(false);
-      SafeFsExecutor.safeUnlinkSync(path.join(mergedPath, 'dist', 'notes.txt'), { operation: 'tests/unit/agent-worktree-reaper.test.ts' });
+      withoutPromotion(() => SafeFsExecutor.safeUnlinkSync(path.join(mergedPath, 'dist', 'notes.txt'), { operation: 'tests/unit/agent-worktree-reaper.test.ts' }));
       // A compiler output edited by hand after the build falls outside the build window.
       const later = new Date(Date.now() + 60 * 60_000);
       fs.utimesSync(path.join(mergedPath, 'dist', 'cli.js'), later, later);

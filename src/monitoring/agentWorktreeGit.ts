@@ -175,6 +175,7 @@ async function walkLinks(root: string, maxDepth: number, pruneName: string | nul
     try {
       entries = await fs.promises.readdir(dir, { withFileTypes: true });
     } catch (err) {
+      // @silent-fallback-ok — an unreadable folder makes the index unknown (false), which keeps every checkout
       const code = (err as NodeJS.ErrnoException).code;
       if (code === 'ENOENT' && dir !== root) continue; // vanished mid-walk
       if (code === 'ENOENT') return true;
@@ -182,7 +183,7 @@ async function walkLinks(root: string, maxDepth: number, pruneName: string | nul
         try {
           const st = await fs.promises.lstat(dir);
           if (uid >= 0 && st.uid !== uid) { skipped.push(dir); continue; }
-        } catch { /* fall through: unknown owner ⇒ unknown index */ }
+        } catch { /* @silent-fallback-ok — unknown owner ⇒ unknown index, which keeps every checkout */ }
       }
       return false;
     }
@@ -197,7 +198,7 @@ async function walkLinks(root: string, maxDepth: number, pruneName: string | nul
 
 export async function buildInboundLinkIndex(agentHome: string, worktreesDir: string, opts?: { timeoutMs?: number }): Promise<InboundLinkIndex | null> {
   const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
-  const worktreesReal = (() => { try { return fs.realpathSync(worktreesDir); } catch { return worktreesDir; } })();
+  const worktreesReal = (() => { try { return fs.realpathSync(worktreesDir); } catch { return worktreesDir; } })(); // @silent-fallback-ok — unresolvable ⇒ compare the literal path
   const links: string[] = [];
   const skippedForeign: string[] = [];
   const walks: Array<[string, number, string | null]> = [

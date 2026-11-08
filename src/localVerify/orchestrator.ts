@@ -84,6 +84,8 @@ export interface OrchestratorFs {
    * the orphan sweep is skipped.
    */
   inUse?(dir: string): boolean | null;
+  /** Bytes under `dir` (every file, recursively); null when that cannot be read. Absent seam ⇒ kept entries are listed without a size. */
+  treeSize?(dir: string): number | null;
 }
 
 export interface OrchestratorSeams {
@@ -111,6 +113,13 @@ export interface OrchestratorSeams {
    */
   holdSuiteSlot?(): Promise<(() => void) | 'busy' | null>;
   log(event: Record<string, unknown>): void;
+  /**
+   * Record a degradation beyond the run log, so a problem that silently stops a safety
+   * behaviour (an unreadable kept-failed.json stopping all sweeping) is seen without
+   * reading a run's log. The run child collects these into its result; the server's
+   * DegradationReporter records them (the child must not write the server's file). Absent ⇒ log only.
+   */
+  degrade?(event: RunDegradation): void;
   /** Every file reachable through relative imports from `files` (absolute paths; roots included). */
   importGraph?(files: string[]): string[];
   /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
@@ -190,10 +199,17 @@ export interface Overlap {
   holders: number[];
 }
 
-export type VerifyRunResult =
+/** A degradation the run child noticed (disk-steward §5); the server's reporter records it. */
+export interface RunDegradation { feature: string; primary: string; fallback: string; reason: string; impact: string }
+
+export type VerifyRunResult = (
   | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[]; flakyRetried?: FlakyRetry[] }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
-  | { kind: 'invalid'; errors: string[] };
+  | { kind: 'invalid'; errors: string[] }
+) & {
+  /** Carried from the run child to the server, which has the only DegradationReporter that reaches /health. */
+  degradations?: RunDegradation[];
+};
 
 export interface VerifyPaths {
   verifyRoot: string;
@@ -1027,6 +1043,7 @@ export async function sweepOrphanVerifyRuns(seams: OrchestratorSeams, p: VerifyP
     const kl = readKeptList(seams, p);
     if (!kl.ok) {
       seams.log({ event: 'orphan-sweep-skipped', detail: 'kept-failed.json unreadable; nothing swept until it parses again' });
+      degradeKeptList(seams, p, 'the orphan sweep removes nothing until it parses again, so run checkouts cut short accumulate');
       return { removed, kept, skipped: 'kept-list-unreadable' };
     }
     const real = (x: string) => seams.fs.realpath?.(x) ?? null;
@@ -1042,7 +1059,10 @@ export async function sweepOrphanVerifyRuns(seams: OrchestratorSeams, p: VerifyP
     const listed = await seams.git(['worktree', 'list', '--porcelain'], {
       cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:worktree-list', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
     });
-    if (listed.status !== 0) return { removed, kept, skipped: 'worktree-list-failed' };
+    if (listed.status !== 0) {
+      seams.log({ event: 'orphan-sweep-skipped', detail: `git worktree list failed (${listed.status}); nothing swept this run`, stderr: listed.stderr.slice(0, 500) });
+      return { removed, kept, skipped: 'worktree-list-failed' };
+    }
     const registered = new Set<string>();
     for (const line of listed.stdout.split('\n')) {
       if (!line.startsWith('worktree ')) continue;
@@ -1069,19 +1089,34 @@ export async function sweepOrphanVerifyRuns(seams: OrchestratorSeams, p: VerifyP
         cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:worktree-prune', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
       });
     }
-    seams.log({ event: 'orphan-sweep', removed: removed.length, kept: kept.length, keptPaths: kept.slice(0, 20) });
+    // Kept entries are listed with their size (disk-steward §5), so a person can see what
+    // the sweep is leaving behind and how much it costs without a du of their own.
+    const keptEntries = kept.slice(0, 20).map((dir) => ({ dir, bytes: seams.fs.treeSize?.(dir) ?? null }));
+    seams.log({ event: 'orphan-sweep', removed: removed.length, kept: kept.length, keptEntries });
   } catch (e) {
     seams.log({ event: 'orphan-sweep-failed', detail: e instanceof Error ? e.message : String(e) });
   }
   return { removed, kept };
 }
 
-/** Record a kept failed-run worktree; drop the oldest beyond the cap. */
-async function keepFailed(seams: OrchestratorSeams, p: VerifyPaths): Promise<void> {
+/** The one degradation both readers of an unparseable kept-failed.json record (disk-steward §5). */
+function degradeKeptList(seams: OrchestratorSeams, p: VerifyPaths, impact: string): void {
+  seams.degrade?.({
+    feature: 'LocalVerify.keptList',
+    primary: `${p.keptListFile} names the failed runs kept for diagnosis`,
+    fallback: 'the file is left untouched for a person to repair or remove',
+    reason: 'kept-failed.json exists but is not a JSON array of paths',
+    impact,
+  });
+}
+
+/** Record a kept failed-run worktree; drop the oldest beyond the cap. Exported for its tests. */
+export async function keepFailed(seams: OrchestratorSeams, p: VerifyPaths): Promise<void> {
   const kl = readKeptList(seams, p);
   if (!kl.ok) {
     // Never overwrite a list we cannot read: it may name runs someone is keeping.
     seams.log({ event: 'kept-list-unreadable', detail: 'kept-failed.json left as is; this run is kept but not listed' });
+    degradeKeptList(seams, p, `this failed run (${p.runDir}) is kept but not listed; the next sweep removes it once the list parses again`);
     return;
   }
   let list = kl.list;

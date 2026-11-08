@@ -4285,14 +4285,32 @@ async function wireDiskSteward(h: {
           const cfgId = (config.monitoring as { diskSteward?: { topicId?: number } } | undefined)?.diskSteward?.topicId;
           const id = typeof cfgId === 'number' && cfgId > 0 ? cfgId : (telegram.findTopicIdByName(DISK_TOPIC_NAME) ?? (await telegram.findOrCreateForumTopic(DISK_TOPIC_NAME, TOPIC_STYLE.INFO.color, { origin: 'system', bounded: true, label: 'disk-steward' })).topicId);
           state.set(_sysKeys.diskSpace, id);
-        } catch (err) { console.error(`  DiskSteward topic ensure failed: ${err}`); }
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          console.error(`  DiskSteward topic ensure failed: ${reason}`);
+          DegradationReporter.getInstance().report({
+            feature: 'DiskSteward.topic',
+            primary: 'the "Disk space (all machines)" topic is ensured at boot so any machine with a low disk has one to adopt',
+            fallback: 'no topic until a machine with a due post creates it, or until the next boot',
+            reason,
+            impact: 'a standby machine with a low disk may have no topic to post into until the next boot',
+          });
+        }
       })();
     }, 60_000);
     bootTopic.unref?.();
     console.log(pc.green('  DiskSteward enabled (disk watch on this machine)'));
     return () => ({ steward: diskSteward, runner: diskStewardRunner, machineId: _dsMachineId, peers: _dsPeers, authToken: config.authToken });
   } catch (err) {
-    console.error(`  DiskSteward failed to start: ${err instanceof Error ? err.message : String(err)}`);
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`  DiskSteward failed to start: ${reason}`);
+    DegradationReporter.getInstance().report({
+      feature: 'DiskSteward',
+      primary: 'free space on this machine is measured every 15 minutes, caches are cleared when low, and a low disk is posted with the machine named',
+      fallback: 'no disk watch on this machine for this boot; GET /disk-steward answers 503',
+      reason,
+      impact: 'a filling disk on this machine goes unreported until the next restart',
+    });
     return undefined;
   }
 }

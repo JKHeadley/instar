@@ -191,6 +191,7 @@ export class DiskSteward {
 
   start(intervalMs: number, firstDelayMs = 120_000): void {
     if (this.timer) return;
+    // @silent-fallback-ok — a failed tick is written to the steward audit (tick-failed) and the next interval retries.
     const run = () => { void this.tick().catch((e) => this.deps.log({ event: 'tick-failed', detail: e instanceof Error ? e.message : String(e) })); };
     this.firstTimer = setTimeout(run, firstDelayMs);
     this.firstTimer.unref?.();
@@ -453,7 +454,7 @@ export class DiskSteward {
 
   private async safeSend(post: DuePost): Promise<SendOutcome> {
     try { return await this.deps.send(post); }
-    catch (e) { this.deps.log({ event: 'send-failed', postId: post.postId, detail: e instanceof Error ? e.message : String(e) }); return 'failed'; }
+    catch (e) { this.deps.log({ event: 'send-failed', postId: post.postId, detail: e instanceof Error ? e.message : String(e) }); return 'failed'; } // @silent-fallback-ok — logged; 'failed' drives the retry backoff
   }
 
   // ── manual and status ────────────────────────────────────────────────────

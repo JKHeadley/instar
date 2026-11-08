@@ -11,11 +11,13 @@ Tier 2. A per-machine disk watcher (`src/monitoring/DiskSteward.ts`, `diskStewar
 
 Companion fixes:
 - `src/monitoring/agentWorktreeGit.ts` + `AgentWorktreeReaper.ts`: a linked `node_modules` and a provable `dist/` count as regenerable. Inbound-link index. A process command line keeps a checkout. A failed working-folder scan keeps all.
-- `src/localVerify/orchestrator.ts` + `orchestratorSeams.ts`: an orphan run sweep at run start. A `kept-failed.json` that cannot be parsed is never overwritten.
+- `src/localVerify/orchestrator.ts` + `orchestratorSeams.ts` (+ `runVerifyMain.ts`, `LocalVerifyService.ts`, `localVerifyWiring.ts`): an orphan run sweep at run start. A `kept-failed.json` that cannot be parsed is never overwritten, and both readers record a degradation (`LocalVerify.keptList`) that rides the run result to the server's reporter; kept entries are listed with their size; a skipped sweep always says why in the run log; the process view (lsof, ps) is read once per sweep.
 
 Registrations: notification category `disk-steward` + floor envelope factory + lint exception; system-topic key `agent-disk-topic`; config defaults + a dev-agent migration for cleanup; dark-gate exclusion (destructive); machine-local write domain + git-sync exclusion; feature ladder entry; self-action controller (eternal sentinel); CLAUDE.md section, template and migration; Registry First row.
 
 Size: about 30 files, ~2,400 lines added. Effort: spec 6 review rounds (the Tier-2 cap), two scope cuts. Proportion: out of line with the original brief, for a stated reason. The deletion rules had to be fitted to this machine's real layout (shared dependency links, pipeline links, generated files).
+
+**Local Verify follow-up (2026-11-08, Mac M5 Pro builder):** the first Local Verify run failed the unit lane in four files, all of them this PR's registrations rather than behaviour: the hand-authored dark-gate attribution map had no row for `monitoring.diskSteward.prune.enabled` (+21 line shift below it); the completeness test had no tracking entry for the migrator's `/disk-steward` sniff key (and the section had no Codex/Gemini shadow marker, now added); the new reaper test deleted its own fixture files through the guarded `SafeFsExecutor` funnel inside a repo it had itself promoted to an instar source tree (now plain `fs.unlinkSync` on fixture residue); and the silent-fallback ratchet rose by 8 (3 reaper walk catches, 2 steward catches, 1 cleanup-child catch, all fail-safe and now annotated with their reason; the two boot catches in `server.ts` now report through `DegradationReporter`, since a steward that fails to start or to ensure its topic is exactly the silent degradation the reporter exists for). CI's Docs Coverage also fell under the class floor by the two new classes; a `site` feature page and an observability cross-link cover them. Gate attempts for this follow-up: 1 commit.
 
 ## Decision-point inventory
 
@@ -114,3 +116,19 @@ Required: this change touches a watchdog-like monitor and deletion paths.
 Independent reviewer (subagent), first pass: Concern raised. (1) The manual route runs regardless of the cleanup switch, and this was undisclosed. (2) The real `node_modules` claim was mis-stated as new. (3) The 15-minute `dist/` window was not listed. All three were fixed in this artifact; no code change was needed.
 
 Second pass: **Concur with the review.** It confirmed that nothing can delete outside the two cache roots, a live, linked or dirty worktree, or a folder the verifier did not create, and that no brittle check holds blocking authority. Its one wording note (the restart needed for the stop) is applied.
+
+## Second-pass review, independent re-read (2026-11-08, Local Verify change)
+
+Local Verify flagged `independent-review-absent` for `src/localVerify/orchestrator.ts` and `orchestratorSeams.ts`: the first trace recorded a reviewer, but the review above did not read that diff on its own. A fresh reviewer subagent read the Local Verify diff cold (code, spec §5, signal-vs-authority) before reading this artifact.
+
+**First verdict: Concern raised.** Deletion safety held on every question asked (only verifier-named, clone-registered, not-in-use folders through a non-forced remove; an unreadable process view keeps; an unparseable kept list stops the sweep and is never overwritten; the sweep never throws into the verify; nothing assumes one machine). The concerns:
+
+1. A `git worktree list` failure skipped the sweep silently (the one skip path with no log line). **Fixed:** logged with git's status and stderr.
+2. Spec §5 promised a degradation record (`LocalVerify.keptList`) and kept entries listed with their size; the code only wrote a capped log line. **Fixed:** a `degrade` seam fired by both readers of an unparseable list, and `keptEntries: [{dir, bytes}]` through a `treeSize` seam (`du -sk`, null when unreadable). The reviewer's second pass caught the first version of this fix: the run child had configured its own DegradationReporter against the server's `degradations.json`, an unsynchronised read-modify-write the server never reads. Final design: the child only logs the event and carries it in `result.degradations`; the service hands each one to an `onDegradation` seam bound to this server's reporter, the one `/health` serves. The spec is unchanged; the code now does what it says.
+3. The spec claimed `keepFailed` leaving an unparseable file untouched was tested; it was not, nor the list-failed skip, nor the lsof/ps line parsing. **Fixed:** `keepFailed` exported; 8 tests added (17 in the file).
+4. `lsof` and `ps` ran once per candidate (up to 42 scans for the motivating 21 orphans). **Fixed:** one process view per sweep (10 s memo).
+5. A stray file in `runs/` (a `.DS_Store`) was listed as kept every run. **Fixed:** the real `list` seam returns directories only.
+6. Noted, accepted: a process holding files open inside a checkout without its working folder there, or a process on another machine sharing the volume, is not seen. Run checkouts are disposable copies under a machine-local root (spec §5 known limit).
+
+**Second verdict:** Concern raised again, on the fix for item 2 (the run child writing the server's `degradations.json`); redesigned as described there. **Third verdict: Concur with the review** (orphanSweep 17 passed, LocalVerifyService 143 passed). Its one note, a crash result dropping collected degradations, is applied: a crash result carries them too.
+
