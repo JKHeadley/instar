@@ -19,7 +19,9 @@ Second cause (live re-run 2, nimbus 1.3.1719-local.f6315e14, 15:40-16:01 PST): w
 - `src/monitoring/sessionUsageLimitEvidence.ts`: `claudeSessionIdFromPidFiles(configHome, tmuxSession)` reads Claude Code's own `<configHome>/sessions/<pid>.json`. Only a file whose `tmux` field names exactly this session, whose pid matches its file name and is alive, and whose id passes `isSafeSessionRef` counts; the newest wins.
 - `src/core/SessionManager.ts` `confirmSessionUsageLimit`: when no id is known, use that record and bind it with `setClaudeSessionId` (what the next hook event would do).
 
-Tier 1: 6 source files, ~110 added lines, one new test file; revert undoes it fully. One commit attempt planned, no spec review rounds.
+Third cause (live re-run 3, nimbus 1.3.1719-local.fab9417b, 16:19-16:37 PST): again the key was picked up (3 s) and the limit ended, and again nothing restarted. The pid records were there and correct, but nimbus's sessions carry no `CLAUDE_CONFIG_DIR` in their tmux environment at all (one login, no pool). tmux answers "unknown variable", `configHomeForSession` returned undefined even with `defaultWhenUnset`, and `confirmSessionUsageLimit` gave up before reading anything. Fix: a `defaultWhenAbsent` option maps exactly that tmux answer to the process default home, the same thing `defaultWhenUnset` does for an explicitly removed variable. Only the usage proof opts in, because it believes nothing without the exact session's transcript row. Checked on the live run-3 sessions with the default home: pid record id, transcript proof and banner all true for both.
+
+Tier 1: 6 source files, ~125 added lines, one new test file; revert undoes it fully. One commit attempt planned, no spec review rounds.
 
 ## Decision-point inventory
 
@@ -47,6 +49,8 @@ No new authority. Applying the saved key is the operator's own instruction (`set
 No new static heuristic at a competing-signals decision point.
 
 ## 5. Interactions
+
+- `defaultWhenAbsent` is opt-in and only the usage proof uses it. The login-expired readers that pass `defaultWhenUnset` keep returning undefined for an absent variable, so they behave as before on single-login agents. Widening that is a separate change, filed as feedback.
 
 - Binding the id from the pid record: every later hook event carries the same id (last-writer-wins, so no conflict). Consumers that read `claudeSessionId` (resume, compaction checks, the `claudeSessionId rotated` attempt matching) now see the true id sooner. A record from another tmux session is never used, because the exact `<name>:` prefix is required.
 

@@ -6369,7 +6369,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
   confirmSessionUsageLimit(tmuxSession: string): string | false {
     const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
     if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return false;
-    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true });
+    // defaultWhenAbsent: safe here because nothing is believed without the exact session's transcript row.
+    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true, defaultWhenAbsent: true });
     if (!configHome) return false;
     // No hook has reported the id yet when the very first turn was refused for usage (no tool, no
     // Stop). Claude Code's own per-process record names it; binding it is what the next hook would do.
@@ -6749,12 +6750,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return configHome ? { configHome } : {};
   }
 
-  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean }): string | undefined {
+  configHomeForSession(tmuxSession: string, opts?: { defaultWhenUnset?: boolean; defaultWhenAbsent?: boolean }): string | undefined {
     try {
       const out = withSyncOp(() => execFileSync(
         this.config.tmuxPath,
         ['show-environment', '-t', `=${tmuxSession}`, 'CLAUDE_CONFIG_DIR'],
-        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] },
+        { encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'pipe'] },
       )).trim();
       const prefix = 'CLAUDE_CONFIG_DIR=';
       if (out.startsWith('-CLAUDE_CONFIG_DIR') && opts?.defaultWhenUnset) {
@@ -6764,7 +6765,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
       if (!out.startsWith(prefix)) return undefined; // unset (tmux prints `-CLAUDE_CONFIG_DIR`) or absent
       const value = out.slice(prefix.length).trim();
       return value.length > 0 ? value : undefined;
-    } catch {
+    } catch (err) {
+      // `defaultWhenAbsent`: the variable was never set in this session at all (tmux exits 1 with
+      // "unknown variable"), as on an agent with one login and no pool (nimbus, 2026-11-07). The
+      // session then runs on the process default, exactly like the explicitly-unset case above.
+      // Only readers that verify what they find there (a transcript row for the exact session id)
+      // opt in; any other tmux failure still yields undefined.
+      const stderr = String((err as { stderr?: unknown })?.stderr ?? '');
+      if (opts?.defaultWhenAbsent && /unknown variable/i.test(stderr)) {
+        return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+      }
       // @silent-fallback-ok — config-home lookup is fail-toward-silence: the
       // detector skips a session it can't place rather than guess a slot.
       return undefined;

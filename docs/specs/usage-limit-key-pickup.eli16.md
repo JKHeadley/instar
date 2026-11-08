@@ -14,6 +14,8 @@ The part of the server that copies a newly saved key into use only ran while the
 
 With the first fix installed on nimbus, the new key was picked up within seconds and the agent noticed usage was back. But the two waiting conversations still did not restart. To prove a conversation is stuck on the usage limit, Instar reads that conversation's own Claude log. It learns which log belongs to which conversation only after the conversation does some work. A conversation whose very first message is refused for usage has done no work yet, so Instar never knew its log, could not prove it was stuck, and skipped it. Claude Code itself keeps a small record per running conversation that names its log. Instar now reads that record when it doesn't know the log yet, using only a record that names exactly that conversation.
 
+A third gap showed up in the next re-run. To read a conversation's Claude log, Instar first asks which Claude folder that conversation uses. On a machine with only one login, nothing records the folder, and Instar gave up instead of using the normal default folder. It now uses the default folder in that case. It does this only for this check, because the check still needs that exact conversation's own log before it believes anything.
+
 ## What changes
 
 - The server now checks the saved key every minute, whatever state it is in, and puts a changed key into use straight away.

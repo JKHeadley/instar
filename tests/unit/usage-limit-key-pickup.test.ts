@@ -306,3 +306,37 @@ describe('a session walled on its very first turn (no hook ever reported its tra
     expect(bound).toEqual([]);
   });
 });
+
+describe('which Claude home a session runs on, read from real tmux', () => {
+  const sock = `ulw-test-${process.pid}-${Date.now()}`;
+  let dir: string; let tmuxPath: string;
+  const { execFileSync } = require('node:child_process') as typeof import('node:child_process');
+  const tmux = (...a: string[]) => execFileSync('tmux', ['-L', sock, ...a], { stdio: 'ignore' });
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tmux-wrap-'));
+    tmuxPath = path.join(dir, 'tmux');
+    fs.writeFileSync(tmuxPath, `#!/bin/sh\nexec tmux -L ${sock} "$@"\n`, { mode: 0o755 });
+    tmux('-f', '/dev/null', 'new-session', '-d', '-s', 'absent', 'sleep 60');
+    tmux('new-session', '-d', '-s', 'removed', 'sleep 60'); tmux('set-environment', '-t', 'removed', '-r', 'CLAUDE_CONFIG_DIR');
+    tmux('new-session', '-d', '-s', 'pinned', 'sleep 60'); tmux('set-environment', '-t', 'pinned', 'CLAUDE_CONFIG_DIR', '/x/.claude-acct');
+  });
+  afterEach(() => { try { tmux('kill-server'); } catch { /* already gone */ } fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it('a session that never had CLAUDE_CONFIG_DIR runs on the default home, but only for a reader that opts in', async () => {
+    const { SessionManager } = await import('../../src/core/SessionManager.js');
+    const read = (SessionManager.prototype as unknown as { configHomeForSession: (this: unknown, s: string, o?: object) => string | undefined }).configHomeForSession;
+    const self = { config: { tmuxPath } };
+    const def = process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+    expect(read.call(self, 'absent', { defaultWhenUnset: true })).toBeUndefined(); // unchanged for every other reader
+    expect(read.call(self, 'absent', { defaultWhenUnset: true, defaultWhenAbsent: true })).toBe(def);
+    expect(read.call(self, 'removed', { defaultWhenUnset: true })).toBe(def);
+    expect(read.call(self, 'pinned', { defaultWhenUnset: true, defaultWhenAbsent: true })).toBe('/x/.claude-acct');
+    expect(read.call(self, 'no-such-session', { defaultWhenUnset: true, defaultWhenAbsent: true })).toBeUndefined();
+  });
+
+  it('the usage proof opts in', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../src/core/SessionManager.ts'), 'utf8');
+    const at = src.indexOf('confirmSessionUsageLimit(tmuxSession: string)');
+    expect(src.slice(at, at + 900)).toContain('{ defaultWhenUnset: true, defaultWhenAbsent: true }');
+  });
+});
