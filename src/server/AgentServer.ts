@@ -6772,6 +6772,12 @@ export class AgentServer {
           return { userId: id, several: owners.length > 1, links: (owner?.telegramUserId ? { telegram: owner.telegramUserId } : {}) as Record<string, string | number> };
         },
         logsDir: path.join(options.config.stateDir, 'logs'),
+        stateDir: options.config.stateDir,
+        conversationTitle: (refOrPlace) => {
+          const topic = /^telegram:(?:topic:)?(\d+)$/.exec(refOrPlace);
+          if (topic) return options.telegram?.getAllTopicMappings().find((m) => m.topicId === Number(topic[1]))?.topicName ?? null;
+          return appStore?.getConversation(refOrPlace.replace(/^app:/, ''))?.title ?? null;
+        },
         restoreRefs: () => {
           const keys = appStore?.liveConversationKeys() ?? [];
           const teamDevices = new Set(pairingSvc.devices.list().filter((d) => d.role === 'team').map((d) => d.id));

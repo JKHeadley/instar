@@ -73,7 +73,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'teamPeople',
     prefixes: ['/team'],
     description: 'Who can reach this agent, how, and what each person can see. The owner\'s phone gives access; the agent can only take it away.',
-    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy'] }),
+    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'POST /team/proposals', 'GET /mobile/team/requests', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy'] }),
   },
   {
     key: 'capabilityRegistry',
