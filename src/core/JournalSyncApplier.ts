@@ -53,6 +53,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { APP_PLACEMENT_KEY } from './CoherenceJournal.js';
 import {
   type ThreadlineConversationAction,
   type GuardLatchAction,
@@ -659,7 +660,10 @@ export class JournalSyncApplier {
       if (raw.transferTo !== undefined && typeof raw.transferTo !== 'string') return false;
       if (raw.timestamp !== undefined && (typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp))) return false;
       if (raw.drainInFlight !== undefined && typeof raw.drainInFlight !== 'boolean') return false;
-      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
+      // app-conversations-in-the-pool §2.7: an app row carries its key and, for "bring it back here", the marker.
+      if (raw.sessionKey !== undefined && (typeof raw.sessionKey !== 'string' || !APP_PLACEMENT_KEY.test(raw.sessionKey))) return false;
+      if (raw.takeover !== undefined && raw.takeover !== true) return false;
+      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight', 'sessionKey', 'takeover'];
       return keys.every((k) => known.includes(k));
     }
     if (kind === 'session-lifecycle') {

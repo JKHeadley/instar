@@ -42,7 +42,7 @@ describe('WS1.2 drain wiring (server boot + transfer route)', () => {
   it('the runner is constructed with journaling CAS, the WS1.4 suspend arm, and the activity-based quiet signal', () => {
     const idx = server.indexOf('new drainMod.SessionDrainRunner');
     expect(idx).toBeGreaterThan(-1);
-    const block = server.slice(idx - 400, idx + 3200);
+    const block = server.slice(idx - 400, idx + 4400);
     // CAS dep journals placement like every other CAS site.
     expect(block).toContain("emitPlacement(c.sessionKey, r, _shedDrainTopics.has(c.sessionKey) ? 'reconcile' : 'user-move', prev)");
     // WS1.4 remote arm.

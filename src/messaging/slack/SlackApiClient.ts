@@ -10,7 +10,7 @@
 
 import { getTier, type RateLimitTier } from './types.js';
 import { redactToken } from './sanitize.js';
-import { Agent } from 'undici';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 // RULE 3: EXEMPT — this transport consumes Slack's documented Web API JSON
 // contract; malformed/non-ok responses fail loudly and never establish hidden
@@ -98,23 +98,21 @@ export class SlackApiClient {
     attempt: number,
     maxRetries: number,
   ): Promise<SlackApiResponse> {
-    let response: Response;
-    // Keep the recovery pool scoped to Slack requests. Rebuilding a
-    // process-global dispatcher could disrupt unrelated HTTP clients. Node's
-    // fetch honors the undici `dispatcher` init option, but the DOM-typed
-    // RequestInit doesn't declare it — declare the init with the extended type
-    // instead of casting the literal.
-    const init: RequestInit & { dispatcher?: Agent } = {
+    let response: Awaited<ReturnType<typeof undiciFetch>>;
+    // Use the package fetch with its matching Agent. Node's built-in fetch may
+    // bundle a different undici version and reject this dispatcher at runtime.
+    // Keep the recovery pool scoped to Slack requests.
+    const init: Parameters<typeof undiciFetch>[1] = {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json; charset=utf-8',
       },
       body: JSON.stringify(params),
+      dispatcher: this.dispatcher,
     };
-    init.dispatcher = this.dispatcher;
     try {
-      response = await fetch(`https://slack.com/api/${method}`, init);
+      response = await undiciFetch(`https://slack.com/api/${method}`, init);
       this.consecutiveFetchFailures = 0;
     } catch (error) {
       this.consecutiveFetchFailures++;

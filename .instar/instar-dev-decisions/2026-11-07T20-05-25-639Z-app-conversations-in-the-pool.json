@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-07T20:05:25.639Z",
+  "slug": "app-conversations-in-the-pool",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/appConversationPool.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/server/mobileConversationRoutes.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-pool-enforcer runs the real enforcer under an always-older machine and an always-refusing owner; this commit adds no self-action"
+    }
+  },
+  "verdict": "pass"
+}

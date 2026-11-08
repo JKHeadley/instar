@@ -252,8 +252,9 @@ describe('Promise Tracking', () => {
       expect(alertCall).toBeDefined();
     });
 
-    it('sends dead session alert when session is not alive', async () => {
-      adapter.onStallDetected = null;
+    it('leaves a dead promised session to the monitor without asking for another message', async () => {
+      const triage = vi.fn(async () => ({ resolved: false }));
+      adapter.onStallDetected = triage;
       adapter.onIsSessionAlive = () => false;
 
       adapter['pendingPromises'].set(42, {
@@ -269,10 +270,33 @@ describe('Promise Tracking', () => {
       const sendCalls = apiCallMock.mock.calls.filter(
         (c: any[]) => c[0] === 'sendMessage'
       );
-      const alertCall = sendCalls.find(
-        (c: any[]) => typeof c[1]?.text === 'string' && c[1].text.includes('stopped unexpectedly')
-      );
-      expect(alertCall).toBeDefined();
+      expect(sendCalls).toHaveLength(0);
+      expect(triage).not.toHaveBeenCalled();
+    });
+
+    it('keeps shared stall and promise detectors silent for a dead session', async () => {
+      adapter.onStallDetected = vi.fn(async () => ({ resolved: false }));
+      const send = vi.fn(async () => {});
+      adapter.sendToTopic = send;
+      const base = { channelId: '42', sessionName: 'dead', messageText: 'Please help',
+        injectedAt: Date.now() - 11 * 60_000, minutesElapsed: 11 };
+      await adapter['handleSharedStallEvent']({ ...base, type: 'stall' }, false);
+      await adapter['handleSharedStallEvent']({ ...base, type: 'promise-expired' }, false);
+      expect(send).not.toHaveBeenCalled();
+      expect(adapter.onStallDetected).not.toHaveBeenCalled();
+    });
+
+    it('keeps the legacy stall detector silent for a dead session', async () => {
+      adapter.onStallDetected = vi.fn(async () => ({ resolved: false }));
+      adapter.onIsSessionAlive = () => false;
+      adapter['pendingMessages'].set('42:turn', {
+        topicId: 42, sessionName: 'dead', messageText: 'Please help',
+        injectedAt: Date.now() - 6 * 60_000, alerted: false,
+      });
+      await adapter['checkForStalls']();
+      const sends = apiCallMock.mock.calls.filter((c: any[]) => c[0] === 'sendMessage');
+      expect(sends).toHaveLength(0);
+      expect(adapter.onStallDetected).not.toHaveBeenCalled();
     });
 
     it('does not alert for promises within timeout window', async () => {
