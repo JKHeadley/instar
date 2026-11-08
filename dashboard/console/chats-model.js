@@ -114,6 +114,7 @@ export function bubble(kind, row, opts = {}) {
   const own = side === 'right' && typeof opts.own === 'function' ? Boolean(opts.own(row)) : false;
   return {
     id,
+    pos: positionOf(kind, row),
     messageId: row.messageId != null ? String(row.messageId) : null,
     side, who,
     text: typeof row.text === 'string' ? row.text : '',
@@ -122,6 +123,46 @@ export function bubble(kind, row, opts = {}) {
     delivery: side === 'right' && kind !== 'telegram' ? deliveryLabel(row.deliveryState, row.deliveryDetail) : side === 'right' && row.deliveryState ? deliveryLabel(row.deliveryState, row.deliveryDetail) : null,
     mark: side === 'right' ? originMark(row, own) : null,
   };
+}
+
+/**
+ * A message's read position `{ atMs, id }` (docs/specs/mobile-unread-messages.md §3.1): app and Slack →
+ * `eventId`; Telegram → `eventId` when present, else `in:<messageId>` for the user's row and
+ * `out:<messageId>` otherwise. Null when the row cannot name one.
+ */
+export function positionOf(kind, row) {
+  const atMs = Date.parse(iso(row.at) || iso(row.timestamp) || '');
+  if (!Number.isSafeInteger(atMs) || atMs < 0) return null;
+  let id = null;
+  if (kind === 'telegram') id = row.eventId ? String(row.eventId) : row.messageId != null ? `${row.fromUser ? 'in' : 'out'}:${row.messageId}` : null;
+  else id = row.eventId ? String(row.eventId) : null;
+  return id ? { atMs, id } : null;
+}
+
+/** The canonical read-marker ref of an open conversation (§3.1); Slack names its machine. */
+export function readRefOf(ref, machine) {
+  if (!ref) return null;
+  if (ref.kind === 'app') return `app:${String(ref.id).toLowerCase()}`;
+  if (ref.kind === 'telegram') return `telegram:${Number(ref.id)}`;
+  if (ref.kind === 'slack') return machine ? `slack:${machine}:${ref.id}` : null;
+  return null;
+}
+
+/**
+ * The read mark for the newest message shown (dashboard-read-markers): `{ ref, id, atMs, machine? }`,
+ * or null when nothing newer than `lastSent` is shown. Placeholders (`local:`) never count.
+ */
+export function readMarkFor(ref, list, machine, lastSent) {
+  const r = readRefOf(ref, machine);
+  if (!r) return null;
+  let newest = null;
+  for (const b of Array.isArray(list) ? list : []) {
+    if (!b || String(b.id).startsWith('local:') || !b.pos) continue;
+    if (!newest || b.pos.atMs > newest.atMs || (b.pos.atMs === newest.atMs && b.pos.id > newest.id)) newest = b.pos;
+  }
+  if (!newest) return null;
+  if (lastSent && (lastSent.atMs > newest.atMs || (lastSent.atMs === newest.atMs && lastSent.id >= newest.id))) return null;
+  return { ref: r, id: newest.id, atMs: newest.atMs, ...(machine ? { machine } : {}) };
 }
 
 /** Bubbles from one history page, oldest first, de-duplicated by id. */

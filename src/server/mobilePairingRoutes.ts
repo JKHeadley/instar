@@ -2153,6 +2153,8 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/device\/confirm$/.source],
   ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
   ['GET', /^\/mobile\/conversations$/.source],
+  // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
+  ['POST', /^\/mobile\/conversations\/read$/.source],
   ['POST', /^\/mobile\/conversations$/.source],
   ['PATCH', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
   ['DELETE', new RegExp(`^/mobile/conversations/${APP_CONVERSATION_KEY_PATTERN}$`).source],
