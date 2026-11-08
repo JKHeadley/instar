@@ -111,3 +111,11 @@ reuse at the follow-me consumers, and signal-vs-authority. Minor notes:
 - `tests/unit/console-auto-repair-model.test.ts`: ticks, removals, waits, unreadable rows, exact request, result words, confirmation.
 - `tests/integration/subscription-relogin-configure-pool.test.ts`: two real routers with real Ed25519 signatures and a real delivered-mandate store, with follow-me and repair off on the target.
 - `tests/e2e/subscription-relogin-one-tap-lifecycle.test.ts`: the production AgentServer path.
+
+## Follow-up after the first Local Verify run (2026-11-08)
+
+Two standing ratchets that landed on main in the meantime flagged the new routes. Both are fixed:
+- `storage-error-response-ratchet`: the `apply-failed` detail now goes through `operatorError(error, stateDir)`, which names storage failures plainly.
+- `pool-rope-health-feedback`: the peer apply call now goes through `poolPeerFetch` (connection health recorded, credential-safe URL admission) instead of a bare fetch.
+
+There is no behaviour change otherwise. The unit ratchets and the integration test pass.

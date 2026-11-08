@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-08T12:39:23.790Z",
+  "slug": "one-tap-unattended-repair",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

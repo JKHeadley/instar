@@ -38314,7 +38314,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const after = describeSubscriptionReloginConfig(result.config);
       return { status: 202, body: { ok: true, mode: after.mode, changed: result.changed, restartRequested: result.restartRequested, revision: after.revision } };
     } catch (error) {
-      return { status: 500, body: { error: 'apply-failed', detail: error instanceof Error ? error.message : String(error) } };
+      return { status: 500, body: { error: 'apply-failed', detail: operatorError(error, ctx.config.stateDir) } };
     }
   };
 
@@ -38390,7 +38390,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { machineId, ok: false, error: 'delivery-failed' };
       }
       try {
-        const response = await fetch(`${peer.url}/subscription-relogin/configure-with-mandate`, {
+        const response = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, '/subscription-relogin/configure-with-mandate', {
           method: 'POST',
           headers: { Authorization: `Bearer ${ctx.config.authToken}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ mandateId, action, config: rawConfig, expectedRevision }), signal: AbortSignal.timeout(15_000),
