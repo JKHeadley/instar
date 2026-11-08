@@ -59,6 +59,7 @@ import { allocatePort, registerAgent, validateAgentName } from '../core/AgentReg
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
 import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
+import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { ContextHierarchy } from '../core/ContextHierarchy.js';
@@ -1787,6 +1788,17 @@ curl http://localhost:\${INSTAR_PORT:-${port}}/evolution
  * Install built-in skills for evolution system.
  * Only writes skill files that don't already exist (preserves customizations).
  */
+/**
+ * The canonical skills root (`<agent-home>/.instar/skills`) for a Claude skills
+ * dir (`<agent-home>/.claude/skills`), or null when `skillsDir` is not that
+ * shape (test fixtures pass arbitrary dirs; those keep the legacy behaviour).
+ */
+export function canonicalSkillsRootFor(skillsDir: string): string | null {
+  const resolved = path.resolve(skillsDir);
+  if (path.basename(resolved) !== 'skills' || path.basename(path.dirname(resolved)) !== '.claude') return null;
+  return path.join(path.dirname(path.dirname(resolved)), '.instar', 'skills');
+}
+
 export function installBuiltinSkills(skillsDir: string, port: number): void {
   const skills: Record<string, { name: string; description: string; content: string }> = {
     'iterative-converging-audit': {
@@ -3094,7 +3106,29 @@ Cherry-picked from the GSD verifier role. The insight: task completion is not go
     },
   };
 
+  // Canonical-first (specs/instar-concepts/skill.md; skill-learning-sentinel
+  // slice 0): the master copy of each built-in skill is written to
+  // `.instar/skills/<slug>/SKILL.md` when absent. The Claude rendering below is
+  // still written when absent so a fresh install is usable before the first
+  // async migration pass; every other enabled framework's rendering is produced
+  // from canonical by PostUpdateMigrator.migrateBuiltinSkillRenderings (via the
+  // parity rule's remediate). Nothing on disk is ever overwritten.
+  const canonicalRoot = canonicalSkillsRootFor(skillsDir);
   for (const [slug, skill] of Object.entries(skills)) {
+    if (canonicalRoot) {
+      const canonicalFile = path.join(canonicalRoot, slug, 'SKILL.md');
+      if (!fs.existsSync(canonicalFile)) {
+        // Canonical must parse under the parity rule's YAML schema: an unquoted
+        // `description:` holding ": " (e.g. "Trigger words: …") is re-quoted with the
+        // same content; a skill that still cannot parse gets no canonical (its Claude
+        // rendering below is unaffected).
+        const normalized = normalizeSkillFrontmatter(skill.content);
+        if (normalized !== null) {
+          fs.mkdirSync(path.dirname(canonicalFile), { recursive: true });
+          fs.writeFileSync(canonicalFile, normalized.text);
+        }
+      }
+    }
     const skillDir = path.join(skillsDir, slug);
     const skillFile = path.join(skillDir, 'SKILL.md');
     if (!fs.existsSync(skillFile)) {

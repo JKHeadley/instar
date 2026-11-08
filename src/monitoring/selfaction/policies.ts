@@ -195,6 +195,66 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 1: the bounded revert before "retired for harm" notifies). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-heal-revert-first',
+    actionVerb: 'converge-skill-heal',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 2: the reviewer's retire-lowest-unused proposal before "index too costly" notifies). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-heal-index-retire',
+    actionVerb: 'converge-skill-heal',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 3: one drafter-family swap per episode after 5 consecutive refusals). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-drafter-family-swap',
+    actionVerb: 'swap-drafter-family',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
+    // Skill Learning Sentinel attention heal (docs/specs/skill-learning-sentinel.md
+    // §3.10 item 4: the bounded classifier failure swap once per episode). SelfHealGate consumer: governor admission is capacity
+    // telemetry; the durable episode store owns the 3-attempt cap, 1 h/6 h/24 h backoff and the 3-in-7-days breaker.
+    controllerId: 'skill-learning-classifier-failure-swap',
+    actionVerb: 'swap-classifier-family',
+    direction: 'relief',
+    resource: 'hardware-bound',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 12,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 12, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Feedback executor fix attempts (feedback-triage-and-execution §4). Telemetry only: the
     // executor enforces its own caps (2 concurrent, 6 starts/day, 4 open PRs) in code.
     controllerId: 'feedback-execute',
