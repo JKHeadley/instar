@@ -173,4 +173,45 @@ describe('Conversations production AgentServer composition',()=>{
    },null,2));
   }finally{await server.stop();}
  });
+ it('answers every graph route with 503 conversation-graph-off when Conversations is configured off, after auth',async()=>{
+  const stateDir=fs.mkdtempSync(path.join(os.tmpdir(),'graph-off-agent-'));
+  const identity=new MachineIdentityManager(stateDir);
+  const config={projectName:'echo',projectDir:stateDir,stateDir,port:0,authToken:'graph-off-token',dashboardPin:'654321',developmentAgent:true,
+   sessions:{claudePath:'/usr/bin/echo',maxSessions:1,defaultMaxDurationMinutes:30,protectedSessions:[],monitorIntervalMs:5000},
+   scheduler:{enabled:false,jobsFile:'',maxParallelJobs:1},messaging:[],updates:{},threadline:{ownerName:'Owner'},
+   secrets:{forceFileKey:true},mobilePairing:{multiRoute:{enabled:false}},tunnel:{enabled:true,type:'named',token:'x',hostname:HOST},
+   multiMachine:{enabled:false},
+  } as unknown as InstarConfig;
+  fs.writeFileSync(path.join(stateDir,'config.json'),JSON.stringify(config));
+  const server=new AgentServer({config,sessionManager:createMockSessionManager(),state:new StateManager(stateDir),initiativeTracker:new InitiativeTracker(stateDir),
+   coordinator:{enabled:false,managers:{identityManager:identity}} as never,
+   tunnel:{lifecycleState:{lastState:'active',activeProvider:'cloudflare-named'},url:`https://${HOST}`,on:()=>undefined} as never});
+  try{
+   const app=server.getApp();
+   // Unauthenticated requests are still refused by the auth middleware first.
+   expect((await request(app).get('/conversation-graph/roots')).status).toBe(401);
+   expect((await request(app).get('/mobile/conversation-graph/roots')).status).toBe(401);
+   const auth=(test:request.Test)=>test.set('Authorization','Bearer graph-off-token').set('X-Instar-AgentId','echo');
+   const ref=encodeRouteRef({kind:'conversation',platform:'app',conversationKey:'7a1c8a3e-1b2c-4d5e-9f90-1234567890ab'});
+   for(const response of [await auth(request(app).get('/conversation-graph/roots')),await auth(request(app).get(`/conversation-graph/nodes/${ref}`)),
+    await auth(request(app).get(`/conversation-graph/nodes/${ref}/messages`)),await auth(request(app).post('/conversation-graph/changes')).send({}),
+    await auth(request(app).get('/mobile/conversation-graph/roots'))]){
+    expect(response.status,JSON.stringify(response.body)).toBe(503);expect(response.body).toEqual({code:'conversation-graph-off'});
+    expect(response.headers['content-type']).toMatch(/json/);
+   }
+   // A signed owner phone reaches the same answer through the device route allowlist.
+   const pairing=server.mobilePairing!;expect(pairing).toBeTruthy();
+   {
+    const phone=makeDevice(),pending=pairing.devices.createPending({deviceName:'Graph off phone',label:null,publicKey:phone.publicKey,host:HOST});
+    if(!pending.ok)throw new Error('graph-off-phone-fixture-failed');
+    pairing.keyLedger?.recordActivation(pending.device,'dashboard-pin',new Date().toISOString());expect(pairing.devices.applyConfirm(pending.device.id,{ok:true})).toBeTruthy();
+    const target='/mobile/conversation-graph/roots?view=all',time=String(Date.now());
+    const signed=await request(app).get(target).set('X-Instar-Device',pending.device.id).set('X-Instar-Device-Time',time)
+     .set('X-Instar-Device-Sig',phone.sign(canonicalString(pending.device.id,HOST,'GET',target,time,undefined)));
+    expect(signed.status,JSON.stringify(signed.body)).toBe(503);expect(signed.body).toEqual({code:'conversation-graph-off'});
+   }
+  }finally{
+   await server.stop();SafeFsExecutor.safeRmSync(stateDir,{recursive:true,force:true,operation:'graph-off-agent-cleanup'});
+  }
+ });
 });

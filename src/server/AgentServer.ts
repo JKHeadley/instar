@@ -22,7 +22,7 @@ import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
-import {createConversationGraphSurface} from './ConversationGraphSurface.js';
+import {createConversationGraphSurface,createConversationGraphOffRouter} from './ConversationGraphSurface.js';
 import {createConversationGraphDefaultSurface} from './ConversationGraphDefaultSurface.js';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { setAutonomousRunProbe } from '../core/appConversationMove.js';
@@ -7123,8 +7123,7 @@ export class AgentServer {
           localBaseUrl:()=>`http://127.0.0.1:${options.config.port}`,peers:()=>options.resolvePeerUrls?.()??[],
           authToken:()=>options.config.authToken!,agentId:options.conversationGraphReplicationRuntime.agentId,recordRopeResult:options.recordRopeResult}}:{})}));
     }
-
-    if(graphSurfaceConfig?.readEnabled===true&&!options.conversationGraphReplicationRuntime&&options.conversationGraphDefault){
+    else if(graphSurfaceConfig?.readEnabled===true&&!options.conversationGraphReplicationRuntime&&options.conversationGraphDefault){
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
@@ -7132,6 +7131,9 @@ export class AgentServer {
         onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},
         ...(options.config.authToken?{history:{selfMachineId:'pending-owned-runtime',localBaseUrl:()=>`http://127.0.0.1:${options.config.port}`,peers:()=>options.resolvePeerUrls?.()??[],authToken:()=>options.config.authToken!,agentId:owned.agentId,recordRopeResult:options.recordRopeResult}}:{})}));
     }
+    // Configured off (or nothing to serve it): every graph route answers one
+    // 503 `conversation-graph-off` instead of Express's HTML "Cannot GET".
+    else this.app.use(createConversationGraphOffRouter());
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });

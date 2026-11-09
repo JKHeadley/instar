@@ -10,12 +10,12 @@ import {ConversationGraphOwnerGrantStore} from './ConversationGraphOwnerGrant.js
 import {createConversationGraphOwnerAdmission} from './ConversationGraphOwnerAdmission.js';
 import type {GraphViewer} from '../core/conversationGraphRead.js';
 import type {ConversationGraphDefault} from './ConversationGraphDefault.js';
-import {createConversationGraphSurface} from './ConversationGraphSurface.js';
+import {createConversationGraphSurface,createConversationGraphOffRouter,CONVERSATION_GRAPH_PATH} from './ConversationGraphSurface.js';
 import {createConversationGraphViewerResolver} from './conversationGraphViewer.js';
 import {ConversationGraphMemberLossSurface} from './ConversationGraphMemberLossSurface.js';
 import type {ConversationGraphReplicationRuntime} from './ConversationGraphReplicationRuntime.js';
 export function createConversationGraphDefaultSurface(options:Omit<Parameters<typeof createConversationGraphSurface>[0],'agentId'|'runtime'|'identity'> & {manager:ConversationGraphDefault;onRuntime?(runtime:ConversationGraphReplicationRuntime):void}):Router{
- const router=Router();if(options.readEnabled!==true)return router;
+ if(options.readEnabled!==true)return createConversationGraphOffRouter();const router=Router();
  const resolveViewer=createConversationGraphViewerResolver({...options,agentId:options.manager.agentId});let mounted:Router|null=null,mountedRuntime:ConversationGraphReplicationRuntime|null=null;
  const grants=options.dashboardPolicy?new ConversationGraphOwnerGrantStore({stateDir:options.stateDir,agentId:options.manager.agentId,secrets:new SecretStore({stateDir:options.stateDir,forceFileKey:options.forceFileKey}),dashboardPolicy:options.dashboardPolicy}):null;
  const memberLoss=grants&&options.correctionsEnabled===true?new ConversationGraphMemberLossSurface({manager:options.manager,stateDir:options.stateDir,forceFileKey:options.forceFileKey,grants,pairing:options.pairing??null,verifyDashboardOwner:options.verifyDashboardOwner??(()=>false),initializeDashboardPolicy:options.initializeDashboardPolicy}):null;
@@ -57,7 +57,7 @@ export function createConversationGraphDefaultSurface(options:Omit<Parameters<ty
   if(!isCurrent())return res.status(403).json({code:'hierarchy-owner-only'}),true;res.status(status).json(body);return true;
  }
  router.use(async(req,res,next)=>{
-  if(!/^\/(?:mobile\/)?conversation-graph(?:\/|$)/.test(req.path))return next();
+  if(!CONVERSATION_GRAPH_PATH.test(req.path))return next();
   const surface=req.path.startsWith('/mobile/')?'mobile':'dashboard',owner=resolveViewer(req,surface);res.setHeader('Cache-Control','no-store');if(!owner)return void res.status(403).json({code:'hierarchy-owner-only'});
   const isCurrent=()=>{const current=resolveViewer(req,surface);return current!==null&&current.principalKey===owner.principalKey&&current.grantVersion===owner.grantVersion;};
   // A configured correction switch is not evidence that local sealing and

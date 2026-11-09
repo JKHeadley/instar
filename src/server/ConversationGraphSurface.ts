@@ -20,6 +20,18 @@ import {createConversationGraphRouter} from './conversationGraphRoutes.js';
 import {createConversationGraphChangeRouter} from './conversationGraphChangeRoutes.js';
 import {createConversationGraphHistoryRoutes,type ConversationGraphHistoryDeps} from './conversationGraphHistoryRoutes.js';
 
+/** The one answer every graph route gives while Conversations is configured
+ * off here: 503 `conversation-graph-off`, the code the history route already
+ * uses for not-ready, so the dashboard says it is not switched on rather than
+ * reading Express's HTML 404 as an unavailable conversation. Mounted after the
+ * auth middleware, so an unauthenticated request is still refused first. */
+export const CONVERSATION_GRAPH_PATH=/^\/(?:mobile\/)?conversation-graph(?:\/|$)/;
+export function createConversationGraphOffRouter():Router{
+ const router=Router();
+ router.all(CONVERSATION_GRAPH_PATH,(_req,res)=>{res.setHeader('Cache-Control','no-store');res.status(503).json({code:'conversation-graph-off'});});
+ return router;
+}
+
 export function createConversationGraphSurface(options:{
  stateDir:string;agentId:string;runtime:ConversationGraphReplicationRuntime;
  readEnabled?:boolean;correctionsEnabled?:boolean;identity:MachineIdentityManager;
@@ -29,8 +41,8 @@ export function createConversationGraphSurface(options:{
  dashboardPolicy?:()=>ConversationGraphOwnerPolicySnapshot|null;initializeDashboardPolicy?:()=>void;forceFileKey?:boolean;
  history?:Pick<ConversationGraphHistoryDeps,'selfMachineId'|'localBaseUrl'|'peers'|'authToken'|'agentId'|'peerHostAllowlist'|'recordRopeResult'>;
 }):Router{
+ if(options.readEnabled!==true)return createConversationGraphOffRouter();
  const router=Router();
- if(options.readEnabled!==true)return router;
  const runtime=options.runtime;
  const resolveViewer=createConversationGraphViewerResolver(options);
  const custody=new ConversationGraphHeaderCustody(options.stateDir,runtime);

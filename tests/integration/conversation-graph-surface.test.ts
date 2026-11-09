@@ -12,8 +12,12 @@ describe('default-off Conversations surface with actual replicated runtime',()=>
    identity:actual.managers[0],scope:actual.options[0].scopeVerifier!,telegramChatId:'-1001',pairing:null,
    verifyDashboardOwner:(token:string|undefined)=>owner&&token==='operator-proof'};
   const off=express();off.use(express.json(),createConversationGraphSurface({...options,correctionsEnabled:true}));
-  expect((await request(off).get('/conversation-graph/roots').set('X-Instar-Operator-Session','operator-proof')).status).toBe(404);
-  expect((await request(off).post('/conversation-graph/changes').send({})).status).toBe(404);
+  // Configured off answers the console's "not switched on" code, never HTML 404.
+  for(const response of [await request(off).get('/conversation-graph/roots').set('X-Instar-Operator-Session','operator-proof'),
+   await request(off).post('/conversation-graph/changes').send({}),await request(off).get('/mobile/conversation-graph/roots')]){
+   expect(response.status).toBe(503);expect(response.body).toEqual({code:'conversation-graph-off'});
+  }
+  expect((await request(off).get('/conversation-graph-elsewhere')).status).toBe(404);
   const on=express();on.use(express.json(),createConversationGraphSurface({...options,readEnabled:true}));
   expect((await request(on).get('/conversation-graph/roots').set('X-Instar-Operator-Session','operator-proof')).status).toBe(503);
   expect((await request(on).get('/mobile/conversation-graph/roots').set('Authorization','Bearer agent-token')).status).toBe(403);
