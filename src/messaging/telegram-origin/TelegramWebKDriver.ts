@@ -194,8 +194,9 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
   /**
    * Lists this account's test groups with Telegram's own chat search for the fixed title prefix. Web K
    * ships only the API methods its own interface calls, so `messages.getAllChats` is not there ("No method
-   * messages.getAllChats found", live 2026-11-09); `contacts.search` is (the search box). A full page of
-   * 100 of the account's own matches marks the read incomplete.
+   * messages.getAllChats found", live 2026-11-09); `contacts.search` is (the search box), and so is
+   * `messages.getDialogs` (the chat list), whose newest 100 chats are merged in because search misses a
+   * brand-new empty group. A full page of 100 of the account's own search matches marks the read incomplete.
    */
   async listTestGroups(input: { deadline: number; channelId?: string }): Promise<unknown> {
     await this.ready;
@@ -203,7 +204,12 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
     const requested = input.channelId === undefined ? 'null' : canonicalBrowserJson(input.channelId);
     return this.evaluatePageScript(this.testGroupScript(input.deadline, `
       let r;try{r=await api('contacts.search',{q:'Instar test',limit:100});}catch(e){return fail('list',e);}
-      const chats=r&&Array.isArray(r.chats)?r.chats:[];
+      // Telegram's search does not return a brand-new, empty group (live 2026-11-09: a group made a
+      // minute earlier was missing), so the newest 100 chats from the chat list are read too and merged.
+      let recent;try{recent=await api('messages.getDialogs',{offset_date:0,offset_id:0,offset_peer:{_:'inputPeerEmpty'},limit:100,hash:'0'});}catch(e){return fail('list',e);}
+      const byId=new Map();
+      for(const c of [...(r&&Array.isArray(r.chats)?r.chats:[]),...(recent&&Array.isArray(recent.chats)?recent.chats:[])])if(c&&c.id!==undefined&&!byId.has(String(c.id)))byId.set(String(c.id),c);
+      const chats=[...byId.values()];
       const mine=r&&Array.isArray(r.my_results)?r.my_results.length:0;
       const candidates=chats.filter(isCandidate);
       window.__instarTestGroups={operation:${canonicalBrowserJson(operation)},chats:Object.fromEntries(candidates.map(c=>[String(c.id),c]))};
