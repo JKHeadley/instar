@@ -140,7 +140,7 @@ button { font: inherit; color: inherit; }
 /* Bottom nav (phone) → sidebar (desktop) */
 .nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; /* 5 sections, plus Conversations when it is on */
   height: var(--nav-total);
   padding-bottom: var(--safe-b);
   background: color-mix(in srgb, var(--surface-solid) 86%, transparent);
@@ -156,6 +156,7 @@ button { font: inherit; color: inherit; }
 .nav a[aria-current="page"] { color: var(--accent); }
 .nav a:hover { color: var(--text); }
 .nav .nav-group-label, .nav .nav-sub { display: none; }
+.nav a.nav-conversations[hidden] { display: none; }
 
 @media (min-width: 900px) {
   .app { grid-template-columns: 248px 1fr; }
@@ -1238,3 +1239,95 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Promises priority filter (promise-review-and-priority §2.7) */
 .promise-filter { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 12px; }
 .promise-filter .chip[aria-pressed="true"] { border-color: var(--accent, var(--hairline-strong)); color: var(--text); background: var(--surface-raised, var(--surface)); font-weight: 600; }
+
+/* ── Conversations (dashboard-conversations-browser-device.md §4.8) ─────── */
+.chats-page { display: block; }
+.chats-page .chat-view { display: none; }
+.chats-page.has-open .chat-list { display: none; }
+.chats-page.has-open .chat-view { display: block; }
+@media (min-width: 900px) {
+  .main:has(> .chats-page) { max-width: 1680px; }
+  .chats-page:not(.chat-state) { display: grid; grid-template-columns: minmax(300px, 420px) minmax(0, 1fr); gap: var(--s-8); align-items: start; }
+  .chats-page:not(.chat-state) .chat-view, .chats-page.has-open .chat-list { display: block; }
+  .chats-page .chat-view { position: sticky; top: var(--s-4); }
+  .chats-page .chat-back { display: none; }
+  /* The open conversation fits the window: the messages scroll, the composer stays on the first screen. */
+  .chats-page .chat-open { min-height: 0; height: calc(100dvh - var(--topbar-h, 56px) - 72px); }
+  .chats-page .chat-messages { height: auto; flex: 1 1 auto; min-height: 200px; }
+  .chats-page:not(.has-open) .chat-view { min-height: calc(100dvh - var(--topbar-h, 56px) - var(--s-10) - var(--s-10)); display: flex; align-items: center; justify-content: center; border: 1px dashed var(--hairline); border-radius: var(--r-lg); }
+}
+.chat-note { color: var(--text); }
+.chat-muted { color: var(--text-muted); font-size: 13.5px; }
+.chat-list-actions { display: flex; flex-wrap: wrap; gap: var(--s-2); margin: var(--s-2) 0 var(--s-4); }
+.chat-rows { display: flex; flex-direction: column; }
+.chat-row { display: flex; gap: var(--s-3); align-items: center; text-decoration: none; color: inherit; padding: var(--s-3) var(--s-2); border-radius: var(--r-md); }
+.chat-row.open { background: var(--accent-wash); }
+.chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.chat-row-top { display: flex; gap: var(--s-2); align-items: center; min-width: 0; }
+.chat-row-title { font-weight: 600; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-row-preview { font-size: 13.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-row-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex: none; }
+.chat-row-time { font-size: 12px; color: var(--text-faint); }
+.chat-kind { flex: none; font-size: 11px; font-weight: 600; letter-spacing: .02em; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--hairline-strong); color: var(--text-muted); }
+.chat-kind-telegram { border-color: rgb(56 189 248 / 0.5); }
+.chat-kind-slack { border-color: rgb(192 132 252 / 0.5); }
+.chat-unread { min-width: 20px; padding: 0 6px; border-radius: 999px; background: var(--accent); color: var(--bg); font-size: 12px; font-weight: 700; text-align: center; }
+.chat-more { margin-top: var(--s-3); }
+.chat-pick { color: var(--text-muted); }
+.chat-open { display: flex; flex-direction: column; gap: var(--s-2); min-height: calc(100dvh - 160px); }
+.chat-bar { display: flex; align-items: center; gap: var(--s-2); }
+.chat-back { text-decoration: none; font-size: 22px; min-width: 44px; display: inline-flex; align-items: center; justify-content: center; }
+.chat-titles { flex: 1; min-width: 0; }
+.chat-title { margin: 0; font-size: 18px; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-sub { margin: 2px 0 0; font-size: 13px; color: var(--text-muted); }
+.chat-menu { display: flex; gap: var(--s-2); flex: none; }
+.chat-messages { flex: 1; min-height: 280px; height: 58dvh; overflow-y: auto; padding: var(--s-3); background: var(--surface); border: 1px solid var(--hairline); border-radius: var(--r-md); display: flex; flex-direction: column; gap: var(--s-2); }
+.chat-bubble { max-width: min(78%, 640px); padding: 8px 12px; border-radius: 16px; background: var(--surface-raised); border: 1px solid var(--hairline); align-self: flex-start; overflow-wrap: anywhere; }
+.chat-bubble.chat-right { align-self: flex-end; background: var(--accent-wash); border-color: rgb(75 168 170 / 0.35); }
+.chat-who { font-size: 12px; font-weight: 600; color: var(--text-muted); margin-bottom: 2px; }
+.chat-text { white-space: pre-wrap; color: var(--text); }
+.chat-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; font-size: 11.5px; color: var(--text-faint); }
+.chat-meta .tone-bad { color: var(--bad); }
+.chat-meta .tone-attn { color: var(--attn); }
+.chat-meta .tone-ok { color: var(--text-muted); }
+.chat-files { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.chat-img, .chat-video { max-width: 100%; max-height: 360px; border-radius: var(--r-sm); display: block; }
+.chat-audio { width: 100%; }
+.chat-file-load, .chat-download { height: auto; min-height: 36px; padding: 6px 12px; text-align: left; }
+.chat-earlier { align-self: center; }
+.chat-composer { display: flex; flex-direction: column; gap: var(--s-2); }
+.chat-compose-row { display: flex; gap: var(--s-2); align-items: flex-end; }
+.chat-compose { flex: 1; min-width: 0; min-height: 44px; max-height: 40dvh; resize: vertical; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
+/* The shared .btn-primary is full width with a top margin; in the composer row the buttons size to their label. */
+.chat-attach, .chat-send { flex: none; width: auto; margin-top: 0; height: 44px; padding: 0 18px; }
+.chat-chosen { display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-chosen:empty { display: none; }
+.chat-file-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; border-radius: 999px; border: 1px solid var(--hairline-strong); font-size: 13px; }
+.chat-unpick { height: 28px; min-width: 28px; padding: 0 8px; border: 0; }
+.chat-progress { width: 100%; }
+.chat-readonly { padding: var(--s-2) var(--s-3); border: 1px dashed var(--unknown-line); border-radius: var(--r-md); color: var(--text-muted); }
+.chat-setup { display: flex; flex-direction: column; gap: var(--s-3); max-width: 640px; }
+.chat-label { display: flex; flex-direction: column; gap: 4px; font-size: 13.5px; color: var(--text-muted); }
+.chat-input { height: 44px; padding: 0 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
+.chat-fingerprint { font-family: var(--font-mono); letter-spacing: .04em; }
+@media (max-width: 899px) {
+  /* The open conversation fits between the top bar and the bottom tab bar: the messages scroll inside it,
+     so the composer stays on the first screen however long the conversation is (flex: 1 alone sizes to content). */
+  .chats-page .chat-open { min-height: 0; height: calc(100dvh - var(--topbar-h, 56px) - 64px - 32px); }
+  .chats-page .chat-messages { height: auto; flex: 1 1 auto; min-height: 160px; }
+  .chat-bubble { max-width: 88%; }
+  .chat-menu .btn-quiet { padding: 0 10px; }
+}
+/* What I've learned to do (Learned page): proposal cards, the disagree reason, one line per skill. */
+.skill-proposals { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.skill-paraphrases { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 2px; }
+.disagree-with { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; }
+.reason-select { height: 44px; font: inherit; font-size: 14px; color: var(--text); background: var(--surface-solid); border: 1px solid var(--hairline-strong); border-radius: var(--r-md); padding: 0 10px; max-width: 100%; }
+.reason-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-wash); }
+.skill-lines { margin: var(--s-2) 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 14.5px; }
+.skill-line { color: var(--text); }
+/* Waiting for your OK (slice 2): the pending skill's description, paraphrases and reason on the first screen; Confirm leads, Reject is quiet. */
+.skill-pending-list { display: flex; flex-direction: column; gap: var(--s-2); margin-top: var(--s-2); }
+.skill-pending .need-title { overflow-wrap: anywhere; }
+.skill-pending-why { font-style: italic; }
+.skill-pending .sheet-actions { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; margin-top: var(--s-1); }

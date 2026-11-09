@@ -25,7 +25,7 @@ export const MEMORY_PRIVACY_CLAUDE_FLOOR = '2.1.316';
 
 const BASELINE_WAIT_MS = 2 * 60_000;
 
-const REPLY_SCRIPTS = ['telegram-reply.sh', 'slack-reply.sh', 'app-reply.sh', 'whatsapp-reply.sh', 'app-media-path'];
+const REPLY_SCRIPTS = ['telegram-reply.sh', 'slack-reply.sh', 'app-reply.sh', 'whatsapp-reply.sh', 'app-media-path', 'threadline-reply.sh'];
 
 interface MessagingEntry { type: string; config?: Record<string, unknown> }
 
@@ -67,6 +67,7 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
   users: () => UserProfile[];
   ready: Promise<void>;
   recovery: MemoryPrivacyRecovery;
+  sandboxReady: () => boolean;
   reachablePeople: ReachablePeople;
 } {
   const users = (): UserProfile[] => readJson(path.join(input.stateDir, 'users.json'), input.initialUsers ?? []);
@@ -226,5 +227,5 @@ export function wireMemoryPrivacy(input: WireMemoryPrivacyInput): {
     });
   });
 
-  return { privacy, tracker, users, ready, recovery, reachablePeople };
+  return { privacy, tracker, users, ready, recovery, reachablePeople, sandboxReady: () => sandboxReady };
 }

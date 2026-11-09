@@ -47,6 +47,7 @@ import {
   resolveExistingMirrorPath,
   type BenchmarkMirror,
 } from '../data/benchmarkDivergenceRegistry.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 /* ── Micro-constants (FD12 — named code constants) ────────────────────────── */
 
@@ -537,9 +538,41 @@ export class BenchmarkDivergenceAnalyzer {
       const byVerdict: Record<string, number> = {};
       for (const c of toWrite) byVerdict[c.verdict] = (byVerdict[c.verdict] ?? 0) + 1;
 
+      // One ladder row per finished pass. It names what the comparison rested on
+      // (mirror date, machines, models) so a review can judge the pass from the row.
+      const mirrorStale = !mirror.present || (mirrorStaleDays !== null && mirrorStaleDays > s.mirrorStalenessMaxDays);
+      const recordPass = (): void => {
+        const held = [...(mirrorStale ? ['mirror stale'] : []), ...(coverageComplete ? [] : ['coverage incomplete'])];
+        const models = new Set<string>();
+        for (const key of merged.keys()) models.add(key.split('\u0000')[1]);
+        const sum = (m: Map<string, number>): number => [...m.values()].reduce((a, n) => a + n, 0);
+        featureEvidence.record('benchmarkDivergence', {
+          kind: held.length ? 'held' : 'fired',
+          reason: held.length ? `analysis pass finished but not comparable: ${held.join(', ')}` : 'analysis pass finished',
+          context: {
+            dryRun: s.dryRun,
+            mirrorPresent: mirror.present,
+            mirrorStale,
+            mirrorStaleDays,
+            mirrorCapturedAt: mirror.capturedAt,
+            machinesReporting,
+            machinesKnown,
+            coverageComplete,
+            windowFromDay: analysisWindow.fromDay,
+            windowToDay: analysisWindow.toDay,
+            findings: toWrite.length,
+            decidedTotal: sum(decidedByPoint),
+            missingModelDecided: sum(missingByPoint),
+            models: [...models].sort().join(','),
+            byVerdict: JSON.stringify(byVerdict),
+          },
+        });
+      };
+
       if (s.dryRun) {
         // FD13: zero detector-owned durable writes — content-free would-analyze summary.
         this.lastPassCompletedMs = this.now();
+        recordPass();
         this.log(
           `[benchmark-divergence] dryRun pass: window ${analysisWindow.fromDay}..${analysisWindow.toDay}, ` +
             `wouldUpsert=${toWrite.length}, byVerdict=${JSON.stringify(byVerdict)}, ` +
@@ -612,6 +645,7 @@ export class BenchmarkDivergenceAnalyzer {
       }
 
       this.lastPassCompletedMs = this.now();
+      recordPass();
       return {
         ran: true,
         dryRun: false,
@@ -621,6 +655,13 @@ export class BenchmarkDivergenceAnalyzer {
         pool: collect.report,
         unanalyzedLossAccrued: lossAccrued,
       };
+    } catch (err) {
+      featureEvidence.record('benchmarkDivergence', {
+        kind: 'error',
+        reason: `analysis pass failed: ${err instanceof Error ? err.message : String(err)}`,
+        context: { dryRun: s.dryRun },
+      });
+      throw err;
     } finally {
       this.inFlight = false;
     }

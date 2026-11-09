@@ -118,7 +118,9 @@ export class TelegramOriginRuntime {
   private readonly retentionBatch = { fold: RETENTION_BATCHES.fold.min, compact: RETENTION_BATCHES.compact.min, purge: RETENTION_BATCHES.purge.min };
   poolAudit?: import('./OriginPoolAudit.js').OriginPoolAudit;
   readonly browsers = new Map<string, { executor: OriginBrowserExecutor;
-    resolvePeer: (destination: BrowserDestination) => Promise<{ [key: string]: BrowserJson }> }>();
+    resolvePeer: (destination: BrowserDestination) => Promise<{ [key: string]: BrowserJson }>;
+    /** Typed test-group operations (docs/specs/telegram-test-groups.md); Web K profiles only. */
+    testGroups?: import('./TelegramTestGroups.js').TelegramTestGroups }>();
   readonly ownerBootId = randomUUID();
   readonly observer = new RuntimeOriginObserver();
   readonly sessions: OriginSessionRegistry;

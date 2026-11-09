@@ -53,7 +53,8 @@ describe('recommended services routes', () => {
     expect(res.body.offersLive).toBe(false);
     expect(res.body.services.map((s: { service: string }) => s.service)).toContain('jev');
     const jev = res.body.services.find((s: { service: string }) => s.service === 'jev');
-    expect(jev).toMatchObject({ backupStatus: 'specified', available: false, choice: 'unset' });
+    // Jev's recipe is proven, so it is available on every agent; nothing else about the row changes.
+    expect(jev).toMatchObject({ backupStatus: 'specified', available: true, choice: 'unset' });
     expect(jev.dataLeaves).toContain('TypeSafe');
     expect(jev).not.toHaveProperty('setupRecipe');
   });

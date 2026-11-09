@@ -15,6 +15,10 @@ import type { SessionPlaceInput } from './MemoryPrivacy.js';
 
 /** The reference a place input names, or null when it names no conversation (jobs, the dashboard). */
 export function conversationRefOf(input: SessionPlaceInput): string | null {
+  // Another agent's place: serialise spawns for one peer. The namespace cannot collide with an
+  // app ref, which carries no prefix (memory-privacy-agent-places §4). No confined entry uses it.
+  const placeKey = input.memoryPlace && 'placeKey' in input.memoryPlace ? input.memoryPlace.placeKey : null;
+  if (placeKey?.startsWith('agent:')) return `peer-place:${placeKey.slice('agent:'.length)}`;
   if (input.memoryPlace) return null;
   if (input.telegramTopicId !== undefined) return `telegram:${input.telegramTopicId}`;
   if (input.memoryPlaceKey?.startsWith('app:')) return input.memoryPlaceKey.slice(4);

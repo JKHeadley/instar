@@ -15,7 +15,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { LocalVerifyService, type PrView } from '../../src/localVerify/LocalVerifyService.js';
-import { computePolicyHash } from '../../src/localVerify/policy.js';
+import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../src/localVerify/record.js';
 import { createRoutes, type RouteContext } from '../../src/server/routes.js';
 import { buildStatusReconciler } from '../../src/localVerify/localVerifyWiring.js';
@@ -137,6 +137,19 @@ describe('local-verify routes (integration)', () => {
     expect(projected.body.diagnosis.result.classification).toBe('machine-or-flake');
     expect((await request(a).get('/local-verify/diagnosis' + query)).body.diagnosis.result.classification).toBe('machine-or-flake');
     expect(s.svc.getRecord(7, sha('a'), 'main')?.outcome).toBe('failure');
+    s.svc.shutdown();
+  });
+  it('a POST refused for a full queue answers 429 and the PR appears on the waiting list in GET (fb-7fde7f49-8ee)', async () => {
+    const views: Record<number, PrView> = {};
+    const cap = LOCAL_VERIFY_LIMITS.queueCap;
+    for (let pr = 1; pr <= cap + 3; pr++) views[pr] = view({ headRefOid: `${'e'.repeat(36)}${pr.toString(16).padStart(4, '0')}` });
+    const s = setup(views);
+    const a = app(baseCtx(s.stateDir, { localVerify: s.svc }));
+    for (let pr = 1; pr <= cap + 1; pr++) expect((await request(a).post('/local-verify').send({ pr })).status).toBe(202);
+    expect((await request(a).post('/local-verify').send({ pr: cap + 2 })).status).toBe(429);
+    expect((await request(a).post('/local-verify').send({ pr: cap + 3 })).status).toBe(429);
+    const body = (await request(a).get('/local-verify')).body;
+    expect(body.waiting.map((w: { pr: number; live: boolean }) => [w.pr, w.live])).toEqual([[cap + 2, true], [cap + 3, true]]);
     s.svc.shutdown();
   });
   it('reports focused preflight mode and keeps an observed red diagnostic subordinate to a full green record', async () => {

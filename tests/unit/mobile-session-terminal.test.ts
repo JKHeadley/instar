@@ -94,6 +94,7 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/sessions/history'],
       ['POST', '/mobile/sessions/door/134088'],
       ['POST', '/mobile/sessions/move/134088'],
+      ['POST', '/mobile/sessions/bring-back/app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f'],
       ['POST', '/mobile/sessions/close/a-session-id'],
       ['POST', '/mobile/sessions/new'],
       ['POST', '/mobile/sessions/default'],
@@ -101,12 +102,15 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       // Team access: the owner's phone writes, and reads the whole team (team-roles-and-access §4.1).
       ['GET', '/mobile/team/context'],
       ['GET', '/mobile/team/activity'],
+      ['GET', '/mobile/team/requests'],
+      ['POST', '/mobile/team/requests/abc/decline'],
       ['GET', '/mobile/team/invites/mia'],
       ['POST', '/mobile/team/invites'],
       ['POST', '/mobile/team/grants'],
       ['POST', '/mobile/team/people/mia'],
       ['POST', '/mobile/team/off'],
       ['POST', '/mobile/team/restore'],
+      ['POST', '/mobile/team/origin-gone'],
       ['POST', '/mobile/team/memory-privacy'],
       // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2).
       ['GET', '/mobile/introducer'],

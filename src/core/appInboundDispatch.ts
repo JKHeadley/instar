@@ -13,11 +13,12 @@
  * appended by the server only on a `verified` origin verdict (increment 2); increment 1 never
  * appends it.
  */
+import { signedTag, type DeviceClient } from './deviceClientWording.js';
 import { safeInboxTarget } from './memorySessionPolicy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionChannelRegistry } from '../messaging/shared/SessionChannelRegistry.js';
-import type { AppConversationStore } from './AppConversationStore.js';
+import type { AppConversationStore, BrowsedMessage } from './AppConversationStore.js';
 import { cleanConversationTitle } from './appConversationText.js';
 import { historyLine } from './appMediaTypes.js';
 
@@ -31,6 +32,8 @@ export interface AppDispatchInput {
   ownerName: string;
   /** The origin verdict; increment 1 always passes 'unknown' (never 'verified'). */
   originVerdict: 'verified' | 'redacted' | 'failed' | 'unknown' | 'none';
+  /** The kind of device that signed it (dashboard-conversations-browser-device §4.7); absent ⇒ phone. */
+  originClient?: DeviceClient;
   /**
    * Lines the session missed (media spec §4.12): files that finished copying after an earlier
    * delivery with no live session to tell, and files that could not be copied within 7 days.
@@ -66,6 +69,8 @@ export interface AppProfile {
 }
 
 export interface AppInboundDispatchDeps {
+  /** Is this stored message held from any current reader of the conversation? */
+  heldFromAReader?: (conversationKey: string, message: BrowsedMessage) => boolean;
   sessions: AppDispatchSessions;
   channels: SessionChannelRegistry;
   store: AppConversationStore;
@@ -145,10 +150,10 @@ function toSpawnOptions(p: AppProfile | null): SpawnEngine {
 const HISTORY = 30;
 
 /** The injection tag. Title and owner name are re-cleaned here (defense in depth). */
-export function appInjectionTag(alias: number, title: string, ownerName: string, verdict: AppDispatchInput['originVerdict']): string {
+export function appInjectionTag(alias: number, title: string, ownerName: string, verdict: AppDispatchInput['originVerdict'], client: DeviceClient = 'phone'): string {
   const t = cleanConversationTitle(title) ?? 'Untitled';
   const o = cleanConversationTitle(ownerName) ?? 'Operator';
-  return `[app:${alias} "${t}" from ${o}${verdict === 'verified' ? ' (📱 signed)' : ''}]`;
+  return `[app:${alias} "${t}" from ${o}${verdict === 'verified' ? ` ${signedTag(client)}` : ''}]`;
 }
 
 /**
@@ -168,7 +173,8 @@ export function createAppFollowUpInjector(deps: { sessions: Pick<AppDispatchSess
 function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput, 'conversationKey' | 'alias' | 'ownerName' | 'notes'> & { messageId: string | null }): { ctxPath: string; contextData: string; fileFor: (name: string) => string } {
     // Context: recent history from the conversation store (never a platform API).
     const history = deps.store.browseMessages(input.conversationKey, null, HISTORY).messages
-      .filter((m) => m.messageId !== input.messageId);
+      // A session serves every reader of its conversation, so it leaves out what any of them may not see.
+      .filter((m) => m.messageId !== input.messageId && !deps.heldFromAReader?.(input.conversationKey, m));
     const lines: string[] = [];
     if (input.notes && input.notes.length > 0) {
       lines.push('--- Files from earlier messages ---');
@@ -210,7 +216,7 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
     fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
     // A confined session can write to its inbox, so a file for it goes through the safe path.
     const fileFor = (name: string) => (confinedInbox ? safeInboxTarget(confinedInbox, name) : path.join(tmpDir, name));
-    // The write below refuses an existing file, and a start and a message can land in the same millisecond.
+    // Exclusive write, so two starts in one millisecond need different names.
     const ctxPath = fileFor(`ctx-${input.alias}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`);
     fs.writeFileSync(ctxPath, contextData, { mode: 0o600, flag: 'wx' }); /* state-registry: app-conversations */
     return { ctxPath, contextData, fileFor };
@@ -227,7 +233,7 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     // second one beside it (spec §3.1). If it was refused, this message starts the session below.
     await waitForStart(deps, `app:${input.conversationKey}`);
     const channelKey = String(input.alias);
-    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict);
+    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict, input.originClient ?? 'phone');
     const { ctxPath, contextData, fileFor } = writeContext(deps, input);
     const full = `${tag} ${input.text} (IMPORTANT: Read ${ctxPath} for conversation history and app relay instructions — you MUST relay your response back.)`;
     let bootstrap = full;
@@ -299,8 +305,8 @@ function reportSpawned(deps: AppInboundDispatchDeps, conversationKey: string, tm
 
 /** What `startApp` needs beyond the dispatch's own deps. */
 export interface AppStartDeps {
-  /** True when this machine serves the conversation. */
-  isOwner: () => boolean;
+  /** True when this machine serves the conversation (app-conversations-in-the-pool §2.1). */
+  serves: (conversationKey: string) => boolean;
   /** The conversation's local alias, or null when it has none here. */
   aliasFor: (conversationKey: string) => number | null;
   /** The conversation's title (null when it is gone). */
@@ -347,7 +353,7 @@ export function createAppSessionStarter(deps: AppInboundDispatchDeps, start: App
     return null;
   };
   return async (conversationKey, resolved, opts) => {
-    if (!start.isOwner()) return refuse(conversationKey, 'not-served', 'not served on this machine');
+    if (!start.serves(conversationKey)) return refuse(conversationKey, 'not-served', 'not served on this machine');
     const alias = start.aliasFor(conversationKey);
     const title = start.titleFor(conversationKey);
     if (alias === null || title === null) return refuse(conversationKey, 'gone', 'the conversation is gone');

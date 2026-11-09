@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "disk-steward",
+  "sessionId": "d9ce5281-ac78-405c-8fe1-9af61ea78316",
+  "timestamp": "2026-11-08T11:26:01.224Z",
+  "artifactPath": "upgrades/side-effects/disk-steward.md",
+  "artifactSha256": "88a912c8e0f21aeb6c127f77eaaa7fa9a4438ec7e328ee039963599d8a0678d7",
+  "specPath": "docs/specs/disk-steward.md",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/orchestrator.ts",
+    "src/localVerify/orchestratorSeams.ts",
+    "src/localVerify/runVerifyMain.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "tests/unit/localVerify/orphanSweep.test.ts",
+    "upgrades/side-effects/disk-steward.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Re-review only: Local Verify at head 81c10992d recorded independent-review-absent because the artifact's Second-pass review section named no reviewer (second-pass-reviewer-missing), not because any flagged path changed. A cold reviewer subagent re-read the Local Verify diff at the head and concurred; the artifact gains the Reviewer line, two wording fixes and the verdict. No source change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

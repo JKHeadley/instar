@@ -144,6 +144,7 @@ export type MeshCommand =
   | { type: 'agent-identity-observe'; agentName: string; requesterNonce: string }
   | { type: 'agent-identity-request'; agentName: string; expectedFingerprint: string; requesterNonce: string }
   | { type: 'ssh-bootstrap-advert'; advert: import('./SshBootstrapAdvert.js').SshBootstrapAdvert }
+  | { type: 'recovery-enrollment-advert' }
   | { type: 'ssh-proof-publish'; proof: import('./MutualSshVerifier.js').DirectionalSshProof }
   | {
       // WS5.2 R7a/R7(c) — per-account SPEND-SLICE renewal (account follow-me).
@@ -335,6 +336,20 @@ export type MeshCommand =
       method: string;
       probeOnly?: boolean;
       assertion?: unknown;
+    }
+  | {
+      // docs/specs/backup-email-sending.md (Who sends): a standby forwards an email to the lease holder, the one
+      // voice. Carries a session's one-off or a standby-fired report; `id` is the caller's idempotency id, so a
+      // re-issue after a mesh timeout answers the existing row. The holder runs its own guard, outbox, budget and
+      // queue, and re-checks the fallback topic's readers itself. Mutating: the handler is the gate.
+      type: 'email-send-forward';
+      id: string;
+      kind: 'report' | 'one-off';
+      subject: string;
+      text: string;
+      topicText: string;
+      fallbackTopicId: number | null;
+      jobSlug?: string;
     };
 
 export interface MeshEnvelope {
@@ -444,7 +459,7 @@ export interface RbacDeps {
    * authority is the R4a asymmetric signature verification in the handler, which re-binds to the
    * authenticated sender + registered operator key. Mirrors the deny-by-default discipline of R3a.
    */
-  authorizeMandateDeliver?: (args: { sender: MachineId }) => boolean;
+  authorizeMandateDeliver?: (args: { sender: MachineId; command?: MeshCommand }) => boolean;
 }
 
 /**
@@ -517,11 +532,15 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // the trusted operator machine / the feature is dark, the verb is refused HERE — before the
       // handler runs. The LOAD-BEARING authority is still the R4a signature re-verification in the
       // handler (this gate is the coarse, fail-closed pre-filter).
-      const authd = deps.authorizeMandateDeliver?.({ sender }) ?? false;
+      const authd = deps.authorizeMandateDeliver?.({ sender, command }) ?? false;
       return authd ? { ok: true, reason: 'ok' } : { ok: false, reason: 'mandate-deliver-unauthorized' };
     }
     case 'commitment-mutate':
     case 'telegram-origin':
+    // email-send-forward (backup-email-sending, Who sends): the same posture. verifyEnvelope proves the sending
+    // machine; the holder's handler re-runs the credential guard, the readers check on the carried topic, the
+    // budget and the owner-only transport, and answers an existing row for a repeated id.
+    case 'email-send-forward':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
       // §3.4/§5): any registered peer may issue it under the same-operator
       // posture — meaning RBAC adds NO authorization beyond verifyEnvelope,
@@ -548,6 +567,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'secret-share':
     case 'ssh-bootstrap-advert':
     case 'ssh-proof-publish':
+    case 'recovery-enrollment-advert':
     case 'a2a-inbox-deliver':
     case 'a2a-relay-forward':
     case 'a2a-relay-forward-ack':

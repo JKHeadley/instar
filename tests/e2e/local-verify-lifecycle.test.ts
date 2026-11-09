@@ -106,7 +106,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(fs.existsSync(path.join(path.dirname(DIST_ENTRY), 'runFailedFileDiagnosisMain.js'))).toBe(true);
     const r = await request(serve(ctx(stateDir, built.service))).get('/local-verify');
     expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0 });
+    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0, waiting: [] });
     expect(r.body.preflight).toMatchObject({ mode: 'off', replayStoreReady: true, replays: [] });
     expect(r.body.diagnosis).toMatchObject({ mode: 'off', storeReady: true, pending: 0, completed: 0 });
     built.service!.shutdown();

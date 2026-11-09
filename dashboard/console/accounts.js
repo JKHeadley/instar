@@ -10,6 +10,11 @@ import { buildAccountsPage, frameworkName, resetWords } from './accounts-model.j
 import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note, cantTell, askPin, forgetOperatorSession, firstPaint, arrivalScroll, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { buildAutoRepair, configurePayload, resultWords, confirmation } from './auto-repair-model.js';
+
+// Tick state survives the page's 30-second re-render (spec one-tap-unattended-repair §6).
+const autoRepairTicks = new Map(); // machineId → boolean, only where the operator changed the default
+let autoRepairResults = null;      // { at, mode, results: [{ machineId, ... }] } from the last tap
 
 async function postJson(path, body, headers = {}) {
   const token = (() => { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } })();
@@ -27,6 +32,7 @@ export async function renderAccounts(main, ctx) {
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
   const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
+  const autoRepair = buildAutoRepair(relogin, { names, blockers });
   const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
   const refresh = () => renderAccounts(main, ctx);
@@ -73,9 +79,10 @@ export async function renderAccounts(main, ctx) {
     pageHead({ eyebrow: 'Capacity · Accounts', headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
     page.partial ? note(page.partial) : null,
     !relogin.ok ? note(`Couldn't read sign-in repairs: ${relogin.reason}.`) : null,
-    notices, needs, list, legacyLink());
+    notices, needs, autoRepairSection(autoRepair, refresh), list, legacyLink());
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want === 'needs') arrivalScroll(needs);
+  if (want === 'auto-repair') arrivalScroll(main.querySelector('#sec-auto-repair'));
 }
 
 function legacyLink() {
@@ -160,4 +167,86 @@ async function repairNeed(n, refresh) {
   if (r.status === 401) { forgetOperatorSession(); status.textContent = 'The unlock expired. Tap the button again and enter your PIN.'; return; }
   status.textContent = r.ok ? `The repair is running on ${n.machine}. It usually takes a few minutes; this page updates on its own.` : (r.data && r.data.error) || `The server answered ${r.status}.`;
   if (r.ok) setTimeout(() => { closeSheet(); refresh(); }, 2000);
+}
+
+// ── Automatic sign-in repair (docs/specs/one-tap-unattended-repair.md §6) ──────────────────
+function autoRepairTicked(row) {
+  if (!row.canTurnOn && !row.canSwitchBack) return false;
+  return autoRepairTicks.has(row.machineId) ? autoRepairTicks.get(row.machineId) : row.defaultTick;
+}
+
+function autoRepairSection(model, refresh) {
+  if (!model.ok || model.rows.length === 0) return null;
+  const section = el('section', { class: 'page-sections', id: 'sec-auto-repair' },
+    el('h2', { class: 'eyebrow', text: 'Automatic sign-in repair' }),
+    el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. Machines set to "asks you first", watching only, or off are switched on from that machine’s own dashboard.' }));
+  const held = () => { const changed = [...autoRepairTicks.keys()].length > 0; if (changed) section.setAttribute('data-interaction-open', '1'); else section.removeAttribute('data-interaction-open'); };
+  const lastResult = (id) => autoRepairResults && autoRepairResults.results.find((r) => r.machineId === id);
+  const rows = el('div', { class: 'rows' }, model.rows.map((row) => {
+    if (row.unreadable) return el('div', { class: 'row' }, el('span', { class: 'dot unknown' }),
+      el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: row.name }), el('span', { class: 'row-sub', text: row.unreadable })));
+    const box = el('input', { type: 'checkbox', 'aria-label': `Include ${row.name}` });
+    box.checked = autoRepairTicked(row);
+    box.disabled = !row.canTurnOn && !row.canSwitchBack;
+    box.addEventListener('change', () => {
+      if (box.checked === row.defaultTick) autoRepairTicks.delete(row.machineId); else autoRepairTicks.set(row.machineId, box.checked);
+      held();
+    });
+    const lines = [];
+    if (row.finalList) lines.push(`Accounts: ${row.finalList.join(', ')}`);
+    if (row.removals.length) lines.push(`Stops: ${row.removals.join(', ')}`);
+    if (row.uncovered.length && row.mode === 'unattended') lines.push(`${row.uncovered.length} account${row.uncovered.length === 1 ? '' : 's'} on this machine ${row.uncovered.length === 1 ? 'isn’t' : 'aren’t'} covered yet`);
+    if (row.stillAsk.length) lines.push(`${row.stillAsk.length} of ${row.stillAskTotal} will still ask: ${[...new Set(row.stillAsk)].join('; ')}`);
+    if (row.waitsLine) lines.push(row.waitsLine);
+    if (row.self && row.mode !== 'unattended' && row.canTurnOn) lines.push('Turning this on: repairs run without asking, including accounts never repaired on this machine.' + (row.minimums[0] || row.minimums[1] ? ` It also removes the wait of ${row.minimums[0]} repairs / ${row.minimums[1]} days.` : ''));
+    if (row.blockedWhy) lines.push(row.blockedWhy);
+    const prior = lastResult(row.machineId);
+    if (prior) {
+      const c = confirmation(row, prior);
+      lines.push(prior.ok ? (c === 'confirmed' ? 'Confirmed.' : c === 'superseded' ? 'Changed again since.' : resultWords(prior)) : resultWords(prior));
+    }
+    const end = el('span', { class: 'row-end' });
+    if (row.activationPending) end.append(el('button', { class: 'btn-quiet btn-small', type: 'button', text: 'Finish restarting',
+      onclick: () => autoRepairTap('finish-restart', [row], refresh) }));
+    return el('div', { class: 'row' },
+      el('label', { class: 'row-check' }, box),
+      el('span', { class: 'row-main' },
+        el('span', { class: 'row-title', text: `${row.name}${row.self ? ' (this machine)' : ''}: ${row.stateWords}${row.activationPending ? ' — restarting' : ''}` }),
+        ...lines.map((t) => el('span', { class: 'row-sub', text: t }))),
+      end);
+  }));
+  const turnOn = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Turn on for ticked machines' });
+  const back = el('button', { class: 'btn-quiet', type: 'button', text: 'Switch ticked machines back to asking first' });
+  const ticked = () => model.rows.filter((r) => !r.unreadable && autoRepairTicked(r));
+  const sync = () => { const t = ticked(); turnOn.disabled = !t.some((r) => r.canTurnOn); back.disabled = t.length === 0 || !t.every((r) => r.canSwitchBack); };
+  section.addEventListener('change', sync);
+  turnOn.addEventListener('click', () => autoRepairTap('unattended', model.rows, refresh));
+  back.addEventListener('click', () => autoRepairTap('approval', model.rows, refresh));
+  sync(); held();
+  section.append(rows, el('div', { class: 'sheet-actions' }, turnOn, back));
+  return section;
+}
+
+async function autoRepairTap(mode, rows, refresh) {
+  const finish = mode === 'finish-restart';
+  const tickedIds = new Set(finish ? rows.map((r) => r.machineId) : rows.filter((r) => !r.unreadable && autoRepairTicked(r)).map((r) => r.machineId));
+  const body = finish
+    ? { action: 'finish-restart', targets: rows.filter((r) => r.revision).map((r) => ({ machineId: r.machineId, expectedRevision: r.revision })) }
+    : configurePayload(rows, tickedIds, mode);
+  if (body.targets.length === 0) return;
+  const title = finish ? 'Finish restarting' : mode === 'unattended' ? 'Turn on automatic sign-in repair' : 'Switch back to asking first';
+  const auth = await askPin({ title, explain: 'This needs a recent PIN unlock. It is kept in this page only until it expires.', adapter: 'session' });
+  if (!auth) return;
+  const status = el('p', { class: 'action-status', role: 'status', text: 'Working…' });
+  sheet({ title }, status);
+  const r = await postJson('/subscription-relogin/configure-pool', body, { 'X-Instar-Operator-Session': auth.session });
+  if (r.status === 401) { forgetOperatorSession(); status.textContent = 'The unlock expired. Tap the button again and enter your PIN.'; return; }
+  if (!r.ok || !r.data || !Array.isArray(r.data.results)) { status.textContent = (r.data && r.data.error) || `The server answered ${r.status}.`; return; }
+  autoRepairResults = { at: Date.now(), mode, results: r.data.results };
+  autoRepairTicks.clear();
+  const nameOf = (id) => (rows.find((x) => x.machineId === id) || {}).name || 'A machine';
+  setKids(status, ...r.data.results.map((x) => el('span', { class: 'row-sub', text: `${x.ok ? '✓' : '✗'} ${nameOf(x.machineId)}: ${resultWords(x)}` })));
+  // Re-read after about 30 s (a restart takes ~15 s and the supervisor polls every 10 s), then once more.
+  setTimeout(() => { closeSheet(); refresh(); }, 30_000);
+  setTimeout(() => refresh(), 60_000);
 }

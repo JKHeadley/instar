@@ -58,6 +58,10 @@ describe('PostUpdateMigrator assisted re-login awareness', () => {
     expect(first.upgraded).toContain('CLAUDE.md: added skill-driven sign-in repair awareness');
     expect(once.match(/Skill-driven sign-in repair \(macOS, dev-gated\)/g)).toHaveLength(1);
     expect(once).toContain('POST /subscription-relogin/EPISODE/code');
+    // One-tap repair setting (spec one-tap-unattended-repair §7) — existing agents get it too.
+    expect(first.upgraded).toContain('CLAUDE.md: added one-tap repair setting awareness');
+    expect(once.match(/One-tap repair setting \(Accounts page\)/g)).toHaveLength(1);
+    expect(once).not.toContain('can safely configure this on any machine');
     expect(once).toContain('loginCheck');
     // Spec relogin-unattended-agent-session-and-slow-retry: fresh inserts carry the new wording.
     expect(once).not.toContain('Approval is forced on this path');

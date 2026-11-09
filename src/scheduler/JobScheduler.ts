@@ -23,7 +23,7 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { parseInstrumentAssessment } from '../core/InstrumentAssessment.js';
 import type { JevJobCompletionAudit } from './JevJobCompletionAudit.js';
-import { findClaudeJobTranscript, readJobTranscriptEvidence } from './jobTranscriptEvidence.js';
+import { findClaudeJobTranscript, readJobTranscriptEvidence, renderJobReportForOwner } from './jobTranscriptEvidence.js';
 
 const execFileAsync = promisify(execFile);
 import path from 'node:path';
@@ -773,6 +773,24 @@ export class JobScheduler {
    * Set local machine identity for machine-scoped job filtering.
    * Jobs with a `machines` field will only run on machines whose ID or name matches.
    */
+  /**
+   * Resource-aware placement §5: this machine's own heavy-work profile (null = unknown
+   * ⇒ the gate does not apply, today's behaviour). Read at trigger time.
+   */
+  private selfHeavyProfile?: (() => { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null) | null;
+  setSelfHeavyProfile(fn: (() => { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null) | null): void {
+    this.selfHeavyProfile = fn;
+  }
+
+  /** True when the job's `machines` list explicitly names this machine (the author's explicit placement). */
+  private jobNamesThisMachine(job: JobDefinition): boolean {
+    if (!job.machines || job.machines.length === 0) return false;
+    return job.machines.some((m) => {
+      const lower = m.toLowerCase();
+      return (!!this.machineId && lower === this.machineId.toLowerCase()) || (!!this.machineName && lower === this.machineName.toLowerCase());
+    });
+  }
+
   setMachineIdentity(machineId: string, machineName: string): void {
     this.machineId = machineId;
     this.machineName = machineName;
@@ -1059,6 +1077,23 @@ export class JobScheduler {
         metadata: { slug, reason, machines: job.machines },
       });
       return 'skipped';
+    }
+
+    // Resource-aware placement §5: a declared-heavy job never runs on a machine below
+    // the heavy-work size floor, unless its `machines` list names this machine.
+    if (job.workWeight === 'heavy' && this.selfHeavyProfile && !this.jobNamesThisMachine(job)) {
+      let prof: { heavyCapable: boolean; reason: string; cores: number | null; memGiB: number | null } | null = null;
+      try { prof = this.selfHeavyProfile(); } catch { prof = null; /* @silent-fallback-ok — an unreadable profile keeps today's behaviour (the job runs); the gate only narrows on measured size */ }
+      if (prof && !prof.heavyCapable) {
+        this.skipLedger.recordSkip(slug, 'machine-too-small');
+        this.state.appendEvent({
+          type: 'job_skipped',
+          summary: `Job "${slug}" skipped — it is marked heavy and this machine is below the heavy-work size (${prof.cores ?? '?'} cores, ${prof.memGiB ?? '?'} GB)`,
+          timestamp: new Date().toISOString(),
+          metadata: { slug, reason, workWeight: 'heavy', profileReason: prof.reason, cores: prof.cores, memGiB: prof.memGiB },
+        });
+        return 'skipped';
+      }
     }
 
     // WS4.3 role-guard-at-spawn (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.3,
@@ -3169,6 +3204,42 @@ export class JobScheduler {
   /** Memory privacy: true when a job's notice would land where others can read it. Unset means no. */
   notifyDestinationHasOtherReaders?: (job: JobDefinition) => boolean;
 
+  /**
+   * Email delivery of job reports (docs/specs/backup-email-sending.md). Unset: every report goes to Telegram as before.
+   * `submitReport` writes the outbox row on the lease holder (or forwards it there from a standby) and returns its id,
+   * the execution marker. It never throws on a send problem: those end in the topic fallback.
+   */
+  emailReports?: {
+    submitReport: (input: { executionId: string; job: JobDefinition; subject: string; ownerText: string; topicText: string; reconcile?: boolean }) => string | null;
+  };
+
+  /**
+   * The reconciliation sweep (docs/specs/backup-email-sending.md): a completed run of a job that emails, with no
+   * `emailOutboxId`, lost its row to a crash between bookkeeping and the write. It gets a falling-back row with the
+   * status line and its marker. A marked run is never reconciled again. Returns how many were reconciled.
+   */
+  reconcileEmailReports(notBeforeMs: number, sinceHours = 48): number {
+    if (!this.emailReports) return 0;
+    let n = 0;
+    for (const job of this.jobs) {
+      if (!job.deliver?.includes('email') || job.execute?.type === 'script') continue;
+      const { runs } = this.runHistory.query({ slug: job.slug, sinceHours, excludeSideRuns: true, limit: 200 });
+      for (const run of runs) {
+        if (run.emailOutboxId || !run.completedAt || run.result === 'pending' || run.result === 'skipped' || run.result === 'spawn-error') continue;
+        // Only runs that finished while email delivery was wired: an older run never had a row to lose.
+        if (Date.parse(run.completedAt) < notBeforeMs) continue;
+        const statusLine = `${job.name}: ${run.result === 'success' ? 'Done' : 'Failed'}`;
+        try {
+          const id = this.emailReports.submitReport({ executionId: run.runId, job, subject: statusLine, ownerText: statusLine, topicText: `*Job Complete: ${job.name}*\nStatus: ${run.result === 'success' ? 'Done' : 'Failed'}`, reconcile: true });
+          if (id) { this.runHistory.recordEmailOutboxId(run.runId, id); n++; }
+        } catch (err) {
+          console.error(`[scheduler] Email reconciliation for ${job.slug} failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+    return n;
+  }
+
   private getNotifyMode(job: JobDefinition): 'always' | 'never' | 'on-alert' {
     if (job.telegramNotify === false) return 'never';
     if (job.telegramNotify === true) return 'always';
@@ -3269,12 +3340,17 @@ export class JobScheduler {
 
     // Record completion in run history (with output summary)
     const runId = this.activeRunIds.get(session.name);
+    // Email (docs/specs/backup-email-sending.md): the outbox row is durable intent, written in the same bookkeeping
+    // step as the completion and named on the run record, so a crash between the two is found by the reconciliation
+    // sweep and a marked run is never reconciled again.
+    const emailOutboxId = runId ? this.emailReportForRun(runId, job, session, failed, output) : undefined;
     if (runId) {
       this.runHistory.recordCompletion({
         runId,
         result: session.status === 'killed' ? 'timeout' : (failed ? 'failure' : 'success'),
         error: failureError,
         outputSummary: output ? output.slice(-1000) : undefined,
+        ...(emailOutboxId ? { emailOutboxId } : {}),
       });
 
       // Auto-extract handoff notes from session output if agent included [HANDOFF] marker
@@ -3395,6 +3471,10 @@ export class JobScheduler {
     if (!this.messenger && !this.telegram) return;
     const notifyMode = this.getNotifyMode(job);
     if (notifyMode === 'never') return;
+    // A job that emails its report and does not also ask for Telegram: the email row carries it, and its fallback
+    // goes to this job's topic through deliverJobReport. Only when email delivery is wired here.
+    // Only when this run's row (or its `quiet` mark) was actually written: no row means no email, so Telegram carries it.
+    if (emailOutboxId && job.deliver?.includes('email') && !job.deliver.includes('telegram')) return;
 
     // Output was already captured above for run history — reuse it
 
@@ -3462,9 +3542,35 @@ export class JobScheduler {
       return;
     }
 
-    // Lazy topic creation for on-alert jobs that need to send their first notification.
-    // Topics aren't created eagerly for these jobs — only when there's something to report.
-    if (this.telegram && !job.topicId && notifyMode === 'on-alert') {
+    // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
+    if (this.telegram && (job.topicId || notifyMode === 'on-alert')) {
+      const sent = await this.deliverJobReport(job, summary);
+      // A lazy topic that could not be created leaves the generic messenger, as before.
+      if (!sent.ok && !job.topicId && this.messenger) {
+        try { await this.messenger.send({ userId: 'system', content: summary }); } catch (err) { console.error(`[scheduler] Failed to send job notification: ${err}`); } // @silent-fallback-ok — logged; the generic messenger is itself the last fallback for this report
+      }
+    } else if (this.messenger) {
+      try {
+        await this.messenger.send({
+          userId: 'system',
+          content: summary,
+        });
+      } catch (err) {
+        console.error(`[scheduler] Failed to send job notification: ${err}`); // @silent-fallback-ok — logged; the generic messenger is the last route for this report
+      }
+    }
+  }
+
+  /**
+   * Carries a job report to the job's topic: lazy topic creation for an on-alert job's first report, and a topic
+   * deleted under it is recreated once. Shared by the ordinary report path and the email fallback
+   * (docs/specs/backup-email-sending.md), so both reach the person the same way. `ok` only on Telegram's own
+   * acknowledgment.
+   */
+  async deliverJobReport(job: JobDefinition, text: string): Promise<{ ok: boolean; messageId?: string | number }> {
+    if (!this.telegram) return { ok: false };
+    // Lazy topic creation: topics aren't created eagerly for quiet jobs, only when there's something to report.
+    if (!job.topicId) {
       try {
         const topic = await this.telegram.findOrCreateForumTopic(
           `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
@@ -3475,41 +3581,64 @@ export class JobScheduler {
         this.saveJobTopicMapping(job.slug, topic.topicId);
       } catch (err) {
         console.error(`[scheduler] Failed to create lazy topic for ${job.slug}: ${err}`);
+        return { ok: false }; // @silent-fallback-ok — logged; the caller sees not-ok and falls back (messenger, or the email row's retry)
       }
     }
+    const acked = (r: unknown): { ok: boolean; messageId?: string | number } => {
+      const m = (r as { messageId?: unknown; quietId?: unknown } | null);
+      if (m && (typeof m.messageId === 'number' || typeof m.messageId === 'string')) return { ok: true, messageId: m.messageId as number | string };
+      if (m && typeof m.quietId === 'string') return { ok: true, messageId: `quiet:${m.quietId}` };
+      return { ok: false };
+    };
+    try {
+      return acked(await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(job.topicId!, text)));
+    } catch (err) {
+      console.error(`[scheduler] Failed to send to job topic ${job.topicId}: ${err}`);
+      // The original outbox retains custody, including uncertain acceptance.
+      // A different topic would create a new operation outside that custody.
+      if (err instanceof TelegramOriginHoldError) return { ok: false };
+      // Topic may have been deleted — try to recreate
+      try {
+        const newTopic = await this.telegram.findOrCreateForumTopic(
+          `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
+          TOPIC_STYLE.JOB.color,
+          { label: 'job-topics' },
+        );
+        job.topicId = newTopic.topicId;
+        this.saveJobTopicMapping(job.slug, newTopic.topicId);
+        return acked(await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(newTopic.topicId, text)));
+      } catch (recreateErr) {
+        console.error(`[scheduler] Failed to recreate topic for ${job.slug}: ${recreateErr}`);
+        return { ok: false }; // @silent-fallback-ok — logged; the caller sees not-ok (an email row stays falling-back and retries)
+      }
+    }
+  }
 
-    // Send to the job's dedicated topic if available, otherwise fall back to generic messenger
-    if (this.telegram && job.topicId) {
-      try {
-        await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(job.topicId!, summary));
-      } catch (err) {
-        console.error(`[scheduler] Failed to send to job topic ${job.topicId}: ${err}`);
-        // The original outbox retains custody, including uncertain acceptance.
-        // A different topic would create a new operation outside that custody.
-        if (err instanceof TelegramOriginHoldError) return;
-        // Topic may have been deleted — try to recreate
-        try {
-          const newTopic = await this.telegram.findOrCreateForumTopic(
-            `${TOPIC_STYLE.JOB.emoji} Job: ${job.name}`,
-            TOPIC_STYLE.JOB.color,
-            { label: 'job-topics' },
-          );
-          job.topicId = newTopic.topicId;
-          this.saveJobTopicMapping(job.slug, newTopic.topicId);
-          await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(newTopic.topicId, summary));
-        } catch (recreateErr) {
-          console.error(`[scheduler] Failed to recreate topic for ${job.slug}: ${recreateErr}`);
-        }
-      }
-    } else if (this.messenger) {
-      try {
-        await this.messenger.send({
-          userId: 'system',
-          content: summary,
-        });
-      } catch (err) {
-        console.error(`[scheduler] Failed to send job notification: ${err}`);
-      }
+  /**
+   * The email decision for one completed run (docs/specs/backup-email-sending.md, Using it). Quiet by Default holds:
+   * a run the topic would not have heard about is not emailed either, and is marked `quiet`. Returns the marker for
+   * the run record, or undefined when this job does not email.
+   */
+  private emailReportForRun(runId: string, job: JobDefinition, session: NonNullable<ReturnType<StateManager["getSession"]>>, failed: boolean, output: string): string | undefined {
+    if (!this.emailReports || !job.deliver?.includes('email') || job.execute?.type === 'script') return undefined;
+    try {
+      const notifyMode = this.getNotifyMode(job);
+      // The owner's text: the job's final message from its transcript (the pane is usually gone by now).
+      const ownerBody = renderJobReportForOwner({ framework: session.framework ?? 'claude-code', claudeSessionId: session.claudeSessionId ?? null, projectDir: session.cwd ?? path.dirname(this.stateDir) });
+      const signal = ownerBody || output;
+      const reportable = notifyMode === 'always' || (notifyMode === 'on-alert' && (failed || this.hasAttentionSignal(signal)));
+      if (!reportable) return 'quiet';
+      const statusLine = `${job.name}: ${failed ? 'Failed' : 'Done'}`;
+      const ownerText = ownerBody.trim() || (output.trim() ? output.slice(-4000) : statusLine);
+      // The topic's copy: redacted where the topic has other readers, exactly as the Telegram report would be.
+      const topicText = this.notifyDestinationHasOtherReaders?.(job)
+        ? `*Job Complete: ${job.name}*\nStatus: ${failed ? 'Failed' : 'Done'}\n\n_Output is available to the agent owner._`
+        : `*Job Complete: ${job.name}*\nStatus: ${failed ? 'Failed' : 'Done'}\n\n${ownerText}`;
+      return this.emailReports.submitReport({ executionId: runId, job, subject: statusLine, ownerText, topicText }) ?? undefined;
+    } catch (err) {
+      // Never break completion handling: an unmarked run is picked up by the reconciliation sweep. @silent-fallback-ok — logged, and reconciled
+      console.error(`[scheduler] Email report for ${job.slug} not written: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
     }
   }
 
@@ -3855,7 +3984,7 @@ export class JobScheduler {
 
   /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
   private observeContinuitySkip(slug: string, reason: SkipReason): void {
-    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'definition-changed')) return;
+    if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'machine-too-small' && reason !== 'definition-changed')) return;
     const job = this.jobs.find((candidate) => candidate.slug === slug);
     if (!job?.enabled) return;
     const key = `job-silence-${slug}`;
@@ -3864,7 +3993,12 @@ export class JobScheduler {
     const count = (previous?.count ?? 0) + 1;
     const next = { count, lastSkip: now, lastNotified: previous?.lastNotified, recordedAt: previous?.recordedAt, lastAttemptAt: previous?.lastAttemptAt };
     this.state.set(key, next);
-    if (count >= 3) this.raiseContinuityAlert(job, `${count} scheduled attempts were skipped (${reason})`, key);
+    if (count >= 3) {
+      const detail = reason === 'machine-too-small'
+        ? `${count} scheduled runs were skipped because this job is marked heavy and the machine running jobs is too small for heavy work. To run it, name this machine in the job's machines list, or let a larger machine take over running jobs`
+        : `${count} scheduled attempts were skipped (${reason})`;
+      this.raiseContinuityAlert(job, detail, key);
+    }
   }
 
   /** A completed success closes the silence episode; a skip never does. */

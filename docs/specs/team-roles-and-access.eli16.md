@@ -26,6 +26,8 @@ For several agents, each agent stays independent, with no central service. Your 
 ## Safeguards
 
 - **The agent can take access away but can never give it.** Every change is a request signed by a person's phone, and the signed request itself is kept in a log copied to all the agent's machines. A forged entry is ignored. So nobody can talk the agent into giving them more. If someone asks the agent for access, the owner gets an Approve button instead.
+- **A refusal says why, in words.** Every time a phone is turned away it gets a plain reason, never a raw error.
+- **Anyone can ask, and asking gives nothing.** When someone asks the agent for access, the owner sees a request and approves or declines it. What the owner approves is exactly what the request named, whatever words came with it.
 - **Only the owner's phone can make someone an admin,** and that also needs Face ID. Admins can add members, but only to conversations they can read themselves.
 - **Everyone on the team needs memory privacy on.** Their chats run in a locked-down session. Without that, one person could ask the agent to read files they shouldn't see, and the roles would mean nothing. If privacy goes off, those phones stop working until it's back.
 - **A shared conversation stops using the owner's private memory.** Once someone else can read a conversation, the agent treats it as a shared place, and that person can read it only after this has taken effect. The owner is told before sharing.
@@ -48,13 +50,17 @@ Existing agents work exactly as they do now. An update neither restricts anyone 
 - Scheduled jobs run for the owner and can read messages in the logs. That's within the owner's access, but the only thing keeping a member's words from steering a job is how the model behaves. Members are told, and it has its own fix on the list.
 - The dashboard stays the owner's. The app is everyone else's way in.
 - A conversation that has ever been shared, or that a member started, stays locked down for good, even after everyone else is removed.
-- An agent that has had team members can't add a second machine until multi-machine support lands.
+- A machine on an older build can't join an agent that has a team. It has to update first.
 - A phone reaches one of the agent's machines, and can send only while that machine is the one serving the agent. Every phone already works this way.
 - An agent that runs only on Codex can't have team members yet, because memory privacy only works with Claude Code.
 
 ## What comes first
 
 The first piece restricts nobody. It lets an owner see who can reach their agent and what they can see, and it warns the owner when a second person can reach an agent with memory privacy off. That warning had no owner in the Thursday B2Lead report. After that come member phones on agents that run on one machine, with their People screens in the app. The checks for that step are done and it is being built now. Agents on several machines come straight after that, because most of ours run that way. The multi-machine parts proved hardest, so they get their own review rounds. Then admin maintenance, adding people across several agents, and Slack conversations for members.
+
+## When an agent runs on several machines
+
+Step 2b extends this to agents on more than one machine. A few rules change. If two people change access at the same moment and neither saw the other, the change that takes access away wins. Once someone is removed they can't be brought back by accident. Words written by a machine that was cut off are kept from new readers where that's possible; Telegram members will already have seen them. Any surviving machine can remove a person, so losing one machine never leaves nobody able to. A laptop going to sleep changes nothing for anyone: other machines pass its records along, and a machine keeps serving when its peers are asleep. Records only a sleeping machine holds just wait; nobody loses access over them. Whether a reader can see a message is worked out from facts that never change, so every machine gives the same answer. A machine that loses its records rebuilds them from the others before asking the owner for anything. Once a team exists, every machine gets the access records, and one that isn't set up for teams stays out of shared conversations until it is. The trade-off is that a machine cut off from everything can't hear about a removal until it reconnects.
 
 ## What you need to decide
 

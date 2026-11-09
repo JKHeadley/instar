@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-agent-places",
+  "sessionId": "4b6b2ecb-5089-4367-904c-5eeb9dc94318",
+  "timestamp": "2026-11-09T00:26:53.241Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-agent-places.md",
+  "artifactSha256": "611cfdc08c3ec3ce7a02127ef0c04d9e1c84d983c3dbc451a89dbe7c3d24aea1",
+  "specPath": "docs/specs/memory-privacy-agent-places.md",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "src/messaging/MessageDelivery.ts",
+    "upgrades/side-effects/memory-privacy-agent-places.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fix for the Local Verify e2e failure on the approved memory-privacy-agent-places change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

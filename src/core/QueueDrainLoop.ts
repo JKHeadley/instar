@@ -768,7 +768,12 @@ export class QueueDrainLoop {
     // mismatch — monotonic deadlines unreconstructable, wall governs, §6).
     const crossTenure = row.lease_epoch !== this.tenure;
     const crossBoot = row.boot_session_id !== this.d.bootSessionId;
-    if (crossTenure || crossBoot) {
+    // An app message waiting for its conversation's machine keeps the normal TTL across a reboot of
+    // THIS holder (same tenure): the restart doesn't change where it must go, the app tail re-reads the
+    // owner on every attempt, and the owner dedupes by message id. Clamping it dropped a message the
+    // phone showed as saved and waiting after a 3-second holder restart.
+    const appAcrossOwnReboot = crossBoot && !crossTenure && row.session_key.startsWith('app:');
+    if ((crossTenure || crossBoot) && !appAcrossOwnReboot) {
       const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms;
       if (age > q.staleCustodyTtlMs) {
         if (this.d.store.transition(row.enqueue_seq, 'queued', 'expired', { nowIso, terminalReason: crossTenure ? 'stale-custody-tenure' : 'stale-custody-reboot' })) {

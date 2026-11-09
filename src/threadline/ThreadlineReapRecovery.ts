@@ -8,7 +8,7 @@ import type { ThreadLogEntry } from './ThreadLog.js';
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import { contentDigest } from './threadDigest.js';
 
-// canonical-migration-consumer: threadline-inbound-canonical-store@1
+// canonical-migration-consumer: threadline-inbound-canonical-store@3
 
 interface RecoverableInbound {
   id: string;
@@ -18,6 +18,8 @@ interface RecoverableInbound {
   trustLevel: AgentTrustLevel;
   text: string;
   timestamp: string;
+  /** Memory privacy: `from` was transport-authenticated when the row was written. */
+  senderAuthenticated?: boolean;
 }
 
 type CanonicalInbound =
@@ -119,6 +121,12 @@ export function createThreadlineReapRecovery(deps: {
         trust: { kind: 'plaintext-tofu', senderFingerprint: inbound.from },
         senderFingerprint: inbound.from, senderName: inbound.senderName,
         trustLevel: inbound.trustLevel as AgentTrustLevel, preferWarmSession: false,
+      }, {
+        // Memory privacy: only a row whose sender was authenticated when written may be
+        // replayed into a peer's place; a thread-log row's peer is the thread owner, not
+        // necessarily the sender (memory-privacy-agent-places §1). Unflagged → refused on a
+        // multi-person agent, and unchanged elsewhere.
+        ...(inbound.senderAuthenticated === true ? { memoryPeerFingerprint: inbound.from } : {}),
       });
       if (result.error || !result.handled || !result.sessionName) {
         throw new Error(result.error ?? 'Threadline router did not start recovery');

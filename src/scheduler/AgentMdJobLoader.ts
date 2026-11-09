@@ -98,6 +98,9 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'unrestrictedTools',
   'gate',
   'telegramNotify',
+  // Where a report goes (docs/specs/backup-email-sending.md). An older instar withholds a job with this key, so
+  // the jobs.json form is documented first and this one needs this version or later.
+  'deliver',
   'topicId',
   'machines',
   'supervision',
@@ -173,6 +176,7 @@ export interface PerSlugManifest {
   tags?: string[];
   topicId?: number;
   telegramNotify?: boolean | 'on-alert';
+  deliver?: Array<'telegram' | 'email'>;
   machines?: string[];
   gate?: string;
   unrestrictedTools?: boolean;
@@ -899,6 +903,17 @@ export function validateManifest(raw: unknown, sourceLabel?: string): PerSlugMan
     throw new Error(`${prefix}: "telegramNotify" must be true, false, or "on-alert" if provided`);
   }
 
+  // deliver (docs/specs/backup-email-sending.md): where a report goes. Script jobs have no report text.
+  if (j.deliver !== undefined) {
+    const d = j.deliver;
+    if (!Array.isArray(d) || d.length === 0 || d.length > 2 || d.some((v) => v !== 'telegram' && v !== 'email') || new Set(d).size !== d.length) {
+      throw new Error(`${prefix}: "deliver" must be a list of "telegram" and/or "email" if provided`);
+    }
+    if ((j.execute as Record<string, unknown> | undefined)?.type === 'script' && d.includes('email')) {
+      throw new Error(`${prefix}: "deliver" with "email" is not available for script jobs (deliver-on-script-job): a script run has no report text to email`);
+    }
+  }
+
   // Optional machines
   if (j.machines !== undefined) {
     if (!Array.isArray(j.machines)) throw new Error(`${prefix}: "machines" must be an array if provided`);
@@ -1507,6 +1522,7 @@ function manifestToJobDefinition(
     tags: manifest.tags,
     topicId: manifest.topicId,
     telegramNotify: manifest.telegramNotify,
+    deliver: manifest.deliver,
     machines: manifest.machines,
     gate: manifest.gate,
     unrestrictedTools: manifest.unrestrictedTools,

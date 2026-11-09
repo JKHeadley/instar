@@ -17,6 +17,7 @@ import { mountMobilePermissionsRoutes, permissionPresenceMessage, type MobilePer
 import { MobileDeviceKeyLedger } from '../../src/core/MobileDeviceKeyLedger.js';
 import { identityKeyLookup, loadMachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { TeamAccessLog } from '../../src/core/TeamAccessLog.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -41,7 +42,7 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
     tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST }, mobilePairing: { multiRoute: { enabled: false } },
     ...overrides,
   };
-  const gate = { now: 'ok' as 'ok' | 'memory-privacy-required' | 'team-needs-one-machine' };
+  const gate = { now: 'ok' as 'ok' | 'memory-privacy-required', jobs: new Set<number>() };
   const deps: MobilePairingDeps = {
     config: config as never, stateDir: dir, holdsLease: () => true, selfMachineId: 'm1',
     tunnel: () => ({ lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' } }),
@@ -70,16 +71,22 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
       spy.held.push(ref);
       try { return await change(); } finally { spy.held.pop(); }
     },
-    isSystemTopic: (id) => id === 1, isJobTopic: (id) => id === 2, isUnconfinableTopic: (id) => id === 3,
+    isSystemTopic: (id) => id === 1, isJobTopic: (id) => id === 2 || gate.jobs.has(id), isUnconfinableTopic: (id) => id === 3,
     ownerProfile: () => ({ userId: 'owner-1', several: false, links: {} }),
-    logsDir: path.join(dir, 'logs'),
+    logsDir: path.join(dir, 'logs'), stateDir: dir, conversationTitle: (ref) => (ref === 'telegram:50' ? 'Client work' : null),
     restoreRefs: () => ({ teamRefs: [], allRefs: () => conversations.map((ref) => ({ ref })) }),
     requireMemoryPrivacy: () => { spy.privacy++; return true; },
+    agentSessionsWhenOn: () => (gate as { agentSessions?: 'own-place' | 'refused' | 'owner-reach' }).agentSessions ?? 'own-place',
   };
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
   mountPublicMobilePairingRoutes(app, svc);
   app.use(authMiddleware(() => 'tok-1', 'echo', undefined, deviceAuthenticator(svc)));
+  app.use((req, res, next) => {
+    const scoped = req.headers['x-test-session'];
+    if (typeof scoped === 'string') res.locals.memorySession = JSON.parse(scoped);
+    next();
+  });
   app.use(createTeamRouter(svc, team));
   const router = express.Router();
   mountMobilePermissionsRoutes(router, {
@@ -161,10 +168,6 @@ describe('team invites', () => {
     let r = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
     expect(r.status).toBe(409);
     expect(r.body.detail).toMatch(/memory privacy/i);
-    e.gate.now = 'team-needs-one-machine';
-    r = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
-    expect(r.status).toBe(409);
-    expect(r.body.detail).toMatch(/next step/);
     expect(e.svc.teamOn()).toBe(false);
     e.gate.now = 'ok';
     expect((await send(e, owner, 'POST', '/mobile/team/invites', firstInvite())).status).toBe(200);
@@ -242,6 +245,81 @@ describe('redeeming a team link', () => {
     expect(r.status).toBe(403);
     expect(r.body.error).toBe('That link has expired or was already used.');
     expect(e.svc.codes.peekPerson(code(inv.body.link))?.userId).toBe('p-1'); // refused by standing, so the code was real
+  });
+});
+
+describe('what the app needs to show', () => {
+  const code = (link: string) => new URLSearchParams(link.split('#')[1]).get('c')!;
+
+  it('redeem says the code is with the inviter, and offers no page to open', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    const inv = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const dev = makeDevice();
+    const r = await request(e.app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: code(inv.body.link), deviceName: 'Mia', devicePublicKey: dev.publicKey, appCaps: ['standing'] });
+    expect(r.body.approval).toBe('inviter');
+    expect(r.body.codePageUrl).toBeUndefined();
+    expect(r.body.codeAt).toBeUndefined();
+  });
+
+  it('every gate refusal a phone can hit has words with it', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    const r = await send(e, member, 'GET', '/mobile/team/context');
+    expect(r.body.error).toBe('owner-phone-required');
+    expect(r.body.detail).toMatch(/owner/);
+    e.gate.now = 'memory-privacy-required';
+    const off = await send(e, member, 'GET', '/mobile/team/people');
+    expect(off.body.error).toBe('memory-privacy-required');
+    expect(off.body.detail).toMatch(/memory privacy/);
+  });
+
+  it.each([
+    ['ENOENT /secret/path/log.jsonl', true],
+    ['ENOSPC /secret/path/log.jsonl', true],
+    ['private credential failure', false],
+  ] as const)('a failed Face ID action keeps %s private and names only storage failures', async (message, storage) => {
+    const e = await setup();
+    const identity = new MachineIdentityManager(e.dir);
+    const local = identity.loadIdentity();
+    identity.updateNickname(local.machineId, 'Mac Studio');
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    e.svc.teamActionRunner = async () => { throw new Error(message); };
+    const r = await faceId(e, owner, 'team-off', '/mobile/team/off', { events: [{ type: 'team-off' }] });
+    expect(r.status).toBe(500);
+    expect(r.body.error).toBe('team-action-failed');
+    expect(JSON.stringify(r.body)).not.toMatch(/secret|private credential|ENOENT|ENOSPC/);
+    expect(r.body.detail).toMatch(/Try again/);
+    if (storage) expect(r.body.detail).toContain('Mac Studio');
+    else expect(r.body.detail).toBe('That did not work, and nothing changed. Try again.');
+  });
+
+  it('context says when the record needs restoring, before any write fails', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.record).toEqual({ health: 'ok', restoreNeeded: false });
+    fs.writeFileSync(path.join(e.dir, 'state', 'team-access', 'confined.json'), 'not json');
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.record.restoreNeeded).toBe(true);
+  });
+
+  it('context tells the turn-on sheet what other agents will get', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.agentSessions).toBe('own-place');
+    (e.gate as { agentSessions?: string }).agentSessions = 'refused';
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.agentSessions).toBe('refused');
+  });
+
+  it('context lists the MSP phones an invite will make read-only', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.mspPhones).toEqual([]);
+    phone(e, { userId: 'mo', role: 'msp' });
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.mspPhones).toEqual([{ deviceName: 'iPhone', personName: 'Mo' }]);
   });
 });
 
@@ -499,6 +577,103 @@ describe('a log with a row missing from the middle', () => {
   });
 });
 
+describe('requests to the owner', () => {
+  const ask = (e: Env, body: unknown, session?: unknown) => {
+    const q = request(e.app).post('/team/proposals').set('Authorization', 'Bearer tok-1');
+    return (session ? q.set('x-test-session', JSON.stringify(session)) : q).send(body as object);
+  };
+  const askGrant = { change: { kind: 'grant', personKey: 'p-1', ref: 'telegram:50', access: 'read' }, reason: 'Needs the client notes' };
+  const asMia = { audience: { kind: 'person', userId: 'p-1' }, placeKey: 'x' };
+
+  it('a request gives nothing by itself, and the owner sees a line built from typed fields', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    expect((await ask(e, askGrant, asMia)).status).toBe(201);
+    expect(e.svc.teamLog()!.grantOf('p-1', 'telegram:50')).toBeNull();
+    expect(e.svc.teamLog()!.isConfined('telegram:50')).toBe(false);
+    const list = (await send(e, owner, 'GET', '/mobile/team/requests')).body.requests;
+    expect(list).toHaveLength(1);
+    expect(list[0].summary).toBe('Mia asks to read Client work');
+    expect(list[0].reason).toBe('Needs the client notes');
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.openRequests).toBe(1);
+  });
+
+  it('the requester comes from the session, whatever the body claims', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    await ask(e, { ...askGrant, requester: { kind: 'agent', label: 'The owner' } }, asMia);
+    const r = (await send(e, owner, 'GET', '/mobile/team/requests')).body.requests[0];
+    expect(r.requester).toEqual({ kind: 'person', label: 'Mia' });
+  });
+
+  it('a shared place reads as someone in that conversation', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    await ask(e, askGrant, { audience: { kind: 'place', placeKey: 'telegram:topic:50' }, placeKey: 'telegram:topic:50' });
+    expect((await send(e, owner, 'GET', '/mobile/team/requests')).body.requests[0].requester.label).toBe('Someone in a shared conversation');
+  });
+
+  it('one open request per person, and asking again after an answer works', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const first = await ask(e, askGrant, asMia);
+    const again = await ask(e, askGrant, asMia);
+    expect(again.status).toBe(409);
+    expect(again.body.error).toBe('one-open-request');
+    expect((await send(e, owner, 'POST', `/mobile/team/requests/${first.body.id}/decline`, {})).status).toBe(200);
+    expect((await ask(e, askGrant, asMia)).status).toBe(201);
+  });
+
+  it.each([[{ kind: 'admin-please' }], [{ kind: 'role', personKey: 'p-1', role: 'admin' }], [{ kind: 'role', personKey: 'p-1', role: 'owner' }], [{ kind: 'grant', personKey: 'p-1', ref: 'telegram:50', access: 'all' }], [undefined]])('an untyped change %j is refused', async (change) => {
+    const e = await setup();
+    expect((await ask(e, { change })).status).toBe(400);
+  });
+
+  it('approving is the owner\'s signed write of exactly that change, and closes the request', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const id = (await ask(e, askGrant, asMia)).body.id;
+    const wrong = await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:50', 'use')], requestId: id });
+    expect(wrong.status).toBe(409);
+    expect(wrong.body.error).toBe('request-mismatch');
+    expect(e.svc.teamLog()!.grantOf('p-1', 'telegram:50')).toBeNull();
+    const right = await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:50', 'read')], requestId: id });
+    expect(right.status).toBe(200);
+    expect(e.svc.teamLog()!.grantOf('p-1', 'telegram:50')).toBe('read');
+    expect((await send(e, owner, 'GET', '/mobile/team/requests')).body.requests).toEqual([]);
+  });
+
+  it('an answered request cannot be answered again', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const id = (await ask(e, askGrant, asMia)).body.id;
+    await send(e, owner, 'POST', `/mobile/team/requests/${id}/decline`, {});
+    expect((await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:50', 'read')], requestId: id })).body.error).toBe('request-gone');
+    expect((await send(e, owner, 'POST', `/mobile/team/requests/${id}/decline`, {})).status).toBe(404);
+  });
+
+  it('only the owner reads or declines; a phone cannot ask through the agent route', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    const msp = phone(e, { userId: 'mo', role: 'msp' });
+    const id = (await ask(e, askGrant, asMia)).body.id;
+    for (const p of [member, msp]) {
+      expect((await send(e, p, 'GET', '/mobile/team/requests')).status).toBe(403);
+      expect((await send(e, p, 'POST', `/mobile/team/requests/${id}/decline`, {})).status).toBe(403);
+      expect((await send(e, p, 'POST', '/team/proposals', askGrant)).status).toBe(403);
+    }
+    expect((await send(e, owner, 'GET', '/mobile/team/requests')).body.requests).toHaveLength(1);
+  });
+});
+
 describe('the activity history', () => {
   it('keeps a removed person\'s name, because the log still holds it', async () => {
     const e = await setup();
@@ -728,5 +903,117 @@ describe('Face ID actions', () => {
     expect((await send(e, owner, 'POST', '/mobile/team/restore', {})).status).toBe(401);
     SafeFsExecutor.safeRmSync(path.join(e.dir, 'state', 'team-access', 'confined.json'), { force: true, operation: 'test' });
     expect((await faceId(e, owner, 'team-restore', '/mobile/team/restore')).status).toBe(200);
+  });
+});
+
+describe('when a machine\'s record has a gap', () => {
+  /** A real second machine, known to this one, writing an event from a newer build. */
+  const peerRow = async (dir: string) => {
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'team-peer-'));
+    await new MachineIdentityManager(other).generateIdentity({ name: 'peer' });
+    const identity = JSON.parse(fs.readFileSync(path.join(other, 'machine', 'identity.json'), 'utf8'));
+    const here = new MachineIdentityManager(dir);
+    here.registerMachine(identity, 'standby');
+    here.storeRemoteIdentity(identity);
+    const log = new TeamAccessLog({ stateDir: other, signer: loadMachineSigner(other), verify: () => 'verified' });
+    return log.appendMachineEvents([{ type: 'from-the-future' } as never]);
+  };
+  const gone = (machine: string, incarnation: string, throughSeq: number) => ({ events: [{ type: 'origin-gone', machine, incarnation, throughSeq }] });
+
+  it('every team phone waits, the owner is told why, and only the owner with Face ID can settle it', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
+
+    const row = await peerRow(e.dir);
+    expect(e.svc.teamLog()!.ingest([row]).added).toBe(1);
+    const peer = row.origin as string; const stream = row.incarnation as string;
+    const held = await send(e, member, 'GET', '/mobile/team/people');
+    expect(held.status).toBe(403);
+    expect(held.body.error).toBe('access-being-checked');
+    const context = await send(e, owner, 'GET', '/mobile/team/context');
+    expect(context.body.refusal).toBe('access-being-checked');
+    expect(context.body.held.map((g: { kind: string }) => g.kind)).toEqual(['unplaced']);
+
+    const body = gone(peer, stream, 1);
+    expect((await send(e, member, 'POST', '/mobile/team/origin-gone', body)).status).toBe(403);
+    expect((await send(e, owner, 'POST', '/mobile/team/origin-gone', body)).status).toBe(401);
+    const self = loadMachineSigner(e.dir)!.machineId();
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone(self, e.svc.teamLog()!.currentIncarnation(), 0))).body.error).toBe('origin-is-this-machine');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('peer-c', 'i1', 0))).body.error).toBe('unknown-origin');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone(peer, stream, 9))).body.error).toBe('unknown-origin');
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(403);
+
+    const settled = await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', body);
+    expect(settled.status).toBe(200);
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
+    e.svc.teamLog()!.load();
+    expect(e.svc.teamLog()!.gaps()).toEqual([]);
+  });
+
+  it('a peer with no rows here can be retired, but only a peer this machine knows', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    e.svc.teamPuller = { knows: (m: string) => m === 'retired', refusing: () => false, belowFloor: () => [], waitingOn: () => [] } as never;
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('stranger', 'none', 0))).body.error).toBe('unknown-origin');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('retired', 'none', 3))).body.error).toBe('unknown-origin');
+    expect((await faceId(e, owner, 'team-origin-gone', '/mobile/team/origin-gone', gone('retired', 'none', 0))).status).toBe(200);
+    e.svc.teamPuller = null;
+  });
+});
+
+describe('a machine that cannot keep a team\'s promises', () => {
+  const stuck = { belowFloor: () => [{ machineId: 'laptop', reason: 'old-build' }], waitingOn: () => [], refusing: () => false, behind: () => false };
+
+  it('blocks new invites and grants, says which machine, and leaves existing phones working', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50')]));
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    e.svc.teamPuller = stuck as never;
+    const invite = await send(e, owner, 'POST', '/mobile/team/invites', { events: [{ type: 'person-add', personKey: 'p-2', name: 'Bo', role: 'guest' }] });
+    expect(invite.status).toBe(409);
+    expect(invite.body.error).toBe('machine-below-floor');
+    expect(invite.body.machines).toEqual([{ machineId: 'laptop', reason: 'old-build' }]);
+    expect((await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:51')] })).body.error).toBe('machine-below-floor');
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.machinesBelowFloor).toHaveLength(1);
+    expect((await send(e, member, 'GET', '/mobile/team/people')).status).toBe(200);
+    e.svc.teamPuller = null;
+    expect((await send(e, owner, 'POST', '/mobile/team/grants', { events: [grant('telegram:51')] })).status).toBe(200);
+  });
+});
+
+describe('a grant this machine would have refused', () => {
+  it('is undone by a row this machine signs, and a grant it would accept stays', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50'), grant('telegram:51')]));
+    e.gate.jobs.add(50); // only this machine knows it is a job's topic
+    e.svc.reconcileTeamPhones();
+    const held = e.svc.teamLog()!.state().grants.get('p-1')!;
+    expect(held.has('telegram:50')).toBe(false);
+    expect(held.has('telegram:51')).toBe(true);
+    const rows = e.svc.teamLog()!.allRows();
+    expect(rows[rows.length - 1]).toMatchObject({ kind: 'machine', events: [{ type: 'lower', personKey: 'p-1', ref: 'telegram:50' }] });
+  });
+});
+
+describe('a message that waited', () => {
+  it('is judged at delivery: a person removed or a read-only grant is refused, and a hold stops everyone', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite('p-1', [grant('telegram:50'), { ...grant('telegram:51'), access: 'read' }]));
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:50')).toBe(true);
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:51')).toBe(false);
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:52')).toBe(false);
+    expect(e.svc.teamMayDeliver('stranger', 'telegram:50')).toBe(false);
+    e.gate.now = 'memory-privacy-required';
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:50')).toBe(false);
+    e.gate.now = 'ok';
+    await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-remove', personKey: 'p-1' }] });
+    expect(e.svc.teamMayDeliver('p-1', 'telegram:50')).toBe(false);
   });
 });

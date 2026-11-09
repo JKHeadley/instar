@@ -10,6 +10,7 @@
  * Challenges and tickets live only in this process's memory, bound to the device and the Host
  * the request was signed for (machine-local by design: spec, Multi-machine posture).
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -220,7 +221,9 @@ export function consoleState(svc: MobilePairingService, now: () => number = Date
 export function activeOwnerPhone(svc: MobilePairingService, deviceId: string): boolean {
   if (!svc.enabled()) return false;
   const d = svc.devices.get(deviceId);
-  if (!d || d.status !== 'active' || !d.publicKey) return false;
+  // Fails closed for a browser on purpose (dashboard-conversations-browser-device §4.1): it reads
+  // `publicKey`, which a browser record never has, and refuses `client: 'browser'` explicitly.
+  if (!d || d.status !== 'active' || !d.publicKey || d.client === 'browser') return false;
   if (svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id)) return false;
   const p = svc.personOfDevice(d);
   return p.ok && p.role === 'owner';
@@ -286,7 +289,7 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
     let r: ReturnType<typeof svc.devices.setPresenceKey>;
     try { r = svc.devices.setPresenceKey(deviceId, stored); } catch (err) {
       svc.deps.reportDegradation?.('MobileConsoleTicket.presenceKey', err);
-      res.status(500).json({ error: 'Could not record the key. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the key. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (r === 'conflict') { res.status(409).json({ error: 'presence-key-set', detail: 'This phone already has a sign-in key. Remove and pair the phone again to replace it.' }); return; }

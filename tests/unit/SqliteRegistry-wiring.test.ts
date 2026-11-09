@@ -20,6 +20,7 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import {
   sqliteRegistrySize,
+  closeAllSqlite,
   __resetSqliteRegistryForTests,
 } from '../../src/core/SqliteRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -27,6 +28,7 @@ import { StopGateDb } from '../../src/core/StopGateDb.js';
 import { PreferenceStore } from '../../src/providers/uxConfirm/PreferenceStore.js';
 import { SpawnLedger } from '../../src/threadline/SpawnLedger.js';
 import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
+import { RecoveryAdmission } from '../../src/recovery/RecoveryAdmission.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = path.join(REPO_ROOT, 'src');
@@ -58,6 +60,7 @@ const LONG_LIVED_STORES = [
   // constructor (registerSqliteHandle), process-lifetime.
   'src/core/AppMediaStore.ts',
   'src/messaging/imessage/NativeBackend.ts',
+  'src/monitoring/skillLearning/Ledger.ts',
   'src/threadline/A2ADeliveryTracker.ts',
   // A2A inbound message-id ledger: registers its handle in the constructor and
   // unregisters in close() (docs/specs/a2a-inbound-id-ledger.md §1).
@@ -89,6 +92,9 @@ const LONG_LIVED_STORES = [
   // Script-result supervision keeps its WAL journal open for the scheduler's
   // lifetime and must close before process exit.
   'src/scheduler/JobSupervisionStore.ts',
+  // The independent sidecar owns its admission handle for its process lifetime;
+  // short-lived SSH/install callers unregister in their explicit close().
+  'src/recovery/RecoveryAdmission.ts',
 ];
 
 /**
@@ -99,9 +105,11 @@ const TRANSIENT_SKIP: Record<string, string> = {
   'src/messaging/telegram-origin/OriginStoreBackend.ts': 'worker-owned outbox handle is owned and registered by PendingRelayStore; archive handles close in finally',
   'src/messaging/telegram-origin/OriginEvidenceSpool.ts': 'worker opens one evidence transaction and closes its handle in finally',
   'src/commands/server.ts': ':memory: probe testDb — closes itself immediately',
+  'src/messaging/telegram-origin/OriginStore.ts': 'parent-thread addon hold: opens one :memory: database and closes it at once, only to keep better-sqlite3 loaded while store workers exit',
   'src/server/routes.ts': 'readonly per-request open — closed per request, not process-lifetime',
   'src/memory/NativeModuleHealer.ts': 'generic ABI-heal helper — owns no handle (a comment mentions new Database)',
   'src/core/UpdateChecker.ts': 'candidate startup probe opens an in-memory database in a child process and closes it in finally',
+  'src/recovery/RecoveryRuntimeSlot.ts': 'bounded copied-runtime qualification opens only an in-memory database in its isolated child process, closes it before success, and the parent owns no handle',
 };
 
 function walkTs(dir: string, acc: string[] = []): string[] {
@@ -187,6 +195,21 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
     expect(sqliteRegistrySize()).toBe(1);
     store.close();
     expect(sqliteRegistrySize()).toBe(0);
+  });
+
+  it('RecoveryAdmission registers its sidecar handle and allows normal close after exit cleanup',()=>{
+    const store=new RecoveryAdmission({stateDir:path.join(tmp,'recovery'),agentId:'test',machineId:'target',bootId:'test-boot',certificationRoot:''});
+    expect(sqliteRegistrySize()).toBe(1);expect(closeAllSqlite()).toBe(1);
+    expect(sqliteRegistrySize()).toBe(0);expect(()=>store.close()).not.toThrow();
+  });
+
+  it('RecoveryAdmission closes and unregisters when its real schema setup fails',()=>{
+    const stateDir=path.join(tmp,'recovery');fs.mkdirSync(stateDir,{mode:0o700});
+    const file=path.join(stateDir,'recovery-admission.db'),db=new Database(file);
+    db.exec('CREATE TABLE operations (wrong_column TEXT)');db.close();fs.chmodSync(file,0o600);
+    expect(()=>new RecoveryAdmission({stateDir,agentId:'test',machineId:'target',bootId:'test-boot',certificationRoot:''})).toThrow();
+    expect(sqliteRegistrySize()).toBe(0);
+    const reopened=new Database(file);expect(()=>reopened.exec('BEGIN EXCLUSIVE; ROLLBACK')).not.toThrow();reopened.close();
   });
 
   it('JobSupervisionStore closes an opened journal when schema setup fails', () => {

@@ -20,7 +20,7 @@ import fs from 'node:fs';
 import { Router, type Request, type Response } from 'express';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
-import { deviceMayUse } from './mobilePairingRoutes.js';
+import { deviceMayUse, devicePersonOf } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
@@ -137,7 +137,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
 
   const ownedUpload = (req: Request, res: Response, deviceId: string): UploadRow | null => {
     const u = svc!.media!.getUpload(String(req.params.uploadId).toLowerCase());
-    if (!u || u.deviceId !== deviceId) { res.status(404).json({ error: 'upload-unknown', detail: 'This machine does not know that upload. Start again.' }); return null; }
+    if (!u || u.deviceId !== deviceId) { res.status(404).json({ error: 'upload-unknown', detail: 'The agent does not know that upload. Start again.' }); return null; }
     return u;
   };
 
@@ -229,16 +229,18 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       if (att) { refKey = k; break; }
     }
     if (!att) { notFound(); return; }
+    // A file belongs to its message: one held from this reader stays held.
+    if (!deps.pairing.mayReadMessageId(devicePersonOf(req), refKey, att.messageId)) { notFound(); return; }
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
-    if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on this machine and has been set aside.' }); return; }
+    if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged where it was stored and has been set aside.' }); return; }
     if (!blob) {
       // §4.8/§4.12: start (or hurry) the copy from another machine and tell the app to poll.
       // 202 only when a copy can actually start: a mesh, a machine with disk room, an online peer
       // that could hold it, and not given up on. Otherwise an honest 404 with the reason.
       const rep = svc!.replicator;
       const can = rep.canFetch(sha);
-      if (!can.ok) { res.status(404).json({ error: 'media-unavailable', detail: `This file is not on this machine: ${can.reason}.` }); return; }
+      if (!can.ok) { res.status(404).json({ error: 'media-unavailable', detail: `This file can't be reached right now: ${can.reason}.` }); return; }
       rep.want(sha);
       res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
       return;
@@ -329,7 +331,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     // The exact set is recorded in the reservation first, so a crash midway resumes it (§4.7).
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'purge', conversationKey: '', sets: JSON.stringify(sets) }); } catch {
-      res.status(503).json({ error: 'purge-unavailable', detail: 'The request could not be recorded, so nothing was removed. Try again.' });
+      res.status(503).json({ error: 'purge-unavailable', detail: `The request could not be recorded on ${s.media!.machineWords()}, so nothing was removed. Try again.` });
       return;
     }
     if (r.kind !== 'reserved') { res.status(429).json({ error: 'too-many-requests' }); return; }

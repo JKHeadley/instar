@@ -8,7 +8,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { sha256Hex, type MachineSigner } from '../../src/core/AppRecordSignatures.js';
-import { foldRows, rowPayload, TeamAccessLog, type RequestRow, type TeamAccessRow } from '../../src/core/TeamAccessLog.js';
+import { foldRows, prefixHash, rowHash, rowPayload, TeamAccessLog, toMergeRow, type RequestRow, type TeamAccessRow } from '../../src/core/TeamAccessLog.js';
 import { parseSignedEvents, validateMachineEvent, validateRequestEvent } from '../../src/core/TeamAccessEvents.js';
 import { mayDoAsTeam, tierAtLeast, tierOfRole } from '../../src/permissions/TeamAccess.js';
 
@@ -343,5 +343,81 @@ describe('TeamAccessLog', () => {
       expect(again.healthState()).toBe('ok');
       expect(again.state().people.has('sam')).toBe(false);
     });
+  });
+});
+
+describe('chained rows (Step 2b)', () => {
+  const dirOf = () => fs.mkdtempSync(path.join(os.tmpdir(), 'team-chain-'));
+  const logAt = (stateDir: string) => new TeamAccessLog({ stateDir, signer, verify });
+  const rowsIn = (stateDir: string) => fs.readFileSync(path.join(stateDir, 'state', 'team-access', 'log.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l) as TeamAccessRow);
+
+  it('each row names its origin, its stream and the row before it', () => {
+    const d = dirOf();
+    const log = logAt(d);
+    const a = log.appendMachineEvents([{ type: 'conversation-own', ref: 'a', personKey: 'p' }]);
+    const b = log.appendMachineEvents([{ type: 'conversation-own', ref: 'b', personKey: 'p' }]);
+    expect(a.origin).toBe('m1');
+    expect(a.prev).toBeNull();
+    expect(b.prev).toBe(rowHash(a));
+    expect(b.incarnation).toBe(a.incarnation);
+    expect(b.seen?.[`m1/${a.incarnation}`]).toBe(1);
+  });
+
+  it('the chain survives a reload, and a machine keeps its stream', () => {
+    const d = dirOf();
+    const first = logAt(d).appendMachineEvents([{ type: 'conversation-own', ref: 'a', personKey: 'p' }]);
+    const again = logAt(d);
+    expect(again.healthState()).toBe('ok');
+    const next = again.appendMachineEvents([{ type: 'conversation-own', ref: 'b', personKey: 'p' }]);
+    expect(next.incarnation).toBe(first.incarnation);
+    expect(next.prev).toBe(rowHash(first));
+  });
+
+  it('a row replaced with one that still numbers correctly reads as damage', () => {
+    const d = dirOf();
+    const log = logAt(d);
+    log.appendMachineEvents([{ type: 'conversation-own', ref: 'a', personKey: 'p' }]);
+    log.appendMachineEvents([{ type: 'conversation-own', ref: 'b', personKey: 'p' }]);
+    log.appendMachineEvents([{ type: 'conversation-own', ref: 'c', personKey: 'p' }]);
+    const rows = rowsIn(d);
+    const swapped = { ...rows[1], events: [{ type: 'conversation-own', ref: 'other', personKey: 'p' }] } as TeamAccessRow & { machineSig: { sig: string } };
+    const { machineSig: _old, ...rest } = swapped;
+    const forged = { ...rest, machineSig: signer.sign(rowPayload(rest as never)) };
+    fs.writeFileSync(path.join(d, 'state', 'team-access', 'log.jsonl'), [rows[0], forged, rows[2]].map((r) => JSON.stringify(r)).join('\n') + '\n');
+    expect(logAt(d).healthState()).toBe('unreadable');
+  });
+
+  it('rows from before chains stay valid, and the first chained row anchors them', () => {
+    const d = dirOf();
+    const log = logAt(d);
+    log.appendMachineEvents([{ type: 'conversation-own', ref: 'a', personKey: 'p' }]);
+    const old = rowsIn(d)[0] as TeamAccessRow & Record<string, unknown>;
+    const { origin: _o, incarnation: _i, prev: _p, seen: _s, machineSig: _m, ...bare } = old;
+    const v1 = { ...bare, machineSig: signer.sign(rowPayload(bare as never)) } as TeamAccessRow;
+    fs.writeFileSync(path.join(d, 'state', 'team-access', 'log.jsonl'), `${JSON.stringify(v1)}\n`);
+    const reopened = logAt(d);
+    expect(reopened.healthState()).toBe('ok');
+    const next = reopened.appendMachineEvents([{ type: 'conversation-own', ref: 'b', personKey: 'p' }]);
+    expect(next.prev).toBe(prefixHash([v1]));
+    expect(logAt(d).healthState()).toBe('ok');
+    expect(logAt(d).state().owned.get('a')).toBe('p');
+  });
+
+  it('a restore starts a new stream, so its rows cannot collide with a peer\'s copy', () => {
+    const d = dirOf();
+    const log = logAt(d);
+    const before = log.appendMachineEvents([{ type: 'conversation-own', ref: 'a', personKey: 'p' }]);
+    log.restore({ teamRefs: [], allRefs: () => [] });
+    const after = log.appendMachineEvents([{ type: 'conversation-own', ref: 'b', personKey: 'p' }]);
+    expect(after.incarnation).not.toBe(before.incarnation);
+    expect(logAt(d).healthState()).toBe('ok');
+  });
+
+  it('feeds the merge rules, with a v1 row named by its signer', () => {
+    const d = dirOf();
+    const row = logAt(d).appendMachineEvents([{ type: 'conversation-own', ref: 'a', personKey: 'p' }]);
+    expect(toMergeRow(row, [])).toMatchObject({ origin: 'm1', seq: 1, prev: null, hash: rowHash(row) });
+    const { origin: _o, incarnation: _i, ...plain } = row;
+    expect(toMergeRow(plain as TeamAccessRow, [])).toMatchObject({ origin: 'm1', incarnation: 'v1' });
   });
 });

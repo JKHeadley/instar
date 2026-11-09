@@ -4,7 +4,7 @@
  * message (docs/specs/session-swap-any-conversation.md §3.1, §3.3).
  */
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -70,10 +70,10 @@ describe('an app message spawns on the conversation\'s engine', () => {
   });
 });
 
-const startDeps = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ isOwner: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
+const startDeps = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ serves: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
 
 describe('restarting an app conversation on a new engine (startApp)', () => {
-  const start = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ isOwner: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
+  const start = (over: Partial<Parameters<typeof createAppSessionStarter>[1]> = {}) => ({ serves: () => true, aliasFor: () => -5, titleFor: () => 'Plans', ownerName: () => 'Justin', ...over });
   it('starts with history and no new message, on the requested engine, admitted as app-respawn', async () => {
     const d = deps();
     const landed = await createAppSessionStarter(d, start())(KEY, { framework: 'codex', model: null });
@@ -84,8 +84,20 @@ describe('restarting an app conversation on a new engine (startApp)', () => {
     expect(admits).toEqual(['app-respawn']);
     expect(d.channels.getSessionForChannel('-5')).toBe('s1');
   });
+  it('a session\'s history leaves out what any reader of the conversation may not see', async () => {
+    const row = (messageId: string, text: string) => ({ eventId: `e-${messageId}`, messageId, role: 'agent', text, at: '2026-11-07T10:00:00.000Z', machineId: 'm', deliveryState: 'delivered' });
+    const d = deps({
+      store: { browseMessages: () => ({ messages: [row('open', 'Shown to all'), row('held', 'Held from Mia')] }) } as unknown as AppInboundDispatchDeps['store'],
+      heldFromAReader: (_key, m) => m.messageId === 'held',
+    });
+    await createAppSessionStarter(d, start())(KEY, { framework: 'codex', model: null });
+    const files = (fs.readdirSync(dir, { recursive: true }) as string[]).map((f) => path.join(dir, f)).filter((f) => fs.statSync(f).isFile());
+    const all = [spawns[0].msg, ...files.map((f) => fs.readFileSync(f, 'utf8'))].join('\n');
+    expect(all).toContain('Shown to all');
+    expect(all).not.toContain('Held from Mia');
+  });
   it('starts nothing on a machine that does not serve it, or for a gone conversation', async () => {
-    expect(await createAppSessionStarter(deps(), start({ isOwner: () => false }))(KEY, { framework: 'codex', model: null })).toBeNull();
+    expect(await createAppSessionStarter(deps(), start({ serves: () => false }))(KEY, { framework: 'codex', model: null })).toBeNull();
     expect(await createAppSessionStarter(deps(), start({ titleFor: () => null }))(KEY, { framework: 'codex', model: null })).toBeNull();
     expect(spawns).toHaveLength(0);
   });
@@ -111,6 +123,16 @@ describe('restarting an app conversation on a new engine (startApp)', () => {
     expect(spawns).toHaveLength(1);
     expect(injected).toEqual([]);
   });
+  it('two context files in the same millisecond do not collide', async () => {
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(1_794_000_000_000);
+    try {
+      const d = deps();
+      d.sessions.injectMessage = () => true;
+      await createAppInboundDispatch(d)(input);
+      await expect(createAppInboundDispatch(d)(input)).resolves.toBe('delivered');
+    } finally { clock.mockRestore(); }
+  });
+
   it('a start in progress, then a message: the message is injected into the started session', async () => {
     const injected: string[] = [];
     const d = deps();
@@ -170,7 +192,7 @@ describe('a new session with its own app conversation (session-conversation-for-
   it('every refusal is reported', async () => {
     const seen: string[] = [];
     const on = { onRefused: (_k: string, why: string) => seen.push(why) };
-    await createAppSessionStarter(deps(), startDeps({ ...on, isOwner: () => false }))(KEY, { framework: null, model: null }, { reason: 'new' });
+    await createAppSessionStarter(deps(), startDeps({ ...on, serves: () => false }))(KEY, { framework: null, model: null }, { reason: 'new' });
     await createAppSessionStarter(deps(), startDeps({ ...on, titleFor: () => null }))(KEY, { framework: null, model: null }, { reason: 'new' });
     await createAppSessionStarter(deps({ relayReady: () => ({ ready: false, reason: 'old' }) }), startDeps(on))(KEY, { framework: null, model: null }, { reason: 'new' });
     await createAppSessionStarter(deps({ spawnAdmission: () => ({ admit: () => ({ allow: false, reason: 'cap' }) }) }), startDeps(on))(KEY, { framework: null, model: null }, { reason: 'new' });

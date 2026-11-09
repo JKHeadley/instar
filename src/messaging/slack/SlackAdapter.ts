@@ -35,7 +35,7 @@ import { FileHandler, type SlackUploadOptions } from './FileHandler.js';
 import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import { verifiedChannelIdentity } from '../shared/channelIdentity.js';
-import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
+import type { SlackChannelKind, SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId } from './sanitize.js';
 import { applySlackFormatter, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
 import type { SlackApiResponse } from './SlackApiClient.js';
@@ -205,6 +205,12 @@ export class SlackAdapter implements MessagingAdapter {
   private seenMessageTs: Set<string> = new Set();
   private seenMessageTsCleanupTimer: ReturnType<typeof setInterval> | null = null;
   private userCache: Map<string, { name: string; fetchedAt: number }> = new Map();
+  /** Channel names from conversations.info, for titles (fb-4db533fa-9d9). */
+  private channelNameCache: Map<string, { name: string; fetchedAt: number }> = new Map();
+  /** What kind of conversation a channel id is (from conversations.info), so titles can show '#' only for channels. */
+  private channelKindCache: Map<string, SlackChannelKind> = new Map();
+  private nameLookupsInFlight = new Set<string>();
+  private nameLookupFailureLoggedAt = new Map<string, number>();
   private promptEvictionTimer: ReturnType<typeof setInterval> | null = null;
   private housekeepingTimer: ReturnType<typeof setInterval> | null = null;
   private logPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -858,6 +864,66 @@ export class SlackAdapter implements MessagingAdapter {
   }
 
   /** Get user info (cached for 5 minutes). */
+  /**
+   * A user's display name from the cache, or null while it is being fetched (fb-4db533fa-9d9). Sync
+   * for read paths that cannot wait (the app's Slack history); a miss starts one lookup, and a later
+   * read has the name. A failed lookup is logged with its reason.
+   */
+  cachedUserName(userId: string): string | null {
+    if (!/^[UWB][A-Z0-9]{2,30}$/.test(userId)) return null;
+    const c = this.userCache.get(userId);
+    if (!c || Date.now() - c.fetchedAt >= 5 * 60 * 1000) this.warmName('user', userId);
+    return c ? c.name : null;
+  }
+
+  /** A channel's name (without '#') from the cache, or null while it is being fetched (fb-4db533fa-9d9). */
+  cachedChannelName(channelId: string): string | null {
+    const id = channelId.split(':')[0];
+    if (!/^[CGD][A-Z0-9]{2,30}$/.test(id)) return null;
+    const c = this.channelNameCache.get(id);
+    if (!c || Date.now() - c.fetchedAt >= 60 * 60 * 1000) this.warmName('channel', id);
+    return c ? c.name : null;
+  }
+
+  /**
+   * Whether a channel id is a channel (public or private), a DM or a group DM: from conversations.info once
+   * known, else from the id ('D' is always a DM). Null when not yet known.
+   */
+  cachedChannelKind(channelId: string): SlackChannelKind | null {
+    const id = channelId.split(':')[0];
+    if (!/^[CGD][A-Z0-9]{2,30}$/.test(id)) return null;
+    const known = this.channelKindCache.get(id);
+    if (known) return known;
+    if (id.startsWith('D')) return 'dm';
+    this.cachedChannelName(id); // warms the lookup that also records the kind
+    return null;
+  }
+
+  private warmName(kind: 'user' | 'channel', id: string): void {
+    const key = `${kind}:${id}`;
+    if (this.nameLookupsInFlight.has(key) || !this.started) return;
+    this.nameLookupsInFlight.add(key);
+    const lookup = kind === 'user'
+      ? this.getUserInfo(id).then(() => undefined)
+      : this.channelManager.getChannelInfo(id).then((info) => {
+        const kindOf = info as { is_im?: boolean; is_mpim?: boolean } | undefined;
+        if (kindOf) this.channelKindCache.set(id, kindOf.is_im ? 'dm' : kindOf.is_mpim ? 'group-dm' : 'channel');
+        if (kindOf?.is_im) return; // a DM has no channel name; its title never uses one
+        const identity = verifiedChannelIdentity('slack', id, (info as { name?: string } | undefined)?.name);
+        if (!identity) throw new Error('conversations.info returned no usable name');
+        this.channelNameCache.set(id, { name: identity.name, fetchedAt: Date.now() });
+      });
+    void lookup.catch((err) => this.noteNameLookupFailure(kind, id, err)).finally(() => this.nameLookupsInFlight.delete(key));
+  }
+
+  private noteNameLookupFailure(kind: 'user' | 'channel', id: string, err: unknown): void {
+    const key = `${kind}:${id}`;
+    const last = this.nameLookupFailureLoggedAt.get(key) ?? 0;
+    if (Date.now() - last < 60 * 60 * 1000) return;
+    this.nameLookupFailureLoggedAt.set(key, Date.now());
+    console.warn(`[slack] could not resolve the ${kind} name of ${id}; showing the id instead: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
   async getUserInfo(userId: string): Promise<{ id: string; name: string }> {
     const cached = this.userCache.get(userId);
     if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
@@ -1744,8 +1810,9 @@ export class SlackAdapter implements MessagingAdapter {
     try {
       const info = await this.getUserInfo(userId);
       senderName = info.name;
-    } catch {
-      // Use userId as fallback
+    } catch (err) {
+      // The id stands in for the name; the reason is logged (once an hour per user), never silent.
+      this.noteNameLookupFailure('user', userId, err);
     }
 
     // Log inbound message
@@ -1948,8 +2015,9 @@ export class SlackAdapter implements MessagingAdapter {
     try {
       const info = await this.getUserInfo(userId);
       senderName = info.name;
-    } catch {
-      // Use userId as fallback
+    } catch (err) {
+      // The id stands in for the name; the reason is logged (once an hour per user), never silent.
+      this.noteNameLookupFailure('user', userId, err);
     }
 
     // Log inbound file

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { queuedReplyOvertaken, reviewQueuedReplyHistory } from '../../../src/messaging/telegram-origin/QueuedReplySupersession.js';
+import { QUEUED_REPLY_PEER_WAIT_MS, queuedReplyOvertaken, reviewQueuedReplyHistory } from '../../../src/messaging/telegram-origin/QueuedReplySupersession.js';
 import { TelegramOriginRuntime } from '../../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
 
 const prepared = Date.parse('2026-11-05T02:08:47.000Z');
@@ -37,11 +37,39 @@ describe('queued reply supersession', () => {
   });
 
   it('holds during incomplete pool coverage instead of sending a possibly stale reply', () => {
-    expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [], failedPeers: 1 })).toBe('hold');
+    expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [], failedPeers: 1, now: prepared + 60_000 })).toBe('hold');
     expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [] })).toBe('hold');
     expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [
       message('2026-11-05T02:30:00.000Z', false, 'automation'),
     ], poolPageLimit: 1 })).toBe('hold');
+  });
+
+  it('stops waiting for an unreachable machine once the bound passes', () => {
+    const review = (now: number) => reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [], failedPeers: 1, now });
+    expect(review(prepared + QUEUED_REPLY_PEER_WAIT_MS - 1)).toBe('hold');
+    expect(review(prepared + QUEUED_REPLY_PEER_WAIT_MS)).toBe('deliver');
+  });
+
+  it('uses the real clock when the caller passes none, as the server does', () => {
+    vi.useFakeTimers();
+    try {
+      const review = () => reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [], failedPeers: 1 });
+      vi.setSystemTime(prepared + QUEUED_REPLY_PEER_WAIT_MS - 1);
+      expect(review()).toBe('hold');
+      vi.setSystemTime(prepared + QUEUED_REPLY_PEER_WAIT_MS);
+      expect(review()).toBe('deliver');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('the bound never overrides evidence or an unread history page', () => {
+    const late = prepared + QUEUED_REPLY_PEER_WAIT_MS * 4;
+    expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [
+      message('2026-11-05T02:11:46.000Z', false, 'agent'),
+    ], failedPeers: 1, now: late })).toBe('retire');
+    expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [], now: late })).toBe('hold');
+    expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [
+      message('2026-11-05T02:30:00.000Z', false, 'automation'),
+    ], failedPeers: 1, poolPageLimit: 1, now: late })).toBe('hold');
   });
 
   it('delivers when complete pooled history has no newer conversation', () => {

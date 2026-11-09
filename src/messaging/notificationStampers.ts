@@ -18,6 +18,7 @@ export const EMITTER_CATEGORIES = {
   "src/messaging/telegram-origin/OriginDeterministicSend.ts": "uncategorized",
   "src/messaging/telegramSendSideComposition.ts": "uncategorized",
   "src/monitoring/BurnAlertDelivery.ts": "spend-alert",
+  "src/monitoring/DiskStewardPoster.ts": "disk-steward",
   "src/monitoring/QuotaNotifier.ts": "spend-alert",
   "src/monitoring/ReapNoticeDrain.ts": "reap-notice",
   "src/monitoring/SessionMonitor.ts": "reap-notice",
