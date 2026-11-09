@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "test-groups-failure-detail",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T16:15:52.642Z",
+  "artifactPath": "upgrades/side-effects/test-groups-failure-detail.md",
+  "artifactSha256": "1ee67414417b4c5215f80e60e487d2332fd6e79690c00a3822a6fdf241258e93",
+  "coveredFiles": [
+    "docs/eli16/test-groups-failure-detail.md",
+    "src/messaging/telegram-origin/TelegramTestGroups.ts",
+    "tests/unit/telegram-origin/test-groups.test.ts",
+    "upgrades/next/test-groups-failure-detail.md",
+    "upgrades/side-effects/test-groups-failure-detail.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnostic only: keeps already-validated error code/type in an error body and audit line; no decision changes; revert undoes it",
+  "eli16Path": "docs/eli16/test-groups-failure-detail.md",
+  "sideEffectsPath": "upgrades/side-effects/test-groups-failure-detail.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
