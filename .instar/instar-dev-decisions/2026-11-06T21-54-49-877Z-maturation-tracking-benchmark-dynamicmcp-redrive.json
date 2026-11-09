@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-06T21:54:49.877Z",
+  "slug": "maturation-tracking-benchmark-dynamicmcp-redrive",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 119,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/DynamicMcpService.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/BenchmarkDivergenceAnalyzer.ts",
+      "src/monitoring/CollaborationRedriveEngine.ts"
+    ],
+    "addedLines": 114,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
