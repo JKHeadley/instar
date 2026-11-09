@@ -38,6 +38,8 @@ beforeEach(() => {
   loginA = path.join(root, '.claude-followme-a');
   loginB = path.join(root, '.claude-followme-b');
   fs.mkdirSync(path.join(agentHome, '.instar'), { recursive: true });
+  // Keep the fixture's project root independent of any enclosing checkout.
+  fs.mkdirSync(path.join(agentHome, '.git'));
   fs.writeFileSync(path.join(agentHome, '.instar', 'config.json'), '{}');
   fs.mkdirSync(loginA);
   fs.mkdirSync(loginB);
@@ -180,10 +182,20 @@ describe('ensureAgentOwnedMemory — when it must not act', () => {
   });
 
   it('a throwaway (temp-dir) agent never links into a real login folder', () => {
-    const realDir = path.resolve(__dirname); // an existing directory outside the temp folder
-    const r = ensureAgentOwnedMemory({ agentHome, configHome: realDir });
-    expect(r.action).toBe('skipped');
-    expect(fs.existsSync(path.join(realDir, 'projects'))).toBe(false);
+    // A configured $TMPDIR may be a normal directory under HOME. Use a fixed
+    // OS temp root for this boundary, independent of the test runner's TMPDIR.
+    const throwawayRoot = fs.mkdtempSync('/tmp/agent-owned-throwaway-');
+    const realDir = '/opt/instar-memory-non-temp-login-never-created';
+    try {
+      const throwawayHome = path.join(throwawayRoot, 'agent');
+      write(path.join(throwawayHome, '.instar', 'config.json'), '{}');
+      const r = ensureAgentOwnedMemory({ agentHome: throwawayHome, configHome: realDir });
+      expect(r.action).toBe('skipped');
+      expect(r.reason).toMatch(/throwaway/);
+      expect(fs.existsSync(path.join(realDir, 'projects'))).toBe(false);
+    } finally {
+      SafeFsExecutor.safeRmSync(throwawayRoot, { recursive: true, force: true, operation: 'tests/unit/agent-owned-memory.test.ts' });
+    }
   });
 });
 
