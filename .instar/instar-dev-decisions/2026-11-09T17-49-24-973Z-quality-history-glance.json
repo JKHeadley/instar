@@ -1,0 +1,30 @@
+{
+  "ts": "2026-11-09T17:49:24.973Z",
+  "slug": "quality-history-glance",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 207,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/maturationBoardRoutes.ts",
+      "src/server/measurementCoverageRead.ts",
+      "src/server/measurementDetailRead.ts",
+      "src/server/measurementQualityGlance.ts"
+    ],
+    "addedLines": 204,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

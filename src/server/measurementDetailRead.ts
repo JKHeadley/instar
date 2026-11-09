@@ -9,8 +9,9 @@ export interface MeasurementRead {
   state: 'available' | 'missing-contract' | 'invalid-contract' | 'unknown-subject' | 'unregistered-target' | 'ambiguous-target' | 'unavailable';
   detail: MeasurementTrend | null; sources: CoverageSource[];
 }
-export function readMeasurementDetail(ctx: MeasurementCoverageContext, subjectId: string, windowDays: number, now = Date.now()): MeasurementRead {
-  const { owner, sources } = readMeasurementOwner(ctx,subjectId,now);
+export function readMeasurementDetail(ctx: MeasurementCoverageContext, subjectId: string, windowDays: number, now = Date.now(),
+  census?: ReturnType<typeof readMeasurementOwner>): MeasurementRead {
+  const { owner, sources } = census ?? readMeasurementOwner(ctx,subjectId,now);
   const relevant = sources.filter(s => ['initiative-tracker','ladder-owner','measurement-evidence-owner','origin-identity'].includes(s.name));
   const result: MeasurementRead = { schema: 'measurement-read/1', advisory: true, authority: 'none', origin: measurementOrigin(ctx),
     subjectId, windowDays, generatedAt: new Date(now).toISOString(), state: 'unavailable', detail: null, sources: relevant };

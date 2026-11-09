@@ -51,6 +51,7 @@ import type { RouteContext } from './routes.js';
 import { readMeasurementDetail, validMeasurementRead } from './measurementDetailRead.js';
 import { COMMITMENT_INVENTORY_SOURCE, measurementOrigin, readMeasurementCoverage } from './measurementCoverageRead.js';
 import { validMeasurementCoverage, type MeasurementCoverage } from '../monitoring/MeasurementCoverage.js';
+import { readQualityGlance, type QualityGlance } from './measurementQualityGlance.js';
 
 export const DEFAULT_REVIEWS_DIR = 'docs/research/feature-maturation/reviews';
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -447,6 +448,9 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
     return true;
   };
   const responseCache = new Map<string, { at: number; body: unknown }>();
+  const QUALITY_CACHE_MS = 60_000;
+  let qualityCache: { at: number; body: QualityGlance } | null = null;
+  let qualityInFlight: Promise<QualityGlance> | null = null;
   /** Last review assessment fetched from another machine (in-memory only; offline rule). */
   let lastRemoteReview: { machine: string; machineId: string; fetchedAt: number; reviews: ParsedReview[] } | null = null;
 
@@ -528,6 +532,19 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
         if(!validMeasurementRead(body,machine,subject,windowDays,now)) throw Error('unsupported-or-invalid');
         res.json(body);
       } catch { res.status(503).json({error:'measurement-origin-unavailable-or-unsupported'}); }
+      return;
+    }
+    if (part === 'quality') {
+      // Quality history at a glance (docs/specs/quality-history-glance.md): this
+      // machine's recorded series, same owner as part=measurement. Cached briefly and
+      // single-flight so repeated page loads never stack whole-census reads.
+      if (qualityCache && now - qualityCache.at < QUALITY_CACHE_MS) { res.json(qualityCache.body); return; }
+      try {
+        qualityInFlight ??= readQualityGlance(ctx, now).finally(() => { qualityInFlight = null; });
+        const body = await qualityInFlight;
+        qualityCache = { at: now, body };
+        res.json(body);
+      } catch { res.status(503).json({ error: 'quality-history-unavailable' }); }
       return;
     }
     if (part === 'coverage') {

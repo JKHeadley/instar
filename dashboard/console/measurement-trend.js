@@ -20,13 +20,15 @@ function retainedMethods(detail){
   }
   return section;
 }
-export function measurementChart(metric,series,detail,proof) {
+/** opts.goal draws the current target as its own line (glance view); opts.caption=false leaves the legend to the page. */
+export function measurementChart(metric,series,detail,proof,opts={}) {
   const points=series.points||[];
   if(!points.length)return el('p',{text:metric.historyAvailable?'No recorded points in this read.':'Numeric history cannot be read.'});
   const baseline=proof?.baseline?.state==='verified'&&series.source===metric.source&&series.sourceRef===metric.sourceRef&&series.descriptorVersion===proof.descriptorVersion?proof.baseline.value:null;
   const past=points.filter(p=>p.at<=Date.parse(detail.generatedAt));
   if(!past.length)return el('p',{text:'These points are dated in the future and cannot establish a trend.'});
-  const values=past.map(p=>p.value);if(baseline!==null)values.push(baseline);
+  const goal=opts.goal&&typeof metric.threshold==='number'&&Number.isFinite(metric.threshold)?metric.threshold:null;
+  const values=past.map(p=>p.value);if(baseline!==null)values.push(baseline);if(goal!==null)values.push(goal);
   const scale=Math.max(1,...values.map(Math.abs)),low=Math.min(...values)/scale,high=Math.max(...values)/scale,range=high-low||.1;
   const left=52,right=340,top=20,bottom=130,minTime=past[0].at,maxTime=past[past.length-1].at;
   const x=t=>left+(maxTime===minTime ? 0.5 : (t-minTime)/(maxTime-minTime))*(right-left);
@@ -35,6 +37,8 @@ export function measurementChart(metric,series,detail,proof) {
   picture.append(svg('title',{},'Recorded numeric values. A line does not establish causation or statistical significance.'),svg('line',{x1:left,y1:bottom,x2:right,y2:bottom,stroke:'currentColor','stroke-opacity':'.4'}));
   for(const value of (low===high?[low*scale]:[low*scale,high*scale]))picture.append(svg('text',{x:4,y:y(value)+4,'font-size':11,fill:'currentColor'},number(value)));
   if(baseline!==null)picture.append(svg('line',{x1:left,y1:y(baseline),x2:right,y2:y(baseline),stroke:'currentColor','stroke-dasharray':'4 4','stroke-opacity':'.5'}));
+  if(goal!==null)picture.append(svg('line',{x1:left,y1:y(goal),x2:right,y2:y(goal),stroke:'var(--attn)','stroke-dasharray':'1 4','stroke-width':2,'stroke-linecap':'round'},undefined),
+    svg('text',{x:right,y:y(goal)-4,'text-anchor':'end','font-size':11,fill:'var(--attn)'},`goal ${metric.direction==='at-least'?'≥':'≤'} ${number(goal)}`));
   let previous=null;
   for(const point of points){
     if(point.at>Date.parse(detail.generatedAt)){previous=null;continue;}
@@ -44,7 +48,7 @@ export function measurementChart(metric,series,detail,proof) {
     dot.append(svg('title',{},`${date(point.at)}: ${number(point.value)}, ${point.samples} samples${usable?'':'; evaluation or sample evidence is incomplete'}`));picture.append(dot);previous=point;
   }
   picture.append(svg('text',{x:left,y:155,'font-size':11,fill:'currentColor'},new Date(minTime).toLocaleDateString()),svg('text',{x:right,y:155,'text-anchor':'end','font-size':11,fill:'currentColor'},new Date(maxTime).toLocaleDateString()));
-  const wrapper=el('figure',{class:'mb-measurement-chart'},picture,el('figcaption',{text:baseline===null?'Dots are recorded values. Gaps and separate versions are not joined.':'Dashed line: corroborated baseline. Gaps and separate versions are not joined.'}));
+  const wrapper=el('figure',{class:'mb-measurement-chart'},picture,opts.caption===false?null:el('figcaption',{text:baseline===null?'Dots are recorded values. Gaps and separate versions are not joined.':'Dashed line: corroborated baseline. Gaps and separate versions are not joined.'}));
   const future=points.length-past.length;if(future)wrapper.append(el('p',{text:`${future} future-dated points cannot be used.`}));
   return wrapper;
 }

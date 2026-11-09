@@ -1038,6 +1038,19 @@ One read-only page joining what already records feature maturation: the \`featur
 }
 
 /**
+ * CLAUDE.md awareness block for Quality history at a glance (docs/specs/quality-history-glance.md).
+ * Unique content-sniff marker: `Quality history at a glance`.
+ */
+export function QUALITY_HISTORY_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Quality history at a glance — is each measured item improving? (\`GET /maturation/board?part=quality\`, console \`#/work/maturation?s=quality\`)
+
+One page of small history charts, one per measured item on this machine, worst first (off goal, then too few samples, then at goal; most-changed first within each). Each chart marks the goal as an amber dotted line, a recorded starting point as a dashed line only when the outcome proof verifies it, and hollow dots where the comparison is not verified. Read-only, \`advisory: true, authority: "none"\`; it reads the same measurement owner as the per-item detail and stores nothing.
+- Read: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/maturation/board?part=quality"\` → \`{ items: [{ subjectId, name, metric: { id, direction, threshold, minSamples }, series, status: off-goal|too-few-samples|at-goal|no-points, first, latest, change, proof }], notReadable, itemsOmitted }\`. \`change\` is a recorded difference across the window, never a verified improvement unless \`proof.comparisonAvailable\` is true.
+- **When to use** (PROACTIVE — this is the trigger): the operator asks how quality is trending, or you are about to point them at "the quality chart" → send the console link ending \`#/work/maturation?s=quality\` (tunnel URL + PIN). That link opens straight onto the charts; the plain board link does not.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for the Maturation Ladder (docs/specs/feature-maturation-ladder.md).
  * Unique content-sniff marker: `Maturation Ladder — what does this feature need`.
  */
@@ -10235,6 +10248,13 @@ setTimeout(() => process.exit(0), 2000);
       content += MATURATION_BOARD_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Maturation Board section');
+    }
+
+    // Quality history at a glance (docs/specs/quality-history-glance.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Quality history at a glance')) {
+      content += QUALITY_HISTORY_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Quality history at a glance section');
     }
 
     // Maturation Ladder (docs/specs/feature-maturation-ladder.md) — Agent Awareness + Migration Parity.
