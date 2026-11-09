@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-09T19:10:26.976Z",
+  "slug": "browser-approval-phone-first",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobilePairingApproval.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 49,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

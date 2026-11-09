@@ -978,7 +978,7 @@ export class MobilePairingService {
   /** One contentless push so an owner phone can answer; only this machine's phones can (spec §6). */
   notifyOwnerPhones(d: DeviceRecord): void {
     if (!isPairingApproveEnabled(this.deps.config) || !this.approvable(d) || !this.ownerPhoneCanApprove()) return;
-    this.push?.notifyHere({ kind: 'notice', dedupeKey: `pairing-request:${d.id}` });
+    this.push?.notifyHere({ kind: 'notice', subject: isBrowserDevice(d) ? 'browser-approval' : 'phone-approval', dedupeKey: `pairing-request:${d.id}` });
   }
 
   /** The record of who approved, in the owner's private chat when there is one (spec §3.4). */
@@ -1286,6 +1286,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
   mountBrowserDeviceRoutes(router, svc, {
     verifyOperatorSession: (token) => poolCtx?.verifyDashboardOperatorSession?.(token) === true,
     telegramConfigured: () => !!poolCtx?.telegram,
+    approvalChat: async () => (poolCtx?.telegram?.botIdentity ? poolCtx.telegram.botIdentity() : null),
   });
 
   router.post('/mobile/pairing-codes', async (req: Request, res: Response) => {
