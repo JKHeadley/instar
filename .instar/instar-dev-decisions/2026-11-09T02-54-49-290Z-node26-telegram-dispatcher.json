@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-09T02:54:49.290Z",
+  "slug": "node26-telegram-dispatcher",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 38,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-egress.ts"
+    ],
+    "addedLines": 37,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
