@@ -3,10 +3,40 @@ title: Local feature outcome plans and genuine baseline capture
 slug: feature-outcome-baseline-capture
 author: Echo
 tier: 2
-status: convergence-failed
+status: narrowed-awaiting-review
 ---
 
 # Local feature outcome plans and genuine baseline capture
+
+## Narrowed proposal (current, 2026-11-09) — supersedes the design below
+
+Seven review rounds did not converge, and round 7 showed why: the full design needs proof that a measurement window was never exposed to the feature, and nothing in Instar records exposure reliably (the ladder audit is sampled and lossy, the rollout reconciler keeps only the current stage). Patching that would mean building a new exposure ledger. Instead the proposal shrinks to the one rule that can be proven with what already exists:
+
+**A starting measurement counts as evidence for a feature move only if it comes with a comparison.** Either:
+
+1. **A comparison group**: the same measurement read over the same window from subjects the feature is not turned on for (for example, other agents or machines still on the earlier rung), recorded side by side with the measured subjects; or
+2. **An approved trial**: an operator-approved trial record that names the feature, the measurement, the before window and the after window.
+
+Anything else (a lone "before" number, a restamped reading, an inferred pre-activation window) is shown as **history only**. It appears on the quality page and in trends, but it never unlocks a move, a promotion or a claim.
+
+What this drops from the design below:
+
+- **Exposure boundary (round 6/7 finding 1)**: no longer needed. The rule never claims a window was unexposed; a comparison group carries the control instead, and its own exposure is read from the same rung records at the same time as the measured group.
+- **Unreadable exclusion state (finding 2)**: fixed separately in the existing owner by PR #2993 (merged): a damaged excluded-machines list keeps every recoverable exclusion in force, is copied aside, and refuses writes until repaired.
+- **Conditional publication into initiative metadata (finding 3)**: no longer needed. Comparison and trial evidence is appended to the existing observation records, never installed as replaceable initiative metadata, so there is no install/replace race and no "clear and re-capture as initial" path.
+
+What stays: the ladder remains the only owner of thresholds, rungs and moves; outcome measurement uses the existing D7 evaluation and archive; a move with no comparison or trial is held and the hold is visible on the quality page with the reason in plain words.
+
+Acceptance tests for the narrowed rule:
+
+- A lone before/after pair with no comparison group and no trial record is labelled history and does not satisfy the move floor.
+- A before/after pair with a recorded same-window comparison group satisfies the floor; removing the comparison rows makes it history again.
+- An approved trial record satisfies the floor only for the exact feature, measurement and windows it names.
+- A move held for missing evidence shows the plain-language reason on the quality page.
+
+Status: proposal only. Not reviewed, not approved, not built. The text from here down is the earlier full design, kept as the record of why it was cut.
+
+## Earlier full design (superseded)
 
 ## Problem statement
 
@@ -119,6 +149,7 @@ Counts: all three round6 DESIGN findings remain open; new DESIGN items are the o
 
 ## Open questions
 
+- Narrowed on 2026-11-09 after round 7 (see the top section). Whether the narrowed rule gets one review, or goes straight to the move floor build, is open.
 - Safety review cap6 was exhausted; the operator allowed exactly one additional bounded independent review (Telegram topic139374, 2026-11-09 09:04 PST, "yes" to "may I run one more independent review of the stronger starting-point rule? A yes only allows the review, not building it"). That round7 ran and did NOT converge (see "Round7 independent review result" above). Whether to stop here, narrow the proposal, or allow further review is an operator decision; no further round, approval or convergence is claimed.
 
 ## Original-run carrier
