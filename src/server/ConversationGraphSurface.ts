@@ -24,12 +24,45 @@ import {createConversationGraphHistoryRoutes,type ConversationGraphHistoryDeps} 
  * off here: 503 `conversation-graph-off`, the code the history route already
  * uses for not-ready, so the dashboard says it is not switched on rather than
  * reading Express's HTML 404 as an unavailable conversation. Mounted after the
- * auth middleware, so an unauthenticated request is still refused first. */
+ * auth middleware, so an unauthenticated request is still refused first.
+ *
+ * It is a fallback only: it answers a graph request that nothing else handles.
+ * AgentServer mounts it last, just before the error handler, and it steps aside
+ * (next()) for any non-error layer added to the same app after it, so a graph
+ * route registered later is never shadowed. */
 export const CONVERSATION_GRAPH_PATH=/^\/(?:mobile\/)?conversation-graph(?:\/|$)/;
 export function createConversationGraphOffRouter():Router{
  const router=Router();
- router.all(CONVERSATION_GRAPH_PATH,(_req,res)=>{res.setHeader('Cache-Control','no-store');res.status(503).json({code:'conversation-graph-off'});});
+ router.all(CONVERSATION_GRAPH_PATH,(req,res,next)=>{
+  if(laterLayerMayHandle(req,router))return next();
+  res.setHeader('Cache-Control','no-store');res.status(503).json({code:'conversation-graph-off'});
+ });
  return router;
+}
+
+/** Express 4 app stack layer, as far as this check reads it. */
+type AppLayer={handle:unknown;route?:{_handles_method?(method:string):boolean};match(path:string):boolean};
+/** True when a non-error layer registered after `self` in the request's app
+ * matches this request: a route for this path and method, or a middleware or
+ * router mounted on a matching path. A later pathless middleware matches every
+ * path, so it also makes the fallback step aside. Error handlers (four
+ * arguments) do not count. An unreadable stack counts as nothing later. */
+function laterLayerMayHandle(req:import('express').Request,self:Router):boolean{
+ const stack=(req.app as unknown as {_router?:{stack?:AppLayer[]}})._router?.stack;
+ if(!Array.isArray(stack))return false;
+ const at=stack.findIndex(layer=>layer.handle===self);if(at<0)return false;
+ // The path as this app's own stack matches it: no absolute-form origin, no query,
+ // and without the prefix this app is mounted under when it is a sub-app.
+ const full=req.originalUrl.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i,'').split('?')[0]||'/';
+ const mount=req.app.path();
+ const pathname=mount&&full.startsWith(mount)?full.slice(mount.length)||'/':full;
+ for(const layer of stack.slice(at+1)){
+  if(typeof layer.handle==='function'&&(layer.handle as (...args:unknown[])=>unknown).length===4)continue;
+  if(!layer.match(pathname))continue;
+  if(layer.route&&!(layer.route._handles_method?.(req.method)??true))continue;
+  return true;
+ }
+ return false;
 }
 
 export function createConversationGraphSurface(options:{

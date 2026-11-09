@@ -211,6 +211,12 @@ describe('Conversations production AgentServer composition',()=>{
      .set('X-Instar-Device-Sig',phone.sign(canonicalString(pending.device.id,HOST,'GET',target,time,undefined)));
     expect(signed.status,JSON.stringify(signed.body)).toBe(503);expect(signed.body).toEqual({code:'conversation-graph-off'});
    }
+   // The fallback answers only what nothing else handles: a graph route added to the app after
+   // construction is reached (behind auth), and the fallback still answers the rest.
+   app.get('/conversation-graph/member-loss/status',(_req,res)=>{res.status(200).json({code:'later-route'});});
+   expect((await request(app).get('/conversation-graph/member-loss/status')).status).toBe(401);
+   expect((await auth(request(app).get('/conversation-graph/member-loss/status'))).body).toEqual({code:'later-route'});
+   expect((await auth(request(app).get('/conversation-graph/roots'))).body).toEqual({code:'conversation-graph-off'});
   }finally{
    await server.stop();SafeFsExecutor.safeRmSync(stateDir,{recursive:true,force:true,operation:'graph-off-agent-cleanup'});
   }

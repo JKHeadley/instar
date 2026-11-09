@@ -7113,7 +7113,9 @@ export class AgentServer {
     // installation into exposing the graph; every enabled read still checks
     // actual runtime readiness and current owner admission.
     const graphSurfaceConfig=options.config.multiMachine?.conversationGraph;
+    let graphSurfaceMounted=false;
     if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
+      graphSurfaceMounted=true;
       this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
         runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
@@ -7124,6 +7126,7 @@ export class AgentServer {
           authToken:()=>options.config.authToken!,agentId:options.conversationGraphReplicationRuntime.agentId,recordRopeResult:options.recordRopeResult}}:{})}));
     }
     else if(graphSurfaceConfig?.readEnabled===true&&!options.conversationGraphReplicationRuntime&&options.conversationGraphDefault){
+      graphSurfaceMounted=true;
       const owned=options.conversationGraphDefault;
       this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
         scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
@@ -7133,7 +7136,9 @@ export class AgentServer {
     }
     // Configured off (or nothing to serve it): every graph route answers one
     // 503 `conversation-graph-off` instead of Express's HTML "Cannot GET".
-    else this.app.use(createConversationGraphOffRouter());
+    // Mounted at the end of route setup, just before the error handler, so it
+    // only ever answers a graph request nothing else handled.
+    const graphOff=!graphSurfaceMounted;
 
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
@@ -7292,6 +7297,10 @@ export class AgentServer {
       onInitiate: options.onHandoffInitiate ?? null,
       inProgress: options.handoffInProgress ?? null,
     }));
+
+    // Conversations off or unavailable: the graph fallback (see above). Last
+    // before the error handler, and it steps aside for anything added later.
+    if (graphOff) this.app.use(createConversationGraphOffRouter());
 
     // Error handler (must be last)
     this.app.use(errorHandler);
