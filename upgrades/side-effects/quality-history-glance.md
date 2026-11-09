@@ -105,3 +105,7 @@ Not required: no gate, sentinel, watchdog, lifecycle or messaging decision is to
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+## Follow-up fix (local verify, 2026-11-09)
+
+The first local verify failed `tests/unit/no-silent-fallbacks.test.ts` (495 against a baseline of 494). The cause was in this change: the scanner reads 20 lines after each catch, and the new cache code (`qualityInFlight = null;`) landed inside the window of the existing peer-read catch, which explicitly answers 503. That made the existing catch look like a silent state reset. Fix: the cache and single-flight logic moved into a `cachedQualityGlance` helper next to the cache declarations, so the route branch is just a read plus an explicit 503. The baseline stays at 494. A failed read is no longer cached and clears the in-flight slot.

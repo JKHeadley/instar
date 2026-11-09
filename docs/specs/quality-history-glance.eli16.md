@@ -11,3 +11,5 @@
 **What does not change.** Nothing is stored, nothing is switched on or off, and nothing gets blocked or allowed. It only reads numbers the agent already keeps. Undoing it is a plain revert.
 
 **What to decide.** Nothing is needed from the reader. The page is read-only and sits behind the same switch and sign-in as the maturation page.
+
+**One fix after the first full test run.** A repository check counts error handlers that quietly swallow failures. The new caching code sat close enough to an existing handler that the check misread that handler as a quiet one. The caching code now lives in its own small function. The check's limit is unchanged, and a failed read is no longer remembered as an answer.

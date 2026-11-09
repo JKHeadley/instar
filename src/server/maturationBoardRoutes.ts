@@ -451,6 +451,18 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
   const QUALITY_CACHE_MS = 60_000;
   let qualityCache: { at: number; body: QualityGlance } | null = null;
   let qualityInFlight: Promise<QualityGlance> | null = null;
+  /** One whole-census read at a time; a fresh answer is reused for a minute. A failed read is not cached. */
+  async function cachedQualityGlance(now: number): Promise<QualityGlance> {
+    if (qualityCache && now - qualityCache.at < QUALITY_CACHE_MS) return qualityCache.body;
+    if (!qualityInFlight) {
+      const read = readQualityGlance(ctx, now);
+      qualityInFlight = read;
+      void read.then(() => undefined, () => undefined).then(() => { if (qualityInFlight === read) qualityInFlight = null; });
+    }
+    const body = await qualityInFlight;
+    qualityCache = { at: now, body };
+    return body;
+  }
   /** Last review assessment fetched from another machine (in-memory only; offline rule). */
   let lastRemoteReview: { machine: string; machineId: string; fetchedAt: number; reviews: ParsedReview[] } | null = null;
 
@@ -538,13 +550,8 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
       // Quality history at a glance (docs/specs/quality-history-glance.md): this
       // machine's recorded series, same owner as part=measurement. Cached briefly and
       // single-flight so repeated page loads never stack whole-census reads.
-      if (qualityCache && now - qualityCache.at < QUALITY_CACHE_MS) { res.json(qualityCache.body); return; }
-      try {
-        qualityInFlight ??= readQualityGlance(ctx, now).finally(() => { qualityInFlight = null; });
-        const body = await qualityInFlight;
-        qualityCache = { at: now, body };
-        res.json(body);
-      } catch { res.status(503).json({ error: 'quality-history-unavailable' }); }
+      try { res.json(await cachedQualityGlance(now)); }
+      catch { res.status(503).json({ error: 'quality-history-unavailable' }); }
       return;
     }
     if (part === 'coverage') {
