@@ -385,7 +385,10 @@ export function freshState(): GreenPrState {
 }
 
 /** Outcomes that rule out only THIS PR this tick, so the next-oldest gets a turn. */
-const PASS_ON = new Set(['episode-not-eligible', 'gave-up-rearm-exhausted', 'deferred:checks-pending']);
+// 'refused:main-red' is here too: that refusal is about main, and a newer PR verified against the
+// current main head (often the one fixing main) can still merge, so the oldest refused PR must not
+// end the tick (independent review of #2981, 2026-11-08).
+const PASS_ON = new Set(['episode-not-eligible', 'gave-up-rearm-exhausted', 'deferred:checks-pending', 'refused:main-red']);
 
 /** Oldest (lowest number) first, as `selectOldest` picks. */
 export function orderOldestFirst<T extends { number: number }>(prs: T[]): T[] {
