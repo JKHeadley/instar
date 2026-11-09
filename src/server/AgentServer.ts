@@ -278,6 +278,8 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
@@ -773,6 +775,8 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
+  private usageLedger: UsageLedger | null = null;
+  private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private undatedActionResurfacer: UndatedActionResurfacer | null = null;
   private blockerLifecycleService: BlockerLifecycleService | null = null;
@@ -2376,6 +2380,63 @@ export class AgentServer {
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);
       this.tokenLedger = null;
+    }
+
+    // ── Unified Usage Ledger (docs/specs/unified-usage-ledger.md) ─────
+    // Dev-gated (live on a development agent, dark on the fleet). Read-only against
+    // source transcripts; writes only server-data/usage-ledger.db (git-sync excluded).
+    // Separate from TokenLedger by design: nothing the old ledger, its routes or the
+    // burn alerts see changes.
+    try {
+      if (options.config.stateDir && resolveDevAgentGate(options.config.usage?.ledger?.enabled, options.config)) {
+        const projectDir = options.config.projectDir ?? process.cwd();
+        const homes = [...new Set([path.resolve(projectDir), path.resolve(process.cwd())])];
+        let otherHomes: string[] = [];
+        try {
+          const reg = JSON.parse(fs.readFileSync(agentRegistryPath(), 'utf-8')) as { agents?: Array<{ path?: string }> } | Array<{ path?: string }>;
+          const list = Array.isArray(reg) ? reg : reg.agents ?? [];
+          otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
+        } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
+        const ledger = new UsageLedger({
+          dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
+          machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+          agentId: options.config.projectName ?? path.basename(projectDir),
+          agentHomes: homes,
+          otherAgentHomes: otherHomes,
+        });
+        if (process.env.CLAUDE_CONFIG_DIR) ledger.addClaudeRoot(process.env.CLAUDE_CONFIG_DIR, 'server-env');
+        ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
+        const sm = options.sessionManager as SessionManager;
+        sm.setClaudeSessionBoundSink?.((session, claudeSessionId) => {
+          const configHome = typeof sm.configHomeForSession === 'function' ? sm.configHomeForSession(session.tmuxSession) : null;
+          if (configHome) ledger.addClaudeRoot(configHome, 'session');
+          ledger.recordBinding({
+            sessionId: claudeSessionId,
+            framework: 'claude-code',
+            sessionKind: session.jobSlug ? 'job' : 'interactive',
+            cwd: session.cwd ?? projectDir,
+            topicId: session.telegramTopicId != null ? String(session.telegramTopicId) : null,
+            jobSlug: session.jobSlug ?? null,
+            runId: session.jobSlug ? session.id : null,
+            accountId: session.subscriptionAccountId ?? null,
+            validFrom: Date.now(),
+          });
+        });
+        this.usageLedger = ledger;
+        let ticks = 0;
+        this.usageLedgerTimer = setInterval(() => {
+          try {
+            this.usageLedger?.scanTick();
+            if (++ticks % 60 === 0) { this.usageLedger?.prune(); this.usageLedger?.dropMissingCheckpoints(); }
+          } catch (err) {
+            console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
+          }
+        }, 60_000);
+        if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();
+      }
+    } catch (err) {
+      console.warn('[instar] usage-ledger init failed (non-fatal):', err);
+      this.usageLedger = null;
     }
 
     // Framework-Onboarding Mentor System issue ledger — read-only observability,
@@ -9080,6 +9141,8 @@ export class AgentServer {
       }
       this.revertDetector = null;
     }
+    if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
+    if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* best-effort */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {
       try {

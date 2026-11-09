@@ -4159,6 +4159,13 @@ export interface InstarConfig {
       dryRun?: boolean;
     };
   };
+  /** Unified usage ledger (docs/specs/unified-usage-ledger.md). */
+  usage?: {
+    ledger?: {
+      /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
+      enabled?: boolean;
+    };
+  };
   routingSpend?: {
     /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
     enabled?: boolean;
