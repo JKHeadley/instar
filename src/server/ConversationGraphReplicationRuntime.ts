@@ -719,6 +719,16 @@ export class ConversationGraphReplicationRuntime {
  private lastBackgroundFailure:string|null=null;
  private lastTailClosureFailure:string|null=null;
  private noteTailClosure(error:unknown):void{const code=error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'unknown';if(code!==this.lastTailClosureFailure){this.lastTailClosureFailure=code;console.warn(`[conversation-graph] cannot close the previous writer's tail yet: ${code}`);}}
+ // A historical (materialized) record never enters the certificate-acknowledgment loop, which is the only other place a record
+ // becomes settled. After a removal every retained record is historical, so without this each readiness pass re-read the removal
+ // history and asked the witness about every record, forever. Settle one once it is terminal locally and at the witness and has
+ // been reconciled. The witness's signed manifest entry hashes every proof and the whole receipt set, so any later witness change
+ // (a new receipt included) changes the key and brings it back; a removed member's receipt that never arrives does not hold it.
+ // The removal-history check still runs for it on every pass.
+ private settleHistorical(entry:{eventId:string},record:ConversationGraphReplicationRecord,operation:{state:string}):void{
+  if(!record.materialization||!(record.certificate||record.cancellationCertificate)||(operation.state!=='certified'&&operation.state!=='canceled'))return;
+  this.settledRecords.set(entry.eventId,canonicalHash({entry,descriptor:this.source.descriptorFor(record)}));
+ }
  private async refreshReadinessCore():Promise<boolean>{const ready=await this.refreshReadinessSteps();const step=ready?null:this.lastReadinessFailure;if(step!==this.lastLoggedReadiness){this.lastLoggedReadiness=step;console.warn(step?`[conversation-graph] not ready yet, stopped at: ${step}`:'[conversation-graph] ready');}return ready;}
  private async refreshReadinessSteps():Promise<boolean>{this.lastReadinessFailure='lifetime';this.readyAt=0;if(!this.alive())return false;try{this.assertPositiveCustody();}catch(error){this.lastReadinessFailure='custody:'+(error instanceof Error&&/^[a-z0-9-]{1,96}$/.test(error.message)?error.message:'unknown');return false;}
   try{this.lastReadinessFailure='initial-inventory';const checkpoint=await this.config.witness.inventory(crypto.randomBytes(32).toString('base64url'));
@@ -745,14 +755,14 @@ export class ConversationGraphReplicationRuntime {
     repairLineage=null;
     const operation=await this.config.witness.operation(record.packet.idempotencyKey),{stateProof:_freshProof,...reconciled}=operation,operationHash=canonicalHash({reconciled,descriptor:this.source.descriptorFor(record)});
     // A record already reconciled against this exact witness state needs no second write. The lock is held for the whole pass, so per-record work here blocks peer writes.
-    if(this.reconciledOperations.get(entry.eventId)===operationHash)continue;
+    if(this.reconciledOperations.get(entry.eventId)===operationHash){this.settleHistorical(entry,record,operation);continue;}
     const needsHistory=operation.materialization&&(!record.materialization||canonicalHash(graphHistoricalMaterializationRef(record.materialization))!==canonicalHash(operation.materialization));
     const hydrated=needsHistory?await this.config.witness.recover(record.packet.idempotencyKey):null;
     const repaired={...record,...(operation.prepareProof?{preparationProof:operation.prepareProof}:{}),...(operation.erasedControlProof?{erasedControlProof:operation.erasedControlProof,...await this.erasedCustodyAuthority(operation.packet,operation.erasedControlProof)}:{}),...(hydrated?.materialization?{materialization:hydrated?.materialization}:{}),...(operation.adoption?{adoption:operation.adoption}:{}),...(operation.rewrap?{rewrap:operation.rewrap}:{}),...(operation.certificate?{certificate:operation.certificate}:{}),
      ...(operation.cancellation?{cancellation:operation.cancellation}:{}),...(operation.cancellationCertificate?{cancellationCertificate:operation.cancellationCertificate}:{}),
      ...(operation.erasure?{erasure:operation.erasure,encryptedSourceBundle:null}:{}),certificatePersistenceReceipts:operation.certificatePersistenceReceipts};
     if(repaired.erasure)await this.applyInventoryErasures([repaired.erasure]);if(repaired.materialization)await this.source.receiveHistorical(repaired);else await this.source.receive(repaired,record.packet.writerId);
-    {const settled=this.source.repairRecord(entry.eventId);if(settled)this.reconciledOperations.set(entry.eventId,canonicalHash({reconciled,descriptor:this.source.descriptorFor(settled)}));}
+    {const settled=this.source.repairRecord(entry.eventId);if(settled){this.reconciledOperations.set(entry.eventId,canonicalHash({reconciled,descriptor:this.source.descriptorFor(settled)}));this.settleHistorical(entry,settled,operation);}}
    }
    this.lastReadinessFailure='certificate-acknowledgment';
    // Waking peers acknowledge only actual local fsynced final metadata.
