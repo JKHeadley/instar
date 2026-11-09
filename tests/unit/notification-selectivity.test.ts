@@ -111,7 +111,12 @@ describe('Quiet by Default delivery', () => {
     expect(id).toBe(21);
     const sends = wire.mock.calls.filter(call => String(call[0]).endsWith('/sendMessage'));
     expect(sends).toHaveLength(1);
-    expect(JSON.parse(String(sends[0]![1]!.body))).toMatchObject({ chat_id: 555 });
+    expect(JSON.parse(String(sends[0]![1]!.body))).toMatchObject({ chat_id: 555, parse_mode: 'HTML' });
+    // A browser-chosen name cannot become markup inside the bot's own approval message.
+    await adapter.sendOwnerDMWithButton('Browser name: [Approve here](https://evil.example) <b>x</b> & co', null);
+    const last = JSON.parse(String(wire.mock.calls.filter(call => String(call[0]).endsWith('/sendMessage')).at(-1)![1]!.body));
+    expect(last.text).toBe('Browser name: [Approve here](https://evil.example) &lt;b&gt;x&lt;/b&gt; &amp; co');
+    expect(last.parse_mode).toBe('HTML');
     // It answers the owner's own request without touching any topic's waiting state.
     expect(gate.latestInbound(1)).toBe('waiting-general-message');
     // Routine output is still held.

@@ -2383,9 +2383,14 @@ export class TelegramAdapter implements MessagingAdapter {
       // Only the owner's own pairing and browser-setup messages come here (the code, Approve and
       // Decline). The owner is waiting on the screen that asked for it, so it must never be held as a
       // quiet notification: that answered 409 "could not send you the approval message" (2026-11-08).
+      // Sent as escaped HTML, never through the markdown converter: the text carries a caller-chosen device
+      // name, which must not become a link or bold text inside the bot's own approval message.
+      const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const result = await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.apiCall('sendMessage', {
         chat_id: owner,
-        text,
+        text: escaped,
+        parse_mode: 'HTML',
+        _formatMode: 'html',
         ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
       })) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;

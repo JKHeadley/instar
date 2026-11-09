@@ -160,9 +160,9 @@ class ChatsPage {
     const go = el('button', { class: 'btn-primary', type: 'button', text: opts.replace ? 'Set up this browser here' : 'Set up this browser' });
     const path = this.status && this.status.approvalPath;
     const how = path === 'telegram' && this.status && this.status.ownerPhoneApproves
-      ? 'You will be asked for your dashboard PIN, then to approve this browser on your iPhone with Face ID (a Telegram message comes too, as a backup).'
+      ? 'You will approve this browser on your iPhone with Face ID (a Telegram message comes too, as a backup).'
       : path === 'telegram'
-      ? `You will be asked for your dashboard PIN, then approve this browser in ${privateChatWords(this.status && this.status.approvalChat)}, or on your phone.`
+      ? `You will approve this browser in ${privateChatWords(this.status && this.status.approvalChat)}, or on your phone.`
       : path === 'dashboard' ? 'You will be asked for your dashboard PIN, which approves this browser.' : 'You will be asked for your dashboard PIN, then to approve this browser.';
     go.addEventListener('click', async () => {
       go.disabled = true; err.textContent = '';

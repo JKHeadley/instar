@@ -193,6 +193,9 @@ export class BrowserDeviceController {
       featureEvidence.record(BROWSER_FEATURE, { kind: 'error', reason: 'activation refused: no device-key ledger', context: { deviceId } });
       return 'failed';
     }
+    // The PIN approves only the setup request that carried it; an introducer agent never approves a browser.
+    if (via === 'dashboard-pin' && !opts.ownRequest) return 'not-pending';
+    if (via === 'owner-agent') return 'not-pending';
     const before = this.svc.devices.get(deviceId);
     if (!before || !isBrowserDevice(before)) return 'not-pending';
     const effects: BrowserEffectKind[] = [...(before.replaces ? ['revokeReplaced' as const] : []), 'notice'];
@@ -392,7 +395,7 @@ export function browserApprovalText(agent: string, d: DeviceRecord, codeLine: st
   ] : [
     codeLine,
     `Type it into the browser only if you are setting up a browser right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
-    `Browser key: ${d.fingerprint ?? 'unknown'}\nBrowser name: ${d.deviceName ?? '(none given)'}`,
+    `Browser key: ${d.fingerprint ?? 'unknown'}\nBrowser name: ${d.deviceName ?? '(none given)'} (the browser chose this name)`,
   ]).join('\n\n');
 }
 
@@ -480,6 +483,8 @@ export function mountBrowserDeviceRoutes(
     // be approved, so the setup is refused before anything is charged (second-pass review).
     if (!svc.keyLedger) { held(503, 'ledger-unavailable', { detail: 'This machine cannot record new devices right now (it has no device-key record). Try again after it restarts.' }); return; }
     if (svc.devices.pairingPaused()) { held(429, 'pairing-paused', { detail: 'Too many wrong codes were typed recently, so setting up new devices is paused for now.' }); return; }
+    // The Bearer principal, on every path (browser-setup-no-second-pin: it used to sit inside step 5 only).
+    if (principalOf(req).kind !== 'token') { held(403, 'bearer-required'); return; }
     // 2. The bound host, before anything else and without the session.
     const host = boundSetupHost(req, svc);
     if (!host) { held(403, 'not-secure-address', { detail: 'Open the dashboard at this agent\'s secure address (or at localhost on this computer) to set up this browser.' }); return; }
@@ -526,11 +531,33 @@ export function mountBrowserDeviceRoutes(
       held(409, 'duplicate-key');
       return;
     }
-    // 5. The operator session (a fresh PIN unlock), never reused for a second record.
-    const session = req.get('X-Instar-Operator-Session');
-    if (principalOf(req).kind !== 'token' || !session || !opts.verifyOperatorSession?.(session)) {
-      held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN to set up this browser.' });
-      return;
+    // 5. Who vouches for this setup. The approval path is read ONCE here and used through step 9.
+    //    `telegram`: the owner approves on the phone (Face ID) or in Telegram, which is the proof, so no PIN
+    //    is asked and any session header is ignored (docs/specs/browser-setup-no-second-pin.md); one setup
+    //    per enrollment. `dashboard`: the live PIN session IS the approval, so it stays required.
+    const path = svc.approvalPath();
+    let setupKey: string;
+    let sessionVerified = false;
+    if (path === 'telegram') {
+      const pausedUntil = svc.browserSetupsPausedUntil();
+      if (pausedUntil > Date.now()) {
+        held(429, 'browser-setups-paused', { nextAllowedAt: new Date(pausedUntil).toISOString(),
+          detail: 'A browser setup was declined in the last hour, so new browser setups are paused until then.' });
+        return;
+      }
+      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending')) {
+        held(409, 'browser-setup-waiting', { detail: 'Another browser is already waiting for approval. Approve or decline it first.' });
+        return;
+      }
+      setupKey = `enroll:${crypto.createHash('sha256').update(enrollmentId).digest('hex')}`;
+    } else {
+      const session = req.get('X-Instar-Operator-Session');
+      if (!session || !opts.verifyOperatorSession?.(session)) {
+        held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN to set up this browser.' });
+        return;
+      }
+      sessionVerified = true;
+      setupKey = sessionHash(session);
     }
     // 7. `replaces`, checked against the ledger activation row of the old device (any machine).
     let replaces: { deviceId: string; keyHash: string } | null = null;
@@ -550,11 +577,12 @@ export function mountBrowserDeviceRoutes(
     const limits = browserLimits(svc.deps.config);
     let revokedKeys: Set<string> | undefined;
     try { revokedKeys = svc.keyLedger?.revokedKeyHashes(); } catch { revokedKeys = undefined; } // @silent-fallback-ok — counting without the ledger is the stricter count
-    const deviceName = cleanText(body.deviceName)?.slice(0, 60) || 'Browser';
+    // Caller-chosen, untrusted: format characters (bidi overrides, zero-width) are stripped so the name cannot reorder the approval text.
+    const deviceName = cleanText(body.deviceName)?.replace(/\p{Cf}/gu, '').trim().slice(0, 60) || 'Browser';
     let created: ReturnType<typeof svc.devices.createPendingBrowser>;
     try {
       created = svc.devices.createPendingBrowser({
-        browserPublicKey: publicKey, host, deviceName, enrollmentId, replaces, session: sessionHash(session),
+        browserPublicKey: publicKey, host, deviceName, enrollmentId, replaces, session: setupKey,
         maxBrowsers: limits.maxBrowsers, maxSetupsPerHour: limits.maxSetupsPerHour, ledgerRevokedKeyHashes: revokedKeys,
       });
     } catch (err) {
@@ -571,7 +599,8 @@ export function mountBrowserDeviceRoutes(
       } else if (created.reason === 'too-many-setups') {
         held(429, 'too-many-setups', { nextAt: new Date(created.nextAt).toISOString(), nextAllowedAt: new Date(created.nextAt).toISOString(), detail: `Too many browsers were set up in the last hour. The next one can be set up at ${new Date(created.nextAt).toISOString()}.` });
       } else if (created.reason === 'session-used') {
-        held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN again to set up this browser.' });
+        if (path === 'telegram') held(409, 'setup-ended', { detail: 'This setup ended. Start it again.' });
+        else held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN again to set up this browser.' });
       } else if (created.reason === 'duplicate-key') {
         held(409, 'duplicate-key');
       } else {
@@ -581,8 +610,7 @@ export function mountBrowserDeviceRoutes(
     }
     const device = created.device;
     featureEvidence.record(BROWSER_FEATURE, { kind: 'fired', reason: 'setup created', context: { deviceId: device.id, replacing: !!replaces, loopback: isLoopbackHost(host) } });
-    // 9. Approval, by the agent's own approval path.
-    const path = svc.approvalPath();
+    // 9. Approval, by the approval path read at step 5.
     if (path === null || (path === 'telegram' && !svc.holdsLease())) {
       if (svc.devices.removeIfStillSettingUp(device.id)) svc.dropSetupSecrets(device.id);
       held(409, 'approval-unavailable', { detail: path === null
@@ -592,6 +620,11 @@ export function mountBrowserDeviceRoutes(
     }
     if (path === 'dashboard') {
       // No Telegram owner: the live operator session approves in this request (dashboard-pin).
+      if (!sessionVerified) {
+        if (svc.devices.removeIfStillSettingUp(device.id)) svc.dropSetupSecrets(device.id);
+        held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN to set up this browser.' });
+        return;
+      }
       const r = svc.browser.activate(device.id, 'dashboard-pin', { ownRequest: true });
       if (r !== 'activated') {
         // Nothing was approved: the setup goes and its slot comes back (a record with an intent stays for recovery).
