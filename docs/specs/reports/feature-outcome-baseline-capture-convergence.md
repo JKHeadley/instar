@@ -22,6 +22,7 @@ Review replaced impossible first-start success requirements with a genuine basel
 |4|Native six lenses and actual Claude5.5|First-start/foreign-origin decisions; producer continuity, fleet path, drop/unmerge and confirmation semantics revised|
 |5|Native and actual Claude, actual conformance|One-custodian policy contested against the actual standard; root selected conservative all-member move floor, not an exception|
 |6|Native0DESIGN/1PRECISION; Claude0DESIGN/5PRECISION; final installed gpt-6-astra3DESIGN|CONVERGENCE FAILED; safety/data integrity findings at cap6|
+|7 (operator-allowed extra, 2026-11-09)|Claude Opus5.5 security+adversarial and integration+decision+lessons subagents; installed codex-cli gpt-6-astra (ok, no truncation); conformance gate 6 flags|NOT CONVERGED. Exposure boundary and unreadable exclusion state not closed; publication race closed but ordinary-write bypass, swallowed persistence errors and boot-migration writers remain. Details in the spec's Round7 section|
 
 Standards-Conformance Gate ran each new program round. Round4 initial floor0/producer2 flags (continuity, fleet authoring); revised producer1archive flag, then0 after non-deleting retention clarification. Round5 floor1/producer1AlwaysMultiMachine flags were engaged, not hidden. Round6 floor0/producer1StructureBeatsWillpower flag: broad conversational claim enforcement is genuinely absent and remains an explicit unmeasured full-effort gap. Reports are retained in topic evidence. No claim that this gap is architecturally satisfied.
 
@@ -42,5 +43,8 @@ Tier2 implementation proposal; six program review rounds against cap6. Documenta
 The three exact final CLI findings are preserved in feature-outcome-baseline-capture-round6-codex.json. Actual Claude final findings/provenance and six lenses are preserved in measurement-evidence-floor-claude-round6.json. Earlier floor-only review catalog remains below as superseded history. Later changes addressed first-start feasibility, exact owner/policy identity, generic feature-target scope, raw producer mapping, full context replication, drop retention, physical capacities, confirmation snapshot identity, and scope honesty. None of these design requirements is presented as implemented.
 
 ## Convergence verdict
+
+Round7 (the single extra review the operator allowed on 2026-11-09, topic139374) also did not converge: none of the three safety findings is fully closed. No tag written; no further round started.
+
 
 CONVERGENCE FAILED at cap6 because the final external review found3safety DESIGN issues. No convergence or approval tag may be written. The operator must decide whether to allow an additional bounded independent review of the concrete corrections. Runtime PR2847 and constitutional PR2842 verification continue independently; the original24-hour deadline is unchanged.
