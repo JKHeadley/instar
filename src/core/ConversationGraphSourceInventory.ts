@@ -325,9 +325,31 @@ export function materializeGraphSourceInventory(options:{source:ConversationGrap
  const entries=[...latest.values()].flatMap(value=>value.entry&&!coverage.removed.some(r=>nodeKey(r.ref)===nodeKey(value.entry!.ref)&&r.producerMachineId===value.entry!.producerMachineId&&r.sourceSequence>value.record.packet.sourceSequence)?[value.entry]:[]);
  const compare=(a:string,b:string)=>a<b?-1:a>b?1:0;
  entries.sort((a,b)=>compare(b.row.lastActivity??'',a.row.lastActivity??'')||compare(nodeKey(a.ref),nodeKey(b.ref)));
- const ambiguous=new Map<string,ConversationRef>();for(const e of entries)if(entries.some(other=>other.producerMachineId!==e.producerMachineId&&nodeKey(other.ref)===nodeKey(e.ref)))ambiguous.set(nodeKey(e.ref),e.ref);if(ambiguous.size)partial=true;
- const conversations:ConversationSource[]=entries.filter(e=>!ambiguous.has(nodeKey(e.ref))).map(e=>({ref:e.ref,conversationId:e.row.id,...(Object.hasOwn(e.row,'machine')?{machine:e.row.machine}:{}),title:e.row.title??'',lastActivity:e.row.lastActivity}));
- return {entries,conversations,coverage,unavailableConversations:[...coverage.unavailableConversations,...ambiguous.values()],partial:partial||!coverage.membershipHash||!!(coverage.staleProducerIds.length||coverage.missingProducerIds.length||coverage.partialProducerIds.length||coverage.missingObservationIds.length),missingEventIds:[...new Set(missingEventIds)].sort()};
+ // `entries` stays one row per producer. `conversations` is one row per ref.
+ // An app conversation replicates to every machine and a Telegram topic list is
+ // read by every machine with a Telegram adapter, so several producers report
+ // the same global ref; the history route reads both through this machine's
+ // pool read, never from one producer. Every machine picks the same display
+ // row from certified content alone (newest activity, then producer id), never
+ // from arrival order. A Slack ref names a machine-local alias and the one
+ // machine that serves its history, so two Slack producers stay ambiguous.
+ // A producer whose own checkpoint calls the ref unavailable does not supply
+ // its row; another producer that still holds a global ref does.
+ const unavailableFrom=new Map<string,Set<string>>();
+ for(const u of coverage.unavailableBy){const k=nodeKey(u.ref);if(!unavailableFrom.has(k))unavailableFrom.set(k,new Set());unavailableFrom.get(k)!.add(u.producerMachineId);}
+ const chosen=new Map<string,(typeof entries)[number]>(),ambiguous=new Map<string,ConversationRef>();
+ for(const e of entries){const k=nodeKey(e.ref),prior=chosen.get(k);
+  if(e.ref.platform!=='slack'&&unavailableFrom.get(k)?.has(e.producerMachineId))continue;
+  if(!prior){chosen.set(k,e);continue;}
+  if(prior.producerMachineId===e.producerMachineId)continue;
+  if(e.ref.platform==='slack'){ambiguous.set(k,e.ref);continue;}
+  const newer=compare(e.row.lastActivity??'',prior.row.lastActivity??'');
+  if(newer>0||(newer===0&&compare(e.producerMachineId,prior.producerMachineId)<0))chosen.set(k,e);
+ }
+ if(ambiguous.size)partial=true;
+ const conversations:ConversationSource[]=entries.filter(e=>!ambiguous.has(nodeKey(e.ref))&&chosen.get(nodeKey(e.ref))===e).map(e=>({ref:e.ref,conversationId:e.row.id,...(Object.hasOwn(e.row,'machine')?{machine:e.row.machine}:{}),title:e.row.title??'',lastActivity:e.row.lastActivity}));
+ const heldElsewhere=(ref:ConversationRef)=>ref.platform!=='slack'&&chosen.has(nodeKey(ref));
+ return {entries,conversations,coverage,unavailableConversations:[...coverage.unavailableConversations.filter(ref=>!heldElsewhere(ref)),...ambiguous.values()],partial:partial||!coverage.membershipHash||!!(coverage.staleProducerIds.length||coverage.missingProducerIds.length||coverage.partialProducerIds.length||coverage.missingObservationIds.length),missingEventIds:[...new Set(missingEventIds)].sort()};
 }
 
 /** One accepting native writer for both source variants. Producer forwarding

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { joinMesh } from '../../src/commands/machine.js';
+import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 /**
  * `instar join <pairing-url> --dir <path>` with a --dir that does not exist yet
@@ -12,7 +13,7 @@ import { joinMesh } from '../../src/commands/machine.js';
  */
 describe('joinMesh with a --dir that does not exist yet', () => {
   const roots: string[] = [];
-  afterEach(() => { vi.restoreAllMocks(); for (const r of roots) fs.rmSync(r, { recursive: true, force: true }); });
+  afterEach(() => { vi.restoreAllMocks(); for (const r of roots) SafeFsExecutor.safeRmSync(r, { recursive: true, force: true, operation: 'join-missing-dir-test-cleanup' }); });
 
   it('creates the state folder and writes the machine-local config instead of crashing', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'join-missing-dir-'));

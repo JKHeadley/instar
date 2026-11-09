@@ -10,6 +10,9 @@ import type {DroppedOriginRegistry} from './RollbackUnmerge.js';
 export interface GraphSourceInventoryCoverage {
  asOf:string|null;producerAsOf:Record<string,string>;staleProducerIds:string[];membershipHash:string|null;missingProducerIds:string[];partialProducerIds:string[];missingObservationIds:string[];
  checkpointEventIds:string[];unavailableConversations:ConversationRef[];
+ /** Which producer's checkpoint made each ref unavailable. A global ref (app,
+  * Telegram) that another producer still holds stays available (inventory). */
+ unavailableBy:Array<{ref:ConversationRef;producerMachineId:string}>;
  /** Suppression comes only from a certified later producer checkpoint. */
  removed:Array<{ref:ConversationRef;producerMachineId:string;sourceSequence:number;reason:'deleted'|'forgotten'|'unavailable'}>;
 }
@@ -23,7 +26,7 @@ export function reconcileGraphSourceCoverage(options:{source:ConversationGraphRe
   }
  }
  const now=options.now?.()??Date.now();
- const result:GraphSourceInventoryCoverage={asOf:null,producerAsOf:{},staleProducerIds:[],membershipHash:options.membership?canonicalHash(options.membership):null,missingProducerIds:[],partialProducerIds:[],missingObservationIds:[],checkpointEventIds:[],unavailableConversations:[],removed:[]};
+ const result:GraphSourceInventoryCoverage={asOf:null,producerAsOf:{},staleProducerIds:[],membershipHash:options.membership?canonicalHash(options.membership):null,missingProducerIds:[],partialProducerIds:[],missingObservationIds:[],checkpointEventIds:[],unavailableConversations:[],unavailableBy:[],removed:[]};
  const unavailable=new Map<string,ConversationRef>();
  for(const member of options.membership?.members??[])if(!latest.has(member.machineId))result.missingProducerIds.push(member.machineId);
  for(const [producer,r]of latest){const c=r.authorizationProof.sourceObservation;if(c?.kind!=='source-inventory-sweep')continue;
@@ -43,13 +46,13 @@ export function reconcileGraphSourceCoverage(options:{source:ConversationGraphRe
   for(const row of rows.values()){const observed=row.authorizationProof.sourceObservation;if(observed?.kind==='conversation-source-observation'&&observed.producerMachineId===producer&&row.packet.sourceSequence>r.packet.sourceSequence)result.partialProducerIds.push(producer);}
   for(const e of payload.entries){if(e.state==='source-removed'){
     result.removed.push({ref:e.ref,producerMachineId:producer,sourceSequence:r.packet.sourceSequence,reason:e.reason});
-    if(e.reason==='unavailable')unavailable.set(nodeKey(e.ref),e.ref);continue;
+    if(e.reason==='unavailable'){unavailable.set(nodeKey(e.ref),e.ref);result.unavailableBy.push({ref:e.ref,producerMachineId:producer});}continue;
    }
    const row=rows.get(e.sourceId),capture=row?.authorizationProof.sourceObservation;
    let valid=!!row&&capture?.kind==='conversation-source-observation'&&capture.producerMachineId===producer&&capture.payloadHash===e.payloadHash&&nodeKey(capture.subject)===nodeKey(e.ref)
     &&row.packet.sourceSequence<r.packet.sourceSequence&&!row.erasure&&options.source.verifyHistoricalRecord(row);
    if(valid&&row)try{const bytes=options.source.openVerifiedPayload(row);bytes.fill(0);}catch{valid=false;}
-   if(!valid){result.missingObservationIds.push(e.sourceId);result.partialProducerIds.push(producer);unavailable.set(nodeKey(e.ref),e.ref);}
+   if(!valid){result.missingObservationIds.push(e.sourceId);result.partialProducerIds.push(producer);unavailable.set(nodeKey(e.ref),e.ref);result.unavailableBy.push({ref:e.ref,producerMachineId:producer});}
   }
  }
  result.unavailableConversations=[...unavailable.values()].sort((a,b)=>nodeKey(a)<nodeKey(b)?-1:1);

@@ -230,6 +230,21 @@ describe('all-member durable source inventory preserves exact machine-local open
   expect(new Set(slack.map(e=>e.row.machine))).toEqual(new Set(members.map(m=>m.id)));expect(new Set(slack.map(e=>e.ref.platform==='slack'?e.ref.channelId:''))).toEqual(new Set(['CALPHA','CBETA']));
   expect(result.conversations.find(c=>c.ref.platform==='app')?.conversationId).toBe(APP);expect(result.conversations.find(c=>c.ref.platform==='telegram')?.conversationId).toBe(42);
  });
+ it('reports an app conversation and a Telegram topic held by both machines as one available conversation each',async()=>{
+  // App conversations replicate to every machine; every machine with a Telegram adapter lists the topics.
+  members[1].svc.applyCreate('device-owner',`${Date.now()}-${crypto.randomUUID()}`,APP,'private app title');
+  members[1].flat.telegramTopics=()=>[{topicId:42,topicName:'renamed telegram title',lastActivity:'2026-11-05T11:00:00.000Z',lastPreview:null}];
+  await certifyAll();const {reader,dropped}=readerFor(stores[1]);
+  const result=materializeGraphSourceInventory({source:stores[1],reader,dropped});
+  for(const platform of ['app','telegram'] as const){
+   expect(new Set(result.entries.filter(e=>e.ref.platform===platform).map(e=>e.producerMachineId))).toEqual(new Set(members.map(m=>m.id)));
+   expect(result.conversations.filter(c=>c.ref.platform===platform)).toHaveLength(1);
+   expect(result.unavailableConversations.filter(r=>r.platform===platform)).toEqual([]);
+  }
+  expect(result.conversations.find(c=>c.ref.platform==='telegram')).toMatchObject({conversationId:42,title:'renamed telegram title',lastActivity:'2026-11-05T11:00:00.000Z'});
+  // Two machines' Slack conversations share the alias -7 and stay two separate conversations.
+  expect(result.conversations.filter(c=>c.ref.platform==='slack').map(c=>[c.conversationId,c.machine]).sort()).toEqual(members.map(m=>[-7,m.id]).sort());
+ });
  it('blocks undecryptable source boot and rejects forged capture or extra plaintext core',async()=>{
   const captured=members[0].capture.capturePage().observations[0];expect(verifyGraphSourceObservationCapture({...captured.capture,producerMachineId:members[1].id},membership)).toBe(false);
   const p=prepareGraphSourceOperation(captured,{agentId:'echo',identity:members[0].identity,ownerPublicKey:owner.publicKey,membership,admission:members[0].admission,coordinator:{holdsLease:()=>true,currentEpoch:()=>native.epoch,currentLease:()=>native}});
@@ -299,7 +314,7 @@ describe('all-member durable source inventory preserves exact machine-local open
   expect(stores[1].mayAcknowledgeNewWrite(adopted.packet.eventId,{lease:current.lease,originalLease:native})).toBe(true);
   expect(canonicalJson(stores[1].repairRecord(adopted.packet.eventId)!.packet)).toBe(frozenPacket);expect(canonicalJson(stores[1].repairRecord(adopted.packet.eventId)!.authorizationProof)).toBe(frozenAuthorization);
   const result=materializeGraphSourceInventory({source:stores[1],reader,dropped});expect(result.entries).toHaveLength(1);
-  expect(result.entries[0].row).toMatchObject({platform:'slack',id:-7,machine:oldMembership.members[0].machineId,title:'private origin title'});
+  expect(result.entries[0].row).toMatchObject({platform:'slack',id:-7,machine:oldMembership.members[0].machineId,title:'#private origin title'});
   expect(result.entries[0].ref).toEqual({kind:'conversation',platform:'slack',channelId:'CALPHA'});
  });
  it('recovers never-Saved erased control only from W after writer destruction and certifies current-member cancellation',async()=>{
