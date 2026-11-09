@@ -8828,6 +8828,26 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!r.ok) { res.status(r.reason === 'no-signer' ? 503 : 409).json({ error: r.reason }); return; }
     res.json({ ok: true, lease: r.lease });
   });
+  // POST /chief-of-staff/triage — the one-time first-run triage list (spec: Migration and rollout):
+  // a private view over the active initiative records with keep / review / archive per record and the
+  // reason from the record's own facts. PIN-gated (owner tap); writes nothing but the view. Re-run with
+  // `force: true`; otherwise an existing list is returned.
+  router.post('/chief-of-staff/triage', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    if (!ctx.initiativeTracker || !ctx.viewer) { res.status(503).json({ error: !ctx.initiativeTracker ? 'initiative tracker not available' : 'private viewer not configured' }); return; }
+    const existing = ctx.state.get<string>('chief-of-staff-triage-view');
+    if (existing && (req.body ?? {}).force !== true && ctx.viewer.get(existing)) { res.json({ ok: true, id: existing, localUrl: `/view/${existing}`, existing: true }); return; }
+    const { buildTriage } = await import('../core/ChiefOfStaffTriage.js');
+    // "Active records" in the digest's sense: everything not completed / archived / abandoned — the paused and
+    // awaiting-user ones are exactly what the needs-you floor exists for.
+    const LIVE = new Set(['active', 'awaiting-user', 'paused', 'halted']);
+    const active = (ctx.initiativeTracker.list() as unknown as Array<Record<string, unknown>>).filter((i) => LIVE.has(String(i.status)));
+    const list = buildTriage(active.map((i) => ({ id: String(i.id), title: String(i.title ?? i.id), description: typeof i.description === 'string' ? i.description : undefined, status: String(i.status ?? 'active'), lastTouchedAt: String(i.lastTouchedAt ?? i.updatedAt ?? ''), needsUser: i.needsUser === true, needsUserReason: typeof i.needsUserReason === 'string' ? i.needsUserReason : undefined, blockers: Array.isArray(i.blockers) ? (i.blockers as string[]) : [], links: Array.isArray(i.links) ? (i.links as Array<{ url?: string }>) : [] })), new Date());
+    const view = ctx.viewer.create('Chief of Staff — first-run triage', list.markdown, undefined, { source: { type: 'chief-of-staff', id: 'triage' } });
+    if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
+    res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
+  });
   router.get('/chief-of-staff/projects/:key', (req, res) => {
     if (!ctx.chiefOfStaffLoop) {
       res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });

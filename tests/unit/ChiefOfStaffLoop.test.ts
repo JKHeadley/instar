@@ -8,7 +8,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { HlcTimestamp } from '../../src/core/HybridLogicalClock.js';
-import { chiefOfStaffRecordStoreSchema, buildBindingPut, buildRenewal, foldIntentState, type UnionEntry, buildLastTick } from '../../src/core/ChiefOfStaffStore.js';
+import { chiefOfStaffRecordStoreSchema, buildBindingPut, buildRenewal, foldIntentState, type UnionEntry, buildLastTick, buildIntent, buildOutcome } from '../../src/core/ChiefOfStaffStore.js';
 import { ChiefOfStaffLoop, CHIEF_OF_STAFF_LOOP_DEFAULTS, clampLoopConfig, applyVerdictFloors, detectProgress, planDue, composeNote, boundProjects, evidenceHash, type ChiefOfStaffLoopDeps, type EvidenceBundle, type JudgeOutput, type NoteItem, outcomeStarted, rejectionReason } from '../../src/core/ChiefOfStaffLoop.js';
 
 const CK = 'telegram:141014';
@@ -239,8 +239,8 @@ describe('ChiefOfStaffLoop — note + immediate budget + owner tap', () => {
     expect(await l.immediate('a')).toBe(true); expect(await l.immediate('b')).toBe(true); expect(await l.immediate('c')).toBe(false);
     expect(w.immediates).toEqual(['a', 'b']);
   });
-  it('a non-owner tap is ignored; a confirm-done tap closes and mirrors', async () => {
-    const w = world(); bind(w); const l = loop(w);
+  it('a non-owner tap is ignored; a confirm-done tap (lease live, deterministic items passing) closes and mirrors', async () => {
+    const w = world(); bind(w); renew(w, T0 - H); w.bundle = { doneItems: { pr: 'pass' } }; const l = loop(w);
     expect(await l.ownerTap(`cos:confirm-done:${CK}`, 'member' as never)).toBe('ignored');
     expect(await l.ownerTap(`cos:confirm-done:${CK}`, 'owner-tap')).toBe('ok');
     expect(w.mirrored).toEqual([['init-1', 'completed']]); expect(boundProjects(w.j.entries)).toHaveLength(0);
@@ -345,5 +345,102 @@ describe('ChiefOfStaffLoop — PR 4 surfaces', () => {
     renew(w, w.now - H); // written by another machine (not through this loop) ⇒ visible once the 2 s read memo lapses
     w.now += 3_000;
     expect(l.status().lease.live).toBe(true);
+  });
+});
+
+describe('ChiefOfStaffLoop — durable note state (CMT-1416)', () => {
+  it('a parked project reaches the note from the FOLD even when a fresh loop instance has nothing in memory', async () => {
+    const w = world({ hour: 8 }); bind(w); renew(w, T0 - H);
+    for (let s = 1; s <= 3; s++) {
+      w.j.emit('m_a')(`${CK}:1:${s}`, buildIntent({ conversationKey: CK, action: 'restart-run', leaseEpoch: 1, sequence: s, claimedAt: new Date(T0 - (4 - s) * H).toISOString(), machine: 'm_a', holderSignature: 's' }));
+      w.j.emit('m_a')(`${CK}:1:${s}:outcome:executing`, buildOutcome({ intentKey: `${CK}:1:${s}`, transition: 'executing', writer: 'ownership-machine', machine: 'm_a', at: new Date(T0).toISOString() }));
+      w.j.emit('m_a')(`${CK}:1:${s}:outcome:started`, buildOutcome({ intentKey: `${CK}:1:${s}`, transition: 'started', writer: 'ownership-machine', machine: 'm_a', at: new Date(T0).toISOString(), runId: `r${s}` }));
+    }
+    w.judge = { verdict: 'stalled', citedIds: ['run'], reason: 'quiet' };
+    await loop(w).tick(); // a brand-new instance: no pendingNote from the tick that parked it
+    expect(w.notes).toHaveLength(1); expect(w.notes[0]).toContain('parked'); expect(w.notes[0]).toContain('Unpark');
+  });
+  it('the note cadence is read from `note` records: a note another instance sent this cadence suppresses a second one; the record is written after a send', async () => {
+    const w = world({ hour: 8 }); bind(w); renew(w, T0 - H);
+    w.judge = { verdict: 'waiting-on-user', citedIds: ['run'], reason: 'needs a decision' };
+    await loop(w).tick();
+    expect(w.notes).toHaveLength(1);
+    expect(w.j.entries.filter((e) => e.data.recordType === 'note' && e.data.kind === 'note')).toHaveLength(1);
+    w.now += H; w.hour = 9;
+    await loop(w).tick(); // a different instance, same cadence window
+    expect(w.notes).toHaveLength(1);
+    w.now += 24 * H;
+    await loop(w).tick();
+    expect(w.notes).toHaveLength(2);
+  });
+  it('the immediate cap counts `note` records, so it holds across loop instances', async () => {
+    const w = world(); bind(w); renew(w, T0 - H);
+    const cap = CHIEF_OF_STAFF_LOOP_DEFAULTS.immediateMessagesPerDay;
+    for (let i = 0; i < cap; i++) expect(await loop(w).immediate(`urgent ${i}`)).toBe(true);
+    expect(await loop(w).immediate('one too many')).toBe(false);
+    expect(w.immediates).toHaveLength(cap);
+    expect(w.j.entries.filter((e) => e.data.recordType === 'note' && e.data.kind === 'immediate')).toHaveLength(cap);
+  });
+  it('a run of unknown checks reaches the note as one can\'t-see line, derived from the check-events', async () => {
+    const w = world({ hour: 7 }); bind(w); renew(w, T0 - H); // before the note hour: checks accumulate, no note yet
+    w.judge = null;
+    const l = loop(w);
+    for (let i = 0; i < CHIEF_OF_STAFF_LOOP_DEFAULTS.unknownStreakForNote; i++) { l.markDirty(CK); await l.tick(); w.now += 61 * 60_000; }
+    w.hour = 8; await loop(w).tick(); // a fresh instance at the note hour derives the streak from the check-events
+    const note = w.notes.join('\n');
+    expect(note).toContain("Can't see");
+  });
+});
+
+describe('ChiefOfStaffLoop — confirm-done hardening (PR 5)', () => {
+  const closedEvents = (w: World) => w.j.entries.filter((e) => e.data.recordType === 'binding-lifecycle' && e.data.event === 'closed');
+  it('a tap while the lease is paused is ignored and closes nothing', async () => {
+    const w = world(); bind(w, { doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }, { id: 'ok', kind: 'judgment', text: 'owner happy' }] });
+    w.bundle = { doneItems: { pr: 'pass' } };
+    expect(await loop(w).ownerTap(`cos:confirm-done:${CK}`, 'owner-tap')).toBe('ignored');
+    expect(closedEvents(w)).toHaveLength(0);
+  });
+  it('a tap when a deterministic item still fails at tap time is ignored and the note says which check', async () => {
+    const w = world({ hour: 8 }); bind(w, { doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }, { id: 'ok', kind: 'judgment', text: 'owner happy' }] }); renew(w, T0 - H);
+    w.bundle = { doneItems: { pr: 'fail' } };
+    const l = loop(w);
+    expect(await l.ownerTap(`cos:confirm-done:${CK}`, 'owner-tap')).toBe('ignored');
+    expect(closedEvents(w)).toHaveLength(0);
+    w.judge = { verdict: 'moving', citedIds: ['run'], reason: 'r' }; await l.tick();
+    expect(w.notes.join('\n')).toContain('not closed — these checks still fail: PR merged');
+  });
+  it('a tap with the lease live and every deterministic item passing records a done-verified check (owner-confirmed) and then closes + mirrors', async () => {
+    const w = world(); bind(w, { doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }, { id: 'ok', kind: 'judgment', text: 'owner happy' }] }); renew(w, T0 - H);
+    w.bundle = { doneItems: { pr: 'pass' } };
+    expect(await loop(w).ownerTap(`cos:confirm-done:${CK}`, 'owner-tap')).toBe('ok');
+    const checks = w.j.entries.filter((e) => e.data.recordType === 'check-event');
+    expect(checks.at(-1)?.data).toMatchObject({ verdict: 'done-verified', note: 'owner-confirmed' });
+    expect(closedEvents(w)).toHaveLength(1);
+    expect(w.mirrored).toEqual([['init-1', 'completed']]);
+  });
+});
+
+describe('ChiefOfStaffLoop — note dedupe keeps every class (PR 5 review #1)', () => {
+  it('a project parked (derived) and another refuted twice (transient) both reach the note; the Confirm-done pair collapses to one line', async () => {
+    const w = world({ hour: 8 }); renew(w, T0 - H);
+    // A: parked via three started restarts without progress.
+    const bindAs = (key: string, goal: string) => w.j.emit('m_a')(`binding:${key}`, buildBindingPut({ conversationKey: key, goal, checkCadenceHours: 24, doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }], linked: { repos: ['o/r'], branches: ['b'] }, confirmedBy: 'owner', confirmedAt: new Date(T0 - H).toISOString() } as never));
+    bindAs('telegram:1', 'Project A');
+    for (let s = 1; s <= 3; s++) {
+      w.j.emit('m_a')(`telegram:1:1:${s}`, buildIntent({ conversationKey: 'telegram:1', action: 'restart-run', leaseEpoch: 1, sequence: s, claimedAt: new Date(T0 - (4 - s) * H).toISOString(), machine: 'm_a', holderSignature: 's' }));
+      w.j.emit('m_a')(`telegram:1:1:${s}:outcome:executing`, buildOutcome({ intentKey: `telegram:1:1:${s}`, transition: 'executing', writer: 'ownership-machine', machine: 'm_a', at: new Date(T0).toISOString() }));
+      w.j.emit('m_a')(`telegram:1:1:${s}:outcome:started`, buildOutcome({ intentKey: `telegram:1:1:${s}`, transition: 'started', writer: 'ownership-machine', machine: 'm_a', at: new Date(T0).toISOString(), runId: `r${s}` }));
+    }
+    // B: claims done with a failing deterministic item, twice (second refutation ⇒ transient needs-you line).
+    bindAs('telegram:2', 'Project B');
+    w.judge = { verdict: 'claims-done', citedIds: ['run'], reason: 'says done' };
+    const l = loop(w);
+    await l.tick();
+    w.now += H; w.bundle = { netDiffLines: 7 }; l.markDirty('telegram:2'); await l.tick(); // second refutation ⇒ a transient needs-you line, held for the next note
+    w.now += 24 * H; await l.tick(); // the next note: derived (A parked) AND transient (B refuted twice) both present
+    expect(l.status().lastError).toBeNull();
+    const note = w.notes.join('\n');
+    expect(note).toContain('Project A is parked');
+    expect(note).toContain('Project B says it is done but these checks still fail');
   });
 });

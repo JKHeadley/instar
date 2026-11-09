@@ -39,7 +39,7 @@ export const CHIEF_OF_STAFF_RECORD_KIND = 'chief-of-staff-record';
 export const CHIEF_OF_STAFF_STORE_KEY = 'chiefOfStaff';
 
 export const COS_RECORD_TYPES = [
-  'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick',
+  'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note',
 ] as const;
 export type CosRecordType = typeof COS_RECORD_TYPES[number];
 
@@ -300,6 +300,14 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
         if (!isIso(raw.tickAt)) return null;
         return { recordType: type, machine: raw.machine, tickAt: raw.tickAt };
       }
+      case 'note': {
+        // §3 / CMT-1416: a sent note or immediate message, so the cadence and the daily cap fold from records on every machine.
+        if (!isMachine(raw.machine)) return null;
+        if (!isIso(raw.at)) return null;
+        if (raw.kind !== 'note' && raw.kind !== 'immediate') return null;
+        if (!Array.isArray(raw.itemKeys) || raw.itemKeys.length > 64 || !raw.itemKeys.every((x) => isShortText(x, 160))) return null;
+        return { recordType: type, machine: raw.machine, at: raw.at, kind: raw.kind, itemKeys: raw.itemKeys };
+      }
     }
     return null;
   },
@@ -396,6 +404,36 @@ export function buildRenewal(r: RenewalInput): Build {
 
 export function buildGraduation(date: string, metrics: Record<string, unknown>, decision: 'pass' | 'incomplete' | 'fail'): Build {
   return (hlc, origin, observed) => DATE_RE.test(date) ? envelope(`graduation:${date}`, hlc, origin, observed, 'put', { recordType: 'graduation', date, metrics, decision }) : null;
+}
+
+/** One record per send; `nonce` makes two sends in the same millisecond two records (the caller passes the same key to the emitter). */
+export function noteRecordKey(n: { machine: string; at: string; kind: 'note' | 'immediate'; nonce: string }): string { return `note:${n.kind}:${n.at}:${n.machine}:${n.nonce}`; }
+export function buildNoteSent(n: { machine: string; at: string; kind: 'note' | 'immediate'; itemKeys: string[]; nonce: string }): Build {
+  const { nonce, ...rec } = n;
+  return (hlc, origin, observed) => isMachine(n.machine) ? envelope(noteRecordKey({ ...n, nonce }), hlc, origin, observed, 'put', { recordType: 'note', ...rec }) : null;
+}
+
+export interface NoteState { lastNoteAt: string | null; immediatesLast24h: number }
+/** CMT-1416: the note cadence and the immediate cap, derived from `note` records (never process memory). */
+export function foldNoteState(entries: UnionEntry[], now: Date): NoteState {
+  let lastNoteAt: string | null = null; let immediates = 0;
+  const dayAgo = now.getTime() - 24 * 3_600_000;
+  for (const [, w] of latestPerKey(entries)) {
+    if (w.data.recordType !== 'note' || !isIso(w.data.at)) continue;
+    const at = w.data.at as string;
+    if (w.data.kind === 'note') { if (!lastNoteAt || at > lastNoteAt) lastNoteAt = at; }
+    else if (w.data.kind === 'immediate' && Date.parse(at) > dayAgo) immediates++;
+  }
+  return { lastNoteAt, immediatesLast24h: immediates };
+}
+
+/** Trailing `unknown` verdicts for one conversation (newest backwards), for the "can't see" line derived at note time. */
+export function trailingUnknownChecks(entries: UnionEntry[], conversationKey: string): number {
+  const checks: Array<{ at: string; verdict: string }> = [];
+  for (const [, w] of latestPerKey(entries)) if (w.data.recordType === 'check-event' && w.data.conversationKey === conversationKey && isIso(w.data.at)) checks.push({ at: w.data.at as string, verdict: String(w.data.verdict) });
+  checks.sort((a, b) => b.at.localeCompare(a.at));
+  let n = 0; for (const c of checks) { if (c.verdict === 'unknown') n++; else break; }
+  return n;
 }
 
 export function buildLastTick(machine: string, tickAt: string): Build {

@@ -458,7 +458,23 @@ export class ChiefOfStaffActionProtocol {
     if (!holder || holder !== cmd.holderMachineId) return { settled: 'unknown' };
     if (!this.safeBool(() => this.d.lease.freshRenewalWithin(holder!, this.d.lease.ttlMs), false)) return { settled: 'unknown' };
     const claim = latestPerKey(this.safeUnion()).get(cmd.intentKey);
-    if (!claim || claim.data.recordType !== 'intent' || claim.data.machine !== cmd.holderMachineId || claim.data.conversationKey !== cmd.conversationKey) return { settled: 'unknown' };
+    if (!claim || claim.data.recordType !== 'intent' || claim.data.conversationKey !== cmd.conversationKey) return { settled: 'unknown' };
+    // CMT-1417: after a lease failover the CURRENT holder (verified above, fresh renewal) may settle an intent a
+    // PREVIOUS holder claimed — but only once that claim is older than a lease TTL, so the previous holder cannot
+    // still be acting on it. A peer that is not the current holder never reaches this line.
+    // Step 2(b)/4: only the conversation's OWNER settles, and only the machine that wrote `executing` may
+    // judge whether a receipt exists (another machine's registry cannot see this run).
+    if ((this.safeOwner(cmd.conversationKey) ?? this.d.machineId) !== this.d.machineId) return { settled: 'unknown' };
+    const executing = latestPerKey(this.safeUnion()).get(`${cmd.intentKey}:outcome:executing`);
+    if (executing && executing.data.machine !== this.d.machineId) return { settled: 'unknown' };
+    const priorHolder = claim.data.machine !== cmd.holderMachineId ? String(claim.data.machine) : null;
+    if (priorHolder) {
+      // Minimum age: the larger of a lease TTL and the lagging-fold window (wall clocks differ between machines; the
+      // conversation lock, not this guard, is what protects a run still executing on THIS machine).
+      const claimedAt = typeof claim.data.claimedAt === 'string' ? Date.parse(claim.data.claimedAt) : NaN;
+      if (!Number.isFinite(claimedAt) || this.d.now() - claimedAt <= Math.max(this.d.lease.ttlMs, this.d.laggingFoldMs)) return { settled: 'unknown' };
+    }
+    const why = (base: string) => (priorHolder ? `${base};prior-holder=${priorHolder}`.slice(0, 200) : base);
     return this.d.withConversationLock(cmd.conversationKey, async () => {
       try { this.rebuildIndex(); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ return { settled: 'unknown' as const }; }
       const seen = this.index.get(cmd.intentKey);
@@ -466,12 +482,12 @@ export class ChiefOfStaffActionProtocol {
       let receipt: { runId: string } | null = null;
       try { receipt = this.d.runRegistry.findByIdempotencyKey(cmd.intentKey); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ return { settled: 'unknown' as const }; }
       if (receipt) {
-        await this.writeOutcome(cmd.intentKey, 'started', 'ownership-machine', 'settled-from-registry', { runId: receipt.runId });
+        await this.writeOutcome(cmd.intentKey, 'started', 'ownership-machine', why('settled-from-registry'), { runId: receipt.runId });
         this.index.set(cmd.intentKey, { state: 'started', runId: receipt.runId });
         return { settled: 'started' as const, runId: receipt.runId };
       }
       // No receipt: a bare `executing` (or a claim that never arrived) is tombstoned, never re-run.
-      await this.writeOutcome(cmd.intentKey, 'rejected', 'ownership-machine', 'settled-no-receipt');
+      await this.writeOutcome(cmd.intentKey, 'rejected', 'ownership-machine', why('settled-no-receipt'));
       this.index.set(cmd.intentKey, { state: 'rejected' });
       return { settled: 'rejected' as const };
     });

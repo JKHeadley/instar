@@ -72,6 +72,7 @@ async function setup(opts: { cos: boolean }) {
     state: { getJobState: () => null, getSession: () => null, queryEvents: () => [], getCoherenceJournal: () => undefined },
     conversationRegistry: registry, conversationBindAuth: createConversationBindAuth(dir), appConversations: svc, telegram,
   } as unknown as RouteContext;
+  const checkIns: string[] = [];
   const parents = new Map<string, string | null>([[`telegram:${COS}`, null], [`telegram:${PROJECT}`, `telegram:${COS}`], [`telegram:${SUB}`, `telegram:${PROJECT}`]]);
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
@@ -80,14 +81,14 @@ async function setup(opts: { cos: boolean }) {
   app.use(createMobileConversationRouter({
     config: config as never, pairing, service: svc, machineId: () => 'm1', pool: { config: config as never, resolvePeerUrls: () => [] } as never,
     telegramTopics: () => topics.map((t) => ({ topicId: t.topicId, topicName: t.topicName, lastActivity: t.lastActivity, lastPreview: null })),
-    ...(opts.cos ? { chiefOfStaff: () => ({ pinnedKey: `telegram:${COS}`, parents }) } : {}),
+    ...(opts.cos ? { chiefOfStaff: () => ({ pinnedKey: `telegram:${COS}`, parents }), chiefOfStaffCheckIn: (principal: string) => { checkIns.push(principal); return { ok: true as const, lease: { live: true } }; } } : {}),
   }));
   app.use(createMobilePairingRouter(pairing, deps, ctx));
   const dev = makeDevice();
   const c = pairing.devices.createPending({ deviceName: 'iPhone', label: null, publicKey: dev.publicKey, host: HOST });
   if (!c.ok) throw new Error('setup');
   const code = pairing.confirm.issue(c.device.id, Date.now() + 60_000);
-  const e = { app, dev, deviceId: c.device.id };
+  const e = { app, dev, deviceId: c.device.id, checkIns };
   expect((await signed(e, 'POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
   return e;
 }
@@ -138,5 +139,20 @@ describe('Chief of Staff app surface', () => {
     const r = await bearer(e, '/mobile/conversations?limit=50');
     expect(r.body.pinned).toBeUndefined();
     expect(r.body.conversations.every((c: Record<string, unknown>) => !('parentConversationKey' in c))).toBe(true);
+  });
+});
+
+describe('Chief of Staff app check-in (§4: an owner-admitted device renews the lease)', () => {
+  it('the owner\'s paired phone checks in; a Bearer caller (no device) is refused; feature off ⇒ 503', async () => {
+    const e = await setup({ cos: true });
+    const r = await signed(e, 'POST', '/mobile/chief-of-staff/check-in', {});
+    expect(r.status).toBe(200); expect(r.body.ok).toBe(true);
+    expect(e.checkIns).toEqual([`device:${e.deviceId}`]);
+    const b = await request(e.app).post('/mobile/chief-of-staff/check-in').set('Authorization', 'Bearer tok-1').set('X-Instar-AgentId', 'echo').send({});
+    expect(b.status).toBe(403);
+    expect(e.checkIns).toHaveLength(1);
+    const off = await setup({ cos: false });
+    const o = await signed(off, 'POST', '/mobile/chief-of-staff/check-in', {});
+    expect(o.status).toBe(503);
   });
 });

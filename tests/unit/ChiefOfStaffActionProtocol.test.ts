@@ -407,3 +407,31 @@ describe('ChiefOfStaffActionProtocol — settle is authenticated like execute', 
     expect(foldIntentState(w.journal.entries).get(`${CK}:7:8`)!.state).toBe('rejected');
   });
 });
+
+describe('settle after a lease failover (CMT-1417)', () => {
+  it('the CURRENT holder settles an intent a PREVIOUS holder claimed once the claim is older than a lease TTL; a fresh claim, and a non-holder, still get unknown', async () => {
+    const w = world(); const A = machine(w, 'm_a'); const B = machine(w, 'm_b', { m_a: A });
+    const { buildIntent, buildOutcome } = await import('../../src/core/ChiefOfStaffStore.js');
+    const seam = w.journal.seam('m_a');
+    // m_a (then the holder, and the conversation's owner) claimed and reached executing, then the lease moved to m_b.
+    seam.emit(`${CK}:7:9`, buildIntent({ conversationKey: CK, action: 'restart-run', leaseEpoch: 7, sequence: 9, claimedAt: new Date(T0 - 60_000).toISOString(), machine: 'm_a', holderSignature: 's' }));
+    seam.emit(`${CK}:7:9:outcome:executing`, buildOutcome({ intentKey: `${CK}:7:9`, transition: 'executing', writer: 'ownership-machine', machine: 'm_a', at: new Date(T0 - 60_000).toISOString() }));
+    const st = foldIntentState(w.journal.entries).get(`${CK}:7:9`)!;
+    expect(st.open).toBe(true);
+    // Not the holder yet: m_b's settle is unknown to the owner ⇒ blocked, nothing written.
+    w.holder = 'm_a'; w.now = T0;
+    expect(await B.settleOpenIntent(st)).toBe('blocked');
+    expect(foldIntentState(w.journal.entries).get(`${CK}:7:9`)!.open).toBe(true);
+    // Holder now, but the previous holder's claim is only 10 s old (TTL 30 s): still unknown ⇒ blocked.
+    w.holder = 'm_b'; w.now = T0 - 50_000;
+    expect(await B.settleOpenIntent(st)).toBe('blocked');
+    // Older than the minimum age (the larger of a lease TTL and the lagging-fold window, 30 min here): the owner settles it
+    // for the new holder — no receipt ⇒ rejected, and the holder writes lost; the outcome names the prior holder.
+    w.now = T0 + 31 * 60_000;
+    expect(await B.settleOpenIntent(st)).toBe('lost');
+    const outcome = w.journal.entries.find((e) => e.data.recordType === 'outcome' && e.data.intentKey === `${CK}:7:9` && e.data.transition === 'rejected');
+    expect(String(outcome?.data.reason)).toContain('prior-holder=m_a');
+    expect(foldIntentState(w.journal.entries).get(`${CK}:7:9`)!.state).toBe('lost');
+    expect(w.started).toHaveLength(0);
+  });
+});
