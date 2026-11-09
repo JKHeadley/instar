@@ -259,4 +259,32 @@ describe('actual graph source runtime + authenticated installed peer transport',
   expect((await witness.operation(original.packet.idempotencyKey)).certificate).toEqual(original.certificate);const payload=runtime.source.openVerifiedPayload(original);expect(payload.toString()).toBe('old saved source must remain repairable');payload.fill(0);prepare.mockRestore();
  });
 
+ it('verifies the removal history once per readiness stretch and reads it again after any await', async () => {
+  // Real Studio + M5 run (2026-11-09): after a removal the readiness pass read
+  // and verified the whole removal history once per manifest record. It now
+  // reuses one read only across records reached with no await in between.
+  const {runtime,peer,f}=await setup();expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);
+  const save=(id:string)=>{const r=f.record(id);return runtime.withSourceMutation(token=>runtime.submitPrepared({coreType:r.coreType,idempotencyKey:r.packet.idempotencyKey,requestHash:canonicalHash(id),core:r.core,authorizationProof:r.authorizationProof,plaintextSource:Buffer.from('lineage reuse source')},token));};
+  const ids:string[]=[];for(const id of ['event-aaa','event-bbb','event-ccc']){const outcome=await save(id);expect(outcome.state).toBe('committed');ids.push(outcome.eventId);}
+  for(let i=0;i<2;i++){expect(await runtime.refreshReadiness()).toBe(true);expect(await peer.refreshReadiness()).toBe(true);}
+  const settled=(runtime as unknown as {settledRecords:Map<string,string>}).settledRecords;expect(ids.every(id=>settled.has(id))).toBe(true);
+  let reads=0;const checked:string[]=[],used=new Map<string,number>();
+  (runtime.source as unknown as {historicalImportAuthority:unknown}).historicalImportAuthority={
+   verifiedNegativeRoleLineage:()=>{reads++;return {read:reads,memberLossActivations:[]};},
+   assertMemberLossRepairAllowed:(record:{packet:{eventId:string}},lineage?:{read:number})=>{if(!lineage)throw new Error('per-record lineage read');checked.push(record.packet.eventId);used.set(record.packet.eventId,lineage.read);},
+  };
+  try{
+   // Every record settled: no await between records, so one read serves all three.
+   expect(await runtime.refreshReadiness()).toBe(true);expect(reads).toBe(1);expect(checked.filter(id=>ids.includes(id))).toEqual(ids);
+   // The middle record now awaits the witness, so the record after it reads the history again.
+   reads=0;checked.length=0;settled.delete(ids[1]);
+   expect(await runtime.refreshReadiness()).toBe(true);expect(checked.filter(id=>ids.includes(id))).toEqual(ids);expect(reads).toBe(2);
+   expect(ids.map(id=>used.get(id))).toEqual([1,1,2]);
+   // A history that fails to verify still stops readiness.
+   (runtime.source as unknown as {historicalImportAuthority:{verifiedNegativeRoleLineage:()=>unknown}}).historicalImportAuthority.verifiedNegativeRoleLineage=()=>{throw new Error('lineage-invalid');};
+   checked.length=0;const repairRead=vi.spyOn(runtime.source,'repairLineage');
+   expect(await runtime.refreshReadiness()).toBe(false);expect((runtime as unknown as {lastReadinessFailure:string|null}).lastReadinessFailure).toBe('lineage-invalid');expect(repairRead).toHaveBeenCalledTimes(1);expect(checked).toEqual([]);repairRead.mockRestore();
+  }finally{(runtime.source as unknown as {historicalImportAuthority:unknown}).historicalImportAuthority=undefined;}
+ });
+
 });
