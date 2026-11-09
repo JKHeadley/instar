@@ -32,7 +32,13 @@ function harness(options: { addRights?: string[]; missingInvitee?: boolean; crea
     calls.push({ method, params: JSON.parse(JSON.stringify(params)) });
     switch (method) {
       case 'users.getUsers': return [{ _: 'user', id: Number(SELF) }];
-      case 'messages.getAllChats': if (options.listThrow !== undefined) throw options.listThrow; return { _: options.slice ? 'messages.chatsSlice' : 'messages.chats', chats: [...chats.values()].map(c => ({ ...c })) };
+      case 'contacts.search': {
+        if (options.listThrow !== undefined) throw options.listThrow;
+        const hits = [...chats.values()].filter(c => String(c.title).toLowerCase().includes(String(params.q).toLowerCase()));
+        return { _: 'contacts.found', my_results: options.slice ? Array.from({ length: 100 }, (_, i) => ({ _: 'peerChannel', channel_id: i })) : hits.map(c => ({ _: 'peerChannel', channel_id: c.id })),
+          results: [], chats: hits.map(c => ({ ...c })), users: [] };
+      }
+      case 'messages.getAllChats': throw Object.assign(new Error('No method messages.getAllChats found'), {});
       case 'contacts.resolveUsername':
         return { peer: { _: 'peerUser', user_id: Number(BOT.userId) },
           users: [{ _: 'user', id: Number(BOT.userId), access_hash: 'bot-hash', pFlags: options.botFlag === false ? {} : { bot: true } }] };
@@ -176,9 +182,15 @@ describe('listTestGroups and deleteTestGroup page scripts', () => {
     h.operator(2, 'Instar test - not mine [itg-abcdeabcde]', { creator: false, megagroup: true, forum: true });
     h.operator(3, 'Instar test - no forum [itg-abcdeabcde]', { creator: true, megagroup: true, forum: false });
     h.operator(4, TITLE);
-    const raw = await h.driver.listTestGroups({ deadline: deadline(), channelId: '1' });
+    const raw = await h.driver.listTestGroups({ deadline: deadline(), channelId: '4' });
     expect(parseTestGroupList(raw)).toEqual({ ok: true, complete: true, groups: [{ channelId: '4', title: TITLE, date: 1_600_000_000 }], requested: { present: true } });
     expect(JSON.stringify(raw)).not.toMatch(/Family|hash/);
+    // The list is Telegram's search for the title prefix, so a chat without it (an operator chat) is never
+    // returned: it reads "not present" and can never be reached by delete.
+    const other = await h.driver.listTestGroups({ deadline: deadline(), channelId: '1' });
+    expect(parseTestGroupList(other)).toMatchObject({ ok: true, requested: { present: false } });
+    expect(h.calls.some(c => c.method === 'messages.getAllChats')).toBe(false);
+    expect(h.calls.filter(c => c.method === 'contacts.search').map(c => c.params)).toContainEqual({ q: 'Instar test', limit: 100 });
   });
   it('marks a slice as incomplete', async () => {
     const h = harness({ slice: true });
