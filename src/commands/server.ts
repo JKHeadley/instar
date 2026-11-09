@@ -11880,6 +11880,17 @@ export async function startServer(options: StartOptions): Promise<void> {
       messageStore: () => messageStoreForResume,
       router: () => threadlineRouterForResume,
     });
+    // Chief of Staff action protocol (docs/specs/chief-of-staff-topic.md §2.4). Constructed in the
+    // mesh block once the lease, ownership, journal and identity seams exist; null until then and
+    // whenever the dev-gated flag resolves off. The other run producers read it through
+    // `_cosStandDownFor` (an open CoS intent, or a CoS-started run whose operator lease expired).
+    let _cosProtocol: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null = null;
+    let _cosRunRecordRead: ((topicId: number) => { cosNoRespawn?: boolean } | null) | null = null;
+    let _sharedOperatorStopSince: ((topicId: number, sinceIso: string) => boolean) | null = null;
+    const _cosStandDownFor = (topicId: number): string | null => {
+      if (!_cosProtocol) return null;
+      try { return _cosProtocol.hasOpenIntent(`telegram:${topicId}`) ? 'cos-intent-open' : null; } catch { /* @silent-fallback-ok: a throwing Chief of Staff read makes the producer STAND DOWN (the safe side), never act */ return 'cos-dep-threw'; }
+    };
     let autonomousLivenessReconciler:
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null = null;
@@ -12106,6 +12117,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           return Math.max(perTopic, globalOperatorStopAt, flagAt) > since;
         };
 
+        _sharedOperatorStopSince = sharedOperatorStopSince;
         resumeDrainer = new ResumeQueueDrainer(
           {
             queue: rq,
@@ -12131,6 +12143,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               return path.resolve(cwd).startsWith(path.resolve(binding.projectDir));
             },
             operatorStopSince: sharedOperatorStopSince,
+            cosStandDown: (topicId) => _cosStandDownFor(topicId),
             // Resume-idle-autonomous fix (spec: resume-idle-autonomous-on-reap.md):
             // drain-time liveness re-check for an entry admitted via the
             // age-limit-active-run path. Returns true (= run FINISHED) when the topic's
@@ -12380,6 +12393,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 }
                 return out;
               },
+              cosStandDown: (topicId) => _cosStandDownFor(topicId),
               liveTopicSnapshot: () => {
                 const set = new Set<number>();
                 for (const s of sessionManager.listRunningSessions()) {
@@ -17769,6 +17783,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 });
                 return null;
               }
+            },
+            // Chief of Staff §4: a CoS-started run is not heartbeated once the operator lease expired.
+            cosSuppress: (topicId) => {
+              try {
+                const rec = _cosRunRecordRead?.(topicId) ?? null;
+                return rec?.cosNoRespawn && _cosProtocol && !_cosProtocol.operatorLeaseLive() ? 'cos-lease-expired' : null;
+              } catch { /* @silent-fallback-ok: an unreadable run record cannot suppress the heartbeat; the heartbeat then behaves exactly as before this feature */ return null; }
             },
             getRunMarkers: (topicId) => readAutonomousRunMarkers(config.stateDir, topicId),
             isSessionAlive: (name) => sessionManager.isSessionAlive(name),
@@ -28379,6 +28400,18 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
               });
             },
+            // Chief of Staff §2.4: the lease holder's claimed action, executed on THIS machine
+            // (the conversation's owner) under the conversation lock. The handler is the gate:
+            // the protocol verifies the INNER holder signature + a fresh renewal, ownership, the
+            // open-intent rule, stand-down and the dedupe index; off ⇒ `cos-disabled`.
+            'cos-action': async (cmd) => {
+              if (!_cosProtocol) return { outcome: 'disabled', reason: 'cos-disabled' };
+              return _cosProtocol.execute(cmd as import('../core/ChiefOfStaffActionProtocol.js').CosActionCommand);
+            },
+            'cos-settle': async (cmd) => {
+              if (!_cosProtocol) return { settled: 'unknown', reason: 'cos-disabled' };
+              return _cosProtocol.settle(cmd as import('../core/ChiefOfStaffActionProtocol.js').CosSettleCommand);
+            },
             'a2a-inbox-deliver': async (cmd, sender) => {
               const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'a2a-inbox-deliver' };
               const { handleA2aMeshInbox } = await import('../core/A2aMeshInbox.js');
@@ -28888,6 +28921,131 @@ export async function startServer(options: StartOptions): Promise<void> {
             if (!url) return { ok: false, reason: 'no-url' };
             return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
           };
+          // ── Chief of Staff action protocol (docs/specs/chief-of-staff-topic.md §2.4) ──
+          // Dev-gated: `chiefOfStaff.enabled` omitted ⇒ live on a development agent, dark on the
+          // fleet. Nothing CALLS claim() until the check-in loop ships (PR 3); this wires the
+          // execution side so a holder on another machine can act here, and the stand-down read
+          // the Reconciler / resume queue / heartbeat consult. Every seam is the real one.
+          try {
+            const cosEnabled = () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('chiefOfStaff.enabled', undefined), config);
+            if (cosEnabled() && coherenceJournal && replicatedRecordEmitter && leaseCoordinatorRef) {
+              const cosMod = await import('../core/ChiefOfStaffActionProtocol.js');
+              const storeMod = await import('../core/ChiefOfStaffStore.js');
+              const streamsMod = await import('../core/ReplicatedPeerStreamReader.js');
+              const { AutonomousRunStore: CosRunStoreCtor } = await import('../core/AutonomousRunStore.js');
+              const cosRunStore = new CosRunStoreCtor(config.stateDir);
+              _cosRunRecordRead = (topicId) => cosRunStore.getRecord(String(topicId));
+              const cosJournal = coherenceJournal;
+              const cosEmitter = replicatedRecordEmitter;
+              const cosLease = leaseCoordinatorRef;
+              const cosPeerStreams = new streamsMod.ReplicatedPeerStreamReader({ stateDir: config.stateDir, registry: replicatedKindRegistry, selfMachineId: meshSelfId, autoRebuild: true });
+              const topicOf = (conversationKey: string): number | null => {
+                const m = /^telegram:(\d+)$/.exec(conversationKey); return m ? Number(m[1]) : null;
+              };
+              const lockRef = (conversationKey: string): string => conversationKey.startsWith('app:') ? conversationKey.slice(4) : conversationKey;
+              const protocol = new cosMod.ChiefOfStaffActionProtocol({
+                enabled: cosEnabled,
+                now: () => Date.now(),
+                machineId: meshSelfId,
+                journal: {
+                  emit: (recordKey, build) => {
+                    const r = cosEmitter.emit(storeMod.CHIEF_OF_STAFF_STORE_KEY, recordKey, build);
+                    return { outcome: r.outcome, ...(r.seq !== undefined ? { seq: r.seq } : {}) };
+                  },
+                  awaitDurable: (seq) => cosJournal.awaitDurableSeq(storeMod.CHIEF_OF_STAFF_RECORD_KIND, seq, 5_000),
+                  flush: () => cosJournal.flush(),
+                  loadUnion: () => {
+                    const own = cosJournal.readTail(storeMod.CHIEF_OF_STAFF_RECORD_KIND, 10_000).entries.map((e) => ({ data: e.data as Record<string, unknown>, origin: String((e.data as Record<string, unknown>).origin ?? meshSelfId) }));
+                    const peers: Array<{ data: Record<string, unknown>; origin: string }> = [];
+                    for (const byOrigin of cosPeerStreams.loadAllOriginRecords(storeMod.CHIEF_OF_STAFF_STORE_KEY).values()) {
+                      for (const r of byOrigin) peers.push({ data: { ...r.data, recordKey: r.envelope.recordKey, hlc: r.envelope.hlc, op: r.envelope.op, origin: r.origin }, origin: r.origin });
+                    }
+                    return [...own, ...peers];
+                  },
+                },
+                lease: {
+                  currentHolder: () => cosLease.currentHolder(),
+                  freshRenewalWithin: (m, ms) => cosLease.freshRenewalWithin(m, ms),
+                  ttlMs: cosLease.ttlMs,
+                  currentEpoch: () => cosLease.currentEpoch(),
+                  holdsLease: () => cosLease.holdsLease(),
+                },
+                ownerOf: (conversationKey) => {
+                  const t = topicOf(conversationKey);
+                  if (t === null) return null;
+                  const owner = sessionOwnershipRegistry?.ownerOf(String(t)) ?? null;
+                  // Single-machine / unregistered topic: this machine is the owner.
+                  return owner ?? meshSelfId;
+                },
+                sign: (c) => idMod.sign(c, localSigningKeyPem),
+                verify: (c, sig, machineId) => {
+                  const pem = meshIdMgr.getSigningPublicKeyPem(machineId);
+                  return pem ? idMod.verify(c, sig, pem) : false;
+                },
+                runRegistry: {
+                  stateFor: (conversationKey) => {
+                    const t = topicOf(conversationKey);
+                    if (t === null) return 'none';
+                    return cosRunStore.blockingStateForTopic(String(t));
+                  },
+                  findByIdempotencyKey: (key) => cosRunStore.findByIdempotencyKey(key),
+                },
+                reconcilerCondition: (conversationKey) => {
+                  const t = topicOf(conversationKey);
+                  if (t === null) return null;
+                  return autonomousLivenessReconciler?.status().conditions.find((c) => c.topicId === t)?.state ?? null;
+                },
+                resumeQueueHolds: (conversationKey) => {
+                  const t = topicOf(conversationKey);
+                  return t === null ? false : (resumeQueue?.list().some((e) => e.topicId === t) ?? false);
+                },
+                moveInProgress: (conversationKey) => {
+                  const t = topicOf(conversationKey);
+                  if (t === null) return false;
+                  const markers = readAutonomousRunMarkers(config.stateDir, t);
+                  return !!(markers?.movedTo || markers?.moveSuspended);
+                },
+                operatorStoppedSince: (conversationKey, sinceIso) => {
+                  const t = topicOf(conversationKey);
+                  return t === null ? false : (_sharedOperatorStopSince ? _sharedOperatorStopSince(t, sinceIso) : true);
+                },
+                // PR 3 derives the operator check-in lease from the replicated renewals; until the
+                // loop ships nothing claims, so the conservative answer is the right one.
+                operatorLeaseLive: () => false,
+                actionGate: () => ({ nextActionAllowedAt: null, newestCheckAgeMs: null }),
+                laggingFoldMs: 30 * 60_000,
+                withConversationLock: (conversationKey, fn) => sessionManager.withConversationLock(lockRef(conversationKey), fn),
+                executors: {
+                  startRun: async () => { throw new Error('cos-start-run-not-wired-until-loop-ships'); },
+                  inject: async ({ conversationKey, text, idempotencyKey }) => {
+                    const t = topicOf(conversationKey);
+                    const name = t === null ? null : telegram?.getSessionForTopic(t) ?? null;
+                    if (t === null || !name || !sessionManager.isSessionAlive(name)) throw new Error('no-live-session');
+                    sessionManager.injectTelegramMessage(name, t, `[chief-of-staff automated — not operator words; key ${idempotencyKey}]\n${text}`);
+                    return { injectId: `${name}:${idempotencyKey}` };
+                  },
+                  liveSession: (conversationKey) => {
+                    const t = topicOf(conversationKey);
+                    const name = t === null ? null : telegram?.getSessionForTopic(t) ?? null;
+                    return !!(name && sessionManager.isSessionAlive(name));
+                  },
+                },
+                route: async (machineId, command) => {
+                  const url = peerUrl(machineId);
+                  if (!url) throw new Error('no-url');
+                  const res = await meshClient.send({ machineId, url }, command as import('../core/MeshRpc.js').MeshCommand, 0, { timeoutMs: 15_000 });
+                  if (!res.ok) throw new Error(`mesh:${res.reason ?? res.status}`);
+                  return res.result;
+                },
+                maxRunHours: Number(liveConfig.get<number | undefined>('chiefOfStaff.maxRunHours', undefined) ?? 4),
+                log: (m) => console.log(pc.dim(`  ${m}`)),
+              });
+              _cosProtocol = protocol;
+              console.log(pc.dim('  [chief-of-staff] action protocol wired (dev-gated; no loop until PR 3)'));
+            }
+          } catch (err) { /* @silent-fallback-ok: Chief of Staff seam read failed — the protocol resolves an unreadable seam to refuse/stand down, never to act */
+            console.log(pc.yellow(`  [chief-of-staff] action protocol not wired: ${(err as Error)?.message}`));
+          }
           if (telegramOriginBoot) {
             const { OriginPoolAudit } = await import('../messaging/telegram-origin/OriginPoolAudit.js');
             const { originAuditAudience, ORIGIN_METRICS_AUDIENCE } = await import('../messaging/telegram-origin/OriginMesh.js');

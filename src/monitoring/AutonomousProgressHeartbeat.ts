@@ -85,6 +85,12 @@ export interface AutonomousHeartbeatDeps {
   listActiveAutonomousRuns: () => ActiveAutonomousRun[];
   /** True only with confirmed local ownership; null when ownership is unknown. */
   isLocalTopicOwner?: (topicId: number) => boolean | null;
+  /**
+   * Chief of Staff (docs/specs/chief-of-staff-topic.md §4) — OPTIONAL: a CoS-started run whose
+   * operator check-in lease is expired is not heartbeated (it is winding down by design).
+   * Returns the suppression reason or null. Absent ⇒ today's behaviour.
+   */
+  cosSuppress?: (topicId: number) => string | null;
   /** Read the run-state markers for #2 (mid-move) + #3 (warmup). Null fails closed. */
   getRunMarkers: (topicId: number) => RunMarkers | null;
   /** Predicate #4: is the bound session alive? */
@@ -327,6 +333,11 @@ export class AutonomousProgressHeartbeat extends EventEmitter {
       return;
     }
 
+    if (this.deps.cosSuppress) {
+      let cos: string | null = null;
+      try { cos = this.deps.cosSuppress(topicId); } catch { /* @silent-fallback-ok: a throwing Chief of Staff dep leaves the heartbeat unchanged */ cos = null; }
+      if (cos) { this.recordSuppressed(topicId, now, 'cos-lease-expired'); return; }
+    }
     // #2 Not mid-handoff + #3 destination warmup elapsed (markers fail closed).
     if (!markers || !markers.runId || markers.stopped) {
       this.recordSuppressed(topicId, now, 'run-markers-unreadable');

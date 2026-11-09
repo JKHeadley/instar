@@ -43,6 +43,12 @@ export interface DevGatedFeature {
 }
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
+  {
+    name: 'chiefOfStaff',
+    configPath: 'chiefOfStaff.enabled',
+    description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Every side effect goes through the §2.4 action protocol (signed intent, ownership-machine lock, durable executing record, idempotency key) and the existing quota, spawn-cap and pressure gates; it acts only on owner-confirmed bindings while the operator check-in lease is live, with P19 brakes (park, breaker, backoff). PR 2 wires the protocol only; no loop runs until PR 3.',
+  },
   { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
   {
     name: 'scriptRunners',

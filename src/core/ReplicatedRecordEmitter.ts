@@ -44,6 +44,10 @@ export interface ReplicatedRecordEmitterJournal {
    *  did with it; a seam that returns nothing (a test fake predating the outcome)
    *  yields the `unconfirmed` emit outcome. */
   emitReplicatedRecord(kind: string, data: Record<string, unknown>): JournalEmitOutcome | void;
+  /** Optional: the same append, also returning the journal seq assigned on `accepted`, so a
+   *  caller may wait for durability (CoherenceJournal.awaitDurableSeq). A seam without it
+   *  yields an EmitResult with no `seq`. */
+  emitReplicatedRecordWithSeq?(kind: string, data: Record<string, unknown>): { outcome: JournalEmitOutcome; seq?: number };
 }
 
 /** The minimal HLC seam (only `tick()` is needed on the author side). */
@@ -104,6 +108,9 @@ export interface EmitResult {
   outcome: EmitOutcome;
   /** The HLC this emit ticked, present whenever the tick happened. */
   hlc?: HlcTimestamp;
+  /** The journal seq assigned to an `emitted` record, when the journal seam reports it
+   *  (CoherenceJournal does). Pass it to `awaitDurableSeq` to wait for the fsync. */
+  seq?: number;
 }
 
 export interface EmitOptions {
@@ -249,7 +256,14 @@ export class ReplicatedRecordEmitter {
         return { outcome: 'skipped', hlc };
       }
       // 7. Append. The journal validates + op-key-dedupes + enqueues (non-blocking).
-      const journalOutcome = this.seams.journal.emitReplicatedRecord(reg.kind, data);
+      let journalOutcome: JournalEmitOutcome | void;
+      let seq: number | undefined;
+      if (typeof this.seams.journal.emitReplicatedRecordWithSeq === 'function') {
+        const r = this.seams.journal.emitReplicatedRecordWithSeq(reg.kind, data);
+        journalOutcome = r.outcome; seq = r.seq;
+      } else {
+        journalOutcome = this.seams.journal.emitReplicatedRecord(reg.kind, data);
+      }
       if (journalOutcome === undefined) {
         this.stats.emitted++;
         return { outcome: 'unconfirmed', hlc };
@@ -260,7 +274,7 @@ export class ReplicatedRecordEmitter {
       }
       this.stats.emitted++;
       this.notify({ store, recordKey, op: data.op === 'delete' ? 'delete' : 'put', hlc, data });
-      return { outcome: 'emitted', hlc };
+      return { outcome: 'emitted', hlc, ...(seq !== undefined ? { seq } : {}) };
     } catch (e) { /* @silent-fallback-ok: the manager's write must NEVER fail because replication did — a builder throw (e.g. over-cap) / journal fault is a counted no-op, surfaced via stats + the log, never propagated (Structure > Willpower: the safety is structural, not per-caller). */
       this.stats.errors++;
       this.log('emit-failed', { store, error: (e as Error)?.message });

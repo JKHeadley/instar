@@ -3688,6 +3688,24 @@ export interface InstarConfig {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
   };
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
+   *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
+   *  owner-tunable at the agent level; per-project values live on the binding. */
+  chiefOfStaff?: {
+    enabled?: boolean;
+    displayName?: string;
+    tickMinutes?: number;
+    defaultCadenceHours?: number;
+    maxRunHours?: number;
+    operatorLeaseHours?: number;
+    noteCadenceHours?: number;
+    noteTime?: string;
+    maxRestartsWithoutProgress?: number;
+    breakerRestartsPerWeek?: number;
+    immediateMessagesPerDay?: number;
+    judgeDailyCents?: number;
+    excludedAuthors?: string[];
+  };
   /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
   machineMaintenance?: {
     enabled?: boolean;
