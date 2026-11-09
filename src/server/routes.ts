@@ -41650,8 +41650,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
             const waiter = ctx.threadlineReplyWaiters.get(inboundThreadId);
             // Memory privacy: on a multi-person agent only the addressed peer, proven by its
             // signature, resolves a waiter, and never under post-only (§3).
-            const waiterAllowed = !waiter || !ctx.sessionManager.isMultiPersonAgent()
-              || (ctx.sessionManager.linkedPeerReplies() === 'deliver' && !!waiter.recipientFp && !!provenSenderFp
+            const waiterAllowed = !waiter || !(ctx.sessionManager?.isMultiPersonAgent?.() ?? false)
+              || ((ctx.sessionManager?.linkedPeerReplies?.() ?? 'deliver') === 'deliver' && !!waiter.recipientFp && !!provenSenderFp
                 && waiter.recipientFp === provenSenderFp.toLowerCase());
             if (waiter && waiterAllowed && !looksLikeAutoAckText(textContent)) {
               console.log(`[relay-agent] Resolved reply waiter for thread ${inboundThreadId} (from ${senderAgent ?? 'unknown'})`);
