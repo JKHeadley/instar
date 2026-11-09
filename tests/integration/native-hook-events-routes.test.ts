@@ -23,7 +23,7 @@
  *      events posted faster than they can be stored leave at most 1,000
  *      pending and count the overflow.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import fs from 'node:fs';
@@ -305,8 +305,9 @@ describe('POST /hooks/native-events — real AgentServer pipeline', () => {
     ingest.schedule = (fn) => setImmediate(fn);
     while (parked.length) parked.shift()!();
     await drained(rig);
-    for (let i = 0; i < 100 && ing.pending > 0; i++) await new Promise(r => setTimeout(r, 5));
-    expect(ing.pending).toBe(0);
+    // Draining 1000 queued events on a loaded verifier can take seconds (314 still pending after
+    // ~0.5 s on 2026-11-09 06:35Z), so wait on the condition, bounded, instead of a fixed 100 x 5 ms.
+    await vi.waitFor(() => expect(ing.pending).toBe(0), { timeout: 15_000, interval: 20 });
     expect(c.stored + c.failedProcessing).toBe(5000 - c.queueOverflow);
   }, 60_000);
 });
