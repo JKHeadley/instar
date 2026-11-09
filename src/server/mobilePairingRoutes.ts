@@ -762,12 +762,25 @@ export class MobilePairingService {
     return hits;
   }
 
+  private browserSetupPause = 0;
+  /**
+   * Until when new browser setups are refused because the owner declined one (in memory; a restart
+   * clears it). The owner's one-tap stop for unwanted approval requests (browser-setup-no-second-pin).
+   */
+  browserSetupsPausedUntil(): number { return this.browserSetupPause; }
+  private noteDeclined(id: string): void {
+    let browser = false;
+    try { browser = isBrowserDevice(this.devices.get(id)); } catch { browser = false; } // @silent-fallback-ok — no pause is the old behaviour
+    if (browser) this.browserSetupPause = Date.now() + 60 * 60_000;
+  }
+
   /** The owner's Decline button. */
   declineByNonce(nonce: string): 'declined' | 'unknown' | 'already-approved' {
     const id = this.declineNonces.get(nonce);
     if (!id) return 'unknown';
     this.declineNonces.delete(nonce);
     this.confirm.drop(id);
+    this.noteDeclined(id);
     try {
       // An approval that wrote first wins (dashboard-conversations-browser-device §4.1).
       if (this.devices.decline(id) === 'already-approved') return 'already-approved';
@@ -890,6 +903,7 @@ export class MobilePairingService {
    * approval already claimed answers 'already-approved' and is left alone.
    */
   declinePending(deviceId: string): 'declined' | 'already-approved' | 'not-pending' | 'failed' {
+    this.noteDeclined(deviceId);
     this.confirm.drop(deviceId);
     this.dropDashboardCode(deviceId);
     for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);

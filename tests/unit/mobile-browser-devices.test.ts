@@ -517,6 +517,70 @@ describe('POST /mobile/browser-devices', () => {
     expect(f.pairing.devices.get(r2.body.deviceId)!.setupState).toBe('awaiting');
   });
 
+  describe('no second PIN when the owner approves (browser-setup-no-second-pin)', () => {
+    const noPin = (s: { srv: http.Server; host: string }, payload: unknown) =>
+      request(s.srv).post('/mobile/browser-devices').set('Host', s.host).send(payload as object);
+
+    it('Telegram owner: setup needs no operator session, and a sent header is ignored', async () => {
+      const s = await server({ ownerDM: async () => 7 });
+      const r = await noPin(s, body(s.host).payload);
+      expect(r.status).toBe(201);
+      expect(r.body).toMatchObject({ status: 'pending' });
+      const s2 = await server({ ownerDM: async () => 7 });
+      const r2 = await post(s2, body(s2.host).payload, 'not-a-real-session');
+      expect(r2.status).toBe(201);
+    });
+
+    it('no Telegram owner: the PIN session is still required, because it is the approval', async () => {
+      const s = await server({});
+      const r = await noPin(s, body(s.host).payload);
+      expect(r.status).toBe(403);
+      expect(r.body.error).toBe('operator-session-required');
+      expect(s.pairing.devices.list().filter((d) => d.client === 'browser')).toHaveLength(0);
+    });
+
+    it('the Bearer principal is required on every path', async () => {
+      const s = await server({ ownerDM: async () => 7 });
+      const app = express(); app.use(express.json());
+      app.use((req, _res, next) => { (req as unknown as { instarPrincipal: unknown }).instarPrincipal = { kind: 'device', deviceId: 'x' }; next(); });
+      app.use(createMobilePairingRouter(s.pairing, s.pairing.deps, { config: s.config } as never));
+      const r = await request(app).post('/mobile/browser-devices').set('Host', s.host).send(body(s.host).payload);
+      expect(r.status).toBe(403);
+      expect(r.body.error).toBe('bearer-required');
+    });
+
+    it('one browser setup waits at a time, and a Decline pauses new ones for an hour', async () => {
+      const s = await server({ ownerDM: async () => 7 });
+      const first = await noPin(s, body(s.host).payload);
+      expect(first.status).toBe(201);
+      const second = await noPin(s, body(s.host).payload);
+      expect(second.status).toBe(409);
+      expect(second.body.error).toBe('browser-setup-waiting');
+      expect(s.pairing.declinePending(first.body.deviceId)).toBe('declined');
+      const third = await noPin(s, body(s.host).payload);
+      expect(third.status).toBe(429);
+      expect(third.body.error).toBe('browser-setups-paused');
+    });
+
+    it('the browser-chosen name loses format characters (bidi overrides, zero-width)', async () => {
+      const sent: string[] = [];
+      const s = await server({ ownerDM: async (t) => { sent.push(t); return 7; } });
+      const { payload } = body(s.host);
+      const r = await noPin(s, { ...payload, deviceName: 'Mac\u202Eevil\u200B book' });
+      expect(r.status).toBe(201);
+      expect(s.pairing.devices.get(r.body.deviceId)!.deviceName).toBe('Macevil book');
+      expect(sent[0]).toContain('Browser name: Macevil book (the browser chose this name)');
+    });
+
+    it('activate refuses dashboard-pin for a request it did not carry, and owner-agent always', async () => {
+      const s = await server({ ownerDM: async () => 7 });
+      const r = await noPin(s, body(s.host).payload);
+      expect(s.pairing.browser.activate(r.body.deviceId, 'dashboard-pin')).toBe('not-pending');
+      expect(s.pairing.browser.activate(r.body.deviceId, 'owner-agent', { ownRequest: true })).toBe('not-pending');
+      expect(s.pairing.devices.get(r.body.deviceId)!.status).toBe('pending');
+    });
+  });
+
   it('not delivered, no lease, and no approval path each remove the setup and return its slot', async () => {
     for (const o of [
       { ownerDM: async () => null },
