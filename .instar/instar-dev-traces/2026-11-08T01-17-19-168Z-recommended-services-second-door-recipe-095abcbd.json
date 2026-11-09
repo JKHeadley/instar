@@ -1,0 +1,30 @@
+{
+  "version": 2,
+  "slug": "recommended-services-second-door-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-08T01:17:19.168Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-second-door-recipe.md",
+  "artifactSha256": "1d714f909bc933ba8c6602bb0bf44bd577d0568589b03fccc4762f438dc824ce",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-second-door-recipe.eli16.md",
+    "src/recommended/aiDoors.ts",
+    "src/recommended/catalog.ts",
+    "src/recommended/recipes.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-second-door.test.ts",
+    "tests/integration/recommended-services-setup.test.ts",
+    "tests/unit/recommended-services-catalog.test.ts",
+    "tests/unit/recommended-services-second-door-recipe.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-second-door-recipe.md",
+    "upgrades/side-effects/recommended-services-second-door-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Writes an operator-only setting (enabledFrameworks) behind the owner's confirmed yes and touches a credential shared by every agent of the machine user; full chain, second-pass concern resolved.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

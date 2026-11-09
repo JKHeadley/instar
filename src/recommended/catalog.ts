@@ -120,7 +120,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
   {
     id: 'second-ai-door',
     name: 'A second AI subscription',
-    benefit: 'Your agent keeps working when one AI provider is down or out of quota.',
+    benefit: 'A second AI provider your agent can work on: when the main one is down or out of quota, you can ask it to move a conversation over, so the work doesn’t stop.',
     dataLeaves: 'Your agent’s conversations and work go to that provider when it’s in use.',
     cost: 'A paid subscription. I confirm the price with you before anything is bought.',
     account: 'An account with the second provider.',
@@ -128,7 +128,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'With only one door, your agent stops when that provider does.',
     gapSpec: LOCAL_MODEL_SPEC,
-    setupRecipe: null,
+    setupRecipe: 'second-door-v1',
   },
   {
     id: 'voice-transcription',

@@ -341,6 +341,9 @@ import { validateWriteToken, canPerformOperation } from '../core/StateWriteAutho
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
 import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
+import { detectDoorPath, proveDoorSignedIn } from '../install/doors.js';
+import { withDoor, withoutDoor } from '../recommended/aiDoors.js';
+import { probeTelegram, readTelegramEntry } from '../recommended/telegramSetup.js';
 import {
   readGuardPostureBootSnapshot,
   resolveGuardConfigSnapshot,
@@ -16515,6 +16518,24 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return null; // @silent-fallback-ok — an unreadable vault reads as no stored key, and the caller says transcription is unavailable
     }
   });
+  // Which doors the second-AI-subscription setup itself listed, so a switch-off takes back only those.
+  const doorsAddedFile = path.join(ctx.config.stateDir, 'state', 'recommended-services', 'doors-added-by-setup.json');
+  const readDoorsAddedBySetup = (): string[] => {
+    try { const v = JSON.parse(fs.readFileSync(doorsAddedFile, 'utf8')); return Array.isArray(v) ? v.filter((d): d is string => typeof d === 'string') : []; } catch { return []; } // @silent-fallback-ok — no record means setup added nothing, so a switch-off removes nothing
+  };
+  const writeDoorsAddedBySetup = (doors: string[]): void => {
+    fs.mkdirSync(path.dirname(doorsAddedFile), { recursive: true });
+    fs.writeFileSync(doorsAddedFile, JSON.stringify(doors));
+  };
+  // The Telegram entry this process wrote or disabled, since ctx.config is only read at boot.
+  let telegramWrittenHere: import('../recommended/telegramSetup.js').TelegramEntry | null = null;
+  // One writer for this agent's switched-on frameworks: the config file (read at the next boot) and the live copies.
+  const setEnabledFrameworks = (next: string[]): void => {
+    writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.enabledFrameworks = next; return { value: true }; });
+    const typed = next as NonNullable<typeof ctx.config.enabledFrameworks>;
+    ctx.config.enabledFrameworks = typed;
+    if (ctx.config.sessions) ctx.config.sessions.enabledFrameworks = typed;
+  };
   registerRecommendedServiceRoutes(router, {
     ledger: () => ctx.recommendedServicesLedger ?? null,
     stateDir: ctx.config.stateDir,
@@ -16541,6 +16562,28 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     bitwarden: realBitwardenSurface(ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent')),
     github: realGitHubBackupSurface(ctx.config.stateDir, (ctx.config as unknown as { git?: Record<string, unknown> }).git),
     agentName: ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent'),
+    // The second-AI-subscription recipe: this agent's doors. Sign-ins are the machine user's and are never touched here.
+    // Listing a door changes this agent's config file and the server's own copy; SessionManager and the internal
+    // fallback chain read the list at boot, so they pick it up at the next restart.
+    aiDoors: {
+      enabled: () => [...((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[])],
+      installed: (door) => detectDoorPath(door) !== null,
+      signedIn: (door) => proveDoorSignedIn(door),
+      enable: (door) => {
+        const next = withDoor((ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[], door);
+        if (!next) return false;
+        setEnabledFrameworks(next);
+        writeDoorsAddedBySetup([...new Set([...readDoorsAddedBySetup(), door])]);
+        return true;
+      },
+      disable: (door) => {
+        if (!readDoorsAddedBySetup().includes(door)) return false;
+        const now = (ctx.config.enabledFrameworks ?? ctx.config.sessions?.enabledFrameworks ?? []) as string[];
+        if (now.includes(door)) setEnabledFrameworks(withoutDoor(now, door));
+        writeDoorsAddedBySetup(readDoorsAddedBySetup().filter((d) => d !== door));
+        return true;
+      },
+    },
     // A confirmed no to GitHub turns the switch older versions read too, so no machine on an older build keeps pushing.
     disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },
     raiseAttention: async (id, title, text) => {
@@ -16569,14 +16612,51 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return ip ? `http://${ip}:${ctx.config.port}` : null;
     },
     registerOfferTapHandler: (handler) => { ctx.telegram?.setRecommendedOfferHandler?.(handler); },
+    // The Telegram recipe: this agent's messaging entry, the Bot API probe, and a planned restart so a new channel starts polling.
+    telegramSetup: {
+      // ctx.config is read once at boot, so the entry this process wrote (or disabled) is remembered here until the restart.
+      configured: () => telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown }),
+      probe: (token, chatId) => probeTelegram(token, chatId),
+      write: ({ token, chatId }) => {
+        writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => {
+          const list = Array.isArray(cfg.messaging) ? (cfg.messaging as Array<Record<string, unknown>>) : [];
+          // A fresh config object: an old entry's topic ids belong to the old group and must not carry over.
+          const entry = { type: 'telegram', enabled: true, config: { token, chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 } };
+          const i = list.findIndex((m) => m?.type === 'telegram');
+          if (i >= 0) list[i] = entry; else list.push(entry);
+          cfg.messaging = list;
+          return { value: true };
+        });
+        telegramWrittenHere = { token, chatId, enabled: true };
+      },
+      disable: () => {
+        writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => {
+          const list = Array.isArray(cfg.messaging) ? (cfg.messaging as Array<Record<string, unknown>>) : [];
+          const i = list.findIndex((m) => m?.type === 'telegram');
+          if (i >= 0) list[i] = { ...list[i], enabled: false };
+          cfg.messaging = list;
+          return { value: true };
+        });
+        const current = telegramWrittenHere ?? readTelegramEntry(ctx.config as unknown as { messaging?: unknown });
+        if (current) telegramWrittenHere = { ...current, enabled: false };
+      },
+      requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },
+    },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
-    canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
+    // Setting up Telegram itself needs no Telegram yet: that session runs where the dashboard shows it (startSetup below).
+    canReachOwner: (service) => { try { return (!!ctx.telegram || service === 'telegram') && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.
     // The channel being switched off never counts as its own backup.
     otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack),
     // Its own conversation, because setup needs the person: for a credential, a decision, and to say it works.
     startSetup: async (service, name, brief, existingTopic) => {
-      if (!ctx.telegram) throw new Error('setup needs a Telegram conversation to reach the person');
+      if (!ctx.telegram) {
+        // An agent with no Telegram can still say yes to Telegram: with no topic to give it, the setup session runs
+        // as a session the dashboard lists (the backup the catalog names), and the brief says so.
+        if (service !== 'telegram') throw new Error('setup needs a Telegram conversation to reach the person');
+        const sessionName = await ctx.sessionManager.spawnInteractiveSession(brief, `setup-${service}`, { awaitInitialInjection: true });
+        return { sessionName };
+      }
       const topicName = `Set up ${name}`;
       const topicId = existingTopic ?? (await ctx.telegram.findOrCreateForumTopic(topicName, undefined, { origin: 'system', label: 'recommended-service-setup' })).topicId;
       // Setup runs with the owner's reach, so it can't serve a place whose readers may not see owner memory.

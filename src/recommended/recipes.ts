@@ -8,6 +8,8 @@
  * reach it.
  */
 import { execFile } from 'node:child_process';
+import type { TelegramSetupSurface } from './telegramSetup.js';
+import { DOOR_NAMES, mainDoor, secondDoorCandidates, type AiDoorSurface } from './aiDoors.js';
 import { VOICE_TRANSCRIPTION_SECRET, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import type { CatalogRow } from './catalog.js';
 import { RECOMMENDED_SERVICE_CATALOG } from './catalog.js';
@@ -41,6 +43,10 @@ export interface RecipeDeps {
   github?: GitHubBackupSurface;
   /** This agent's name, for things named after it (a backup repository). */
   agentName?: string;
+  /** This agent's AI doors, for the second-subscription recipe. Absent means the recipe can't check. */
+  aiDoors?: AiDoorSurface;
+  /** This agent's Telegram entry and the Bot API, for the Telegram recipe. Absent means the recipe can't check. */
+  telegramSetup?: TelegramSetupSurface;
 }
 
 /** What a recipe that keeps a copy elsewhere needs to bring it up to date. */
@@ -197,6 +203,111 @@ ${RULES('voice-transcription', port)}`,
       if (!setUpHere) return { stopped: true, changed: false, detail: "The voice transcription key on this machine was yours before I set anything up, so I've left it in place. Say the word and I'll remove it for you." };
       deleteSecret(VOICE_TRANSCRIPTION_SECRET);
       return { stopped: true, changed: true, detail: "Voice transcription is switched off on this machine: its key is removed, so voice notes are no longer sent anywhere. The provider account stays yours; say the word and I'll close it." };
+    },
+  },
+  {
+    id: 'second-door-v1',
+    service: 'second-ai-door',
+    // The sign-in is the person's own tap on the provider's link; there is no key for this recipe to keep.
+    secretName: null,
+    brief: ({ port }) => `The person said yes to a second AI subscription. Set it up, so this agent has a second provider to work on when its main one is down or out of quota.
+
+What it means here: a second "door", a provider other than this agent's main one, signed in on this machine and switched on for this agent. Today the doors are Claude (Claude Code) and Codex (ChatGPT's Codex CLI).
+
+What's known, as of 2026-11-08:
+- Check first: call the check below. If it passes, a second provider is already signed in here: call the server step below once, say so, and change nothing else.
+- If the second door's program isn't installed, install it yourself without administrator rights (npm install -g @openai/codex or @anthropic-ai/claude-code into the user's npm prefix).
+- Signing in is the person's own tap. For Codex, start "codex login --device-auth" in the background with a time limit and read the link and one-time code it prints; for Claude, "claude auth login" prints a link. Send the person the link (and the code) in one plain message: one tap signs this machine in with their own account. If they have no subscription with that provider yet, say what it costs and ask for their yes before anything is bought; buying it is their decision.
+- Never sign this machine out of a door, and never sign in with credentials or a browser login you already hold: the login is shared by every agent this machine user runs.
+- When the door is signed in, ask the server to list it in this agent's settings:
+curl -s -X POST http://localhost:${port}/recommended-services/second-ai-door/sync -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1"
+Then call the check. When it passes, tell the person plainly what they now have: a second provider this agent can work on, so when the main one is down or out of quota they can ask you to move a conversation onto it (for example "use Codex here"). Don't promise that a running conversation moves by itself; it doesn't.
+${RULES('second-ai-door', port)}`,
+    verify: async ({ aiDoors }) => {
+      if (!aiDoors) return { result: 'unknown', detail: "This server can't read its AI doors." };
+      // The capability is a second provider this agent can move a conversation onto: installed and signed in on
+      // this machine. Whether it is also listed in this agent's settings is the server's step (sync), not the test.
+      let unknown = false;
+      for (const door of secondDoorCandidates(aiDoors.enabled())) {
+        if (!aiDoors.installed(door)) continue;
+        const v = await aiDoors.signedIn(door);
+        if (v === 'signed-in') return { result: 'pass', detail: `${DOOR_NAMES[door]} is installed and signed in on this machine, so this agent can move a conversation onto it.` };
+        if (v === 'unknown') unknown = true;
+      }
+      return unknown
+        ? { result: 'unknown', detail: "The second provider's sign-in could not be read." }
+        : { result: 'fail', absent: true, detail: `No second AI provider is signed in on this machine (this agent's main one is ${DOOR_NAMES[mainDoor(aiDoors.enabled())]}).` };
+    },
+    // The server's part: list a signed-in second door in this agent's settings, so the dashboard's provider
+    // choice and the internal fallback chain (read at boot) include it. Nothing to do when the agent lists no
+    // providers (everything is allowed) or already lists it.
+    sync: async ({ aiDoors }) => {
+      if (!aiDoors) return { ok: false, copied: [], detail: "This server can't read its AI doors." };
+      for (const door of secondDoorCandidates(aiDoors.enabled())) {
+        if (!aiDoors.installed(door)) continue;
+        if ((await aiDoors.signedIn(door)) !== 'signed-in') continue;
+        const added = aiDoors.enable(door);
+        return { ok: true, copied: [door], detail: added
+          ? `${DOOR_NAMES[door]} is now listed in this agent's settings; its internal checks can fall back to it from the next restart.`
+          : `${DOOR_NAMES[door]} is already allowed in this agent's settings.` };
+      }
+      return { ok: false, copied: [], detail: 'No second AI provider is signed in on this machine yet, so nothing changed.' };
+    },
+    // Switching off undoes only what setup changed: it takes back a door setup listed in this agent's settings.
+    // The sign-in is the machine user's, shared with every agent here, and the subscription is the person's; both stay.
+    stop: async ({ aiDoors, setUpHere }) => {
+      if (!aiDoors) return { stopped: false, changed: false, detail: "This server can't change its AI doors, so nothing was switched off." };
+      // A door setup listed is always taken back (the surface remembers which), even when the sign-in was here first.
+      const removed = secondDoorCandidates(aiDoors.enabled()).filter((d) => aiDoors.disable(d));
+      const signIn = setUpHere
+        ? 'It stays signed in on this machine, which other agents may share, and your subscription stays yours; say the word if you want either ended.'
+        : 'Its sign-in on this machine was there before I set anything up, so it stays as it was.';
+      return { stopped: true, changed: removed.length > 0, detail: removed.length
+        ? `${removed.map((d) => DOOR_NAMES[d]).join(' and ')} is taken back out of this agent's settings, and I won't move work there. ${signIn}`
+        : `I won't move work to the second provider any more. ${signIn}` };
+    },
+  },
+  {
+    id: 'telegram-v1',
+    service: 'telegram',
+    // The person's own Telegram login is the credential, and it stays in their browser session; the bot token the
+    // recipe produces is written into this agent's messaging config, not the vault's named secrets.
+    secretName: null,
+    brief: ({ port }) => `The person said yes to Telegram. Set it up: a bot of this agent's own and a group with topics, so they can reach the agent from their phone and get its messages there.
+
+What's known, as of 2026-11-08:
+- Check first: call the check below. If it passes, Telegram already works here: say so and change nothing.
+- If $INSTAR_TELEGRAM_TOPIC is empty, this agent has no Telegram yet, so this session has no topic: the person sees it in the dashboard's session list. Write to them there in plain words, and ask for anything secret only through a Secret Drop link. Wherever the rules below say "this topic", read "this session".
+- Everything happens in the person's own Telegram, signed in by them, in a normal browser the agent drives (the agent's browser profiles: GET http://localhost:${port}/playwright-profiles; the normal-chrome browser when automation is refused). Open https://web.telegram.org/k/ and start "Log in by phone number". The person's phone number and the login code Telegram sends them are credentials: ask for each through one Secret Drop, never in chat, and type them yourself. Telegram's terms are theirs already; nothing new is accepted.
+- With BotFather (@BotFather, the verified one): /newbot; display name = this agent's name; username = a lower-case form of it ending in "bot" (append digits if taken, up to five tries). If BotFather says the account has the most bots Telegram allows (20), stop: tell the person in one sentence that Telegram can't be added until a bot is freed, and that the dashboard and the Instar app still work. Never delete any of their bots.
+- BotFather's reply holds the token. Never print it, never put it in a command line or a web address, and never call the Bot API yourself (each shell is fresh, so a variable does not survive, and a token in a URL lands in the transcript). Read it straight from the page into the one call below, through the browser tool's stdin wrapper. Then: /setprivacy → Disable (so the bot reads group messages); /setjoingroups → Enable.
+- Create a new group named "<person> + <agent name>", add the bot, then turn on Topics in the group's settings (that makes it a supergroup with threads). Make the bot an administrator. The group's id is in the browser's address bar once it is open (web.telegram.org/k/#-100…); that -100… number is the chat id.
+- Then hand the channel to the server, with the token as the body and the chat id in the header, and don't print either:
+curl -s -X POST http://localhost:${port}/recommended-services/telegram/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "X-Telegram-Chat-Id: <chat id>" -H "Content-Type: text/plain" --data-binary @-
+The server itself proves the token and the group with the Bot API (it answers telegram-refused with the reason if they don't), stores the entry, asks for a planned restart so the new channel starts polling, and the check passes. Then sign the browser out of Telegram Web (Settings → Devices → log out this device): the person's login must not stay in a browser profile the agent holds. Tell the person their Telegram is ready and that the agent will greet them there after it restarts.
+${RULES('telegram', port)}`,
+    verify: async ({ telegramSetup }) => {
+      if (!telegramSetup) return { result: 'unknown', detail: "This server can't read its Telegram setup." };
+      const entry = telegramSetup.configured();
+      if (!entry) return { result: 'fail', absent: true, detail: 'No Telegram bot is set up for this agent.' };
+      if (!entry.enabled) return { result: 'fail', detail: 'Telegram is set up but switched off for this agent.' };
+      const probe = await telegramSetup.probe(entry.token, entry.chatId);
+      if (probe === 'ok') return { result: 'pass', detail: 'The bot answers and the group with topics is reachable, so Telegram works here.' };
+      if (probe === 'unknown') return { result: 'unknown', detail: 'Telegram did not answer.' };
+      if (probe === 'token-refused') return { result: 'fail', detail: 'Telegram refused the bot token.' };
+      if (probe === 'chat-unreachable') return { result: 'fail', detail: "The bot can't reach the group." };
+      return { result: 'fail', detail: 'The group has no topics turned on.' };
+    },
+    // Switching off disables this agent's entry; the person's bot and group stay theirs, and the entry stays in the
+    // config so a later yes needs no new bot. The routes hold this until another way in works (`wayIn`).
+    stop: async ({ telegramSetup, setUpHere }) => {
+      if (!telegramSetup) return { stopped: false, changed: false, detail: "This server can't change its Telegram setup, so nothing was switched off." };
+      if (!setUpHere) return { stopped: true, changed: false, detail: "Telegram on this agent was yours before I set anything up, so I've left it as it was." };
+      const entry = telegramSetup.configured();
+      if (!entry || !entry.enabled) return { stopped: true, changed: false, detail: 'Telegram was not switched on here, so there was nothing to switch off.' };
+      telegramSetup.disable();
+      telegramSetup.requestRestart('Telegram switched off by the owner');
+      return { stopped: true, changed: true, detail: 'Telegram is switched off for this agent: it stops reading and sending there after its next restart. Your bot and group stay yours; say the word and I’ll remove them.' };
     },
   },
   {
