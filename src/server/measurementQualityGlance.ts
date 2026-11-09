@@ -48,7 +48,8 @@ export interface GlanceItem {
 
 export interface QualityGlance {
   schema: typeof QUALITY_GLANCE_SCHEMA; advisory: true; authority: 'none'; origin: string; generatedAt: string; windowDays: number;
-  subjects: number; subjectsOmitted: number; notReadable: Record<string, number>; items: GlanceItem[]; itemsOmitted: number;
+  /** Subjects read; measured subjects beyond the read limit; owners with no measurement contract (counted, never read). */
+  subjects: number; subjectsOmitted: number; noMeasurement: number; notReadable: Record<string, number>; items: GlanceItem[]; itemsOmitted: number;
   sourcesComplete: boolean; truncatedPoints: boolean;
 }
 
@@ -118,12 +119,26 @@ export function glanceItems(read: MeasurementRead, name: GlanceItem['name'], now
   return { items, truncated };
 }
 
+const UNMEASURED = 2;
+/** 0: has a measurement contract; 1: needs repair or its target is not registered (read, to report why);
+ *  2: no measurement contract at all (the same owner state readMeasurementDetail calls missing-contract). */
+export function subjectRank(owner: { contract?: unknown; error?: string; targetState?: string }): number {
+  if (owner.error || (owner.targetState && owner.targetState !== 'registered')) return 1;
+  return owner.contract ? 0 : UNMEASURED;
+}
+
 const yieldTurn = () => new Promise<void>(resolve => setImmediate(resolve));
 
 export async function readQualityGlance(ctx: MeasurementCoverageContext, now = Date.now()): Promise<QualityGlance> {
   const census = readMeasurementSubjects(ctx, now);
-  const all = [...census.subjects.keys()].sort();
-  const subjects = all.slice(0, MAX_SUBJECTS);
+  // The read limit is spent on subjects that can have a chart: an owner with no
+  // measurement contract is counted from the census and never read, so the limit
+  // cannot silently drop measured items behind unmeasured ones.
+  const ranked = [...census.subjects.entries()].map(([id, owner]) => ({ id, rank: subjectRank(owner) }))
+    .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+  const noMeasurement = ranked.filter(r => r.rank === UNMEASURED).length;
+  const readable = ranked.filter(r => r.rank !== UNMEASURED).map(r => r.id);
+  const subjects = readable.slice(0, MAX_SUBJECTS);
   const notReadable: Record<string, number> = {};
   let items: GlanceItem[] = [];
   let truncatedPoints = false;
@@ -140,7 +155,7 @@ export async function readQualityGlance(ctx: MeasurementCoverageContext, now = D
   }
   items = rankGlance(items);
   const result: QualityGlance = { schema: QUALITY_GLANCE_SCHEMA, advisory: true, authority: 'none', origin: measurementOrigin(ctx),
-    generatedAt: new Date(now).toISOString(), windowDays: WINDOW_DAYS, subjects: subjects.length, subjectsOmitted: all.length - subjects.length,
+    generatedAt: new Date(now).toISOString(), windowDays: WINDOW_DAYS, subjects: subjects.length, subjectsOmitted: readable.length - subjects.length, noMeasurement,
     notReadable, items: [], itemsOmitted: 0, sourcesComplete: census.sources.every(s => s.ok), truncatedPoints };
   let bytes = Buffer.byteLength(JSON.stringify(result));
   for (const item of items) {

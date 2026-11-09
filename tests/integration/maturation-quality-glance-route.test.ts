@@ -38,13 +38,17 @@ describe('GET /maturation/board?part=quality', () => {
     const one = { id: 'one', title: 'Recovery', status: 'active', rollout: { flagPath: 'monitoring.one', stage: 'live', maturationEvaluation: { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [good], outcome } } } as Initiative;
     const two = { id: 'two', title: 'Misses', status: 'active', rollout: { flagPath: 'monitoring.two', stage: 'live', maturationEvaluation: { cadenceHours: 6, evidenceMaxAgeHours: 12, metrics: [bad] } } } as Initiative;
     svc.evaluateMaturation([one, two]); time = realNow; goodValue = 7; badValue = 9; svc.evaluateMaturation([one, two]);
-    const ctx = { config: { projectName: 'test', stateDir: root, developmentAgent: true }, meshSelfId: 'local', initiativeTracker: { list: () => [one, two] }, blockerLifecycleService: svc } as never;
+    // 450 tracked efforts with no measurement, all sorting before the measured ones: the read
+    // limit (400) must still reach every measured subject, and they are counted, not read.
+    const plain = Array.from({ length: 450 }, (_, n) => ({ id: `a-plain-${String(n).padStart(3, '0')}`, title: `Plain ${n}`, status: 'active' }) as Initiative);
+    const ctx = { config: { projectName: 'test', stateDir: root, developmentAgent: true }, meshSelfId: 'local', initiativeTracker: { list: () => [...plain, one, two] }, blockerLifecycleService: svc } as never;
     const app = express().use(authMiddleware(() => 'test', 'test')).use(createMaturationBoardRoutes(ctx));
 
     expect((await request(app).get('/maturation/board?part=quality')).status).toBe(401);
     const res = await request(app).get('/maturation/board?part=quality').set('Authorization', 'Bearer test');
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ schema: 'measurement-quality-glance/1', advisory: true, authority: 'none', origin: 'local', windowDays: 90 });
+    expect(res.body).toMatchObject({ subjects: 2, subjectsOmitted: 0, noMeasurement: 450, notReadable: {} });
     const items = res.body.items as Array<Record<string, any>>;
     expect(items.map(i => [i.subjectId, i.metric.id, i.status])).toEqual([['two', 'misses', 'off-goal'], ['one', 'quality', 'at-goal']]);
     // The off-goal item has no recorded starting point: no proof, comparison stays unverified.
