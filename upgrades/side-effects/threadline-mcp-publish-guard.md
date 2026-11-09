@@ -3,7 +3,7 @@
 **Version / slug:** `threadline-mcp-publish-guard`
 **Date:** `2026-11-04`
 **Author:** `Echo`
-**Second-pass reviewer:** `not run (Tier 1, CI workflow and test only)`
+**Second-pass reviewer:** `independent general-purpose reviewer subagent (fresh context), 2026-11-09`
 
 ## Summary of the change
 
@@ -62,3 +62,10 @@ The decision stays inline in the workflow, which is where the old one lived, and
 ## 6. Rollback
 
 A plain revert restores the old trigger, the auto-bump and the stale assertion. No state or published artifact depends on this change.
+
+## Second-pass review
+
+**Reviewer:** independent general-purpose reviewer subagent, fresh context, given the diff, this artifact, the PR description, docs/signal-vs-authority.md and main's version of the workflow (2026-11-09 ~07:35 PST).
+
+**Concur.** (1) `check` publishes only when the local x.y.z is numerically greater than npm `latest`; equal skips with a notice, a 404 counts as 0.0.0 (first publish), any other registry error and any non-x.y.z version fail the step closed. (2) Merging while the jkheadley npm account is suspended (until ~2026-11-10 13:06 PST) is safe: repo and npm are both 0.6.1, so the merge run builds, tests and skips; the workflow no longer commits, tags or pushes, so nothing can be stranded. (3) Dropping the `pair status` smoke step loses nothing: that CLI was removed in 0.5.1, so the step could not pass; load and network checks remain. (4) Tests run the real step script against a fake npm for equal, older, newer (0.6.10 vs 0.6.9), 404 and other-error cases. Non-blocking: no test yet for the not-x.y.z branch (e.g. 0.7.0-beta.1 or empty npm output). (5) RELEASE_TOKEN is still used by publish.yml, publish-witness.yml and publish-threadline-core.yml, as this artifact says.
+
