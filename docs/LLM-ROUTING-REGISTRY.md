@@ -162,6 +162,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | PromptGate | src/monitoring/PromptGate.ts:656 | unanswered permission prompt? | A | OC(fast) | ⚠ |
 | SlackAdapter (alert-suppress) | src/messaging/slack/SlackAdapter.ts:844 | suppress a stall alert? | A | OC(default, maxTok 5) | ⚠ |
 | **InputClassifier** ⚠ | src/monitoring/InputClassifier.ts:246 | auto-approve vs relay | A | **AD(fast) → Claude** | ❌ not in map — silently on Claude |
+| ChiefOfStaffLoop | src/core/ChiefOfStaffEvidence.ts:buildJudge (prompt) → src/commands/server.ts (evaluate, attribution inlined) | per bound project: moving / stalled / drifting / waiting-on-user / claims-done / unknown over deterministic evidence + a byte-bounded untrusted conversation tail | **B** signal under deterministic floors (null ⇒ unknown, never an action) | OC(fast) | ✅ nature-B closed-set verdict; the floors hold authority (docs/specs/chief-of-staff-topic.md §2.5), one metered call per due project under the `chief-of-staff` LlmQueue budget (≤200/day) |
 
 ### Gates (router-backed)
 | Component | file:line | Decision | Nature | Route | Intentional? |

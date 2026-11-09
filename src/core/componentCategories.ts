@@ -36,6 +36,7 @@ export function isComponentCategory(v: unknown): v is ComponentCategory {
 export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // ── Sentinels (background watchers that make small judgment calls) ──
   InputDetector: 'sentinel',
+  ChiefOfStaffLoop: 'sentinel', // Chief of Staff check-in judge (docs/specs/chief-of-staff-topic.md §2.5)
   InputGuard: 'sentinel',
   SessionActivitySentinel: 'sentinel',
   StallTriageNurse: 'sentinel',

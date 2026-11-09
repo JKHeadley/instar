@@ -17786,6 +17786,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     }
 
+    // Chief of Staff (docs/specs/chief-of-staff-topic.md): the owner-tunable defaults, added only
+    // when missing. `enabled` is deliberately NOT written: omitted follows the dev-agent gate.
+    {
+      const cos = (config.chiefOfStaff && typeof config.chiefOfStaff === 'object') ? config.chiefOfStaff as Record<string, unknown> : {};
+      const defaults: Record<string, unknown> = { displayName: 'Chief of Staff', tickMinutes: 15, defaultCadenceHours: 24, maxRunHours: 4, operatorLeaseHours: 72, noteCadenceHours: 24, noteTime: '08:00', maxRestartsWithoutProgress: 3, breakerRestartsPerWeek: 5, immediateMessagesPerDay: 3, judgeDailyCents: 15 };
+      let added = false;
+      for (const [k, v] of Object.entries(defaults)) { if (cos[k] === undefined) { cos[k] = v; added = true; } }
+      if (added) { config.chiefOfStaff = cos; patched = true; result.upgraded.push('config.json: Chief of Staff defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+    }
+
     // An already-configured verifier gets the explicit dark diagnosis default;
     // installs without Local Verify remain untouched. Never override a host choice.
     {
