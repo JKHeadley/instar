@@ -9110,6 +9110,18 @@ export async function startServer(options: StartOptions): Promise<void> {
     setTopicNameResolver((id) => telegram?.getTopicName(id) ?? null);
     let topicMemory: TopicMemory | undefined;
     const telegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
+    // Telegram added after the install step (the recommended-services recipe, or a hand-added entry) left no reply
+    // script, so a session could read the group but never answer. Write it when missing; an existing one is never touched.
+    if (telegramConfig && !fs.existsSync(path.join(config.projectDir, '.claude', 'scripts', 'telegram-reply.sh'))
+      && !fs.existsSync(path.join(config.stateDir, 'scripts', 'telegram-reply.sh'))) {
+      try {
+        const { installTelegramRelayForJoinedMachine } = await import('./init.js');
+        installTelegramRelayForJoinedMachine(config.projectDir, config.stateDir, config.port);
+        console.log('  Telegram reply script installed (Telegram was added after this agent was set up)');
+      } catch (err) {
+        DegradationReporter.getInstance().report({ feature: 'Telegram.replyScript', primary: 'Install the missing Telegram reply script at boot', fallback: 'The next instar update installs it.', reason: err instanceof Error ? err.message : String(err), impact: 'Sessions can read Telegram but cannot answer there.' });
+      }
+    }
     const skipTelegram = options.telegram === false; // --no-telegram sets telegram: false
     // Standby machines use send-only Telegram — they don't poll for messages
     const isStandbyTelegram = !coordinator.isAwake && telegramConfig != null;

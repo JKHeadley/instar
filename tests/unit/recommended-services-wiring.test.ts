@@ -34,7 +34,14 @@ describe('recommended services wiring', () => {
 
   it('the server gives the routes a real reach check, a strand check and a key remover', () => {
     const routes = read('src/server/routes.ts');
-    expect(routes).toContain('canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); }');
+    // Telegram's own setup needs no Telegram yet; every other service needs it. The lease holds either way.
+    expect(routes).toContain("canReachOwner: (service) => { try { return (!!ctx.telegram || service === 'telegram') && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); }");
+    // With no Telegram, only the Telegram recipe starts, as a session the dashboard lists.
+    expect(routes).toContain("if (service !== 'telegram') throw new Error('setup needs a Telegram conversation to reach the person');");
+    // Telegram added after install (this recipe) gets its reply script at the restart the key route asks for; an existing script is never replaced.
+    const server = read('src/commands/server.ts');
+    expect(server).toContain("if (telegramConfig && !fs.existsSync(path.join(config.projectDir, '.claude', 'scripts', 'telegram-reply.sh'))");
+    expect(server).toContain('installTelegramRelayForJoinedMachine(config.projectDir, config.stateDir, config.port);');
     expect(routes).toContain("otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack)");
     expect(routes).toContain('deleteSecret: (name) => { new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).delete(name); }');
     // The Bitwarden recipe's copy and page list come from the real vault and the real CLI surface, names only.

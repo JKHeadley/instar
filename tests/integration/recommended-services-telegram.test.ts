@@ -44,13 +44,13 @@ describe('Telegram through the routes', () => {
     disable: () => { if (entry) entry = { ...entry, enabled: false }; },
     requestRestart: (reason) => { restarts.push(reason); return true; },
   });
-  const app = () => {
+  const app = (opts: { catalog?: CatalogRow[]; canReachOwner?: (service?: string) => boolean } = {}) => {
     const a = express();
     a.use(express.text({ type: 'text/plain' }));
     a.use(express.json());
     const router = express.Router();
     registerRecommendedServiceRoutes(router, {
-      ledger: () => ledger, stateDir: dir, owner: () => '42', catalog: [PROVEN], port: 4040,
+      ledger: () => ledger, stateDir: dir, owner: () => '42', catalog: opts.catalog ?? [PROVEN], port: 4040,
       checkPin: () => true, checkConfirmPin: () => true, recordApproval: () => undefined,
       openCommitment: () => 'CMT-1', finishCommitment: () => undefined, withdrawCommitment: () => undefined,
       startSetup: start, stopSetup: () => true, sessionForTopic: () => null, isSetupRunning: () => false,
@@ -58,6 +58,7 @@ describe('Telegram through the routes', () => {
       readSecret: () => null, writeSecret: () => undefined, deleteSecret: () => undefined,
       telegramSetup: surface(),
       otherRouteWorks: async () => otherRoute,
+      ...(opts.canReachOwner ? { canReachOwner: opts.canReachOwner } : {}),
     });
     a.use(router);
     return a;
@@ -76,6 +77,28 @@ describe('Telegram through the routes', () => {
     told = vi.fn();
   });
   afterEach(() => SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/recommended-services-telegram.test.ts' }));
+
+  it('an agent with no Telegram can say yes to Telegram itself, and setup starts with no topic; other services still wait', async () => {
+    // The server's reach: no Telegram on this agent, so only Telegram's own setup can talk to the person (dashboard session).
+    const reach = (service?: string) => service === 'telegram';
+    const jev: CatalogRow = { ...RECOMMENDED_SERVICE_CATALOG.find((r) => r.id === 'jev')! };
+    start = vi.fn(async () => ({ sessionName: 's-tg' }));
+    const a = app({ catalog: [PROVEN, jev], canReachOwner: reach });
+    const page = await request(a).get(`${BASE}/confirm`);
+    expect(page.body.canSetUp).toBe(true);
+    const yes = await say(a, 'yes');
+    expect(yes.status).toBe(200);
+    await vi.waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(start.mock.calls[0][0]).toBe('telegram');
+    await vi.waitFor(() => expect(readSetupStates(dir).telegram?.sessionName).toBe('s-tg'));
+    expect(readSetupStates(dir).telegram?.topicId).toBeUndefined();
+    // Jev still needs a channel to the person, so its yes is refused before the token is spent.
+    const jp = await request(a).get('/recommended-services/jev/confirm');
+    expect(jp.body.canSetUp).toBe(false);
+    const jy = await request(a).post('/recommended-services/jev/confirm').set('X-Instar-Request', '1').send({ token: jp.body.token, pin: '1', answer: 'yes' });
+    expect(jy.status).toBe(409);
+    expect(jy.body.error).toBe('cannot-reach-you');
+  });
 
   it('yes → setup → the session writes the channel → restart requested → check passes → switch-off disables it', async () => {
     const a = app();

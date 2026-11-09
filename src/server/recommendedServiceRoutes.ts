@@ -40,7 +40,8 @@ export interface RecommendedServiceRouteDeps {
   /** Off: the person said no. */
   withdrawCommitment: (id: string, reason: string) => void;
   /** Starts the session in its own conversation, reusing that topic on a restart. */
-  startSetup: (service: string, name: string, brief: string, topicId?: number) => Promise<{ sessionName: string; topicId: number }>;
+  /** Without a topic (an agent setting up Telegram before it has any), the session runs where the dashboard shows it. */
+  startSetup: (service: string, name: string, brief: string, topicId?: number) => Promise<{ sessionName: string; topicId?: number }>;
   /** False when the session didn't stop. */
   stopSetup: (sessionName: string) => boolean;
   /** The session a conversation runs in now. A reply can bring it back under another name. */
@@ -83,7 +84,7 @@ export interface RecommendedServiceRouteDeps {
    * True when this machine can message the person right now: it has a channel and holds the lease.
    * Setup talks to the person, so a yes is refused here when it can't, and a restart waits.
    */
-  canReachOwner?: () => boolean;
+  canReachOwner?: (service?: string) => boolean;
   /** Before switching a service off: does the person keep another way to reach this agent, not counting the one being switched off? */
   otherRouteWorks?: (service: string) => Promise<boolean>;
   /** Hands over the check to run once sessions can start, and on a timer after that. */
@@ -131,7 +132,8 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   let mintLimitReported = false;
   const starting = new Set<string>();
   const stopping = new Set<string>();
-  const reach = (): boolean => deps.canReachOwner?.() ?? true;
+  /** With a service named, setting up that service is the question: Telegram's own setup needs no Telegram yet. */
+  const reach = (service?: string): boolean => deps.canReachOwner?.(service) ?? true;
   const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, aiDoors: deps.aiDoors, telegramSetup: deps.telegramSetup });
   /** How often a copy kept elsewhere is brought up to date by the regular check, and how long a failed refresh waits before another try. */
   const SYNC_EVERY_MS = 24 * 60 * 60_000;
@@ -489,7 +491,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (!row.wayIn) return 'A yes to this one needs the page, with your PIN.';
     if (!isServiceAvailable(row)) return 'That service is not available here right now.';
     const owner = deps.owner();
-    if (owner === null || !reach()) return 'I cannot start setup from this machine right now.';
+    if (owner === null || !reach(row.id)) return 'I cannot start setup from this machine right now.';
     if (!taps.consume(nonce)) return 'Already answered.';
     if (!applyYes(ledger, row, { origin: 'first-offer', offerTextHash: offerTextHash(row), grantMachine: ledger.machineId(), principal: owner })) return 'That choice could not be saved. Nothing changed.';
     return `Yes to ${row.name}. Setting it up now; I'll say when it works.`;
@@ -553,7 +555,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       if (state?.verified?.result === 'pass' || state?.exhausted || state?.dormant || state?.held) continue;
       if (state?.sessionName && deps.isSetupRunning(state.sessionName)) continue;
       // Setup talks to the person. While this machine can't, a restart waits and costs no attempt.
-      if (!reach()) continue;
+      if (!reach(row.id)) continue;
       const decision = decideSetupRestart({ starts: state?.attempts ?? 0, lastStartMs: state?.lastAttemptAt ? Date.parse(state.lastAttemptAt) : null, nowMs });
       if (decision === 'restart') await beginSetup(row);
       else if (decision === 'dormant') updateSetupState(deps.stateDir, row.id, { dormant: true, sessionName: undefined });
@@ -693,7 +695,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     const workingHere = state?.verified?.result === 'pass' && !state.stopped;
     // A recipe that keeps a copy elsewhere says on the page which secrets it would copy: names only, never values.
     const copies = recipeFor(row)?.listsCopies ? (deps.readSecretNames?.() ?? []) : undefined;
-    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...minted });
+    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(row.id), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...minted });
   });
 
   router.post('/recommended-services/:id/confirm', (req, res) => {
@@ -732,7 +734,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       return;
     }
     // Setup talks to the person from this machine. Refused before the token is spent, so the page works again once it can.
-    if (answer === 'yes' && !reach()) {
+    if (answer === 'yes' && !reach(row.id)) {
       res.status(409).json({ error: 'cannot-reach-you' });
       return;
     }

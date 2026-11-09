@@ -81,3 +81,39 @@ A revert removes the recipe and the key-route branch; an entry already written s
 Independent read (reviewer subagent, 2026-11-08), tests run. Token leak paths otherwise clean (the probe swallows every throw; the key body is stdin; `express.text` is mounted); regexes correct for real tokens and supergroup ids; a plaintext token written beside a vault placeholder wins at boot; the restart flag is picked up by the foreground watcher within ten seconds; the way-in hold releases only when another channel appears.
 
 **Concern raised:** (1) the real `configured()` read `ctx.config`, which is never reloaded, so the check could not pass and a no could not disable the entry until the restart; (2) the brief had the session call the Bot API itself, which put the token in URLs (argv and transcript). **Resolved:** the surface remembers the entry it wrote or disabled; `signedInBySetup` is recorded at write time; the server runs the Bot API proof before writing and refuses otherwise; the brief drops every session-side Bot API call and reads the chat id from the address bar. Notes taken: a fresh config object on write (no stale topic ids); a disabled pre-existing entry is the person's (recorded above); the hold can be permanent (recorded); the ELI16's token sentence corrected.
+
+## Amendment (live proof, 2026-11-08): an agent with no Telegram can set Telegram up
+
+**Defect found in the live proof.** On a fresh agent with no Telegram (the audience this recipe is for), the confirm page answered `canSetUp: false` and a yes with the PIN returned `409 cannot-reach-you`: the reach check required an existing Telegram, and `startSetup` threw without one. The recipe could never start where it was meant to.
+
+**Fix (Tier 1, 3 source files, about 20 lines).** `canReachOwner` takes the service: Telegram's own setup is reachable without Telegram (the lease still holds it); every other service still needs Telegram. With no Telegram, `startSetup` for `telegram` spawns the setup session with no topic, so it shows in the dashboard's session list (the catalog's named backup); any other service still throws as before. The brief gains one line: with `$INSTAR_TELEGRAM_TOPIC` empty, talk to the person in this session and take secrets only through Secret Drop. Offers are unchanged (`offersLive` still uses the Telegram-only reach).
+
+1. **Over-block:** none added. A Slack-only agent still cannot start other recipes (unchanged).
+2. **Under-block:** a person on a no-Telegram agent reads this setup only on the dashboard; there is no push notice. Acceptable: the yes itself came from the dashboard's confirm page.
+3. **Level:** the reach rule lives in the one wiring point and the route consumer; no new gate.
+4. **Signal vs authority:** no new blocking authority; one existing refusal is narrowed for one service.
+5. **Interactions:** the tap handler and the restart loop use the same per-service reach, so a no-Telegram agent's Telegram grant gets the same bounded restarts as any other.
+6. **External surfaces:** `GET /recommended-services/telegram/confirm` reports `canSetUp: true` on a no-Telegram agent.
+7. **Multi-machine:** unchanged; the lease condition still applies.
+8. **Rollback:** a revert restores the refusal; a setup state with no `topicId` is read as before.
+
+Tests: integration (no-Telegram yes starts setup with no topic; Jev on the same agent still refused, red before the fix), wiring and brief assertions; 25 files, 282 tests green.
+
+### Second live-proof defect: no reply script on an agent that gained Telegram later
+
+**Found:** after the restart the agent read the person's message (Lifeline msg 6) and started a session, but the session could not answer: `telegram-reply.sh` is installed only by `init` when Telegram already exists (and by the join flow), so an agent made without Telegram never had it. The session said so itself in its terminal.
+
+**Fix:** at server boot, when an enabled Telegram entry exists and neither `.claude/scripts/telegram-reply.sh` nor `.instar/scripts/telegram-reply.sh` exists, write both with the existing `installTelegramRelayForJoinedMachine` (the joined-machine installer). The recipe always restarts after writing the entry, so the script is there before any session needs it. A hand-added Telegram entry is covered the same way.
+
+1. **Over-block:** none; nothing is refused.
+2. **Under-block:** a script that exists but is broken is not repaired here (the update migrator owns that, as before).
+3. **Level:** boot, beside the app-reply relay install; the installer is the existing one.
+4. **Signal vs authority:** no decision point.
+5. **Interactions:** never overwrites an existing script, so a customised one and the migrator's always-overwrite path are untouched.
+6. **External surfaces:** one new file pair in the agent home when Telegram is configured and the script is missing; one boot log line.
+7. **Multi-machine:** per machine, like the installer it reuses; each machine's boot checks its own home.
+8. **Rollback:** revert; a script already written stays and keeps working.
+
+Live result after both fixes: message 6 answered as message 8 (03:22:42Z).
+
+**Second-pass review of the amendment (reviewer subagent, 2026-11-09):** reach is unchanged for every service except Telegram (offers, tap handler, restart loop and `canSetUp` all pass the service id; Telegram still needs the lease); the no-topic setup state is guarded where a topic is read; the boot install runs only when both scripts are missing, inside the async `startServer`, and reports a failure without stopping boot; no token path touched. Concur with the review.

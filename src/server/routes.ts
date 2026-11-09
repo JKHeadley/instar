@@ -16643,13 +16643,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },
     },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
-    canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
+    // Setting up Telegram itself needs no Telegram yet: that session runs where the dashboard shows it (startSetup below).
+    canReachOwner: (service) => { try { return (!!ctx.telegram || service === 'telegram') && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.
     // The channel being switched off never counts as its own backup.
     otherRouteWorks: async (service) => (service !== 'telegram' && !!ctx.telegram) || (service !== 'slack' && !!ctx.slack),
     // Its own conversation, because setup needs the person: for a credential, a decision, and to say it works.
     startSetup: async (service, name, brief, existingTopic) => {
-      if (!ctx.telegram) throw new Error('setup needs a Telegram conversation to reach the person');
+      if (!ctx.telegram) {
+        // An agent with no Telegram can still say yes to Telegram: with no topic to give it, the setup session runs
+        // as a session the dashboard lists (the backup the catalog names), and the brief says so.
+        if (service !== 'telegram') throw new Error('setup needs a Telegram conversation to reach the person');
+        const sessionName = await ctx.sessionManager.spawnInteractiveSession(brief, `setup-${service}`, { awaitInitialInjection: true });
+        return { sessionName };
+      }
       const topicName = `Set up ${name}`;
       const topicId = existingTopic ?? (await ctx.telegram.findOrCreateForumTopic(topicName, undefined, { origin: 'system', label: 'recommended-service-setup' })).topicId;
       // Setup runs with the owner's reach, so it can't serve a place whose readers may not see owner memory.

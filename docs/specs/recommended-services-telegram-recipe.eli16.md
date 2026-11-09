@@ -22,3 +22,5 @@ Telegram is switched off for this agent after its next restart. Your bot and gro
 ## What you need to decide
 
 Nothing yet. The live proof needs one decision, asked separately: whether a test bot and test group may be created on your Telegram account and deleted afterwards.
+
+**Added after the live proof:** an agent that has no Telegram yet can now say yes to Telegram. Before, the yes was refused because setup could only talk to the person through Telegram, which is the very thing being set up. Now that one setup runs as a session the dashboard lists, and the person answers it there; every other service still waits for a messaging channel.

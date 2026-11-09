@@ -83,6 +83,8 @@ describe('the telegram-v1 recipe', () => {
     expect(brief).toContain('through one Secret Drop, never in chat');
     expect(brief).toContain('never put it in a command line or a web address, and never call the Bot API yourself');
     expect(brief).toContain('web.telegram.org/k/#-100');
+    // An agent with no Telegram yet runs this setup with no topic, where the dashboard lists it.
+    expect(brief).toContain("If $INSTAR_TELEGRAM_TOPIC is empty, this agent has no Telegram yet");
     expect(brief).toContain('Never delete any of their bots');
     expect(brief).toContain('/recommended-services/telegram/key');
     expect(brief).toContain('X-Telegram-Chat-Id');
