@@ -13,3 +13,4 @@ When you set up a browser for your conversations, the dashboard now tells you ex
 - `tests/unit/mobile-browser-devices.test.ts`: status names the chat and falls back to null; phone-first setup with and without the Telegram copy.
 - `tests/unit/console-chats-model.test.ts`: the wording for both paths.
 - `tests/integration/mobile-pairing-approve.test.ts`: waiting rows carry `client`.
+- **The phone notification says what is waiting.** A browser or phone waiting for approval now notifies paired owner phones with "A new browser wants to use your conversations. Tap to approve with Face ID." (or the phone equivalent) instead of "Something needs you", and tells the app to open the approval.

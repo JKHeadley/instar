@@ -978,7 +978,7 @@ export class MobilePairingService {
   /** One contentless push so an owner phone can answer; only this machine's phones can (spec §6). */
   notifyOwnerPhones(d: DeviceRecord): void {
     if (!isPairingApproveEnabled(this.deps.config) || !this.approvable(d) || !this.ownerPhoneCanApprove()) return;
-    this.push?.notifyHere({ kind: 'notice', dedupeKey: `pairing-request:${d.id}` });
+    this.push?.notifyHere({ kind: 'notice', subject: isBrowserDevice(d) ? 'browser-approval' : 'phone-approval', dedupeKey: `pairing-request:${d.id}` });
   }
 
   /** The record of who approved, in the owner's private chat when there is one (spec §3.4). */

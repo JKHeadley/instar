@@ -5,3 +5,5 @@ When you set up a browser to read and send your conversations from the dashboard
 Now the dashboard names the chat, for example "your private Telegram chat with Echo Agent (@its_bot), not a group". When a paired iPhone can approve, it comes first: "Approve it on your iPhone: open the Instar app and confirm with Face ID", with the Telegram message as a backup. If the Telegram message cannot be sent but your phone can approve, setup no longer fails; it simply waits for your phone. The list of waiting devices the app reads now says whether each one is a browser or a phone, so the app can describe it properly.
 
 Who can approve does not change: still only you, with Face ID on your own phone or with the Telegram message. The dashboard PIN step is unchanged in this change.
+
+The phone notification now says what is waiting too: "A new browser wants to use your conversations. Tap to approve with Face ID." instead of "Something needs you". It never includes the browser's own name, because whoever sets up the browser picks that name.

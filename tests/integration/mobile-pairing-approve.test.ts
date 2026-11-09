@@ -138,7 +138,7 @@ describe('what the waiting phone is told', () => {
     await ownerPhone(ctx2);
     const w = await waiting(ctx2);
     expect(w.redeem.body.confirmWith).toEqual(['owner-phone', 'code']);
-    expect(ctx2.pushes).toEqual([{ kind: 'notice', dedupeKey: `pairing-request:${w.deviceId}` }]);
+    expect(ctx2.pushes).toEqual([{ kind: 'notice', subject: 'phone-approval', dedupeKey: `pairing-request:${w.deviceId}` }]);
   });
 
   it('the status poll is signed as the waiting phone and follows it to the end', async () => {

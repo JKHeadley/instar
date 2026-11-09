@@ -25,3 +25,6 @@ Operator 2026-11-09: the approval message went to the private chat "Echo Agent" 
 - (2) No raw internals: names the chat by its display name.
 - (3) No destructive action.
 - (4) Plain at phone width: same card, one sentence longer.
+
+## Addendum: the pairing push says what is waiting
+`MobilePush` notices take an optional `subject` (`browser-approval` | `phone-approval`) with fixed alert text ("A new browser wants to use your conversations. Tap to approve with Face ID." / "A new phone wants to pair. Tap to approve with Face ID.") and `instar.subject` so the app opens the approval. The device's caller-chosen name is never in an alert. Unknown subjects fall back to "Something needs you". Operator 2026-11-09: the notification detail "is terrible".
