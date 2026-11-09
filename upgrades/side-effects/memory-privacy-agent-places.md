@@ -177,3 +177,9 @@ First pass: concern. One BLOCKER: the reply route wrote the place audience key o
 - **`closure`** — `guard`
 - **Guard citation** — `tests/unit/self-action-convergence.test.ts` (ratchet), with the new controller `peer-place-session-tick` registered in `src/testing/selfActionRegistry.ts` and marked at the tick in `src/commands/server.ts`.
 - **How caught (convergence argument)** — The control-loop edge is the 60-second place tick ending an idle or no-longer-admitted place session. The tick ends only sessions recorded in `PlaceSessionRegistry` and removes each record when it ends it. It never starts a session: only a peer's admitted message does, through the spawn manager's admission, cooldown and place capacity. Under sustained idle pressure, the steady-state bound is the place cap (3 kills), with one kill per target, and the count is horizon-independent.
+
+## Local Verify follow-up (2026-11-08)
+
+The first Local Verify run on aa36e7e74 failed in e2e:
+- `memory-privacy-recovery-lifecycle` (2 tests): `memoryPrivacyStatus` called `this.isMultiPersonAgent()` and `this.scopedSessionsReady()`, but that test borrows the real method onto a stand-in object, so the route returned 500. The status now reads only the wiring and config (`scopedSessionsReadyFor`), and the two methods share that same helper.
+- `messaging-lifecycle` (1 test): passes on three local reruns. As a guard, `MessageDelivery` now checks that the session id is a string before testing it for the place marker.

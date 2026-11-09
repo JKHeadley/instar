@@ -771,6 +771,13 @@ export class MemoryPrivacyUnavailableError extends Error {
  * A session another agent's message started without a place of its own (a cold or drained
  * A2A spawn, or a warm A2A worker). It has owner reach (memory-privacy-agent-places §3).
  */
+/** The scoped-session predicate, from the wiring and the configured framework only. */
+export function scopedSessionsReadyFor(wiring: { sandboxReady(): boolean } | null | undefined, configFramework: string | undefined): boolean {
+  if (!wiring?.sandboxReady()) return false;
+  const framework = resolveInteractiveFramework({ perCall: undefined, configFramework: configFramework as never, envFramework: frameworkFromEnv() });
+  return framework === 'claude-code';
+}
+
 export function isUnplacedPeerOriginSession(session: Pick<Session, 'triggeredBy' | 'tmuxSession' | 'name' | 'memoryScopeDir'>): boolean {
   if (session.memoryScopeDir) return false;
   if (session.triggeredBy === 'spawn-request' || session.triggeredBy === 'spawn-request-drain') return true;
@@ -2024,10 +2031,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
       sandboxReady: wiring.sandboxReady(),
       blocker: wiring.blocker?.() ?? null,
       fix: wiring.fix?.() ?? null,
+      // Self-contained on purpose: reads only the wiring and config (callers borrow this method).
       agentSessions: agentSessionsStatus({
-        multiPerson: this.isMultiPersonAgent(),
-        refuseAgentSessions: wiring.privacy.refuseAgentSessions(),
-        scopedSessionsReady: this.scopedSessionsReady(),
+        multiPerson: Boolean(wiring.privacy.enabled && wiring.privacy.isMultiPerson()),
+        refuseAgentSessions: wiring.privacy.refuseAgentSessions?.() ?? false,
+        scopedSessionsReady: scopedSessionsReadyFor(wiring, this.config.framework),
       }),
     };
   }
@@ -2056,10 +2064,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * sandbox works. The same predicate gates another agent's place (memory-privacy-agent-places §1).
    */
   scopedSessionsReady(): boolean {
-    const wiring = this.memoryPrivacyWiring;
-    if (!wiring?.sandboxReady()) return false;
-    const framework = resolveInteractiveFramework({ perCall: undefined, configFramework: this.config.framework, envFramework: frameworkFromEnv() });
-    return framework === 'claude-code';
+    return scopedSessionsReadyFor(this.memoryPrivacyWiring, this.config.framework);
   }
 
   memoryPrivacyRecovery(): MemoryPrivacyRecovery | null {

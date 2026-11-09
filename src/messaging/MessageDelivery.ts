@@ -92,7 +92,7 @@ export class MessageDelivery implements IMessageDelivery {
       formatted = this.formatter.formatPointer(envelope.message);
     } else {
       // A session in another agent's place has no Threadline tools (memory-privacy-agent-places §5).
-      formatted = sessionId.includes(PEER_PLACE_SESSION_MARKER)
+      formatted = typeof sessionId === "string" && sessionId.includes(PEER_PLACE_SESSION_MARKER)
         ? this.formatter.formatInline(envelope.message, undefined, {
           replyHint: `.instar/scripts/threadline-reply.sh --thread ${envelope.message.threadId ?? '<thread id>'} "your reply" (one argument; no heredoc).`,
         })
