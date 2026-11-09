@@ -1491,7 +1491,9 @@ export class ConversationGraphReplication {
   nativeTailRecords():Promise<ConversationGraphReplicationRecord[]>{return this.serial(async()=>{this.assertNativeTailReadable();return [...this.recordsForRepair(),...await this.controlIntents()];});}
   assertNativeTailReadable():void{this.assertNoPagedHeldOnlyExport();for(const c of this.heldImports.values()){const known=this.records.get(c.eventId)?.record;if(!c.priorCanonical&&(!known||!this.heldImportActivated(known,c)))throw new Error('graph-held-original-awaits-activation');}for(const stored of this.records.values())if(stored.quarantine)throw new Error('graph-native-tail-quarantined-source');}
   /** The member-loss gate a repair write would apply, for callers that may skip that write. */
-  assertRepairStillAllowed(record:ConversationGraphReplicationRecord):void{this.historicalImportAuthority?.assertMemberLossRepairAllowed(record);}
+  /** The removal history verified now, for a caller that checks several records with no await in between. */
+  repairLineage():ReturnType<GraphCustodyProfileAuthority['verifiedNegativeRoleLineage']>|null{return this.historicalImportAuthority?.verifiedNegativeRoleLineage()??null;}
+  assertRepairStillAllowed(record:ConversationGraphReplicationRecord,lineage?:ReturnType<GraphCustodyProfileAuthority['verifiedNegativeRoleLineage']>|null):void{if(lineage)this.historicalImportAuthority?.assertMemberLossRepairAllowed(record,lineage);else this.historicalImportAuthority?.assertMemberLossRepairAllowed(record);}
   retainedOriginalSourceReceipt(eventId:string):GraphMemberReceipt|null{
     const stored=this.records.get(eventId),receipt=stored?.originalSourceReceipt??stored?.sourceReceipt;if(!stored||stored.quarantine||!receipt||receipt.machineId!==this.options.machineId||receipt.phase!=='source'||!this.verify(stored.record,stored.record.packet.writerId))return null;
     return verifyMemberReceipt(receipt,stored.record.packet,stored.record.authorizationProof.membership,'source')?structuredClone(receipt):null;
