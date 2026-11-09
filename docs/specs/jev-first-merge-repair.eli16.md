@@ -1,0 +1,7 @@
+# Jev-first merge verification repair
+
+PR 2795 adds a shared way to ask Jev a bounded question before using the existing larger model. Its first caller checks whether a conversation contains a commitment. That caller remains in shadow: the existing model still supplies the answer, even if someone requests a live stage. The earlier replay failed its accuracy requirement, and this repair does not change that result.
+
+The branch predates the feature maturation registry now on main. The required combined-tree test correctly refuses its unregistered switch, intelligence.jevFirstCommitment. This repair registers that switch as sensitive and describes the actual shadow posture. Both future moves require code review. The registry asks for real Jev calls and independently reviewed outcomes with zero wrong results in the sample; it explicitly says the missing quality evidence still needs collecting. Merely making calls or agreeing in shadow is insufficient proof of safe savings.
+
+The earlier TypeScript failure was checked again after merging current main. Both the compiler and full build now pass without a runtime code change. The repair adds no new authority and changes no configuration on Echo or the fleet. Its acceptance evidence is the existing coverage test, the affected Jev and ladder tests, a full unit run, and the required fresh merge-tree verifier. Safe-merge remains the only merge path. A revert removes this registry addition without data repair.
