@@ -129,6 +129,7 @@ describe('maturation board — production wiring', () => {
       // Quality history at a glance: the same owner's series through the production route, baseline proof intact.
       const glance=await request(server.getApp()).get('/maturation/board?part=quality');expect(glance.status).toBe(200);
       expect(glance.body).toMatchObject({schema:'measurement-quality-glance/1',advisory:true,authority:'none',origin:'mb-e2e'});
+      expect(typeof glance.body.noMeasurement).toBe('number');expect(glance.body.notReadable['missing-contract']).toBeUndefined();expect(glance.body.subjectsOmitted).toBe(0);
       const right=glance.body.items.find((i:{subjectId:string;metric:{id:string}})=>i.subjectId==='whole-quality'&&i.metric.id==='right-rate');
       expect(right).toMatchObject({proof:{comparisonAvailable:true,baseline:{state:'verified',value:.8}},metric:{threshold:.8,direction:'at-least'}});expect(right.series.points.length).toBeGreaterThan(0);
       const invalid=await request(server.getApp()).patch('/initiatives/whole-quality').send({rollout:{flagPath:'one.enabled',stage:'live'}});expect(invalid.status).toBe(400);expect(initiatives.get('whole-quality')!.measurement).toBeDefined();

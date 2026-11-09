@@ -2,8 +2,8 @@
  * server's ranking/thinning signals and the page that draws them. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { thinPoints, glanceStatus, rankGlance, glanceItems, type GlanceItem } from '../../src/server/measurementQualityGlance.js';
-import { qualityHistoryView, statusText, summarize, comparisonVerified, QUALITY_HREF } from '../../dashboard/console/quality-history.js';
+import { thinPoints, glanceStatus, rankGlance, glanceItems, subjectRank, type GlanceItem } from '../../src/server/measurementQualityGlance.js';
+import { qualityHistoryView, statusText, summarize, comparisonVerified, sublineText, coverage, QUALITY_HREF } from '../../dashboard/console/quality-history.js';
 import { measurementChart } from '../../dashboard/console/measurement-trend.js';
 import { parseState } from '../../dashboard/console/maturation-board-model.js';
 import type { MeasurementPoint } from '../../src/monitoring/MeasurementTrend.js';
@@ -53,6 +53,14 @@ describe('glance signals (server)', () => {
       item({ subjectId: 'f', status: 'no-points', series: null, latest: null, first: null, change: null }),
     ]);
     expect(ranked.map(i => i.subjectId)).toEqual(['d', 'b', 'c', 'a', 'e', 'f']);
+  });
+
+  it('spends the read limit on measured subjects first and only counts the unmeasured', () => {
+    expect(subjectRank({ contract: {} })).toBe(0);
+    expect(subjectRank({ contract: {}, error: 'invalid' })).toBe(1);
+    expect(subjectRank({ contract: {}, targetState: 'unregistered' })).toBe(1);
+    expect(subjectRank({ contract: {}, targetState: 'registered' })).toBe(0);
+    expect(subjectRank({})).toBe(2);
   });
 
   it('builds rows from a detail read without carrying evaluation records, and nothing from an unavailable read', () => {
@@ -127,7 +135,32 @@ describe('quality history page', () => {
   it('writes plain status lines and counts', () => {
     expect(statusText(item())).toMatch(/^Off goal: now 100, goal at most 48\. Was 60 on /);
     expect(statusText(item({ status: 'too-few-samples', latest: { at: 1, value: 3, samples: 4 } }))).toContain('too few samples to judge (4 of 10 needed)');
-    expect(summarize(data([item(), item({ status: 'at-goal' })]) as never)).toMatchObject({ total: 2, off: 1, at: 1, verified: 0 });
+    expect(summarize(data([item(), item({ status: 'at-goal' })]) as never)).toMatchObject({ total: 2, off: 1, at: 1, none: 0, verified: 0 });
+  });
+
+  it('accounts for every item in the subline, including those with no recorded values', () => {
+    const s = summarize(data([item(), item({ status: 'too-few-samples' }), item({ status: 'at-goal' }), item({ status: 'at-goal' }),
+      item({ status: 'no-points', series: null, latest: null, first: null, change: null })]) as never);
+    expect(s).toMatchObject({ total: 5, off: 1, few: 1, at: 2, none: 1 });
+    expect(s.off + s.few + s.at + s.none).toBe(s.total);
+    expect(sublineText(s)).toBe('Worst first. 1 has too few samples to judge, 2 are at goal, 1 has no recorded values yet.');
+  });
+
+  it('says on the first screen what is not covered, with a way to act, and that it is this machine only', () => {
+    const d = { ...data([item()]), noMeasurement: 381, subjectsOmitted: 12, itemsOmitted: 1, notReadable: { 'invalid-contract': 2 }, truncatedPoints: true };
+    expect(coverage(d as never).text).toBe('This machine only. Not shown: 381 tracked items with no measurement yet, 2 that could not be read, 13 past the read limit.');
+    const node = qualityHistoryView(d as never);
+    const line = node.querySelector('.qh-coverage')!;
+    expect(line.textContent).toContain('This machine only.');
+    expect(line.querySelector('a.ask-link')).not.toBeNull();
+    // It sits above the charts, on the first screen.
+    expect(line.compareDocumentPosition(node.querySelector('.qh-grid')!) & 4).toBeTruthy();
+    expect(node.querySelector('.qh-key')!.textContent).toContain('Up to 24 points per chart');
+    // An older server reported unmeasured subjects as missing-contract reads: still named as "no measurement".
+    expect(coverage({ ...data([]), notReadable: { 'missing-contract': 381 } } as never).text).toBe('This machine only. Not shown: 381 tracked items with no measurement yet.');
+    const full = qualityHistoryView({ ...data([item()]), noMeasurement: 0 } as never);
+    expect(full.querySelector('.qh-coverage')!.textContent).toContain('Every measured item here is shown');
+    expect(full.querySelector('.qh-coverage a')).toBeNull();
   });
 
   it('keeps names literal', () => {
