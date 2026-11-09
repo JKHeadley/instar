@@ -14800,6 +14800,30 @@ Strip the \`[telegram:N]\` prefix before interpreting the message. Respond natur
       result.upgraded.push('CLAUDE.md: check-in reminder now names the server tick');
     }
 
+    // Promised-update capture (docs/specs/promised-update-capture.md). Its own
+    // sniff, so an agent that already has the Commitments section still gets it.
+    if (
+      content.includes('**Commitments & Follow-Through**') &&
+      !content.includes('promised-update capture')
+    ) {
+      const marker = '- **When to use** (PROACTIVE — this is the trigger): the moment you promise the user a future action, open a commitment.';
+      const promisedLine = `- **"Next update by 7 PM" is recorded for you (promised-update capture).** When a message you send to a topic names a time for your next update or result ("next update by about 7 PM", "I'll report back in 30 minutes"), the server records a dated promise from the message itself; you do not have to remember to. Any later message from you in that topic closes it. If nothing follows by the time (plus 15 minutes), the check-in reminder posts one line telling the user the update is late and hands the promise back to this topic's session, which is resumed or restarted, so send the update then. Follows the \`commitments.checkInReminder\` gate; \`commitments.promisedUpdateCapture.enabled: false\` turns it off; set \`commitments.promisedUpdateCapture.timeZone\` if this machine's time zone is not the user's. **When to use** (PROACTIVE): only name a time you mean. If the time can't be met, send a short message before it with the new time.
+`;
+      const at = content.indexOf(marker);
+      if (at >= 0) {
+        content = content.slice(0, at) + promisedLine + content.slice(at);
+      } else {
+        const idx = content.indexOf('**Commitments & Follow-Through**');
+        const endOfBlock = content.indexOf('\n\n', idx);
+        const insertAt = endOfBlock >= 0 ? endOfBlock : idx;
+        content = content.slice(0, insertAt) + '\n' + promisedLine + content.slice(insertAt);
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added promised-update capture to Commitments section');
+    } else if (content.includes('promised-update capture')) {
+      result.skipped.push('CLAUDE.md: promised-update capture already present');
+    }
+
     // Commitments curl payload fix (2026-07-27) — the shipped template was
     // already corrected, but existing agents with the section present skipped
     // the additive section migration and kept a payload rejected by POST

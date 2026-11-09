@@ -157,6 +157,27 @@ export function buildCheckInReminderText(opts: {
   );
 }
 
+/**
+ * The reminder for a PROMISED UPDATE (docs/specs/promised-update-capture.md):
+ * "next update by 7 PM" and nothing came. Same fixed-template rules as above —
+ * a fact, no model prose. `resuming` is true only when the caller will hand the
+ * promise back to the topic's session right after this send, so the line never
+ * claims a pickup nothing performs.
+ */
+export function buildPromisedUpdateOverdueText(opts: {
+  userRequest: string;
+  agentResponse: string;
+  resuming: boolean;
+}): string {
+  const said = (opts.agentResponse ?? '').trim().replace(/\s+/g, ' ').slice(0, CHECK_IN_TEXT_MAX);
+  const when = (opts.userRequest ?? '').match(/promised for (.+)$/)?.[1]?.trim();
+  return (
+    `I said you'd have my next update${when ? ` by ${when}` : ''}, and I haven't sent it.` +
+    (opts.resuming ? ` I'm picking it back up now and will send it next.` : '') +
+    (said ? `\n\nWhat I said: “${said}”` : '')
+  );
+}
+
 /** Human date, or '' when unparseable — never throws, never invents. */
 export function formatCheckInDate(iso: string): string {
   const ms = Date.parse(iso);

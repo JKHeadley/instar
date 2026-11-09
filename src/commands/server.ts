@@ -317,6 +317,7 @@ import { gitLeaseHasNoRemote, reportLeaseMediumSelection, selectLeaseMedium } fr
 import { decideRoleRestart, readLastRoleRestart, requestRoleRestart } from '../core/roleFollowRestart.js';
 import { HumanAsDetectorLog, observeInboundMessage } from '../monitoring/HumanAsDetectorLog.js';
 import { skillLearningSlackLink, skillLearningTelegramLink } from '../monitoring/skillLearning/SeamFilter.js';
+import { PromisedUpdateCapture, chainPromisedUpdateCapture, resolvePromisedUpdateCaptureEnabled, type PromisedUpdateCommitmentsConfig } from '../monitoring/PromisedUpdateCapture.js';
 import { startSkillLearning, skillLearningEnv, createLearnedSkillReconciler, bootReconcileLearnedSkills } from '../monitoring/skillLearning/wire.js';
 import { SkillLearningSentinel } from '../monitoring/SkillLearningSentinel.js';
 import { creditUsherOnMiss } from '../core/UsherActedCorrelator.js';
@@ -17613,6 +17614,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         console.warn('[GoalRealignment] init failed:', error instanceof Error ? error.message : String(error));
       }
     }
+
+    // Promised-update capture (docs/specs/promised-update-capture.md): an agent message naming a time for
+    // its next update becomes a dated commitment, so the check-in reminder fires and hands the promise back
+    // to the topic's session if nothing follows. One statement: startServer sits at the TS2563 limit.
+    chainPromisedUpdateCapture(telegram, new PromisedUpdateCapture({ tracker: commitmentTracker, enabled: () => resolvePromisedUpdateCaptureEnabled(liveConfig.get<PromisedUpdateCommitmentsConfig | undefined>('commitments', undefined) ?? (config as { commitments?: PromisedUpdateCommitmentsConfig }).commitments, config), timeZone: () => liveConfig.get<string | undefined>('commitments.promisedUpdateCapture.timeZone', undefined) }));
 
     // Jev correction-detector shadow (docs/specs/jev-correction-shadow.md): asks
     // Jev whether each inbound user message is a correction or a standing
