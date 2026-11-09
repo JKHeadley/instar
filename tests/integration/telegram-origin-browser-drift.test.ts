@@ -85,8 +85,7 @@ describe('Telegram browser route under Web K drift', () => {
       expect(held.status).toBe(409);
       // The cause is logged server-side by class and message, never returned to the caller.
       expect(held.body).toEqual({ error: 'telegram-browser-snapshot-unavailable' });
-      expect(warn).toHaveBeenCalledWith('[telegram-origin] browser snapshot unavailable',
-        expect.objectContaining({ profileId: 'operator', errorClass: expect.any(String), message: expect.any(String) }));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[telegram-origin\] browser snapshot unavailable: profile=operator class=\w+ message=\S/));
     } finally { warn.mockRestore(); }
     expect(h.factory).toHaveBeenCalledTimes(2);
     expect(h.attention).toHaveBeenCalledOnce();
