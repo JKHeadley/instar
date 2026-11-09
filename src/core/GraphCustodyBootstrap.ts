@@ -112,6 +112,12 @@ export class GraphCustodyBootstrapStore {
   if(canonicalHash(publication)!==anchor.publicationHash||canonicalHash(publication.ownerPublicKey)!==anchor.ownerPublicKeyHash||canonicalHash(publication.membership)!==anchor.membershipHash||publication.membership.agentId!==this.agentId||!verifyGraphCustodyBootstrapPublication(publication,publication.membership.members))throw new Error('graph-bootstrap-established-anchor-mismatch');
   return publication;
  }
+ /** The pinned genesis checked against its own signed members, not against pairing. For finishing an interrupted pin only; the caller checks pairing. */
+ selfSignedPublication():GraphCustodyBootstrapPublication|null{
+  const p=this.read('publication') as GraphCustodyBootstrapPublication|null;if(!p)return null;
+  if(p.membership?.agentId!==this.agentId||!Array.isArray(p.membership.members)||!verifyGraphCustodyBootstrapPublication(p,p.membership.members))throw new Error('graph-bootstrap-publication-invalid');
+  return p;
+ }
  publication(installed:readonly GraphMembershipMember[]):GraphCustodyBootstrapPublication|null{
   const p=this.read('publication') as GraphCustodyBootstrapPublication|null;if(!p)return null;
   if(p.membership.agentId!==this.agentId||!verifyGraphCustodyBootstrapPublication(p,installed))throw new Error('graph-bootstrap-publication-invalid');
