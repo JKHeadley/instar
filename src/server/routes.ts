@@ -365,7 +365,7 @@ import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacemen
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
-import { decorateWithRopeCondition } from './poolRopeCondition.js';
+import { decorateWithRopeCondition, decorateWithReconnect } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runGradePassWithIdleProof } from '../core/JobGradePassIdleVerifier.js';
 import { buildDirectJobSupervisionQuality } from './directJobSupervisionQuality.js';
@@ -11768,7 +11768,15 @@ export function createRoutes(ctx: RouteContext): Router {
         isSelf: boolean;
         sessionCount: number;
         emptyState?: { kind: string; text: string; lastSeen: string | null };
+        /** CMT-1541: a peer that did not answer carries its /pool reachability fields. */
+        reach?: Record<string, unknown>;
       }> = [];
+      let poolRowsMemo: Array<Record<string, unknown>> | null = null;
+      const poolRows = (): Array<Record<string, unknown>> => {
+        if (poolRowsMemo) return poolRowsMemo;
+        try { poolRowsMemo = (poolView().machines as Array<Record<string, unknown>>) ?? []; } catch { poolRowsMemo = []; /* @silent-fallback-ok: no reach fields → the page says "not known" */ }
+        return poolRowsMemo;
+      };
       // Registry-wide roster: self + every known machine. listPoolMachines is
       // the /guards?scope=pool accounting boundary (every registered machine,
       // online or not). Absent (single-machine/dark) → roster is just self.
@@ -11804,6 +11812,7 @@ export function createRoutes(ctx: RouteContext): Router {
           );
           entry.emptyState = { kind: state.kind, text: state.text, lastSeen: state.lastSeen };
         }
+        if (!isSelf && peerFetchReason.get(machineId)) entry.reach = reachFieldsOf(poolRows().find((r) => r.machineId === machineId));
         machines.push(entry);
       }
 
@@ -24380,6 +24389,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const membership=Object.fromEntries((ctx.coordinator?.managers?.identityManager?.getActiveMachines()??[]).map(row=>[row.machineId,Date.parse(row.entry.pairedAt)]));
     return recoveryPoolHealth(ctx.meshSelfId??null,(ctx.listPoolMachines?.()??[]).map(p=>p.machineId),Date.now(),membership);
   }
+  /** The /pool fields that say how long a machine has been out of reach and whether anything is fixing it (CMT-1541). */
+  function reachFieldsOf(row: Record<string, unknown> | undefined): Record<string, unknown> {
+    if (!row) return {};
+    const out: Record<string, unknown> = {};
+    for (const k of ['liveness', 'ropeCondition', 'ropeAllDownSince', 'reconnect']) if (row[k] !== undefined) out[k] = row[k];
+    return out;
+  }
   function poolView(): Record<string, unknown> {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     // Rope-condition decoration: the registry's `online` flag feeds placement and
@@ -24388,10 +24404,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // evaluation. Attach the live classification so reachability renders
     // honestly without touching placement semantics. Monitor dark → absent.
     const nickOf = (id: string): string => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine';
-    const machines = decorateWithRopeCondition(
+    // CMT-1541: whether this machine is re-dialing a peer it cannot reach (prober dark → absent).
+    const machines = decorateWithReconnect(decorateWithRopeCondition(
       ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
       ctx.ropeHealthMonitor?.status().peers,
-    ).map((m) => ({
+    ), sync?.ropeHealth).map((m) => ({
       ...m,
       // trustworthy-machine-load A5: the one wording template, rendered server-side
       // so every consumer (dashboard, digests, peers) says the same honest thing.

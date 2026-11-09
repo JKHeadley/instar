@@ -2,6 +2,10 @@
 // Pure: reads the /subscription-relogin?scope=pool body the page already fetched, touches no DOM.
 
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableSentence, poolMachine } from './unreachable-model.js';
+
+/** Why a remote machine's row has no tick box (the SubscriptionReloginRemoteConfigure owner-must-enable-here rule). */
+export const OWNER_MUST_ENABLE_WORDS = 'Repairing without asking is off there, and it can only be switched on from that machine itself: another machine is not allowed to raise its setting.';
 
 const STATE_WORDS = {
   unattended: 'On, repairs without asking',
@@ -30,7 +34,7 @@ export function resultWords(r) {
     case 'target-unreachable': case 'delivery-failed': return 'Couldn’t reach this machine. Try again.';
     case 'stale-config': return 'Its setting changed meanwhile; check the row and tap again.';
     case 'outcome-unknown': return 'May have applied; checking again.';
-    case 'owner-must-enable-here': return 'Turn this on from that machine’s own dashboard.';
+    case 'owner-must-enable-here': return OWNER_MUST_ENABLE_WORDS;
     case 'identity-not-on-this-machine': return 'Not changed: an account on the list is not on that machine.';
     case 'pool-unreadable': return 'Not changed: that machine couldn’t read its own accounts.';
     case 'not-unattended': return 'Not changed: it isn’t set to repair without asking.';
@@ -47,12 +51,12 @@ function emailsOf(list) {
  * Build the rows. `relogin` is the console `get()` result ({ ok, data }); `names` maps machine id →
  * nickname. Never a raw machine id on screen.
  */
-export function buildAutoRepair(relogin, { names = {}, blockers = [] } = {}) {
+export function buildAutoRepair(relogin, { names = {}, blockers = [], poolMachines = null, now = Date.now() } = {}) {
   if (!relogin || !relogin.ok || !relogin.data) return { ok: false, rows: [] };
   const d = relogin.data;
   const configs = d.pool && Array.isArray(d.pool.configs) ? d.pool.configs : (d.config ? [{ ...d.config, remote: false }] : []);
   const missing = d.pool && Array.isArray(d.pool.configsMissing) ? d.pool.configsMissing : [];
-  const failed = d.pool && Array.isArray(d.pool.failed) ? d.pool.failed.map((f) => f && f.machineId).filter(Boolean) : [];
+  const failedRows = d.pool && Array.isArray(d.pool.failed) ? d.pool.failed.filter((f) => f && f.machineId) : [];
   const nameOf = (id, nick) => verifiedDisplayName(nick, id) || verifiedDisplayName(names[id], id) || 'A machine';
   const rows = [];
   const seen = new Set();
@@ -73,7 +77,7 @@ export function buildAutoRepair(relogin, { names = {}, blockers = [] } = {}) {
     let blockedWhy = null;
     if (finalList === null) blockedWhy = 'Couldn’t read this machine’s accounts.';
     else if (finalList.length === 0) blockedWhy = 'No accounts on this machine yet.';
-    else if (!self && mode !== 'unattended') blockedWhy = 'Turn this on from that machine’s own dashboard.';
+    else if (!self && mode !== 'unattended') blockedWhy = OWNER_MUST_ENABLE_WORDS;
     rows.push({
       machineId: c.machineId, name: nameOf(c.machineId, c.machineNickname), self, mode,
       stateWords: STATE_WORDS[mode], revision: typeof c.revision === 'string' ? c.revision : null,
@@ -87,7 +91,12 @@ export function buildAutoRepair(relogin, { names = {}, blockers = [] } = {}) {
     });
   }
   for (const id of missing) if (!seen.has(id)) { seen.add(id); rows.push({ machineId: id, name: nameOf(id), unreadable: 'Needs an Instar update first' }); }
-  for (const id of failed) if (!seen.has(id)) { seen.add(id); rows.push({ machineId: id, name: nameOf(id), unreadable: 'Couldn’t read this machine' }); }
+  for (const f of failedRows) if (!seen.has(f.machineId)) {
+    seen.add(f.machineId);
+    // How long it has been out of reach and whether anything is fixing it (CMT-1541).
+    const name = nameOf(f.machineId);
+    rows.push({ machineId: f.machineId, name, unreadable: unreachableSentence(verifiedDisplayName(names[f.machineId], f.machineId), poolMachine(poolMachines, f.machineId), f, now) });
+  }
   rows.sort((a, b) => (b.self === true) - (a.self === true) || String(a.name).localeCompare(String(b.name)));
   return { ok: true, rows };
 }

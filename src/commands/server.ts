@@ -228,6 +228,8 @@ import { GuardPostureStore } from '../core/GuardPostureStore.js';
 import { MachineEvidenceStore } from '../core/MachineEvidenceStore.js';
 import { AttentionConditionStore, baseKeyOfItemId } from '../core/AttentionConditionStore.js';
 import { resolveSubscriptionReloginAttention, subscriptionReloginConditionKey } from '../core/SubscriptionReloginAttention.js';
+import { SubscriptionReloginApprovalReminder, DEFAULT_APPROVAL_REMINDER_HOURS, waitingSinceMs, approvalReminderSummary } from '../core/SubscriptionReloginApprovalReminder.js';
+import { DEFAULT_SLOW_RETRY, outsideQuietHours } from '../core/SubscriptionReloginService.js';
 import { isWslHost } from '../core/wslPlatform.js';
 import { emailMismatchAttentionIdPrefix } from '../core/AccountFollowMeEmailGate.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from '../server/peerUrlGuard.js';
@@ -17465,6 +17467,36 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         subscriptionReloginRuntimeRef = subscriptionReloginRuntime;
         subscriptionReloginRuntime.start();
+        // CMT-1541: a repair waiting for the operator's tap is reminded ONCE after a few hours, on the
+        // same attention row as its first notice (Quiet-by-Default applies; never at night).
+        const reminderHoursRaw = reloginCfg.approvalReminderHours;
+        const reminderHours = typeof reminderHoursRaw === 'number' && Number.isFinite(reminderHoursRaw) && reminderHoursRaw >= 0
+          ? reminderHoursRaw : DEFAULT_APPROVAL_REMINDER_HOURS;
+        if (telegram && reminderHours > 0) {
+          const runtime = subscriptionReloginRuntime;
+          const tg = telegram;
+          const rawQuiet = reloginCfg.slowRetry?.quietHours;
+          const quiet = rawQuiet === null ? null : rawQuiet ?? DEFAULT_SLOW_RETRY.quietHours;
+          new SubscriptionReloginApprovalReminder({
+            thresholdMs: reminderHours * 3_600_000,
+            listSuggested: () => runtime.store.list({ state: 'suggested', limit: 200 }).filter((e) => e.machineId === subscriptionPoolMachineId),
+            waitingSince: (ep) => waitingSinceMs(ep, runtime.store.listEvents(ep.id, 50)),
+            inQuietHours: (nowMs) => outsideQuietHours(nowMs, quiet) !== nowMs,
+            log: (line) => console.warn(line),
+            remind: async ({ episode, waitingSinceMs: since }) => {
+              const doorway = episode.framework === 'codex-cli' ? 'Codex' : 'Claude Code';
+              let base = `http://localhost:${config.port}`;
+              try { if (tunnel?.url) base = tunnel.url; }
+              catch { /* @silent-fallback-ok — tunnel URL is best-effort; the local link still opens the page */ }
+              const link = `${base}/dashboard/console/#/capacity/accounts?s=needs`;
+              const email = subscriptionPool.get(episode.accountId)?.email ?? null;
+              const summary = approvalReminderSummary({ doorway, account: email, machine: null, waitingSinceMs: since, link });
+              await tg.createAttentionItem({ id: `subscription-relogin-${episode.id}-approval-reminder`, title: `${doorway} sign-in repair is waiting for you`,
+                summary, description: summary, category: 'subscription-relogin', conditionKey: subscriptionReloginConditionKey(episode),
+                priority: 'HIGH', sourceContext: 'assisted-subscription-relogin' });
+            },
+          }).start();
+        }
         console.log(pc.green(`  Assisted subscription re-login: ${reloginCfg.dryRun !== false ? 'observe' : (reloginCfg.mode ?? 'approval')} (navigation: ${reloginNavigation}, browser: ${process.platform === 'darwin' || windowsRepair ? 'normal' : 'automated'}, last-resort model: ${reloginLastResort && !windowsRepair ? (reloginLastResort.available() ? reloginLastResort.config.model : `key ${reloginLastResort.config.keyName} not in vault`) : 'off'})`));
       } catch (error) {
         // @silent-fallback-ok — bootstrap refusal is logged and the runtime is explicitly darkened; routes return typed 503.

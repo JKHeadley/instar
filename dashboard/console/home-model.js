@@ -11,6 +11,7 @@
 
 import { verifiedDisplayName } from './display-identity.js';
 import { sessionTopicName } from './topic-names.js';
+import { unreachableSentence, poolMachine } from './unreachable-model.js';
 
 export const FRESH_MS = 5 * 60 * 1000;
 export const MAX_ROWS = 3;
@@ -51,13 +52,26 @@ export function machineLabel(f, names = {}) {
   return verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || verifiedDisplayName(names[f.machineId], f.machineId) || 'a machine with no name on file';
 }
 
-/** "Couldn't reach Mac Mini, so its items may be missing." Empty when every machine answered. */
-export function unreachedLine(failed, names, what) {
+/**
+ * "Couldn't reach Mac Mini for 3 hours; reconnecting by itself. Its items may be missing."
+ * Each machine says how long and whether anything is fixing it (CMT-1541), read from the /pool
+ * rows `machineNames` carries. Empty when every machine answered.
+ */
+export function unreachedLine(failed, names, what, now = Date.now()) {
   if (!failed || failed.length === 0) return '';
-  const labels = [...new Set(failed.map((f) => machineLabel(f, names)))];
-  const list = labels.length === 1 ? labels[0] : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]}`;
-  return `Couldn't reach ${list}, so ${failed.length === 1 ? 'its' : 'their'} ${what} may be missing.`;
+  const seen = new Set();
+  const sentences = [];
+  for (const f of failed) {
+    const label = machineLabel(f, names);
+    if (seen.has(label)) continue;
+    seen.add(label);
+    sentences.push(unreachableSentence(label, poolMachine({ machines: (names && names[POOL_ROWS]) || [] }, f && f.machineId), f, now));
+  }
+  return `${sentences.join(' ')} ${seen.size === 1 ? 'Its' : 'Their'} ${what} may be missing.`;
 }
+
+/** The /pool rows behind a name map, kept off its enumerable keys so it still reads as id → name. */
+export const POOL_ROWS = '__poolRows';
 
 /** Name map from a /pool answer: machineId → nickname. */
 export function machineNames(poolRes) {
@@ -67,6 +81,7 @@ export function machineNames(poolRes) {
     const name = verifiedDisplayName(m.nickname, m.machineId) || verifiedDisplayName(m.name, m.machineId);
     if (name) out[m.machineId] = name;
   }
+  Object.defineProperty(out, POOL_ROWS, { value: ms, enumerable: false });
   return out;
 }
 

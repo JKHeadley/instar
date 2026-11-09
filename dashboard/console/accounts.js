@@ -32,8 +32,8 @@ export async function renderAccounts(main, ctx) {
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
   const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
-  const autoRepair = buildAutoRepair(relogin, { names, blockers });
-  const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names });
+  const autoRepair = buildAutoRepair(relogin, { names, blockers, poolMachines: machines });
+  const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names, poolMachines: machines });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
   const refresh = () => renderAccounts(main, ctx);
 
@@ -179,19 +179,22 @@ function autoRepairSection(model, refresh) {
   if (!model.ok || model.rows.length === 0) return null;
   const section = el('section', { class: 'page-sections', id: 'sec-auto-repair' },
     el('h2', { class: 'eyebrow', text: 'Automatic sign-in repair' }),
-    el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. Machines set to "asks you first", watching only, or off are switched on from that machine’s own dashboard.' }));
+    el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. A machine whose setting is off, watching only, or “asks you first” has no tick box: only that machine can switch itself on, from its own dashboard, because another machine is not allowed to raise it.' }));
   const held = () => { const changed = [...autoRepairTicks.keys()].length > 0; if (changed) section.setAttribute('data-interaction-open', '1'); else section.removeAttribute('data-interaction-open'); };
   const lastResult = (id) => autoRepairResults && autoRepairResults.results.find((r) => r.machineId === id);
   const rows = el('div', { class: 'rows' }, model.rows.map((row) => {
     if (row.unreadable) return el('div', { class: 'row' }, el('span', { class: 'dot unknown' }),
       el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: row.name }), el('span', { class: 'row-sub', text: row.unreadable })));
-    const box = el('input', { type: 'checkbox', 'aria-label': `Include ${row.name}` });
-    box.checked = autoRepairTicked(row);
-    box.disabled = !row.canTurnOn && !row.canSwitchBack;
-    box.addEventListener('change', () => {
-      if (box.checked === row.defaultTick) autoRepairTicks.delete(row.machineId); else autoRepairTicks.set(row.machineId, box.checked);
-      held();
-    });
+    // A row this page cannot change shows no tick box at all: a greyed-out box looks offered here
+    // (operator 2026-11-09). Its reason line says why and where it can be changed.
+    const box = row.canTurnOn || row.canSwitchBack ? el('input', { type: 'checkbox', 'aria-label': `Include ${row.name}` }) : null;
+    if (box) {
+      box.checked = autoRepairTicked(row);
+      box.addEventListener('change', () => {
+        if (box.checked === row.defaultTick) autoRepairTicks.delete(row.machineId); else autoRepairTicks.set(row.machineId, box.checked);
+        held();
+      });
+    }
     const lines = [];
     if (row.finalList) lines.push(`Accounts: ${row.finalList.join(', ')}`);
     if (row.removals.length) lines.push(`Stops: ${row.removals.join(', ')}`);
@@ -209,7 +212,7 @@ function autoRepairSection(model, refresh) {
     if (row.activationPending) end.append(el('button', { class: 'btn-quiet btn-small', type: 'button', text: 'Finish restarting',
       onclick: () => autoRepairTap('finish-restart', [row], refresh) }));
     return el('div', { class: 'row' },
-      el('label', { class: 'row-check' }, box),
+      box ? el('label', { class: 'row-check' }, box) : el('span', { class: 'row-check', 'aria-hidden': 'true' }),
       el('span', { class: 'row-main' },
         el('span', { class: 'row-title', text: `${row.name}${row.self ? ' (this machine)' : ''}: ${row.stateWords}${row.activationPending ? ' — restarting' : ''}` }),
         ...lines.map((t) => el('span', { class: 'row-sub', text: t }))),

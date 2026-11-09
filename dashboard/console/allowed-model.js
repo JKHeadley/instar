@@ -8,6 +8,7 @@
 
 import { ago } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableClause, poolMachine } from './unreachable-model.js';
 
 // ── Profile ───────────────────────────────────────────────────────────────
 export const PROFILES = ['cautious', 'supervised', 'collaborative', 'autonomous'];
@@ -157,7 +158,7 @@ function guardRow(g, machine, local) {
  * Every guard row, this machine first. `res` is GET /guards (optionally ?scope=pool).
  * Returns { ok, look, others, failed, multi, selfName, counts }.
  */
-export function buildGuards(res) {
+export function buildGuards(res, { pool: poolRows = null, now = Date.now() } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read the safety checks: ${res.reason}.` };
   const d = res.data || {};
   if (!Array.isArray(d.guards)) return { ok: false, reason: 'The safety checks answered without their list.' };
@@ -177,10 +178,12 @@ export function buildGuards(res) {
   const accepted = rows.filter((r) => r.record.loadBearingAccepted);
   return {
     ok: true, look, others, multi, selfName,
-    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || 'Another machine', sub: `Can’t tell: ${FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
+    failed: failed.map((f) => ({ key: `failed:${f.machineId}`, main: verifiedDisplayName(f.nickname, f.machineId) || 'Another machine', sub: `Can’t tell: ${GUARD_UNREACHED.has(f.reason) ? unreachableClause(poolMachine(poolRows, f.machineId), f, now) : FAILED_WORDS[f.reason] || String(f.reason || 'no answer').replace(/-/g, ' ')}`, tone: 'unknown' })),
     counts: { look: look.length, others: others.length, accepted: accepted.length, total: rows.length },
   };
 }
+// Out of reach: say for how long and whether anything is fixing it (CMT-1541).
+const GUARD_UNREACHED = new Set(['offline', 'timeout', 'unreachable']);
 const FAILED_WORDS = {
   'no-known-url': 'no address known for it', offline: 'it is offline', 'url-rejected': 'its address was refused',
   'route-missing': 'it needs an update to report', unauthorized: 'it refused the request', timeout: 'no answer in time',
