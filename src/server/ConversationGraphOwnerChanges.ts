@@ -80,7 +80,7 @@ export class ConversationGraphOwnerChanges {
    const result=this.reply(view.requestId,source.packet.eventId,undefined,owner);
    if(result.body.state==='checking-save')return{status:202,privateMayServe,body:{...result.body,state:'recorded-local',
     custody:{kind:'recorded-here',machine:this.machine(view.recordedMachineId)},details:view.details,
-    ...localIntent}};
+    ...localIntent,...this.writerBlock()}};
    return ['committed','canceled','erased'].includes(String(result.body.state))?result:{...result,privateMayServe,body:{...result.body,details:view.details,
     ...localIntent}};
   }
@@ -90,7 +90,7 @@ export class ConversationGraphOwnerChanges {
    cancelEligible:view.cancelEligible,sync:{state:'unavailable'},
    waitingMachines:this.options.membership().members.filter(row=>row.machineId!==view.recordedMachineId).map(row=>this.machine(row.machineId)),
    details:view.details,...(view.change?{localIntent:{v:1,change:view.change,...(view.createdEffort?{createdEffort:view.createdEffort}:{})}}:{}),
-   ...(view.refusalCode?{reason:view.refusalCode}:{})}};
+   ...(view.refusalCode?{reason:view.refusalCode}:{}),...(view.state==='recorded-local'?this.writerBlock():{})}};
  }
  /** Priority local suppression works on followers and during witness outage.
   * The response deliberately does not certify fleet or backup erasure. */
@@ -478,6 +478,8 @@ export class ConversationGraphOwnerChanges {
    return this.submit(req,surface,requestId,{kind:'set-primary-placement',subject:claim.subject,parent:claim.parent,replacesPlacementEventIds:[core.eventId]});
   }catch{return failure(409,'undo-unavailable');}
  }
+ /** Signal only: a recorded-local change cannot move while a paired machine outside the graph holds the lease; say which machine instead of waiting silently. */
+ private writerBlock():{blockedBy?:{reason:'writer-not-joined';machine:{machineId:string;name:string}}}{const holder=this.options.runtime.writerOutsideMembership();return holder?{blockedBy:{reason:'writer-not-joined',machine:this.machine(holder)}}:{};}
  private machine(machineId:string):{machineId:string;name:string}{
   const entry=this.options.identity.loadRegistry().machines[machineId];
   const name=verifiedEntityName(machineId,entry?.nickname??entry?.name);return{machineId,name:name?.slice(0,120)||'Another machine'};

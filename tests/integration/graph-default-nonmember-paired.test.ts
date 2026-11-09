@@ -3,10 +3,12 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import express from 'express';
 import type {Server} from 'node:http';
 import {afterEach,describe,expect,it,vi} from 'vitest';
 import {setupGraphDefaultNativePeers} from '../helpers/graph-default-planned-transition.js';
 import {ConversationGraphDefault} from '../../src/server/ConversationGraphDefault.js';
+import {createConversationGraphDefaultSurface} from '../../src/server/ConversationGraphDefaultSurface.js';
 import {MachineIdentityManager} from '../../src/core/MachineIdentity.js';
 import {IdentityStore} from '../../src/core/IdentityStore.js';
 import {SecretStore} from '../../src/core/SecretStore.js';
@@ -71,4 +73,24 @@ describe('paired machines outside the signed membership',()=>{
   expect(follower.get(PUBLICATION_MARKER)).toBeUndefined();
  });
 
+ it('names the paired machine outside the graph when it holds the lease, instead of leaving changes recorded-local with no reason',async()=>{
+  let chosen:readonly string[]|undefined;const f=await fixture(()=>chosen);chosen=[f.ids[0],f.ids[1]];
+  for(let i=0;i<2;i++){f.apps[i].use(express.json({limit:'64kb'}));f.apps[i].use(createConversationGraphDefaultSurface({manager:f.defaults[i],stateDir:f.native.options[i].stateDir,readEnabled:true,correctionsEnabled:true,scope:f.native.options[i].scopeVerifier!,telegramChatId:'-1001',pairing:null,verifyDashboardOwner:token=>token==='actual-fixture-owner',dashboardPolicy:()=>({pin:'fixture-owner-policy',generation:'11111111-1111-4111-8111-111111111111'}),forceFileKey:true}));}
+  const headers={'X-Instar-Operator-Session':'actual-fixture-owner','content-type':'application/json'};
+  const post=async(requestId:string)=>{const response=await fetch(f.origins[1]+'/conversation-graph/changes',{method:'POST',headers,body:JSON.stringify({requestId,change:{kind:'create-effort',projectScope:['instar']}})});return{status:response.status,body:await response.json()};};
+  const status=async(requestId:string)=>{const response=await fetch(f.origins[1]+'/conversation-graph/changes/'+requestId,{headers});return{status:response.status,body:await response.json()};};
+  const first=await post('while-a-member-holds');expect([200,202],JSON.stringify(first.body)).toContain(first.status);await f.defaults[0].runtime!.reconcilePending();await f.defaults[1].runtime!.reconcilePending();
+  const committed=await status('while-a-member-holds');expect(committed.body.state,JSON.stringify(committed.body)).toBe('committed');expect(committed.body.blockedBy).toBeUndefined();
+  // The lease moves to the paired machine that never joined.
+  for(const options of f.native.options){vi.spyOn(options.leaseCoordinator,'currentHolder').mockReturnValue(f.outsiderId);vi.spyOn(options.leaseCoordinator,'holdsLease').mockReturnValue(false);}
+  expect(f.defaults[1].runtime!.writerOutsideMembership()).toBe(f.outsiderId);expect(f.defaults[1].writerOutsideGraph()).toBe(f.outsiderId);
+  const waiting=await post('while-the-outsider-holds');expect(waiting.status,JSON.stringify(waiting.body)).toBe(202);expect(waiting.body.state).toBe('recorded-local');
+  expect(waiting.body.blockedBy).toEqual({reason:'writer-not-joined',machine:{machineId:f.outsiderId,name:expect.any(String)}});
+  await f.defaults[1].runtime!.reconcilePending();
+  const later=await status('while-the-outsider-holds');expect(later.status).toBe(202);expect(later.body.state).toBe('recorded-local');expect(later.body.blockedBy?.machine.machineId).toBe(f.outsiderId);
+  const pending=await (await fetch(f.origins[1]+'/conversation-graph/pending',{headers})).json();expect(JSON.stringify(pending)).toContain('writer-not-joined');
+  // Back on a member: the reason goes away.
+  vi.restoreAllMocks();expect(f.defaults[1].runtime!.writerOutsideMembership()).toBeNull();expect(f.defaults[1].writerOutsideGraph()).toBeNull();
+  const back=await status('while-the-outsider-holds');expect(back.body.blockedBy,JSON.stringify(back.body)).toBeUndefined();
+ });
 });

@@ -187,6 +187,8 @@ export function writeStatusWords(data, known = {}) {
   if (data?.state === 'cancel-pending' || data?.state === 'checking-cancel') return `Cancellation is waiting for sync${waiting ? ` with ${waiting}` : ''}.`;
   if (known.witnessed) return 'Saved independently. The current sync status could not be checked.';
   if(known.recorded&&data?.state!=='recorded-local')return 'Recorded here earlier. The current recording machine and sync status could not be checked. This does not confirm an independent copy.';
+  const writer = data?.blockedBy?.reason === 'writer-not-joined' && typeof data.blockedBy.machine?.name === 'string' ? data.blockedBy.machine.name.slice(0,120) : '';
+  if (data?.state === 'recorded-local' && writer) return `Recorded here on ${machine}. Not yet saved independently: ${writer} is in charge of your machines right now and has not joined Conversations, so this change waits until a joined machine${waiting ? ` (${waiting})` : ''} is in charge again. This copy may be lost if this machine is lost. The agreed view stays unchanged.`;
   if (data?.state === 'recorded-local') return `Recorded here on ${machine}. Not yet saved independently${waiting ? `; waiting for ${waiting}` : ''}. This copy may be lost if this machine is lost. The agreed view stays unchanged.`;
   if (data?.state === 'commit-won') return 'The change was already being committed. Check its status.';
   return 'The save has not been confirmed. Check this same request before trying again.';
