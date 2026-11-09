@@ -276,6 +276,30 @@ describe('graph immutable source and replication proofs', () => {
   it('preserves an actual original ACK through normal cold repair after readoption archive publication fails',async()=>{const f=replicationFixture(),record=f.record(),dir=await directory();let source=await ConversationGraphReplication.open(f.options(dir));await source.appendLocal(record);const original=source.retainedOriginalSourceReceipt(record.packet.eventId),save=(source as unknown as {save(name:string,value:unknown,immutable?:boolean):Promise<void>}).save.bind(source),fault=vi.spyOn(source as unknown as {save(name:string,value:unknown,immutable?:boolean):Promise<void>},'save').mockImplementation(async(name,value,immutable)=>{if(name.endsWith('.original-receipt.json'))throw new Error('fault-before-original-archive');return save(name,value,immutable);});try{await expect(source.receive(f.adopted(record,true),'writer')).rejects.toThrow('fault-before-original-archive');}finally{fault.mockRestore();}source=await ConversationGraphReplication.open(f.options(dir));expect(source.retainedOriginalSourceReceipt(record.packet.eventId)).toEqual(original);source=await ConversationGraphReplication.open(f.options(dir),'verify-only');expect(source.retainedOriginalSourceReceipt(record.packet.eventId)).toEqual(original);});
   it('refuses a genuine foreign member receipt substituted into a local receipt slot',async()=>{const f=replicationFixture(),record=f.record(),dir=await directory(),other=await directory(),source=await ConversationGraphReplication.open(f.options(dir)),peer=await ConversationGraphReplication.open(f.options(other,'sleeper'));await source.appendLocal(record);const foreign=await peer.receive(record,'writer');await source.receive(f.adopted(record,true),'writer');await fs.writeFile(path.join(dir,graphReplicationFileStem(record.packet.eventId)+'.receipt.json'),JSON.stringify(foreign));await expect(ConversationGraphReplication.open(f.options(dir),'verify-only')).rejects.toThrow('local-receipt-machine-mismatch');});
   it.each([false,true])('retains the actual original source ACK across readoption and cold verify-only reopen (refused=%s)',async refused=>{const f=replicationFixture(),record=f.record(),dir=await directory();let source=await ConversationGraphReplication.open(f.options(dir));await source.appendLocal(record);const original=source.retainedOriginalSourceReceipt(record.packet.eventId);expect(original).not.toBeNull();await source.receive(f.adopted(record,refused),'writer');expect(source.retainedOriginalSourceReceipt(record.packet.eventId)).toEqual(original);source=await ConversationGraphReplication.open(f.options(dir),'verify-only');expect(source.retainedOriginalSourceReceipt(record.packet.eventId)).toEqual(original);});
+  it('verifies the removal history once per inventory pass, and an unverifiable history holds every row', async () => {
+    const f = replicationFixture(); const dir = await directory();
+    const writer = await ConversationGraphReplication.open(f.options(dir));
+    const peer = await ConversationGraphReplication.open(f.options(await directory(), 'sleeper'));
+    let previous: string | null = null;
+    for (const [i, id] of ['event-aaa', 'event-bbb', 'event-ccc'].entries()) {
+      const r = f.record(id, i + 1, previous); previous = r.packet.coreHash;
+      const wr = await writer.appendLocal(r); const pr = await peer.receive(r, 'writer');
+      const cert = f.certificate(r, [wr.receipt, pr]);
+      await writer.attachCertificate(r.packet.eventId, cert);
+      await writer.recordCertificateReceipt(r.packet.eventId, await peer.attachCertificate(r.packet.eventId, cert));
+    }
+    const { reader, dropped } = sourceReader(dir, () => writer.originRecords());
+    let lineageReads = 0; let checks = 0; let unverifiable = false;
+    (writer as unknown as { historicalImportAuthority: unknown }).historicalImportAuthority = {
+      verifiedNegativeRoleLineage: () => { lineageReads++; if (unverifiable) throw new Error('lineage-invalid'); return { memberLossActivations: [] }; },
+      assertMemberLossRepairAllowed: (_record: unknown, lineage: unknown) => { checks++; if (!lineage) throw new Error('per-row lineage read'); },
+    };
+    expect(writer.certifiedUnion(reader, dropped).records).toHaveLength(3);
+    expect(lineageReads).toBe(1); expect(checks).toBe(3);
+    unverifiable = true;
+    expect(writer.certifiedUnion(reader, dropped)).toMatchObject({ records: [], partial: true,
+      quarantined: ['graph-event:event-aaa', 'graph-event:event-bbb', 'graph-event:event-ccc'] });
+  });
   it('never chooses an event-id winner when valid certificates equivocate on one source sequence', async () => {
     const f = replicationFixture(); const dir = await directory();
     const writer = await ConversationGraphReplication.open(f.options(dir));

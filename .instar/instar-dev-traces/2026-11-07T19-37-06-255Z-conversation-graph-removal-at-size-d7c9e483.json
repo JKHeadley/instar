@@ -19,5 +19,10 @@
   ],
   "phase": "complete",
   "secondPass": "not-required",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new trigger or loop; existing work yields more often."
+  }
 }
