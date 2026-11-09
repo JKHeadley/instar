@@ -67,6 +67,8 @@ async function boot(ownerId: string | null) {
     getChannelMessages: () => [{ ts: '1730000000.000900', user: 'U0E2EGEAR', text: 'second person here' }],
     cachedUserName: (u: string) => (u === 'U0E2EGEAR' ? 'Gear Test' : null),
     cachedChannelName: (c: string) => (c === 'C0E2ECHAN' ? 'e2e-channel' : null),
+    // conversations.info says this is a channel, so its title carries '#', as in Slack.
+    cachedChannelKind: (c: string) => (c === 'C0E2ECHAN' ? 'channel' as const : null),
     getBotUserId: () => 'UBOT',
     getLogPath: () => logPath,
     logMessage: (e: Record<string, unknown>) => fs.appendFileSync(logPath, `${JSON.stringify({ ...e, timestamp: new Date().toISOString(), platform: 'slack' })}\n`),
