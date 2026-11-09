@@ -191,17 +191,24 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
     })()`;
   }
   private testGroupOperation = '';
+  /**
+   * Lists this account's test groups with Telegram's own chat search for the fixed title prefix. Web K
+   * ships only the API methods its own interface calls, so `messages.getAllChats` is not there ("No method
+   * messages.getAllChats found", live 2026-11-09); `contacts.search` is (the search box). A full page of
+   * 100 of the account's own matches marks the read incomplete.
+   */
   async listTestGroups(input: { deadline: number; channelId?: string }): Promise<unknown> {
     await this.ready;
     const operation = this.testGroupOperation = randomUUID();
     const requested = input.channelId === undefined ? 'null' : canonicalBrowserJson(input.channelId);
     return this.evaluatePageScript(this.testGroupScript(input.deadline, `
-      let r;try{r=await api('messages.getAllChats',{except_ids:[]});}catch(e){return fail('list',e);}
+      let r;try{r=await api('contacts.search',{q:'Instar test',limit:100});}catch(e){return fail('list',e);}
       const chats=r&&Array.isArray(r.chats)?r.chats:[];
+      const mine=r&&Array.isArray(r.my_results)?r.my_results.length:0;
       const candidates=chats.filter(isCandidate);
       window.__instarTestGroups={operation:${canonicalBrowserJson(operation)},chats:Object.fromEntries(candidates.map(c=>[String(c.id),c]))};
       const req=${requested};
-      const out={ok:true,complete:!!r&&r._==='messages.chats'&&candidates.length<=${TEST_GROUP_LIST_BOUND},
+      const out={ok:true,complete:!!r&&mine<100&&candidates.length<=${TEST_GROUP_LIST_BOUND},
         groups:candidates.slice(0,${TEST_GROUP_LIST_BOUND}).map(c=>({channelId:String(c.id),title:c.title,date:Number(c.date)}))};
       if(req!==null)out.requested={present:chats.some(c=>String(c&&c.id)===req)};
       return out;`));
