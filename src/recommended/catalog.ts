@@ -38,7 +38,6 @@ export interface CatalogRow {
 const LOCAL_MODEL_SPEC = 'docs/specs/backup-local-model-last-resort.md';
 const OFF_MACHINE_SPEC = 'docs/specs/backup-off-machine-copy.md';
 const VOICE_SPEC = 'docs/specs/backup-on-machine-voice.md';
-const EMAIL_SPEC = 'docs/specs/backup-email-sending.md';
 
 export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze([
   {
@@ -146,14 +145,14 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
   {
     id: 'email',
     name: 'Email',
-    benefit: 'Scheduled reports in your inbox.',
-    dataLeaves: 'The reports go through the email provider. Which one is still to be chosen.',
-    cost: 'Not known until the provider is chosen.',
-    account: 'Not known until the provider is chosen.',
-    backup: null,
-    backupStatus: 'gap',
-    gapWhen: 'Your agent can’t send email yet.',
-    gapSpec: EMAIL_SPEC,
+    benefit: 'Reports you choose arrive in your inbox. I only ever email you, at the address you type here.',
+    dataLeaves: 'Those reports go through the email service you pick: Resend, or your own Gmail or iCloud.',
+    cost: 'Free: Resend’s free plan, or the mailbox you already have.',
+    account: 'Your choice: a free Resend account I open in your name, your own Gmail or iCloud, or a mailbox you give me.',
+    backup: 'The report comes to our conversation instead, with a line saying why.',
+    backupStatus: 'exercised',
+    drillTest: 'tests/e2e/email-sending-lifecycle.test.ts',
+    // Proving: available only to an agent that lists email-v1 under recommendedServices.provingRecipes until its live proof.
     setupRecipe: null,
   },
 ] satisfies CatalogRow[]);

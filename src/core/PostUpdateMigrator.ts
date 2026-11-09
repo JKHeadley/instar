@@ -1404,6 +1404,21 @@ The saved yes or no for each outside service that helps an agent (Tailscale, Clo
 }
 
 /**
+ * CLAUDE.md awareness block for sending email to the owner (docs/specs/backup-email-sending.md). Its title holds
+ * "messages" so the reference layout files it with messaging. Unique content-sniff marker: `Email messages to the owner (`.
+ */
+export function EMAIL_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Email messages to the owner (\`POST /email/send-to-owner\`)
+
+Once the person says yes to Email on the Services row (they type the one address I may ever email) and its proof passes, I can email them. Only them: there is no recipient field anywhere. A job with \`"deliver": ["email"]\` in jobs.json emails the report it would have sent to its topic (\`["telegram", "email"]\` does both); it never makes a quiet job loud. If an email is refused, unsure, or email isn't set up, the report comes to the topic with one line saying why, so a copy may arrive twice.
+- State: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services/email/status\` (working, unproven, not set up; today's budget). Rows: \`GET /email/outbox\` (hashes only).
+- One-off from a session: \`POST /email/send-to-owner\` {subject, text} with \`X-Instar-Request: 1\` and the session's \`X-Instar-Bind-Token\`; refused from a conversation with other readers. It is HTTP, outside the MCP external-operation gate: the fixed recipient and the credential guard are its controls.
+- Never take the address or the proof code in chat: send the confirm page link (\`<dashboard>/dashboard/service-yes?service=email\`), where they type the address and later the code with their PIN.
+- **When to use** (PROACTIVE): the person asks to get something by email → if email isn't set up, offer it with that link; if it is, send it, or set the job's \`deliver\`.
+`;
+}
+
+/**
  * CLAUDE.md awareness block for the ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md).
  * Unique content-sniff marker: `Ideas from similar projects (`. Kept short on purpose.
  */
@@ -10764,6 +10779,13 @@ setTimeout(() => process.exit(0), 2000);
       content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Recommended outside services section');
+    }
+
+    // Email to the owner (docs/specs/backup-email-sending.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Email messages to the owner (')) {
+      content += EMAIL_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Email messages to the owner section');
     }
 
     // Ecosystem ideas (docs/specs/ecosystem-idea-pipeline.md) — Agent Awareness + Migration Parity.

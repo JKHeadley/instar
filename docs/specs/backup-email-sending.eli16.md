@@ -30,3 +30,7 @@ The test is a real report arriving in a real inbox, checked by opening the inbox
 ## What you need to decide
 
 Whether this plan is right: Resend in your name proposed as the default, your own mailbox or a spare mailbox as the alternatives, sending only, and only ever to you. Once you approve it, I build it and prove it live like the other services.
+
+## Where the build stands
+
+You approved the plan on 2026-11-08. It is built: the address field and the code box on the confirm page, the three account choices, email reports from jobs, and the fallback to your chat. It stays switched off for everyone until a test agent proves it live, and its progress is tracked under the name "recommendedServices.email".

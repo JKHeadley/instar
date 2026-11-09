@@ -71,6 +71,7 @@ import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, pa
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
+import { fallbackRetryDelayMs } from '../email/EmailService.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -5091,6 +5092,45 @@ const peerPlaceSessionTick: SelfActionController = {
   },
 };
 
+/**
+ * email-fallback-retry — backup-email-sending, the falling-back row. An email that did not go is carried to its
+ * topic; when Telegram and the relay queue both refuse, the holder retries the topic copy. Under the pinned
+ * fixture every send is refused, forever. The REAL brake is `fallbackRetryDelayMs` (1, 2, 4, 8, 15 minutes, then
+ * every 15, and after 24 hours in falling-back the timer stops until a resume event: Telegram's reconnect, the
+ * relay sentinel's recovery, or a handoff; the hourly sweep does not resume it). Over three days that is 100
+ * attempts for the one row, then nothing. Relay copies are capped at RELAY_MAX_TRIES per row inside the same
+ * attempts, so they add no sends of their own.
+ */
+const emailFallbackRetry: SelfActionController = {
+  id: 'email-fallback-retry',
+  actionVerb: 'fallback-retry-sendToTopic',
+  models: 'src/email/EmailService.ts (fallbackRetryDelayMs: 1, 2, 4, 8, 15 min then 15, timer stops 24h after the row first fell back)',
+  modelsPath: 'src/email/EmailService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'fallingBackSince and fallbackTries are on the replicated row, so a restart keeps the 24-hour clock; recovery re-arms one attempt per restart, and a restart is never caused by this controller.' },
+  boundK: 100,
+  perTargetBoundK: 100,
+  ticks: 3 * 1440,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'falling-back-row';
+    const sinceMs = 0;
+    let nowMs = 0;
+    let tries = 0;
+    let nextAt: number | null = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (nextAt !== null && nowMs >= nextAt) {
+          tries += 1;
+          sink.emit({ verb: 'fallback-retry-sendToTopic', target: TARGET });
+          nextAt = f.targetAlwaysRejects() ? (() => { const d = fallbackRetryDelayMs(tries, sinceMs, nowMs); return d === null ? null : nowMs + d; })() : null;
+        }
+        nowMs += 60_000;
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   peerPlaceSessionTick,
   skillLearningHealRevertFirst,
@@ -5212,4 +5252,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   readMarkerEmitCoalesce,
   readMarkerCatchUpRetry,
   browserActivationEffectRetry,
+  emailFallbackRetry,
 ];

@@ -40,6 +40,13 @@ export interface ChoiceRow extends RowSignature {
   principal?: string;
   /** On a yes: every no its writer knew of. A no outside this list came later, whatever the clocks say. */
   knownNos?: string[];
+  /**
+   * On a yes to email (docs/specs/backup-email-sending.md): a keyed hash of the owner-typed recipient (HMAC with the
+   * machine identity key, so a replicated row is not dictionary-reversible). The address itself is in the vault.
+   */
+  recipientHash?: string;
+  /** On a yes to email: the agent's email day timezone, the granting machine's zone at the yes. */
+  timezone?: string;
 }
 
 export interface LegacyImportRow extends RowSignature {
@@ -132,7 +139,12 @@ export function validateRow(raw: unknown): LedgerRow | null {
   if (typeof offerTextHash !== 'string' || offerTextHash.length > 128) return null;
   if (!Array.isArray(supersedes) || supersedes.length > 256) return null;
   if (!supersedes.every((id) => typeof id === 'string' && ID_RE.test(id))) return null;
-  const { grantMachine, principal, knownNos } = r;
+  const { grantMachine, principal, knownNos, recipientHash, timezone } = r;
+  if (recipientHash !== undefined || timezone !== undefined) {
+    if (choice !== 'yes' || grantMachine === undefined) return null;
+    if (typeof recipientHash !== 'string' || !/^[0-9a-f]{64}$/.test(recipientHash)) return null;
+    if (typeof timezone !== 'string' || !timezone || timezone.length > 64 || !/^[A-Za-z0-9_+\-/]+$/.test(timezone)) return null;
+  }
   if (grantMachine !== undefined || principal !== undefined || knownNos !== undefined) {
     if (choice !== 'yes') return null;
     for (const v of [grantMachine, principal]) {
@@ -145,6 +157,7 @@ export function validateRow(raw: unknown): LedgerRow | null {
     type: 'choice', eventId, service, choice, shutdown, reason: reason as NoReason,
     origin: origin as ChoiceOrigin, offerTextHash, supersedes: supersedes as string[], at,
     ...(grantMachine === undefined ? {} : { grantMachine: grantMachine as string, principal: principal as string, knownNos: knownNos as string[] }),
+    ...(recipientHash === undefined ? {} : { recipientHash: recipientHash as string, timezone: timezone as string }),
     ...s,
   };
 }
@@ -225,7 +238,7 @@ export class RecommendedServicesLedger {
   }
 
   /** A confirmed yes replaces every no standing at this moment, and only those. */
-  recordYes(input: { service: string; origin: ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string }): ChoiceRow {
+  recordYes(input: { service: string; origin: ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string; recipientHash?: string; timezone?: string }): ChoiceRow {
     const replaced = new Set(this.all().flatMap((r) => (r.type === 'choice' && r.choice === 'yes' ? r.supersedes : [])));
     const supersedes = this.all()
       .filter((r): r is ChoiceRow => r.type === 'choice' && r.service === input.service && r.choice === 'no' && !replaced.has(r.eventId))
@@ -319,6 +332,7 @@ export class RecommendedServicesLedger {
       type: 'choice', eventId: newId(), service: input.service, choice: input.choice, shutdown: input.shutdown,
       reason: input.reason, origin: input.origin, offerTextHash: input.offerTextHash ?? '', supersedes: input.supersedes, at: this.at(),
       ...(input.grantMachine === undefined ? {} : { grantMachine: input.grantMachine, principal: input.principal, knownNos: input.knownNos }),
+      ...(input.recipientHash === undefined ? {} : { recipientHash: input.recipientHash, timezone: input.timezone }),
     }) as ChoiceRow;
   }
 

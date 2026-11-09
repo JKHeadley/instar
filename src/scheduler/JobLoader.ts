@@ -442,6 +442,17 @@ export function validateJob(job: unknown, index?: number): void {
     }
   }
 
+  // deliver (docs/specs/backup-email-sending.md): where a report goes. Script jobs have no report text.
+  if (j.deliver !== undefined) {
+    const d = j.deliver;
+    if (!Array.isArray(d) || d.length === 0 || d.length > 2 || d.some((v) => v !== 'telegram' && v !== 'email') || new Set(d).size !== d.length) {
+      throw new Error(`${prefix}: "deliver" must be a list of "telegram" and/or "email" if provided`);
+    }
+    if ((j.execute as Record<string, unknown> | undefined)?.type === 'script' && d.includes('email')) {
+      throw new Error(`${prefix}: "deliver" with "email" is not available for script jobs (deliver-on-script-job): a script run has no report text to email`);
+    }
+  }
+
   // Machine scope — optional array of machine IDs or names
   if (j.machines !== undefined) {
     if (!Array.isArray(j.machines)) {

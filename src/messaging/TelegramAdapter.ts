@@ -680,6 +680,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * same handler, which still checks owner, chat and the one-time token (spec §6.1 r7). Before
    * this, a polling agent (PP, 2026-10-21) could only say "use the dashboard".
    */
+  /** Called once each time polling recovers after errors (consecutive poll errors back to zero). */
+  private readonly reconnectListeners: Array<() => void> = [];
+  onReconnect(listener: () => void): void { this.reconnectListeners.push(listener); }
   private pairingHandler: PollingPairingHandler | null = null;
   setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
   hasPairingHandler(): boolean { return this.pairingHandler !== null; }
@@ -5930,6 +5933,13 @@ export class TelegramAdapter implements MessagingAdapter {
 
     try {
       const updates = await this.getUpdates();
+      // The poll-error-to-zero edge (docs/specs/backup-email-sending.md): one reconnect signal, so parked work that
+      // was waiting for Telegram (the email fallback's 24-hour breaker) resumes.
+      if (this.consecutivePollErrors > 0) {
+        for (const listener of this.reconnectListeners) {
+          try { listener(); } catch { /* @silent-fallback-ok — a listener's failure never touches polling */ }
+        }
+      }
       this.consecutivePollErrors = 0; // Reset on success
 
       // Offset range sanity check: if received update_ids are significantly lower

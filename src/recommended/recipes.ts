@@ -16,6 +16,7 @@ import type { CatalogRow } from './catalog.js';
 import { RECOMMENDED_SERVICE_CATALOG } from './catalog.js';
 import { VAULT_CHECK_ITEM, type BitwardenSurface } from './bitwardenVault.js';
 import { backupRepoName, parseGitHubRepo, type GitHubBackupSurface } from './githubBackup.js';
+import { EMAIL_PROVIDER_ACCOUNT_SECRET, EMAIL_RECIPIENT_SECRET, EMAIL_SECRET, parseEmailCredential } from '../email/emailCore.js';
 
 export interface VerifyResult {
   result: 'pass' | 'fail' | 'unknown';
@@ -54,7 +55,28 @@ export interface RecipeDeps {
   cloudflare?: CloudflareSurface;
   /** What the Cloudflare recipe did (tunnel, DNS record, previous settings), so a switch-off undoes exactly that. */
   cloudflareWork?: { remember(work: CloudflareWork): void; recall(): CloudflareWork | null; forget(): void };
+  /** The email sender (docs/specs/backup-email-sending.md). Absent means the recipe can't check. */
+  email?: EmailRecipeSurface;
 }
+
+/** What the email recipe needs from the server's email sender. */
+export interface EmailRecipeSurface {
+  /** The regular check: sends nothing (Resend GET /domains; SMTP connect, TLS, AUTH, QUIT). */
+  verifyCredential: () => Promise<{ result: 'pass' | 'fail' | 'unknown'; detail: string }>;
+  /** Whether the proof for the current credential version passed (A and C: with the owner's code). */
+  proven: () => { proven: boolean; detail: string };
+  /** Sends the proof mail (or reads its status). */
+  prove: () => Promise<{ result: 'pass' | 'fail' | 'unknown' | 'waiting'; detail: string }>;
+  /** Accepted intake must drain: falls every live row back to its topic before a switch-off. Returns rows still live. */
+  drain: () => Promise<number>;
+  /** Forgets the opt-in state and the sender's flags on a switch-off. */
+  forget: () => void;
+  /** The owner-typed recipient, or null. */
+  recipient: () => string | null;
+}
+
+/** What a recipe's key route answers: refuse with a fixed reason, or the secrets to write. */
+export type PreparedKey = { error: string } | { writes: Array<[string, string]> };
 
 /** What a recipe that keeps a copy elsewhere needs to bring it up to date. */
 export interface SyncDeps extends RecipeDeps {
@@ -105,6 +127,13 @@ export interface SetupRecipe {
   sync?: (deps: SyncDeps) => Promise<SyncResult>;
   /** True when the copy is of the agent's SECRETS, so the confirm page lists their names before the yes (spec: "the confirm page lists the secrets copied"). */
   listsCopies?: boolean;
+  /**
+   * For a recipe whose key is structured (email): checks the key route's body and says what to write. Without it the
+   * body is stored as-is under `secretName`.
+   */
+  prepareKey?: (value: string, deps: RecipeDeps) => PreparedKey;
+  /** For a recipe that proves itself by acting (email's proof mail): run from the setup session after the key is stored. */
+  prove?: (deps: RecipeDeps) => Promise<{ result: 'pass' | 'fail' | 'unknown' | 'waiting'; detail: string }>;
 }
 
 /** Exported so tests can check every recipe carries the shared rules. */
@@ -630,6 +659,75 @@ ${RULES('github-state-backup', port)}`,
       return { stopped: true, changed, detail: changed
         ? "GitHub backup is switched off on this machine: the token is gone from here and automatic pushes are off. The private repository and what is in it stay yours. If you want it gone too, tell me and I'll ask for a token once to delete it."
         : 'GitHub backup was not switched on here, so there was nothing to switch off.' };
+    },
+  },
+  {
+    // docs/specs/backup-email-sending.md. Send only, to the owner only. The owner types the address on the confirm
+    // page; a session never sets it. The check sends nothing; the proof mail is its own step (`prove`).
+    id: 'email-v1',
+    service: 'email',
+    secretName: EMAIL_SECRET,
+    brief: ({ port }) => `The person said yes to email from their agent. Set it up so scheduled reports can reach their inbox.
+
+Send only, and only ever to the person. They typed their address on the confirm page; you never set or change it. Read it with:
+curl -s http://localhost:${port}/recommended-services/email/recipient -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1"
+
+First ask them, once, which of three ways they want. All three are good; say each one's catch plainly and don't rank them:
+A. A free Resend account I open in their name with that address. Mail comes from Resend's shared sender address, not theirs. I propose this one by default.
+B. Their own Gmail or iCloud mailbox, through an app password. Mail comes from them, to them. An app password lets a program send as them and read their mail; I only ever send to them.
+C. A mailbox of my own that they give me (its address and an app password). They need a spare mailbox to give.
+
+A. Resend, as of 2026-11-08: sign up at resend.com with exactly the person's address in a normal browser (GET http://localhost:${port}/playwright-profiles, and the normal-chrome browser when automation is refused). Just before you submit the signup form, call POST http://localhost:${port}/recommended-services/email/signup-mail with the header "X-Instar-Request: 1": it counts the signup mail against today's limit of mails to an unconfirmed address, and if it refuses, stop for today and tell the person. Make up a strong password for the account. Resend emails a verification link to the person: ask for it through one Secret Drop, open it yourself. Resend's terms are part of what they said yes to on the confirm page. Create a Full access API key (a sending-only key can't read delivery status). Never add or verify a domain: with no domain, Resend itself refuses to send anywhere but the person's address, a second wall behind mine, and my check fails if a domain appears. The free tier at build time was 100 a day; confirm it. Store:
+{"shape":"A","transport":"resend","secret":"<the API key>","providerAccountPassword":"<the account password>"}
+
+B. Own mailbox: Gmail (smtp.gmail.com) or iCloud (smtp.mail.me.com) only; Outlook.com no longer allows app passwords. Make an app password in a normal browser signed in as the person, in a fresh browser profile you create for this and delete on every exit path within 20 minutes (up to 60 while a Secret Drop for a sign-in code is waiting). Their password and any sign-in code come through Secret Drop, are typed only by your browser, and are never stored. Tell them to expect a new sign-in alert. If app passwords need two-step verification and it is off, stop: tell them in one sentence that turning it on permanently changes how they sign in, with a second factor they hold, and offer A or C instead. Only their explicit yes in this topic lets you turn it on, and only with their own phone number as the factor. A work account whose administrator disabled app passwords can't use B. Sign the browser out before deleting the profile. The username must be the person's address exactly, or the key is refused. Store:
+{"shape":"B","transport":"smtp","preset":"gmail" or "icloud","username":"<their address>","secret":"<the app password>"}
+
+C. Agent mailbox: ask through one Secret Drop for the mailbox's address and its app password (Gmail or iCloud). Store:
+{"shape":"C","transport":"smtp","preset":"gmail" or "icloud","username":"<the agent mailbox address>","secret":"<the app password>"}
+
+Store it as a plain text body, and don't print it (never put it on a command line; write it to a private temporary file, send it, delete the file):
+curl -s -X POST http://localhost:${port}/recommended-services/email/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "Content-Type: text/plain" --data-binary @<file>
+Never include the person's address in it: the route refuses a recipient.
+
+Then send the proof email: POST http://localhost:${port}/recommended-services/email/prove with the header "X-Instar-Request: 1". In A and C it carries a six-digit code: tell the person to open the confirm page again (the same link as their yes) and enter the code there with their PIN. Call prove again after a minute to read the result. In B the mail server's acceptance is the proof, and say it in those words: accepted, not proven delivered. Then verify as below.
+
+Tell them, once it works: reports a job is set to email arrive in their inbox; if I can't be sure an email arrived, they also get it here, so a copy may come twice.
+${RULES('email', port)}`,
+    verify: async ({ email }) => {
+      if (!email) return { result: 'unknown', detail: 'The email sender is not running on this machine.' };
+      const check = await email.verifyCredential();
+      if (check.result !== 'pass') return { result: check.result, detail: check.detail, ...(check.result === 'fail' && !email.recipient() ? { absent: true } : {}) };
+      const proof = email.proven();
+      return proof.proven ? { result: 'pass', detail: proof.detail } : { result: 'fail', detail: `${check.detail} ${proof.detail}` };
+    },
+    prepareKey: (value, { readSecret }) => {
+      const parsed = parseEmailCredential(value);
+      if (!parsed.ok) return { error: parsed.error };
+      const recipient = readSecret(EMAIL_RECIPIENT_SECRET);
+      if (!recipient) return { error: 'no-recipient' };
+      // Shape B sends from the person's own mailbox to itself: the login must be the address they typed.
+      if (parsed.credential.shape === 'B' && parsed.credential.username !== recipient) return { error: 'recipient-mismatch' };
+      if (parsed.credential.shape === 'C' && parsed.credential.username === recipient) return { error: 'agent-mailbox-is-the-recipient' };
+      const { providerAccountPassword, credential } = parsed;
+      return { writes: [[EMAIL_SECRET, JSON.stringify(credential)], ...(providerAccountPassword ? [[EMAIL_PROVIDER_ACCOUNT_SECRET, providerAccountPassword] as [string, string]] : [])] };
+    },
+    prove: async ({ email }) => email ? email.prove() : { result: 'unknown', detail: 'The email sender is not running on this machine.' },
+    // Accepted intake drains first: every report in flight goes to its topic. Then the stored values setup put here go.
+    // The provider account stays the person's.
+    stop: async ({ readSecret, deleteSecret, setUpHere, email }) => {
+      const live = email ? await email.drain() : 0;
+      if (live > 0) return { stopped: false, changed: false, detail: `I couldn't hand ${live} report${live === 1 ? '' : 's'} that ${live === 1 ? 'was' : 'were'} on the way by email over to our conversation yet, so email stays on until ${live === 1 ? 'it has' : 'they have'}.` };
+      if (!readSecret(EMAIL_SECRET) && !readSecret(EMAIL_RECIPIENT_SECRET)) return { stopped: true, changed: false, detail: 'Email was not switched on here, so there was nothing to switch off.' };
+      if (!setUpHere) return { stopped: true, changed: false, detail: "The email details on this machine weren't set up by me, so I've left them in place and will just stop sending email. Say the word and I'll remove them." };
+      const shape = (() => { try { return (JSON.parse(readSecret(EMAIL_SECRET) ?? '{}') as { shape?: string }).shape; } catch { return undefined; } })(); // @silent-fallback-ok — an unreadable value only changes the wording below
+      for (const name of [EMAIL_SECRET, EMAIL_RECIPIENT_SECRET, EMAIL_PROVIDER_ACCOUNT_SECRET]) if (readSecret(name)) deleteSecret(name);
+      email?.forget();
+      const tail = shape === 'A' ? ' The Resend account stays yours.'
+        : shape === 'B' ? ' Its app password still exists in your Google or iCloud account; I can remove it with one more sign-in if you want.'
+          : shape === 'C' ? ' The mailbox you gave me, and its app password, stay as they were; you can remove that app password in its account.'
+            : ' The email account itself stays yours.';
+      return { stopped: true, changed: true, detail: `Email is switched off on this machine: reports go to our conversation again, and the email details are gone from here.${tail}` };
     },
   },
 ]);

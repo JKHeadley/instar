@@ -37,6 +37,8 @@ export interface ServiceSetupState {
   /** The last time a refresh was tried, and how many refreshes in a row have failed (a failed refresh waits before trying again). */
   lastSyncAttemptAt?: string;
   syncFailures?: number;
+  /** A key recipe's regular re-check (docs/specs/backup-email-sending.md): when it last ran. Cleared to ask for one now. */
+  lastRecheckAt?: string;
   /** The attention item a failing check asked for (a public backup repository), raised once; cleared when the check passes again. */
   attentionRaised?: string;
   /** `verify` passed here with no choice made: the service is already in use on this machine, so it is not offered (a fact, never a choice). */
