@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "automerge-main-red-not-an-attempt",
+  "sessionId": "b9445863-89ae-4d35-a4cd-78ad9d2cccf2",
+  "timestamp": "2026-11-09T03:11:30.802Z",
+  "artifactPath": "upgrades/side-effects/automerge-main-red-not-an-attempt.md",
+  "artifactSha256": "3dccdfd8b6d5a987c6453eb4b1a05b5f4ddb080278e3001131e9369e8558d747",
+  "coveredFiles": [
+    "src/monitoring/greenPrLogic.ts",
+    "tests/unit/green-pr-logic.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One-file retry bookkeeping change in the auto-merger ladder; a revert fully undoes it; no new block/allow authority.",
+  "eli16Path": "upgrades/side-effects/automerge-main-red-not-an-attempt.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/automerge-main-red-not-an-attempt.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
