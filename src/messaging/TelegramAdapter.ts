@@ -2357,11 +2357,14 @@ export class TelegramAdapter implements MessagingAdapter {
     if (!owner) return null;
     const buttons = Array.isArray(button) ? button : button ? [button] : [];
     try {
-      const result = await this.apiCall('sendMessage', {
+      // Only the owner's own pairing and browser-setup messages come here (the code, Approve and
+      // Decline). The owner is waiting on the screen that asked for it, so it must never be held as a
+      // quiet notification: that answered 409 "could not send you the approval message" (2026-11-08).
+      const result = await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.apiCall('sendMessage', {
         chat_id: owner,
         text,
         ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
-      }) as { message_id: number };
+      })) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409

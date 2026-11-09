@@ -140,7 +140,7 @@ button { font: inherit; color: inherit; }
 /* Bottom nav (phone) → sidebar (desktop) */
 .nav {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-  display: grid; grid-template-columns: repeat(5, 1fr);
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; /* 5 sections, plus Conversations when it is on */
   height: var(--nav-total);
   padding-bottom: var(--safe-b);
   background: color-mix(in srgb, var(--surface-solid) 86%, transparent);
@@ -156,6 +156,7 @@ button { font: inherit; color: inherit; }
 .nav a[aria-current="page"] { color: var(--accent); }
 .nav a:hover { color: var(--text); }
 .nav .nav-group-label, .nav .nav-sub { display: none; }
+.nav a.nav-conversations[hidden] { display: none; }
 
 @media (min-width: 900px) {
   .app { grid-template-columns: 248px 1fr; }
