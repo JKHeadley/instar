@@ -177,6 +177,7 @@ import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { withSyncOp } from './InFlightSyncOpMarker.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from './SlackReplyRelayInstaller.js';
 import { ensureAppReplyRelay } from './AppReplyRelayInstaller.js';
+import { ensureThreadlineReplyRelay } from './ThreadlineReplyRelayInstaller.js';
 import { SubscriptionPool } from './SubscriptionPool.js';
 import { MachineIdentityManager } from './MachineIdentity.js';
 import { SourceTreeGuardError } from './SourceTreeGuard.js';
@@ -9243,6 +9244,12 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: memory privacy is opt-in for existing agents');
     }
+    // Memory privacy: other agents get a place of their own (docs/specs/memory-privacy-agent-places.md).
+    if (!content.includes('**Agents under memory privacy**')) {
+      content += `\n\n- **Agents under memory privacy**: on an agent with several people and memory privacy on, another agent's conversation runs in a place of its own, with that place's memory only: never the owner's or any person's. Only agents the owner granted trust to, or paired with, get one. Its session has no Threadline tools and replies with \`.instar/scripts/threadline-reply.sh --thread <id>\`. \`memoryPrivacy.refuseAgentSessions: true\` turns agent conversations off again; \`memoryPrivacy.linkedPeerReplies: \"post-only\"\` stops another agent's reply to a conversation the owner started from being typed into it. \`GET /memory-privacy\` reports \`agentSessions\` (\`own-place\`, \`refused\` or \`owner-reach\`). Proactive: owner asks \"can other agents talk to you?\" or \"can another agent see what people told you?\" → read \`agentSessions\` and explain.`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Agents under memory privacy');
+    }
     if (!content.includes('one-time repair link')) {
       content += `\n\n- **Memory privacy recovery**: when \`sandboxReady\` is false, \`GET /memory-privacy\` gives \`blocker\` and \`fix\`, the real cause in plain words, and the owner also gets a private link to the solution, with a one-time repair link when one click can fix it. Owner reports "I can't reply here yet: private memory isn't set up" → read \`fix\` and tell them exactly that. Never set \`memoryPrivacy.enabled\` false to get past it unless the owner asks: that reopens the leak.`;
       patched = true;
@@ -16098,6 +16105,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       '**Memory privacy**',
       'An update never turns it on',
       'one-time repair link',
+      '**Agents under memory privacy**',
       '### Feature switches apply their setting (read `effective` before saying a feature is on)',
       '### Telegram message origin',
       // message-origin-all-platforms: server-side and framework-neutral (app + Slack recording).
@@ -16756,6 +16764,26 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       }
     } catch (err) {
       result.errors.push(`App reply relay migration: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // Peer-place reply relay (docs/specs/memory-privacy-agent-places.md §5). Every agent gets it
+    // (inert outside a session in another agent's place); reconciled like the app relay.
+    try {
+      const template = this.loadRelayTemplate('threadline-reply.sh');
+      if (template) {
+        const installed = ensureThreadlineReplyRelay({
+          projectDir: this.config.projectDir,
+          stateDir: this.config.stateDir,
+          template,
+          claudeCompatibility: fs.existsSync(path.join(this.config.projectDir, '.claude')),
+        });
+        result.upgraded.push(...installed.installed.map(p => `${p} (peer-place reply relay)`));
+        result.skipped.push(...installed.current.map(p => `${p} (already current)`));
+        result.skipped.push(...installed.degraded);
+        result.errors.push(...installed.errors);
+      }
+    } catch (err) {
+      result.errors.push(`Peer-place reply relay migration: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     // WhatsApp reply script — lives in .instar/scripts/ per init.ts, not

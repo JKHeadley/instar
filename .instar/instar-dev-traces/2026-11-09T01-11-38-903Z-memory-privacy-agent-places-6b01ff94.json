@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "memory-privacy-agent-places",
+  "sessionId": "4b6b2ecb-5089-4367-904c-5eeb9dc94318",
+  "timestamp": "2026-11-09T01:11:38.903Z",
+  "artifactPath": "upgrades/side-effects/memory-privacy-agent-places.md",
+  "artifactSha256": "c345f2edfcbdb9238ab30024fdcab21a9d9a5378a6217c58f54750563eabebd3",
+  "specPath": "docs/specs/memory-privacy-agent-places.md",
+  "coveredFiles": [
+    "src/server/routes.ts",
+    "upgrades/side-effects/memory-privacy-agent-places.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fix for the second Local Verify failure on the approved memory-privacy-agent-places change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

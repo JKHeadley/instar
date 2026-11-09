@@ -10,7 +10,7 @@ import { ThreadLog } from '../../src/threadline/ThreadLog.js';
 import { contentDigest } from '../../src/threadline/threadDigest.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-// canonical-migration-validator: threadline-inbound-canonical-store@2
+// canonical-migration-validator: threadline-inbound-canonical-store@3
 
 const dirs: string[] = [];
 afterEach(() => {

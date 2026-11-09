@@ -23,6 +23,7 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  */
 
 import { WorkAdmission } from '../core/workAdmission.js';
+import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
@@ -5053,7 +5054,45 @@ const browserActivationEffectRetry: SelfActionController = {
   },
 };
 
+/**
+ * peer-place-session-tick — memory-privacy-agent-places §4. The 60-second tick ends
+ * another agent's place session when it is idle past the limit or no longer admitted.
+ * Modeled on the REAL PlaceSessionRegistry. A kill removes the record, and the tick
+ * never starts a session (only a peer's message does, through admission), so under
+ * sustained "everything is idle" pressure it ends each recorded place once and then
+ * has nothing left: the count settles at the place cap, horizon-independent.
+ */
+const peerPlaceSessionTick: SelfActionController = {
+  id: 'peer-place-session-tick',
+  actionVerb: 'kill-idle-place-session',
+  models: 'src/commands/server.ts (placeTick: idle end + live re-admission over PlaceSessionRegistry)',
+  modelsPath: 'src/commands/server.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The registry is in memory; boot ends every place session once and starts the registry empty, so a restart cannot re-arm a kill.' },
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 30,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const reg = new PlaceSessionRegistry({ globalCap: () => 3, idleMs: () => 600_000, now: () => f.clock.nowMs() });
+    for (const fp of ['peer-a', 'peer-b', 'peer-c']) {
+      const r = reg.reserve(fp);
+      if (r.kind === 'reserved') r.markRunning(`place-${fp}`);
+    }
+    return {
+      tick() {
+        sink.considered += 1;
+        for (const rec of reg.idle()) {
+          if (!rec.sessionName) continue;
+          sink.emit({ verb: 'kill-idle-place-session', target: rec.sessionName });
+          reg.forgetSession(rec.sessionName);
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  peerPlaceSessionTick,
   skillLearningHealRevertFirst,
   skillLearningHealIndexRetire,
   skillLearningDrafterFamilySwap,

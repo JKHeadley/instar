@@ -351,6 +351,9 @@ let dropSecondPassTimer: ReturnType<typeof setTimeout> | null = null;
 import { pickupGitSyncMessages } from '../messaging/GitSyncTransport.js';
 import { DeliveryRetryManager } from '../messaging/DeliveryRetryManager.js';
 import { SpawnRequestManager } from '../messaging/SpawnRequestManager.js';
+import { PlaceSessionRegistry, DEFAULT_PLACE_GLOBAL_CAP, DEFAULT_PLACE_IDLE_MS } from '../threadline/PlaceSessionRegistry.js';
+import { PEER_PLACE_SESSION_MARKER } from '../users/peerPlaceAdmission.js';
+import { PEER_PLACE_QUEUE_PREFIX } from '../messaging/SpawnRequestManager.js';
 import { ThreadlineRouter, trustMeetsFloor } from '../threadline/ThreadlineRouter.js';
 import { WarmSessionPool } from '../threadline/WarmSessionPool.js';
 import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
@@ -20057,12 +20060,93 @@ export async function startServer(options: StartOptions): Promise<void> {
     const spawnConfig = config.threadline?.spawn;
     // Forward-declared `let` so the onDrainReady callback can reference the
     // manager it belongs to (for re-entrant evaluate() calls during drain).
+    // Memory privacy: another agent's place (docs/specs/memory-privacy-agent-places.md).
+    // On a multi-person agent an A2A conversation runs in the authenticated peer's own
+    // place, never with owner reach. The decision is live: trust and config are read on
+    // every call, so revoking a grant or setting refuseAgentSessions takes effect at once.
+    const peerTrustOf = (fp: string): { source: string | null; level: string | null } | null => {
+      const profile = _requiredAckTrustManager()?.getProfileByFingerprint(fp);
+      return profile ? { source: profile.source ?? null, level: profile.level ?? null } : null;
+    };
+    const admitPeer = (fp: string | null | undefined): import('../users/peerPlaceAdmission.js').PeerAdmission =>
+      sessionManager.peerPlaceAdmission(fp ?? null, fp ? peerTrustOf(fp) : null);
+    const placeSessionsCfg = () => config.threadline?.placeSessions;
+    const placeSessionRegistry = new PlaceSessionRegistry({
+      globalCap: () => placeSessionsCfg()?.globalCap ?? DEFAULT_PLACE_GLOBAL_CAP,
+      idleMs: () => placeSessionsCfg()?.idleMs ?? DEFAULT_PLACE_IDLE_MS,
+    });
+    const liveMaxSessions = () => config.sessions?.maxSessions ?? (config as { maxSessions?: number }).maxSessions ?? 5;
+    const endPlaceSession = (sessionName: string, why: string): void => {
+      try {
+        const rec = sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName);
+        if (rec) sessionManager.killSession(rec.id);
+        console.log(`[peer-place] ended ${sessionName}: ${why}`);
+      } catch (err) {
+        console.warn(`[peer-place] ending ${sessionName} failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      placeSessionRegistry.forgetSession(sessionName);
+    };
+    /** Start a session in another agent's place, or hand the prompt to its live one. */
+    const spawnPlaceSession = async (
+      prompt: string,
+      opts: { memoryPeer: string; sessionId?: string; resumeSessionId?: string },
+    ): Promise<{ sessionId: string; tmuxSession: string }> => {
+      // Decided again at launch with live trust and config (§3 "decided at spawn time").
+      const admission = admitPeer(opts.memoryPeer);
+      if (admission.kind !== 'place') {
+        const live = placeSessionRegistry.live(opts.memoryPeer);
+        if (live) endPlaceSession(live, 'refused at launch');
+        throw new Error(admission.kind === 'refused' ? admission.reason : 'agent places apply only on an agent that serves several people');
+      }
+      const reservation = placeSessionRegistry.reserve(opts.memoryPeer);
+      if (reservation.kind === 'live') {
+        sessionManager.injectMessage(reservation.sessionName, prompt);
+        placeSessionRegistry.touch(opts.memoryPeer);
+        const rec = sessionManager.listRunningSessions().find(s => s.tmuxSession === reservation.sessionName);
+        return { sessionId: rec?.id ?? reservation.sessionName, tmuxSession: reservation.sessionName };
+      }
+      if (reservation.kind === 'refused') throw new Error(`agent place unavailable (${reservation.reason})`);
+      try {
+        const tmuxSession = await sessionManager.spawnInteractiveSession(prompt, `${PEER_PLACE_SESSION_MARKER}${Date.now()}`, {
+          framework: 'claude-code',
+          sessionId: opts.sessionId,
+          resumeSessionId: opts.resumeSessionId,
+          memoryPlace: { kind: 'shared', placeKey: admission.placeKey },
+          admissionKind: 'automatic',
+        });
+        reservation.markRunning(tmuxSession);
+        const rec = sessionManager.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+        return { sessionId: rec?.id ?? tmuxSession, tmuxSession };
+      } catch (err) {
+        reservation.release();
+        throw err;
+      }
+    };
+
     let spawnManager: SpawnRequestManager;
     spawnManager = new SpawnRequestManager({
-      // Memory privacy: trust levels limit what a peer may do, not what data its
-      // session can see, so a peer session with owner reach could pass a person's fact on.
-      refuseSpawn: () => (_memoryInbound && sessionManager.isMultiPersonAgent()
-        ? 'agent-to-agent sessions are off on an agent that serves several people' : null),
+      // Memory privacy: on a multi-person agent, an A2A spawn runs only in the authenticated
+      // peer's own place, and only for a peer with an explicit trust grant
+      // (memory-privacy-agent-places §1). Otherwise refused with today's reason.
+      refuseSpawn: (request) => {
+        if (!_memoryInbound) return null;
+        const admission = admitPeer(request.memoryPeer);
+        return admission.kind === 'refused' ? admission.reason : null;
+      },
+      // The place cap and the free slot, counting launches in progress: transient, so the
+      // message queues and the drain retries it, and the peer is not penalised (§4).
+      placeCapacity: (request) => {
+        if (!request.memoryPeer || placeSessionRegistry.live(request.memoryPeer)) return null;
+        const reserved = placeSessionRegistry.reservedCount();
+        if (sessionManager.listRunningSessions().length + reserved >= liveMaxSessions() - 1) {
+          return `Session limit reached for agent places (one slot kept free).`;
+        }
+        const records = placeSessionRegistry.list();
+        if (records.some(r => r.fingerprint === request.memoryPeer)) return 'Agent place is starting; queued.';
+        const cap = placeSessionsCfg()?.globalCap ?? DEFAULT_PLACE_GLOBAL_CAP;
+        if (records.length >= cap) return `Agent places are full (${records.length}/${cap}); queued.`;
+        return null;
+      },
       maxSessions: config.sessions.maxSessions ?? 5,
       // Live accessor — read config on every admission check so operators
       // raising sessions.maxSessions don't have to rebuild the manager.
@@ -20091,6 +20175,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           }
         : {}),
       spawnSession: async (prompt, opts) => {
+        // Memory privacy: another agent's place (memory-privacy-agent-places §4).
+        if (opts?.memoryPeer) {
+          return spawnPlaceSession(prompt, { memoryPeer: opts.memoryPeer, sessionId: opts.sessionId, resumeSessionId: opts.resumeSessionId });
+        }
         // Warm-session A2A (Arch Y): when the SpawnRequest is flagged interactive,
         // launch a PERSISTENT (keep-alive) interactive worker instead of the
         // headless one-shot `claude -p`. The grounded prompt is delivered as the
@@ -20261,12 +20349,16 @@ export async function startServer(options: StartOptions): Promise<void> {
       // are only used in the spawn prompt template for display.
       onDrainReady: async (agent: string) => {
         try {
+          // Memory privacy: a peer place's queue is keyed by its fingerprint; the drain
+          // rebuilds it so launch-time admission sees the authenticated peer (§3).
+          const drainPeer = agent.startsWith(PEER_PLACE_QUEUE_PREFIX) ? agent.slice(PEER_PLACE_QUEUE_PREFIX.length) : null;
           const result = await spawnManager.evaluate({
-            requester: { agent, session: 'drain', machine: 'drain' },
+            requester: { agent: drainPeer ?? agent, session: 'drain', machine: 'drain' },
             target: { agent: config.projectName, machine: os.hostname() },
-            reason: `Drain re-attempt for queued messages from ${agent}`,
+            reason: `Drain re-attempt for queued messages from ${drainPeer ?? agent}`,
             priority: 'medium',
             triggeredBy: 'spawn-request-drain',
+            ...(drainPeer ? { memoryPeer: drainPeer, interactive: true } : {}),
           });
           if (!result.approved) {
             console.log(`[spawn-manager] drain re-attempt for ${agent} not approved: ${result.reason}`);
@@ -20359,6 +20451,73 @@ export async function startServer(options: StartOptions): Promise<void> {
     );
     threadlineRouterForResume = threadlineRouter;
 
+    // Memory privacy: another agent's place (memory-privacy-agent-places). Inert unless
+    // memory privacy is on and the agent serves several people.
+    threadlineRouter.setPeerPlacePolicy({
+      active: () => !!_memoryInbound && sessionManager.isMultiPersonAgent(),
+      admit: (fp) => admitPeer(fp),
+      linkedPeerReplies: () => sessionManager.linkedPeerReplies(),
+      topicAudienceKind: (topicId) => sessionManager.memoryAudienceKind({ telegramTopicId: topicId }),
+      sessionAudienceKey: (name) => sessionManager.listRunningSessions().find(s => s.tmuxSession === name)?.memoryAudience ?? null,
+      hasStoredMessages: async (threadId, excludeMessageId) => {
+        try {
+          const thread = await messageRouter.getThread(threadId);
+          return !!thread && thread.messages.some((env) => env.message.id !== excludeMessageId);
+        } catch {
+          return true; // @silent-fallback-ok — unknown counts as stored: the strict direction (a fresh thread id)
+        }
+      },
+      livePlaceSession: (fp) => placeSessionRegistry.live(fp),
+      delivered: (fp) => placeSessionRegistry.touch(fp),
+      endPlace: (fp) => {
+        const live = placeSessionRegistry.live(fp);
+        if (live) endPlaceSession(live, 'refused');
+      },
+      postLinkedReplyToTopic: async (topicId, senderLabel, text) => {
+        if (!telegram) return;
+        const body = text.length > 3500 ? `${text.slice(0, 3500)}…` : text; // bounded-input-reviewed: a Telegram post body under the 4096 message limit, not a prompt or a decision input
+        const tg = telegram;
+        // A reply to a conversation this topic started: a response, stamped like every other.
+        await withNotificationEnvelope(stampResponse(), async () => tg.sendToTopic(topicId, `Reply from ${senderLabel}, posted here only. It was not passed to this conversation's session:\n\n${body}`));
+      },
+    });
+    // The peer-place reply relay must be on disk before any place session spawns (§5, §7).
+    try {
+      const { ensureThreadlineReplyRelay, packagedThreadlineReplyRelayTemplate } = await import('../core/ThreadlineReplyRelayInstaller.js');
+      const relayTemplate = packagedThreadlineReplyRelayTemplate();
+      if (relayTemplate) ensureThreadlineReplyRelay({ projectDir: config.projectDir, stateDir: config.stateDir, template: relayTemplate, claudeCompatibility: fs.existsSync(path.join(config.projectDir, '.claude')) });
+    } catch (err) { // @silent-fallback-ok — migrateScripts and init install it too; a place session with no script fails its reply loudly
+      console.warn(`[peer-place] reply relay install failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    // A pipe-mode session runs with owner reach: end them on the multi-person flip (§3).
+    sessionManager.setPeerOriginRetirer(() => {
+      // pipeSpawner is declared further down this boot sequence; before then there is none to end.
+      try { return pipeSpawner?.killAll('memory-privacy-flip') ?? []; } catch { return []; } // @silent-fallback-ok — before pipeSpawner exists there is no pipe session to end
+    });
+    // Place sessions: idle end and live re-admission, on their own tick, whatever the warm flag says (§4).
+    /* @self-action-controller: peer-place-session-tick */
+    const placeTick = setInterval(() => {
+      try {
+        for (const rec of placeSessionRegistry.idle()) {
+          if (rec.sessionName) endPlaceSession(rec.sessionName, 'idle');
+        }
+        for (const rec of placeSessionRegistry.list()) {
+          if (rec.state !== 'running' || !rec.sessionName) continue;
+          if (admitPeer(rec.fingerprint).kind !== 'place') endPlaceSession(rec.sessionName, 'no longer admitted');
+          else if (!sessionManager.listRunningSessions().some(s => s.tmuxSession === rec.sessionName)) placeSessionRegistry.forgetSession(rec.sessionName);
+        }
+      } catch (err) { // @silent-fallback-ok — the next tick retries; refusal still ends sessions on the next peer message
+        console.warn(`[peer-place] tick failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, 60_000);
+    placeTick.unref();
+    // The registry is in memory and a restart revokes every mps_ token, so a place session
+    // left from a previous server is ended at boot.
+    for (const s of sessionManager.listRunningSessions()) {
+      const name = s.tmuxSession || s.name || '';
+      if (name.includes(PEER_PLACE_SESSION_MARKER)) endPlaceSession(name, 'left from a previous server');
+    }
+
     // Warm-Session A2A reap tick — kill warm sessions idle past their TTL so a
     // flood can't pin processes. Gated on warmEnabled; .unref() so it never holds
     // the process open; cleared on shutdown. Eviction is lossless (the next
@@ -20381,6 +20540,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     sessionManager.on('sessionComplete', (session: import('../core/types.js').Session) => {
       const sessionName = session.tmuxSession || session.name;
       if (!sessionName) return;
+      // A place session that ended (any cause) frees its place (memory-privacy-agent-places §4).
+      placeSessionRegistry.forgetSession(sessionName);
       // A2A Coherence Layer 1 (the continuity linchpin): persist the AUTHORITATIVE Claude
       // transcript UUID (`session.claudeSessionId`, populated from Claude session-hook events),
       // NOT `session.id` (the SessionManager/tmux id). The old `session.id || claudeSessionId`
@@ -20879,7 +21040,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.warn(`Threadline MCP local secret could not be created: ${err instanceof Error ? err.message : err}`);
     }
     /** Shared reply waiters for threadline waitForReply support */
-    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout> }>();
+    const threadlineReplyWaiters = new Map<string, { resolve: (reply: string) => void; threadId: string; senderAgent: string; timer: ReturnType<typeof setTimeout>; recipientFp?: string | null }>();
     try {
       const threadline = await bootstrapThreadline({
         agentName: config.projectName,
@@ -21240,6 +21401,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           const senderFingerprint = msg.from;
           const senderName = senderFingerprint.slice(0, 8);
           const trustLevel = (decision.trustLevel ?? 'untrusted') as import('../threadline/AgentTrustManager.js').AgentTrustLevel;
+          // Memory privacy (memory-privacy-agent-places): on a multi-person agent every peer message
+          // goes to the router, which runs it in the peer's own place. The pipe and listener
+          // shortcuts and the warm pool are skipped, because they run with owner reach.
+          const peerPlaceActive = !!_memoryInbound && sessionManager.isMultiPersonAgent();
+          // The relay-authenticated sender; a probe never opens a place.
+          const memoryPeerFingerprint = decision.reason === 'probe' ? undefined : senderFingerprint;
 
           // Extract text content
           let textContent: string;
@@ -21257,28 +21424,14 @@ export async function startServer(options: StartOptions): Promise<void> {
           // for compatibility with older senders.
           const msgType = typeof msg.content === 'object' && msg.content !== null ? (msg.content as Record<string, unknown>).type : undefined;
           const isAutoAck = isAutoAckInbound({ type: msgType, text: textContent });
-          let waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
-          if (!waiter) {
-            // Legacy fallback: try by sender fingerprint, then by resolved name
-            waiter = threadlineReplyWaiters.get(senderFingerprint);
-            if (!waiter) {
-              const resolvedName = (() => {
-                try {
-                  const kaPath = path.join(config.stateDir, 'threadline', 'known-agents.json');
-                  const kaData = JSON.parse(fs.readFileSync(kaPath, 'utf-8'));
-                  const agents = kaData.agents ?? kaData;
-                  if (Array.isArray(agents)) {
-                    const match = agents.find((a: { publicKey?: string; name?: string }) =>
-                      a.publicKey === senderFingerprint || a.publicKey?.startsWith(senderFingerprint));
-                    return match?.name ?? null;
-                  }
-                  return null;
-                } catch { return null; /* @silent-fallback-ok — unknown ownership falls to the election's lease-holder/tiebreak path, never silence */ }
-              })();
-              if (resolvedName) waiter = threadlineReplyWaiters.get(resolvedName);
-            }
-          }
-          if (waiter && !isAutoAck && !looksLikeAutoAckText(textContent)) {
+          // Waiters are keyed by thread id only (PR-3); the old by-name fallback could never
+          // match one, so it is gone (memory-privacy-agent-places §3).
+          const waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
+          // Memory privacy: on a multi-person agent a waiter is resolved only by the peer its
+          // send addressed, and never under `linkedPeerReplies: post-only` (§3).
+          const waiterAllowed = !waiter || !(_memoryInbound && sessionManager.isMultiPersonAgent())
+            || (sessionManager.linkedPeerReplies() === 'deliver' && !!waiter.recipientFp && waiter.recipientFp === senderFingerprint.toLowerCase());
+          if (waiter && waiterAllowed && !isAutoAck && !looksLikeAutoAckText(textContent)) {
             waiter.resolve(textContent);
             // Don't return — still process the message normally for routing
           }
@@ -21344,6 +21497,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                 threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint),
                 text: textContent,
                 messageId: msg.messageId,
+                // The relay authenticated this sender; recovery may replay it into its place.
+                ...(decision.reason !== 'probe' ? { senderAuthenticated: true } : {}),
               });
             } catch (err) {
               console.warn(`[relay] Canonical inbox append failed (non-fatal): ${err instanceof Error ? err.message : err}`);
@@ -21472,6 +21627,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // tmux session. With no proven listener reader that is the router, which does not
           // know about the pipe session: a second session may answer on the same thread.
           if (
+            !peerPlaceActive &&
             pipeSpawner &&
             msg.threadId &&
             !threadResumeMap.get(msg.threadId) &&
@@ -21529,7 +21685,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // for the user even though transport succeeded. (The pipe-spawn branch
           // above is already excluded for topic-bound threads via its
           // `!threadResumeMap.get(...)` guard, now that get() no longer nulls them.)
-          if (listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {
+          if (!peerPlaceActive && listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {
             listenerManager.writeToInbox({ from: senderFingerprint, senderName, trustLevel, threadId: msg.threadId ?? getSyntheticThreadId(senderFingerprint), text: ledgerNotice ? `[server notice: ${ledgerNotice}]\n\n${textContent}` : textContent });
             ledgerTicket?.recordHandoff('listener');
             console.log(`[relay] Routed to listener inbox from ${senderName} (trust: ${trustLevel})`);
@@ -21560,7 +21716,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           // (trustMeetsFloor), NEVER string `>=`. When false (or feature off), the
           // router takes the proven cold-spawn path byte-for-byte.
           const preferWarmSession =
-            warmEnabled && !isTopicBoundReply && trustMeetsFloor(trustLevel, warmTrustFloor);
+            !peerPlaceActive && warmEnabled && !isTopicBoundReply && trustMeetsFloor(trustLevel, warmTrustFloor);
           // a2a-required-acknowledgment D4: pipe and listener paths never get here.
           const requiredAckHandle = decision.reason === 'probe' ? null : (_requiredAckService?.prepare({
             peerFp: senderFingerprint, messageId: msg.messageId, threadId: msg.threadId ?? null, triggerEncrypted: arrivedEncrypted,
@@ -21571,9 +21727,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             senderName,
             trustLevel,
             preferWarmSession,
-            ...(requiredAckHandle ? { requiredAck: { instruction: requiredAckHandle.instruction, receipt: requiredAckHandle.receipt } } : {}),
+            ...(requiredAckHandle ? { requiredAck: { instruction: requiredAckHandle.instruction, receipt: requiredAckHandle.receipt, ackRef: requiredAckHandle.ackRef } } : {}),
           };
-          let result = await threadlineRouter.handleInboundMessage(envelope, relayContext, { resentNotice: ledgerNotice });
+          let result = await threadlineRouter.handleInboundMessage(envelope, relayContext, {
+            resentNotice: ledgerNotice,
+            ...(memoryPeerFingerprint ? { memoryPeerFingerprint } : {}),
+          });
 
           // Fallback only when a threadless message could not be associated
           // with any thread. A refusal can be unhandled while still carrying
@@ -21581,7 +21740,10 @@ export async function startServer(options: StartOptions): Promise<void> {
           // same refused message to the router twice.
           if (!result.handled && !result.threadId && !msg.threadId) {
             (envelope.message as { threadId?: string }).threadId = getSyntheticThreadId(senderFingerprint);
-            result = await threadlineRouter.handleInboundMessage(envelope, relayContext, { resentNotice: ledgerNotice });
+            result = await threadlineRouter.handleInboundMessage(envelope, relayContext, {
+              resentNotice: ledgerNotice,
+              ...(memoryPeerFingerprint ? { memoryPeerFingerprint } : {}),
+            });
           }
           // Inbound-id ledger: the outcome of the LAST path tried, through the allowlist.
           ledgerTicket?.recordRouterResult(result);
@@ -28159,6 +28321,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 isSessionAlive: (name) => sessionManager.isSessionAlive(name),
                 inject: (name, text) => sessionManager.injectPasteNotificationConfirmed(name, text),
                 counters: _a2aRelayForwardCtx?.counters,
+                // Memory privacy: the receiving machine applies the same rule as the holder (§3).
+                peerReplyAllowed: (topicId) => {
+                  if (!_memoryInbound || !sessionManager.isMultiPersonAgent()) return true;
+                  if (sessionManager.linkedPeerReplies() === 'post-only') return false;
+                  const kind = sessionManager.memoryAudienceKind({ telegramTopicId: topicId });
+                  return kind === 'owner' || kind === 'system';
+                },
               });
             },
             'a2a-inbox-deliver': async (cmd, sender) => {

@@ -12,7 +12,7 @@
  * 'low'), defaults to 'medium' when omitted, and rejects invalid values
  * with 400.
  *
- * canonical-migration-validator: threadline-inbound-canonical-store@2
+ * canonical-migration-validator: threadline-inbound-canonical-store@3
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';

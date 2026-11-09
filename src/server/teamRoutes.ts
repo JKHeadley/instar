@@ -39,6 +39,12 @@ export interface TeamRouteDeps {
   restoreRefs: () => { teamRefs: ConfinedEntry[]; allRefs: () => ConfinedEntry[] };
   /** Turn memory privacy on here and restart this machine (§3.6). */
   requireMemoryPrivacy: () => Promise<boolean> | boolean;
+  /**
+   * What other agents get once memory privacy is on (memory-privacy-agent-places): the live
+   * `agentSessions` status when it is already on, otherwise what turning it on would give. The
+   * phone's turn-on sheet reads it from the team context; null when the agent cannot tell.
+   */
+  agentSessionsWhenOn?: () => 'own-place' | 'refused' | 'owner-reach' | null;
   now?: () => number;
 }
 
@@ -372,6 +378,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
         return { deviceName: d.deviceName, personName: p.ok ? p.name : null };
       }),
       people: [...(log?.state().people.values() ?? [])].map((p) => ({ personKey: p.personKey, name: p.name, role: p.role })),
+      // What the turn-on sheet tells the owner about other agents; absent on agents built before it.
+      agentSessions: deps.agentSessionsWhenOn?.() ?? null,
     });
   });
 

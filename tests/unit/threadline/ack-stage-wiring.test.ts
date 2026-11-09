@@ -30,7 +30,7 @@ describe('relay handler (src/commands/server.ts)', () => {
   it('recognises acks structurally through the shared helper; the prefix test only spares the reply waiter', () => {
     expect(handler).toContain('isAutoAckInbound({ type: msgType, text: textContent })');
     expect(handler).not.toMatch(/textContent\.startsWith\('Message received/);
-    expect(handler).toContain('if (waiter && !isAutoAck && !looksLikeAutoAckText(textContent))');
+    expect(handler).toContain('if (waiter && waiterAllowed && !isAutoAck && !looksLikeAutoAckText(textContent))');
     // The loose test is used exactly once in the handler, and never to stop a message.
     expect(handler.split('looksLikeAutoAckText(').length - 1).toBe(1);
   });
@@ -131,7 +131,8 @@ describe('relay handler (src/commands/server.ts)', () => {
 
   it('ACT-091: the listener path is taken only on ListenerSessionManager\'s own decision, and its ack follows the reader\'s liveness', () => {
     // The "is a live reader proven?" decision lives in the manager, not inline here.
-    expect(handler).toContain('if (listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {');
+    // Memory privacy (memory-privacy-agent-places §3): skipped on a multi-person agent.
+    expect(handler).toContain('if (!peerPlaceActive && listenerManager && listenerManager.shouldUseListener(trustLevel, textContent.length) && !isTopicBoundReply) {');
     expect(handler.split('listenerManager.writeToInbox(').length - 1).toBe(1);
     const cond = handler.indexOf('listenerManager.shouldUseListener(');
     const write = handler.indexOf('listenerManager.writeToInbox(');

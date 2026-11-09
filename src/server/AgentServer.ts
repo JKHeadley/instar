@@ -7015,6 +7015,13 @@ export class AgentServer {
           options.liveConfig?.set('memoryPrivacy.enabled', true);
           return this.requestSupervisedRestart('memory privacy turned on for team members', 'team-memory-privacy');
         },
+        // On: the live status. Off: what turning it on for team members would give (several people).
+        agentSessionsWhenOn: () => {
+          const status = options.sessionManager.memoryPrivacyStatus?.();
+          if (status?.enabled) return status.agentSessions;
+          const refuse = options.liveConfig?.get ? options.liveConfig.get<unknown>('memoryPrivacy.refuseAgentSessions', false) : (options.config as { memoryPrivacy?: { refuseAgentSessions?: unknown } }).memoryPrivacy?.refuseAgentSessions;
+          return refuse === true ? 'refused' : 'own-place';
+        },
       }));
     }
 

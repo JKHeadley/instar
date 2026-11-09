@@ -76,6 +76,7 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
     logsDir: path.join(dir, 'logs'), stateDir: dir, conversationTitle: (ref) => (ref === 'telegram:50' ? 'Client work' : null),
     restoreRefs: () => ({ teamRefs: [], allRefs: () => conversations.map((ref) => ({ ref })) }),
     requireMemoryPrivacy: () => { spy.privacy++; return true; },
+    agentSessionsWhenOn: () => (gate as { agentSessions?: 'own-place' | 'refused' | 'owner-reach' }).agentSessions ?? 'own-place',
   };
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
@@ -303,6 +304,14 @@ describe('what the app needs to show', () => {
     expect((await send(e, owner, 'GET', '/mobile/team/context')).body.record).toEqual({ health: 'ok', restoreNeeded: false });
     fs.writeFileSync(path.join(e.dir, 'state', 'team-access', 'confined.json'), 'not json');
     expect((await send(e, owner, 'GET', '/mobile/team/context')).body.record.restoreNeeded).toBe(true);
+  });
+
+  it('context tells the turn-on sheet what other agents will get', async () => {
+    const e = await setup();
+    const owner = phone(e);
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.agentSessions).toBe('own-place');
+    (e.gate as { agentSessions?: string }).agentSessions = 'refused';
+    expect((await send(e, owner, 'GET', '/mobile/team/context')).body.agentSessions).toBe('refused');
   });
 
   it('context lists the MSP phones an invite will make read-only', async () => {
