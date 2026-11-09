@@ -325,6 +325,20 @@ describe('create, list, delete through the real broker', () => {
     h.advance(6000);
     expect((await h.groups.delete(row.channelId, producer)).body).toMatchObject({ state: 'deleted' });
   });
+  it('a page failure carries Telegram\'s own code and type into the reply and the audit line, and the next operation starts clean', async () => {
+    // 2026-11-09 first live run: list answered only { step: "list" } and could not be diagnosed.
+    const h = harness();
+    const original = h.driver.listTestGroups!;
+    h.driver.listTestGroups = async () => ({ ok: false, step: 'list', code: 400, type: 'INPUT_METHOD_INVALID' });
+    expect((await h.groups.list()).body).toEqual({ error: 'test-group-failed', step: 'list', code: 400, type: 'INPUT_METHOD_INVALID' });
+    const audit = readFileSync(path.join(h.dir, 'state', 'telegram-test-groups.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    expect(audit.at(-1)).toMatchObject({ op: 'list', phase: 'outcome', outcome: 'test-group-failed', failure: { code: 400, type: 'INPUT_METHOD_INVALID', step: 'list' } });
+    h.driver.listTestGroups = original;
+    h.advance(6000);
+    const listed = await h.groups.list();
+    expect(listed.status).toBe(200);
+    expect(listed.body).not.toHaveProperty('code');
+  });
   it('a typed rollback is a known failure and leaves the driver open', async () => {
     const h = harness();
     h.behaviour.createFailure = { ok: false, step: 'verify', channelId: '777', rolledBack: true };

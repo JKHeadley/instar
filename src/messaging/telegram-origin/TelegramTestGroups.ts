@@ -337,6 +337,14 @@ export class TelegramTestGroups {
   readonly key: TestGroupMarkerKey;
   private running = false;
   private lastRead: CachedRead | null = null;
+  /** Telegram's own error code and type from the current operation's page failure, if any: already
+   * validated by parseFailure (a safe integer, an uppercase identifier), never page text. Operations
+   * run one at a time (`running`), so one field serves; admit() clears it. Without it a live
+   * failure reads only "list" and cannot be diagnosed (2026-11-09 first live run). */
+  private failureDetail: { code?: number; type?: string } | null = null;
+  private noteFailure(f: TestGroupPageFailure): void {
+    this.failureDetail = { ...(f.code !== undefined ? { code: f.code } : {}), ...(f.type !== undefined ? { type: f.type } : {}) };
+  }
   private liveReads: number[] = [];
   private readonly now: () => number;
   constructor(private readonly options: TelegramTestGroupsOptions) {
@@ -360,6 +368,7 @@ export class TelegramTestGroups {
       return { status: 429, body: { error: 'test-groups-busy', retryAfterMs: this.liveReads[0] + HOUR_MS - now } };
     }
     this.running = true;
+    this.failureDetail = null;
     this.liveReads.push(now);
     return null;
   }
@@ -393,6 +402,7 @@ export class TelegramTestGroups {
     const result = parseTestGroupList(raw);
     if (!result) throw new TestGroupKnownStop('unusable-page-result');
     if (!result.ok) {
+      this.noteFailure(result);
       const flood = floodWaitSeconds(result);
       if (flood !== null) await this.recordFlood(flood);
       throw new TestGroupKnownStop(flood !== null ? 'flood-wait' : result.step);
@@ -438,7 +448,7 @@ export class TelegramTestGroups {
     }
     if (outcome.reason === 'read-incomplete') return { status: 409, body: { error: 'test-groups-read-incomplete' } };
     if (outcome.reason.startsWith('browser-')) return { status: 409, body: { error: 'telegram-browser-held', reason: outcome.reason, retryable: false } };
-    return { status: 409, body: { error: 'test-group-failed', step: outcome.reason } };
+    return { status: 409, body: { error: 'test-group-failed', step: outcome.reason, ...(this.failureDetail ?? {}) } };
   }
 
   async list(): Promise<TestGroupResponse> {
@@ -456,7 +466,8 @@ export class TelegramTestGroups {
       step => this.listStep(step, key));
       const response = outcome.state !== 'done' ? this.outcomeResponse(outcome) : { status: 200, body: this.publicGroups(outcome.value) };
       await this.audit.append({ at: this.now(), op: 'list', phase: 'outcome', profileId: this.options.profileId,
-        outcome: outcome.state === 'done' ? `groups:${outcome.value.verified.length}+${outcome.value.unverified.length}` : String(response.body.error) }).catch(() => undefined);
+        outcome: outcome.state === 'done' ? `groups:${outcome.value.verified.length}+${outcome.value.unverified.length}` : String(response.body.error),
+        ...(outcome.state !== 'done' && this.failureDetail ? { failure: { ...this.failureDetail, step: String(response.body.step ?? '') } } : {}) }).catch(() => undefined);
       return response;
     } finally { this.running = false; }
   }
@@ -503,6 +514,7 @@ export class TelegramTestGroups {
         const result = parseTestGroupCreate(raw);
         if (!result) return { kind: 'unknown' as const, reason: 'unusable-page-result' };
         if (result.ok) { channelId = result.channelId; return { kind: 'created' as const, channelId: result.channelId }; }
+        this.noteFailure(result);
         const flood = floodWaitSeconds(result);
         if (flood !== null) await this.recordFlood(flood);
         if (result.uncertain || (result.channelId && !result.rolledBack)) return { kind: 'unknown' as const, reason: result.step };
@@ -518,12 +530,13 @@ export class TelegramTestGroups {
         return { status: 200, body: { channelId: value.channelId, chatId: `-100${value.channelId}`, title: marked, bot: bot.username, createdAt: this.now() } };
       }
       if (value.kind === 'unknown') return this.outcomeResponse({ state: 'unknown', reason: value.reason });
-      return { status: 409, body: { error: 'test-group-failed', step: value.step, rolledBack: value.rolledBack } };
+      return { status: 409, body: { error: 'test-group-failed', step: value.step, rolledBack: value.rolledBack, ...(this.failureDetail ?? {}) } };
     } finally {
       this.running = false;
       if (intentWritten) {
         await this.audit.append({ at: this.now(), op: 'create', phase: 'outcome', profileId: this.options.profileId,
-          title: marked, ...(channelId ? { channelId, outcome: 'created' } : { outcome: 'not-created-or-unknown' }), producer }).catch(() => undefined);
+          title: marked, ...(channelId ? { channelId, outcome: 'created' } : { outcome: 'not-created-or-unknown' }),
+          ...(this.failureDetail ? { failure: this.failureDetail } : {}), producer }).catch(() => undefined);
       }
     }
   }
@@ -557,6 +570,7 @@ export class TelegramTestGroups {
         const parsed = parseTestGroupDelete(raw);
         if (!parsed) return { outcome: 'unknown' as const, reason: 'unusable-page-result' };
         if (parsed.ok) return { outcome: parsed.outcome };
+        this.noteFailure(parsed);
         const flood = floodWaitSeconds(parsed);
         if (flood !== null) await this.recordFlood(flood);
         if (parsed.step === 'delete' && parsed.uncertain) return { outcome: 'unknown' as const, reason: 'delete' };
@@ -568,7 +582,7 @@ export class TelegramTestGroups {
     } finally {
       this.running = false;
       await this.audit.append({ at: this.now(), op: 'delete', phase: 'outcome', profileId: this.options.profileId, channelId,
-        outcome: result ? String(result.body.state ?? result.body.error) : 'error', producer }).catch(() => undefined);
+        outcome: result ? String(result.body.state ?? result.body.error) : 'error', ...(this.failureDetail ? { failure: this.failureDetail } : {}), producer }).catch(() => undefined);
     }
   }
 }
