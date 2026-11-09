@@ -5821,6 +5821,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // the store-enable flag (ws13PinReplicate), so a single-machine / dark agent is a no-op.
     const { TOPIC_PIN_KIND_REGISTRATION } = await import('../core/TopicPinReplicatedStore.js');
     replicatedKindRegistry.register(TOPIC_PIN_KIND_REGISTRATION);
+    // Chief of Staff (docs/specs/chief-of-staff-topic.md §1.2): register `chief-of-staff-record`
+    // so the tree / bindings / check-events / intents / renewals replicate as immutable event
+    // records across the agent's machines. Registration is INERT — nothing emits until the
+    // feature ships (PR 2/3) and `multiMachine.stateSync.chiefOfStaff` is on.
+    const { CHIEF_OF_STAFF_KIND_REGISTRATION } = await import('../core/ChiefOfStaffStore.js');
+    replicatedKindRegistry.register(CHIEF_OF_STAFF_KIND_REGISTRATION);
 
     // U4.2 (docs/specs/u4-2-stale-owner-release.md §2.4, R-r3-1) — register the
     // `topic-claim-annotation` kind (claim suspension + per-topic claim budget +
