@@ -4,9 +4,9 @@
 
 Codex (GPT-6 Astra, through the agent's own Codex login) reviewed every one of the six rounds. Gemini CLI is not installed on this machine, so Codex was the only external family.
 
-## ⚠ Status: stopped at the round cap — operator decision needed
+## ⚠ Status: stopped at the round cap — accepted by the operator
 
-Six rounds is the cap for a change this size. Round 6 still raised design findings. All are narrow, and fixes for each are written into the spec, but those last fixes have **not** been through a review round. Some of them concern whether usage history survives a restore, which the process treats as data loss, so convergence is not self-declared. The operator chooses: approve with the round-6 fixes as they stand, or run one more review round on them. No convergence tag has been written.
+Six rounds is the cap for a change this size. Round 6 still raised design findings. All are narrow, and fixes for each are written into the spec, but those last fixes have **not** been through a review round. Some of them concern whether usage history survives a restore, which the process treats as data loss, so convergence is not self-declared. The operator was offered the choice — approve with the round-6 fixes as they stand, or run one more review round — and approved the spec as it stands (Justin, Telegram topic 141063 "Token Usage Tracking", 2026-11-09), keeping the FD1 and FD2 defaults. The convergence tag records that operator acceptance at the cap.
 
 ## ELI10 Overview
 
@@ -73,4 +73,4 @@ The per-round reviewer outputs (all six internal lenses plus Codex) are kept in 
 
 ## Convergence verdict
 
-Stopped at the round cap (6 of 6). Rounds 1–5 resolved every design finding raised. Round 6 raised six narrow design findings; fixes for all six are in the spec but were not re-reviewed. Decision-completeness: 7 frontloaded decisions, 1 cheap-to-change tag (contested each round and cleared), 0 open user decisions. Awaiting the operator's choice: approve with the round-6 fixes, or run one more review round.
+Stopped at the round cap (6 of 6). Rounds 1–5 resolved every design finding raised. Round 6 raised six narrow design findings; fixes for all six are in the spec but were not re-reviewed. Decision-completeness: 7 frontloaded decisions, 1 cheap-to-change tag (contested each round and cleared), 0 open user decisions. The operator approved the spec with the round-6 fixes as they stand (2026-11-09).

@@ -17,6 +17,17 @@ lessons-engaged:
   - "token-audit-completeness (2026-06-11): attribution ratchet, cached-token subset column, usage-coverage tripwire"
   - "routing-control-room-spend-alerts: dated append-only price authority, priced on read at the as-of point, unpriced loud"
   - "TOKENLEDGER-* boot/backfill specs: bounded async scans, rowid backfill, scan-loop close guard"
+review-convergence: "2026-11-09T22:24:16.672Z"
+review-iterations: 6
+review-completed-at: "2026-11-09T22:24:16.672Z"
+review-report: "docs/specs/reports/unified-usage-ledger-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 9
+cheap-to-change-tags: 1
+contested-then-cleared: 1
+approved: true
+approved-by: "Justin (telegram topic 141063, 2026-11-09)"
 ---
 
 # Unified Usage Ledger
@@ -229,6 +240,15 @@ The live reconciliation re-parses the same files, so it cannot see calls the fil
 
 Everything ships behind `usage.ledger.enabled`, registered in `src/core/devGatedFeatures.ts` (on for the development agent, dark on other installs). The development agent runs it until the live reconciliation is clean and every machine in its pool has been reached by the pool view. Turning it on for other installs is a separate release decision after that.
 
+## Maturation plan
+
+- **test-agent-live:** Run the capture-matrix, token-arithmetic, scope, dedupe, Codex-delta, replay/restore, pool and auth suites against fixture homes, then on a throwaway test agent with real Claude and Codex sessions, a one-shot funnel call of each framework, a forced snapshot import and a two-machine pull.
+- **dev-agent-live:** Enable `usage.ledger.enabled` on Echo across all of its machines. Run the live reconciliation daily: an independent re-parse of each day's source files compared with `/usage/summary`, plus the per-root file counts and the subscription-window check. Every unexplained difference is a defect to fix before graduation.
+- **graduation criterion:** Seven consecutive days on Echo with a clean live reconciliation, every pool machine reached by the pool view, zero dedupe disagreements that are not explained, and the console page reviewed by the operator at desktop and phone width.
+- **fleet:** After graduation, a separate release decision (FD7) turns `usage.ledger.enabled` on by default for other installs; the fleet-wide multi-agent view is the separate Instar Fleet Support track.
+- **dark-window:** Dark on other installs until graduation, bounded to 30 days after the dev-agent enable; if graduation is not met by then, the failing checks are reported in topic 141063 with the reconciliation evidence rather than the feature sitting dark silently.
+- **ladder:** usage.ledger
+
 ## Existing agents on update
 
 - `devGatedFeatures.ts` entry for `usage.ledger.enabled` with its justification.
@@ -260,16 +280,17 @@ Each slice is additive. Turning `usage.ledger.enabled` off stops ingest, the bin
 - **Snapshot cadence** (hourly) — `judgment-candidate` config default; floor: an import is only needed when the live database is lost, and the import window it leaves is listed in coverage; basis: bounds `intelligence-call` detail lost on such a loss to about an hour.
 - **Scan limits** (3 directory levels, 30-day backfill window, 500-file shared per-tick budget, 10,000-entry funnel queue) — `judgment-candidate`; floor: whatever a limit leaves out is counted in `/usage/coverage`; basis: the measured subagent layout (exactly 3 levels) and the existing TokenLedger backfill window and per-tick budget.
 - **Dedupe settle window** (2 minutes after the file is read to its end) — `judgment-candidate` config default; floor: a late row re-opens a settled pair, so settling early can delay but never lose or double a count.
-- No gate, block or routing decision is added; nothing here changes which calls run, and no operator notice is added.
 
 ## Frontloaded Decisions
 
 - **FD1 — Unpriced models stay unpriced.** A model with no published API price is shown as `unpriced` with its token count, never estimated. cheap-to-change-after: pricing happens on read, so adding a clearly labeled estimate or a real price later applies to all history and rewrites nothing.
 - **FD2 — Retention defaults.** Raw request rows 90 days (or 4 million rows per machine, whichever comes first), hourly and per-conversation daily rollups 400 days, daily rollups kept. Only detail is ever deleted; every daily total survives. Configurable per agent.
+- **FD9 — Nothing gates or notifies.** No gate, block or routing decision is added; nothing here changes which calls run, and no operator notice is added.
 - **FD3 — Equivalent cost is labeled as such everywhere.** Surfaces show "equivalent API cost" for list-price valuation and the reported figure with its basis (`actual` or `plan-rate`), never a merged figure.
 - **FD4 — Legacy stores and routes are not changed.** `TokenLedger`, `/tokens/*`, `/jobs/cost`, `/metrics/features`, `/routing-spend/*` and BurnDetector keep their current behavior; the console moves to `/usage/*` once the live reconciliation is clean.
 - **FD5 — Phone access is owner-only and trimmed.** Only `/mobile/usage`, owner phones only, without account, session or machine ids, trimmed on the receiving machine; `/usage/*` stays bearer-only.
 - **FD6 — Prices are added by the building agent with sources, reviewed in the PR.** No separate human step in the middle of the build.
+- **FD8 — Operator approval at the review cap.** The operator approved this spec with the round-6 fixes unreviewed and kept the FD1 and FD2 defaults (Justin, topic 141063, 2026-11-09).
 - **FD7 — Other installs stay dark** until a release decision after the development agent's reconciliation is clean.
 
 ## Left behind
@@ -279,4 +300,4 @@ Each slice is additive. Turning `usage.ledger.enabled` off stops ingest, the bin
 
 ## Open questions
 
-*(none)* — the two operator choices (estimating unpriced models; retention periods) are frontloaded as FD1 and FD2 and raised with the operator at approval.
+*(none)*
