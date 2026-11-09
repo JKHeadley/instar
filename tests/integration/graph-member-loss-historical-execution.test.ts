@@ -60,6 +60,13 @@ it('preserves original M1 certified history through actual planned M2 then fresh
   phase('removal');const result=await removeLostMachine({manager,stateDir,intent:admitted,resumed:null,progress:null});phase('removal-complete');expect(result.activation.newMembership.epoch).toBe(3);
   for(const original of f.records){const retained=manager.runtime!.source.repairRecord(original.packet.eventId);expect(retained?.certificate).toEqual(original.certificate);expect(retained?.packetSignature).toBe(original.packetSignature);expect(retained?.core).toEqual(original.core);}
   expect(manager.runtime!.installedMembership.epoch).toBe(3);const ready=await manager.runtime!.refreshReadiness();console.info('[historical-loss-readiness]',JSON.stringify({ready,phase:(manager.runtime as unknown as {lastReadinessFailure:string|null}).lastReadinessFailure}));expect(ready).toBe(true);
+  // Real Studio + M5 run (2026-11-09): after a removal every retained record is historical, and a historical record was never
+  // marked settled, so every later pass re-read the removal history and asked the witness about every record again, forever.
+  // One reconciliation now settles them: the next pass asks the witness nothing, reads the history once, and still checks each record against it.
+  {const after=manager.runtime!,witnessOperation=vi.spyOn((after as unknown as {config:{witness:{operation:(key:string)=>Promise<unknown>}}}).config.witness,'operation'),lineageRead=vi.spyOn(after.source,'repairLineage'),checked=vi.spyOn(after.source,'assertRepairStillAllowed');
+   try{expect(await after.refreshReadiness()).toBe(true);expect(witnessOperation).not.toHaveBeenCalled();expect(lineageRead).toHaveBeenCalledTimes(1);expect(checked).toHaveBeenCalledTimes(f.records.length);
+    expect(f.records.every(original=>(after as unknown as {settledRecords:Map<string,string>}).settledRecords.has(original.packet.eventId))).toBe(true);
+   }finally{witnessOperation.mockRestore();lineageRead.mockRestore();checked.mockRestore();}}
   }finally{clearInterval(timingInterval);console.info('[historical-loss-method-timing-final]',JSON.stringify(methodTiming.snapshot()));methodTiming.restore();for(const release of restore)release();}
  }finally{await server.stop();await f.cleanup();}
  }finally{if(metricsTimer)clearInterval(metricsTimer);if(observer){const value=observer.snapshot();console.info('[historical-loss-safe-sites-final]',JSON.stringify({failure:value.failure,callsiteSampling:value.callsiteSampling,sampleCount:value.samples.length}));}observer?.close();}

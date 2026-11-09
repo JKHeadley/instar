@@ -10,6 +10,8 @@ export function createConversationGraphChangeRouter(deps:{changes:ConversationGr
  const router=Router();
  for(const [prefix,surface] of [['/conversation-graph','dashboard'],['/mobile/conversation-graph','mobile']] as const){
   const run=(handler:(req:Request)=>GraphChangeReply|Promise<GraphChangeReply>)=>async(req:Request,res:Response)=>{
+   // A request queued behind a long pass can reach the route after the request timeout already answered 408; the client retries with the same requestId.
+   if(res.headersSent)return;
    res.setHeader('Cache-Control','no-store');
    const owner=deps.resolveViewer(req,surface);if(!owner)return void res.status(403).json({code:'hierarchy-owner-only'});
    try{
