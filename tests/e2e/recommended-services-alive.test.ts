@@ -196,6 +196,20 @@ describe('recommended services: production wiring', () => {
     expect(key.body.error).toBe('not-granted-here');
   });
 
+  it('the Cloudflare recipe is dark on a fleet agent and reachable on a proving agent through the real wiring', async () => {
+    const plain = boot(true);
+    const plainList = await request(plain.server.getApp()).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(plainList.body.services.find((row: { service: string }) => row.service === 'cloudflare-domain').available).toBe(false);
+    const { server } = boot(true, { recommendedServices: { provingRecipes: ['cloudflare-v1'] } });
+    const app = server.getApp();
+    const list = await request(app).get('/recommended-services').set('Authorization', `Bearer ${AUTH}`);
+    expect(list.body.services.find((row: { service: string }) => row.service === 'cloudflare-domain').available).toBe(true);
+    const key = await request(app).post('/recommended-services/cloudflare-domain/key')
+      .set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').type('text/plain').send(JSON.stringify({ token: 'cf-test', hostname: 'agent.example.com' }));
+    expect(key.status).toBe(409);
+    expect(key.body.error).toBe('not-granted-here');
+  });
+
   it('an agent proving a recipe (a throwaway under a temp folder) reaches it through the real wiring, beside the proven ones', async () => {
     const { server } = boot(true, { recommendedServices: { provingRecipes: ['tailscale-v1'] } });
     const app = server.getApp();

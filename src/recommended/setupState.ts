@@ -41,6 +41,8 @@ export interface ServiceSetupState {
   attentionRaised?: string;
   /** `verify` passed here with no choice made: the service is already in use on this machine, so it is not offered (a fact, never a choice). */
   inUse?: boolean;
+  /** The Cloudflare recipe's own work (tunnel, DNS record, previous tunnel settings), so a switch-off undoes exactly that. */
+  cloudflareWork?: import('./cloudflareDomain.js').CloudflareWork;
 }
 
 export function setupStateFile(stateDir: string): string {

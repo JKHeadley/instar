@@ -8,6 +8,7 @@
  */
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
+import { parseCloudflareSecret } from '../recommended/cloudflareDomain.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { NO_REASONS, OFFER_LIST_EVERY_MS, type NoReason, type RecommendedServicesLedger } from '../recommended/RecommendedServicesLedger.js';
 import { newListId, offerCandidates, renderOfferList } from '../recommended/offerList.js';
@@ -74,6 +75,7 @@ export interface RecommendedServiceRouteDeps {
   github?: GitHubBackupSurface;
   aiDoors?: import('../recommended/aiDoors.js').AiDoorSurface;
   telegramSetup?: import('../recommended/telegramSetup.js').TelegramSetupSurface;
+  cloudflare?: import('../recommended/cloudflareDomain.js').CloudflareSurface;
   /** This agent's name, for things named after it. */
   agentName?: string;
   /** Turns the agent's git backup off in its config (a confirmed no to GitHub). */
@@ -117,6 +119,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
+  // The Cloudflare recipe's own work, kept in the setup state so its switch-off undoes exactly that.
+  const cloudflareWork = {
+    remember: (work: import('../recommended/cloudflareDomain.js').CloudflareWork) => { updateSetupState(deps.stateDir, 'cloudflare-domain', { cloudflareWork: work }); },
+    recall: () => readSetupStates(deps.stateDir)['cloudflare-domain']?.cloudflareWork ?? null,
+    forget: () => { updateSetupState(deps.stateDir, 'cloudflare-domain', { cloudflareWork: undefined }); },
+  };
   /**
    * Offers go out only when every precondition holds on this machine: the switch is on, the migration flag is
    * set for this owner, a first result was delivered, this machine can reach the person (lease and channel),
@@ -134,7 +142,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const stopping = new Set<string>();
   /** With a service named, setting up that service is the question: Telegram's own setup needs no Telegram yet. */
   const reach = (service?: string): boolean => deps.canReachOwner?.(service) ?? true;
-  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, aiDoors: deps.aiDoors, telegramSetup: deps.telegramSetup });
+  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, machineId: deps.ledger()?.machineId(), aiDoors: deps.aiDoors, telegramSetup: deps.telegramSetup, cloudflare: deps.cloudflare, cloudflareWork: cloudflareWork });
   /** How often a copy kept elsewhere is brought up to date by the regular check, and how long a failed refresh waits before another try. */
   const SYNC_EVERY_MS = 24 * 60 * 60_000;
   const SYNC_RETRY_MS = 6 * 60 * 60_000;
@@ -939,6 +947,19 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (!value || value.length > 4096 || /\p{Cc}/u.test(value)) {
       res.status(400).json({ error: 'invalid-value' });
       return;
+    }
+    // Cloudflare's value is a token and a host name together; a value the sync could not use is refused here, not stored.
+    if (row.id === 'cloudflare-domain' && !parseCloudflareSecret(value)) {
+      res.status(400).json({ error: 'invalid-value', detail: 'Expected JSON with "token" and a lower-case "hostname" such as agent.example.com.' });
+      return;
+    }
+    // A fixed address the person already had (a named tunnel here before setup) is theirs: setup never replaces it.
+    if (row.id === 'cloudflare-domain' && deps.cloudflare) {
+      const existing = deps.cloudflare.tunnelConfigured();
+      if (existing?.enabled && existing.type === 'named' && !readSetupStates(deps.stateDir)[row.id]?.absentBeforeSetup) {
+        res.status(409).json({ error: 'already-held' });
+        return;
+      }
     }
     try {
       // Live features may read a key that was already here, so a setup session never replaces one. It

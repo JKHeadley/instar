@@ -70,6 +70,16 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('probe: (token, chatId) => probeTelegram(token, chatId),');
     expect(routes).toContain("const entry = { type: 'telegram', enabled: true, config: { token, chatId, pollIntervalMs: 2000, stallTimeoutMinutes: 5 } };");
     expect(routes).toContain("requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-telegram'); return r === true; },");
+    // Cloudflare: the real API client, this agent's tunnel block (remembered until the restart), one public read, the planned restart.
+    expect(routes).toContain('api: realCloudflareApi(),');
+    expect(routes).toContain('tunnelConfigured: () => (tunnelWrittenHere ? tunnelWrittenHere.value : tunnelFromConfig()),');
+    expect(routes).toContain('cfg.tunnel = namedTunnelBlock(cfg.tunnel as Record<string, unknown> | undefined, { token, hostname });');
+    expect(routes).toContain('cfg.tunnel = restoredTunnelBlock(cfg.tunnel as Record<string, unknown> | undefined, previous);');
+    expect(routes).toContain('const tunnelFromConfig = (): TunnelSettings | null => tunnelSettingsFrom(ctx.config.tunnel);');
+    expect(routes).toContain('const r = await fetch(`https://${hostname}/health`, { signal: AbortSignal.timeout(8000), redirect: \'manual\' });');
+    expect(routes).toContain("requestRestart: (reason) => { const r = ctx.requestSupervisedRestart?.(reason, 'recommended-services-cloudflare'); return r === true; },");
+    // The key route refuses a Cloudflare value the sync could not use, before anything is stored.
+    expect(read('src/server/recommendedServiceRoutes.ts')).toContain("if (row.id === 'cloudflare-domain' && !parseCloudflareSecret(value)) {");
     const adapter = fs.readFileSync(path.join(root, 'src/messaging/TelegramAdapter.ts'), 'utf8');
     expect(adapter).toContain("if (query.data.startsWith('rs:'))");
     expect(adapter).toContain('this.recommendedOfferHandler({ action: m[1] === \'y\' ? \'yes\' : \'no\', nonce: m[2]!, fromIsOwner })');
