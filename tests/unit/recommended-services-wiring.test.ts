@@ -41,6 +41,23 @@ describe('recommended services wiring', () => {
     expect(routes).toContain('readSecretNames: () => copySourceNames(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), ctx.config as unknown as Record<string, unknown>)');
     expect(routes).toContain("const held = name.startsWith('config.') ? configHeldSecrets(ctx.config as unknown as Record<string, unknown>)[name] : undefined;");
     expect(routes).toContain('bitwarden: realBitwardenSurface(');
+    // The GitHub recipe's surface, the agent's name, the config switch a no turns off, and the attention item for a public repository.
+    expect(routes).toContain('github: realGitHubBackupSurface(ctx.config.stateDir,');
+    // The first list (Offers): the switch, the send to the owner's conversation with its message id, the link base, the taps.
+    expect(routes).toContain('offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled');
+    expect(routes).toContain('ctx.telegram!.sendOfferList(topicId, text, buttons)');
+    expect(routes).toContain('registerOfferTapHandler: (handler) => { ctx.telegram?.setRecommendedOfferHandler?.(handler); }');
+    expect(routes).toContain('pickPrimaryLanIp(os.networkInterfaces()');
+    // Voice transcription: the vault reader every transcription caller falls back to, registered once by the server.
+    expect(routes).toContain('registerStoredTranscriptionKey(() => {');
+    expect(routes).toContain('.get(VOICE_TRANSCRIPTION_SECRET)');
+    expect(read('src/commands/server.ts')).toContain("(await import('../core/VoiceTranscription.js')).resolveTranscriptionProvider({ explicit, env: {} })");
+    expect(read('src/messaging/backends/BaileysBackend.ts')).toContain('resolveSharedTranscriptionProvider({ env: {} })');
+    const adapter = fs.readFileSync(path.join(root, 'src/messaging/TelegramAdapter.ts'), 'utf8');
+    expect(adapter).toContain("if (query.data.startsWith('rs:'))");
+    expect(adapter).toContain('this.recommendedOfferHandler({ action: m[1] === \'y\' ? \'yes\' : \'no\', nonce: m[2]!, fromIsOwner })');
+    expect(routes).toContain("disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },");
+    expect(routes).toContain('raiseAttention: async (id, title, text) => {');
   });
 
   it('a lone machine backs its choices up', () => {

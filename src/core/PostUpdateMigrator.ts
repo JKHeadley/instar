@@ -460,6 +460,7 @@ export const LOCAL_VERIFY_THROUGHPUT_OVERFLOW_CLAUDEMD_LINE = '- Local Verify th
  * section (`migrateClaudeMd`, content-sniffed on the config key).
  */
 export const LOCAL_VERIFY_FAIL_FAST_CLAUDEMD_LINE = '- Local Verify fail-fast: in a PR verify, once one lane (unit, integration or e2e) ends with a failure its isolation re-run did not clear, the lanes still running are stopped (the verdict is already failure) and reported as `lane-stopped-early:<lane>`, so a doomed run frees the slot minutes sooner. A `main` verify always runs every lane. A test file that was itself re-run-passed on the last green `main` (flaky on `main`) now gets the same one isolation re-run as any other file, unless the PR changed it or a file it imports. Off switch: `monitoring.localVerify.failFast: false` (read at each start). When the user asks "why did my PR\'s run stop early / show only one lane\'s failures?" → this; fix the reported failure and re-request the verify.';
+export const LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE = '- Local Verify waiting list: a PR refused because the queue is full (`queue-full`, HTTP 429) keeps its place on a waiting list, ordered by when it was first refused. When a slot frees, the PR refused earliest gets it; a newer PR asking first is refused again with the audit row `queue-full-waiting`. A waiter keeps its place only while it keeps being offered (within 30 minutes of running time while `main` is healthy); one that stops being offered, closes or merges gives the place up, so a waiter can never hold a slot empty. A pushed head keeps the place. The read surface (`GET /local-verify` → `waiting`) lists the waiters; the admitted entry carries `firstRefusedAt`, so the wait before entering the queue can be measured. A `merge-throughput` PR, a repair while `main` is red, and a re-queued head are admitted exactly as before. When the user asks "why is my PR still not in the verify queue?" → read `waiting` for its place in line.';
 
 /**
  * Local Verify balanced shards — the awareness line appended to an existing CLAUDE.md's Local
@@ -1115,6 +1116,8 @@ export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" 
 /** The native session screen (docs/specs/mobile-native-session-screen.md), inserted after the "Open session" bullet. Sniff: "native session screen". */
 /** Unread counts (docs/specs/mobile-unread-messages.md): the bullet after the native session screen line. */
 export const APP_CONVERSATIONS_UNREAD_LINE = '- The app shows per-person unread counts: a read marker per person per conversation (replicated across my machines) plus "your own reply marks everything before it as read"; Telegram and Slack give a bot no per-user read state, so the marker here is the source. Phones report what they read with `POST /mobile/conversations/read`; my own Bearer reads of the list and history carry NO read fields (`hasUnread`, `unreadCount`, `readUpTo` appear only for a phone). When the operator asks "why does the app say N unread?" read `GET /mobile/conversations` as the phone would, never guess from Telegram. Off switch: `mobilePairing.native.unread.enabled: false`.';
+/** Dashboard conversations (docs/specs/dashboard-conversations-browser-device.md), inserted after the native session screen line. Sniff: "browser device". */
+export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work > Conversations, `#/work/chats`) is a browser set up as a device of its own: it holds its own key, is approved the way a new phone would be (with a Telegram owner: the owner\'s private Telegram chat or an owner phone, never the PIN alone), is listed in People > Phones as "Browser", and may only use conversations and files and remove itself. A message marked 💻 (`💻 <owner> (from the dashboard)`, or `(💻 signed)` in the session tag) means an approved browser key of the owner signed it in the dashboard — weaker proof than a phone, since the dashboard pages come from my own machine. Setup: `POST /mobile/browser-devices` (Bearer + dashboard PIN session); state: `GET /mobile/browser-devices/status`. Gate: `mobilePairing.browser.enabled` (development agents live, fleet dark). When the operator asks "can I chat with you from the dashboard?", yes, on Work > Conversations once the browser is approved.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -1261,6 +1264,7 @@ ${APP_CONVERSATIONS_POOL_LINE}
 ${APP_CONVERSATIONS_OPEN_SESSION_LINE}
 ${APP_CONVERSATIONS_NATIVE_SESSION_LINE}
 ${APP_CONVERSATIONS_UNREAD_LINE}
+${DASHBOARD_CONVERSATIONS_LINE}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
@@ -1381,6 +1385,7 @@ ${MOBILE_APP_POOL_LINE()}
 /** The shipped v1 sentence of the recommended-services block; a legacy-layout CLAUDE.md still carrying it gets the v2 wording. */
 export const RECOMMENDED_SERVICES_V1_TAIL = 'field says whether it is. Offers are not live yet.';
 export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale and Jev can be set up on every agent: the person says yes or no on the dashboard\'s Services row (`/dashboard/service-yes?service=<id>`, PIN); a yes starts a setup session in its own topic that owns the whole job; a no can also switch a working service off here. I don\'t offer services on my own yet.';
+export const RECOMMENDED_SERVICES_V3_TAIL = 'field says whether it is. Tailscale, Jev, Bitwarden and GitHub backup can be set up on every agent: yes or no on the Services row (PIN); a yes starts a setup session that owns the job; a no can switch a service off. With `recommendedServices.offers.enabled` on I offer them myself, once, in one list; `offered` marks an unanswered row.';
 
 /**
  * CLAUDE.md awareness block for recommended outside services (docs/specs/recommended-services.md).
@@ -1389,7 +1394,7 @@ export const RECOMMENDED_SERVICES_V2_TAIL = 'field says whether it is. Tailscale
 export function RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port: number): string {
   return `\n### Recommended outside services (\`GET /recommended-services\`)
 
-The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V2_TAIL}
+The saved yes or no for each outside service that helps an agent (Tailscale, Cloudflare, Telegram, Jev, Bitwarden, GitHub backup, a second AI subscription, voice transcription, email). Choices replicate across machines where machine sync is on, and the route's \`replicating\` ${RECOMMENDED_SERVICES_V3_TAIL}
 - Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services\`. A no stands until the person confirms a yes, and I never re-offer on my own for now.
 - **The person only approves, asks for changes, or supplies a credential.** After a yes, everything else is mine: research, creating accounts, getting keys, setup. They never open a browser or follow steps.
 - **Whose account is their choice.** I can fully manage their accounts like an executive assistant, use accounts of my own, or both. I make that clear and never recommend against either.
@@ -1635,6 +1640,23 @@ instar opens a short-lived detached tmux session (\`instar-codex-arm-<id>\`) to 
 - **Ships enabled in DRY-RUN**: it reports what it WOULD close and kills nothing. Read \`wouldKillDistinct\` for the backlog (\`wouldKill\` re-counts the same orphan every pass). Arm it with \`monitoring.codexArmSessionSweeper.dryRun: false\` — read live at each pass, no restart. \`enabled: false\` turns it off (next restart; it then grades \`diverged-from-default\` on \`/guards\`, deliberately).
 - Safety: a session is a candidate only if its name's embedded birth time agrees with tmux's own creation record; the age threshold is clamped to a 5-minute floor (~2x the ~150 s modeled arming budget); an attached or recently-active session is kept whatever its age; a future-dated session is kept; an unreadable session list, or an unreadable protected-name list, ends the pass with zero kills; a pass is capped at 50 attempts and ~3 s of wall clock.
 - Proactive: user asks "why is this machine so full / what are all these terminal sessions?" → read this status AND run a real \`tmux ls\` count; the two together are the honest answer. Spec: \`docs/specs/codex-arm-session-leak-and-sweeper.md\`.
+`;
+}
+
+/**
+ * The Disk Steward section, one definition for fresh agents and updated ones.
+ * Sniff key for the migrator: `/disk-steward`. Spec: docs/specs/disk-steward.md
+ */
+export function DISK_STEWARD_CLAUDEMD_SECTION(port: number | string): string {
+  return `
+## Disk Steward
+
+Every machine watches its own free space (every 15 minutes, inside the agent server, standbys included) and posts in the "Disk space (all machines)" topic when it gets low: under 15% or 100 GiB free (capped at 30% of small disks), more often under 10% or 60 GiB or when it is on track to fill within 3 days, and always when it reaches the 5% line where uploads are refused. Before warning it clears two tool caches if its cleanup is on (npm cache over 5 GiB, Xcode build files older than a day) and stays quiet if that fixed it. Only the awake machine posts, for every machine; each post names the machine. Cleanup is off by default and on for development agents; it never touches worktrees, agent state or the operator's files.
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
+- **When to use** (PROACTIVE): someone asks how full a machine is, why an upload was refused, or what is taking the space → read \`/disk-steward?scope=pool\` and answer from it in plain words.
+- Someone replies "clear disk on <machine>" in the Disk space topic → find that machine's id in \`/disk-steward?scope=pool\`, then \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/disk-steward/prune -d '{"machineId":"<id>","requestedBy":{"topicId":<topic>}}'\` (202 with a run id; \`GET /disk-steward/prune/<runId>\` for the result). It clears only the two caches, on that machine, and posts what it freed.
+- Someone asks to turn on the worktree cleaner on a machine → set \`monitoring.agentWorktreeReaper\` to \`{ "enabled": true, "dryRun": false }\` in that machine's config, restart it, and report its first pass (\`GET /worktrees/agent-reaper\`). It keeps any worktree that is in use, linked to by another checkout, or holds anything it cannot prove is rebuildable.
+- Disk posts follow the "Disk space" notification choice (quiet by default); the operator turns pushes on through the category push route with their own recent message. Floor posts always come through. Audit: \`logs/disk-steward.jsonl\`.
 `;
 }
 
@@ -10454,6 +10476,20 @@ setTimeout(() => process.exit(0), 2000);
       }
     }
 
+    // Dashboard conversations (docs/specs/dashboard-conversations-browser-device.md): after the native session screen line.
+    if (content.includes(APP_CONVERSATIONS_NATIVE_SESSION_LINE) && !content.includes(DASHBOARD_CONVERSATIONS_LINE)) {
+      const lines = content.split('\n');
+      // After the unread line when it is there, else after the native session line (the template's order).
+      const unreadAt = lines.findIndex((l) => l === APP_CONVERSATIONS_UNREAD_LINE);
+      const at = unreadAt >= 0 ? unreadAt : lines.findIndex((l) => l === APP_CONVERSATIONS_NATIVE_SESSION_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, DASHBOARD_CONVERSATIONS_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the dashboard conversations (browser device) line');
+      }
+    }
+
     // Native Accounts / Spend / Resource usage reads (docs/specs/mobile-native-capacity-screens.md): one
     // bullet after the probe bullet of an existing Mobile app routes block (a block added below already has it).
     if (content.includes('Mobile app routes') && !content.includes(MOBILE_CAPACITY_SCREENS_MARKER)) {
@@ -10710,6 +10746,12 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(RECOMMENDED_SERVICES_V1_TAIL, RECOMMENDED_SERVICES_V2_TAIL);
       patched = true;
       result.upgraded.push('CLAUDE.md: recommended services section now says Tailscale and Jev can be set up');
+    }
+    // v2 → v3 wording (Bitwarden and GitHub available; the first list behind its switch): swapped in place, once.
+    if (content.includes('Recommended outside services (') && content.includes(RECOMMENDED_SERVICES_V2_TAIL)) {
+      content = content.replace(RECOMMENDED_SERVICES_V2_TAIL, RECOMMENDED_SERVICES_V3_TAIL);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: recommended services section now names the offer list and all four recipes');
     }
     if (!content.includes('Recommended outside services (')) {
       content += RECOMMENDED_SERVICES_CLAUDEMD_SECTION(port);
@@ -12599,6 +12641,12 @@ The server runs the full test suite on the exact code a pull request would merge
       patched = true;
       result.upgraded.push('CLAUDE.md: added Local Verify fail-fast awareness');
     }
+    // local-verify waiting list (fb-7fde7f49-8ee): a queue-full refusal keeps its place in line.
+    if (content.includes('/local-verify') && !content.includes('Local Verify waiting list')) {
+      content += '\n' + LOCAL_VERIFY_WAITING_LIST_CLAUDEMD_LINE + '\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Local Verify waiting-list awareness');
+    }
     // local-verify balanced shards: more processes for the slow lanes, planned from history.
     if (content.includes('/local-verify') && !content.includes('monitoring.localVerify.laneShards')) {
       content += '\n' + LOCAL_VERIFY_LANE_SHARDS_CLAUDEMD_LINE + '\n';
@@ -13780,6 +13828,15 @@ Every session shutoff — and every REFUSED shutoff (protected, not-lease-holder
       result.upgraded.push('CLAUDE.md: added orphaned codex-arm sessions section');
     } else {
       result.skipped.push('CLAUDE.md: orphaned codex-arm sessions section already present');
+    }
+
+    // Disk Steward (disk-steward spec). Idempotent via content-sniffing on the route path.
+    if (!content.includes('/disk-steward')) {
+      content += '\n' + DISK_STEWARD_CLAUDEMD_SECTION(this.config.port ?? 4040);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Disk Steward section');
+    } else {
+      result.skipped.push('CLAUDE.md: Disk Steward section already present');
     }
 
     // Machine self-maintenance, watch-only (machine-self-maintenance spec). Idempotent
@@ -16429,6 +16486,10 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // job-cost-reduction §8 item 6: script jobs and triage are server-side, so a
       // Codex/Gemini agent needs the same read surfaces.
       '### Scheduled jobs run as scripts',
+      // disk-steward: the steward, its pool read and the prune route are server-side and
+      // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
+      // the disk?" and "clear disk on <machine>" from the same section.
+      '## Disk Steward',
     ];
     // Some mirrored capabilities are nested bullets rather than standalone
     // sections. These sentinels bound their slice without themselves becoming
@@ -17760,6 +17821,24 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       feedbackCfg.webhookUrl = CANONICAL_FEEDBACK_URL;
       patched = true;
       result.upgraded.push(`config.json: feedback.webhookUrl repointed to the canonical front (was ${fromUrl})`);
+    }
+
+    // Disk Steward cleanup (docs/specs/disk-steward.md): on for development agents
+    // first. Runs BEFORE applyDefaults so the default `false` cannot pre-empt it;
+    // writes an explicit value the operator can see and flip, and never changes a
+    // value that is already set (idempotent).
+    if ((config as { developmentAgent?: unknown }).developmentAgent === true) {
+      const monitoring = (config.monitoring && typeof config.monitoring === 'object') ? config.monitoring as Record<string, unknown> : {};
+      const ds = (monitoring.diskSteward && typeof monitoring.diskSteward === 'object') ? monitoring.diskSteward as Record<string, unknown> : {};
+      const prune = (ds.prune && typeof ds.prune === 'object') ? ds.prune as Record<string, unknown> : {};
+      if (prune.enabled === undefined) {
+        prune.enabled = true;
+        ds.prune = prune;
+        monitoring.diskSteward = ds;
+        config.monitoring = monitoring;
+        patched = true;
+        result.upgraded.push('config.json: disk steward cache cleanup turned on for this development agent');
+      }
     }
 
     // Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3, decision 20):

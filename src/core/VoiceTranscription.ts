@@ -14,6 +14,30 @@ const PROVIDERS: Readonly<Record<string, { envKey: string; baseUrl: string; mode
   openai: { envKey: 'OPENAI_API_KEY', baseUrl: 'https://api.openai.com/v1', model: 'whisper-1' },
 };
 
+/** The vault name the voice-transcription setup recipe stores its key under (docs/specs/recommended-services.md). */
+export const VOICE_TRANSCRIPTION_SECRET = 'voice_transcription_key';
+
+/**
+ * A key setup stored in the agent's vault, read on each transcription. Registered once by the server, so
+ * every caller (Telegram, Slack, WhatsApp, the app) sees it without its own wiring. Null when none is set.
+ */
+let storedKeyReader: (() => string | null) | null = null;
+export function registerStoredTranscriptionKey(reader: (() => string | null) | null): void {
+  storedKeyReader = reader;
+}
+
+/** Which provider a key belongs to, from its published prefix. Groq keys start `gsk_`, OpenAI keys `sk-`. */
+export function providerForKey(key: string): 'groq' | 'openai' | null {
+  if (/^gsk_[A-Za-z0-9]{20,}$/.test(key)) return 'groq';
+  if (/^sk-[A-Za-z0-9_-]{20,}$/.test(key)) return 'openai';
+  return null;
+}
+
+export function providerSettings(name: 'groq' | 'openai'): { baseUrl: string; model: string } {
+  const p = PROVIDERS[name]!;
+  return { baseUrl: p.baseUrl, model: p.model };
+}
+
 /** Thrown when no provider is configured: the caller says "transcription unavailable", never retries. */
 export class TranscriptionUnavailableError extends Error {
   constructor(message = 'No voice transcription provider configured. Set GROQ_API_KEY or OPENAI_API_KEY.') {
@@ -27,6 +51,8 @@ export interface ResolveOptions {
   explicit?: string;
   env?: NodeJS.ProcessEnv;
   log?: (line: string) => void;
+  /** Tests pass their own stored key; the server registers the vault reader once. */
+  storedKey?: () => string | null;
 }
 
 /**
@@ -40,6 +66,8 @@ export function resolveTranscriptionProvider(opts: ResolveOptions = {}): Transcr
     const p = PROVIDERS[explicit];
     const apiKey = env[p.envKey];
     if (!apiKey) {
+      const stored = storedProvider(opts);
+      if (stored) return stored;
       opts.log?.(`${p.envKey} not set — required for ${explicit} voice transcription`);
       return null;
     }
@@ -52,7 +80,24 @@ export function resolveTranscriptionProvider(opts: ResolveOptions = {}): Transcr
       return { name, apiKey, baseUrl: p.baseUrl, model: p.model };
     }
   }
-  return null;
+  return storedProvider(opts);
+}
+
+/** The key setup stored, when nothing in the environment answers. An explicit provider is never replaced by another vendor. */
+function storedProvider(opts: ResolveOptions): TranscriptionProvider | null {
+  let key: string | null = null;
+  try {
+    key = (opts.storedKey ?? storedKeyReader)?.() ?? null;
+  } catch {
+    return null; // @silent-fallback-ok — an unreadable vault is "no stored key", and the caller says transcription is unavailable
+  }
+  if (!key) return null;
+  const name = providerForKey(key);
+  if (!name) return null;
+  const explicit = opts.explicit?.toLowerCase();
+  if (explicit && PROVIDERS[explicit] && explicit !== name) return null;
+  const p = PROVIDERS[name]!;
+  return { name, apiKey: key, baseUrl: p.baseUrl, model: p.model };
 }
 
 export interface TranscribeOptions extends ResolveOptions {

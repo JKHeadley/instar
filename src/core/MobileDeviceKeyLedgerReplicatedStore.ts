@@ -22,7 +22,7 @@ export const DEVICE_KEY_LEDGER_RECORD_KIND = 'mobile-device-key-ledger-row';
 export const DEVICE_KEY_LEDGER_STORE_KEY = 'mobileDeviceKeyLedger';
 export const DEVICE_KEY_LEDGER_IMPACT_TIER: ImpactTier = 'low';
 
-const KNOWN = ['type', 'keyHash', 'publicKey', 'deviceId', 'host', 'approvedVia', 'activatedAt', 'revokedAt', 'machineId', 'signerKeyHash', 'sig'] as const;
+const KNOWN = ['type', 'keyHash', 'publicKey', 'deviceId', 'host', 'approvedVia', 'activatedAt', 'revokedAt', 'machineId', 'signerKeyHash', 'sig', 'client'] as const;
 
 export function deriveDeviceKeyLedgerRecordKey(row: Pick<LedgerRow, 'type' | 'keyHash' | 'deviceId' | 'machineId'>): string {
   return crypto.createHash('sha256').update(ledgerRowId(row)).digest('hex');

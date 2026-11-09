@@ -19,6 +19,8 @@ export interface TelegramWebKOptions {
   supportedBuilds: WebKBuildEnrollment[];
   startupTimeoutMs?: number;
 }
+/** Web K's client-side error for an rpc_result it could not deserialize (networker.ts, build 686+). */
+export const WEB_K_UNREADABLE_RESULT = 'NETWORK_RESULT_UNREADABLE';
 /** The only script surface is static code written here plus JSON data, never caller JS. */
 const assetsExpression = `Array.from(new Set([...Array.from(document.scripts).map(s=>s.src), ...performance.getEntriesByType('resource').map(e=>e.name)]))
  .filter(u=>u.startsWith('https://web.telegram.org/k/')).map(u=>u.split('/').pop().split('?')[0])
@@ -155,9 +157,13 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
         ||!approved.some(a=>JSON.stringify(a.assets)===JSON.stringify(probe.assets)&&a.assets.every(name=>a.assetDigests[name]===probe.assetDigests[name]))||Date.now()>=${child.deadlineMs})return {held:true};
       const p=${payload};const m=window.createProxiedManagersForAccount(${this.options.accountNumber});
       try{return {result:await m.apiManager.invokeApi(p.method,p.args,{rawError:true,noErrorBox:true,stopTime:${child.deadlineMs}})}}
-      catch(e){return {rpcError:{code:Number(e&&e.code)}}}
-    })()`) as { held?: boolean; rpcError?: { code: number }; result?: unknown };
+      catch(e){return {rpcError:{code:Number(e&&e.code),type:String(e&&e.type||'')}}}
+    })()`) as { held?: boolean; rpcError?: { code: number; type?: string }; result?: unknown };
     if (result?.held) throw new TelegramRpcRefusal(403);
+    // Web K 2.3 (686) turns a server result the client cannot parse into a
+    // synthetic 400. The server may have executed the write, so this is an
+    // unknown outcome, never a refusal that would make a resend look safe.
+    if (result?.rpcError?.type === WEB_K_UNREADABLE_RESULT) throw new Error('telegram-result-unreadable');
     if (result?.rpcError) throw new TelegramRpcRefusal(result.rpcError.code);
     return result?.result;
   }

@@ -43,6 +43,199 @@ export function isGateRecordPath(relPath: string): boolean {
 }
 
 /**
+ * Ignored entries a merged, clean checkout can lose without losing work
+ * (spec docs/specs/disk-steward.md §4). Each class is corroborated by the
+ * checkout itself, never by the name alone:
+ *   - a `node_modules` SYMLINK (any depth): removed as a link by
+ *     `git worktree remove`, never followed, so its target (often an install
+ *     many checkouts share) is untouched. A real `node_modules` directory stays
+ *     `work`: nothing in the checkout proves it holds no hand edits, and other
+ *     checkouts may link into it.
+ *   - root `dist/`: only when every file in it maps back to a source file
+ *     the checkout's own tsconfig compiles into it (see distIsBuildOutput).
+ * Anything else ignored stays `work`, as before (a hand-made `notes/dist/`
+ * or an `audit-data/` folder keeps the checkout).
+ */
+export type IgnoredEntryClass = 'gate-record' | 'regenerable' | 'work';
+
+/** All compiler outputs of one build are written within this window. */
+export const DIST_BUILD_WINDOW_MS = 15 * 60_000;
+
+/** dist/ subfolders the repo's own `build` script writes beside tsc output. */
+export const BUILD_GENERATED_DIST_DIRS = ['data', 'keys', 'native'] as const;
+
+function readTsconfigDirs(checkout: string): { outDir?: string; rootDir?: string } | null {
+  try {
+    const raw = fs.readFileSync(path.join(checkout, 'tsconfig.json'), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+    const co = (JSON.parse(raw) as { compilerOptions?: { outDir?: unknown; rootDir?: unknown } }).compilerOptions ?? {};
+    const norm = (v: unknown) => (typeof v === 'string' ? path.normalize(v).replace(/[\\/]+$/, '') : undefined);
+    return { outDir: norm(co.outDir), rootDir: norm(co.rootDir) };
+  } catch {
+    return null; // @silent-fallback-ok — no readable build config ⇒ dist/ is not corroborated ⇒ work (KEEP)
+  }
+}
+
+/**
+ * Root `dist/` is build output only when (a) the checkout's own tsconfig builds
+ * `rootDir` into `outDir: dist`, and (b) every file under it is either a
+ * compiler output of a source file present in `rootDir` (`x.js`, `x.d.ts` and
+ * their maps for `x.ts`/`x.tsx`/`x.mts`/`x.cts`/`x.js`) or lives in a folder the
+ * build script generates. Any other file (a hand-placed `dist/hotfix.js`) means
+ * `work`. The checkout is clean and merged when this runs, so a present source
+ * file is tracked source.
+ */
+function distIsBuildOutput(checkout: string): boolean {
+  const dirs = readTsconfigDirs(checkout);
+  if (!dirs || dirs.outDir !== 'dist' || !dirs.rootDir) return false;
+  const distRoot = path.join(checkout, 'dist');
+  const srcRoot = path.join(checkout, dirs.rootDir);
+  try {
+    if (fs.lstatSync(distRoot).isSymbolicLink()) return true; // removed as a link, never followed
+    const stack = [''];
+    let minMtime = Infinity;
+    let maxMtime = -Infinity;
+    while (stack.length) {
+      const rel = stack.pop()!;
+      for (const ent of fs.readdirSync(path.join(distRoot, rel), { withFileTypes: true })) {
+        const childRel = rel ? path.join(rel, ent.name) : ent.name;
+        if (ent.isDirectory()) { stack.push(childRel); continue; }
+        const top = childRel.split(path.sep)[0];
+        if ((BUILD_GENERATED_DIST_DIRS as readonly string[]).includes(top) && childRel !== top) {
+          // Written by the build script in the same build: only the window check applies.
+          const gm = fs.lstatSync(path.join(distRoot, childRel)).mtimeMs;
+          if (gm < minMtime) minMtime = gm;
+          if (gm > maxMtime) maxMtime = gm;
+          continue;
+        }
+        const m = /^(.*)\.(?:d\.ts\.map|d\.ts|js\.map|js|d\.mts|mjs|d\.cts|cjs)(?:\.map)?$/.exec(childRel);
+        if (!m) return false;
+        const stem = path.join(srcRoot, m[1]);
+        if (!['.ts', '.tsx', '.mts', '.cts', '.js', '.mjs', '.cjs'].some((ext) => fs.existsSync(stem + ext))) return false;
+        const mt = fs.lstatSync(path.join(distRoot, childRel)).mtimeMs;
+        if (mt < minMtime) minMtime = mt;
+        if (mt > maxMtime) maxMtime = mt;
+      }
+    }
+    // The compiler rewrites every output on each build, so all outputs share one
+    // build window. A file edited by hand afterwards falls outside it ⇒ work.
+    return maxMtime === -Infinity || maxMtime - minMtime <= DIST_BUILD_WINDOW_MS;
+  } catch {
+    return false; // @silent-fallback-ok — unreadable output ⇒ not corroborated ⇒ work (KEEP)
+  }
+}
+
+export function classifyIgnoredEntry(relPath: string, checkout: string): IgnoredEntryClass {
+  if (isGateRecordPath(relPath)) return 'gate-record';
+  const segments = relPath.replace(/\/+$/, '').split('/');
+  if (segments.some((s) => s === '' || s === '..' || s === '.')) return 'work';
+  const nm = segments.indexOf('node_modules');
+  if (nm >= 0) return isSymlink(path.join(checkout, ...segments.slice(0, nm + 1))) ? 'regenerable' : 'work';
+  if (segments[0] === 'dist' && distIsBuildOutput(checkout)) return 'regenerable';
+  return 'work';
+}
+
+/** True only for a symbolic link (lstat; the link is never followed). */
+function isSymlink(p: string): boolean {
+  try { return fs.lstatSync(p).isSymbolicLink(); }
+  catch { return false; } // @silent-fallback-ok — unreadable ⇒ not proven a link ⇒ work (KEEP)
+}
+
+/**
+ * Checkouts under `worktreesDir` that some symlink OUTSIDE them points into
+ * (disk-steward §4). On Echo's Studio worktrees chain their node_modules
+ * through each other and the 2.0 pipeline links into checkouts, so removing a
+ * link target breaks every checkout behind it. Walks, without blocking the
+ * event loop: each checkout's top levels (not inside node_modules), the agent
+ * home's top level, `.worktrees-deps/` and `.instar/lanes/` in full. Each link
+ * is resolved both lexically (catches a target that is itself a link) and by
+ * realpath. null when any walk fails or runs out of time (callers then keep
+ * every checkout).
+ */
+export interface InboundLinkIndex {
+  /** Realpaths of checkouts something outside them links into. */
+  linked: Set<string>;
+  /** Unreadable folders owned by another account (skipped; their links cannot be used by this agent's processes). */
+  skippedForeign: string[];
+}
+
+/**
+ * Walk `root` for symlinks without following them. maxDepth counts levels below
+ * root; `pruneName` folders are not entered. Returns null when a folder this
+ * account owns cannot be read (unknown ⇒ callers keep everything). A folder
+ * owned by another account that this account cannot read is skipped and
+ * listed: no process running as this account can traverse it to use its links.
+ */
+async function walkLinks(root: string, maxDepth: number, pruneName: string | null, out: string[], skipped: string[], deadline: number): Promise<boolean> {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : -1;
+  const stack: Array<[string, number]> = [[root, 0]];
+  while (stack.length) {
+    if (Date.now() > deadline) return false;
+    const [dir, depth] = stack.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch (err) {
+      // @silent-fallback-ok — an unreadable folder makes the index unknown (false), which keeps every checkout
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' && dir !== root) continue; // vanished mid-walk
+      if (code === 'ENOENT') return true;
+      if (code === 'EACCES' || code === 'EPERM') {
+        try {
+          const st = await fs.promises.lstat(dir);
+          if (uid >= 0 && st.uid !== uid) { skipped.push(dir); continue; }
+        } catch { /* @silent-fallback-ok — unknown owner ⇒ unknown index, which keeps every checkout */ }
+      }
+      return false;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isSymbolicLink()) out.push(full);
+      else if (e.isDirectory() && depth < maxDepth && e.name !== pruneName) stack.push([full, depth + 1]);
+    }
+  }
+  return true;
+}
+
+export async function buildInboundLinkIndex(agentHome: string, worktreesDir: string, opts?: { timeoutMs?: number }): Promise<InboundLinkIndex | null> {
+  const deadline = Date.now() + (opts?.timeoutMs ?? 300_000);
+  const worktreesReal = (() => { try { return fs.realpathSync(worktreesDir); } catch { return worktreesDir; } })(); // @silent-fallback-ok — unresolvable ⇒ compare the literal path
+  const links: string[] = [];
+  const skippedForeign: string[] = [];
+  const walks: Array<[string, number, string | null]> = [
+    [worktreesDir, 3, 'node_modules'],
+    [agentHome, 0, null],
+    [path.join(agentHome, '.worktrees-deps'), Number.MAX_SAFE_INTEGER, null],
+    [path.join(agentHome, '.instar', 'lanes'), Number.MAX_SAFE_INTEGER, null],
+  ];
+  for (const [root, depth, prune] of walks) {
+    if (!(await walkLinks(root, depth, prune, links, skippedForeign, deadline))) return null;
+  }
+  const owner = (p: string): string | null => {
+    const norm = p === worktreesDir || p.startsWith(worktreesDir + path.sep) ? worktreesReal + p.slice(worktreesDir.length) : p;
+    if (!norm.startsWith(worktreesReal + path.sep)) return null;
+    const slug = norm.slice(worktreesReal.length + 1).split(path.sep)[0];
+    return slug ? path.join(worktreesReal, slug) : null;
+  };
+  const linked = new Set<string>();
+  for (const link of links) {
+    let target: string;
+    try { target = await fs.promises.readlink(link); }
+    catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue; // removed mid-walk
+      return null; // @silent-fallback-ok — unreadable link ⇒ unknown index ⇒ every checkout kept
+    }
+    const from = owner(link);
+    const lexical = owner(path.resolve(path.dirname(link), target));
+    if (lexical && lexical !== from) linked.add(lexical);
+    try {
+      const real = owner(await fs.promises.realpath(link));
+      if (real && real !== from) linked.add(real);
+    } catch { /* dangling link: the lexical target is what matters */ }
+  }
+  return { linked, skippedForeign };
+}
+
+/**
  * Untracked only. A staged record is someone's in-progress commit, and a locally
  * edited tracked record cannot be put back here (the source-tree guard refuses
  * `git restore`, deliberately), so both keep the checkout.
@@ -71,9 +264,14 @@ export function preserveGateRecords(p: string, archiveRoot: string, readGit: Rea
     if (!isUntrackedGateRecord(line)) throw new Error(`not gate-records-only: ${line}`);
     untracked.push(line.slice(3));
   }
-  const ignored = readGit(ignoredArgs(p), p).split('\0').filter(Boolean);
-  for (const relPath of ignored) {
-    if (!isGateRecordPath(relPath)) throw new Error(`not gate-records-only: ${relPath}`);
+  const ignored: string[] = [];
+  for (const relPath of readGit(ignoredArgs(p), p).split('\0').filter(Boolean)) {
+    const kind = classifyIgnoredEntry(relPath, p);
+    // Regenerable entries go with the checkout (git worktree remove deletes ignored
+    // files); they are neither archived nor a reason to keep it.
+    if (kind === 'regenerable') continue;
+    if (kind !== 'gate-record') throw new Error(`not gate-records-only: ${relPath}`);
+    ignored.push(relPath);
   }
   const toCopy = [...untracked, ...ignored];
   for (const relPath of toCopy) {
@@ -220,7 +418,11 @@ export function makeAgentWorktreeReaperDeps(opts: {
   readGit?: ReadGit;
   /** Override the process-cwd scanner (testing). Returns the set of worktree
    *  ROOT paths that currently have a live process cwd inside them. */
-  cwdRoots?: () => Set<string>;
+  cwdRoots?: () => Set<string> | null;
+  /** Override the inbound-link index builder (testing). null = scan failed. */
+  inboundLinks?: () => Promise<Set<string> | null>;
+  /** Override the running-process command-line scan (testing). null = scan failed. */
+  commandLines?: () => string[] | null;
   /** When true (default), `isMerged` falls back to GitHub merged-PR state to
    *  detect multi-commit squash-merges that `git cherry` cannot. Fail-safe:
    *  any gh error degrades to cherry-only (KEEP). Set false to disable the
@@ -247,7 +449,7 @@ export function makeAgentWorktreeReaperDeps(opts: {
   // ONCE, not once per worktree. Maps every process cwd under `.worktrees/` to
   // its worktree root (the immediate child dir). lsof failure ⇒ empty set (fall
   // back to lock files; the reaper still ships dark + dry-run + reviewed).
-  const defaultCwdRoots = (): Set<string> => {
+  const defaultCwdRoots = (): Set<string> | null => {
     const roots = new Set<string>();
     let out: string;
     // lint-allow-blocking-scan: AgentWorktreeReaper ships dark + dry-run + reviewed
@@ -256,7 +458,7 @@ export function makeAgentWorktreeReaperDeps(opts: {
     // follow-up (docs/postmortems/2026-06-07-server-temporarily-down.md, root cause #4).
     try {
       out = execFileSync('lsof', ['-w', '-d', 'cwd', '-Fn'], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
-    } catch { return roots; } // @silent-fallback-ok — no cwd signal ⇒ rely on locks
+    } catch { return null; } // @silent-fallback-ok — no cwd signal ⇒ isInUse keeps every checkout (disk-steward §4)
     for (const line of out.split('\n')) {
       if (line.charCodeAt(0) !== 110 /* 'n' */) continue;
       const p = line.slice(1);
@@ -270,11 +472,44 @@ export function makeAgentWorktreeReaperDeps(opts: {
   const cwdRootsFn = opts.cwdRoots ?? defaultCwdRoots;
   let cwdCache: Set<string> | null = null;
   let cwdCacheAt = 0;
-  const cwdRootsCached = (): Set<string> => {
+  const cwdRootsCached = (): Set<string> | null => {
     const t = Date.now();
-    if (!cwdCache || t - cwdCacheAt > 10_000) { cwdCache = cwdRootsFn(); cwdCacheAt = t; }
+    if (cwdCacheAt === 0 || t - cwdCacheAt > 10_000) { cwdCache = cwdRootsFn(); cwdCacheAt = t; }
     return cwdCache;
   };
+
+  // Every running process's command line, memoized like the cwd scan. null =
+  // the scan failed (treated as in use by isInUse).
+  const commandLinesFn = opts.commandLines ?? ((): string[] | null => {
+    try {
+      // lint-allow-blocking-scan: the reaper's pass is already synchronous and off by default (like its lsof scan above); memoized 10 s, bounded 15 s.
+      return withSyncOp(() => execFileSync('ps', ['-axww', '-o', 'command='], { encoding: 'utf-8', timeout: 15_000, maxBuffer: 64 * 1024 * 1024 }))
+        .split('\n').filter(Boolean);
+    } catch {
+      return null; // @silent-fallback-ok — no process list ⇒ isInUse reports in use (KEEP)
+    }
+  });
+  let commandCache: string[] | null = null;
+  let commandCacheAt = 0;
+  const commandLinesCached = (): string[] | null => {
+    const t = Date.now();
+    if (commandCacheAt === 0 || t - commandCacheAt > 10_000) { commandCache = commandLinesFn(); commandCacheAt = t; }
+    return commandCache;
+  };
+
+  // Inbound-link index, rebuilt by preparePass at the start of every pass and
+  // before each snapshot. undefined = never built, null = the scan failed:
+  // both keep every checkout.
+  let inboundLinks: Set<string> | null | undefined;
+  let skippedForeignDirs: string[] = [];
+  let prepareSeq = 0;
+  let appliedSeq = 0;
+  const inboundLinksFn = opts.inboundLinks ?? (async (): Promise<Set<string> | null> => {
+    const idx = await buildInboundLinkIndex(path.dirname(opts.worktreesDir), opts.worktreesDir);
+    skippedForeignDirs = idx?.skippedForeign ?? [];
+    if (skippedForeignDirs.length) console.warn(`[agent-worktree-reaper] link scan skipped ${skippedForeignDirs.length} folder(s) owned by another account: ${skippedForeignDirs.slice(0, 3).join(', ')}`);
+    return idx ? idx.linked : null;
+  });
 
   // Merged-PR map (headRefName→headRefOid), cached for a short TTL so a single
   // reap pass makes ONE `gh` call, not one per worktree. The map only fixes the
@@ -290,6 +525,16 @@ export function makeAgentWorktreeReaperDeps(opts: {
   };
 
   return {
+    preparePass: async (): Promise<void> => {
+      // Last-started wins, never last-finished: an older walk that ends late
+      // must not replace a newer index that saw a fresh link.
+      const startedAt = ++prepareSeq;
+      let next: Set<string> | null;
+      try { next = await inboundLinksFn(); }
+      catch { next = null; } // @silent-fallback-ok — failed index ⇒ isInUse keeps every checkout
+      if (startedAt >= appliedSeq) { appliedSeq = startedAt; inboundLinks = next; }
+    },
+
     listWorktrees: (): WorktreeEnumeration<WorktreeInfo> => {
       let porcelain: string;
       // REPORT the failure as a state, do not swallow it. `catch { return [] }`
@@ -347,7 +592,7 @@ export function makeAgentWorktreeReaperDeps(opts: {
       try {
         const work = statusLines(readGit(statusArgs(p), p)).filter((line) => !isUntrackedGateRecord(line));
         if (classifyPorcelain(work.join('\n'), REAPER_RESIDUE_DENYLIST)) return false;
-        return readGit(ignoredArgs(p), p).split('\0').filter(Boolean).every(isGateRecordPath);
+        return readGit(ignoredArgs(p), p).split('\0').filter(Boolean).every((rel) => classifyIgnoredEntry(rel, p) !== 'work');
       }
       catch { return false; }
     },
@@ -375,11 +620,30 @@ export function makeAgentWorktreeReaperDeps(opts: {
         try { if (fs.existsSync(path.join(p, lock))) return true; } catch { /* ignore */ }
       }
       // A running process whose cwd is inside the worktree — KEEP.
+      let real: string;
       try {
-        const real = fs.realpathSync(p);
-        if (cwdRootsCached().has(real)) return true;
-      } catch { /* ignore */ }
-      return false;
+        real = fs.realpathSync(p);
+        const cwds = cwdRootsCached();
+        if (cwds === null || cwds.has(real)) return true;
+      } catch { real = p; }
+      // Another checkout or a pipeline folder links into this one — KEEP. An
+      // index that was never built or failed to build keeps every checkout.
+      if (!inboundLinks || inboundLinks.has(real)) return true;
+      // A running process started from files inside the worktree (e.g.
+      // `node <worktree>/dist/...` launched elsewhere) — KEEP. An unreadable
+      // process list reads as in use (disk-steward §4).
+      const commands = commandLinesCached();
+      if (commands === null) return true;
+      // The path counts when a delimiter precedes it: start, whitespace, a quote,
+      // `=`, `/` (file:// URLs) or `:` (PATH-style lists). More delimiters only
+      // make the check more conservative.
+      const names = (x: string) => new RegExp(`(^|[\\s'"=/:])${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|[\\s'":]|$)`);
+      // Also the `.worktrees/<slug>` token with any prefix (relative, `~`, another
+      // spelling of the home), at boundaries: more matches only keep more.
+      const slug = path.basename(real);
+      const rel = new RegExp(`(^|[\\s'"=/:~.])\\.worktrees/${slug.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(/|[\\s'":]|$)`);
+      const patterns = [names(real), names(p), rel];
+      return commands.some((c) => patterns.some((re) => re.test(c)));
     },
 
     currentBranch: (p: string): string | null => {

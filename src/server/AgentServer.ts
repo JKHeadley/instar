@@ -690,6 +690,38 @@ export class AgentServer {
     }
   }
 
+  /**
+   * The owner's security notice for a new browser device (dashboard-conversations-browser-device
+   * §4.2 step 10), built like raiseLockedSecurityItem: a Telegram attention item when Telegram is
+   * configured, else the local attention list plus one push to owner phones. `localOnly` forces the
+   * local item and its push (the one-time fallback after 24 failed Telegram attempts). Raised at
+   * once: this is a security event for the owner, not an internal fault (Self-Heal Before Notify
+   * does not apply). True once raised; the caller retries otherwise and never drops it.
+   */
+  private async raiseBrowserNotice(item: { key: string; title: string; body: string }, opts: { localOnly: boolean }): Promise<boolean> {
+    const id = `agent:${item.key}`;
+    if (!this.telegramAdapter || opts.localOnly) {
+      const stored = this.localAttention?.raise({ id, title: item.title, summary: item.body,
+        description: item.body, priority: 'HIGH', category: 'security', source: 'agent',
+        sourceContext: 'browser-device' }) ?? false;
+      if (!stored) return false;
+      try {
+        this.mobilePairing?.push?.onHubPost({ kind: 'item', itemId: id, dedupeKey: `local-attention:${id}:${Date.now()}`, priority: 'HIGH' });
+      } catch { /* @silent-fallback-ok — the item is stored; the push is best-effort and reports its own degradation */ }
+      return true;
+    }
+    try {
+      await this.telegramAdapter.createAttentionItem({ id, conditionKey: item.key,
+        title: item.title, summary: item.body, description: item.body, priority: 'HIGH', source: 'agent',
+        category: 'security', sourceContext: 'browser-device' } as never);
+      return true;
+    } catch (error) {
+      // @silent-fallback-ok — not dropped: the caller (BrowserDeviceController.runEffects) retries with backoff and reports through DegradationReporter after 24 attempts
+      console.warn(`[instar] browser-device security notice could not be raised (${error instanceof Error ? error.message : String(error)}); it is retried`);
+      return false;
+    }
+  }
+
   private desktopLockedOsMajor: number | undefined;
   /** Removes the tunnel lifecycle listener that refreshes open desktop viewers. */
   private desktopTunnelListenerOff: (() => void) | null = null;
@@ -1616,6 +1648,7 @@ export class AgentServer {
     /** AgentWorktreeReaper — reclaims stale CLI worktrees. Powers
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
+    diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
     /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel (CMT-1901). Powers
      *  GET /external-hog + the PIN-gated arm/disarm routes. */
     externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel;
@@ -1906,6 +1939,8 @@ export class AgentServer {
           feature: what, primary: 'record the phone device state', fallback: 'the request was refused or a pending pairing was cancelled',
           reason: err instanceof Error ? err.message : String(err), impact: 'A phone pairing step failed and must be retried.',
         }),
+      // A new browser's owner notice (dashboard-conversations-browser-device §4.2 step 10).
+      raiseBrowserNotice: (item, opts) => this.raiseBrowserNotice(item, opts),
       ownerDM: async (text, declineData, approveData) => {
         if (!options.telegram) return null;
         return options.telegram.sendOwnerDMWithButton(text, [
@@ -1988,11 +2023,17 @@ export class AgentServer {
       });
       mp.push.start();
       if (options.telegram) {
-        options.telegram.mobileDeclineHandler = (nonce) => mp.declineByNonce(nonce);
+        // The tap's wording follows the device's kind (dashboard-conversations-browser-device §4.7),
+        // read before the nonce is consumed.
+        options.telegram.mobileDeclineHandler = (nonce) => {
+          const client = mp.nonceClient(nonce);
+          return { result: mp.declineByNonce(nonce), client };
+        };
         options.telegram.mobileApproveHandler = (nonce) => {
+          const client = mp.nonceClient(nonce);
           const outcome = mp.approveByNonce(nonce);
-          return outcome === 'approved' ? { outcome, text: '' }
-            : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? 'This pairing has already ended.' : APPROVE_REFUSAL[outcome].detail };
+          return outcome === 'approved' ? { outcome, text: '', client }
+            : { outcome: outcome === 'ended' ? 'ended' : 'other', text: outcome === 'ended' ? (client === 'browser' ? 'This browser setup has already ended.' : 'This pairing has already ended.') : APPROVE_REFUSAL[outcome].detail, client };
         };
         options.telegram.mobileInboundScan = (text) => mp.scanInbound(text);
         options.telegram.onHubPost = (t) => mp.push?.onHubPost(t);
@@ -3876,6 +3917,8 @@ export class AgentServer {
                 updatePending: () => {
                   try { return executorUpdatePending(options.autoUpdater?.getStatus()); } catch { return true; } // @silent-fallback-ok: an unreadable updater refuses admission (safe side)
                 },
+                // The attempt hold yields to a restart Local Verify's queued work is waiting for.
+                localVerifyNeedsRestart: () => options.localVerify?.restartNeededForQueuedWork() === true,
                 raiseAttention: async (item) => {
                   const enqueue = this.telegramAdapter?.createAttentionItem;
                   if (!enqueue) throw new Error('durable attention enqueue unavailable');
@@ -5955,6 +5998,7 @@ export class AgentServer {
       geminiCapacityEscalationMonitor: this.geminiCapacityEscalationMonitor,
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
+      diskSteward: options.diskSteward ?? null,
       externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
@@ -6256,6 +6300,14 @@ export class AgentServer {
             DegradationReporter.getInstance().report({
               feature: 'MobileDeviceKeyLedger', primary: 'reconcile the device-key ledger with the device registry at boot', fallback: 'the next boot retries',
               reason: err instanceof Error ? err.message : String(err), impact: 'Some signed app messages may read "couldn\'t check" until it is repaired.',
+            });
+          }
+          // Browser devices (dashboard-conversations-browser-device §4.2 step 10): finish or expire
+          // approvals a crash interrupted, and resume their effects, now that the ledger is attached.
+          try { this.mobilePairing.browser.recoverOnLedgerAttach(); } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'MobilePairing.browserRecovery', primary: 'finish browser approvals interrupted by a restart', fallback: 'retried from the pairing service tick',
+              reason: err instanceof Error ? err.message : String(err), impact: 'A browser approval or its owner notice may finish late.',
             });
           }
         } else {

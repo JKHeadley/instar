@@ -26,7 +26,7 @@ import type { SessionManager } from '../../../src/core/SessionManager.js';
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-wiring.test.ts' }); });
 
-function build(opts: { sessionManager?: SessionManager | null; execute?: Record<string, unknown> } = {}) {
+function build(opts: { sessionManager?: SessionManager | null; execute?: Record<string, unknown>; localVerifyNeedsRestart?: () => boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'execute-wiring-'));
   dirs.push(dir);
   const drain = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: 'k'.repeat(32) });
@@ -42,6 +42,7 @@ function build(opts: { sessionManager?: SessionManager | null; execute?: Record<
     config, drainStore: drain, triage, processing, initiativeTracker: tracker, sessionManager: opts.sessionManager ?? null, selfMachineId: 'm1',
     ownerMachineId: () => 'm1', ownerEpoch: () => 3, isCanonicalOwner: () => true, enabled: () => true, quotaShedding: () => false, updatePending: () => false,
     raiseAttention: async () => {}, tunnelUrl: () => null,
+    ...(opts.localVerifyNeedsRestart ? { localVerifyNeedsRestart: opts.localVerifyNeedsRestart } : {}),
   });
   triage.service.attachExecutor({ status: () => ctx.service.status(), executionStateFor: (id) => ctx.service.executionStateFor(id), actionItems: () => ctx.service.actionItems(), holdsItem: (id) => ctx.service.holdsItem(id) });
   return { ctx, drain, triage, dir };
@@ -66,6 +67,15 @@ describe('buildFeedbackExecutor wiring', () => {
     expect((await ctx.service.refreshAvailability()).reason).toBe('no-source-repo');
     expect(triage.service.summary().executor).toEqual({ available: false, reason: 'no-source-repo' });
     expect(isInstarSourceCheckout(os.tmpdir())).toBe(false);
+  });
+
+  it('passes Local Verify\'s restart need through to the attempt hold; absent, the hold never yields', () => {
+    expect(build().ctx.service.restartHoldYields()).toBe(false);
+    let needs = true;
+    const { ctx } = build({ localVerifyNeedsRestart: () => needs });
+    expect(ctx.service.restartHoldYields()).toBe(true);
+    needs = false;
+    expect(ctx.service.restartHoldYields()).toBe(false);
   });
 
   it('dry-run is the default: config without dryRun:false never starts work', () => {

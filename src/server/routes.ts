@@ -9,6 +9,7 @@ import { categoryForProducer } from '../messaging/notificationCategories.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/routes.ts');
 import { mountNotificationRoutes } from './notificationRoutes.js';
+import { mountDiskStewardRoutes, type DiskStewardRouteDeps } from './diskStewardRoutes.js';
 import { jobReportChoice } from '../messaging/notificationCategories.js';
 import { verifiedReplyEnvelope, requireTelegramDelivery } from '../messaging/NotificationSelectivityGate.js';
 import { JobPortableSync } from '../core/JobPortableSync.js';
@@ -17,6 +18,7 @@ import { registerEcosystemIdeaRoutes } from './ecosystemIdeaRoutes.js';
 import { registerRecommendedServiceRoutes } from './recommendedServiceRoutes.js';
 import { catalogWithProving } from '../recommended/recipes.js';
 import { configHeldSecrets, copySourceNames, realBitwardenSurface } from '../recommended/bitwardenVault.js';
+import { realGitHubBackupSurface } from '../recommended/githubBackup.js';
 import { classifyLocation, readThrowawayRecord } from '../core/ThrowawayAgentGuard.js';
 import { browserCapability, provisionLinuxBrowser } from '../core/linuxBrowserProvision.js';
 import { holdSetupForSession } from '../recommended/setupState.js';
@@ -337,6 +339,8 @@ import { CoherenceJournalReader, InvalidCursorError } from '../core/CoherenceJou
 import { creditUsherOnOutbound } from '../core/UsherActedCorrelator.js';
 import { validateWriteToken, canPerformOperation } from '../core/StateWriteAuthority.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { pickPrimaryLanIp } from '../core/MeshUrlAdvertiser.js';
+import { registerStoredTranscriptionKey, VOICE_TRANSCRIPTION_SECRET } from '../core/VoiceTranscription.js';
 import {
   readGuardPostureBootSnapshot,
   resolveGuardConfigSnapshot,
@@ -1942,6 +1946,8 @@ export interface RouteContext {
   /** AgentWorktreeReaper — reclaims stale CLI worktrees. Null when not wired.
    *  Powers GET /worktrees/agent-reaper observability. */
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
+  /** Disk Steward (docs/specs/disk-steward.md); null when turned off. Read lazily. */
+  diskSteward?: (() => DiskStewardRouteDeps | null) | null;
   /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel. Null when not wired
    *  (dev-gated dark). Powers GET /external-hog + the PIN-gated arm/disarm routes (CMT-1901). */
   externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel | null;
@@ -2930,6 +2936,7 @@ export function createRoutes(ctx: RouteContext): Router {
 
   const router = Router();
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
+  mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
     verifyOperator: proof => ctx.verifyDashboardOperatorSession?.(proof) === true,
@@ -10841,11 +10848,12 @@ export function createRoutes(ctx: RouteContext): Router {
   // each kept?": every `.worktrees/` worktree's verdict (active-lock /
   // uncommitted-changes / not-stale / unmerged / reap-eligible) + the reclaimable
   // count + whether reaping is armed (enabled, dryRun). Read-only, Bearer-auth.
-  router.get('/worktrees/agent-reaper', (_req, res) => {
+  router.get('/worktrees/agent-reaper', async (_req, res) => {
     if (!ctx.agentWorktreeReaper) {
       res.status(503).json({ error: 'agent worktree reaper unavailable' });
       return;
     }
+    await ctx.agentWorktreeReaper.prepare();
     res.json(ctx.agentWorktreeReaper.snapshot());
   });
 
@@ -16493,6 +16501,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({ action: 'ignore-live', ...plan });
   });
 
+  // The voice-transcription recipe stores its key in the vault; every transcription caller (Telegram, Slack,
+  // WhatsApp, the app) reads it from there when the environment has none.
+  registerStoredTranscriptionKey(() => {
+    try {
+      const v = new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).get(VOICE_TRANSCRIPTION_SECRET);
+      return typeof v === 'string' && v ? v : null;
+    } catch {
+      return null; // @silent-fallback-ok — an unreadable vault reads as no stored key, and the caller says transcription is unavailable
+    }
+  });
   registerRecommendedServiceRoutes(router, {
     ledger: () => ctx.recommendedServicesLedger ?? null,
     stateDir: ctx.config.stateDir,
@@ -16517,6 +16535,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     },
     // The folder name is guarded: a route harness may build a config with no project directory.
     bitwarden: realBitwardenSurface(ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent')),
+    github: realGitHubBackupSurface(ctx.config.stateDir, (ctx.config as unknown as { git?: Record<string, unknown> }).git),
+    agentName: ctx.config.projectName ?? (typeof ctx.config.projectDir === 'string' && ctx.config.projectDir ? path.basename(ctx.config.projectDir) : 'agent'),
+    // A confirmed no to GitHub turns the switch older versions read too, so no machine on an older build keeps pushing.
+    disableGitBackup: () => { writeConfigAtomic(path.join(ctx.config.stateDir, 'config.json'), (cfg) => { cfg.gitBackup = { ...((cfg.gitBackup as Record<string, unknown>) ?? {}), enabled: false }; return { value: true }; }); },
+    raiseAttention: async (id, title, text) => {
+      if (!ctx.telegram) return false;
+      try {
+        await ctx.telegram.createAttentionItem({ id, conditionKey: id, title, summary: text, description: text, priority: 'HIGH', category: 'recommended-services', sourceContext: 'agent' } as import('../messaging/TelegramAdapter.js').AttentionObservation);
+        return true;
+      } catch (err) {
+        DegradationReporter.getInstance().report({ feature: 'RecommendedServices.setup', primary: `Raise the attention item ${id}`, fallback: 'The next check tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'The person has not been told about the privacy issue.' });
+        return false;
+      }
+    },
+    // The first list (docs/specs/recommended-services.md, Offers): off unless the switch is on; one message to
+    // the owner's conversation; its message id is the delivery proof. The link is the address the person can
+    // open the confirm page at: the tunnel when there is one, else this machine on the home network.
+    offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled,
+    sendOfferList: async (text, buttons) => {
+      const topicId = ctx.telegram?.getLifelineTopicId?.();
+      if (!ctx.telegram || topicId === undefined) return null;
+      return withNotificationEnvelope(stampNotification(), () => ctx.telegram!.sendOfferList(topicId, text, buttons));
+    },
+    linkBase: () => {
+      const tunnel = ctx.tunnel?.getExternalUrl?.('/') ?? null;
+      if (tunnel) return tunnel.replace(/\/+$/, '');
+      const ip = pickPrimaryLanIp(os.networkInterfaces() as never);
+      return ip ? `http://${ip}:${ctx.config.port}` : null;
+    },
+    registerOfferTapHandler: (handler) => { ctx.telegram?.setRecommendedOfferHandler?.(handler); },
     // Setup talks to the person from this machine, which needs a channel and the lease. An unreadable lease reads as not held.
     canReachOwner: () => { try { return !!ctx.telegram && (ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true); } catch { return false; } }, // @silent-fallback-ok — not held means a yes waits, never a yes on a machine that can't talk
     // Messaging is the backup every address service names, so a working channel means a switch-off strands nobody.

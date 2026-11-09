@@ -67,6 +67,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const starved: Array<{ pr: number }> = [];
   const records: LocalVerifyRecord[] = [];
   const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+  const degradations: Array<Record<string, unknown>> = [];
   const priorities: boolean[] = [];
   let holders: number[] = [];
   /** What the verifier files on disk compute right now; null (the default) = unknown, never holds. */
@@ -98,6 +99,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     setSuitePriority: (active) => { priorities.push(active); },
     onStarved: (i) => { starved.push(i); },
     onRecord: (r) => { records.push(r); },
+    onDegradation: (e) => { degradations.push(e as unknown as Record<string, unknown>); },
     signal: (key, detail) => { signals.push({ key, detail }); },
     installedVerifierVersion: () => diskVersion,
     now: () => t,
@@ -120,7 +122,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     await flush();
   };
   return {
-    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, priorities, intentPath,
+    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, degradations, priorities, intentPath,
     setHolders: (h: number[]) => { holders = h; },
     setDiskVersion: (v: string | null) => { diskVersion = v; },
     advance: (ms: number) => { t += ms; },
@@ -135,6 +137,25 @@ const preflightRed = () => record({ outcome: 'failure', lanes: [], preflight: {
   selectedFiles: ['tests/unit/a.test.ts'], selectedCases: 1, repeatedFailedFile: 'tests/unit/a.test.ts',
   headSha: sha('a'), baseSha: sha('b'),
 } });
+
+describe('degradations carried by the run child', () => {
+  it('hands each degradation in the result to the seam, and the record still lands', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    const d = { feature: 'LocalVerify.keptList', primary: 'kept-failed.json names kept runs', fallback: 'left untouched', reason: 'not a JSON array', impact: 'nothing swept' };
+    await h.finish(0, { ...ok(record({ outcome: 'success' })), degradations: [d] });
+    expect(h.degradations).toEqual([d]);
+    expect(h.records).toHaveLength(1);
+  });
+
+  it('a result without degradations calls the seam for none', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(record({ outcome: 'success' })));
+    expect(h.degradations).toEqual([]);
+  });
+});
 
 describe('automatic full-suite replay after enforced preflight red', () => {
   it('bypasses preflight on a fresh-tree retry after a preflight cleanup error', async () => {
@@ -2049,6 +2070,25 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s.signals).toHaveLength(1);
     expect(audit(s.stateDir).filter((l) => l.event === 'verifier-hold-overdue')).toHaveLength(1);
     expect(s.spawned).toHaveLength(1); // still held: only a restart (or the files matching again) resumes
+  });
+
+  it('restartNeededForQueuedWork: false with no hold, false while held with nothing queued, true while held with work waiting', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(1);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false); // a run in flight, no hold
+    await s.finish(0, mismatch());
+    expect(s.svc.snapshot().verifierHold).not.toBeNull();
+    expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([1]); // the refused entry waits for the restart
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // The same hold with an empty queue needs no restart on anyone's behalf.
+    (s.svc as unknown as { queue: unknown[] }).queue.length = 0;
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(2);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // A stopped service answers false whatever it held.
+    s.svc.shutdown();
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
   });
 
   it('an ordinary crash is still an error record with one automatic re-run (the mismatch path changed nothing else)', async () => {

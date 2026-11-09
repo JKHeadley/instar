@@ -126,6 +126,13 @@ export interface FeedbackExecutorServiceOptions {
   /** The independent review gate's reviewers; absent → no PR is admitted without the owner's approval. */
   review?: IndependentReviewPort;
   admission: ExecutorAdmission;
+  /**
+   * True while Local Verify holds queued work for a restart (its verifier changed on disk, so no
+   * verify can start until the server restarts). The attempt hold yields to it: deferring that
+   * restart for up to two hours idles the test slot with work waiting (fb-7459b8b6-a7f, 2026-11-07:
+   * 16.7 minutes idle with 11 queued). Absent → the hold never yields.
+   */
+  localVerifyNeedsRestart?: () => boolean;
   identityFacts: () => Omit<AgentIdentityFacts, 'agentGithubLogin' | 'agentGithubAccounts'>;
   /** Ranked `work` items (the triage queue order). */
   rankedWork: () => Array<{ initiativeId: string; clusterId: string }>;
@@ -208,6 +215,9 @@ export function prepareFailureStep(detail: string | null): string {
 function attemptTmpDirFor(agentHome: string, row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): string {
   return shortAttemptTmpDir(row.initiativeId, row.attempt, shortTmpRealRoot(), path.resolve(agentHome));
 }
+
+/** Vitest's marks for a failed test in the output a killed run leaves behind. */
+const RELATED_FAILURE_OUTPUT = /(^|\s)(FAIL|×)\s|\b\d+ failed\b/m;
 
 export class FeedbackExecutorService {
   private readonly now: () => number;
@@ -357,11 +367,40 @@ export class FeedbackExecutorService {
    */
   restartHolds(): RestartHold[] {
     if (!this.running) return [];
-    return this.opts.store.inStates('claimed', 'verifying').map((row) => ({
+    let rows = this.opts.store.inStates('claimed', 'verifying');
+    if (rows.length === 0) return [];
+    if (this.restartHoldYields()) {
+      // The restart this hold would defer is the one Local Verify's queue is waiting for, so the
+      // hold is withdrawn and that is recorded once per attempt. A restart then interrupts the
+      // attempt: the next tick ends a `claimed` row as stopped/interrupted (re-claimable, never a
+      // failure) and re-verifies a `verifying` row once when its trees survived. Nothing is reported
+      // as a success. The publish window keeps its hold: a restart there parks the item
+      // `publish-outcome-unknown` with an operator escalation, and the window is seconds long.
+      const publishing = (row: ExecutionRow) => row.state === 'verifying' && row.reason === 'publishing';
+      for (const row of rows) {
+        if (publishing(row) || this.holdYieldAudited.has(row.attemptId)) continue;
+        this.holdYieldAudited.add(row.attemptId);
+        this.opts.audit.append('execute:restart-hold-withdrawn', { attemptId: row.attemptId, state: row.state, for: 'local-verify:verifier-hold' });
+      }
+      rows = rows.filter(publishing);
+    }
+    return rows.map((row) => ({
       name: `feedback-attempt:${row.attemptId}`,
       until: row.updatedAt + ATTEMPT_RESTART_HOLD_MS,
       reason: 'a feedback fix attempt is in setup or verification and a restart would lose it',
     }));
+  }
+
+  /** Attempts whose withdrawn hold was recorded (in memory; the restart it stood aside for ends the process). */
+  private readonly holdYieldAudited = new Set<string>();
+
+  /**
+   * Whether the attempt hold stands aside for a restart Local Verify's queued work needs. An
+   * unreadable answer keeps the hold (the previous behavior), so a fault here can only make a
+   * restart later, never lose an attempt.
+   */
+  restartHoldYields(): boolean {
+    try { return this.opts.localVerifyNeedsRestart?.() === true; } catch { return false; } // @silent-fallback-ok: an unreadable Local Verify state keeps the hold
   }
 
   acceptTick(): { status: 202 | 409 | 429 | 503; body: Record<string, unknown> } {
@@ -1177,7 +1216,7 @@ export class FeedbackExecutorService {
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       return;
     }
-    await this.gateAndPublish(row, epoch, changeSet, result, 'fix', slug, approver);
+    await this.gateAndPublish(row, epoch, changeSet, result, 'fix', slug, approver, verification.relatedInconclusive === true);
   }
 
   /**
@@ -1200,7 +1239,8 @@ export class FeedbackExecutorService {
   }
 
   /** (a) fails at base with an assertion (or a missing new source), (b) passes at the workspace, (c) lint + related tests pass. All confined. */
-  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true } | { ok: false; reason: string; detail?: string }> {
+  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true; relatedInconclusive?: boolean } | { ok: false; reason: string; detail?: string }> {
+    let relatedInconclusive = false;
     const cfg = this.opts.config();
     const p = this.attemptPaths(row);
     const depsHash = this.metaJson<{ hash: string }>(`exec:attempt-deps:${row.attemptId}`)?.hash;
@@ -1274,25 +1314,36 @@ export class FeedbackExecutorService {
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
         const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
-        if (limit(related)) return limited('related-tests', related);
-        if (related.exitCode !== 0) return failed('gate:related-tests', related);
+        // Core files pull much of the suite into this run, and a busy machine can run out of time before
+        // it finishes. That says nothing against a fix that passed its own checks, and the CI test jobs
+        // must still pass on this head before merge. A failure already printed still stops the fix.
+        if (related.timedOut && !RELATED_FAILURE_OUTPUT.test(`${related.stdout}\n${related.stderr}`)) {
+          relatedInconclusive = true;
+          this.opts.audit.append('execute:related-tests-inconclusive', { attemptId: row.attemptId });
+        } else if (related.timedOut) {
+          return failed('gate:related-tests', related);
+        } else if (limit(related)) {
+          return limited('related-tests', related);
+        } else if (related.exitCode !== 0) {
+          return failed('gate:related-tests', related);
+        }
       }
     } finally {
       for (const dir of [p.baseClone, p.headClone, p.gateClone]) {
         try { removeAttemptTree(dir, this.trashRoot(), 'feedback-execute check clone cleanup'); } catch { /* @silent-fallback-ok: retried by the attempt cleanup */ }
       }
     }
-    return { ok: true };
+    return { ok: true, relatedInconclusive };
   }
 
-  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult): { title: string; body: string; message: string } {
+  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult, relatedInconclusive = false): { title: string; body: string; message: string } {
     const triage = this.opts.triageStore.get(row.initiativeId);
     // The triage schema already bounds the summary (400 printable chars); it is PR text, not model input.
     const summary = String(triage?.summary ?? 'a reported problem').replace(/\s+/g, ' ');
     const brief = triage?.brief;
     const title = `${kind === 'fix' ? 'fix' : 'docs(spec)'}(feedback): ${summary.slice(0, 60)}`.slice(0, 120);
     const eli16 = kind === 'fix'
-      ? `People using Instar reported a problem: ${summary} The feedback executor reproduced it with a test that failed before this change and passes after it, inside a sandbox with no network and no credentials. It also ran the repository's lint check and the tests related to the changed files. This pull request merges only after the repository owner approves this exact version.`
+      ? `People using Instar reported a problem: ${summary} The feedback executor reproduced it with a test that failed before this change and passes after it, inside a sandbox with no network and no credentials. ${relatedInconclusive ? 'It also ran the repository\'s lint check. The tests related to the changed files ran out of time without a failure, so they are not a pass; CI has to pass before this merges.' : 'It also ran the repository\'s lint check and the tests related to the changed files.'} This pull request merges only after the repository owner approves this exact version.`
       : `People using Instar reported a problem that needs a design before anyone changes code: ${summary} This pull request adds only a first draft of that design. Once the repository owner approves it, a normal trusted session reviews and improves the draft before any build work starts.`;
     const body = [
       `## ELI16 — ${kind === 'fix' ? 'a fix for reported feedback' : 'a design draft for reported feedback'}`,
@@ -1320,8 +1371,8 @@ export class FeedbackExecutorService {
     return { title, body, message };
   }
 
-  private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string): Promise<void> {
-    const text = this.prText(row, kind, result);
+  private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string, relatedInconclusive = false): Promise<void> {
+    const text = this.prText(row, kind, result, relatedInconclusive);
     const secrets = secretGate(changeSet, { notes: result.notes, prTitle: text.title, prBody: text.body });
     if (secrets.length > 0) {
       const ref = this.saveHeldChangeSet(row, changeSet, result, kind);

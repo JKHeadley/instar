@@ -67,6 +67,8 @@ export const SYSTEM_TOPIC_STATE_KEYS = Object.freeze({
   updates: 'agent-updates-topic',
   attention: 'agent-attention-topic',
   agentHealth: 'agent-health-topic',
+  /** The Disk Steward's "Disk space (all machines)" topic (docs/specs/disk-steward.md §3.5). */
+  diskSpace: 'agent-disk-topic',
 } as const);
 const SYSTEM_TOPIC_KEY_SET: ReadonlySet<string> = new Set(Object.values(SYSTEM_TOPIC_STATE_KEYS));
 

@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
 import type { PeerClient, PeerResult, PeerRunAnswer, PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
@@ -163,6 +164,9 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
         reason: i.reason ?? 'waited', interruptions: i.interruptions ?? 0,
       })),
       onRecord: (r) => opts.hooks?.onRecord?.(r),
+      // A degradation the run child noticed rides its result here; this server's reporter is the
+      // one /health reads, so the record is made here, never by the child.
+      onDegradation: (e) => DegradationReporter.getInstance().report(e),
       onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
       signal: (k, d) => opts.hooks?.signal?.(k, d),
       clearSignal: (k, r) => opts.hooks?.clearSignal?.(k, r),

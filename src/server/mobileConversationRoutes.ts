@@ -32,6 +32,7 @@ import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPrese
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import crypto from 'node:crypto';
+import { deviceKeyOf } from '../core/MobileDeviceKeys.js';
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
@@ -292,17 +293,25 @@ export function agentOriginRow(m: Pick<BrowsedMessage, 'agentOrigin' | 'machineI
   return deviceOriginRow(null, ctx.display, m.machineId === ctx.selfMachineId ? 'not-recorded' : 'other-machine');
 }
 
+/** The signing browser's device id, so a page can say "signed (this browser)" for its own key (§4.8). */
+function originDeviceOf(m: { origin?: unknown }): { originDeviceId?: string } {
+  const id = (m.origin as { deviceId?: unknown } | undefined)?.deviceId;
+  return typeof id === 'string' ? { originDeviceId: id } : {};
+}
+
 export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => OriginVerdict, svc?: AppConversationService,
   originCtx?: { display: OriginDisplaySettings; selfMachineId: string }): Record<string, unknown> {
   const verdict = verify(m);
   // How the signing phone was approved (§4.6 display: "approved on dashboard"), only with a good verdict.
   const approvedVia = svc ? svc.originApprovedVia(m, verdict) : null;
+  // A browser key's message (dashboard-conversations-browser-device §4.3), from the signed ledger row.
+  const originClient = svc ? svc.originClient(m, verdict) : null;
   // Why a send ended as it did (app-conversations-in-the-pool §2.2), from the request record on this machine. Absent once that has aged out.
   const deliveryDetail = svc && m.role === 'operator' && (m.deliveryState === 'refused' || m.deliveryState === 'unknown') ? svc.deps.requests.detailForMessage(m.messageId) : null;
   return {
     ...(deliveryDetail ? { deliveryDetail } : {}),
     eventId: m.eventId, messageId: m.messageId, role: m.role, text: m.text, at: m.at, machineId: m.machineId,
-    deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}),
+    deliveryState: m.deliveryState, originVerified: verdict, ...(approvedVia ? { originApprovedVia: approvedVia } : {}), ...(originClient ? { originClient, ...originDeviceOf(m) } : {}),
     // People and roles §3.3: who sent an operator message, as recorded when it was accepted.
     ...(m.senderName ? { senderName: m.senderName } : {}), ...(m.senderRole ? { senderRole: m.senderRole } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
@@ -1075,7 +1084,8 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
           ...(e.kind === 'message' || e.kind === 'media-message' ? (() => {
             const verdict = svc!.verify(e);
             const via = svc!.originApprovedVia(e, verdict);
-            return { originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+            const client = svc!.originClient(e, verdict);
+            return { originVerified: verdict, ...(via ? { originApprovedVia: via } : {}), ...(client ? { originClient: client, ...originDeviceOf(e) } : {}) };
           })() : {}),
           ...(e.kind === 'media-message' ? { attachments: attachmentRows(e.attachments, svc!) } : {}),
           // A server transcript is scrubbed on read too (a peer may have stored it unscrubbed).
@@ -1108,9 +1118,11 @@ export function buildSignedOrigin(
   const raw = (req as unknown as { rawBody?: Buffer }).rawBody ?? Buffer.alloc(0);
   const time = req.headers['x-instar-device-time'];
   const sig = req.headers['x-instar-device-sig'];
-  if (!dev?.publicKey || !dev.host || typeof time !== 'string' || typeof sig !== 'string') return {};
+  // A browser's key is `browserPublicKey` (dashboard-conversations-browser-device §4.1 reader table).
+  const devKey = deviceKeyOf(dev);
+  if (!devKey || !dev?.host || typeof time !== 'string' || typeof sig !== 'string') return {};
   let keyHash: string;
-  try { keyHash = crypto.createHash('sha256').update(Buffer.from(dev.publicKey, 'base64url')).digest('hex'); } catch { return {}; } // @silent-fallback-ok — an unreadable key stores no origin (history reads 'none')
+  try { keyHash = crypto.createHash('sha256').update(Buffer.from(devKey, 'base64url')).digest('hex'); } catch { return {}; } // @silent-fallback-ok — an unreadable key stores no origin (history reads 'none')
   const bodySha256 = crypto.createHash('sha256').update(raw).digest('hex');
   const base = {
     // E2E-PAIRING: EXEMPT — no route added or changed; the stored Host is exercised end to end through the
@@ -1118,7 +1130,7 @@ export function buildSignedOrigin(
     // still asserts `verified` on the paired route.
     // The Host the signature was actually verified against (another of this machine's names over
     // multi-route), so the stored record re-verifies; the paired host only when none was recorded.
-    kind: 'device-signed' as const, v: 1 as const, deviceId, keyHash, publicKey: dev.publicKey, host: deviceAdmittedHost(req) ?? dev.host,
+    kind: 'device-signed' as const, v: 1 as const, deviceId, keyHash, publicKey: devKey, host: deviceAdmittedHost(req) ?? dev.host,
     method: req.method.toUpperCase(), pathWithQuery: req.originalUrl, timeMs: time, bodySha256, sig,
   };
   const redacted = removedKinds.length > 0;
@@ -1173,13 +1185,15 @@ export function joinTelegramHistory(
       // the attachments instead, so the verdict covers exactly what it shows and no path leaks.
       const verdict = app.verify(ev);
       const via = app.originApprovedVia(ev, verdict);
-      return { ...row, ...delivered, text: ev.text, attachments: attachmentRows(ev.attachments, app), originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+      const client = app.originClient(ev, verdict);
+      return { ...row, ...delivered, text: ev.text, attachments: attachmentRows(ev.attachments, app), originVerified: verdict, ...(via ? { originApprovedVia: via } : {}), ...(client ? { originClient: client, ...originDeviceOf(ev) } : {}) };
     }
     // The verdict covers the STORED text; a Telegram row showing different text gets no verdict.
     if (typeof row.text === 'string' && row.text !== ev.text) return { ...row, ...delivered, originVerified: 'unknown' };
     const verdict = app.verify(ev);
     const via = app.originApprovedVia(ev, verdict);
-    return { ...row, ...delivered, originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+    const client = app.originClient(ev, verdict);
+    return { ...row, ...delivered, originVerified: verdict, ...(via ? { originApprovedVia: via } : {}), ...(client ? { originClient: client, ...originDeviceOf(ev) } : {}) };
   });
   const seen = new Set(out.map((r) => (typeof r.eventId === 'string' ? r.eventId : '')).filter(Boolean));
   let stored: BrowsedMessage[] = [];
@@ -1195,7 +1209,8 @@ export function joinTelegramHistory(
         const rec = { ...m, conversationKey: key };
         const verdict = app.verify(rec);
         const via = app.originApprovedVia(rec, verdict);
-        return { originVerified: verdict, ...(via ? { originApprovedVia: via } : {}) };
+        const client = app.originClient(rec, verdict);
+        return { originVerified: verdict, ...(via ? { originApprovedVia: via } : {}), ...(client ? { originClient: client, ...originDeviceOf(rec) } : {}) };
       })(),
     });
   }

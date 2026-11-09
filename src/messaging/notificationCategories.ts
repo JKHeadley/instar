@@ -11,6 +11,7 @@ export const notificationCategories = [
   ['update-announcement', 'Software updates'], ['selectivity-digest', 'Quiet notification digest'],
   ['presence-standby', 'Waiting for a reply'], ['cold-start-fallback', 'Conversation availability'],
   ['message-loss-notice', 'Message delivery problems'], ['command-response', 'Command responses'],
+  ['disk-steward', 'Disk space'],
   ['uncategorized', 'Other automated notices'],
 ] as const;
 export type NotificationCategoryId = typeof notificationCategories[number][0];

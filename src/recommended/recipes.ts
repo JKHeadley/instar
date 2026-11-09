@@ -8,15 +8,19 @@
  * reach it.
  */
 import { execFile } from 'node:child_process';
+import { VOICE_TRANSCRIPTION_SECRET, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import type { CatalogRow } from './catalog.js';
 import { RECOMMENDED_SERVICE_CATALOG } from './catalog.js';
 import { VAULT_CHECK_ITEM, type BitwardenSurface } from './bitwardenVault.js';
+import { backupRepoName, parseGitHubRepo, type GitHubBackupSurface } from './githubBackup.js';
 
 export interface VerifyResult {
   result: 'pass' | 'fail' | 'unknown';
   detail: string;
   /** On a fail: nothing of the service is here at all (no key, not signed in, not installed), as opposed to one that is here but not working. */
   absent?: boolean;
+  /** On a fail that is a privacy issue the person must act on (a public backup repository): raised once as an attention item. */
+  attention?: { id: string; title: string; text: string };
 }
 
 /** What reading `tailscale status --json` gave: no program at all, a program that answered with an error, a reading, or no answer in time. */
@@ -33,6 +37,10 @@ export interface RecipeDeps {
   tailscaleStatus?: () => Promise<TailscaleStatusRead>;
   /** This machine's Bitwarden CLI, scoped to the agent's own folder. Absent means the recipe can't check. */
   bitwarden?: BitwardenSurface;
+  /** GitHub and this agent's state repository, for the private-backup recipe. Absent means the recipe can't check. */
+  github?: GitHubBackupSurface;
+  /** This agent's name, for things named after it (a backup repository). */
+  agentName?: string;
 }
 
 /** What a recipe that keeps a copy elsewhere needs to bring it up to date. */
@@ -57,6 +65,8 @@ export interface StopDeps extends RecipeDeps {
   tailscaleLogout?: () => Promise<boolean>;
   /** True when the check before setup found nothing of the service here, so a sign-in on this machine is setup's own. */
   absentBefore?: boolean;
+  /** Turns the agent's git backup off in its config, the switch older versions read too (spec: a no to GitHub sets gitBackup.enabled: false). */
+  disableGitBackup?: () => void;
 }
 
 /** `stopped` false means the service is still on; `changed` says whether anything on this machine was undone; `detail` is for the person, in plain words. */
@@ -78,8 +88,10 @@ export interface SetupRecipe {
    * (the spec's `shutdown: authorized`). Undoes only what setup did here, never the person's own.
    */
   stop: (deps: StopDeps) => Promise<StopResult>;
-  /** For a service that keeps a copy of this agent's secrets elsewhere: write the copy. Values never leave the process. */
+  /** For a service that keeps a copy of something elsewhere: write the copy. Values never leave the process. */
   sync?: (deps: SyncDeps) => Promise<SyncResult>;
+  /** True when the copy is of the agent's SECRETS, so the confirm page lists their names before the yes (spec: "the confirm page lists the secrets copied"). */
+  listsCopies?: boolean;
 }
 
 /** Exported so tests can check every recipe carries the shared rules. */
@@ -140,6 +152,54 @@ ${RULES('jev', port)}`,
     },
   },
   {
+    id: 'voice-v1',
+    service: 'voice-transcription',
+    secretName: VOICE_TRANSCRIPTION_SECRET,
+    brief: ({ port }) => `The person said yes to voice transcription. Set it up, so the agent understands their voice notes.
+
+What it is: a Groq or OpenAI key the agent's server uses to turn a voice note into text. The audio of each voice note goes to that provider; nothing else does.
+
+Whose account: present both as good options and never recommend against either. (1) The person's own Groq or OpenAI account: you sign in to it and manage it for them, or they give you a key for it, either way through one Secret Drop, never in chat. (2) An account of the agent's own, which you create and run yourself.
+
+What's known, as of 2026-11-07:
+- Groq: console.groq.com, sign in with Google, GitHub or email; a free tier with daily limits; keys are made under API Keys and start with gsk_. Groq is the default: it is faster and has a free tier.
+- OpenAI: platform.openai.com, keys under API keys, start with sk-; it charges per minute of audio and needs billing set up first. Confirm the current price with the person before anything costs money.
+- These pages need a normal browser. Use the agent's browser profiles (GET http://localhost:${port}/playwright-profiles) and the normal-chrome browser when automation is refused.
+
+Store the key as a plain text body, and don't print it:
+curl -s -X POST http://localhost:${port}/recommended-services/voice-transcription/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "Content-Type: text/plain" --data-binary @-
+It refuses to replace a key that was here before setup started. The check below proves the provider accepts the key and offers its transcription model. When it passes, tell the person their voice notes now work and invite them to send one.
+${RULES('voice-transcription', port)}`,
+    verify: async ({ readSecret, fetch: doFetch = fetch }) => {
+      // The check tests the key transcription will actually use: one the person put in the server's environment
+      // answers first (it already works here), then the key setup stored.
+      const stored = readSecret(VOICE_TRANSCRIPTION_SECRET);
+      const resolved = resolveTranscriptionProvider({ storedKey: () => stored });
+      if (!stored && !resolved) return { result: 'fail', absent: true, detail: 'No voice transcription key is stored yet.' };
+      if (!resolved) return { result: 'fail', detail: "The stored key isn't a Groq (gsk_) or OpenAI (sk-) key." };
+      const vendor = resolved.name === 'groq' ? 'Groq' : 'OpenAI';
+      try {
+        const res = await doFetch(`${resolved.baseUrl}/models`, { headers: { Authorization: `Bearer ${resolved.apiKey}` }, signal: AbortSignal.timeout(15_000) });
+        if (res.status === 401 || res.status === 403) return { result: 'fail', detail: `${vendor} refused the key (${res.status}).` };
+        if (!res.ok) return { result: 'unknown', detail: `${vendor} answered ${res.status}.` };
+        const body = await res.json().catch(() => null) as { data?: Array<{ id?: unknown }> } | null;
+        const models = Array.isArray(body?.data) ? body!.data.map((m) => m?.id) : [];
+        if (!models.includes(resolved.model)) return { result: 'fail', detail: `${vendor} accepted the key but does not offer ${resolved.model} to it.` };
+        return { result: 'pass', detail: `${vendor} accepted the key and offers ${resolved.model}, so voice notes are transcribed here.` };
+      } catch {
+        return { result: 'unknown', detail: `${vendor} could not be reached.` };
+      }
+    },
+    // The stored key is what makes transcription work through this setup, so removing it switches it off here.
+    // A key the person put in the server's environment is theirs and stays; so does the provider account.
+    stop: async ({ readSecret, deleteSecret, setUpHere }) => {
+      if (!readSecret(VOICE_TRANSCRIPTION_SECRET)) return { stopped: true, changed: false, detail: 'Voice transcription was not switched on here through setup, so there was nothing to switch off.' };
+      if (!setUpHere) return { stopped: true, changed: false, detail: "The voice transcription key on this machine was yours before I set anything up, so I've left it in place. Say the word and I'll remove it for you." };
+      deleteSecret(VOICE_TRANSCRIPTION_SECRET);
+      return { stopped: true, changed: true, detail: "Voice transcription is switched off on this machine: its key is removed, so voice notes are no longer sent anywhere. The provider account stays yours; say the word and I'll close it." };
+    },
+  },
+  {
     id: 'tailscale-v1',
     service: 'tailscale',
     // Tailscale's sign-in is the person's own tap on a link. There is no key for this recipe to keep,
@@ -184,6 +244,7 @@ ${RULES('tailscale', port)}`,
   {
     id: 'bitwarden-v1',
     service: 'bitwarden',
+    listsCopies: true,
     // The vault's master password, so this server can open the vault later to keep the copy fresh and to check it.
     secretName: 'bitwarden_master_password',
     brief: ({ port }) => `The person said yes to Bitwarden. Set it up on this machine.
@@ -258,7 +319,101 @@ ${RULES('bitwarden', port)}`,
         : 'Bitwarden copying was not switched on here, so there was nothing to switch off.' };
     },
   },
+  {
+    id: 'github-v1',
+    service: 'github-state-backup',
+    // A GitHub token that can create and push to a private repository. Stored so this server can push and check on its own.
+    secretName: 'github_backup_token',
+    brief: ({ port }) => `The person said yes to GitHub private backup. Set it up on this machine.
+
+What it gives them: a copy of this agent's memory, settings and identity files (never its secrets: the state folder's ignore list keeps config.json and the secrets folder out) in a PRIVATE repository on GitHub, so they survive losing this machine. The repository is created and pushed by this server, never by you. The ONE value you handle is a GitHub token, and only on the path Secret Drop -> a shell variable -> the key route. You never run git against the agent's state folder yourself.
+
+What's known, as of 2026-11-07:
+- Whose account: the person's own GitHub account, or an account of the agent's own if it already has one (a GitHub token in the agent's vault means it does; ask before using it). Both are good; say so and let them choose.
+- For the person's account, the credential is a personal access token that can create a repository and push to it (classic scope "repo", or a fine-grained token with "Administration: write" and "Contents: write" on the account). Ask for it through one Secret Drop link, with one plain sentence on what kind of token; it never goes in chat. If they would rather not make a token, offer the agent's own account instead, or stop and hold.
+- Read the dropped token straight into a shell variable from the Secret Drop retrieve route (the route answers {"values": {...}}): GH_TOKEN="$(curl -s -X POST ... | jq -r '.values.token')", never through echo, cat or a file, and never print it.
+- Store it with the key route, piping it from that variable (printf '%s' "$GH_TOKEN" | curl ...), never typed into a command:
+curl -s -X POST http://localhost:${port}/recommended-services/github-state-backup/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "Content-Type: text/plain" --data-binary @-
+It refuses to replace a token that was here before setup started.
+- Then ask this server to make the backup; it creates the private repository "instar-<agent name>-state" under the token's account if it doesn't exist, refuses to push to a repository that is not private, and pushes the state folder:
+curl -s -X POST http://localhost:${port}/recommended-services/github-state-backup/sync -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1"
+The answer names the repository (owner/name), nothing secret. Tell the person that name and that it is private.
+- Then call the check below. It passes when GitHub says the repository is private and the copy on GitHub matches what this machine has.
+- The copy is kept fresh by this server from then on. If GitHub says the repository has become public, the check fails and the person is told once; nothing is pushed to a public repository.
+${RULES('github-state-backup', port)}`,
+    verify: async ({ readSecret, github, agentName }) => {
+      if (!github) return { result: 'unknown', detail: "This server can't reach GitHub or its own state folder." };
+      const token = readSecret('github_backup_token');
+      const remote = github.currentRemote();
+      const fullName = remote ? parseGitHubRepo(remote) : null;
+      if (!token) return { result: 'fail', absent: !fullName, detail: fullName ? 'A backup repository is set, but no token is stored to check it with.' : 'No GitHub token is stored yet, and no backup repository is set.' };
+      const owner = await github.tokenOwner(token);
+      if (owner === undefined) return { result: 'unknown', detail: 'GitHub did not answer.' };
+      if (owner === null) return { result: 'fail', detail: 'GitHub refused the stored token.' };
+      const target = fullName ?? `${owner}/${backupRepoName(agentName ?? 'agent')}`;
+      const repo = await github.repo(token, target);
+      if (repo === undefined) return { result: 'unknown', detail: 'GitHub did not answer.' };
+      if (repo === null) return { result: 'fail', absent: !fullName, detail: `The backup repository ${target} does not exist yet.` };
+      if (!repo.private) {
+        return {
+          result: 'fail',
+          detail: `The backup repository ${repo.fullName} is PUBLIC, so nothing is pushed to it.`,
+          attention: { id: `recommended-service-public-repo:${repo.fullName}`, title: 'Your agent\'s backup repository is public', text: `The GitHub repository ${repo.fullName} that holds this agent's backup is public. Make it private in the repository's settings (Settings → General → Danger Zone → Change visibility), and the backup resumes on the next check. Nothing is pushed to it while it is public.` },
+        };
+      }
+      const [local, remoteHead] = [github.localHead(), await github.remoteHead(token, repo.cloneUrl)];
+      if (remoteHead === undefined) return { result: 'unknown', detail: 'The repository could not be reached to compare the copy.' };
+      if (!local) return { result: 'fail', detail: 'This machine has no state repository yet.' };
+      if (remoteHead !== local) return { result: 'fail', detail: `The copy on GitHub is behind this machine (${remoteHead ? 'different' : 'empty'}).` };
+      return { result: 'pass', detail: `The private repository ${repo.fullName} holds this agent's backup, matching this machine.` };
+    },
+    sync: async ({ readSecret, github, agentName }) => {
+      if (!github) return { ok: false, copied: [], detail: "This server can't reach GitHub or its own state folder." };
+      const token = readSecret('github_backup_token');
+      if (!token) return { ok: false, copied: [], detail: 'No GitHub token is stored yet.' };
+      const owner = await github.tokenOwner(token);
+      if (!owner) return { ok: false, copied: [], detail: owner === undefined ? 'GitHub did not answer.' : 'GitHub refused the stored token.' };
+      const remote = github.currentRemote();
+      const target = (remote && parseGitHubRepo(remote)) ?? `${owner}/${backupRepoName(agentName ?? 'agent')}`;
+      let repo = await github.repo(token, target);
+      if (repo === undefined) return { ok: false, copied: [], detail: 'GitHub did not answer.' };
+      let created = false;
+      if (repo === null) {
+        if (remote && parseGitHubRepo(remote)) return { ok: false, copied: [], detail: `The repository ${target} this machine points at does not exist or is not reachable with this token.` };
+        repo = await github.createPrivateRepo(token, backupRepoName(agentName ?? 'agent'), `${agentName ?? 'agent'}: Instar agent state backup (private)`);
+        if (!repo) return { ok: false, copied: [], detail: 'GitHub refused to create the private repository.' };
+        created = true;
+      }
+      // Never push to a repository that is not private: this is the person's memory and settings.
+      if (!repo.private) return { ok: false, copied: [], detail: `The repository ${repo.fullName} is public, so nothing was pushed.` };
+      let pushed = github.pushState(token, repo.cloneUrl);
+      if (!pushed && created) {
+        // A repository GitHub has just created can refuse its first push for a moment (seen in the live proof). One more try, once.
+        await new Promise((resolve) => setTimeout(resolve, GITHUB_FIRST_PUSH_RETRY_MS));
+        pushed = github.pushState(token, repo.cloneUrl);
+      }
+      if (!pushed) return { ok: false, copied: [repo.fullName], detail: `The push to ${repo.fullName} failed.` };
+      return { ok: true, copied: [repo.fullName], detail: `The state folder is pushed to the private repository ${repo.fullName}.` };
+    },
+    // The stored token is what lets this machine push and check, so removing it switches the backup off here, and the
+    // config switch older versions read is turned off too. The repository is the person's and stays.
+    stop: async ({ readSecret, deleteSecret, setUpHere, disableGitBackup }) => {
+      if (!setUpHere) return { stopped: true, changed: false, detail: "The GitHub backup on this machine was yours before I set anything up, so I've left it as it was and will just stop relying on it." };
+      let changed = false;
+      if (readSecret('github_backup_token')) {
+        deleteSecret('github_backup_token');
+        changed = true;
+      }
+      try { disableGitBackup?.(); } catch { /* @silent-fallback-ok: the token is gone, so nothing can push; the switch is a courtesy for older versions */ }
+      return { stopped: true, changed, detail: changed
+        ? "GitHub backup is switched off on this machine: the token is gone from here and automatic pushes are off. The private repository and what is in it stay yours. If you want it gone too, tell me and I'll ask for a token once to delete it."
+        : 'GitHub backup was not switched on here, so there was nothing to switch off.' };
+    },
+  },
 ]);
+
+/** How long the GitHub recipe waits before its one retry of the first push to a repository it just created. */
+export const GITHUB_FIRST_PUSH_RETRY_MS = 3000;
 
 const TAILSCALE_PROGRAMS = ['tailscale', '/Applications/Tailscale.app/Contents/MacOS/Tailscale', '/usr/local/bin/tailscale', '/opt/homebrew/bin/tailscale'];
 

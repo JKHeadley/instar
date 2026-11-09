@@ -27,6 +27,7 @@
  * this agent ⇒ 503 `slack-not-configured`. `mobilePairing.slackOwnerUserId` unset ⇒ 503
  * `slack-owner-unset` (the owner's Slack identity is a config field, never inferred).
  */
+import { deviceIcon, mirrorPrefix, openItHint, requestDeviceClient, type DeviceClient } from '../core/deviceClientWording.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
@@ -65,6 +66,10 @@ export interface SlackAppConversation {
   threadTs: string | null;
   label: string | null;
   mintedAt: string | null;
+  /** The channel's Slack name (no '#') when known (fb-4db533fa-9d9); null while it is being looked up. */
+  channelName?: string | null;
+  /** Channel, DM or group DM, when known: only a channel's title shows '#', as in Slack. */
+  channelKind?: 'channel' | 'dm' | 'group-dm' | null;
 }
 
 /** One Slack history row as the bridge reads it (slack-messages.jsonl and the in-memory ring). */
@@ -100,7 +105,7 @@ export interface MobileSlackBridge {
   /** The log tail's size and modification time: the revision an unread count is cached on (§3.4). */
   historyVersion?(): string;
   /** The Slack inbound dispatch, with the operator as sender. Null when it is not wired yet. */
-  dispatch(input: { conv: SlackAppConversation; text: string; ownerName: string; ownerUserId: string; messageId: string; originVerdict: OriginVerdict }): Promise<SlackDispatchOutcome>;
+  dispatch(input: { conv: SlackAppConversation; text: string; ownerName: string; ownerUserId: string; messageId: string; originVerdict: OriginVerdict; originClient?: DeviceClient }): Promise<SlackDispatchOutcome>;
   /** Post the mirror line into the channel or thread. */
   post(conv: SlackAppConversation, text: string): Promise<void>;
   /**
@@ -166,10 +171,16 @@ export function parseSlackConversationId(raw: string): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
-/** The title the app shows for a Slack conversation: its label, else `#<channel>` (a thread says so). */
+/**
+ * The title the app shows for a Slack conversation, written the way Slack writes it: a channel (public or
+ * private) is `#<name>`, a DM or group DM is its name with no '#'. The name is the label, else the Slack name,
+ * else the id while the name is being looked up. A thread says so.
+ */
 export function slackConversationTitle(c: SlackAppConversation): string {
-  const base = c.label ? c.label.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : '';
-  const name = base || `#${c.channelId}`;
+  const clean = (v: string | null | undefined) => (v ? v.replace(/[\x00-\x1f\x7f]/g, '').trim().slice(0, 80) : '');
+  const shown = (clean(c.label) || clean(c.channelName) || c.channelId).replace(/^#+/, '');
+  const kind = c.channelKind ?? (c.channelId.startsWith('D') ? 'dm' : /^mpdm-/.test(shown) ? 'group-dm' : 'channel');
+  const name = kind === 'channel' ? `#${shown}` : shown;
   return c.threadTs ? `${name} (thread)` : name;
 }
 
@@ -465,11 +476,12 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       if (!requests.finish(deviceId, requestId, { status, body: b })) s.deps.reportDegradation?.('MobileSlack.requestStore', 'could not record a finished request');
       res.status(status).json(b);
     };
+    const client = requestDeviceClient(req);
     const mirror = async (): Promise<'sent' | 'failed'> => {
       try {
         // A copy for people reading the channel: credential-shaped spans always hidden (§4.9).
-        if (stored.length > 0) await mirrorMediaToSlack(bridge, conv, ownerName, stored, hideCredentialSpans(delivered), (sha) => s.media.locateBlob(sha));
-        else await bridge.post(conv, `📱 ${ownerName} (from the app): ${hideCredentialSpans(delivered)}`);
+        if (stored.length > 0) await mirrorMediaToSlack(bridge, conv, ownerName, stored, hideCredentialSpans(delivered), (sha) => s.media.locateBlob(sha), client);
+        else await bridge.post(conv, `${mirrorPrefix(client, ownerName)}: ${hideCredentialSpans(delivered)}`);
         return 'sent';
       } catch (err) {
         s.deps.reportDegradation?.('MobileSlack.mirror', err instanceof Error ? err.message : String(err));
@@ -506,7 +518,7 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
     }
     let outcome: 'delivered' | 'queued' | 'refused';
     try {
-      outcome = await bridge.dispatch({ conv, text: sessionText, ownerName, ownerUserId: speakAs, messageId, originVerdict: s.verify(msg) });
+      outcome = await bridge.dispatch({ conv, text: sessionText, ownerName, ownerUserId: speakAs, messageId, originVerdict: s.verify(msg), originClient: client });
     } catch (err) {
       delivery('unknown');
       requests.markUnknown(deviceId, requestId);
@@ -544,6 +556,11 @@ export interface SlackAdapterLike {
   isAuthorized(userId: string): boolean;
   /** message-origin-all-platforms §3: the origin ledger every Slack send writes to first. */
   originLedger?: Pick<SlackOriginLedger, 'lookup'>;
+  /** A user's display name from the adapter's cache, or null while it is fetched (fb-4db533fa-9d9). */
+  cachedUserName?(userId: string): string | null;
+  /** A channel's name from the adapter's cache, or null while it is fetched (fb-4db533fa-9d9). */
+  cachedChannelName?(channelId: string): string | null;
+  cachedChannelKind?(channelId: string): 'channel' | 'dm' | 'group-dm' | null;
 }
 
 /** The slice of ConversationRegistry the bridge uses. */
@@ -601,9 +618,22 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
     tailCache = { version, rows: out };
     return out;
   };
+  const channelNameOf = (channelId: string): string | null => { try { return d.adapter.cachedChannelName?.(channelId) ?? null; } catch { return null; } }; // @silent-fallback-ok — the title falls back to the id; the adapter logs a failed lookup
+  const channelKindOf = (channelId: string): 'channel' | 'dm' | 'group-dm' | null => { try { return d.adapter.cachedChannelKind?.(channelId) ?? null; } catch { return null; } }; // @silent-fallback-ok — an unknown kind is read from the id and name in slackConversationTitle
   const toConv = (key: string, e: { id: number; channelId: string; threadTs: string | null; mintedAt: string; label?: string }): SlackAppConversation => ({
-    id: e.id, key, channelId: e.channelId, threadTs: e.threadTs, label: e.label ?? null, mintedAt: e.mintedAt ?? null,
+    id: e.id, key, channelId: e.channelId, threadTs: e.threadTs, label: e.label ?? null, mintedAt: e.mintedAt ?? null, channelName: channelNameOf(e.channelId), channelKind: channelKindOf(e.channelId),
   });
+  /**
+   * A row's sender name: the logged name, unless it is missing or is just the user id (the old
+   * fallback when the lookup failed), in which case the adapter's cached name (fb-4db533fa-9d9).
+   */
+  const nameFor = (logged: string | null, userIdIn: string | undefined): string | null => {
+    // A logged "name" that is itself a Slack user id is the old fallback: look the id up.
+    const userId = userIdIn ?? (logged && /^[UW][A-Z0-9]{6,30}$/.test(logged) ? logged : undefined);
+    if (logged && logged !== userId) return logged;
+    if (!userId) return logged;
+    try { return d.adapter.cachedUserName?.(userId) ?? logged; } catch { return logged; } // @silent-fallback-ok — the adapter logs a failed lookup; the logged value stands
+  };
   let activityCache: { at: number; map: Map<string, { at: string; preview: string }> } | null = null;
 
   return {
@@ -612,7 +642,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
       if (!r || r.platform !== 'slack' || r.origin === 'replicated' || typeof r.key !== 'string' || typeof r.channelId !== 'string' || typeof r.id !== 'number') return null;
       // An alias resolves to its target; the app keeps using the id it was given.
       const listed = d.registry.list({ platform: 'slack', limit: 5000 }).find((x) => x.entry.id === r.id);
-      return { id, key: r.key, channelId: r.channelId, threadTs: r.threadTs ?? null, label: r.label ?? null, mintedAt: listed?.entry.mintedAt ?? null };
+      return { id, key: r.key, channelId: r.channelId, threadTs: r.threadTs ?? null, label: r.label ?? null, mintedAt: listed?.entry.mintedAt ?? null, channelName: channelNameOf(r.channelId), channelKind: channelKindOf(r.channelId) };
     },
     conversations() {
       return d.registry.list({ platform: 'slack', limit: 500 })
@@ -636,7 +666,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
         if (typeof row.text !== 'string' || typeof row.timestamp !== 'string') continue;
         out.set(ts, {
           ts, text: row.text, fromUser: row.fromUser === true, at: row.timestamp,
-          senderName: typeof row.senderName === 'string' ? row.senderName : null,
+          senderName: nameFor(typeof row.senderName === 'string' ? row.senderName : null, typeof row.platformUserId === 'string' ? row.platformUserId : undefined),
           ...(typeof row.eventId === 'string' && row.eventId ? { eventId: row.eventId } : {}),
           ...(typeof row.platformUserId === 'string' && row.platformUserId ? { platformUserId: row.platformUserId } : {}),
         });
@@ -648,7 +678,8 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
           if (out.has(m.ts) || !inConversation(conv, m.ts, m.thread_ts ?? null)) continue;
           const secs = Number(m.ts);
           if (!Number.isFinite(secs)) continue;
-          out.set(m.ts, { ts: m.ts, text: m.text, fromUser: !(bot && m.user === bot), at: new Date(secs * 1000).toISOString(), senderName: null, ...(typeof m.user === 'string' && m.user ? { platformUserId: m.user } : {}) });
+          const fromUser = !(bot && m.user === bot);
+          out.set(m.ts, { ts: m.ts, text: m.text, fromUser, at: new Date(secs * 1000).toISOString(), senderName: fromUser ? nameFor(null, typeof m.user === 'string' ? m.user : undefined) : null, ...(typeof m.user === 'string' && m.user ? { platformUserId: m.user } : {}) });
         }
       } catch { /* @silent-fallback-ok — the log rows remain */ }
       return [...out.values()].sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).slice(-limit);
@@ -679,6 +710,7 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
           slackUserId: input.ownerUserId, senderName: input.ownerName, ts, channelId: input.conv.channelId,
           ...(input.conv.threadTs ? { threadTs: input.conv.threadTs } : {}),
           isDM: input.conv.channelId.startsWith('D'), appOrigin: input.originVerdict,
+          ...(input.originClient === 'browser' ? { appClient: 'browser' } : {}),
         },
       });
       return r ?? 'delivered';
@@ -727,15 +759,16 @@ export function slackListRows(bridge: MobileSlackBridge): Array<{ id: number; ti
  */
 export async function mirrorMediaToSlack(
   bridge: MobileSlackBridge, conv: SlackAppConversation, ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string,
-  locate: (sha256: string) => string | null,
+  locate: (sha256: string) => string | null, client: DeviceClient = 'phone',
 ): Promise<void> {
   if (typeof bridge.uploadFile !== 'function') throw new Error('this Slack adapter cannot upload files');
-  const line = caption ? `📱 ${ownerName} (from the app): ${caption}` : `📱 ${ownerName} (from the app)`;
+  const prefix = mirrorPrefix(client, ownerName);
+  const line = caption ? `${prefix}: ${caption}` : prefix;
   let commented = false;
   const missing: string[] = [];
   for (const a of attachments) {
     const p = locate(a.sha256);
-    if (!p) { missing.push(`📱 ${ownerName} sent ${displayName(a.filename)} (open it in the app)`); continue; }
+    if (!p) { missing.push(`${deviceIcon(client)} ${ownerName} sent ${displayName(a.filename)} (${openItHint(client)})`); continue; }
     await bridge.uploadFile(conv, p, { filename: displayName(a.filename), ...(!commented ? { initialComment: line } : {}) });
     commented = true;
   }

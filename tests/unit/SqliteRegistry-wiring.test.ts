@@ -105,6 +105,7 @@ const TRANSIENT_SKIP: Record<string, string> = {
   'src/messaging/telegram-origin/OriginStoreBackend.ts': 'worker-owned outbox handle is owned and registered by PendingRelayStore; archive handles close in finally',
   'src/messaging/telegram-origin/OriginEvidenceSpool.ts': 'worker opens one evidence transaction and closes its handle in finally',
   'src/commands/server.ts': ':memory: probe testDb — closes itself immediately',
+  'src/messaging/telegram-origin/OriginStore.ts': 'parent-thread addon hold: opens one :memory: database and closes it at once, only to keep better-sqlite3 loaded while store workers exit',
   'src/server/routes.ts': 'readonly per-request open — closed per request, not process-lifetime',
   'src/memory/NativeModuleHealer.ts': 'generic ABI-heal helper — owns no handle (a comment mentions new Database)',
   'src/core/UpdateChecker.ts': 'candidate startup probe opens an in-memory database in a child process and closes it in finally',

@@ -170,6 +170,8 @@ export function buildFeedbackExecutor(input: {
   enabled: () => boolean;
   quotaShedding: () => boolean;
   updatePending: () => boolean;
+  /** Local Verify holds queued work for a restart (see FeedbackExecutorServiceOptions.localVerifyNeedsRestart). */
+  localVerifyNeedsRestart?: () => boolean;
   raiseAttention: (item: AttentionInput) => Promise<void>;
   tunnelUrl: () => string | null;
   /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
@@ -266,6 +268,7 @@ export function buildFeedbackExecutor(input: {
     deps,
     sessions,
     admission,
+    ...(input.localVerifyNeedsRestart ? { localVerifyNeedsRestart: input.localVerifyNeedsRestart } : {}),
     identityFacts: input.overrides?.identityFacts ?? (() => readIdentityFacts(config.stateDir)),
     rankedWork: () => input.triage.service.queue().map((item) => ({ initiativeId: String(item.initiativeId), clusterId: String(item.clusterId) })),
     enabled: input.enabled,

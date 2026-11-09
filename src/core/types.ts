@@ -4070,6 +4070,13 @@ export interface InstarConfig {
       unread?: { enabled?: boolean };
     };
     /**
+     * Dashboard browsers as signed devices (docs/specs/dashboard-conversations-browser-device.md).
+     * `enabled` omitted ⇒ live on a development agent, dark on the fleet (read live); needs
+     * `native.enabled`. `maxBrowsers` (default 10) pending-or-active per machine; `maxSetupsPerHour`
+     * (default 6) per machine.
+     */
+    browser?: { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number };
+    /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
      * GET /mobile/routes. `enabled` omitted ⇒ live on a development agent, off on the fleet.
@@ -4944,7 +4951,11 @@ export interface InstarConfig {
   dispatches?: DispatchConfig;
   /** Git backup config (opt-in for standalone agents) */
   /** docs/specs/recommended-services.md: setup recipes this agent is proving. Only a test agent or the development agent sets it. */
-  recommendedServices?: { provingRecipes?: string[] };
+  recommendedServices?: {
+    provingRecipes?: string[];
+    /** The first list of recommended services, sent once per service after a delivered first result. Off by default. */
+    offers?: { enabled?: boolean };
+  };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */
     enabled: boolean;
