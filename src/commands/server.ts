@@ -11406,6 +11406,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (apiKey) { provider = { apiKey, baseUrl: p.baseUrl, model: p.model }; break; }
             }
           }
+          if (!provider) {
+            // A key the voice-transcription setup stored in the vault (docs/specs/recommended-services.md).
+            const shared = (await import('../core/VoiceTranscription.js')).resolveTranscriptionProvider({ explicit, env: {} });
+            if (shared) provider = { apiKey: shared.apiKey, baseUrl: shared.baseUrl, model: shared.model };
+          }
           if (!provider) throw new Error('No voice transcription provider. Set GROQ_API_KEY or OPENAI_API_KEY.');
 
           const formData = new FormData();

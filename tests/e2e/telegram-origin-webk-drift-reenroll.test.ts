@@ -127,8 +127,7 @@ describe('Telegram Web K drift through the production boot', () => {
       const response = await request(app).get('/telegram/browser/operator-telegram/snapshot').set('X-Instar-Origin-Session', 'not-a-session');
       expect(response.status).toBe(409);
       expect(response.body).toEqual({ error: 'telegram-browser-snapshot-unavailable' });
-      expect(warn).toHaveBeenCalledWith('[telegram-origin] browser snapshot unavailable',
-        expect.objectContaining({ profileId: 'operator-telegram', errorClass: expect.any(String), message: expect.any(String) }));
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[telegram-origin\] browser snapshot unavailable: profile=operator-telegram class=\w+ message=\S/));
     } finally { warn.mockRestore(); }
   });
 

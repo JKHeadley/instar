@@ -8,6 +8,7 @@
  * reach it.
  */
 import { execFile } from 'node:child_process';
+import { VOICE_TRANSCRIPTION_SECRET, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
 import type { CatalogRow } from './catalog.js';
 import { RECOMMENDED_SERVICE_CATALOG } from './catalog.js';
 import { VAULT_CHECK_ITEM, type BitwardenSurface } from './bitwardenVault.js';
@@ -148,6 +149,54 @@ ${RULES('jev', port)}`,
       if (!setUpHere) return { stopped: true, changed: false, detail: "The TypeSafe key on this machine was yours before I set anything up, so I've left it in place and will just stop relying on Jev. Say the word and I'll remove it for you." };
       deleteSecret('typesafe_api_key');
       return { stopped: true, changed: true, detail: 'Jev is switched off on this machine: its key is removed, so nothing here uses it any more. The TypeSafe account and any credits on it stay yours; say the word and I\'ll close them.' };
+    },
+  },
+  {
+    id: 'voice-v1',
+    service: 'voice-transcription',
+    secretName: VOICE_TRANSCRIPTION_SECRET,
+    brief: ({ port }) => `The person said yes to voice transcription. Set it up, so the agent understands their voice notes.
+
+What it is: a Groq or OpenAI key the agent's server uses to turn a voice note into text. The audio of each voice note goes to that provider; nothing else does.
+
+Whose account: present both as good options and never recommend against either. (1) The person's own Groq or OpenAI account: you sign in to it and manage it for them, or they give you a key for it, either way through one Secret Drop, never in chat. (2) An account of the agent's own, which you create and run yourself.
+
+What's known, as of 2026-11-07:
+- Groq: console.groq.com, sign in with Google, GitHub or email; a free tier with daily limits; keys are made under API Keys and start with gsk_. Groq is the default: it is faster and has a free tier.
+- OpenAI: platform.openai.com, keys under API keys, start with sk-; it charges per minute of audio and needs billing set up first. Confirm the current price with the person before anything costs money.
+- These pages need a normal browser. Use the agent's browser profiles (GET http://localhost:${port}/playwright-profiles) and the normal-chrome browser when automation is refused.
+
+Store the key as a plain text body, and don't print it:
+curl -s -X POST http://localhost:${port}/recommended-services/voice-transcription/key -H "Authorization: Bearer $INSTAR_AUTH_TOKEN" -H "X-Instar-Request: 1" -H "Content-Type: text/plain" --data-binary @-
+It refuses to replace a key that was here before setup started. The check below proves the provider accepts the key and offers its transcription model. When it passes, tell the person their voice notes now work and invite them to send one.
+${RULES('voice-transcription', port)}`,
+    verify: async ({ readSecret, fetch: doFetch = fetch }) => {
+      // The check tests the key transcription will actually use: one the person put in the server's environment
+      // answers first (it already works here), then the key setup stored.
+      const stored = readSecret(VOICE_TRANSCRIPTION_SECRET);
+      const resolved = resolveTranscriptionProvider({ storedKey: () => stored });
+      if (!stored && !resolved) return { result: 'fail', absent: true, detail: 'No voice transcription key is stored yet.' };
+      if (!resolved) return { result: 'fail', detail: "The stored key isn't a Groq (gsk_) or OpenAI (sk-) key." };
+      const vendor = resolved.name === 'groq' ? 'Groq' : 'OpenAI';
+      try {
+        const res = await doFetch(`${resolved.baseUrl}/models`, { headers: { Authorization: `Bearer ${resolved.apiKey}` }, signal: AbortSignal.timeout(15_000) });
+        if (res.status === 401 || res.status === 403) return { result: 'fail', detail: `${vendor} refused the key (${res.status}).` };
+        if (!res.ok) return { result: 'unknown', detail: `${vendor} answered ${res.status}.` };
+        const body = await res.json().catch(() => null) as { data?: Array<{ id?: unknown }> } | null;
+        const models = Array.isArray(body?.data) ? body!.data.map((m) => m?.id) : [];
+        if (!models.includes(resolved.model)) return { result: 'fail', detail: `${vendor} accepted the key but does not offer ${resolved.model} to it.` };
+        return { result: 'pass', detail: `${vendor} accepted the key and offers ${resolved.model}, so voice notes are transcribed here.` };
+      } catch {
+        return { result: 'unknown', detail: `${vendor} could not be reached.` };
+      }
+    },
+    // The stored key is what makes transcription work through this setup, so removing it switches it off here.
+    // A key the person put in the server's environment is theirs and stays; so does the provider account.
+    stop: async ({ readSecret, deleteSecret, setUpHere }) => {
+      if (!readSecret(VOICE_TRANSCRIPTION_SECRET)) return { stopped: true, changed: false, detail: 'Voice transcription was not switched on here through setup, so there was nothing to switch off.' };
+      if (!setUpHere) return { stopped: true, changed: false, detail: "The voice transcription key on this machine was yours before I set anything up, so I've left it in place. Say the word and I'll remove it for you." };
+      deleteSecret(VOICE_TRANSCRIPTION_SECRET);
+      return { stopped: true, changed: true, detail: "Voice transcription is switched off on this machine: its key is removed, so voice notes are no longer sent anywhere. The provider account stays yours; say the word and I'll close it." };
     },
   },
   {

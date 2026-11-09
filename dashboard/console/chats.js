@@ -146,8 +146,9 @@ class ChatsPage {
 
   // ── setup (§4.2 client side) ──
   defaultName() {
-    const ua = (navigator.userAgent || '');
-    const platform = (navigator.userAgentData && navigator.userAgentData.platform) || (/Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : /Linux/.test(ua) ? 'Linux' : 'this computer');
+    const nav = globalThis.navigator || {};
+    const ua = (nav.userAgent || '');
+    const platform = (nav.userAgentData && nav.userAgentData.platform) || (/Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /iPhone|iPad/.test(ua) ? 'iPhone' : /Android/.test(ua) ? 'Android' : /Linux/.test(ua) ? 'Linux' : 'this computer');
     const h = location.hostname;
     const via = h === 'localhost' || h === '127.0.0.1' ? 'localhost' : /\.ts\.net$/i.test(h) ? 'Tailscale' : 'tunnel';
     return `Browser on ${platform} (${via})`.slice(0, 60);
@@ -891,7 +892,7 @@ class ChatsPage {
 
   seekLeadership() {
     if (this.leader || this.lockAbort || !this.live || !this.pageEl) return;
-    const locks = navigator.locks;
+    const locks = globalThis.navigator && globalThis.navigator.locks;
     if (!locks || typeof locks.request !== 'function') { this.becomeLeader(null); return; }
     this.lockAbort = new AbortController();
     locks.request(POLL_LOCK, { signal: this.lockAbort.signal }, () => new Promise((release) => {

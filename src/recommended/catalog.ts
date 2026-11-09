@@ -141,7 +141,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'Nothing can read a voice note without a provider.',
     gapSpec: VOICE_SPEC,
-    setupRecipe: null,
+    setupRecipe: 'voice-v1',
   },
   {
     id: 'email',
