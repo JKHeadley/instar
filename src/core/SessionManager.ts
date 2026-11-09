@@ -492,6 +492,12 @@ export const TERMINAL_ERROR_PATTERNS = [
  *  genuinely-transient errors never hits it. */
 const MAX_ERROR_NUDGES_PER_SESSION = 50;
 
+/** Full process-table reads (`ps -eo pid,ppid,command`) on a busy host can pass
+ *  node's 1 MiB default buffer; the call then fails with ENOBUFS and every probe
+ *  falls back to "assume active", so idle sessions are never reaped or drained.
+ *  Same 32 MiB ceiling as ProcessFootprintMonitor's process-table read. */
+const PS_TABLE_MAX_BUFFER = 32 * 1024 * 1024;
+
 /**
  * Pure gate for the post-API-error nudge (the 2026-05-29 re-arm fix). A session is
  * nudged only when it has NOT already been nudged in the CURRENT idle episode
@@ -5945,7 +5951,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // Use ps to find all processes whose parent is in our tree
       const psOutput = withSyncOp(() => execFileSync(
         'ps', ['-eo', 'pid,ppid,command'],
-        { encoding: 'utf-8', timeout: 5000 }
+        { encoding: 'utf-8', timeout: 5000, maxBuffer: PS_TABLE_MAX_BUFFER }
       ));
 
       return this.computeHasActiveProcesses(panePid, psOutput);
@@ -5977,7 +5983,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!panePid || !/^\d+$/.test(panePid)) return false;
     const psOutput = withSyncOp(() => execFileSync(
       'ps', ['-eo', 'pid,ppid,command'],
-      { encoding: 'utf-8', timeout: 5000 }
+      { encoding: 'utf-8', timeout: 5000, maxBuffer: PS_TABLE_MAX_BUFFER }
     ));
     return SessionManager.computeHasLiveToolShell(panePid, psOutput);
   }
@@ -6035,6 +6041,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       const { stdout: psOutput } = await execFileAsync('ps', ['-eo', 'pid,ppid,command'], {
         timeout: 5000,
         killSignal: 'SIGKILL',
+        maxBuffer: PS_TABLE_MAX_BUFFER,
       });
 
       return this.computeHasActiveProcesses(panePid, psOutput);
@@ -6112,7 +6119,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
       const psOutput = withSyncOp(() => execFileSync(
         'ps', ['-eo', 'pid,ppid,time,command'],
-        { encoding: 'utf-8', timeout: 5000 },
+        { encoding: 'utf-8', timeout: 5000, maxBuffer: PS_TABLE_MAX_BUFFER },
       ));
       const procs = new Map<string, { ppid: string; time: string; command: string }>();
       for (const line of psOutput.split('\n').slice(1)) {
@@ -6239,6 +6246,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     const promise = execFileAsync('ps', ['-eo', 'pid,ppid,command'], {
       timeout: 5000,
       killSignal: 'SIGKILL' as const,
+      maxBuffer: PS_TABLE_MAX_BUFFER,
     })
       .then((r) => r.stdout)
       .catch(() => null);
@@ -6666,7 +6674,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
           ['list-panes', '-t', `=${session.tmuxSession}:`, '-F', '#{pane_pid}'],
           { encoding: 'utf-8', timeout: 5000 },
         )).trim();
-        const psOutput = withSyncOp(() => execFileSync('ps', ['-eo', 'pid,ppid,command'], { encoding: 'utf-8', timeout: 5000 }));
+        const psOutput = withSyncOp(() => execFileSync('ps', ['-eo', 'pid,ppid,command'], { encoding: 'utf-8', timeout: 5000, maxBuffer: PS_TABLE_MAX_BUFFER }));
         const shape = drainProcessShape(panePid, psOutput);
         return shape === null ? null : shape.working;
       } catch { return null; /* @silent-fallback-ok — unknown tree ⇒ NOT drained (wait) */ }
