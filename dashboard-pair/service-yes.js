@@ -35,7 +35,7 @@ function el(tag, attrs = {}, ...kids) {
   return n;
 }
 
-function show(...kids) { root.replaceChildren(...kids); }
+function show(...kids) { root.replaceChildren(...kids.filter(Boolean)); }
 function message(title, text) { show(el('div', { class: 'pair-head' }, el('h1', { text: title })), el('p', { text })); }
 function line(label, text) { return text ? el('section', {}, el('h2', { text: label }), el('p', { text })) : null; }
 

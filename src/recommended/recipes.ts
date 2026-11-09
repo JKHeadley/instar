@@ -720,9 +720,14 @@ ${RULES('email', port)}`,
       if (live > 0) return { stopped: false, changed: false, detail: `I couldn't hand ${live} report${live === 1 ? '' : 's'} that ${live === 1 ? 'was' : 'were'} on the way by email over to our conversation yet, so email stays on until ${live === 1 ? 'it has' : 'they have'}.` };
       if (!readSecret(EMAIL_SECRET) && !readSecret(EMAIL_RECIPIENT_SECRET)) return { stopped: true, changed: false, detail: 'Email was not switched on here, so there was nothing to switch off.' };
       if (!setUpHere) return { stopped: true, changed: false, detail: "The email details on this machine weren't set up by me, so I've left them in place and will just stop sending email. Say the word and I'll remove them." };
+      const shape = (() => { try { return (JSON.parse(readSecret(EMAIL_SECRET) ?? '{}') as { shape?: string }).shape; } catch { return undefined; } })(); // @silent-fallback-ok — an unreadable value only changes the wording below
       for (const name of [EMAIL_SECRET, EMAIL_RECIPIENT_SECRET, EMAIL_PROVIDER_ACCOUNT_SECRET]) if (readSecret(name)) deleteSecret(name);
       email?.forget();
-      return { stopped: true, changed: true, detail: 'Email is switched off on this machine: reports go to our conversation again, and the email details are gone from here. The email account itself stays yours. If it was your own Gmail or iCloud, its app password still exists in your account; I can remove it with one more sign-in if you want.' };
+      const tail = shape === 'A' ? ' The Resend account stays yours.'
+        : shape === 'B' ? ' Its app password still exists in your Google or iCloud account; I can remove it with one more sign-in if you want.'
+          : shape === 'C' ? ' The mailbox you gave me, and its app password, stay as they were; you can remove that app password in its account.'
+            : ' The email account itself stays yours.';
+      return { stopped: true, changed: true, detail: `Email is switched off on this machine: reports go to our conversation again, and the email details are gone from here.${tail}` };
     },
   },
 ]);

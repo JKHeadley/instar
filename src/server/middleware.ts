@@ -275,6 +275,13 @@ export function authMiddleware(
       return;
     }
 
+    // The same page takes the email proof's code (docs/specs/backup-email-sending.md): the PIN is the auth, checked
+    // in the handler with the unlock route's limits, plus the code's own five-attempt cap. Exact path and method.
+    if (req.method === 'POST' && req.path === '/recommended-services/email/code') {
+      next();
+      return;
+    }
+
     // Mobile pairing (docs/specs/mobile-pairing-link.md): the redeem and the self-probe
     // ping are public by exact path+method; mint and devices stay behind the bearer gate.
     if ((req.path === '/mobile/pairing-codes/redeem' && req.method === 'POST')

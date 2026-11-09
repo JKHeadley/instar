@@ -79,7 +79,7 @@ describe('the email-v1 recipe', () => {
     expect(done).toMatchObject({ stopped: true, changed: true });
     expect(store).toEqual({});
     expect(forgot).toBe(true);
-    expect(done.detail).toMatch(/account itself stays yours/);
+    expect(done.detail).toMatch(/email details are gone from here/);
   });
 });
 

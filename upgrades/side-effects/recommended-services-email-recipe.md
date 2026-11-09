@@ -111,6 +111,17 @@ Concerns raised and how each was resolved in this change:
 
 ---
 
+## Live proof (test-agent rung) and what it changed
+
+Throwaway `emailproof-agent` on the Mac Studio, built from this branch, with its own test Telegram group (`Instar test - email`, the spare PR-2760 test bot) and `email-v1` on its proving list. Echo played the person; every person-side message is labelled `[TEST]`.
+
+- **Shape A (Resend):** ask in Lifeline → the session refused to take the address in chat and pointed to the confirm page → the yes on the real page (phone width) with the typed address `echo+email-a@sagemindai.io` → the setup session (its own topic) offered A, B and C as equals → opened the Resend account, counted the signup mail, asked for the verification link through one Secret Drop, confirmed the account, stored a full-access key through the key route → sent the proof email; Resend reported it `delivered`; the code entered on the real page → `working`. A scheduled job with `deliver: ["email"]` then emailed its report: row `delivered`, run marked with `emailOutboxId`, the email read in the real inbox in a browser (the job's own final message, to the typed address only).
+- **The drill:** `email.enabled: false`, the same job run again → the report arrived in the job's Telegram topic with the line "I was asked to email you this, but email isn't set up, so here it is instead."; row `fallen-back`.
+- **Switch-off:** a no with switch-off drained, removed the stored values and told the person once.
+- **Shape C (agent mailbox over SMTP):** a new yes with `echo+email-c@sagemindai.io`; Echo's own Workspace mailbox and an app password handed through one Secret Drop; the proof went out over Gmail SMTP and its code was entered on the page → `working`; a scheduled report went out `accepted`, from echo@sagemindai.io to the typed address only, read in the real inbox.
+
+Defects the proof found, fixed in this change: the code route sat behind bearer auth, so the confirm page (which holds only the PIN) could not submit a code — now exempt by exact path and method like the confirm route itself, with an E2E check through the real middleware; the confirm page printed a stray "null" for every service (its `show()` did not drop empty sections); the switch-off message named an app password for every shape (now shape-specific); the awareness section now hands people the direct confirm-page link and says never to take the address or code in chat.
+
 ## Evidence pointers
 
 Unit: `tests/unit/email-core.test.ts`, `email-transports.test.ts`, `email-outbox.test.ts`, `email-opt-in.test.ts`, `email-service.test.ts`, `email-recipe.test.ts`, `JobScheduler-email.test.ts`. Integration: `tests/integration/recommended-services-email.test.ts`. E2E: `tests/e2e/email-sending-lifecycle.test.ts` (the drill).

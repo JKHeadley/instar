@@ -3532,7 +3532,7 @@ export class JobScheduler {
       const sent = await this.deliverJobReport(job, summary);
       // A lazy topic that could not be created leaves the generic messenger, as before.
       if (!sent.ok && !job.topicId && this.messenger) {
-        try { await this.messenger.send({ userId: 'system', content: summary }); } catch (err) { console.error(`[scheduler] Failed to send job notification: ${err}`); }
+        try { await this.messenger.send({ userId: 'system', content: summary }); } catch (err) { console.error(`[scheduler] Failed to send job notification: ${err}`); } // @silent-fallback-ok — logged; the generic messenger is itself the last fallback for this report
       }
     } else if (this.messenger) {
       try {
@@ -3541,7 +3541,7 @@ export class JobScheduler {
           content: summary,
         });
       } catch (err) {
-        console.error(`[scheduler] Failed to send job notification: ${err}`);
+        console.error(`[scheduler] Failed to send job notification: ${err}`); // @silent-fallback-ok — logged; the generic messenger is the last route for this report
       }
     }
   }
@@ -3566,7 +3566,7 @@ export class JobScheduler {
         this.saveJobTopicMapping(job.slug, topic.topicId);
       } catch (err) {
         console.error(`[scheduler] Failed to create lazy topic for ${job.slug}: ${err}`);
-        return { ok: false };
+        return { ok: false }; // @silent-fallback-ok — logged; the caller sees not-ok and falls back (messenger, or the email row's retry)
       }
     }
     const acked = (r: unknown): { ok: boolean; messageId?: string | number } => {
@@ -3594,7 +3594,7 @@ export class JobScheduler {
         return acked(await withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram)!.sendToTopic(newTopic.topicId, text)));
       } catch (recreateErr) {
         console.error(`[scheduler] Failed to recreate topic for ${job.slug}: ${recreateErr}`);
-        return { ok: false };
+        return { ok: false }; // @silent-fallback-ok — logged; the caller sees not-ok (an email row stays falling-back and retries)
       }
     }
   }
@@ -3621,7 +3621,7 @@ export class JobScheduler {
         : `*Job Complete: ${job.name}*\nStatus: ${failed ? 'Failed' : 'Done'}\n\n${ownerText}`;
       return this.emailReports.submitReport({ executionId: runId, job, subject: statusLine, ownerText, topicText }) ?? undefined;
     } catch (err) {
-      // Never break completion handling: an unmarked run is picked up by the reconciliation sweep.
+      // Never break completion handling: an unmarked run is picked up by the reconciliation sweep. @silent-fallback-ok — logged, and reconciled
       console.error(`[scheduler] Email report for ${job.slug} not written: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }

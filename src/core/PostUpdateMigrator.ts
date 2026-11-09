@@ -1413,7 +1413,8 @@ export function EMAIL_CLAUDEMD_SECTION(port: number): string {
 Once the person says yes to Email on the Services row (they type the one address I may ever email) and its proof passes, I can email them. Only them: there is no recipient field anywhere. A job with \`"deliver": ["email"]\` in jobs.json emails the report it would have sent to its topic (\`["telegram", "email"]\` does both); it never makes a quiet job loud. If an email is refused, unsure, or email isn't set up, the report comes to the topic with one line saying why, so a copy may arrive twice.
 - State: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/recommended-services/email/status\` (working, unproven, not set up; today's budget). Rows: \`GET /email/outbox\` (hashes only).
 - One-off from a session: \`POST /email/send-to-owner\` {subject, text} with \`X-Instar-Request: 1\` and the session's \`X-Instar-Bind-Token\`; refused from a conversation with other readers. It is HTTP, outside the MCP external-operation gate: the fixed recipient and the credential guard are its controls.
-- **When to use** (PROACTIVE): the person asks to get something by email → if email isn't set up, offer it (the Services row); if it is, send it, or set the job's \`deliver\`.
+- Never take the address or the proof code in chat: send the confirm page link (\`<dashboard>/dashboard/service-yes?service=email\`), where they type the address and later the code with their PIN.
+- **When to use** (PROACTIVE): the person asks to get something by email → if email isn't set up, offer it with that link; if it is, send it, or set the job's \`deliver\`.
 `;
 }
 

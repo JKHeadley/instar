@@ -154,7 +154,9 @@ describe('email: production wiring', () => {
     expect(proof.body.result).toBe('waiting');
     const code = String(resend.sends[resend.sends.length - 1].body.text).match(/(\d{6})/)![1];
     expect((await request(app).post('/recommended-services/email/prove').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({})).body.result).toBe('waiting');
-    const entered = await request(app).post('/recommended-services/email/code').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({ code, pin: PIN });
+    // The confirm page holds no bearer token: the code route takes the PIN alone, through the real middleware.
+    expect((await request(app).post('/recommended-services/email/code').set('X-Instar-Request', '1').send({ code, pin: 'wrong-pin' })).status).toBe(403);
+    const entered = await request(app).post('/recommended-services/email/code').set('X-Instar-Request', '1').send({ code, pin: PIN });
     expect(entered.body).toEqual({ confirmed: true });
     expect((await request(app).post('/recommended-services/email/verify').set('Authorization', `Bearer ${AUTH}`).set('X-Instar-Request', '1').send({})).body.result).toBe('pass');
 
