@@ -12,6 +12,7 @@ import {ConversationGraphHeaderCustody} from '../../src/server/ConversationGraph
 import {ConversationGraphRuntimeReadSource} from '../../src/server/ConversationGraphReadSource.js';
 import {ConversationGraphReadModel} from '../../src/core/conversationGraphRead.js';
 import {nodeKey,type NodeRef} from '../../src/core/conversationGraph.js';
+import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
 
 async function fixture(){
  const actual=await setupGraphRuntimeFixture();
@@ -201,7 +202,7 @@ describe('owner corrections through actual native admission, witness HTTP and tw
   expect(node.body).toMatchObject({capabilities:{ownerCorrections:true,ownerErasure:true},correction:{headerVersion:1},erasure:{headerForgotten:false}});
   const files=['src/core/conversationGraph.ts','src/core/conversationGraphRead.ts','src/core/EffortHeaderStore.ts','src/server/ConversationGraphHeaderCustody.ts','src/server/ConversationGraphReadSource.ts','src/server/conversationGraphRoutes.ts'];
   const sourceHashes=Object.fromEntries(files.map(file=>[file,crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')]));
-  const directory=path.join(process.cwd(),'.instar','state','build');fs.mkdirSync(directory,{recursive:true});
+  const directory=testEvidenceDir();fs.mkdirSync(directory,{recursive:true});
   fs.writeFileSync(path.join(directory,'conversation-graph-wire-capture.json'),JSON.stringify({kind:'local-synthetic-http-capture',uncommittedSources:true,sourceHashes,
    limitations:['test viewer resolver; not device-signature evidence','synthetic data and loopback witness; no real server deployment','effort envelopes only; no flat source-alias integration proof'],
    capturedAt:new Date().toISOString(),roots:roots.body,node:node.body},null,2));

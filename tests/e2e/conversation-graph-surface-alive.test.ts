@@ -24,6 +24,7 @@ import {encodeRouteRef} from '../../src/core/conversationGraph.js';
 import {createMockSessionManager} from '../helpers/setup.js';
 import {makeDevice} from '../helpers/mobileDevice.js';
 import {setupGraphRuntimeFixture,witnesses} from '../helpers/conversation-graph-runtime.js';
+import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
 
 const HOST='graph-alive.example.dev';
 describe('Conversations production AgentServer composition',()=>{
@@ -165,7 +166,7 @@ describe('Conversations production AgentServer composition',()=>{
    const sources=['src/server/ConversationGraphOwnerChanges.ts','src/server/ConversationGraphSurface.ts',
     'src/server/ConversationGraphOwnerAdmission.ts','src/server/ConversationGraphReplicationRuntime.ts'];
    const sourceHashes=Object.fromEntries(sources.map(file=>[file,crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')]));
-   const out=path.resolve('.instar/state/build');fs.mkdirSync(out,{recursive:true});
+   const out=testEvidenceDir();fs.mkdirSync(out,{recursive:true});
    fs.writeFileSync(path.join(out,'native-owned-local-wire-capture-with-phone-corrections.json'),JSON.stringify({
     kind:'actual-agent-server-synthetic-signed-phone-capture',uncommittedSources:true,
     runtime:'injected-two-member-owned-runtime; fixture-seeded-device-approval; not-default-bootstrap-or-pairing-UI-or-physical-device-proof',sourceHashesAtCapture:sourceHashes,capturedAt:new Date().toISOString(),

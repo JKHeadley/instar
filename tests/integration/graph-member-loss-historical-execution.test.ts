@@ -26,8 +26,9 @@ import {LiveConfig} from '../../src/config/LiveConfig.js';
 import {initializeConversationGraphOwnerPolicy,readConversationGraphOwnerPolicy} from '../../src/core/ConversationGraphOwnerPolicy.js';
 import {canonicalHash} from '../../src/core/GraphWitnessTypes.js';
 import type {InstarConfig} from '../../src/core/types.js';
+import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
 it('preserves original M1 certified history through actual planned M2 then fresh-owner loss to M3',async()=>{
- let metricsTimer:ReturnType<typeof setInterval>|undefined;const observer=process.env.GRAPH_LOSS_DIAGNOSTIC_PERF==='1'?observeFixturePerformance(fs.mkdtempSync(path.join(process.cwd(),'.instar/state/build/graph-loss-historical-perf-'))):null;try{
+ let metricsTimer:ReturnType<typeof setInterval>|undefined;const observer=process.env.GRAPH_LOSS_DIAGNOSTIC_PERF==='1'?observeFixturePerformance(fs.mkdtempSync(path.join(testEvidenceDir(),'graph-loss-historical-perf-'))):null;try{
  const started=Date.now(),phase=(name:string)=>console.info('[historical-loss-phase]',JSON.stringify({phase:name,elapsedMs:Date.now()-started}));
  if(observer){metricsTimer=setInterval(()=>{const value=observer.snapshot();console.info('[historical-loss-safe-sites]',JSON.stringify({failure:value.failure,callsiteSampling:value.callsiteSampling,sampleCount:value.samples.length}));},15000);metricsTimer.unref();}
  phase('fixture-start');const f=await setupGraphDefaultPlannedTransition({onPhase:name=>phase('fixture-'+name)});phase('fixture-complete');const manager=f.defaults[1],identity=f.native.managers[1],stateDir=identity.baseDir,secrets=f.secrets[1],native=manager.nativeDelegationDependencies!,actual=manager.memberLossPlanningComponents()!,runtime=manager.runtime!,removed=f.native.managers[0].loadIdentity().machineId;

@@ -6,8 +6,9 @@ import {it,expect,vi} from 'vitest';
 import {setupGraphDefaultPlannedTransition} from '../helpers/graph-default-planned-transition.js';
 import {GraphCustodyActivationPinStore} from '../../src/core/GraphCustodyActivationPinStore.js';
 import type {GraphSourceTransferStage} from '../../src/core/ConversationGraphReplicationTransfer.js';
+import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
 it('clears v1 ordinary pin clones and detached envelopes during an awaited import before purge returns',async()=>{
- const observer=process.env.GRAPH_PIN_DIAGNOSTIC_PERF==='1'?observeFixturePerformance(fs.mkdtempSync(path.join(process.cwd(),'.instar/state/build/graph-ordinary-pin-perf-'))):null;try{
+ const observer=process.env.GRAPH_PIN_DIAGNOSTIC_PERF==='1'?observeFixturePerformance(fs.mkdtempSync(path.join(testEvidenceDir(),'graph-ordinary-pin-perf-'))):null;try{
  const began=Date.now(),phase=(name:string)=>console.info('ordinary-pin-phase',JSON.stringify({name,elapsedMs:Date.now()-began}));phase('fixture-start');
  const f=await setupGraphDefaultPlannedTransition({onPhase:phase,skipReadinessForComponentProof:true}),manager=f.defaults[0],runtime=manager.runtime!,authority=manager.memberLossPlanningComponents()!.authority,native=manager.nativeDelegationDependencies!,reader=await runtime.transfer.openRetainedCustodyStage(f.activation,authority),records:GraphSourceTransferStage['records']=[],rewraps:GraphSourceTransferStage['rewraps']=[];
  phase('reader-open');let release!:()=>void,entered!:()=>void;const blocked=new Promise<void>(resolve=>{release=resolve;}),started=new Promise<void>(resolve=>{entered=resolve;});let captured:GraphSourceTransferStage|undefined;

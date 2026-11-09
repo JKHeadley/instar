@@ -39,6 +39,7 @@ import {CoherenceJournal} from '../../src/core/CoherenceJournal.js';
 import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {canonicalHash,canonicalJson,signGraphRecord} from '../../src/core/GraphWitnessTypes.js';
 import {signGraphAuthorizationReceipt} from '../../src/core/ConversationGraphReplicationProof.js';
+import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
 const managers:ConversationGraphDefault[]=[],servers:Server[]=[],journals:CoherenceJournal[]=[];
 afterEach(async()=>{for(const server of servers.splice(0)){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}for(const manager of managers.splice(0))await manager.close();for(const journal of journals.splice(0))journal.close();});
 async function fixture(stagingDiskQuotaBytes?:number){
@@ -89,7 +90,7 @@ it('finds only the actually pinned genesis planning objects after a native peer 
  original.secrets.delete('conversation_graph_owned_publication');original.secrets.syncDurably();expect(()=>host.memberLossPlanningComponents()).toThrow('planning-publication-unverified');expect(original.secrets.get(GRAPH_OWNER_CONTROL_SECRET)).toEqual(control);
 });
 it('returns a large real held Source tail through fresh signed response pages without inventing Saved authority',async()=>{
- const evidenceDir=fs.mkdtempSync(path.join(os.tmpdir(),'graph-owned-evidence-'));runtimeDirectories.push(evidenceDir);const phase=(name:string)=>fs.appendFileSync(path.join(evidenceDir,'owned-controller-response-phases.jsonl'),JSON.stringify({at:new Date().toISOString(),phase:name})+'\n');phase('start');
+ const evidenceDir=testEvidenceDir();const phase=(name:string)=>fs.appendFileSync(path.join(evidenceDir,'owned-controller-response-phases.jsonl'),JSON.stringify({at:new Date().toISOString(),phase:name})+'\n');phase('start');
  const f=await fixture(),[host,follower]=f.defaults;for(const manager of f.defaults)await manager.ensureOwner({principalKey:'owner:echo',authenticationMethod:'owner-dashboard',requestId:'framed-tail-owner',isCurrent:()=>true});
  const runtime=host.runtime!,current=runtime.actuation(),membership=runtime.installedMembership,identity=f.native.managers[0];await runtime.prepareNativeTailClosure();
  let predecessorHash:string|null=null;
