@@ -363,7 +363,7 @@ describe('an owner phone, with Face ID', () => {
     const list = await signed(ctx.app, phone.dev, phone.deviceId, 'GET', '/mobile/pairing-requests');
     expect(list.status).toBe(200);
     expect(list.body.presenceKey).toBe(true);
-    expect(list.body.waiting).toEqual([expect.objectContaining({ deviceId: w.deviceId, deviceName: 'iPhone', fingerprint: fp, role: 'owner' })]);
+    expect(list.body.waiting).toEqual([expect.objectContaining({ deviceId: w.deviceId, client: 'phone', deviceName: 'iPhone', fingerprint: fp, role: 'owner' })]);
     expect(list.body.waiting[0].code).toBeUndefined();
     const dmsBefore = ctx.dms.length;
     const a = await signed(ctx.app, phone.dev, phone.deviceId, 'POST', path_(w.deviceId, 'approve'), await faceId(ctx, phone, w.deviceId, 'approve', fp));

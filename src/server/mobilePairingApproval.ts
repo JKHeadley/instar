@@ -11,6 +11,7 @@ import { deviceClientOf } from '../core/deviceClientWording.js';
 import type { Request, Response, Router } from 'express';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import type { DeviceRecord } from '../core/MobileDeviceKeys.js';
+import { isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { BoundSecretStore, activeOwnerPhone, signedHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { approveAnswer, isPairingApproveEnabled, personFields, type MobilePairingService } from './mobilePairingRoutes.js';
@@ -85,7 +86,7 @@ export function mountPairingApprovalDeviceRoutes(router: Router, svc: MobilePair
     res.json({
       presenceKey: !!svc.devices.get(approver)?.presenceKey,
       waiting: svc.waitingPhones().map((d) => ({
-        deviceId: d.id, deviceName: d.deviceName, label: d.label, fingerprint: d.fingerprint ?? null, requestedAt: d.pairedAt, expiresAt: d.expiresAt ?? null, canApprove: svc.approvable(d), ...personFields(d, svc),
+        deviceId: d.id, client: isBrowserDevice(d) ? 'browser' : 'phone', deviceName: d.deviceName, label: d.label, fingerprint: d.fingerprint ?? null, requestedAt: d.pairedAt, expiresAt: d.expiresAt ?? null, canApprove: svc.approvable(d), ...personFields(d, svc),
       })),
     });
   });

@@ -498,6 +498,25 @@ describe('POST /mobile/browser-devices', () => {
     expect(s.ledger!.activationFor(r.body.deviceId)).toBeNull();
   });
 
+  it('a paired owner iPhone comes first: approval is owner-phone with Telegram as the backup, and a failed Telegram copy keeps the setup', async () => {
+    // Operator 2026-11-09: "Why can't the iphone app be used for this approval flow?"
+    const sent: string[] = [];
+    const s = await server({ ownerDM: async (t) => { sent.push(t); return 7; } });
+    vi.spyOn(s.pairing, 'ownerPhoneCanApprove').mockReturnValue(true);
+    const r = await post(s, body(s.host).payload);
+    expect(r.status).toBe(201);
+    expect(r.body).toMatchObject({ status: 'pending', approval: 'owner-phone', telegramBackup: true });
+    expect(sent).toHaveLength(1);
+    expect((await request(s.srv).get('/mobile/browser-devices/status').set('Host', s.host)).body.ownerPhoneApproves).toBe(true);
+
+    const f = await server({ ownerDM: async () => null });
+    vi.spyOn(f.pairing, 'ownerPhoneCanApprove').mockReturnValue(true);
+    const r2 = await post(f, body(f.host).payload);
+    expect(r2.status).toBe(201);
+    expect(r2.body).toMatchObject({ status: 'pending', approval: 'owner-phone', telegramBackup: false });
+    expect(f.pairing.devices.get(r2.body.deviceId)!.setupState).toBe('awaiting');
+  });
+
   it('not delivered, no lease, and no approval path each remove the setup and return its slot', async () => {
     for (const o of [
       { ownerDM: async () => null },
@@ -529,6 +548,23 @@ describe('POST /mobile/browser-devices', () => {
     const app1 = express(); app1.use(express.json());
     app1.use(createMobilePairingRouter(s1.pairing, s1.pairing.deps, { config: s1.config, telegram: {} } as never));
     expect((await request(app1).get('/mobile/browser-devices/status')).body.telegramSend).toBe(true);
+  });
+
+  it('status: names the private chat the approval arrives in, by the bot name, and falls back to null', async () => {
+    // 2026-11-09: the operator looked for the approval message in the group and said no code arrived.
+    const s = await server({ ownerDM: async () => 7, telegramOwner: true });
+    const app = express(); app.use(express.json());
+    app.use(createMobilePairingRouter(s.pairing, s.pairing.deps,
+      { config: s.config, telegram: { botIdentity: async () => ({ name: 'Echo Agent', username: 'echo_test_bot' }) } } as never));
+    const st = (await request(app).get('/mobile/browser-devices/status')).body;
+    expect(st.approvalPath).toBe('telegram');
+    expect(st.approvalChat).toEqual({ name: 'Echo Agent', username: 'echo_test_bot' });
+    const appBroken = express(); appBroken.use(express.json());
+    appBroken.use(createMobilePairingRouter(s.pairing, s.pairing.deps,
+      { config: s.config, telegram: { botIdentity: async () => { throw new Error('getMe failed'); } } } as never));
+    const r = await request(appBroken).get('/mobile/browser-devices/status');
+    expect(r.status).toBe(200);
+    expect(r.body.approvalChat).toBeNull();
   });
 
   it('status: precedence revoked > registry > elsewhere > not-found', async () => {

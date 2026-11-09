@@ -396,10 +396,21 @@ export function browserApprovalText(agent: string, d: DeviceRecord, codeLine: st
   ]).join('\n\n');
 }
 
-function setupView(d: DeviceRecord, svc: MobilePairingService, host: string): Record<string, unknown> {
+/**
+ * A paired owner iPhone that can approve this browser with Face ID right now. When there is one it is the
+ * first way shown, ahead of the private Telegram message (operator 2026-11-09: "Why can't the iphone app
+ * be used for this approval flow?"); Telegram stays as the backup route.
+ */
+function phoneApproves(svc: MobilePairingService, d: DeviceRecord): boolean {
+  return isPairingApproveEnabled(svc.deps.config) && svc.approvable(d) && svc.ownerPhoneCanApprove();
+}
+
+function setupView(d: DeviceRecord, svc: MobilePairingService, host: string, telegramBackup?: boolean): Record<string, unknown> {
+  const phone = svc.approvalPath() === 'telegram' && phoneApproves(svc, d);
   return {
     deviceId: d.id, machineId: svc.deps.selfMachineId ?? null, host, status: d.status,
-    approval: svc.approvalPath(), fingerprint: d.fingerprint ?? null,
+    approval: phone ? 'owner-phone' : svc.approvalPath(), fingerprint: d.fingerprint ?? null,
+    ...(phone ? { telegramBackup: telegramBackup ?? true } : {}),
     ...(d.status === 'pending' && d.expiresAt ? { expiresAt: d.expiresAt } : {}),
   };
 }
@@ -433,18 +444,23 @@ export function browserKeyState(svc: MobilePairingService, keyHash: string): Rec
 /** Bearer routes for browser setup (§4.2) and status (§4.6). */
 export function mountBrowserDeviceRoutes(
   router: Router, svc: MobilePairingService,
-  opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean },
+  opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean; approvalChat?: () => Promise<{ name: string; username: string | null } | null> },
 ): void {
-  router.get('/mobile/browser-devices/status', (req: Request, res: Response) => {
+  router.get('/mobile/browser-devices/status', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!svc.browserOn()) { res.status(503).json({ error: 'browser-devices-off', detail: 'Conversations in the dashboard are switched off on this agent.' }); return; }
     if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'bearer-required' }); return; }
     const machineId = svc.deps.selfMachineId ?? null;
     const kh = typeof req.query.keyHash === 'string' ? req.query.keyHash.toLowerCase() : null;
     if (kh !== null && !/^[0-9a-f]{64}$/.test(kh)) { res.status(400).json({ error: 'bad-key-hash' }); return; }
+    // Which private chat the approval message arrives in, by the bot's own name, so a missed message is found.
+    const approvalChat = svc.approvalPath() === 'telegram' && opts.approvalChat
+      ? await Promise.race([opts.approvalChat().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 1500).unref?.())])
+      : null;
     res.json({
-      enabled: true, machineId, nickname: machineNickname(svc, machineId) ?? svc.deps.config.projectName ?? null,
+      enabled: true, machineId, nickname: machineNickname(svc, machineId) ?? svc.deps.config.projectName ?? null, approvalChat,
       serverTime: Date.now(), approvalPath: svc.approvalPath(), approveEnabled: isPairingApproveEnabled(svc.deps.config),
+      ownerPhoneApproves: isPairingApproveEnabled(svc.deps.config) && svc.ownerPhoneCanApprove(),
       // Sending into Telegram from the app speaks as the Telegram owner and needs the serving lease.
       telegramSend: !!opts.telegramConfigured?.() && svc.holdsLease() && (svc.deps.telegramOwnerPresent ? svc.deps.telegramOwnerPresent() : true),
       limits: { maxFiles: MAX_ATTACHMENTS, maxMessageBytes: MAX_MESSAGE_BYTES, maxFileBytes: MAX_FILE_BYTES, chunkBytes: CHUNK_BYTES },
@@ -588,7 +604,10 @@ export function mountBrowserDeviceRoutes(
     }
     svc.browser.noteNotifying();
     const sent = await svc.sendBrowserApproval(device);
-    if (!sent) {
+    if (!sent && phoneApproves(svc, device)) {
+      // The Telegram copy did not go out, but the owner's iPhone can approve: keep the setup and say so.
+      featureEvidence.record(BROWSER_FEATURE, { kind: 'fired', reason: 'setup kept: phone approves, Telegram copy not delivered', context: { deviceId: device.id } });
+    } else if (!sent) {
       if (svc.devices.removeIfStillSettingUp(device.id)) svc.dropSetupSecrets(device.id);
       featureEvidence.record(BROWSER_FEATURE, { kind: 'error', reason: 'setup failed: approval message not delivered', context: { deviceId: device.id } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the approval message in Telegram. Open a private chat with the bot and send it any message, then try again.' });
@@ -603,7 +622,7 @@ export function mountBrowserDeviceRoutes(
     }
     const now = svc.devices.get(device.id) ?? device;
     svc.notifyOwnerPhones(now);
-    res.status(201).json({ ...setupView(now, svc, host), codeFormat: 'word' });
+    res.status(201).json({ ...setupView(now, svc, host, !!sent), codeFormat: 'word' });
   });
 }
 
