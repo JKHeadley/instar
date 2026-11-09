@@ -52,6 +52,10 @@ Unified: `note` records replicate like every other store record; the failover se
 ## Proportion
 Tier 2, ~600 LOC incl. tests, 1 attempt. In line.
 
+## Addendum — the owner's binding and tap routes (same PR, after the second pass)
+
+Two PIN-gated routes close the loop's last gap before the live proof: `POST /chief-of-staff/projects` writes a CONFIRMED `binding` (the store schema validates it; an invalid body writes nothing) plus the `tree` link under the Chief of Staff root (or a named parent for a sub-topic) and marks the project due — spec §1.3's "a binding is written ONLY by an owner tap", the dashboard PIN being that tap; `POST /chief-of-staff/projects/:key/tap` carries the dashboard's Unpark / Confirm-done to `ownerTap` (the same owner-only checks as the Telegram buttons). Both are owner identity mechanics (PIN), no judgment; both are refused 503 where the loop is off. The conversational draft-binding flow ("describe an effort in the Chief of Staff conversation") remains PR 5b; the live proof binds its four synthetic projects through the first route. Tests: unit (binding + tree + due + invalid refused; sub-topic under its parent), integration (PIN wrong/missing refused, bad body 400, bind 201, listed, tap ok, bad action 400).
+
 ## Class-Closure Declaration
 
 - **defectClass:** `unbounded-self-action` — **closure:** `n/a` — **reason:** this change adds no new self-triggered controller; it makes two existing bounded sends (the daily note, the capped immediates) count from durable records instead of memory, which can only lower their rate across restarts, and the triage route is a one-shot owner tap. No restart / respawn / kill / retry path is added.

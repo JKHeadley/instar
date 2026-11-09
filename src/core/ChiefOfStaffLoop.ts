@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import {
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
   buildCheckEvent, buildLastTick, buildLifecycleEvent, buildRenewal,
-  type BindingState, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey } from './ChiefOfStaffStore.js';
+  type BindingState, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import type { ChiefOfStaffActionProtocol, CosProtocolOutcome } from './ChiefOfStaffActionProtocol.js';
 
@@ -384,6 +384,26 @@ export class ChiefOfStaffLoop {
   }
 
   /** §4: record an owner check-in. The CALLER has already verified the principal on the inbound event. */
+  /**
+   * §1.3: the owner binds a conversation as a project (the route has verified the owner principal / PIN — a binding
+   * is written ONLY by an owner tap). Writes the confirmed `binding` record and the `tree` link under the CoS root
+   * (or under `parentConversationKey` for a sub-topic). Validation is the store schema's: an invalid binding is refused,
+   * nothing is written.
+   */
+  bindProject(input: { conversationKey: string; goal: string; doneDefinition: Array<{ id: string; kind: 'deterministic' | 'judgment'; text: string; certify?: 'owner-confirms' | 'agent-may-certify' }>; checkCadenceHours?: number; linked?: { repos?: string[]; branches?: string[]; domains?: string[] }; initiativeId?: string; parentConversationKey?: string | null }): { ok: true; conversationKey: string } | { ok: false; reason: 'invalid-binding' | 'write-refused' } {
+    const cfg = this.d.config();
+    const at = new Date(this.d.now()).toISOString();
+    const binding = { conversationKey: input.conversationKey, goal: String(input.goal ?? '').trim(), doneDefinition: input.doneDefinition, checkCadenceHours: Math.max(cfg.minCadenceHours, Number(input.checkCadenceHours) || cfg.defaultCadenceHours), linked: { repos: input.linked?.repos ?? [], branches: input.linked?.branches ?? [], domains: input.linked?.domains ?? [] }, ...(input.initiativeId ? { initiativeId: input.initiativeId } : {}), confirmedBy: 'owner' as const, confirmedAt: at };
+    this.memo = null;
+    const r = this.d.journal.emit(`binding:${input.conversationKey}`, buildBindingPut(binding));
+    if (r.outcome !== 'emitted' && r.outcome !== 'accepted') return { ok: false, reason: r.outcome.startsWith('dropped') ? 'invalid-binding' : 'write-refused' };
+    const root = this.safe(() => this.d.rootConversationKey?.() ?? null, null);
+    const parent = input.parentConversationKey === undefined ? root : input.parentConversationKey;
+    if (parent !== null) this.d.journal.emit(input.conversationKey, buildTreePut(input.conversationKey, parent, parent === root ? 'project' : 'sub-topic'));
+    this.dirty.add(input.conversationKey); // first check on the next tick
+    return { ok: true, conversationKey: input.conversationKey };
+  }
+
   /** §4: an owner check-in from the app or the console (the route has already verified the owner principal / PIN). */
   checkIn(input: { renewedVia: 'app' | 'console'; principal: string; eventRef?: string }): { ok: true; lease: ReturnType<ChiefOfStaffLoop['lease']> } | { ok: false; reason: 'no-signer' | 'write-refused' } {
     if (!this.d.sign) return { ok: false, reason: 'no-signer' };

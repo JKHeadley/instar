@@ -444,3 +444,25 @@ describe('ChiefOfStaffLoop — note dedupe keeps every class (PR 5 review #1)', 
     expect(note).toContain('Project B says it is done but these checks still fail');
   });
 });
+
+describe('ChiefOfStaffLoop.bindProject (the owner tap that binds a project)', () => {
+  it('writes a confirmed binding and the tree link under the CoS root, marks the project due, and refuses an invalid binding without writing', () => {
+    const w = world(); const l = loop(w);
+    (l as unknown as { d: { rootConversationKey?: () => string | null } }).d.rootConversationKey = () => 'telegram:9';
+    const r = l.bindProject({ conversationKey: 'telegram:1', goal: 'Ship it', doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }], linked: { repos: ['o/r'] } });
+    expect(r).toEqual({ ok: true, conversationKey: 'telegram:1' });
+    const b = w.j.entries.find((e) => e.data.recordType === 'binding' && e.data.conversationKey === 'telegram:1')!;
+    expect(b.data).toMatchObject({ confirmedBy: 'owner', goal: 'Ship it', checkCadenceHours: CHIEF_OF_STAFF_LOOP_DEFAULTS.defaultCadenceHours });
+    expect(w.j.entries.find((e) => e.data.recordType === 'tree' && e.data.conversationKey === 'telegram:1')?.data).toMatchObject({ parentConversationKey: 'telegram:9', role: 'project' });
+    expect(boundProjects(w.j.entries).map((p) => p.conversationKey)).toContain('telegram:1');
+    const bad = l.bindProject({ conversationKey: 'telegram:2', goal: 'x', doneDefinition: [] });
+    expect(bad).toEqual({ ok: false, reason: 'invalid-binding' });
+    expect(w.j.entries.some((e) => e.data.conversationKey === 'telegram:2')).toBe(false);
+  });
+  it('a sub-topic binds under its parent', () => {
+    const w = world(); const l = loop(w);
+    (l as unknown as { d: { rootConversationKey?: () => string | null } }).d.rootConversationKey = () => 'telegram:9';
+    l.bindProject({ conversationKey: 'telegram:3', goal: 'Sub', doneDefinition: [{ id: 'd', kind: 'judgment', text: 'ok' }], parentConversationKey: 'telegram:1' });
+    expect(w.j.entries.find((e) => e.data.recordType === 'tree' && e.data.conversationKey === 'telegram:3')?.data).toMatchObject({ parentConversationKey: 'telegram:1', role: 'sub-topic' });
+  });
+});

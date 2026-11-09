@@ -8848,6 +8848,35 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
     res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
   });
+  // POST /chief-of-staff/projects — the owner binds a conversation as a project (spec §1.3: a binding is
+  // written ONLY by an owner tap; here the dashboard's PIN is that tap). Body: conversationKey, goal,
+  // doneDefinition[{id,kind,text,certify?}], checkCadenceHours?, linked{repos,branches,domains}?, initiativeId?,
+  // parentConversationKey? (default: under the Chief of Staff root). Validation is the store schema's.
+  router.post('/chief-of-staff/projects', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof b.conversationKey !== 'string' || typeof b.goal !== 'string' || !Array.isArray(b.doneDefinition)) { res.status(400).json({ error: 'conversationKey, goal and doneDefinition are required' }); return; }
+    const r = ctx.chiefOfStaffLoop.bindProject({
+      conversationKey: b.conversationKey, goal: b.goal, doneDefinition: b.doneDefinition as never,
+      ...(typeof b.checkCadenceHours === 'number' ? { checkCadenceHours: b.checkCadenceHours } : {}),
+      ...(b.linked && typeof b.linked === 'object' ? { linked: b.linked as never } : {}),
+      ...(typeof b.initiativeId === 'string' ? { initiativeId: b.initiativeId } : {}),
+      ...(b.parentConversationKey === null || typeof b.parentConversationKey === 'string' ? { parentConversationKey: b.parentConversationKey as string | null } : {}),
+    });
+    if (!r.ok) { res.status(r.reason === 'invalid-binding' ? 400 : 409).json({ error: r.reason }); return; }
+    res.status(201).json({ ok: true, conversationKey: r.conversationKey });
+  });
+  // POST /chief-of-staff/projects/:key/tap — the owner's Unpark / Confirm-done from the dashboard (PIN = the tap).
+  router.post('/chief-of-staff/projects/:key/tap', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const action = String((req.body ?? {}).action ?? '');
+    if (action !== 'unpark' && action !== 'confirm-done') { res.status(400).json({ error: 'action must be unpark or confirm-done' }); return; }
+    const key = String(req.params.key ?? '');
+    const r = await ctx.chiefOfStaffLoop.ownerTap(`cos:${action}:${key}`, 'owner-tap');
+    res.status(r === 'ok' ? 200 : 409).json({ ok: r === 'ok', result: r });
+  });
   router.get('/chief-of-staff/projects/:key', (req, res) => {
     if (!ctx.chiefOfStaffLoop) {
       res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
