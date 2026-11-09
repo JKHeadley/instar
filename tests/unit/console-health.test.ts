@@ -29,12 +29,33 @@ describe('health-model', () => {
     expect(healthNeedRows({ ok: true, data: {} })).toBeNull();
   });
 
+  it('an answering agent with only unsorted notes reads running, even from an older server that says unsure', async () => {
+    const { buildHealthPage } = await model();
+    for (const verdict of ['unsure', 'running']) {
+      const p = buildHealthPage(answer(verdict, [issue({ id: 'a', impact: 'unclassified' }), issue({ id: 'b', impact: 'unclassified' })]));
+      expect(p.verdict).toBe('running');
+      expect(p.tone).toBe('ok');
+      expect(p.sub).toContain('2 notes I haven’t sorted yet');
+    }
+    // A problem that affects the person still raises it.
+    expect(buildHealthPage(answer('attention', [issue()])).tone).toBe('attn');
+  });
+
   it('Home gets only what affects the person', async () => {
     const { healthNeedRows } = await model();
     expect(healthNeedRows(answer('running', [issue({ impact: 'internal' })]))).toEqual([]);
     expect(healthNeedRows(answer('unsure', [issue({ impact: 'unclassified' })]))).toEqual([]);
     const rows = healthNeedRows(answer('attention', [issue()]));
     expect(rows).toEqual([{ key: 'iMessage', title: 'iMessage isn’t connected', detail: 'Messages won’t reach me.', href: '#/capacity/health?s=iMessage' }]);
+  });
+
+  it('each problem names its machine on Home, and says nothing when the agent named none', async () => {
+    const { healthNeedRows, machineWords } = await model();
+    const rows = healthNeedRows(answer('attention', [issue({ machine: { key: 'k1', name: 'Mac Studio' } })]));
+    expect(rows[0].detail).toBe('On Mac Studio · Messages won’t reach me.');
+    expect(machineWords(issue())).toBe('');
+    expect(machineWords(issue({ machine: { key: 'k1', name: null } }))).toBe('');
+    expect(machineWords(issue({ machine: { key: 'k1', name: '  ' } }))).toBe('');
   });
 
   it('the Ask link carries the question, encoded', async () => {
@@ -86,6 +107,16 @@ describe('the page', () => {
     expect(main.querySelector('[data-focus-key="h:GitSync.gitHygiene"]').hasAttribute('open')).toBe(true);
     expect(main.querySelector('details.list-section').hasAttribute('open')).toBe(true);
     expect(main.querySelector('h1').textContent).toBe('iMessage isn’t connected.');
+  });
+
+  it('a problem card says which machine it is on', async () => {
+    const { renderHealth } = await import(path.join(CONSOLE, 'health.js'));
+    const main = document.querySelector('main');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue({ machine: { key: 'k1', name: 'Mac Studio' } })])) });
+    const card = main.querySelector('[data-focus-key="h:iMessage"]');
+    expect(card.querySelector('summary').nextElementSibling.textContent).toBe('On Mac Studio');
+    await renderHealth(main, { get: vi.fn(async () => answer('attention', [issue()])) });
+    expect(main.textContent).not.toContain('On ');
   });
 
   // ── Quick actions (docs/specs/health-quick-actions.md) ──

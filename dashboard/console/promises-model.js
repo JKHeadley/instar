@@ -30,6 +30,16 @@ export function until(ts, now = Date.now()) {
 
 export { isMissed, lastTouched };
 
+/** Priority words and order (docs/specs/promise-review-and-priority.md §2.7). */
+export const PRIORITY_WORDS = { high: 'High priority', normal: 'Normal', low: 'Low priority' };
+export const PRIORITY_FILTERS = ['all', 'high', 'normal', 'low', 'unset'];
+export const PRIORITY_FILTER_LABELS = { all: 'All', high: 'High', normal: 'Normal', low: 'Low', unset: 'Not assessed' };
+export function priorityOf(c) {
+  return c && (c.priority === 'high' || c.priority === 'normal' || c.priority === 'low') ? c.priority : 'unset';
+}
+const PRIORITY_RANK = { high: 0, normal: 1, unset: 2, low: 3 };
+export function priorityRank(c) { return PRIORITY_RANK[priorityOf(c)]; }
+
 const BLOCKED_WORDS = {
   'user-input': 'your answer',
   'user-authorization': 'your approval',
@@ -50,6 +60,9 @@ export function toRow(c, now = Date.now(), names = {}) {
   const due = nextDue(c);
   const waiting = waitingOnWords(c);
   const bits = [];
+  const open = isActiveCommitment(c, now) || c.status === 'violated';
+  if (open && PRIORITY_WORDS[c.priority]) bits.push(PRIORITY_WORDS[c.priority]);
+  if (c.closedBy === 'promise-review' && !open) bits.push('closed by my review');
   if (waiting && waitsOnOperator(c)) bits.push(`waiting on ${waiting}`);
   else if (waiting === 'something outside') bits.push('waiting on something outside');
   if (!waitsOnOperator(c) && isMissed(c, now)) bits.push('due date passed · outcome unverified');
@@ -66,6 +79,7 @@ export function toRow(c, now = Date.now(), names = {}) {
     id: c.id,
     origin: c.originMachineId || null,
     replica: c.viewSource === 'replica',
+    priority: priorityOf(c),
     main: (waitsOnOperator(c)
       ? verifiedDisplayName(c.userRequest, c.id) || verifiedDisplayName(c.agentResponse, c.id)
       : verifiedDisplayName(c.agentResponse, c.id) || verifiedDisplayName(c.userRequest, c.id)) || 'Promise details unavailable',
@@ -79,21 +93,29 @@ export function toRow(c, now = Date.now(), names = {}) {
  * Sort every promise into the page's sections.
  * Returns { ok, sections:{waiting,missed,dueSoon,carrying,handled,closed}, counts, coverage, headline }.
  */
-export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null, peerIds = null, names = {} } = {}) {
+export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null, peerIds = null, names = {}, priority = 'all' } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read promises: ${res.reason}.` };
   if (res.data && res.data.enabled === false) return { ok: false, reason: 'Promise tracking is switched off on this agent.' };
   const list = Array.isArray(res.data && res.data.commitments) ? res.data.commitments : null;
   if (!list) return { ok: false, reason: 'The promise list answered without records.' };
 
   const fresh = (c) => now - lastTouched(c) <= STALE_DAYS * DAY;
-  const s = { waiting: [], missed: [], review: [], dueSoon: [], carrying: [], handled: [], closed: [] };
+  const s = { waiting: [], high: [], missed: [], review: [], dueSoon: [], carrying: [], handled: [], closed: [] };
+  const filter = PRIORITY_FILTERS.includes(priority) ? priority : 'all';
+  const priorityCounts = { all: 0, high: 0, normal: 0, low: 0, unset: 0 };
   for (const c of list) {
     if (!c) continue;
     if (isActiveCommitment(c, now) || c.status === 'violated') {
+      // Counts cover every open promise, before the filter; closed ones never count.
+      priorityCounts.all++;
+      priorityCounts[priorityOf(c)]++;
+      if (filter !== 'all' && priorityOf(c) !== filter) continue;
       // Echo-owned work stays in collapsed audit sections even when its due
       // date passed or a check failed. Only a named operator dependency appears
       // by default. Age never means a promise was handled or completed.
       if (waitsOnOperator(c)) s.waiting.push(c);
+      // High priority (a person is waiting on the agent) is shown first and open, whatever its age.
+      else if (c.priority === 'high') s.high.push(c);
       else if (!fresh(c)) s.handled.push(c);
       else {
         s.carrying.push(c);
@@ -104,7 +126,8 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
     }
   }
   const byNewest = (a, b) => (Date.parse(b.createdAt) || 0) - (Date.parse(a.createdAt) || 0);
-  for (const k of Object.keys(s)) s[k].sort(k === 'dueSoon' ? (a, b) => nextDue(a) - nextDue(b) : k === 'closed' ? (a, b) => Date.parse(b.resolvedAt) - Date.parse(a.resolvedAt) : byNewest);
+  const byPriorityThenNewest = (a, b) => priorityRank(a) - priorityRank(b) || byNewest(a, b);
+  for (const k of Object.keys(s)) s[k].sort(k === 'dueSoon' ? (a, b) => nextDue(a) - nextDue(b) : k === 'closed' ? (a, b) => Date.parse(b.resolvedAt) - Date.parse(a.resolvedAt) : byPriorityThenNewest);
   const sections = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map((c) => toRow(c, now, names))]));
   const counts = Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.length]));
 
@@ -124,7 +147,7 @@ export function buildPromisesPage(res, now = Date.now(), { expectedPeers = null,
   if (n.waiting) headline = `${plural(n.waiting, 'promise is', 'promises are')} waiting on you.`;
   else headline = 'Nothing is waiting on you.';
   // warning-path: pageHead
-  return { ok: true, sections, counts, coverage, headline, sub: '', tone: n.waiting ? 'attn' : coverage ? 'muted' : 'ok' };
+  return { ok: true, sections, counts, priorityCounts, filter, coverage, headline, sub: '', tone: n.waiting ? 'attn' : coverage ? 'muted' : 'ok' };
 }
 
 /** The detail sheet's story, in plain sentences. */
@@ -132,6 +155,7 @@ export function storyOf(c, now = Date.now(), names = {}) {
   const lines = [];
   if (c.userRequest) lines.push({ label: isInternalFollowUp(c) ? 'Internal follow-up' : 'You asked', text: c.userRequest });
   if (c.agentResponse) lines.push({ label: 'I promised', text: c.agentResponse });
+  if (PRIORITY_WORDS[c.priority]) lines.push({ label: 'Priority', text: c.priorityReason ? `${PRIORITY_WORDS[c.priority]} — ${c.priorityReason}` : PRIORITY_WORDS[c.priority] });
   const w = waitingOnWords(c);
   if (w && w !== 'you') lines.push({ label: 'Waiting on', text: w === 'something outside' ? 'another task or person' : w });
   else if (w === 'you') lines.push({ label: 'Waiting on', text: 'you' });
@@ -145,6 +169,10 @@ export function storyOf(c, now = Date.now(), names = {}) {
   else if (needsPromiseReview(c, now)) lines.push({ label: 'Progress', text: 'The agent has not confirmed this is done.' });
   if (c.status === 'delivered' || c.status === 'withdrawn' || c.status === 'expired') {
     lines.push({ label: c.status === 'delivered' ? 'Done' : c.status === 'withdrawn' ? 'Dropped' : 'Expired', text: `${ago(c.resolvedAt, now) || ''}${c.resolution ? ` — ${c.resolution}` : ''}` });
+    if (c.closedBy === 'promise-review') lines.push({ label: 'Closed by', text: c.evidenceRefResolved
+      ? 'My promise review. What it cited exists and is newer than the promise.'
+      : c.evidenceRef ? 'My promise review, on my judgment. What it cited could not be checked automatically.'
+      : 'My promise review, on my judgment.' });
   }
   if (c.viewSource === 'replica') lines.push({ label: 'Agent machine', text: machineName(c.originMachineId, names) });
   return lines;
@@ -194,6 +222,8 @@ export function actionsFor(c) {
   if (c.status === 'pending') a.push('deliver');
   if (c.status === 'pending' || c.status === 'verified' || c.status === 'violated') a.push('withdraw');
   if (c.beaconPaused && c.status === 'pending') a.push('resume');
+  // Undo a closure the agent's own review made — own rows only (the owner undoes its own).
+  if (c.closedBy === 'promise-review' && (c.status === 'delivered' || c.status === 'withdrawn') && c.viewSource !== 'replica') a.push('reopen');
   return a;
 }
 

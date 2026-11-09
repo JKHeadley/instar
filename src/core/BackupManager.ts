@@ -44,6 +44,12 @@ const BLOCKED_PATH_PREFIXES = new Set([
   // machine; a restored auto-install file would also start a root install on another machine.
   'state/playwright-profiles/',
   'state/xdrive/',
+  // Team access (team-roles-and-access §7): an ordinary restore must not roll back who has access.
+  // /mobile/team/restore is the only way back.
+  'state/team-access/',
+  'state/team-access-last-good/',
+  '.instar/state/team-access/',
+  '.instar/state/team-access-last-good/',
   '.instar/state/playwright-profiles/',
   '.instar/state/xdrive/',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,
@@ -198,27 +204,48 @@ const DEFAULT_CONFIG: BackupConfig = {
     // Feedback Factory operated state: canonical source generations, durable
     // drain DB/WAL, authority-registry sidecar/audit, and consumer promotion.
     'state/feedback-factory/store/',
+    // Skill-learning sentinel (docs/specs/skill-learning-sentinel.md decision 21):
+    // canonical skills, the per-machine ledgers/journals/baselines/versions/
+    // proposals/retired, the per-machine use telemetry, and the derived cache
+    // with its WAL/SHM companions (a directory-prefixed glob — see expandGlob).
+    'skills/',
+    'skill-learning/',
+    'skill-telemetry/',
+    'state/skill-learning.db*',
+    // Read markers (mobile-unread-messages §3.3): what each person has read, replicated; small.
+    'state/conversation-read-markers.json',
   ],
 };
 
 /**
- * Expand a single glob-style entry (only trailing `*` is supported) against
- * a directory. Returns literal filenames to copy. Safe against path traversal —
- * each returned name is a plain basename in stateDir.
+ * Expand a single glob-style entry (only one `*`, in the LAST path segment,
+ * is supported) against a directory. Returns literal stateDir-relative paths
+ * to copy. Safe against path traversal — each returned name is the entry's
+ * own directory part plus a plain basename read from that directory, e.g.
+ * 'shared-state.jsonl*' → ['shared-state.jsonl', 'shared-state.jsonl.123'] and
+ * 'state/skill-learning.db*' → ['state/skill-learning.db', 'state/skill-learning.db-wal'].
  */
 function expandGlob(stateDir: string, entry: string): string[] {
   if (!entry.includes('*')) return [entry];
-  // Only support trailing * for now — e.g., 'shared-state.jsonl*'
   const starIdx = entry.indexOf('*');
   const prefix = entry.slice(0, starIdx);
   const suffix = entry.slice(starIdx + 1);
-  if (prefix.includes('/') || suffix.includes('/') || suffix.includes('*')) {
+  if (suffix.includes('/') || suffix.includes('*')) {
     // Unsupported glob shape — return the literal entry; caller will skip if missing.
     return [entry];
   }
+  // The `*` must sit in the last segment: 'state/skill-learning.db*' splits into
+  // dir 'state' + basename pattern 'skill-learning.db*'. A `*` in an earlier
+  // segment is not a directory wildcard here.
+  const slashIdx = prefix.lastIndexOf('/');
+  const dirPart = slashIdx === -1 ? '' : prefix.slice(0, slashIdx);
+  const basePrefix = slashIdx === -1 ? prefix : prefix.slice(slashIdx + 1);
+  if (dirPart.includes('*') || dirPart.split('/').some((seg) => seg === '..')) return [entry];
   try {
-    const names = fs.readdirSync(stateDir);
-    return names.filter((n) => n.startsWith(prefix) && n.endsWith(suffix));
+    const names = fs.readdirSync(dirPart ? path.join(stateDir, dirPart) : stateDir);
+    return names
+      .filter((n) => n.startsWith(basePrefix) && n.endsWith(suffix))
+      .map((n) => (dirPart ? `${dirPart}/${n}` : n));
   } catch {
     return [];
   }

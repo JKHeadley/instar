@@ -100,6 +100,14 @@ export interface WorktreeEvaluation {
  */
 export interface AgentWorktreeReaperDeps {
   /**
+   * Optional async preparation run at the start of every pass and before a
+   * snapshot (disk-steward §4): builds the inbound-link index so `isInUse` can
+   * keep checkouts that other checkouts or pipeline folders link into, without
+   * a long scan on the event loop. Never throws; a failed scan makes `isInUse`
+   * report every checkout in use.
+   */
+  preparePass?: () => Promise<void>;
+  /**
    * Worktrees under the agent's `.worktrees/` (excludes the main checkout).
    *
    * Returns a THREE-STATE result, not a bare array. The states are
@@ -242,6 +250,7 @@ export class AgentWorktreeReaper extends EventEmitter {
     const reaped: string[] = [];
     const evaluations: WorktreeEvaluation[] = [];
     try {
+      await this.deps.preparePass?.();
       // The `ok` narrowing is mandatory — `worktrees` is unreachable without it.
       const enumeration = this.deps.listWorktrees();
       if (!enumeration.ok) {
@@ -436,6 +445,12 @@ export class AgentWorktreeReaper extends EventEmitter {
    * a signal that cannot be determined must never resolve to the permissive
    * answer.
    */
+  /** Run the deps' async preparation (the inbound-link index) before a snapshot read. */
+  async prepare(): Promise<void> {
+    try { await this.deps.preparePass?.(); }
+    catch { /* @silent-fallback-ok — preparePass never throws by contract; a failure leaves isInUse fail-closed */ }
+  }
+
   snapshot(): {
     enabled: boolean; dryRun: boolean; lastPassAt: number; reapedLastPass: number;
     initialPassPending: boolean;

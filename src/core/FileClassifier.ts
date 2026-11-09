@@ -191,6 +191,10 @@ const DEFAULT_GENERATED_PATTERNS = [
   // Portable-job approvals, replay ledger, inbox, and import journal are local to
   // one exact agent root. Git-sync must not carry consent or staged bundles.
   '.instar/state/job-portable-*',
+  // Disk Steward (docs/specs/disk-steward.md): samples, cadence, prune run records
+  // and results describe THIS machine's disk (hardware-bound); another machine
+  // reading them would watch the wrong disk or recover the wrong process group.
+  '.instar/state/disk-steward/',
 ];
 
 const DEFAULT_SECRET_PATTERNS = [

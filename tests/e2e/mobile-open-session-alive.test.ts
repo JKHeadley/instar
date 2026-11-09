@@ -24,7 +24,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { NO_SESSION_REASON } from '../../src/server/mobileSessionRoutes.js';
+import { findRemoteSession, NO_SESSION_REASON } from '../../src/server/mobileSessionRoutes.js';
 
 const HOST = 'echo-open-session-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -135,5 +135,13 @@ describe('open session — production wiring', () => {
     expect(bearer.status).toBe(403);
     expect((await send('GET', `/mobile/conversations/session?ref=${encodeURIComponent('app:33333333-3333-4333-8333-333333333333')}`)).status).toBe(404);
     expect((await send('GET', '/mobile/conversations/session?ref=nope')).status).toBe(400);
+
+    // Open session on any machine: the production pool listing this server serves is the source the
+    // route reads for a session on another machine. It parses here, and a machine not in it is not found
+    // (a missing peer is never guessed at). This server's own sessions are not "remote".
+    const listing = await auth(request(app).get('/sessions?scope=pool'));
+    expect(listing.status).toBe(200);
+    const ref = { kind: 'app' as const, ref: `app:${key}`, key };
+    expect(findRemoteSession(listing.body, ref, 'm_absent_peer').state).toBe('none');
   });
 });

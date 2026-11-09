@@ -4,6 +4,9 @@
  *   GET /mobile/jobs         — the schedule: every job, late or failing first, with next run times.
  *   GET /mobile/commitments  — promises: open ones first, with their due dates.
  *   GET /mobile/machines     — each machine with a plain status line, load verdict and version.
+ *                              Wording is agnostic of which machine answered: the phone talks to
+ *                              the agent, not a machine, so no row says "this machine". The evidence
+ *                              behind a state is a separate `evidenceLine` for the machine's detail.
  *
  * Read-only. A paired OWNER phone (device-signed; DEVICE_ALLOWLIST lists exactly these three
  * paths) or the agent's bearer token may read them; an MSP phone gets 403 `owner-phone-required`.
@@ -236,7 +239,15 @@ export interface MobileCommitment {
   machine: string | null;
   /** A replicated copy whose last update is older than 15 min, or of unknown age. */
   stale: boolean;
+  /** How much it matters (set by the agent); null = not assessed yet. */
+  priority: 'high' | 'normal' | 'low' | null;
+  /** 'promise-review' when the agent's own review closed it. */
+  closedBy: 'promise-review' | null;
 }
+
+export type MobilePriorityFilter = 'high' | 'normal' | 'low' | 'unset';
+export interface MobileCommitmentCounts { open: number; high: number; normal: number; low: number; unset: number }
+const PRIORITY_RANK: Record<string, number> = { high: 0, normal: 1, unset: 2, low: 3 };
 
 const WAIT_WORDS: Record<string, MobileCommitment['waitingOn']> = { 'user-input': 'your answer', 'user-authorization': 'your approval', external: 'something outside' };
 
@@ -251,7 +262,12 @@ function nextDue(c: Rec): number | null {
  * promises first — overdue, then by due date, then newest — then promises closed in the last
  * seven days, newest first. Older closed promises are left out.
  */
-export function summarizeCommitments(rows: unknown, now: number, nicknameOf: (machineId: string) => string | null = () => null): { commitments: MobileCommitment[]; truncated: boolean } {
+export function summarizeCommitments(
+  rows: unknown,
+  now: number,
+  nicknameOf: (machineId: string) => string | null = () => null,
+  priorityFilter: MobilePriorityFilter | null = null,
+): { commitments: MobileCommitment[]; truncated: boolean; counts: MobileCommitmentCounts } {
   const list = Array.isArray(rows) ? rows : [];
   const out: Array<MobileCommitment & { _due: number | null; _at: number }> = [];
   for (const raw of list) {
@@ -288,15 +304,23 @@ export function summarizeCommitments(rows: unknown, now: number, nicknameOf: (ma
       resolvedAt: Number.isFinite(resolved) ? new Date(resolved).toISOString() : null,
       machine: replica && origin ? verifiedEntityName(origin, nicknameOf(origin)) : null,
       stale: replica && !(typeof c.stalenessMs === 'number' && Number.isFinite(c.stalenessMs) && c.stalenessMs <= REPLICA_FRESH_MS),
+      priority: c.priority === 'high' || c.priority === 'normal' || c.priority === 'low' ? c.priority : null,
+      closedBy: c.closedBy === 'promise-review' ? 'promise-review' : null,
       _due: due,
       _at: Number.isFinite(open ? created : resolved) ? (open ? created : resolved) : 0,
     });
   }
+  // Counts cover EVERY open promise (the row list is capped), never closed ones.
+  const counts: MobileCommitmentCounts = { open: 0, high: 0, normal: 0, low: 0, unset: 0 };
+  for (const r of out) if (r.open) { counts.open++; counts[r.priority ?? 'unset']++; }
+  const rank = (r: MobileCommitment) => PRIORITY_RANK[r.priority ?? 'unset'];
   out.sort((a, b) => Number(b.open) - Number(a.open)
-    || (a.open ? Number(b.overdue) - Number(a.overdue) || (a._due ?? Infinity) - (b._due ?? Infinity) : 0)
+    || (a.open ? rank(a) - rank(b) || Number(b.overdue) - Number(a.overdue) || (a._due ?? Infinity) - (b._due ?? Infinity) : 0)
     || b._at - a._at);
-  const truncated = out.length > MAX_COMMITMENTS;
-  return { commitments: out.slice(0, MAX_COMMITMENTS).map(({ _due, _at, ...r }) => r), truncated };
+  // ?priority= narrows to OPEN rows of that priority (closed rows are omitted while filtering).
+  const listed = priorityFilter ? out.filter((r) => r.open && (r.priority ?? 'unset') === priorityFilter) : out;
+  const truncated = listed.length > MAX_COMMITMENTS;
+  return { commitments: listed.slice(0, MAX_COMMITMENTS).map(({ _due, _at, ...r }) => r), truncated, counts };
 }
 
 // ── machines ──────────────────────────────────────────────────────────────────
@@ -311,7 +335,10 @@ export interface MobileMachine {
   isSelf: boolean;
   leading: boolean;
   state: MobileMachineState;
+  /** Short and agnostic: "Live · load normal", "Not answering". Never names the answering machine as "this". */
   statusLine: string;
+  /** Where the state comes from, for the machine's detail ("Checked 17 s ago by Mac Studio."), or null. */
+  evidenceLine: string | null;
   loadVerdict: string | null;
   loadPerCore: number | null;
   sessions: number | null;
@@ -334,31 +361,77 @@ function machineState(m: Rec): { state: MobileMachineState; estimated: boolean }
   return { state: m.online === true ? 'live' : m.online === false ? 'stale' : 'unknown', estimated: true };
 }
 
-/** A one-way, stable row key for a machine (never the id itself). */
-function machineKey(id: string): string {
+/** A one-way, stable row key for a machine (never the id itself). Shared with the health reading's `machine`. */
+export function machineKey(id: string): string {
   return crypto.createHash('sha256').update(`mobile-ops-machine:${id}`).digest('hex').slice(0, 16);
 }
 
 const LOAD_WORDS: Record<string, string> = { ok: 'load normal', elevated: 'busy', saturated: 'overloaded', impaired: 'struggling to keep up' };
 
+const STATE_WORDS: Record<MobileMachineState, string> = {
+  live: 'Live', struggling: 'Struggling', unreachable: 'Not answering', stale: 'Not heard from recently', unknown: 'No evidence yet',
+};
+
+/** "17 s" / "3 min" / "2 h" / "4 d"; null when there is no age. */
+function ageWords(ms: unknown): string | null {
+  const v = num(ms);
+  if (v === null) return null;
+  const sec = Math.max(0, Math.floor(v / 1000));
+  if (sec < 60) return `${sec} s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min} min`;
+  const hr = Math.floor(min / 60);
+  return hr < 48 ? `${hr} h` : `${Math.floor(hr / 24)} d`;
+}
+
 /**
- * Each machine from the `GET /pool` view. A pool switched off gets one "This machine" row; a pool
- * that is on (or unstated) with no usable rows gets the same row with `inventoryKnown: false`.
- * `single` is true only for a pool switched off. Machines that are not answering come first.
+ * The evidence behind a machine's state, worded without "this machine": the checker is named.
+ * Built from the pool row's structured `liveness` block, never from its pre-worded line.
  */
-export function summarizeMachines(pool: unknown, selfVersion: string | null): { machines: MobileMachine[]; headline: string; single: boolean; inventoryKnown: boolean } {
+export function evidenceLine(m: Rec, checkerName: string | null, nameOf: (machineId: string) => string | null): string | null {
+  const lv = (m.liveness && typeof m.liveness === 'object' ? m.liveness : null) as Rec | null;
+  if (!lv) return null;
+  const by = checkerName ?? 'the machine the app reached';
+  const age = ageWords(lv.evidenceAgeMs);
+  let main: string;
+  switch (lv.source) {
+    case 'self': main = 'Answered the app directly.'; break;
+    case 'direct': main = age ? `Checked ${age} ago by ${by}.` : `Checked by ${by}.`; break;
+    case 'relayed': main = age ? `Last heard ${age} ago, through a heartbeat file.` : 'Heard through a heartbeat file.'; break;
+    case 'saved': main = age ? `Last confirmed ${age} ago (a saved check).` : 'Confirmed by a saved check.'; break;
+    case 'peer-sighting': main = age ? `Last seen ${age} ago by another machine.` : 'Seen by another machine.'; break;
+    default: main = 'No contact on record yet.';
+  }
+  const ps = (lv.peerSighting && typeof lv.peerSighting === 'object' ? lv.peerSighting : null) as Rec | null;
+  const observer = ps ? nameOf(String(ps.observerMachineId ?? '')) : null;
+  const psAge = ps ? ageWords(ps.ageMs) : null;
+  const sight = observer && psAge ? ` ${observer} reached it ${psAge} ago.` : '';
+  return `${main}${sight}`;
+}
+
+/**
+ * Each machine from the `GET /pool` view. A pool switched off gets one row for the machine that
+ * answered; a pool that is on (or unstated) with no usable rows gets the same row with
+ * `inventoryKnown: false`. `single` is true only for a pool switched off. Machines that are not
+ * answering come first, then the leading machine. No wording depends on which machine answered.
+ */
+export function summarizeMachines(pool: unknown, selfVersion: string | null, nicknameOf: (machineId: string) => string | null = () => null): { machines: MobileMachine[]; headline: string; single: boolean; inventoryKnown: boolean } {
   const p = (pool && typeof pool === 'object' ? pool : {}) as Rec;
   const raw = Array.isArray(p.machines) ? (p.machines as unknown[]).filter((m): m is Rec => !!m && typeof m === 'object' && !!str((m as Rec).machineId)) : [];
   const selfId = str(p.selfMachineId);
   const router = p.router as Rec | null | undefined;
   const leader = router ? str(router.holder) : null;
   if (raw.length === 0) {
-    // This server answered, so this machine is up. Only a pool that is switched off proves it is
+    // This server answered, so its machine is up. Only a pool that is switched off proves it is
     // the only machine; an enabled pool with no usable rows means the list could not be read.
-    const machines: MobileMachine[] = [{ key: selfId ? machineKey(selfId) : 'self', name: 'This machine', isSelf: true, leading: false, state: 'live', statusLine: 'Answering (this machine)', loadVerdict: null, loadPerCore: null, sessions: null, maxSessions: null, version: selfVersion }];
+    const name = (selfId ? verifiedEntityName(selfId, nicknameOf(selfId)) : null) ?? 'Your machine';
+    const machines: MobileMachine[] = [{ key: selfId ? machineKey(selfId) : 'self', name, isSelf: true, leading: false, state: 'live', statusLine: 'Live', evidenceLine: null, loadVerdict: null, loadPerCore: null, sessions: null, maxSessions: null, version: selfVersion }];
     if (p.enabled === false) return { machines, headline: 'One machine, answering.', single: true, inventoryKnown: true };
-    return { machines, headline: "This machine is answering, but I can't read the list of your other machines right now.", single: false, inventoryKnown: false };
+    return { machines, headline: `${name} is answering, but I can't read the list of your other machines right now.`, single: false, inventoryKnown: false };
   }
+  const named = new Map<string, string | null>(raw.map((m) => [str(m.machineId) as string, verifiedEntityName(str(m.machineId) as string, m.nickname)]));
+  const nameOf = (id: string): string | null => named.get(id) ?? verifiedEntityName(id, nicknameOf(id));
+  const checker = selfId ? nameOf(selfId) : null;
   let estimatedPeers = 0;
   const rows = raw.map((m): MobileMachine => {
     const id = str(m.machineId) as string;
@@ -370,26 +443,26 @@ export function summarizeMachines(pool: unknown, selfVersion: string | null): { 
     const load = num(m.loadAvg);
     const perCore = load !== null && cores ? Math.round((load / cores) * 100) / 100 : null;
     const verdict = str(m.loadVerdict);
-    const liveness = phoneText(m.livenessLine, 160);
-    const baseLine = liveness
-      ? liveness.charAt(0).toUpperCase() + liveness.slice(1)
-      : state === 'live' ? (isSelf ? 'Answering (this machine)' : 'Answering') : state === 'stale' ? 'Not heard from recently' : 'No evidence yet';
-    const loadLine = verdict && verdict !== 'unknown' ? LOAD_WORDS[verdict] ?? null : null;
-    const line = [baseLine, loadLine, estimated && !isSelf ? 'estimated' : null].filter(Boolean).join(' · ');
+    // The load word already says "struggling to keep up" / "overloaded"; a struggling LIVE machine reads "Live · overloaded".
+    const lv = m.liveness as Rec | undefined;
+    const base = state === 'struggling' && lv?.state === 'live' ? 'Live' : STATE_WORDS[state];
+    const loadLine = (state === 'live' || state === 'struggling') && verdict && verdict !== 'unknown' ? LOAD_WORDS[verdict] ?? null : null;
+    const line = [base, loadLine, estimated && !isSelf ? 'estimated' : null].filter(Boolean).join(' · ');
     return {
       key: machineKey(id),
-      name: verifiedEntityName(id, m.nickname) ?? (isSelf ? 'This machine' : 'A machine with no name yet'),
+      name: named.get(id) ?? 'A machine with no name yet',
       isSelf,
       leading: !!leader && leader === id,
       state,
       statusLine: line,
+      evidenceLine: evidenceLine(m, checker, nameOf),
       loadVerdict: verdict && /^[a-z]{1,16}$/.test(verdict) ? verdict : null,
       loadPerCore: perCore,
       sessions: num(m.activeSessionCount),
       maxSessions: num(m.maxSessions),
       version: (str(hw.instarVersion) && /^[0-9A-Za-z.+-]{1,32}$/.test(String(hw.instarVersion)) ? String(hw.instarVersion) : null) ?? (isSelf ? selfVersion : null),
     };
-  }).sort((a, b) => MACHINE_ORDER[a.state] - MACHINE_ORDER[b.state] || Number(b.isSelf) - Number(a.isSelf) || a.name.localeCompare(b.name));
+  }).sort((a, b) => MACHINE_ORDER[a.state] - MACHINE_ORDER[b.state] || Number(b.leading) - Number(a.leading) || a.name.localeCompare(b.name));
   const down = rows.filter((r) => r.state === 'unreachable');
   const slow = rows.filter((r) => r.state === 'struggling');
   const unclear = rows.filter((r) => r.state === 'stale' || r.state === 'unknown');
@@ -470,8 +543,13 @@ export function mountMobileOpsRoutes(router: Router, deps: MobileOpsDeps): void 
     try {
       const rows = await deps.commitmentsView();
       if (rows === null) { res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), enabled: false, commitments: [], truncated: false }); return; }
-      const { commitments, truncated } = summarizeCommitments(rows, now(), deps.nicknameOf);
-      res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), enabled: true, commitments, truncated });
+      const pq = typeof req.query.priority === 'string' ? req.query.priority : undefined;
+      if (pq !== undefined && !['high', 'normal', 'low', 'unset'].includes(pq)) {
+        res.status(400).json({ error: 'priority must be high, normal, low or unset' });
+        return;
+      }
+      const { commitments, truncated, counts } = summarizeCommitments(rows, now(), deps.nicknameOf, (pq as MobilePriorityFilter | undefined) ?? null);
+      res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), enabled: true, commitments, truncated, counts });
     } catch (err) {
       reportReadFailure('GET /mobile/commitments', err);
       res.status(500).json({ error: 'promises-unavailable' });
@@ -482,7 +560,7 @@ export function mountMobileOpsRoutes(router: Router, deps: MobileOpsDeps): void 
     if (!guard(req, res)) return;
     try {
       const pool = deps.poolView();
-      const { machines, headline, single, inventoryKnown } = summarizeMachines(pool, deps.selfVersion());
+      const { machines, headline, single, inventoryKnown } = summarizeMachines(pool, deps.selfVersion(), deps.nicknameOf);
       res.json({ schemaVersion: MOBILE_OPS_SCHEMA_VERSION, generatedAt: new Date(now()).toISOString(), poolEnabled: (pool as Rec | null)?.enabled === true, single, inventoryKnown, headline, machines });
     } catch (err) {
       reportReadFailure('GET /mobile/machines', err);

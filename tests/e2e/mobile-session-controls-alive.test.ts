@@ -23,6 +23,7 @@ import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { presenceEnrollMessage } from '../../src/server/mobileConsoleTicket.js';
 import { permissionPresenceMessage, actionLine, buildAction } from '../../src/server/mobilePermissionsRoutes.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
+import { DOOR } from '../../src/server/mobileSessionControlsRoutes.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import { allowTestIdentities } from '../helpers/allow-test-identities.js';
 
@@ -131,6 +132,11 @@ describe('session controls — production wiring', () => {
     expect(controls.body.actions).toEqual({ state: 'available', reason: null, presenceKey: true });
     expect(controls.body.session).toMatchObject({ tmuxSession: 'throwaway-session', id: 'throwaway-session-id', kind: 'a conversation', chat: 'none (terminal only)' });
     expect(controls.body.door.state).toBe('not-this-chat');
+    // The word for a door comes from the one constant, through the production route.
+    // session-swap-any-conversation: no conversation means nothing to switch, said without Telegram.
+    expect(controls.body.door.reason).toBe(`${DOOR.Word} and machine can be changed for a session that has a conversation. This session has none, so there is nothing to switch.`);
+    // Justin's word (topic 134088, 2026-11-06 07:58), as the phone reads it through the production route.
+    expect(controls.body.door.reason.startsWith('Engine and machine')).toBe(true);
     expect(controls.body.typing).toEqual({ can: true, reason: null });
     expect((await signed('GET', '/mobile/sessions/controls?name=not-there')).status).toBe(404);
     expect((await signed('GET', '/mobile/sessions/new-options')).status).toBe(200);
@@ -165,6 +171,16 @@ describe('session controls — production wiring', () => {
     const ch = await signed('POST', '/mobile/permissions/challenge', { action: 'session-new', target: 'new', name: 'Throwaway two', platform: 'headless' });
     const wrong = await signed('POST', '/mobile/sessions/new', { name: 'Something else', platform: 'headless', challenge: ch.body.challenge, presenceSig: presence.sign(permissionPresenceMessage(deviceId, HOST, ch.body.challenge, 'session-new new x headless none none auto')) });
     expect(wrong.status).toBe(401);
+
+    // An app conversation's engine (session-swap-any-conversation §3.5): the reference rides the path
+    // raw, through the production allowlist and the Face ID proof, to the route itself — never 403 or 404.
+    const appRef = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
+    const doorApp = await act({ action: 'session-door', target: appRef, framework: 'codex-cli' }, `/mobile/sessions/door/${appRef}`, { framework: 'codex-cli' });
+    expect([403, 404]).not.toContain(doorApp.status);
+    expect(doorApp.body.error).not.toBe('device-not-allowed');
+    expect(typeof (doorApp.body.message ?? doorApp.body.reason)).toBe('string');
+    // A reference that isn't a conversation never reaches it.
+    expect((await signed('POST', '/mobile/sessions/door/app:nope', { framework: 'codex-cli' })).status).toBe(403);
 
     // A close: the dashboard's route, on the exact session.
     const closed = await act({ action: 'session-close', target: 'throwaway-session-id', tmux: 'throwaway-session' }, '/mobile/sessions/close/throwaway-session-id', { tmux: 'throwaway-session' });

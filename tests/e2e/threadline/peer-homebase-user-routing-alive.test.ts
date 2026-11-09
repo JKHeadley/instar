@@ -51,8 +51,8 @@ describe('§2.6 user-meant peer messages land in the homebase — wiring', () =>
     // The signed-HTTP receive path is wired too, keyed on the verified fingerprint.
     expect(routesSrc).toMatch(/peerHomebaseRelay: ctx\.peerHomebaseRelay,\s*conversationBound:/);
     expect(read('../../../src/threadline/ThreadlineEndpoints.ts')).toMatch(/config\.peerHomebaseRelay\.relayInbound\(\{[\s\S]{0,80}peers: \[hbFp\]/);
-    // A message the relay does not post still reaches the hub.
-    expect(serverSrc).toMatch(/\.then\(\(r\) => \{ if \(!r\.posted\) hubSurface\(\); \}/);
+    // A message neither delivered nor durably recorded reaches the hub; quiet recording is terminal.
+    expect(serverSrc).toMatch(/\.then\(\(r\) => \{ if \(!r\.posted && !r\.recorded\) hubSurface\(\); \}/);
     expect(agentServerSrc).toMatch(/peerHomebaseRelay: options\.peerHomebaseRelay/);
     expect(serverSrc).toMatch(/collaborationSurfacer, peerHomebaseRelay, threadResumeMap/);
   });

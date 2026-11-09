@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "accounts-notices",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T22:45:14.926Z",
+  "artifactPath": "upgrades/side-effects/accounts-notices.md",
+  "artifactSha256": "f9299c36f44b854dbf096d99451d33c5b7b5e9dda3f8759a0c8bea03a5a1c950",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "docs/specs/console-features/capacity.md",
+    "tests/unit/console-accounts.test.ts",
+    "upgrades/next/accounts-notices.md",
+    "upgrades/side-effects/accounts-notices.eli16.md",
+    "upgrades/side-effects/accounts-notices.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only: removes one dashboard sub-line; a revert fully undoes it",
+  "eli16Path": "upgrades/side-effects/accounts-notices.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/accounts-notices.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

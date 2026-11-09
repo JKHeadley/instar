@@ -1,3 +1,6 @@
+import { categoryForProducer } from '../notificationCategories.js';
+import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope, isVerifiedReplyEnvelope, verifiedJobEnvelope, isVerifiedJobEnvelope } from '../NotificationSelectivityGate.js';
+import type { OutboundEnvelope } from '../NotificationSelectivityGate.js';
 // Governed by: Telegram Message Origin Is Mandatory; Its Display Is Optional
 // (docs/STANDARDS-REGISTRY.md). Recording and presentation are independent.
 import { sealOriginAdmission, validOriginAdmission } from './OriginAdmissionSeal.js';
@@ -107,6 +110,13 @@ async function within<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 /** Preparation, recording and sole-outbox execution. Evidence copies never grant a claim. */
 export class TelegramOriginService {
+  public notificationTopicId = (_chatId: string | null, topicId: string | null): number => Number(topicId ?? 1);
+  public notificationGate: (Pick<NotificationSelectivityGate, 'route' | 'markAnswered'> & { destination?: NotificationSelectivityGate['destination']; close?: () => Promise<void> }) | null = null;
+  /** Resolved from the server's session registry, never from caller metadata. */
+  public notificationPromotedUpgradeSession: (sessionId: string | null) => boolean = () => false;
+  public notificationJobSession: (sessionId: string | null) => boolean = () => false;
+  /** The job this local session runs, from the session record. A caller's claim never reaches here. */
+  public notificationJobSlug: (sessionId: string | null) => string | undefined = () => undefined;
   readonly #scope = new AsyncLocalStorage<OriginScope>();
   readonly #producers = new Map<string, TelegramOriginProducer>();
   readonly #automationCredentials = new Map<string, { producer: TelegramOriginProducer; bodyDigest: string; topicId: number; expiresAt: number; logicalSendKey?: string }>();
@@ -150,6 +160,13 @@ export class TelegramOriginService {
       harnessName: author.harness.value ? harnessNames[author.harness.value] ?? author.harness.value : null });
     return this.#scope.run({ producer, operations: [] }, fn);
   }
+  private automationLogicalKey(producerId:string,topicId:number,logicalSendId:string):string {
+    return originDigest({producerId,topicId,logicalSendId,machineId:this.options.identity.originMachineId,agentId:this.options.identity.agentId});
+  }
+  /** Read-only identity of the first durable operation in this fixed logical send. */
+  automationOperationId(producerId:string,topicId:number,logicalSendId:string):string {
+    return originDigest({key:this.automationLogicalKey(producerId,topicId,logicalSendId),ordinal:0});
+  }
   /** Private in-process mint. HTTP callers cannot register producers or choose
    * author evidence. The one-use token binds the entire submitted request and
    * destination, expires in 30 seconds, and stores only its hash in memory. */
@@ -165,8 +182,7 @@ export class TelegramOriginService {
     const bodyDigest = originDigest(JSON.parse(JSON.stringify(body)));
     this.#automationCredentials.set(createHash('sha256').update(token).digest('hex'), {
       producer, bodyDigest, topicId, expiresAt: this.#now() + 30_000,
-      ...(logicalSendId ? { logicalSendKey: originDigest({ producerId, topicId, logicalSendId,
-        machineId: this.options.identity.originMachineId, agentId: this.options.identity.agentId }) } : {}) });
+      ...(logicalSendId ? { logicalSendKey: this.automationLogicalKey(producerId,topicId,logicalSendId) } : {}) });
     return token;
   }
   runWithAutomationReply<T>(token: string, topicId: number, body: Record<string, unknown>, fn: () => T): T {
@@ -302,6 +318,11 @@ export class TelegramOriginService {
     if (!p) throw new TelegramOriginHoldError('producer-context-required');
     return structuredClone(p);
   }
+  forgetTerminalHold(operationId: string): void {
+    const held = this.#held.get(operationId);
+    if (held?.operation) this.#heldBytes -= held.operation.admission.payloadBytes;
+    this.#held.delete(operationId);
+  }
   currentOperationIds(): string[] { return [...(this.#scope.getStore()?.operations ?? [])]; }
   /** What this machine can truthfully say about who wrote a queued legacy row.
    * The queue lives in this agent's local state, so the machine is always this
@@ -362,11 +383,52 @@ export class TelegramOriginService {
     sealOriginAdmission(operation, this.options.signingKey, this.#now());
     return operation;
   }
+  /** Who may hold the reply floor. A direct session send proves itself with its
+   * credential. An imported queue row names a session only when recovery matched
+   * the digest the reply script recorded to a credential this registry issued to
+   * a still-live session (attributeLegacy); a row with no digest, a foreign
+   * digest, or a dead session stays unattributed and automated. Job sessions
+   * are excluded from the server's own session record in both cases. */
+  private sessionAuthored(producer: Pick<TelegramOriginProducer, 'producerKind' | 'sessionId'>): boolean {
+    return producer.producerKind === 'session' || producer.producerKind === 'imported-legacy' && producer.sessionId !== null;
+  }
+  notificationForCurrentProducer(): import('../NotificationSelectivityGate.js').OutboundEnvelope {
+    const producer = this.currentProducer();
+    // An imported row's provenance is the row's own; the scope recovery happens
+    // to run in says nothing about who wrote it.
+    const ambient = producer.producerKind === 'imported-legacy' ? undefined : notificationContext.getStore();
+    let notification = ambient ?? (this.sessionAuthored(producer) && !this.notificationJobSession(producer.sessionId)
+      ? verifiedReplyEnvelope(producer.producerKind === 'session' ? 'origin-session' : 'imported-origin-session')
+      : { origin: 'automated' as const, category: categoryForProducer(producer.producerId), sourceContext: producer.producerId });
+    if (producer.producerKind === 'session' && this.notificationPromotedUpgradeSession(producer.sessionId)) return { origin: 'automated', category: 'update-announcement', sourceContext: 'release-upgrade-notify', releaseAudiencePromoted: true };
+    if (notification.origin === 'verified-reply' && !isVerifiedReplyEnvelope(notification)) notification = { origin: 'automated', category: 'uncategorized', sourceContext: producer.producerId };
+    if (notification.origin === 'automated' && notification.category === 'uncategorized') notification = { ...notification, category: categoryForProducer(producer.producerId) };
+    const jobSlug = producer.producerKind === 'session' ? this.notificationJobSlug(producer.sessionId) : undefined;
+    // The session's own record names the job, whatever slug the send claimed.
+    if (jobSlug && notification.origin === 'automated' && (notification.category === 'job-status' || notification.category === 'uncategorized')) return verifiedJobEnvelope(jobSlug, notification);
+    if (notification.verifiedJobSlug !== undefined && !isVerifiedJobEnvelope(notification)) { const { verifiedJobSlug: _unproven, ...rest } = notification; return rest; }
+    return notification;
+  }
+  /** Sealed bytes carry no capability, so every last-hop reader restores it here. Only a mint
+   * site can seal the field, and a peer's record arrives attested; a local session outranks it. */
+  restoreJobEnvelope(record: TelegramOriginRecord, envelope: OutboundEnvelope | undefined): OutboundEnvelope | undefined {
+    if (envelope?.origin !== 'automated' || envelope.category !== 'job-status') return envelope;
+    const localSession = record.producerKind === 'session' && record.originMachineId === this.options.identity.originMachineId;
+    const jobSlug = (localSession ? this.notificationJobSlug(record.sessionId ?? null) : undefined) ?? envelope.verifiedJobSlug;
+    return jobSlug ? verifiedJobEnvelope(jobSlug, envelope) : envelope;
+  }
   prepareBot(input: { method: string; accountId: string; params: BotParameters; operationId?: string; executionOwnerMachineId?: string;
     attachments?: import('./OriginMultipart.js').PreparedOriginAttachments; policyInput?: OriginSendPolicyInput }): OriginPreparedBotOperation {
+    const producer = this.currentProducer();
+    let notification = this.notificationForCurrentProducer();
+    const addressedTopicId = this.notificationTopicId(input.params.chat_id === undefined ? null : String(input.params.chat_id), input.params.message_thread_id === undefined ? null : String(input.params.message_thread_id));
+    const pushDestination = this.notificationGate?.destination?.(notification, addressedTopicId);
+    if (pushDestination && !input.method.startsWith('edit')) {
+      notification = { ...notification, contextTopicId: addressedTopicId };
+      input = { ...input, params: { ...input.params, chat_id: pushDestination.chatId, message_thread_id: pushDestination.topicId } };
+    }
     // Translate BEFORE sealing: the lease holder and recovery replay the sealed bytes.
     if (this.options.wireParams) input = { ...input, params: this.options.wireParams(input.params) };
-    const producer = this.currentProducer();
     const destination = { accountId: input.accountId, chatId: input.params.chat_id === undefined ? null : String(input.params.chat_id),
       topicId: input.params.message_thread_id === undefined ? null : String(input.params.message_thread_id) };
     const preferences = this.options.display(destination);
@@ -390,7 +452,7 @@ export class TelegramOriginService {
     const logicalOperationId = scope?.logicalSendKey ? originDigest({ key: scope.logicalSendKey, ordinal: scope.logicalOrdinal ?? 0 }) : undefined;
     if (scope?.logicalSendKey) scope.logicalOrdinal = (scope.logicalOrdinal ?? 0) + 1;
     const now = this.#now(), operationId = input.operationId ?? logicalOperationId ?? randomUUID(), originId = randomUUID();
-    const unsigned = { ...producer, schemaVersion: 'instar-telegram-origin-v1' as const, originId, operationId,
+    const unsigned = { ...producer, notification, schemaVersion: 'instar-telegram-origin-v1' as const, originId, operationId,
       executionOwnerMachineId: input.executionOwnerMachineId ?? this.options.identity.originMachineId,
       childLinks: plan.children.map(child => ({ childId: child.childId, companionOf: child.request.companionOf ?? null })),
       ...(/^(forward|copy)Messages?$/.test(input.method) && input.params.from_chat_id !== undefined
@@ -546,6 +608,10 @@ export class TelegramOriginService {
               return response;
             }
           }
+          if (existing.operation?.state === 'suppressed' && existing.operation.holdReason === 'quiet-notification-recorded') {
+            const quietId = (existing.operation.holdDetail as { quietId?: unknown } | null)?.quietId;
+            if (typeof quietId === 'string') throw new QuietRecordedError({ delivered: false, recorded: true, quietId });
+          }
           throw new TelegramOriginHoldError('original-operation-unresolved', operation.record.operationId,
             existing.operation?.state === 'outcome-unknown' ? 'outcome-unknown' : 'held');
         }
@@ -554,7 +620,7 @@ export class TelegramOriginService {
       await this.admit(operation);
       return await this.executePreparedBot(operation, network);
     } catch (error) {
-      if (error instanceof TelegramOriginHoldError) throw error;
+      if (error instanceof QuietRecordedError || error instanceof TelegramOriginHoldError) throw error;
       return this.#hold(operation, 'origin-execution-state-unavailable');
     } });
   }
@@ -574,6 +640,45 @@ export class TelegramOriginService {
     operation.admission.record.envelopeJson = envelopeJson;
     operation.admission.record.envelopeDigest = wireDigest(envelopeJson);
   }
+  /** Shared last-hop policy for Bot API, typed browser writes, and their recovery. */
+  completeNotification(record: TelegramOriginRecord): void {
+    if (!record.notification?.inboundMirror && (record.notification?.origin === 'verified-reply' || record.notification?.category === 'command-response')) this.notificationGate?.markAnswered(record.notification?.contextTopicId ?? this.notificationTopicId(record.destination.chatId, record.destination.topicId));
+  }
+  async classifyPreparedNotification(operation: OriginPreparedBotOperation, stored: OriginAuditRecord): Promise<void> {
+    if (stored.operation?.state === 'suppressed' && stored.operation.holdReason === 'quiet-notification-recorded') {
+      const quietId = stored.operation.holdDetail?.quietId;
+      if (typeof quietId === 'string') throw new QuietRecordedError({ delivered: false, recorded: true, quietId });
+    }
+    // A durable quiet disposition is terminal. Recovery and mesh delivery both
+    // pass here, so neither can resurrect a suppressed automated notice.
+    if (this.notificationGate && !/(^|\.)edit/.test(operation.record.operationKind) && !stored.children.some(child => child.state === 'accepted')) {
+      const topicId = operation.record.notification?.contextTopicId ?? this.notificationTopicId(operation.record.destination.chatId, operation.record.destination.topicId);
+      let envelope = operation.record.notification;
+      // Older signed records retain the reply floor for genuine session authors.
+      // An imported row keeps it only when its sealed record names the session
+      // recovery attributed it to; an unattributed import never gains it here.
+      const sessionReply = !this.notificationJobSession(operation.record.sessionId)
+        && !(operation.record.producerKind === 'imported-legacy' && operation.record.sessionId === null)
+        && (envelope?.origin === 'verified-reply' || !envelope && operation.record.producerKind === 'session');
+      if (sessionReply) envelope = verifiedReplyEnvelope('origin-session');
+      else if (envelope?.origin === 'verified-reply') envelope = { ...envelope, origin: 'automated', category: 'job-status' };
+      if (envelope && operation.record.originMachineId !== this.options.identity.originMachineId) envelope = { ...envelope, relayedOrigin: true };
+      // Restore the local capability after tagging peer provenance.
+      if (sessionReply) envelope = verifiedReplyEnvelope('relayed-origin-session');
+      else envelope = this.restoreJobEnvelope(operation.record, envelope);
+      const request = parseOriginJson(operation.admission.children[0]?.materializations[0]?.requestJson ?? '{}') as { policy?: { text?: string }; body?: string };
+      const body = JSON.parse(request.body ?? '{}') as { text?: string; caption?: string };
+      const routed = await this.notificationGate.route(topicId, request.policy?.text ?? body.text ?? body.caption ?? '', envelope, operation.record.operationId);
+      if (routed.receipt) {
+        if (!await this.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed',
+          holdReason: 'quiet-notification-recorded', holdDetail: { quietId: routed.receipt.quietId } })) {
+          throw new TelegramOriginHoldError('quiet-disposition-unrecorded', operation.record.operationId);
+        }
+        this.forgetTerminalHold(operation.record.operationId);
+        throw new QuietRecordedError(routed.receipt);
+      }
+    }
+  }
   async executePreparedBot(operation: OriginPreparedBotOperation,
     network: OriginBotTransport): Promise<Response> {
     // Detach caller-owned input before any await. The stored claim below must
@@ -590,6 +695,7 @@ export class TelegramOriginService {
     const stored = await this.options.store.getOrigin(operation.record.originId);
     if (!stored || stored.record.envelopeJson !== canonicalOrigin(operation.record) ||
       stored.operation?.operationId !== operation.record.operationId) return this.#hold(operation, 'stored-origin-mismatch');
+    await this.classifyPreparedNotification(operation, stored);
     if (stored.children.some(child => child.state !== 'accepted')) await this.reviewPreparedSendPolicy(operation);
     // Any platform acceptance (stored or in this run) keeps the reservation:
     // part of this content may be visible to the user.
@@ -718,6 +824,7 @@ export class TelegramOriginService {
       throw error;
     }
     await this.completePreparedContent(operation);
+    this.completeNotification(operation.record);
     const held = this.#held.get(operation.record.operationId);
     if (held?.operation) this.#heldBytes -= held.operation.admission.payloadBytes;
     this.#held.delete(operation.record.operationId);

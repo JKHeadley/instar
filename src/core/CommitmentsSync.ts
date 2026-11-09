@@ -43,6 +43,10 @@ const TEXT_FIELDS = [
   'resolution',
   'escalationDetail',
   'followThroughOptOutReason',
+  // promise-review-and-priority §2.1 — new free-text fields travel redacted too.
+  'priorityReason',
+  'reopenReason',
+  'shadowDecision',
 ] as const;
 
 // ── Wire shapes ─────────────────────────────────────────────────────
@@ -138,6 +142,15 @@ function serveRecord(c: Commitment, ownMachineId: string): ReplicatedCommitment 
       }
     }
   }
+  // promise-review-and-priority: the nested evidence reference is free text too.
+  const ref = (served as unknown as { evidenceRef?: { kind?: unknown; ref?: unknown } }).evidenceRef;
+  if (ref && typeof ref.ref === 'string') {
+    const r = redactForLiveTail(ref.ref);
+    if (r.redactedCount > 0) {
+      (served as unknown as Record<string, unknown>).evidenceRef = { ...ref, ref: r.text };
+      redacted = true;
+    }
+  }
   if (redacted) served.textRedacted = true;
   return served;
 }
@@ -152,14 +165,36 @@ function serveRecord(c: Commitment, ownMachineId: string): ReplicatedCommitment 
 // well-formed.)
 const OWNER_VALUES = new Set(['agent', 'user']);
 const BLOCKED_ON_VALUES = new Set(['none', 'external', 'user-input', 'user-authorization']);
-function clampReplicatedRow(row: ReplicatedCommitment): ReplicatedCommitment {
+export function clampReplicatedRow(row: ReplicatedCommitment): ReplicatedCommitment {
   const owner = OWNER_VALUES.has(((row as { owner?: string }).owner ?? '')) ? row.owner : 'agent';
   const blockedOn = BLOCKED_ON_VALUES.has(((row as { blockedOn?: string }).blockedOn ?? ''))
     ? row.blockedOn
     : 'none';
-  if (owner === row.owner && blockedOn === row.blockedOn) return row;
-  return { ...row, owner, blockedOn } as ReplicatedCommitment;
+  // promise-review-and-priority §2.1: priority / closedBy are enum-clamped
+  // (unknown → removed), the new free-text fields are length-clamped, so a peer
+  // can neither inject an unknown priority nor forge a review closure marker
+  // the dashboard would treat as reopenable (reopen is own-row-only anyway).
+  const r = row as ReplicatedCommitment & Record<string, unknown>;
+  const priorityOk = r.priority === undefined || PRIORITY_VALUES.has(String(r.priority));
+  const closedByOk = r.closedBy === undefined || r.closedBy === 'promise-review';
+  const lengthsOk = (typeof r.priorityReason !== 'string' || r.priorityReason.length <= 200)
+    && (typeof r.reopenReason !== 'string' || r.reopenReason.length <= 500)
+    && (typeof r.shadowDecision !== 'string' || r.shadowDecision.length <= 300);
+  const ev = r.evidenceRef as { kind?: unknown; ref?: unknown } | undefined;
+  const evidenceOk = ev === undefined || (typeof ev === 'object' && ev !== null
+    && ['commitment', 'file', 'commit', 'pr', 'message', 'other'].includes(String(ev.kind))
+    && typeof ev.ref === 'string' && ev.ref.length <= 300);
+  if (owner === row.owner && blockedOn === row.blockedOn && priorityOk && closedByOk && lengthsOk && evidenceOk) return row;
+  const out: Record<string, unknown> = { ...row, owner, blockedOn };
+  if (!priorityOk) delete out.priority;
+  if (!closedByOk) delete out.closedBy;
+  if (typeof out.priorityReason === 'string') out.priorityReason = (out.priorityReason as string).slice(0, 200);
+  if (typeof out.reopenReason === 'string') out.reopenReason = (out.reopenReason as string).slice(0, 500);
+  if (typeof out.shadowDecision === 'string') out.shadowDecision = (out.shadowDecision as string).slice(0, 300);
+  if (!evidenceOk) delete out.evidenceRef;
+  return out as unknown as ReplicatedCommitment;
 }
+const PRIORITY_VALUES = new Set(['high', 'normal', 'low']);
 
 // ── Receive side (§3.2) ─────────────────────────────────────────────
 

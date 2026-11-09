@@ -11,7 +11,7 @@
  *   POST /mobile/permissions/features/:id           — set a switch on or off
  *   POST /mobile/secrets/requests                   — ask someone for a password or key (docs/specs/mobile-native-secrets-writes.md)
  *   POST /mobile/secrets/requests/:key/cancel       — cancel a waiting request held here
- *   POST /mobile/sessions/door/:topic               — switch a session's door and model (docs/specs/mobile-native-session-controls.md)
+ *   POST /mobile/sessions/door/:conversation        — switch a conversation's engine and model (docs/specs/session-swap-any-conversation.md)
  *   POST /mobile/sessions/move/:topic               — move a conversation to another machine
  *   POST /mobile/sessions/close/:id                 — close a session
  *   POST /mobile/sessions/new                       — start a session
@@ -27,15 +27,19 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { isStorageFailure, storageErrorResponse } from '../core/storageMachineName.js';
 import type { Request, Response, Router } from 'express';
 import { ownerOrBearer, rowKey } from './mobileCapacityRoutes.js';
 import { cleanText } from './mobilePlansPeopleRoutes.js';
+import { conversationKeys } from '../core/conversationKeys.js';
+import { cleanConversationTitle } from '../core/appConversationText.js';
 import { TOKEN_RUN } from './mobileSecretsRoutes.js';
 import { activeOwnerPhone, isConsoleTicketEnabled, normalHost, verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 import type { InstarConfig } from '../core/types.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { FLOOR_ACTION_LABELS } from '../core/AuthorizationRequestStore.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
@@ -87,11 +91,14 @@ export type PermissionAction =
   | { kind: 'cancel-secret'; target: string }
   | { kind: 'session-door'; target: string; framework: string; model: string | null; machine: string | null }
   | { kind: 'session-move'; target: string; to: string; confirmation: string | null }
+  /** "Bring it back here" (app-conversations-in-the-pool §2.2): Face ID, behind the same write gate as Move. */
+  | { kind: 'session-bring-back'; target: string; confirmed: boolean }
   | { kind: 'session-close'; target: string; tmux: string; machine: string | null }
+  | { kind: TeamActionKind; target: 'team' }
   | { kind: 'session-new'; target: 'new'; name: string; platform: SessionPlatformChoice; framework: string | null; model: string | null; machine: string | null }
   | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null };
 
-export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'headless';
+export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
 export const MAX_SESSION_NAME_CHARS = 120;
 /** A door, model or machine as an action line can carry it: one word, nothing a line could be split on. */
@@ -115,20 +122,27 @@ export function actionLine(a: PermissionAction): string {
     case 'cancel-secret': return `cancel-secret ${a.target}`;
     case 'session-door': return `session-door ${a.target} ${a.machine ?? 'here'} ${a.framework} ${a.model ?? 'none'}`;
     case 'session-move': return `session-move ${a.target} ${a.to} ${a.confirmation ?? 'none'}`;
+    case 'session-bring-back': return `session-bring-back ${a.target} ${a.confirmed ? 'confirmed' : 'ask'}`;
     case 'session-close': return `session-close ${a.target} ${a.tmux} ${a.machine ?? 'here'}`;
+    case 'team-off': case 'team-restore': case 'team-memory-privacy': case 'team-origin-gone': return `${a.kind} team`;
     case 'session-new': return `session-new new ${reasonHash(a.name)} ${a.platform} ${a.framework ?? 'none'} ${a.model ?? 'none'} ${a.machine ?? 'auto'}`;
     case 'session-default': return `session-default new-topic-default ${a.framework ?? 'none'} ${a.model ?? 'none'}`;
   }
 }
 
 /** The exact bytes the presence key signs for one action. */
+/** What the owner confirms with Face ID on the team screens. */
+export type TeamActionKind = 'team-off' | 'team-restore' | 'team-memory-privacy' | 'team-origin-gone';
+
 export function permissionPresenceMessage(deviceId: string, host: string, challenge: string, line: string): string {
   return `${PERMISSION_ACTION_VERSION}\n${deviceId}\n${host.toLowerCase()}\n${challenge}\n${line}`;
 }
 
 /** Builds an action from its parts, or names what is wrong with them. */
 export function buildAction(kind: unknown, target: unknown, extra: { value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
-  if (typeof target !== 'string' || !TARGET_PATTERN.test(target)) return { ok: false, error: 'bad-target' };
+  // A session door names a conversation reference, whose Slack form has uppercase ids (checked below).
+  if (typeof target !== 'string' || (kind === 'session-door' ? !conversationKeys(target) : !TARGET_PATTERN.test(target))) return { ok: false, error: 'bad-target' };
+  if (kind === 'team-off' || kind === 'team-restore' || kind === 'team-memory-privacy' || kind === 'team-origin-gone') return { ok: true, action: { kind, target: 'team' } };
   if (kind === 'approve-request') {
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
@@ -164,7 +178,7 @@ export function buildAction(kind: unknown, target: unknown, extra: { value?: unk
     if (!/^[0-9a-f]{16}$/.test(target)) return { ok: false, error: 'bad-target' };
     return { ok: true, action: { kind, target } };
   }
-  if (kind === 'session-door' || kind === 'session-move' || kind === 'session-close' || kind === 'session-new' || kind === 'session-default') return buildSessionAction(kind, target, extra);
+  if (kind === 'session-door' || kind === 'session-move' || kind === 'session-bring-back' || kind === 'session-close' || kind === 'session-new' || kind === 'session-default') return buildSessionAction(kind, target, extra);
   return { ok: false, error: 'bad-action' };
 }
 
@@ -178,15 +192,23 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
   if (machine === undefined) return { ok: false, error: 'bad-machine' };
   if (model === undefined) return { ok: false, error: 'bad-model' };
   if (kind === 'session-door') {
-    if (!TOPIC_ID.test(target)) return { ok: false, error: 'bad-target' };
+    // Any conversation (session-swap-any-conversation §3.5): a reference, or a bare Telegram topic
+    // id from an older app. The signed line carries the target exactly as sent.
+    if (!conversationKeys(target)) return { ok: false, error: 'bad-target' };
     if (!word(x.framework)) return { ok: false, error: 'bad-framework' };
     return { ok: true, action: { kind, target, framework: x.framework, model, machine } };
   }
   if (kind === 'session-move') {
-    if (!TOPIC_ID.test(target)) return { ok: false, error: 'bad-target' };
+    // A Telegram topic or an app conversation (app-conversations-in-the-pool §2.5), re-validated with
+    // its real case. A Slack conversation stays with its connection, so it has no move to sign.
+    if (!TOPIC_ID.test(target) && conversationKeys(target)?.kind !== 'app') return { ok: false, error: 'bad-target' };
     if (!word(x.to)) return { ok: false, error: 'bad-machine' };
     if (!absent(x.confirmation) && !(typeof x.confirmation === 'string' && CONFIRMATION.test(x.confirmation))) return { ok: false, error: 'bad-confirmation' };
     return { ok: true, action: { kind, target, to: x.to, confirmation: absent(x.confirmation) ? null : x.confirmation as string } };
+  }
+  if (kind === 'session-bring-back') {
+    if (conversationKeys(target)?.kind !== 'app') return { ok: false, error: 'bad-target' };
+    return { ok: true, action: { kind, target, confirmed: x.confirmation === 'confirmed' } };
   }
   if (kind === 'session-close') {
     if (typeof x.tmux !== 'string' || !TMUX_NAME.test(x.tmux)) return { ok: false, error: 'bad-session-name' };
@@ -205,9 +227,13 @@ function buildSessionAction(kind: SessionAction['kind'], target: string, x: { fr
   if (name !== name.trim() || name.length > MAX_SESSION_NAME_CHARS) return { ok: false, error: 'bad-name' };
   if (CONTROL_CHARS.test(name) || holdsToken(name)) return { ok: false, error: 'bad-name' };
   const platform = x.platform ?? 'auto';
-  if (platform !== 'auto' && platform !== 'telegram' && platform !== 'slack' && platform !== 'headless') return { ok: false, error: 'bad-platform' };
-  // Door, model and machine apply to Telegram topics only. A signed line never names a choice the route would drop.
+  if (platform !== 'auto' && platform !== 'telegram' && platform !== 'slack' && platform !== 'app' && platform !== 'headless') return { ok: false, error: 'bad-platform' };
+  // Engine, model and machine never apply to Slack or terminal-only. A signed line never names a choice the route would drop.
   if ((platform === 'slack' || platform === 'headless') && (framework !== null || model !== null || machine !== null)) return { ok: false, error: 'bad-platform' };
+  // An app conversation takes an engine and model, but no machine until part 3.
+  if (platform === 'app' && machine !== null) return { ok: false, error: 'bad-platform' };
+  // An app conversation's title is at most 80 characters: refused here, before Face ID, not after.
+  if (platform === 'app' && cleanConversationTitle(name) !== name) return { ok: false, error: 'bad-name' };
   if (framework === null && model !== null) return { ok: false, error: 'bad-framework' };
   return { ok: true, action: { kind, target, name, platform, framework, model, machine } };
 }
@@ -270,7 +296,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -286,6 +312,7 @@ export class PermissionActionAudit {
       fs.appendFileSync(this.file, JSON.stringify({ at: new Date(this.now()).toISOString(), ...row }) + '\n', { mode: 0o600 });
     } catch (err) {
       // @silent-fallback-ok — not silent: reported through DegradationReporter; the audit never fails the request
+      featureEvidence.record('mobilePairing.permissionActions', { kind: 'error', reason: 'audit row not written', context: { event: row.event } });
       report('MobilePermissions.audit', 'the phone permission audit row is written', 'the action still runs and its own records (mandate audit, feature events) are written', err);
     }
   }
@@ -550,6 +577,8 @@ export interface MobilePermissionsDeps {
   /** Each online peer's `GET /mobile/permissions/features?scope=local` (read-only here). */
   peerFeatures: () => Promise<Array<PeerSlips | PeerUnreached>>;
   offlineMachineIds?: () => string[];
+  /** The answering machine's verified name, or null. */
+  selfName?: () => string | null;
   nicknameOf: (machineId: string) => string | null;
   features: () => { state: PartState; list: Rec[] };
   /** One registry definition by id (null when unknown), for the disclosure a switch must carry. */
@@ -566,6 +595,8 @@ export interface MobilePermissionsDeps {
   cancelSecret: (key: string) => ActionResult;
   /** A session control: runs the dashboard's own route and answers in the phone's words (mobileSessionControlsRoutes.ts). */
   sessionAction?: (action: SessionAction, deviceId: string) => Promise<ActionResult>;
+  /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
+  teamAction?: (kind: TeamActionKind, req: Request, deviceId: string) => Promise<ActionResult>;
   now?: () => number;
 }
 
@@ -663,11 +694,14 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
       // @silent-fallback-ok — not silent: reported; offline machines are then not named
       report('MobilePermissions.read', 'the offline machine list', 'offline machines are not named', err);
     }
-    res.json({ ...head(), actions: actionsState(req, deps), state: part.state, features, ...summarizePeerFeatures(peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline }) });
+    // `machine`: the answering machine's name, so the phone titles its switches by name, never "This machine".
+    res.json({ ...head(), actions: actionsState(req, deps), state: part.state, machine: cleanText(deps.selfName?.() ?? null, 60), features, ...summarizePeerFeatures(peers, { nicknameOf: deps.nicknameOf, offlineMachineIds: offline }) });
   });
 
   /** Steps 1–6 of the write gate (spec §3.3). Answers and returns null on refusal. */
-  const writeGate = (req: Request, res: Response): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
+  // `teamControl`: turning team access off, restoring it and requiring privacy must always work for
+  // whoever could invite, so they do not hang on this feature's switch or the console PIN (§3.6).
+  const writeGate = (req: Request, res: Response, teamControl = false): { deviceId: string; personId: string | null; host: string; presenceKey: string; svc: MobilePairingService } | null => {
     res.set('Cache-Control', 'no-store');
     // Every refusal leaves a trace before the answer (A Refusal Stays a Refusal); the bearer has no device id.
     const refuse = (r: Refusal, deviceId: string | null = principalDevice(req)): null => {
@@ -677,13 +711,13 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     };
     const svc = deps.pairing();
     const config = deps.config();
-    if (!svc || !svc.enabled() || !isPermissionActionsEnabled(config)) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
+    if (!svc || !svc.enabled() || (!teamControl && !isPermissionActionsEnabled(config))) return refuse({ status: 503, error: 'permission-actions-off', detail: 'Changing permissions from the phone is turned off on this agent. Open the console to change this.' });
     const p = (req as unknown as { instarPrincipal?: { kind: string; deviceId?: string } }).instarPrincipal;
     if (!p || p.kind !== 'device' || typeof p.deviceId !== 'string') return refuse({ status: 403, error: 'device-signature-required', detail: 'Only the owner\'s paired phone can do this here. Open the console to change this.' });
     const deviceId = p.deviceId;
     if (!overLocalTls(req)) return refuse({ status: 403, error: 'secure-transport-required' }, deviceId);
     if (!activeOwnerPhone(svc, deviceId)) return refuse({ status: 403, error: 'owner-phone-required' }, deviceId);
-    if (!config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
+    if (!teamControl && !config.dashboardPin) return refuse({ status: 503, error: 'console-pin-not-set', detail: 'The console has no PIN set, so it cannot approve or switch either. Set a PIN first.' }, deviceId);
     const d = svc.devices.get(deviceId);
     if (!d?.presenceKey) return refuse({ status: 409, error: 'presence-key-missing' }, deviceId);
     const raw = (req as unknown as { instarDeviceHost?: unknown }).instarDeviceHost;
@@ -693,9 +727,9 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   };
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
-    const g = writeGate(req, res);
-    if (!g) return;
     const b = rec(req.body);
+    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone');
+    if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
     const line = actionLine(built.action);
@@ -726,6 +760,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
     const ok = r.status >= 200 && r.status < 300;
     // A request's signed target is `new`; its one-way key ties the row to the request it made.
     const madeKey = rec(r.body).key;
+    // The action kind only: a target can name a secret path.
+    if (ok) featureEvidence.record('mobilePairing.permissionActions', { kind: 'fired', reason: event, context: { action: action.kind } });
     audit.record({ event: ok ? event : 'refused', deviceId: g.deviceId, personId: g.personId, action: action.kind, target: action.target, ...(action.kind === 'request-secret' && typeof madeKey === 'string' ? { requestKey: madeKey } : {}), ...(action.kind === 'set-feature' ? { value: action.value } : {}), status: r.status, ...(ok ? {} : { reason: errorCode(r.body) }) });
     res.status(r.status).json(r.body);
   };
@@ -794,9 +830,33 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   };
   sessionRoute('/mobile/sessions/door/:topic', 'session-door', (req) => String(req.params.topic));
   sessionRoute('/mobile/sessions/move/:topic', 'session-move', (req) => String(req.params.topic));
+  sessionRoute('/mobile/sessions/bring-back/:conversation', 'session-bring-back', (req) => String(req.params.conversation));
   sessionRoute('/mobile/sessions/close/:id', 'session-close', (req) => String(req.params.id));
   sessionRoute('/mobile/sessions/new', 'session-new', () => 'new');
   sessionRoute('/mobile/sessions/default', 'session-default', () => 'new-topic-default');
+
+  const teamRoute = (routePath: string, kind: TeamActionKind): void => {
+    router.post(routePath, async (req: Request, res: Response) => {
+      const g = writeGate(req, res, true);
+      if (!g) return;
+      const built = buildAction(kind, 'team', {});
+      if (!built.ok || !proven(req, res, g, built.action)) return;
+      let r: ActionResult;
+      try {
+        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId) : { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
+      } catch (err) {
+        // The reason goes to the log. The phone gets words a person can use.
+        console.warn(`[team-access] ${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
+        const body = { error: 'team-action-failed', detail: 'That did not work, and nothing changed. Try again.' };
+        r = { status: 500, body: isStorageFailure(err) ? storageErrorResponse(body, deps.stateDir) : body };
+      }
+      finish(res, 'team-changed', built.action, g, r);
+    });
+  };
+  teamRoute('/mobile/team/off', 'team-off');
+  teamRoute('/mobile/team/restore', 'team-restore');
+  teamRoute('/mobile/team/origin-gone', 'team-origin-gone');
+  teamRoute('/mobile/team/memory-privacy', 'team-memory-privacy');
 
   router.post('/mobile/permissions/features/:id', async (req: Request, res: Response) => {
     const g = writeGate(req, res);

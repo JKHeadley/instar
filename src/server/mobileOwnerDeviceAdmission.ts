@@ -1,6 +1,7 @@
 /** Reusable live owner-phone authorization for asynchronous private reads. */
 import type { Request } from 'express';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
+import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { isOwnerProfile } from '../core/MobilePeople.js';
 import { deviceAdmissionIdentity, deviceAdmittedAt, devicePersonOf, isMobileNativeEnabled,
   type MobileDeviceAdmissionIdentity, type MobilePairingService } from './mobilePairingRoutes.js';
@@ -29,8 +30,11 @@ export function mobileOwnerDeviceAdmission(pairing: MobilePairingService, req: R
     try {
       if (!pairing.keyLedger || !pairing.enabled() || !pairing.nativeOn || !isMobileNativeEnabled(pairing.deps.config)) return false;
       const device = pairing.devices.get(deviceId);
-      if (!device || device.status !== 'active' || !device.publicKey
-        || deviceKeyHashOf(device.publicKey) !== admitted.keyHash
+      const key = deviceKeyOf(device);
+      // A browser is admitted only while the browser switch is on (dashboard-conversations-browser-device §4.1).
+      if (device && isBrowserDevice(device) && !pairing.browserOn()) return false;
+      if (!device || device.status !== 'active' || !key
+        || deviceKeyHashOf(key) !== admitted.keyHash
         || (device.userId ?? null) !== admitted.userId || (device.role ?? 'owner') !== admitted.role
         || pairing.keyLedger.isRevoked(admitted.keyHash, deviceId)) return false;
       const current = pairing.personOfDevice(device);

@@ -14,6 +14,7 @@
  *    home and the temp roots and re-allows an exact list.
  */
 
+import { setAsideUnlessRealFolder } from '../users/MemoryPrivacy.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -100,9 +101,12 @@ export function buildMemorySessionSettings(p: MemorySessionPaths): Record<string
 export function prepareSessionCurlHome(scopeDir: string, platform: NodeJS.Platform = process.platform): string | null {
   if (platform !== 'linux') return null;
   const curlHome = path.join(scopeDir, '.curl');
+  // The folder is the session's own, so it may have left a link here, and this runs unsandboxed.
+  setAsideUnlessRealFolder(curlHome);
   fs.mkdirSync(curlHome, { recursive: true, mode: 0o700 });
-  // Rewritten at every spawn: the folder is the session's own, so it may have changed it.
-  fs.writeFileSync(path.join(curlHome, '.curlrc'), 'noproxy = ""\n', { mode: 0o600 });
+  const staged = path.join(curlHome, `.curlrc-${randomUUID()}`);
+  fs.writeFileSync(staged, 'noproxy = ""\n', { mode: 0o600, flag: 'wx' });
+  fs.renameSync(staged, path.join(curlHome, '.curlrc')); // replaces a link rather than following it
   return curlHome;
 }
 
@@ -136,6 +140,21 @@ export function applyMemorySessionLaunch(argv: string[], settingsPath: string, s
   if (argv.includes('--dangerously-skip-permissions') || !argv.includes('dontAsk') || !argv.includes(settingsPath)) {
     throw new Error('memory-session-launch-missing: the memory session form was not applied');
   }
+}
+
+/**
+ * Where the unsandboxed server may safely put a file in a session's inbox. The session can write to
+ * its own scope folder, so it can plant links there: the inbox must be a real folder in the scope, and
+ * the name is unguessable, to be written with an exclusive flag so nothing planted can be followed.
+ * Throws when the inbox is not safe.
+ */
+export function safeInboxTarget(inbox: string, name: string): string {
+  fs.mkdirSync(inbox, { recursive: true, mode: 0o700 });
+  const info = fs.lstatSync(inbox);
+  if (info.isSymbolicLink() || !info.isDirectory() || fs.realpathSync(inbox) !== path.join(fs.realpathSync(path.dirname(inbox)), path.basename(inbox))) {
+    throw new Error('session-inbox-not-safe');
+  }
+  return path.join(inbox, `${randomUUID()}-${path.basename(name)}`);
 }
 
 /**

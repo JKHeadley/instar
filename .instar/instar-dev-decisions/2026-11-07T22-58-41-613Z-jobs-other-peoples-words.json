@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-07T22:58:41.613Z",
+  "slug": "jobs-other-peoples-words",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/appInboundDispatch.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "recommended-services-bitwarden-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-08T09:23:26.803Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-bitwarden-recipe.md",
+  "artifactSha256": "3f09ca96f56f8b647fbbb7438fcb1e04eacccbff9c97f6140c1dabe1554b11d7",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "src/core/BitwardenProvider.ts",
+    "upgrades/side-effects/recommended-services-bitwarden-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Variable rename in the Bitwarden provider's logout so the keyword-intent ratchet sees CLI output, not a message; the recipe stays Tier 2 (vault master password, secrets copied to Bitwarden).",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

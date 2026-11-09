@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "decision-audit-deleted-scope",
+  "sessionId": "6b6957b5-6fd1-49d5-a2a7-373fae21e92f",
+  "timestamp": "2026-11-07T15:19:36.385Z",
+  "artifactPath": "upgrades/side-effects/decision-audit-deleted-scope.md",
+  "artifactSha256": "566536f12e43621ae2ca1b67069c56eed6de45d9613f6527373f76f4d841b44a",
+  "coveredFiles": [
+    "scripts/decision-audit-presence-check.mjs",
+    "scripts/instar-dev-precommit.js",
+    "tests/unit/decision-audit-presence-check.test.ts",
+    "tests/unit/instar-dev-precommit-audit-staging.test.ts",
+    "tests/unit/safe-merge-local-floor.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Two build-time scripts, about 40 lines, no runtime surface; a revert fully undoes it and new records stay valid under the old checker.",
+  "eli16Path": "docs/specs/decision-audit-deleted-scope.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/decision-audit-deleted-scope.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -16,7 +16,8 @@ import { join } from 'node:path';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
-import { applyClaudeChildAuth, classifyClaudeAuthFailure, reportClaudeCallOutcome } from './claudeChildAuth.js';
+import { guardChildStdin } from './pipeErrorGuard.js';
+import { applyClaudeChildAuth, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -179,6 +180,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
           // The auth verdict is only in stdout. It is logged as a category, never as CLI text.
           const authFailure = classifyClaudeAuthFailure(stdout);
           if (authFailure) reportClaudeCallOutcome(authFailure);
+          if (isUsageLimitOutput(stdout)) reportClaudeUsageLimited();
           reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}${authFailure ? ` — auth: ${authFailure}` : ''}`));
           return;
         }
@@ -187,6 +189,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
         resolve(parseJsonResult(stdout, options?.onUsage, Boolean(hardened?.jsonSchema), options?.onServedModel));
       });
 
+      guardChildStdin(child.stdin, 'claude-cli');
       // Hardened calls pass the prompt over STDIN (§1.4) so it never appears in
       // ps-visible argv; the default path already carries it as the `-p` arg.
       if (hardened) {

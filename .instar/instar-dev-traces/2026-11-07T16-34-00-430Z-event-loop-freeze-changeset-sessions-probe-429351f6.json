@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "event-loop-freeze-changeset-sessions-probe",
+  "sessionId": "d0af9c77-56cb-467e-897f-a7ace8bfa5ea",
+  "timestamp": "2026-11-07T16:34:00.430Z",
+  "artifactPath": "upgrades/side-effects/event-loop-freeze-changeset-sessions-probe.md",
+  "artifactSha256": "3ca647a181279995c1e69e9eaf0b72ec7ca2071e37c24e025c9ebb5837bfe722",
+  "coveredFiles": [
+    "src/feedback-factory/execute/ConfinedRunner.ts",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/changeSet.ts",
+    "src/monitoring/SessionReaper.ts",
+    "src/server/routes.ts",
+    "tests/e2e/sessions-listing-hygiene-lifecycle.test.ts",
+    "tests/integration/session-reaper-routes.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/eli16/event-loop-freeze-changeset-sessions-probe.md",
+    "upgrades/next/event-loop-freeze-changeset-sessions-probe.md",
+    "upgrades/side-effects/event-loop-freeze-changeset-sessions-probe.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix: same reads and checks made non-blocking, plus an id-only reaper read; a revert fully undoes it, no state or config.",
+  "eli16Path": "upgrades/eli16/event-loop-freeze-changeset-sessions-probe.md",
+  "sideEffectsPath": "upgrades/side-effects/event-loop-freeze-changeset-sessions-probe.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

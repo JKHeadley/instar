@@ -1,3 +1,8 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
+import { isQuietReceipt, QuietRecordedError, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
+import { deviceIcon, mirrorPrefix, openItHint, type DeviceClient } from '../core/deviceClientWording.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/server/mobileMediaSend.ts');
 /**
  * The media half of an app send, shared by every send route that accepts files
  * (docs/specs/mobile-native-chat-media.md §4.3, §4.9): a native app conversation
@@ -129,7 +134,7 @@ export async function claimMediaUploads(s: AppConversationService, uploadIds: st
   try { await s.media.verifyClaimed(uploadIds); } catch (err) {
     s.media.releaseClaim(uploadIds, messageId);
     report(err instanceof Error ? err.message : String(err));
-    return { status: 503, body: { error: 'chat-unavailable', detail: 'The files could not be saved, so the message was not sent. Try again.' } };
+    return { status: 503, body: storageErrorResponse({ error: 'chat-unavailable', detail: 'The files could not be saved, so the message was not sent. Try again.' }, s.deps.stateDir) };
   }
   return null;
 }
@@ -170,28 +175,30 @@ export interface TelegramMirrorPlan {
 /**
  * Plan the Telegram mirror of an app-sent media message (§4.9): files above 50,000,000 bytes
  * become "📱 <owner> sent <display name> (too large for Telegram; open it in the app)"; the rest
- * upload with the caption "📱 <owner> (from the app): <caption>". `locate` returns the blob path
+ * upload with the caption "📱 <owner> (from the app): <caption>" (💻 … (from the dashboard) for a browser, §4.7). `locate` returns the blob path
  * on this machine; a file with no local blob is treated like an oversized one (a text line), so a
  * mirror never waits on a copy.
  */
 export function planTelegramMirror(
   ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string, locate: (sha256: string) => string | null,
+  client: DeviceClient = 'phone',
 ): TelegramMirrorPlan {
+  const prefix = mirrorPrefix(client, ownerName);
   const upload: TelegramMirrorFile[] = [];
   const tooLarge: string[] = [];
   for (const a of attachments) {
     const p = a.size <= TELEGRAM_MIRROR_MAX_BYTES ? locate(a.sha256) : null;
     if (p) upload.push({ path: p, filename: displayName(a.filename), mediaType: a.mediaType, kind: a.kind, size: a.size });
-    else tooLarge.push(`📱 ${ownerName} sent ${displayName(a.filename)} (too large for Telegram; open it in the app)`);
+    else tooLarge.push(`${deviceIcon(client)} ${ownerName} sent ${displayName(a.filename)} (too large for Telegram; ${openItHint(client)})`);
   }
-  const line = caption ? `📱 ${ownerName} (from the app): ${caption}` : `📱 ${ownerName} (from the app)`;
+  const line = caption ? `${prefix}: ${caption}` : prefix;
   const textLines: string[] = [];
   let uploadCaption: string | null = line;
   if (upload.length === 0) {
     uploadCaption = null;
     if (caption) textLines.push(line);
   } else if (line.length > TELEGRAM_MIRROR_CAPTION_MAX) {
-    uploadCaption = `📱 ${ownerName} (from the app)`;
+    uploadCaption = prefix;
     textLines.push(line);
   }
   return { upload, caption: uploadCaption, textLines: [...textLines, ...tooLarge] };
@@ -203,6 +210,10 @@ export interface TelegramMediaMirrorTarget {
   sendToTopic(topicId: number, text: string, options?: { silent?: boolean; skipStallClear?: boolean; operatorMirror?: boolean }): Promise<unknown>;
 }
 
+export type TelegramMirrorDelivery = { outcome: 'delivered'; deliveredParts: number }
+  | { outcome: 'recorded'; deliveredParts: number; receipt: QuietReceipt };
+export type TelegramMirrorResult = TelegramMirrorPlan & { delivery: TelegramMirrorDelivery };
+
 /**
  * Mirror an app-sent media message into its Telegram topic (§4.9): the files that fit go up in
  * one request (a media group for several), then any text lines (an over-long caption, and one
@@ -212,16 +223,29 @@ export interface TelegramMediaMirrorTarget {
  */
 export async function mirrorMediaToTelegram(
   tg: TelegramMediaMirrorTarget, topicId: number, ownerName: string, attachments: ReadonlyArray<AppAttachment>, caption: string,
-  locate: (sha256: string) => string | null,
-): Promise<TelegramMirrorPlan> {
+  locate: (sha256: string) => string | null, client: DeviceClient = 'phone',
+): Promise<TelegramMirrorResult> {
   if (typeof tg.sendMediaToTopic !== 'function') throw new Error('this Telegram adapter cannot send files');
-  const plan = planTelegramMirror(ownerName, attachments, caption, locate);
-  if (plan.upload.length > 0) {
-    const files = await Promise.all(plan.upload.map(async (f) => ({
-      data: new Uint8Array(await fs.promises.readFile(f.path)), filename: f.filename, mediaType: f.mediaType, kind: f.kind,
-    })));
-    await tg.sendMediaToTopic(topicId, files, plan.caption, { silent: true });
+  const plan = planTelegramMirror(ownerName, attachments, caption, locate, client);
+  let deliveredParts = 0;
+  const recorded = (receipt: QuietReceipt): TelegramMirrorResult => ({ ...plan, delivery: { outcome: 'recorded', deliveredParts, receipt } });
+  try {
+    if (plan.upload.length > 0) {
+      const files = await Promise.all(plan.upload.map(async (f) => ({
+        data: new Uint8Array(await fs.promises.readFile(f.path)), filename: f.filename, mediaType: f.mediaType, kind: f.kind,
+      })));
+      const result = await withNotificationEnvelope(stampNotification(), () => tg.sendMediaToTopic(topicId, files, plan.caption, { silent: true }));
+      if (isQuietReceipt(result)) return recorded(result);
+      deliveredParts++;
+    }
+    for (const line of plan.textLines) {
+      const result = await withNotificationEnvelope(stampNotification(), () => tg.sendToTopic(topicId, line, { silent: true, skipStallClear: true, operatorMirror: true }));
+      if (isQuietReceipt(result)) return recorded(result);
+      deliveredParts++;
+    }
+    return { ...plan, delivery: { outcome: 'delivered', deliveredParts } };
+  } catch (error) {
+    if (error instanceof QuietRecordedError) return recorded(error.receipt);
+    throw error;
   }
-  for (const line of plan.textLines) await tg.sendToTopic(topicId, line, { silent: true, skipStallClear: true, operatorMirror: true });
-  return plan;
 }

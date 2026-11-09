@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "dashboard-read-markers",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T16:22:01.074Z",
+  "artifactPath": "upgrades/side-effects/dashboard-read-markers.md",
+  "artifactSha256": "5e6252b6a384041d000673da77bcf921ff15134b2419e01dc6bc558bf22511d1",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/dashboard-read-markers.eli16.md",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/dashboard-read-markers-alive.test.ts",
+    "tests/unit/console-read-marks.test.ts",
+    "upgrades/next/dashboard-read-markers.md",
+    "upgrades/side-effects/dashboard-read-markers.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One route added to the closed browser allowlist plus client read reports on an existing contract; a revert fully undoes it. Approved by Echo as a small follow-up to #2966.",
+  "eli16Path": "docs/specs/dashboard-read-markers.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-read-markers.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

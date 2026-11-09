@@ -6,6 +6,7 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
+import { guardChildStdin } from '../../core/pipeErrorGuard.js';
 import { RuntimeOriginObserver, type RuntimeOriginObservation } from './RuntimeOriginObserver.js';
 import { CODEX_CANARY_FALLBACK, CODEX_CANARY_MODELS, openCodexCanaryProvider } from './OriginCodexModelCanaryProtocol.js';
 
@@ -102,6 +103,7 @@ export async function runCodexNativeModelCanary(options: {
   const launch = (args: string[], env: NodeJS.ProcessEnv) => {
     check();
     const child = spawn('/usr/bin/sandbox-exec', args, { cwd: root, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    guardChildStdin(child.stdin, 'codex-model-canary');
     const entry = { child, exited: false, exit: Promise.resolve() };
     entry.exit = new Promise<void>(resolve => {
       child.once('exit', () => { entry.exited = true; resolve(); });

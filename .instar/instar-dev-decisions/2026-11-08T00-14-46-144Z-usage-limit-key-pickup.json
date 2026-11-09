@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-08T00:14:46.144Z",
+  "slug": "usage-limit-key-pickup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts",
+      "src/monitoring/sessionUsageLimitEvidence.ts"
+    ],
+    "addedLines": 48,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "No new controller: the change only lets the existing usage-limit-session-refresh controller (registered, ratchet-proven) recognise sessions walled on their first turn. Its brakes are unchanged: decideLimitRefresh caps restarts at REFRESH_MAX_PER_DAY=3 per conversation per 24 h, REFRESH_BATCH=10 per pass, it acts only after a real probe says usage is back, and a session that walls again stops at the cap with one resend ask. Steady state: at most 3 restarts per conversation per day, then quiet."
+    }
+  },
+  "verdict": "blocked"
+}

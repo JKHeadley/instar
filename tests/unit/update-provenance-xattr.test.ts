@@ -19,8 +19,10 @@ describe('Launchd crash loop prevention — UpdateChecker', () => {
   const updateCheckerPath = path.resolve(__dirname, '../../src/core/UpdateChecker.ts');
   const source = fs.readFileSync(updateCheckerPath, 'utf-8');
 
-  it('imports execFileSync for synchronous operations', () => {
-    expect(source).toContain('execFileSync');
+  it('never holds the event loop: no synchronous subprocess call anywhere in the update path', () => {
+    // A synchronous recursive xattr blocked the server for 39.8s during a real update.
+    expect(source).not.toMatch(/execFileSync|execSync|spawnSync/);
+    expect(source).toContain('stripCandidateXattrs');
   });
 
   it('imports os module for platform detection', () => {

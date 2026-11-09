@@ -1,3 +1,4 @@
+import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../data/accountPageSafetyScript.js';
 /**
  * `instar init` — Initialize agent infrastructure.
  * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
@@ -59,6 +60,7 @@ import { allocatePort, registerAgent, validateAgentName } from '../core/AgentReg
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
 import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
+import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { ContextHierarchy } from '../core/ContextHierarchy.js';
@@ -82,6 +84,7 @@ import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
 import { ensureAppReplyRelay } from '../core/AppReplyRelayInstaller.js';
+import { ensureThreadlineReplyRelay } from '../core/ThreadlineReplyRelayInstaller.js';
 import { verifyBundledStageBReleaseEvidence } from '../core/StageBActivationGate.js';
 
 /**
@@ -1787,6 +1790,17 @@ curl http://localhost:\${INSTAR_PORT:-${port}}/evolution
  * Install built-in skills for evolution system.
  * Only writes skill files that don't already exist (preserves customizations).
  */
+/**
+ * The canonical skills root (`<agent-home>/.instar/skills`) for a Claude skills
+ * dir (`<agent-home>/.claude/skills`), or null when `skillsDir` is not that
+ * shape (test fixtures pass arbitrary dirs; those keep the legacy behaviour).
+ */
+export function canonicalSkillsRootFor(skillsDir: string): string | null {
+  const resolved = path.resolve(skillsDir);
+  if (path.basename(resolved) !== 'skills' || path.basename(path.dirname(resolved)) !== '.claude') return null;
+  return path.join(path.dirname(path.dirname(resolved)), '.instar', 'skills');
+}
+
 export function installBuiltinSkills(skillsDir: string, port: number): void {
   const skills: Record<string, { name: string; description: string; content: string }> = {
     'iterative-converging-audit': {
@@ -3094,7 +3108,29 @@ Cherry-picked from the GSD verifier role. The insight: task completion is not go
     },
   };
 
+  // Canonical-first (specs/instar-concepts/skill.md; skill-learning-sentinel
+  // slice 0): the master copy of each built-in skill is written to
+  // `.instar/skills/<slug>/SKILL.md` when absent. The Claude rendering below is
+  // still written when absent so a fresh install is usable before the first
+  // async migration pass; every other enabled framework's rendering is produced
+  // from canonical by PostUpdateMigrator.migrateBuiltinSkillRenderings (via the
+  // parity rule's remediate). Nothing on disk is ever overwritten.
+  const canonicalRoot = canonicalSkillsRootFor(skillsDir);
   for (const [slug, skill] of Object.entries(skills)) {
+    if (canonicalRoot) {
+      const canonicalFile = path.join(canonicalRoot, slug, 'SKILL.md');
+      if (!fs.existsSync(canonicalFile)) {
+        // Canonical must parse under the parity rule's YAML schema: an unquoted
+        // `description:` holding ": " (e.g. "Trigger words: …") is re-quoted with the
+        // same content; a skill that still cannot parse gets no canonical (its Claude
+        // rendering below is unaffected).
+        const normalized = normalizeSkillFrontmatter(skill.content);
+        if (normalized !== null) {
+          fs.mkdirSync(path.dirname(canonicalFile), { recursive: true });
+          fs.writeFileSync(canonicalFile, normalized.text);
+        }
+      }
+    }
     const skillDir = path.join(skillsDir, slug);
     const skillFile = path.join(skillDir, 'SKILL.md');
     if (!fs.existsSync(skillFile)) {
@@ -3844,7 +3880,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nWrite your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
+        value: `You are a Category Overseer for the GUARDIAN category. Your job is to review all guardian/monitoring jobs and assess the health of the monitoring system itself.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/guardian?sinceHours=24\n2. Analyze the report for:\n   - Jobs with high failure rates or consecutive failures\n   - Jobs that are being skipped excessively (especially for quota reasons)\n   - Schedule mismatches (jobs running too often or not often enough for their purpose)\n   - Model over-allocation (could any job use a cheaper model?)\n   - Contradictions between job findings (e.g., health-check says healthy but degradation-digest found issues)\n   - Coverage gaps (are there monitoring blind spots?)\n3. Read the handoff notes from each job — do they tell a coherent story?\n4. If you find actionable issues, write a clear summary. If everything is healthy, say so briefly.\n\nQuiet by Default: keep routine findings in internal records and [HANDOFF]. Own bounded checks and recovery before escalating. Post to the Bugs hub only when a concrete remaining impact needs one operator-only decision or action; use one short plain notice. Never label a scheduled report as a conversational reply. Write your findings in [HANDOFF] tags for the next overseer run. Focus on trends and cross-job insights that individual jobs can't see.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3860,7 +3896,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nWrite findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
+        value: `You are a Category Overseer for the LEARNING category. Your job is to review all evolution/learning jobs and assess whether the learning pipeline is producing genuine value.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/learning?sinceHours=48\n2. Analyze:\n   - Are evolution proposals being generated AND accepted? What's the accept/reject ratio?\n   - Is insight-harvest finding novel insights or recycling stale ones?\n   - Are commitments being tracked and completed, or piling up?\n   - Is reflection-trigger producing meaningful MEMORY.md updates?\n   - Are any learning jobs consistently skipped due to quota? This means the learning pipeline is being starved.\n   - Model costs: reflection-trigger uses opus — is the quality difference worth it vs sonnet?\n3. Look for the meta-pattern: is the agent actually getting smarter over time, or is the learning pipeline just busy-work?\n4. Check handoff notes for patterns across runs.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Flag if the learning pipeline is producing diminishing returns.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3876,7 +3912,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nWrite findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
+        value: `You are a Category Overseer for the MAINTENANCE category. Your job is to review all housekeeping/maintenance jobs and ensure they're keeping the system clean.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/maintenance?sinceHours=48\n2. Analyze:\n   - Is memory-hygiene actually reducing stale entries, or finding nothing each run?\n   - Is project-map-refresh keeping the map accurate? How often does it find drift?\n   - Is coherence-audit finding real misalignments or just confirming everything is fine?\n   - Are any maintenance jobs redundant with each other? (e.g., overlapping checks)\n   - Are skill-type jobs (coherence-audit, memory-hygiene) running correctly?\n   - Workload trends: are jobs processing fewer items over time (diminishing returns)?\n3. Maintenance jobs should trend toward finding LESS work over time. If they consistently find issues, something upstream is broken.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Recommend disabling or reducing frequency of jobs that consistently find nothing.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3892,7 +3928,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nWrite findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
+        value: `You are a Category Overseer for the INFRASTRUCTURE category. Your job is to review infrastructure/plumbing jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/infrastructure?sinceHours=48\n2. Analyze:\n   - Is git-sync succeeding? Any merge conflicts or divergence?\n   - Is dashboard-link-refresh keeping links current? Could it run less often?\n   - Is feedback-retry actually retrying anything, or is the queue always empty?\n   - Model allocation: git-sync uses high priority — is that justified by its failure rate?\n   - Are any infrastructure jobs causing issues for other jobs (e.g., git-sync holding sessions)?\n3. Infrastructure jobs should be boring and reliable. Any excitement is a problem.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags. Keep it brief — infrastructure overseers should be the quietest.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -3908,7 +3944,7 @@ If everything is coherent and no reflection is needed, exit silently. Only repor
       enabled: true,
       execute: {
         type: 'prompt',
-        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nWrite findings in [HANDOFF] tags.`,
+        value: `You are a Category Overseer for the DEVELOPMENT category. Your job is to review development-focused jobs.\n\n1. Fetch the category report: curl -H "Authorization: Bearer $AUTH" -H "X-Instar-AgentId: $INSTAR_AGENT_ID" http://localhost:\${INSTAR_PORT:-${port}}/jobs/category-report/development?sinceHours=48\n2. Analyze:\n   - Are development jobs consuming appropriate resources for their value?\n   - Are there CI/testing patterns that could be automated?\n3. Development jobs are only valuable when there's active development. If the codebase is stable, these could be reduced.\n\nQuiet by Default: keep routine findings internal. Own bounded checks and self-healing and record the result. Bugs-hub posts must identify a remaining impact and one operator-only action; never send housekeeping or progress narration. Never label scheduled output as a reply. Write findings in [HANDOFF] tags.`,
       },
       tags: ['cat:overseer', 'role:supervisor'],
       telegramNotify: 'on-alert',
@@ -5129,6 +5165,13 @@ function installAppRelay(projectDir: string, stateDir: string = path.join(projec
     claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
   });
   if (outcome.errors.length > 0) throw new Error(`App reply relay install failed: ${outcome.errors.join('; ')}`);
+  // Peer-place reply relay (docs/specs/memory-privacy-agent-places.md §5): inert outside a peer place.
+  const peerOutcome = ensureThreadlineReplyRelay({
+    projectDir, stateDir,
+    template: loadRelayTemplate('threadline-reply.sh', 4040),
+    claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
+  });
+  if (peerOutcome.errors.length > 0) throw new Error(`Peer-place reply relay install failed: ${peerOutcome.errors.join('; ')}`);
 }
 
 function installSerendipityCapture(projectDir: string): void {
@@ -5240,7 +5283,7 @@ function installSecretGet(projectDir: string): void {
  * with its WSL wrapper (ndrive.sh), and the Linux driver (x-drive.py, AT-SPI + XTEST on an agent-private
  * display) with its wrapper (xdrive.sh). All install everywhere; each refuses the wrong platform itself.
  */
-export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py'] as const;
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'account-page-safety.js', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py'] as const;
 /** Started by the agent's own boot, never by a person or the skill, so the skill does not name it. */
 export const BROWSER_PROVISION_SCRIPT_NAMES = ['xdrive-provision.sh'] as const;
 /** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
@@ -5266,6 +5309,14 @@ export function installBrowserScripts(projectDir: string): string[] {
   const modDir = __dirname;
   const written: string[] = [];
   for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, ...BROWSER_PROVISION_SCRIPT_NAMES]) {
+    if (name === 'account-page-safety.js') {
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      const target = path.join(scriptsDir, name);
+      fs.writeFileSync(target, ACCOUNT_PAGE_SAFETY_SCRIPT, { mode: 0o755 });
+      fs.chmodSync(target, 0o755);
+      written.push(name);
+      continue;
+    }
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
       path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),

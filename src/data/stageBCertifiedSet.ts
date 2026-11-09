@@ -24,6 +24,70 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/AppRecordSignatures.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/IdentityStore.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/MachineIdentity.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/MobileDeviceKeys.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/NicknameAssigner.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessEvents.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessMerge.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2b). Pure rules for how machines agree on access, run only when a team exists, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/TeamAccessLog.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/appConversationText.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/appMediaTypes.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/keyMaterialPaths.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/pairingWords.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/messaging/outbound-credential-guard.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/permissions/TeamAccess.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/users/TeamConfinement.ts",
+      "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
+    },
+    {
+      "file": "src/core/pipeErrorGuard.ts",
+      "reason": "Stream error listener reached through the excluded ClaudeCliIntelligenceProvider; it only stops a closed pipe becoming an uncaught exception, and has no part in the certified Codex Stage-B delivery path."
+    },
+    {
       "file": "src/core/claudeChildAuth.ts",
       "reason": "Claude-only helper that passes the sign-in key to claude children; a Codex launch never reads it, so it cannot change the behaviour the Stage-B evidence certifies."
     },
@@ -408,8 +472,36 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
+      "file": "src/messaging/NotificationPreferences.ts",
+      "reason": "Confirmed Telegram notification preference replication, reached through the notification gate; it cannot change Codex composer admission, inbound delivery observation, or recovery acknowledgment certified by Stage-B."
+    },
+    {
+      "file": "src/messaging/NotificationSelectivityGate.ts",
+      "reason": "Outbound Telegram notification routing only, reached through excluded TelegramAdapter; it does not admit, observe, or acknowledge inbound Codex composer deliveries covered by the Stage-B canary."
+    },
+    {
+      "file": "src/messaging/QuietNotificationStore.ts",
+      "reason": "Local outbound Telegram quiet-feed persistence only, reached through the notification gate; it has no effect on the certified inbound Codex delivery state machine."
+    },
+    {
+      "file": "src/messaging/notificationCategories.ts",
+      "reason": "Closed outbound Telegram notification category declarations only, reached through the notification gate; no Codex composer or inbound delivery behavior."
+    },
+    {
+      "file": "src/core/upgradeAnnouncement.ts",
+      "reason": "Existing outbound release announcement front-matter parser, reached through notification category promotion; does not admit or observe inbound Codex composer deliveries certified by Stage-B."
+    },
+    {
       "file": "src/core/SigninProfileGuard.ts",
       "reason": "Stateless Google browser-profile ownership validation and generated native hook text, reached through the shared MCP/registry dependency graph; it does not implement the certified Codex delivery observer, composer, ledger, or recovery protocol. Its browser capability boundary is verified by dedicated unit, HTTP, and installed-hook lifecycle tests."
+    },
+    {
+      "file": "src/core/storageMachineName.ts",
+      "reason": "Read-only machine nickname lookup and diagnostic error formatting reached through existing storage notices. It changes no Stage-B dispatch, receipt, delivery, admission or recovery decisions; it is outside the certified protocol canary surface."
+    },
+    {
+      "file": "src/messaging/shared/channelIdentity.ts",
+      "reason": "Pure human-facing display-name validation used by storage diagnostic labels. It changes no Stage-B protocol state, receipt validation, dispatch or recovery decisions."
     }
   ],
   "fingerprint": "f1aacb47b41db1f9385f30b67cd53dfe1febac2ea1e555dbd61f5002ac55512f",
@@ -423,9 +515,9 @@ export const STAGE_B_CERTIFIED_SET = {
     "src/core/SessionRecoveryConsumer.ts": "6a00ca4993d188f1c95eaa7d156795804f00f7e10e600ea12fa2e8cd40423268",
     "src/core/StageBStartupReadiness.ts": "92275608368d44abc98802f9a445acc6419fd57bddb8c2e4935f32961d401183"
   },
-  "boundAt": "2026-11-05",
+  "boundAt": "2026-11-08",
   "boundBy": "echo (fresh exact-candidate certification, topic 59199, 2026-09-04)",
-  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here. On 2026-10-27 the unrelated shared script protocol was classified as excluded; certified hashes and signed evidence are unchanged."
+  "note": "Fresh binding after the first candidate correctly failed closed on three busy-session false-unknown outcomes. Candidate cfe468dc5 then passed 50/50 deliveries over 7,213,141 ms, the full required case matrix, 30/30 responsiveness samples, and zero forbidden outcomes; its signed evidence digest is bound here. On 2026-10-27 the unrelated shared script protocol was classified as excluded; certified hashes and signed evidence are unchanged. On 2026-11-07, storageMachineName and channelIdentity were classified as diagnostic-only exclusions; certified hashes and signed evidence remain unchanged."
 } as const;
 
 export type StageBCertifiedSet = typeof STAGE_B_CERTIFIED_SET;

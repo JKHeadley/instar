@@ -6,6 +6,7 @@
  * the result. It adds packages and gates nothing: on any false fact or failure the agent still boots
  * and reports what is missing. Spec: docs/specs/normal-chrome-linux.md, "Installing on a fresh agent".
  */
+import { storageMachineName } from './storageMachineName.js';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -77,12 +78,12 @@ export function wantsAutoInstall(stateDir: string, configured: boolean | undefin
 }
 
 /** Why this machine cannot be installed automatically, or null when it can. */
-export function machineBlocker(facts: MachineFacts): string | null {
+export function machineBlocker(facts: MachineFacts, stateDir?: string): string | null {
   if (facts.arch !== 'x64') return 'arch: Google publishes no Chrome for Linux on this processor';
   if (!/^ID=ubuntu$/m.test(facts.osRelease) || !/^VERSION_ID="?24\.04"?$/m.test(facts.osRelease)) return 'os: automatic install is measured on Ubuntu 24.04 only';
   if (!facts.hasApt) return 'os: no apt-get';
   if (!facts.sudoWorks) return 'sudo: this user has no passwordless sudo';
-  if (facts.freeBytes < MIN_FREE_BYTES) return 'disk: less than 3 GB free';
+  if (facts.freeBytes < MIN_FREE_BYTES) return `disk: less than 3 GB free on ${storageMachineName(stateDir)}`;
   return null;
 }
 
@@ -93,6 +94,7 @@ export function retryDelayMs(attempts: number): number {
 /** Everything the boot call decides, as a pure function of what it read. */
 export function decideProvision(input: {
   wanted: boolean;
+  stateDir?: string;
   bypassBackoff?: boolean;
   depsPresent: boolean;
   bindings: number;
@@ -110,7 +112,7 @@ export function decideProvision(input: {
     if (due && bindings === 0 && facts.sudoWorks && facts.hasApt) return { action: 'upgrade' };
     return { action: 'none', reason: 'ready' };
   }
-  const blocker = machineBlocker(facts);
+  const blocker = machineBlocker(facts, input.stateDir);
   if (blocker) return { action: 'skip', reason: blocker };
   if (!input.bypassBackoff && backoff && backoff.attempts >= MAX_INSTALL_ATTEMPTS) {
     return { action: 'none', reason: 'stopped retrying' };
@@ -216,6 +218,7 @@ export async function provisionLinuxBrowser(deps: ProvisionDeps): Promise<Provis
       : (await run(path.join(deps.projectDir, '.instar', 'scripts', 'browser', 'xdrive.sh'), ['deps'])).stdout.trim() === 'OK';
     const backoffFile = path.join(folder, 'provision-backoff.json');
     const decision = decideProvision({
+      stateDir: deps.stateDir,
       wanted,
       bypassBackoff: deps.bypassBackoff,
       depsPresent: present,

@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "safe-merge-ruleset-code-owner-approval",
+  "sessionId": "738adb65-513e-4ef1-87cc-95c3e41b0fd3",
+  "timestamp": "2026-11-06T10:28:12.326Z",
+  "artifactPath": "upgrades/side-effects/safe-merge-ruleset-code-owner-approval.md",
+  "artifactSha256": "c6dfe49449c13f72616f42d8c98de81abeeddc42a7ca32498d886a2ce772f54c",
+  "coveredFiles": [
+    "scripts/local-verify-floor.d.mts",
+    "scripts/local-verify-floor.mjs",
+    "scripts/safe-merge.mjs",
+    "src/monitoring/GreenPrAutoMerger.ts",
+    "src/monitoring/greenPrAutomergeWiring.ts",
+    "tests/unit/green-pr-automerge-wiring.test.ts",
+    "tests/unit/green-pr-local-floor.test.ts",
+    "tests/unit/safe-merge-local-floor.test.ts",
+    "upgrades/next/safe-merge-ruleset-code-owner-approval.md",
+    "upgrades/side-effects/safe-merge-ruleset-code-owner-approval.eli16.md",
+    "upgrades/side-effects/safe-merge-ruleset-code-owner-approval.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Removes a false refusal in front of GitHub's own enforcement; a plain revert undoes it; no state or migration",
+  "eli16Path": "upgrades/side-effects/safe-merge-ruleset-code-owner-approval.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/safe-merge-ruleset-code-owner-approval.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

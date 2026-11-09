@@ -48,6 +48,7 @@ export interface SentinelSessionSurface {
  * block (which is the gate doing its job, not an error to retry).
  */
 export type AttentionPoster = (item: {
+  contextTopicIds?: number[];
   id: string;
   title: string;
   summary: string;

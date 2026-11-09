@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "measurement-commitment-census",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T11:45:53.739Z",
+  "artifactPath": "upgrades/side-effects/measurement-commitment-census.md",
+  "artifactSha256": "e96aacfa6e34ddf780054977121fb2f2e327563a47a5fb1617b793ac7d09d4b1",
+  "coveredFiles": [
+    "dashboard/console/measurement-coverage.js",
+    "docs/specs/measurement-commitment-census.eli16.md",
+    "docs/specs/measurement-commitment-census.md",
+    "site/src/content/docs/features/measurement-evidence.md",
+    "src/server/maturationBoardRoutes.ts",
+    "src/server/measurementCoverageRead.ts",
+    "tests/e2e/maturation-board-alive.test.ts",
+    "tests/integration/maturation-board-route.test.ts",
+    "tests/unit/measurement-commitment-census.test.ts",
+    "upgrades/next/measurement-commitment-census.md",
+    "upgrades/side-effects/measurement-commitment-census.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small additive advisory census over the existing commitment owner; no new durable state, authoring, authentication or blocking authority. Tests and explanation account for most files; a revert fully removes the read increment.",
+  "eli16Path": "docs/specs/measurement-commitment-census.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/measurement-commitment-census.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

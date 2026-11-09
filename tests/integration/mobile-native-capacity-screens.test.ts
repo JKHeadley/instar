@@ -119,12 +119,26 @@ describe('owner phone: served, trimmed', () => {
     expect(r.status).toBe(200);
     expect(r.headers['cache-control']).toBe('no-store');
     expect(r.body).toMatchObject({ schemaVersion: 1, enabled: true, needsSignIn: 1, usable: 1, unread: { count: 1, names: ['Laptop'] } });
-    expect(r.body.headline).toBe('1 account needs signing in (on the machines that answered).');
+    // Adriana is the only account on Mac Mini: one machine notice that signs it in, not a second sign-in notice.
+    expect(r.body.notices).toEqual([expect.objectContaining({ tone: 'bad', title: 'Mac Mini has no signed-in account, so nothing can run there.', action: { kind: 'sign-in', accounts: [r.body.accounts[0].key] } })]);
+    expect(r.body.headline).toBe(r.body.notices[0].title);
     expect(r.body.accounts.map((a: { name: string }) => a.name)).toEqual(['Adriana Pro', 'Justin Max']);
     expect(r.body.accounts[0]).toMatchObject({ signIn: 'needs-sign-in', email: 'adriana@example.com', machines: [{ name: 'Mac Mini', isSelf: false, state: 'attn', label: 'needs sign-in' }] });
     expect(r.body.accounts[1]).toMatchObject({ signIn: 'signed-in', inUse: true, kind: 'Claude', usageLine: '62% of 5-hour', windows: [{ label: '5-hour', pct: 62, resetsAt: '2026-11-04T04:10:00.000Z' }, { label: 'weekly', pct: 30 }] });
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
+  });
+
+  it('GET /mobile/accounts does not count an unconfirmed sign-in, and survives an unreadable blocker list', async () => {
+    const quiet = await signedGet(setup({ reloginBlockers: async () => [{ accountId: 'adriana-pro', machineId: 'm_peer', reason: 'no-open-incident' }] }), '/mobile/accounts');
+    expect(quiet.status).toBe(200);
+    expect(quiet.body.needsSignIn).toBe(0);
+    expect(quiet.body.headline).not.toContain('signing in');
+    const adriana = quiet.body.accounts.find((a: { name: string }) => a.name === 'Adriana Pro');
+    expect(adriana.machines[0]).toMatchObject({ state: 'unknown', label: 'sign-in not confirmed; still checking' });
+    const down = await signedGet(setup({ reloginBlockers: async () => { throw new Error('unreachable'); } }), '/mobile/accounts');
+    expect(down.status).toBe(200);
+    expect(down.body.needsSignIn).toBe(1);
   });
 
   it('GET /mobile/spend gives recorded cost with its basis, limits without the credential reference, token totals', async () => {
@@ -139,8 +153,8 @@ describe('owner phone: served, trimmed', () => {
       { name: 'Studio', isSelf: true, state: 'ok', netUsd: 4.2, unpricedTokens: 0 },
       { name: 'Mac Mini', isSelf: false, state: 'unreached', netUsd: null, unpricedTokens: null },
     ]);
-    expect(r.body.limits).toMatchObject({ routesState: 'ok', controlsState: 'ok', storeUnreadable: true, sentence: 'Limits are on and enforcing on this machine.', routesSentence: '1 paid route is open.' });
-    expect(r.body.limits.routes[0]).toMatchObject({ name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: 3, dailyCapUsd: 25, heldBy: 'this machine', committedElsewhere: false });
+    expect(r.body.limits).toMatchObject({ routesState: 'ok', controlsState: 'ok', storeUnreadable: true, sentence: 'Limits are on and enforcing on Studio.', routesSentence: '1 paid route is open.' });
+    expect(r.body.limits.routes[0]).toMatchObject({ name: 'OpenRouter · OpenRouter', status: 'Open', committedDayUsd: 3, dailyCapUsd: 25, heldBy: 'Studio', committedElsewhere: false });
     expect(r.body.conversations.claude).toMatchObject({ count: 4, tokens: 1200000 });
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
@@ -155,6 +169,44 @@ describe('owner phone: served, trimmed', () => {
     expect(r.body.server).toMatchObject({ name: 'The agent server', cpuPercent: 3 });
     const text = JSON.stringify(r.body);
     for (const leak of LEAKS) expect(text, leak).not.toContain(leak);
+  });
+
+  it('GET /mobile/resources covers every machine: a combined summary, one block per machine, a silent one never zeros', async () => {
+    const asked: string[] = [];
+    const c = setup({
+      resourceMachines: () => [
+        { key: 'k-self', name: 'Studio', isSelf: true, leading: true, sessions: 3, maxSessions: 10, version: '1.3.1703' },
+        { key: 'k-laptop', name: 'Laptop', isSelf: false, leading: false, sessions: 2, maxSessions: 6, version: '1.3.1702' },
+        { key: 'k-mama', name: 'Mama PC', isSelf: false, leading: false, sessions: null, maxSessions: null, version: null },
+      ],
+      peerResources: async (key) => {
+        asked.push(key);
+        if (key === 'k-mama') return { ok: false, reason: 'not-answering' };
+        return { ok: true, body: { enabled: true, headline: 'peer', total: { key: 'total', name: 'Everything together', cpuPercent: 20, memoryBytes: 2e9, newestAt: new Date(NOW - 30_000).toISOString(), pid: 7, path: '/Users/x' }, sessions: [{ key: 'abc123', name: 'laptop-build', cpuPercent: 9, memoryBytes: 5e8, newestAt: new Date(NOW - 30_000).toISOString() }] } };
+      },
+    });
+    const r = await signedGet(c, '/mobile/resources');
+    expect(r.status).toBe(200);
+    // The older phone's top-level fields are still the answering machine's own.
+    expect(r.body).toMatchObject({ enabled: true, machine: 'Studio', scope: 'pool' });
+    expect(asked.sort()).toEqual(['k-laptop', 'k-mama']);
+    expect(r.body.combined).toMatchObject({ machines: 3, answering: 2, notAnswering: ['Mama PC'], runningSessions: null, busiest: 'Busiest: Laptop, 20% CPU' });
+    expect(r.body.combined.headline).toBe('2 of 3 machines · 3.4 GB of memory');
+    expect(r.body.machines.map((m: { name: string; state: string }) => [m.name, m.state])).toEqual([['Mama PC', 'not-answering'], ['Studio', 'answering'], ['Laptop', 'answering']]);
+    expect(r.body.machines[0]).toMatchObject({ total: null, line: 'Not answering' });
+    expect(r.body.machines[2].sessions[0]).toMatchObject({ name: 'laptop-build', cpuPercent: 9 });
+    const text = JSON.stringify(r.body);
+    for (const leak of [...LEAKS, '"pid"']) expect(text, leak).not.toContain(leak);
+  });
+
+  it('?scope=local answers only the machine asked and never fans out (the peer read)', async () => {
+    let fanned = 0;
+    const c = setup({ resourceMachines: () => { fanned++; return [{ key: 'k', name: 'Studio', isSelf: true, leading: false, sessions: 1, maxSessions: 2, version: null }]; }, peerResources: async () => { fanned++; return { ok: false, reason: 'offline' }; } });
+    const r = await request(c.app).get('/mobile/resources?scope=local').set('Authorization', 'Bearer tok-1');
+    expect(r.status).toBe(200);
+    expect(r.body.machines).toBeUndefined();
+    expect(r.body.machine).toBe('Studio');
+    expect(fanned).toBe(0);
   });
 
   it('the bearer token is served too', async () => {

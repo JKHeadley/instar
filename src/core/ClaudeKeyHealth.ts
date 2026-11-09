@@ -1,3 +1,4 @@
+import { isQuietReceipt, type QuietReceipt } from '../messaging/NotificationSelectivityGate.js';
 /**
  * ClaudeKeyHealth — notices when the agent's configured Claude sign-in key stops working, tells the
  * operator plainly, and recovers stuck conversations once a working key is proven
@@ -21,6 +22,8 @@ export type ClaudeKeyProbeResult = 'ok' | 'rejected' | 'no-auth' | 'inconclusive
 
 export const CONFIRM_DELAY_MS = 30_000;
 export const TICK_MS = 60_000;
+/** How often the saved key is compared with the one in use, whatever the key's state. */
+export const KEY_WATCH_MS = 60_000;
 export const OK_MIN_PROBE_INTERVAL_MS = 5 * 60_000;
 export const DEAD_PROBE_START_MS = 10 * 60_000;
 export const NEW_KEY_RETRY_START_MS = 60_000;
@@ -74,6 +77,8 @@ interface PersistedState {
   nextProbeAt: number;
   keySeenAt: number | null; // when the key under test was first seen: the breaker's clock
   operatorTold: boolean;
+  operatorQuietId?: string;
+  peopleRecorded?: Record<string, string>;
   noticeAttempts: number;
   peopleTold: string[];
   sweepPending: boolean;
@@ -100,9 +105,9 @@ export interface ClaudeKeyHealthDeps {
   /** A real authenticated call with exactly this key. Must not raise signals of its own. */
   probe: (key: string) => Promise<ClaudeKeyProbeResult>;
   /** True only on confirmed delivery to at least one channel. */
-  notifyOperator: (text: string) => Promise<boolean>;
+  notifyOperator: (text: string) => Promise<boolean | QuietReceipt>;
   /** True only on confirmed delivery. A session with no channel returns false. */
-  notifyPerson: (sessionName: string, text: string) => Promise<boolean>;
+  notifyPerson: (sessionName: string, text: string) => Promise<boolean | QuietReceipt>;
   /** Live, channel-bound, unprotected claude-code sessions showing the login screen now. */
   listStuckSessions: () => Promise<string[]>;
   /** Fingerprint of the key the session was launched with, or null when it has none. */
@@ -140,6 +145,7 @@ export class ClaudeKeyHealth {
   private working = false;
   private timer: NodeJS.Timeout | null = null;
   private confirmTimer: NodeJS.Timeout | null = null;
+  private keyWatch: NodeJS.Timeout | null = null;
   private lastProbeAt = 0;
   private lastOkFingerprint: string | null = null;
   private noAuthReported: string | null = null;
@@ -170,7 +176,30 @@ export class ClaudeKeyHealth {
     }
     this.save();
     this.ensureTimer();
+    this.startKeyWatch();
     if (this.state.status === 'dead') await this.tick();
+  }
+
+  /**
+   * Put a key saved on disk (`instar set-claude-key`) into use now. Before this ran on its own, a key
+   * was only read while this monitor was already alarmed or a session sat at the login screen, so a
+   * key put in during a usage limit was never used: sessions and the usage probe stayed on the old
+   * walled key, and nothing picked up (B2Lead live proof, 2026-11-07). Never throws.
+   */
+  refreshKeyFromDisk(): void {
+    try {
+      this.syncKeyFromDisk();
+      this.ensureTimer();
+    } catch (err) {
+      // @silent-fallback-ok: logged; the next watch pass reads the key again
+      this.logger.warn(`[ClaudeKeyHealth] could not read the saved key: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private startKeyWatch(): void {
+    if (this.deps.manualTimers || this.keyWatch) return;
+    this.keyWatch = setInterval(() => this.refreshKeyFromDisk(), KEY_WATCH_MS);
+    this.keyWatch.unref?.();
   }
 
   /** A signal from an internal call. Asks for a probe, decides nothing. */
@@ -233,8 +262,10 @@ export class ClaudeKeyHealth {
   stop(): void {
     if (this.timer) clearInterval(this.timer);
     if (this.confirmTimer) clearTimeout(this.confirmTimer);
+    if (this.keyWatch) clearInterval(this.keyWatch);
     this.timer = null;
     this.confirmTimer = null;
+    this.keyWatch = null;
   }
 
   private syncKeyFromDisk(): void {
@@ -337,7 +368,7 @@ export class ClaudeKeyHealth {
     this.state = {
       ...this.state, status: 'dead', fingerprint: fp, since: sameEpisode ? this.state.since : this.now(),
       probeDelayMs: DEAD_PROBE_START_MS, nextProbeAt: this.now() + DEAD_PROBE_START_MS, keySeenAt: this.now(),
-      operatorTold: false, noticeAttempts: 0, peopleTold: [],
+      operatorTold: false, operatorQuietId: undefined, peopleRecorded: {}, noticeAttempts: 0, peopleTold: [],
       // A conversation waiting on an answer is stuck again; this episode's notice covers it.
       awaiting: sameEpisode ? this.state.awaiting : [],
     };
@@ -468,14 +499,14 @@ export class ClaudeKeyHealth {
       catch (err) { this.logger.warn(`[ClaudeKeyHealth] answer check for "${item.session}" failed: ${err instanceof Error ? err.message : String(err)}`); }
       if (answered === true) continue;
       if (this.now() - item.since < ANSWER_WAIT_MS) { still.push(item); continue; }
-      let told = false;
+      let told: boolean | QuietReceipt = false;
       try { told = await this.deps.notifyPerson(item.session, PERSON_RESEND_TEXT); }
       catch (err) { this.logger.warn(`[ClaudeKeyHealth] resend request for "${item.session}" failed: ${err instanceof Error ? err.message : String(err)}`); }
       this.deps.report({
         reason: answered === null
           ? `Could not check whether "${item.session}" answered after the sign-in key was fixed.`
           : `"${item.session}" restarted after the sign-in key was fixed but did not answer within ${ANSWER_WAIT_MS / 60_000} minutes.`,
-        impact: told
+        impact: isQuietReceipt(told) ? 'The resend request was recorded in Notifications.' : told === true
           ? 'The person was asked to send their message again.'
           : 'The person may still be waiting, and could not be told to resend.',
       });
@@ -491,11 +522,12 @@ export class ClaudeKeyHealth {
   }
 
   private async sendOperatorNotice(): Promise<void> {
-    if (this.state.operatorTold || this.state.noticeAttempts >= NOTICE_MAX_ATTEMPTS) return;
+    if (this.state.operatorTold || this.state.operatorQuietId || this.state.noticeAttempts >= NOTICE_MAX_ATTEMPTS) return;
     this.state.noticeAttempts += 1;
-    let delivered = false;
+    let delivered: boolean | QuietReceipt = false;
     try { delivered = await this.deps.notifyOperator(OPERATOR_DEAD_TEXT); }
     catch (err) { this.logger.warn(`[ClaudeKeyHealth] operator notice failed: ${err instanceof Error ? err.message : String(err)}`); }
+    if (isQuietReceipt(delivered)) { this.state.operatorQuietId = delivered.quietId; this.save(); return; }
     this.state.operatorTold = delivered;
     if (!delivered && this.state.noticeAttempts >= NOTICE_MAX_ATTEMPTS) {
       this.deps.report({
@@ -507,12 +539,13 @@ export class ClaudeKeyHealth {
   }
 
   private async tellPerson(sessionName: string): Promise<void> {
-    if (this.state.peopleTold.includes(sessionName)) return;
+    if (this.state.peopleTold.includes(sessionName) || this.state.peopleRecorded?.[sessionName]) return;
     const text = this.state.operatorTold ? `${PERSON_TEXT}${PERSON_TOLD_SUFFIX}` : PERSON_TEXT;
-    let delivered = false;
+    let delivered: boolean | QuietReceipt = false;
     try { delivered = await this.deps.notifyPerson(sessionName, text); }
     catch (err) { /* @silent-fallback-ok: undelivered stays untold, so the next report of this session tries again */ this.logger.warn(`[ClaudeKeyHealth] person notice failed: ${err instanceof Error ? err.message : String(err)}`); }
-    if (delivered) {
+    if (isQuietReceipt(delivered)) { (this.state.peopleRecorded ??= {})[sessionName] = delivered.quietId; this.save(); return; }
+    if (delivered === true) {
       this.state.peopleTold.push(sessionName);
       this.save();
     }

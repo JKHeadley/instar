@@ -43,6 +43,7 @@ export interface DevGatedFeature {
 }
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
+  { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
   {
     name: 'scriptRunners',
     configPath: 'jobs.scriptRunners.enabled',
@@ -66,6 +67,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.workAdmission.enabled',
     description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',
     justification: 'Ships dryRun:true: the state machine, audit and advert run on the real verdict feed but nothing is refused and peers keep placing work here until a deliberate dryRun:false. Even live it only DEFERS automatic work (jobs retry, inbound messages stay in the durable queue) and always leaves an operator session a slot; no LLM, no spend, no kills, no credential or state mutation.',
+  },
+  {
+    name: 'appConversationsPool',
+    configPath: 'multiMachine.sessionPool.appConversations.enabled',
+    description: 'App conversations move between machines (docs/specs/app-conversations-in-the-pool.md): per-conversation ownership, forwards to the owner, Move and Bring it back here. Off means the lease holder serves every app conversation, exactly as before.',
+    justification: 'Live on a development agent so the first real two-machine move proves it. Held from the fleet until then: a duplicate is still possible when an attempt reached another machine before its delivery event replicates, and nothing has run across two real machines yet.',
   },
   {
     name: 'overloadShed',
@@ -134,6 +141,11 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'feedbackFactory.execute.enabled',
     description: 'Feedback executor: confined build sessions turn top-ranked feedback work items into pull requests that merge only at the exact head the repository owner approves.',
     justification: 'Ships dryRun:true (evaluates admission and records the attempt it would start, spawning and pushing nothing). Live, every session and every command that runs attempt code is OS-sandboxed (no network, no credentials, no reads outside the workspace) behind a must-fail/must-succeed canary before each attempt; trusted code alone pushes, from its own clone, refusing tooling paths and secret-shaped content; merges happen only at the exact head the repository owner approved, and the executor refuses to run while the agent itself could act as that approver unless a PIN-bound acceptance exists.',
+  },
+  {
+    name:'serverDownRecovery',configPath:'multiMachine.serverDownRecovery.enabled',
+    description:'Independent SSH and relay recovery with source-verified server-down route proofs.',
+    justification:'The setup page, missing-enrollment attention and truthful pool/channel status are visible across the fleet. Active source probing remains development-agent gated until explicit setup enables it. No host grant or listener can activate without a release-certified per-agent authority, a current owner-phone grant, current MachineAuth-signed peer inventory and a target-bound checkpoint. Missing enrollment is degraded, never ready.',
   },
   {
     name: 'mutualSsh',
@@ -206,6 +218,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'commitments.agentOwnedFollowthrough.enabled',
     description: 'The Agent Carries the Loop (C1+C2) — owner-gated beacon suppression + external-block staleness governor + evidence-gated graveyard reconciler; the user is never status-pinged for an agent-owned commitment.',
     justification: 'Ships dryRun:true (the dry-run canary): on a dev agent the owner-gate + governor + reconciler run the full decision loop and AUDIT/log every suppression/dead-letter/close they WOULD make, but PromiseBeacon.emitUserSend STILL sends and the governor/reconciler mutate nothing while dryRun holds (verified at emitUserSend §4.2 + reconcileGraveyard/maybeReconcileGraveyard dryRun branches). No spend, no destructive action, no egress while the canary holds; real suppression/closes need a deliberate dryRun:false. Same dogfooding posture as topicProfiles / credential-repointing.',
+  },
+  {
+    name: 'promiseReview',
+    configPath: 'commitments.promiseReview.enabled',
+    description: 'Promise review (docs/specs/promise-review-and-priority.md): the promise-review job reviews the agent\'s own open promises every 6 h and keeps / prioritizes / delivers / archives each through POST /commitments/review/apply.',
+    justification: 'Ships closureDryRun:true: on a dev agent keep/prioritize stamp live (they close nothing), while deliver/archive are validated and audited as would-apply and close nothing until a deliberate closureDryRun:false. Even live, every closure needs a written reason plus server-checked evidence, is capped (15/run, 60/day), audited to logs/promise-review.jsonl and reopenable for 30 days; nothing is ever deleted and the job never messages anyone. Spend: one sonnet session per 6 h only when enough rows are due (gate). Kill switch read live.',
   },
   {
     name: 'biasToAction',
@@ -912,10 +930,22 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Device-signed only, behind the existing allowlist; the server decides a file\'s type from its bytes and serves everything non-executable; reply files are confined to three roots and scanned by the existing credential wall; every admission is capped and a free-disk floor protects the machine. Off ⇒ the media routes answer 503, nothing is copied, and what is stored stays. Dark on the fleet until the development-agent live proof passes.',
   },
   {
+    name: 'mobilePairingBrowser',
+    configPath: 'mobilePairing.browser.enabled',
+    description: 'Dashboard conversations with the browser as its own signed device (docs/specs/dashboard-conversations-browser-device.md): a browser holds its own non-extractable key, is approved through the same channel a new phone would be (never the PIN alone on an agent with a Telegram owner), may call only the conversation and media routes and revoke itself, and every message it signs is marked as browser-signed from the signed ledger row.',
+    justification: 'a new signing client identity; proven live on the development agent before any fleet exposure',
+  },
+  {
     name: 'mobilePairingMultiRoute',
     configPath: 'mobilePairing.multiRoute.enabled',
     description: 'Several routes per agent for the Instar iPhone app (docs/specs/mobile-multi-route.md): a paired phone\'s signature is accepted on any of this machine\'s proven own names (Cloudflare tunnel hostname, Tailscale HTTPS name), GET /mobile/routes lists them, and a boot step maps tailscale serve HTTPS 443 to the agent port when 443 has no serve config.',
     justification: 'Own names come only from local configuration and are proven by the per-process pairing ping (echoed Host, local-TLS arrival, no sibling claim); a request is accepted only on a still-configured own name that arrived through this machine\'s own TLS front, and a captured signature names its exact host. Probes are bounded (one in flight, 3 s, backoff to 15 min, breaker after 8). The serve step never overwrites an existing 443 config. Switching it off restores the single paired host exactly.',
+  },
+  {
+    name: 'mobilePairingOwnerPresence',
+    configPath: 'mobilePairing.ownerPresence.enabled',
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page on the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): a fresh presence-key signature over a single-use, purpose-bound challenge mints a desktop-only, phone-bound 15-minute session (POST /mobile/desktop-unlock) or reveals the dashboard PIN this server compares against (POST /mobile/dashboard-pin/reveal).',
+    justification: 'The desktop session is narrower than the PIN unlock: accepted only by the desktop routes, re-checked against the phone on every use, cleared on a PIN change, and the phone never holds the API token. The reveal is owner-phone only, never returns a placeholder, and needs the owner\'s private chat, which is told (without the PIN) at most once per phone per 10 minutes while every reveal is audited. Bearer, MSP and shared phones are refused; every use and refusal is audited. Dark on the fleet until the development-agent live proof and a physical-phone check pass.',
   },
   {
     name: 'mobilePairingPermissionActions',
@@ -966,6 +996,7 @@ export interface DarkGateExclusion {
 }
 
 export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
+  { configPath: 'notifications.selectivity.digest.enabled', category: 'optional-integration', reason: 'A daily digest is an explicit operator notification preference, never an automatic development-agent opt-in.' },
   // ── destructive — kills/deletes on a heuristic; off + dry-run for EVERYONE ──
   {
     configPath: 'monitoring.sessionReaper.enabled',
@@ -1005,6 +1036,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     configPath: 'monitoring.agentWorktreeReaper.enabled',
     category: 'destructive',
     reason: 'deletes git worktrees; off+dry-run for everyone',
+  },
+  {
+    configPath: 'monitoring.diskSteward.prune.enabled',
+    category: 'destructive',
+    reason: 'deletes npm cache and Xcode build files; off for everyone, the update migration writes an explicit true on development agents only (docs/specs/disk-steward.md)',
   },
   {
     configPath: 'monitoring.mcpProcessReaper.enabled',

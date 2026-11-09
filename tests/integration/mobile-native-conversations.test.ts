@@ -309,7 +309,7 @@ describe('native app conversations — a Telegram-free agent keeps its own lease
   async function leased(dependency: string | undefined) {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const clock = { value: Date.now() };
-    const h = await originLeaseDependencyFixture({ clock, ...(dependency ? { dependency } : { enroll: false }) });
+    const h = await originLeaseDependencyFixture({ clock, ...(dependency ? { dependency } : { enroll: false, sharedStore: true }) });
     const advance = async (ms: number) => { clock.value += ms; await vi.advanceTimersByTimeAsync(ms); };
     return { h, advance };
   }
@@ -327,7 +327,7 @@ describe('native app conversations — a Telegram-free agent keeps its own lease
     } finally { await h.close(); vi.useRealTimers(); }
   });
 
-  it('REPRODUCTION: with no renewal dependency the same message gets 503 owner-unavailable', async () => {
+  it('REPRODUCTION: on a shared store with no renewal dependency the same message gets 503 owner-unavailable', async () => {
     const { h, advance } = await leased(undefined);
     try {
       const e = setup({ holdsLease: () => h.coordinator.holdsLease() });

@@ -796,11 +796,13 @@ export class OriginStoreBackend {
 
   recordOperationState(input: { operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number;
     holdReason?: string; holdDetail?: Record<string, unknown> | null }): boolean {
+    const quietReceipt = input.state === 'suppressed' && input.holdReason === 'quiet-notification-recorded' &&
+      typeof input.holdDetail?.quietId === 'string' && input.holdDetail.quietId.length <= 200 && Object.keys(input.holdDetail).length === 1;
     if (input.holdReason !== undefined) {
-      if (input.state !== 'held' || typeof input.holdReason !== 'string' || !/^[a-z0-9-]{1,64}$/.test(input.holdReason)) fail('invalid-hold-reason');
+      if ((!quietReceipt && input.state !== 'held') || typeof input.holdReason !== 'string' || !/^[a-z0-9-]{1,64}$/.test(input.holdReason)) fail('invalid-hold-reason');
     }
     const holdDetailJson = input.holdDetail === undefined || input.holdDetail === null ? null : JSON.stringify(input.holdDetail);
-    if (holdDetailJson !== null) { if (input.state !== 'held') fail('invalid-hold-detail'); json(holdDetailJson, 64 * 1024); }
+    if (holdDetailJson !== null) { if (input.state !== 'held' && !quietReceipt) fail('invalid-hold-detail'); json(holdDetailJson, 64 * 1024); }
     return this.db.transaction(() => {
       const op = this.operation(input.operationId); if (!op) return false;
       if (input.state === 'expired') return this.expireOperation(input.operationId, input.now ?? Date.now());
@@ -812,12 +814,15 @@ export class OriginStoreBackend {
         // A re-hold without a named reason keeps the reason already recorded.
         this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=coalesce(?,hold_reason),hold_detail_json=CASE WHEN ? IS NULL THEN hold_detail_json ELSE ? END WHERE operation_id=?')
           .run(input.state, input.holdReason ?? null, holdDetailJson, holdDetailJson, input.operationId);
+      } else if (quietReceipt) {
+        this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=?,hold_detail_json=? WHERE operation_id=?').run(input.state, input.holdReason, holdDetailJson, input.operationId);
       } else if (input.state === 'admitted') {
         this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=NULL,hold_detail_json=NULL WHERE operation_id=?').run(input.state, input.operationId);
       } else this.db.prepare('UPDATE telegram_origin_operations SET state=? WHERE operation_id=?').run(input.state, input.operationId);
       if (input.state === 'suppressed') {
         this.db.prepare("UPDATE telegram_origin_children SET state='suppressed' WHERE operation_id=? AND state='queued'").run(input.operationId);
-        this.db.prepare("UPDATE entries SET state='delivered-tone-gated' WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(input.operationId);
+        // Nothing reached Telegram: the notice was recorded in the quiet feed.
+        this.db.prepare("UPDATE entries SET state='quiet-recorded' WHERE origin_child_id IN (SELECT child_id FROM telegram_origin_children WHERE operation_id=?) AND state='queued'").run(input.operationId);
       }
       this.event(`${input.operationId}:${input.state}`, `operation:${input.state}`);
       return true;

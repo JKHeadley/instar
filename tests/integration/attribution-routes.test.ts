@@ -31,6 +31,7 @@ const stops: Stop[] = [];
 const dirs: string[] = [];
 afterEach(async () => {
   for (const stop of stops.splice(0)) await stop();
+  vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/integration/attribution-routes.test.ts:cleanup' });
 });
 
@@ -75,7 +76,7 @@ async function serve(agent: { project: string; stateDir: string }, ctxExtra: Rec
   app.use(createRoutes({
     config: { authToken: 'test', stateDir: agent.stateDir, port: 0, projectName: 'x', projectDir: agent.project },
     state: new StateManager(agent.stateDir),
-    sessionManager: { clearInjectionTracker: () => {} },
+    sessionManager: { clearInjectionTracker: () => {}, getSession: () => null },
     startTime: new Date(),
     ...ctxExtra,
   } as never));
@@ -257,7 +258,7 @@ describe('B23 through checkOutboundMessage', () => {
     const { url } = await serve(agent, {
       attribution: runtime,
       messagingToneGate: new MessagingToneGate(provider),
-      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); } },
+      telegram: { sendToTopic: async (_t: number, text: string) => { sent.push(text); return { messageId: sent.length }; } },
     });
     const reply = (text: string, metadata?: Record<string, unknown>) => postJson(`${url}/telegram/reply/42`, metadata ? { text, metadata } : { text });
     return { reply, sent, prompts, runtime };
@@ -285,6 +286,39 @@ describe('B23 through checkOutboundMessage', () => {
     expect(r.status).toBe(200);
     expect(h.sent).toHaveLength(1);
   }, 15_000);
+
+  describe('every channel feeds the recap test (live test 2026-11-06: Slack could never hold a credit)', () => {
+    async function slackAgent(mode: 'record' | 'enforce') {
+      const agent = makeAgent();
+      fs.writeFileSync(path.join(agent.stateDir, 'slack-messages.jsonl'), `${JSON.stringify({ channelId: 'C0123ABCD', messageId: '1', text: 'what next?', fromUser: true })}\n`);
+      const sent: string[] = [];
+      const prompts: string[] = [];
+      const provider = { evaluate: vi.fn(async (prompt: string) => { prompts.push(prompt); return JSON.stringify(mode === 'enforce' && prompt.includes('conversationContext=true') ? NUDGE : PASS); }) } as unknown as IntelligenceProvider;
+      const { url } = await serve(agent, {
+        attribution: runtimeFor(agent, async () => claims([]), {}, mode),
+        messagingToneGate: new MessagingToneGate(provider),
+        slack: { sendToChannel: async (_c: string, text: string) => { sent.push(text); return String(sent.length); }, inboundThreadFor: () => undefined },
+      });
+      return { url, sent, prompts };
+    }
+
+    it('a Slack reply in enforce reaches the gate with the conversation, and is held', async () => {
+      const h = await slackAgent('enforce');
+      const r = await postJson(`${h.url}/slack/reply/C0123ABCD`, { text: 'Justin never wants that.' });
+      expect(h.prompts[0]).toContain('conversationContext=true');
+      expect(r.status).toBe(422);
+      expect(r.body.error).toBe('tone-gate-advisory');
+      expect(h.sent).toEqual([]);
+    });
+
+    it('in record the tone review sees no new context', async () => {
+      const h = await slackAgent('record');
+      const r = await postJson(`${h.url}/slack/reply/C0123ABCD`, { text: 'Justin never wants that.' });
+      expect(r.status).toBe(200);
+      expect(h.prompts.join('')).not.toContain('what next?');
+      expect(h.prompts.join('')).not.toContain('conversationContext');
+    });
+  });
 
   it('a reasoned ack delivers it, unchanged', async () => {
     const h = await start((p) => (p.includes('B23') ? NUDGE : PASS), 'enforce');
@@ -324,6 +358,8 @@ describe('Threadline and memory routes', () => {
     const peer = await listen(target);
     const name = `attr-int-${randomBytes(4).toString('hex')}`;
     fs.writeFileSync(path.join(agent.stateDir, 'threadline', 'known-agents.json'), JSON.stringify({ agents: [{ name, port: peer.port, fingerprint: 'aabbccddeeff00112233445566778899', publicKey: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' }] }));
+    // Keep the real token lookup inside this disposable fixture's home.
+    vi.spyOn(os, 'homedir').mockReturnValue(agent.project);
     const tokenDir = path.join(os.homedir(), '.instar', 'agent-tokens');
     fs.mkdirSync(tokenDir, { recursive: true });
     const tokenFile = path.join(tokenDir, `${name}.token`);

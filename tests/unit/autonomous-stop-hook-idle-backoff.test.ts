@@ -114,6 +114,18 @@ function runHook(extraEnv: Record<string, string> = {}): { decision: string | nu
   return { decision, exitCode, elapsedMs };
 }
 
+function runHookWithSleepProbe(extraEnv: Record<string, string> = {}) {
+  const binDir = path.join(tmp, 'bin');
+  const callsFile = path.join(tmp, 'sleep-calls');
+  fs.mkdirSync(binDir, { recursive: true });
+  const sleepScript = path.join(binDir, 'sleep');
+  fs.writeFileSync(sleepScript, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$INSTAR_TEST_SLEEP_CALLS"\nexec /bin/sleep "$@"\n');
+  fs.chmodSync(sleepScript, 0o755);
+  const result = runHook({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? '/usr/bin:/bin'}`, INSTAR_TEST_SLEEP_CALLS: callsFile, ...extraEnv });
+  const sleepCalls = fs.existsSync(callsFile) ? fs.readFileSync(callsFile, 'utf8').trim().split('\n') : [];
+  return { ...result, sleepCalls };
+}
+
 function runHookAsync(extraEnv: Record<string, string> = {}): Promise<{ exitCode: number; elapsedMs: number }> {
   const input = JSON.stringify({ session_id: UUID_A, transcript_path: '' });
   const t0 = Date.now();
@@ -142,9 +154,9 @@ afterEach(() => {
 
 describe('IDLE_BACKOFF — counter evolution without sleep', () => {
   it('first stop: no sidecar history → quickStops 0, no sleep, still blocks', () => {
-    const r = runHook();
+    const r = runHookWithSleepProbe();
     expect(r.decision).toBe('block');
-    expect(r.elapsedMs).toBeLessThan(1900); // no tier engaged (T1=2s)
+    expect(r.sleepCalls).toEqual([]); // no tier engaged (T1=2s)
     const sc = readSidecar();
     expect(sc.quickStops).toBe(0);
     expect(sc.lastSleepSecs).toBe(0);
@@ -162,18 +174,18 @@ describe('IDLE_BACKOFF — counter evolution without sleep', () => {
   it('a long gap (real work) resets the counter to zero — no sleep', () => {
     const now = Math.floor(Date.now() / 1000);
     writeSidecar({ lastResumedAt: now - 3600, quickStops: 9 }); // long-idle history
-    const r = runHook();
+    const r = runHookWithSleepProbe();
     expect(r.decision).toBe('block');
-    expect(r.elapsedMs).toBeLessThan(1900);
+    expect(r.sleepCalls).toEqual([]);
     expect(readSidecar().quickStops).toBe(0);
   });
 
   it('a NEW run (different started_at) resets a stale sidecar', () => {
     const now = Math.floor(Date.now() / 1000);
     writeSidecar({ lastResumedAt: now, quickStops: 11, runStartedAt: '2026-01-01T00:00:00Z' });
-    const r = runHook();
+    const r = runHookWithSleepProbe();
     expect(r.decision).toBe('block');
-    expect(r.elapsedMs).toBeLessThan(1900); // would have slept T3 if the stale counter survived
+    expect(r.sleepCalls).toEqual([]); // would have slept T3 if the stale counter survived
     expect(readSidecar().quickStops).toBe(0);
   });
 });
@@ -203,9 +215,9 @@ describe('IDLE_BACKOFF — tiered sleep engages', () => {
     const now = Math.floor(Date.now() / 1000);
     writeSidecar({ lastResumedAt: now, quickStops: 10 });
     const before = fs.readFileSync(backoffFile(), 'utf8');
-    const r = runHook({ INSTAR_HOOK_BACKOFF_DISABLE: '1' });
+    const r = runHookWithSleepProbe({ INSTAR_HOOK_BACKOFF_DISABLE: '1' });
     expect(r.decision).toBe('block');
-    expect(r.elapsedMs).toBeLessThan(1900);
+    expect(r.sleepCalls).toEqual([]);
     expect(fs.readFileSync(backoffFile(), 'utf8')).toBe(before); // untouched
   });
 });

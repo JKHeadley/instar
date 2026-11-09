@@ -132,7 +132,7 @@ describe('helpers', () => {
   it('titles a conversation by its label, else its channel, and says when it is a thread', () => {
     const c: SlackAppConversation = { id: -1, key: SLACK_KEY, channelId: 'C0123ABC', threadTs: null, label: null, mintedAt: null };
     expect(slackConversationTitle(c)).toBe('#C0123ABC');
-    expect(slackConversationTitle({ ...c, label: 'general\u0000' })).toBe('general');
+    expect(slackConversationTitle({ ...c, label: 'general\u0000' })).toBe('#general');
     expect(slackConversationTitle({ ...c, threadTs: '1730000000.000100' })).toBe('#C0123ABC (thread)');
   });
 
@@ -203,7 +203,7 @@ describe('the production bridge', () => {
     expect(bridge.history(chan, 50).find((r) => r.text.startsWith('bot'))!.fromUser).toBe(false);
     expect(bridge.history(thread, 50).map((r) => r.text)).toEqual(['in the thread']);
     const list = slackListRows(bridge);
-    expect(list.find((r) => r.id === -11)).toMatchObject({ title: 'general', lastActivity: '2026-11-02T10:00:00.000Z', lastPreview: 'channel hello' });
+    expect(list.find((r) => r.id === -11)).toMatchObject({ title: '#general', lastActivity: '2026-11-02T10:00:00.000Z', lastPreview: 'channel hello' });
     expect(list.find((r) => r.id === -12)).toMatchObject({ title: '#C0123ABC (thread)', lastPreview: 'in the thread' });
     expect(bridge.emergencyStop()).toEqual({ stopped: true });
     expect(killed).toBe(true);

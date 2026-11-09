@@ -44,6 +44,8 @@ export interface OriginDestination {
   scheduledMessageId: string | null;
 }
 export interface TelegramOriginRecord extends TelegramOriginProducer {
+  /** Origin-stamped structural notification provenance, signed with the record. */
+  notification?: import('../NotificationSelectivityGate.js').OutboundEnvelope;
   /** Custody importer attests unknown legacy authorship, not its own authorship. */
   importedByMachineId?: string;
   legacySnapshotDigest?: string;
@@ -133,6 +135,15 @@ export interface OriginConfig {
    * The decisionRef identifies the recorded operator instruction. */
   browserSendAllowance?: {
     profileId: string; accountId: string; chatId: string; topicId: string | null; decisionRef: string;
+  };
+  /** Agent-held grant for typed Telegram test groups (docs/specs/telegram-test-groups.md).
+   * Gates create only; list and delete act only on groups carrying this agent's marker. */
+  testGroups?: {
+    profileId: string; accountId: string; bots: { username: string; userId: string }[];
+    /** One attribution source marker naming the logged decision. */
+    decisionRef: string;
+    /** ISO-8601, at most 30 days after it is read. */
+    expiresAt: string;
   };
   /** Application permission for the pre-recorded operator-hub outage notice.
    * Omitted means enabled; this never disables ordinary origin recording. */

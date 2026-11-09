@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "lease-restart-no-tie",
+  "sessionId": "3c3df589-c439-4d78-a99a-01ad51fcb5df",
+  "timestamp": "2026-11-07T10:16:32.068Z",
+  "artifactPath": "upgrades/side-effects/lease-restart-no-tie.md",
+  "artifactSha256": "6b594892452c4aac49075ad553f5067eddd8d2409a47b6c7247e4eb8979d23a6",
+  "coveredFiles": [
+    "docs/specs/lease-restart-no-tie.eli16.md",
+    "src/commands/server.ts",
+    "src/core/LeaseCoordinator.ts",
+    "src/core/LocalLeaseStore.ts",
+    "src/core/MultiMachineCoordinator.ts",
+    "tests/e2e/lease-takeover-wiring.test.ts",
+    "tests/helpers/originLeaseDependency.ts",
+    "tests/integration/lease-contested-resolution.test.ts",
+    "tests/integration/lease-restart-no-tie.test.ts",
+    "tests/unit/MultiMachineCoordinator-leasePull.test.ts",
+    "tests/unit/lease-renewal-app-dependency.test.ts",
+    "tests/unit/lease-restart-no-tie-coordinator.test.ts",
+    "tests/unit/lease-restart-no-tie.test.ts",
+    "tests/unit/multi-machine-coordinator.test.ts",
+    "tests/unit/telegram-origin/lease-renewal-dependency.test.ts",
+    "upgrades/next/lease-restart-no-tie.md",
+    "upgrades/side-effects/lease-restart-no-tie.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "narrow bug fix in the lease path that a revert fully undoes; no stored data or config to migrate; the size signal reads tier 2 because the test work is large, and an independent second pass was run because it touches lease authority",
+  "eli16Path": "docs/specs/lease-restart-no-tie.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lease-restart-no-tie.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Three latent paths on no-shared-medium stores, found by review and simulation: claiming from an own stale copy, no renew timer without a conversation surface, and no way to confirm renewal while the peer boots."
+  }
+}

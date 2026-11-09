@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-06T16:50:41.204Z",
+  "slug": "epipe-crash-false-gone",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/data/stageBCertifiedSet.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 0
+  },
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Classifies pipeErrorGuard, added earlier in this same branch, for the Stage-B closure check."
+  },
+  "classClosure": null,
+  "verdict": "blocked"
+}

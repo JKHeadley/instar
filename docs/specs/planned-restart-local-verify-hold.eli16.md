@@ -1,29 +1,37 @@
-# Planned restart and local PR checks — Plain-English Overview
+# Planned restart waits for verification — Plain-English Overview
 
-> Planned maintenance waits for a running PR check to finish, then restarts before the next check begins.
+> The one-line version: when this machine is about to restart itself for routine maintenance, it waits a short, capped time so test runs it has handed to other machines can finish instead of being thrown away.
 
 ## The problem in one breath
 
-Two planned server restarts interrupted the same PR check on November 1. Together they discarded about 13 minutes of test work. The updater already knew to wait for a check, but other settings could request a restart directly through a file that the server supervisor consumed immediately.
+Before a pull request can merge, its full test suite has to pass. The coordinating machine runs some of these suites itself and hands others to helper machines. When the coordinator restarts for routine reasons, such as installing an update, it comes back as a "new" coordinator and discards every suite it had handed out, even ones nearly finished. In one day this threw away about 78 minutes of helper-machine work across 8 runs. A pull request that loses both of its helper attempts this way falls back to the slower local queue.
 
 ## What already exists
 
-- **PR verification** runs the full unit, integration, and end-to-end suites in a separate child process. It records that child in a small local state file and removes the record when the run ends.
-- **Planned restart requests** use a local flag file. Both the background supervisor and the foreground server can act on that flag.
-- **Updater hold** waits for a PR check when the updater itself requests a restart. It does not cover the other writers of the shared flag.
+- **The local hold** — a planned restart already waits while the coordinator's own test suite is running, for up to three hours. It shipped on 2026-11-02 and has held 5 restarts without losing a run.
+- **The override** — an explicit forced restart, or the updater reaching its four-hour ceiling, skips every hold.
+- **The pause** — while a planned restart is waiting, the coordinator hands out no new test runs, so the wait cannot keep growing.
 
 ## What this adds
 
-Both consumers of the restart flag now check the same live PR-run record before acting on a planned request. They leave the request in place while the child runs. The verifier also pauses its queue when a planned restart is waiting, giving maintenance the next turn instead of starting another long check.
+The same hold also looks at the test runs the coordinator has handed to helper machines. If a helper has accepted a run, the planned restart waits until that run finishes and its result is collected, but never more than 21 minutes after the run was handed out (in the last week, 412 of 414 helper runs finished inside that), and never past the existing three-hour ceiling.
 
 ## The safeguards
 
-The record must name a live child process, except for a 30-second interval between recording the run and starting its child. A stale record cannot hold the restart. When a real check causes a delay before the request's original expiry, the consumer records proof tied to that particular request. An already-expired request cannot gain proof later. The wait ends after at most three hours from the request or the run start; only a proven delayed request remains deliverable for one more hour so the supervisor cannot discard it at the boundary. A request never delayed by verification keeps its original one-hour expiry. Explicitly forced restarts bypass the wait, and the updater's existing four-hour limit remains the final limit for updater requests. Unplanned crash recovery is unaffected. If a check is interrupted at a limit, the existing verifier records and retries that interruption; it does not call the partial run green.
+**It cannot hold a restart forever.** Each helper run gives at most 21 minutes, no new runs are handed out while a restart waits, and the three-hour ceiling and forced-restart override still apply.
+
+**Only a live, current run causes a wait.** The test service, which is the only part that knows whether a helper run is still alive and belongs to the current coordinator, keeps a short note up to date about every half minute while a helper run is in progress. The restart only waits on a fresh note. If the service is down, the helper stopped answering, or the run belongs to an older coordinator, nothing waits.
+
+**Bad or missing data never causes a wait.** If that note is missing, unreadable or more than 90 seconds old, or a run's start time looks wrong, the restart proceeds exactly as it does today.
+
+**Emergencies are unaffected.** Only routine, planned restarts wait. Crash recovery and emergency restarts go ahead immediately.
+
+**The safety fence stays.** A run handed out before a restart is still discarded if the restart happens anyway. This change only gives the run time to finish first.
+
+## How we will know it worked
+
+We count helper runs discarded right after the coordinator's own restarts, and the minutes they had used, for equal periods before and after the change. The goal is close to zero for restarts that found a run in progress.
 
 ## What ships when
 
-This is one reversible code change with unit, integration, and end-to-end checks. It needs an independent second-pass review because it changes restart timing. No new setting, service, or user action is needed; installed agents receive it with the package release.
-
-## What you actually need to decide
-
-The operational rule is to let an ordinary planned restart wait for one active check, within the stated bounds, so completed test work is preserved.
+One small code change to the existing restart guard, with unit, integration and end-to-end tests, released through the normal pull request path. No settings change and nothing for anyone to do.

@@ -225,8 +225,12 @@ describe('console ticket routes', () => {
     const m = await mint(e, p);
     (e.config.mobilePairing as Record<string, unknown>).consoleTicket = { enabled: false };
     expect((await signed(e, p, '/mobile/console-ticket/challenge')).status).toBe(503);
-    expect((await enroll(e, p)).status).toBe(503);
     expect((await redeem(e, m.body.ticket)).status).toBe(503);
+    // Enrolment also serves Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.4
+    // step 6): it stays open while that switch is on, and closes only when both are off.
+    expect((await enroll(e, p)).status).not.toBe(503);
+    (e.config.mobilePairing as Record<string, unknown>).ownerPresence = { enabled: false };
+    expect((await enroll(e, p)).status).toBe(503);
   });
 
   it('only POST on the exact redeem path skips the bearer gate', async () => {

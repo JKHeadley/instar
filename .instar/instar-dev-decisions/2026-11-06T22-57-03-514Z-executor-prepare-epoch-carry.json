@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-06T22:57:03.514Z",
+  "slug": "executor-prepare-epoch-carry",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 28,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/FeedbackExecutorService.ts"
+    ],
+    "addedLines": 26,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "failure-callout-process",
+  "sessionId": "7c372f52-9afd-4718-ad0d-d004f3960326",
+  "timestamp": "2026-11-06T16:14:26.421Z",
+  "artifactPath": "upgrades/side-effects/failure-callout-process.md",
+  "artifactSha256": "16c15664ac40717dc6173098cdb86df2e39b03fa7af5d45edf19cbfe4b58addc",
+  "coveredFiles": [
+    "docs/specs/failure-callout-process.eli16.md",
+    "site/src/content/docs/features/correction-preference-learning.md",
+    "site/src/content/docs/reference/default-jobs.md",
+    "src/core/WriteDomainRegistry.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/fixtures/write-surface-inventory.json",
+    "tests/integration/self-violation-signal.test.ts",
+    "tests/unit/self-violation-wiring-integrity.test.ts",
+    "upgrades/side-effects/failure-callout-process.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow reversible current-main rebase repair; existing approved tier-2 spec retained.",
+  "eli16Path": "docs/specs/failure-callout-process.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/failure-callout-process.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

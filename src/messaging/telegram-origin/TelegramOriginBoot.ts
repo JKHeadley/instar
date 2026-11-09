@@ -1,3 +1,4 @@
+import { inboundTopicId } from '../telegramTopicSpace.js';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -25,6 +26,7 @@ import { OriginNoticePolicyObserver } from './OriginNoticePolicyObserver.js';
 import { projectOriginNoticePolicy } from './OriginNoticePolicy.js';
 import type { OriginNoticeDestinationPolicy } from './OriginNoticePolicy.js';
 import { OriginDetectorCanary } from './OriginDetectorCanary.js';
+import { TelegramTestGroups, readTestGroupGrant, type TestGroupGrant } from './TelegramTestGroups.js';
 import { browserSendAllowanceMatches, originDetectorCanaryInterval, readBrowserSendAllowance, type BrowserSendAllowance } from './OriginConfig.js';
 import { toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from '../telegramTopicSpace.js';
 import { OriginConfigUnavailableError } from './types.js';
@@ -51,6 +53,7 @@ export function originSnapshotFailureReason(error: unknown): string {
  */
 export async function bootTelegramOrigin(options: {
   config: InstarConfig;
+  notificationGate?: import('./TelegramOriginService.js').TelegramOriginService['notificationGate'];
   /** Compiled worker seam for production-factory lifecycle tests. */
   workerUrl?: URL;
   configWorkerUrl?: URL;
@@ -74,6 +77,8 @@ export async function bootTelegramOrigin(options: {
   onRecoveredMessage?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onRecoveredMessage'];
   onSessionDeliveryHeld?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onSessionDeliveryHeld'];
   onBrowserRecoveryAttention?: (input: { id: string; profileId: string; publicTransportAlternative: boolean }) => Promise<void>;
+  /** Test seam for the Web K page layer (telegram-test-groups). Defaults to the real driver. */
+  webKDriverFactory?: (options: import('./TelegramWebKDriver.js').TelegramWebKOptions) => TelegramWebKDriver;
   listLiveSessions?: () => Array<{ sessionId: string; harnessId: string | null }>;
   enrollmentObservations?: () => OriginActivationObservation[];
   /** Internal packaged-build fixture seam, never read from agent config or HTTP. */
@@ -99,6 +104,7 @@ export async function bootTelegramOrigin(options: {
   let snapshot: { observedAt: number; configRevision: number; chatId: string; issuesChatId: string | null; ownerIds: string[]; hub: string | null;
     display: Partial<OriginDisplaySettings>; enabled: boolean; demoChatId: string | null;
     browserSendAllowance: BrowserSendAllowance | null;
+    testGroupGrant: TestGroupGrant | null;
     conversationDisplays: Record<string, Partial<OriginDisplaySettings>> } | null = null;
   let closed = false, timer: ReturnType<typeof setTimeout> | undefined, configTimer: ReturnType<typeof setTimeout> | undefined;
   // Why the last refresh failed (null after a good read). A failed read means the
@@ -135,6 +141,7 @@ export async function bootTelegramOrigin(options: {
       }
       snapshot = { observedAt: observation.observedAt, configRevision: observation.revision, chatId: telegram.config.chatId,
         browserSendAllowance: readBrowserSendAllowance(telegram.config.messageOrigin),
+        testGroupGrant: readTestGroupGrant(telegram.config.messageOrigin, Date.now()),
         issuesChatId: telegram.config.issuesChatId == null || telegram.config.issuesChatId === '' ? null : String(telegram.config.issuesChatId),
         demoChatId: current.liveTest?.demo?.telegramChatId == null ? null : String(current.liveTest.demo.telegramChatId),
         ownerIds: [telegram.config.ownerUserId, telegram.config.promptGate?.ownerId, ...(telegram.config.authorizedUserIds ?? [])]
@@ -237,6 +244,9 @@ export async function bootTelegramOrigin(options: {
     holdsLease: options.holdsLease,
     noticeProcess: { role: options.noticeOwner ? 'owner' : 'client', socketPath: path.join(config.stateDir, 'origin-notice.sock') },
   }).catch(error => { noticePolicyObserver?.close(); configReader.close(); throw error; });
+  runtime.service.notificationGate = options.notificationGate ?? null;
+  runtime.service.notificationTopicId = (chatId, topicId) => inboundTopicId(conversationChatId(chatId), topicId === null ? 1 : Number(topicId), { mainChatId: snapshot?.chatId, issuesChatId: snapshot?.issuesChatId });
+
   const close = async () => { closed = true; if (timer) clearTimeout(timer); if (configTimer) clearTimeout(configTimer);
     noticePolicyObserver?.close(); configReader.close();
     await Promise.all([detectorCanary.close(), nativeCanary.close()]); await runtime.close(); };
@@ -267,7 +277,8 @@ export async function bootTelegramOrigin(options: {
         const found = liveEnrollment();
         if (!found) throw new Error('browser-profile-unavailable');
         driverProof = found.proof;
-        return driver = new TelegramWebKDriver({ ...found.current, expectedAccountId: found.current.accountId, userDataDir: found.live.userDataDir! });
+        const driverOptions = { ...found.current, expectedAccountId: found.current.accountId, userDataDir: found.live.userDataDir! };
+        return driver = options.webKDriverFactory ? options.webKDriverFactory(driverOptions) : new TelegramWebKDriver(driverOptions);
       };
       let signing: { privateKey: Buffer; publicKey: Buffer } | null = null;
       try {
@@ -309,7 +320,10 @@ export async function bootTelegramOrigin(options: {
         },
         driverFactory: async () => {
           const current = getDriver();
-          return { canary: () => current.canary(), readSnapshot: () => current.readSnapshot(), resolvePeer: destination => current.resolvePeer(destination), invoke: child => current.invoke(child),
+          return { canary: (deadlineMs?: number) => current.canary(deadlineMs), readSnapshot: () => current.readSnapshot(), resolvePeer: destination => current.resolvePeer(destination), invoke: child => current.invoke(child),
+            // telegram-test-groups: the broker only sees what this wrapper forwards.
+            listTestGroups: input => current.listTestGroups(input), createTestGroup: input => current.createTestGroup(input),
+            deleteTestGroup: input => current.deleteTestGroup(input),
             close: async () => { try { await current.close(); } finally { if (driver === current) driver = undefined; } } };
         },
         resolveAgentPublicKey: agentId => agentId === config.projectName ? signing?.publicKey : null,
@@ -325,7 +339,10 @@ export async function bootTelegramOrigin(options: {
         // Signer and Web worker are on this same host; no remote clock inferred.
         clockSkewMs: () => 0,
       });
-      runtime.browsers.set(profile.id, { executor, resolvePeer: destination => executor.broker.resolvePeer(destination) });
+      const testGroups = new TelegramTestGroups({ profileId: profile.id, stateDir: config.stateDir, accountId: enrollment.accountId,
+        broker: executor.broker, executorBusy: () => executor.busy,
+        authority: () => ({ healthy: healthy(), enabled: !!snapshot?.enabled, holdsLease: options.holdsLease(), grant: snapshot?.testGroupGrant ?? null }) });
+      runtime.browsers.set(profile.id, { executor, resolvePeer: destination => executor.broker.resolvePeer(destination), testGroups });
     }
   }
   const productionEnrollment = new OriginProductionEnrollment({ selfMachineId: identity.machineId,

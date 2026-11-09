@@ -34,6 +34,14 @@ export function phonesGlanceSpec({ waiting = null, paired = null, locked = false
   ] };
 }
 
+/** A browser device's extra words (dashboard-conversations-browser-device.md §4.9); null for a phone. */
+export function browserWords(d, { browserOff = false } = {}) {
+  if (!d || d.client !== 'browser') return null;
+  if (browserOff) return 'Browser · Switched off on this agent';
+  const t = Date.parse(d.lastSeenAt || '');
+  return Number.isFinite(t) ? `Browser · last used on this machine ${new Date(t).toLocaleString()}` : 'Browser · not used yet';
+}
+
 const STATUS = { pending: 'Waiting to confirm', active: 'Paired', revoked: 'Removed', declined: 'Declined', expired: 'Expired' };
 
 /** "123 456" — easier to read off a screen. A word code ("KITE-4172") is shown as the server sent it. */
@@ -114,7 +122,7 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     }
   };
 
-  const renderDevices = (list) => {
+  const renderDevices = (list, opts = {}) => {
     devices.replaceChildren();
     make('h3', 'Paired phones', devices);
     const shown = list.filter((d) => d.status === 'active' || d.status === 'pending');
@@ -122,15 +130,18 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     if (!shown.length) { make('p', 'No phones are paired with this machine.', devices); return; }
     for (const d of shown) {
       const row = make('div', undefined, devices); row.className = 'phone-row';
-      make('p', `${d.deviceName || 'Unnamed phone'}${personText(d)} · ${STATUS[d.status] || d.status}${d.approvedAt ? ` since ${new Date(d.approvedAt).toLocaleDateString()}` : ''}`, row);
+      const isBrowser = d.client === 'browser';
+      const extra = browserWords(d, opts);
+      make('p', `${d.deviceName || (isBrowser ? 'Unnamed browser' : 'Unnamed phone')}${personText(d)} · ${STATUS[d.status] || d.status}${d.approvedAt ? ` since ${new Date(d.approvedAt).toLocaleDateString()}` : ''}${extra ? ` · ${extra}` : ''}`, row);
       if (d.status === 'active') {
-        const revoke = make('button', 'Remove this phone', row);
+        const what = isBrowser ? 'browser' : 'phone';
+        const revoke = make('button', `Remove this ${what}`, row);
         revoke.onclick = async () => {
-          if (!doc.defaultView?.confirm?.('Remove this phone? It will stop reaching this agent at once.')) return;
+          if (!doc.defaultView?.confirm?.(`Remove this ${what}? It will stop reaching this agent at once.`)) return;
           revoke.disabled = true;
           try {
             const r = await request(`/mobile/devices/${encodeURIComponent(d.id)}/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-            notice.textContent = r.ok ? 'Removed.' : 'Could not remove that phone. Try again.';
+            notice.textContent = r.ok ? 'Removed.' : `Could not remove that ${what}. Try again.`;
           } catch { notice.textContent = 'Could not reach the agent.'; }
           await refresh();
         };
@@ -156,7 +167,16 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
         renderApprovals(Array.isArray(body.approvals) ? body.approvals : []);
       } else { notice.textContent = 'Pairing codes are unavailable right now.'; }
       const d = await request('/mobile/devices');
-      if (d.ok) { const body = await d.json(); renderDevices(Array.isArray(body.devices) ? body.devices : []); }
+      if (d.ok) {
+        const body = await d.json();
+        const list = Array.isArray(body.devices) ? body.devices : [];
+        // Browser rows say when browsers are switched off on this agent (§4.9).
+        let browserOff = false;
+        if (list.some((x) => x && x.client === 'browser')) {
+          try { const s = await request('/mobile/browser-devices/status'); browserOff = s.status === 503; } catch { browserOff = false; }
+        }
+        renderDevices(list, { browserOff });
+      }
     } catch { notice.textContent = 'Could not reach the agent.'; }
     finally { busy = false; renderSummary(); }
   }

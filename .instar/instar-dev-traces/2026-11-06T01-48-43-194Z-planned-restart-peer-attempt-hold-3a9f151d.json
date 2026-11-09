@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "planned-restart-peer-attempt-hold",
+  "sessionId": "f2db6fe4-4151-4cef-98d6-80beb0eb724c",
+  "timestamp": "2026-11-06T01:48:43.194Z",
+  "artifactPath": "upgrades/side-effects/planned-restart-peer-attempt-hold.md",
+  "artifactSha256": "71daa97a6b1ffc9098d8067392c8d933443eba7900384bae08a5bf01c86f6a1c",
+  "coveredFiles": [
+    "docs/specs/planned-restart-local-verify-hold.eli16.md",
+    "docs/specs/planned-restart-local-verify-hold.md",
+    "docs/specs/reports/planned-restart-local-verify-hold-convergence.md",
+    "src/core/PlannedRestartVerifyGuard.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/e2e/planned-restart-local-verify-lifecycle.test.ts",
+    "tests/integration/planned-restart-local-verify.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "tests/unit/planned-restart-verify-guard.test.ts",
+    "upgrades/next/planned-restart-peer-attempt-hold.md",
+    "upgrades/side-effects/planned-restart-peer-attempt-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible by code revert; machine-local sidecar file only, no config/migration; bounded hold within existing 3 h ceiling; bypassHolds and crash recovery unchanged",
+  "eli16Path": "docs/specs/planned-restart-local-verify-hold.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/planned-restart-peer-attempt-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -149,6 +149,11 @@ export interface CodeOwnedPathsVerdict {
   /** The code-owned files the PR changes (empty when none). */
   files: string[];
   /**
+   * GitHub gave no review decision and a named code owner of every owned file approved
+   * this head (a ruleset leaves reviewDecision empty). Absent = not established.
+   */
+  ownerApproved?: boolean;
+  /**
    * The changed files on the verifier's protected list (absent = not computed).
    * On the actions floor there is no local-verify record to carry the independent
    * review, so the watcher checks it itself for these (same judge, same rule).
@@ -380,7 +385,10 @@ export function freshState(): GreenPrState {
 }
 
 /** Outcomes that rule out only THIS PR this tick, so the next-oldest gets a turn. */
-const PASS_ON = new Set(['episode-not-eligible', 'gave-up-rearm-exhausted', 'deferred:checks-pending']);
+// 'refused:main-red' is here too: that refusal is about main, and a newer PR verified against the
+// current main head (often the one fixing main) can still merge, so the oldest refused PR must not
+// end the tick (independent review of #2981, 2026-11-08).
+const PASS_ON = new Set(['episode-not-eligible', 'gave-up-rearm-exhausted', 'deferred:checks-pending', 'refused:main-red']);
 
 /** Oldest (lowest number) first, as `selectOldest` picks. */
 export function orderOldestFirst<T extends { number: number }>(prs: T[]): T[] {
@@ -881,7 +889,7 @@ export class GreenPrAutoMerger extends EventEmitter {
         this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owners-unverifiable', pr: pr.number });
         continue;
       }
-      if (co.touches && pr.reviewDecision !== 'APPROVED') {
+      if (co.touches && pr.reviewDecision !== 'APPROVED' && co.ownerApproved !== true) {
         // Waits for the code owner's review on GitHub (GitHub enforces it; this only avoids a refused merge).
         snapshotEntries.push({ pr: pr.number, headRefName: pr.headRefName, headRefOid: pr.headRefOid, kind: 'code-owner-review' });
         this.deps.audit({ kind: 'green-pr-automerge', event: 'waiting', class: 'code-owner-review', pr: pr.number, files: co.files.slice(0, 10) });

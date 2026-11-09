@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "slack-refused-restart",
+  "sessionId": "220ff7db-8651-46b9-8d85-8536f15e29a6",
+  "timestamp": "2026-11-07T12:05:18.679Z",
+  "artifactPath": "upgrades/side-effects/slack-refused-restart.md",
+  "artifactSha256": "d0d45c4f38ab1f785949f2e9b7b12fe56dfca44da6fe697fad1f8d84bb3a14af",
+  "coveredFiles": [
+    "tests/integration/recommended-services-setup.test.ts",
+    "upgrades/side-effects/slack-refused-restart.md",
+    "upgrades/slack-refused-restart.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only: replaces a fixed character window with the real branch",
+  "eli16Path": "upgrades/slack-refused-restart.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-refused-restart.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

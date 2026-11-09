@@ -1,3 +1,5 @@
+import { ACCOUNT_ACTION_SAFETY } from './accountActionSafety.js';
+
 /**
  * builtinSkillContent.ts — single source for built-in skill content that BOTH
  * the scaffold path (`installBuiltinSkills` in init.ts) AND the PostUpdateMigrator
@@ -199,6 +201,8 @@ Use this when the machine that needs a login (the **target**) cannot run a norma
  * the current rules on disk and they cannot drift from the shipped text.
  */
 export const NORMAL_CHROME_BROWSER_SHARED_RULES = `## The rules both drivers follow
+
+${ACCOUNT_ACTION_SAFETY}
 
 - **Normal Chrome only**, launched the ordinary way: \`open -g -na\` on macOS, \`chrome.exe\` on Windows. Never Playwright/CDP, never \`--remote-debugging-port\`, never an automation flag, in any spelling (\`--flag\`, \`-flag\`, \`/flag\`). The macOS launcher accepts no flags at all (a URL argument that is not a URL is refused); the Windows driver accepts only a short allowlist of harmless window flags.
 - **One profile per account, and never the operator's own.** macOS: profiles live inside this agent's home and the scripts refuse anything else. Windows: give automation its own profile directory; \`ndrive.sh\` refuses the operator's own Chrome profile folder. Never copy a profile between machines (a signed-in profile is cookies on one disk).

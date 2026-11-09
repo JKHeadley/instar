@@ -64,7 +64,7 @@ describe('production origin enrollment factory', () => {
     expect(first.activation.complete).toBe(true);
     await boot.close(); boot = await start(path.join(f.root, 'missing-release'));
     const telegram = new TelegramAdapter(telegramConfig, stateDir, { suppressLifelineAutoCreate: true });
-    const app = express(); app.use(express.json()); app.use(createRoutes({ config, telegramOrigin: boot.runtime, telegram,
+    const app = express(); app.use(express.json()); app.use(createRoutes({ state: { getSession: () => undefined }, config, telegramOrigin: boot.runtime, telegram,
       verifyDashboardOperatorSession: (proof: string) => proof === 'fixture-operator' } as never));
     const server = await new Promise<import('node:http').Server>(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));

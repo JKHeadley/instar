@@ -323,3 +323,11 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full story.
 ## License
 
 MIT
+
+### Storage errors and backups
+
+Storage refusals and failed saves name the computer that produced them, using its machine nickname or hostname. If a phone reports that Mac Studio is nearly out of disk space, free space on Mac Studio. Another computer receiving that error keeps the original machine name.
+
+Use `instar backup create` to snapshot agent state, `instar backup list` to inspect snapshots, and `instar backup restore [id]` to restore one. A storage failure during a backup or restore identifies the computer performing the operation; check its available space and directory permissions before retrying.
+
+Owner requests are kept by the [TeamRequests store](src/core/TeamRequests.ts). Asking for access does not grant it: the owner's phone must sign the access change. If storage fails while handling a signed team action, the reply names the computer needing attention and keeps private file paths out of the response.
