@@ -28,6 +28,11 @@ import { getDecisionQualityRecorder } from '../../src/core/decisionQualityTypes.
 import type { DecisionQualityRecorderImpl } from '../../src/core/DecisionQualityRecorderImpl.js';
 import { AutonomousRunStore } from '../../src/core/AutonomousRunStore.js';
 import { JobScheduler } from '../../src/scheduler/JobScheduler.js';
+import { buildCommitmentJevFirst } from '../../src/core/JevFirstCommitment.js';
+import { CommitmentSentinel } from '../../src/monitoring/CommitmentSentinel.js';
+import { JudgmentProvenanceLog } from '../../src/core/JudgmentProvenanceLog.js';
+import { getFeatureMetricsRecorder } from '../../src/core/CircuitBreakingIntelligenceProvider.js';
+import { DEV_GATED_FEATURES } from '../../src/core/devGatedFeatures.js';
 
 function createMockSessionManager() {
   return { listRunningSessions: () => [], getSession: () => null };
@@ -79,6 +84,53 @@ describe('Decision-Quality E2E lifecycle (feature is alive)', () => {
   });
 
   const auth = () => ({ Authorization: `Bearer ${AUTH}` });
+
+  it('GET /jev-first/summary is alive on production AgentServer initialization', async () => {
+    const res = await request(app).get('/jev-first/summary').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ sinceHours: 168, points: [] });
+  });
+
+  it('production Jev factory keeps the commitment scan alive with one provider and real metrics wiring', async () => {
+    const bootSource = fs.readFileSync(path.join(__dirname, '../../src/commands/server.ts'), 'utf8');
+    expect(bootSource).toMatch(/buildCommitmentJevFirst\(/);
+    expect(bootSource).toMatch(/commitmentSentinel = new CommitmentSentinel\([\s\S]*?jevFirst,[\s\S]*?getJevPoint/);
+    expect(DEV_GATED_FEATURES.filter((f) => f.configPath === 'intelligence.jevFirstCommitment.enabled')).toHaveLength(1);
+    const vendor = vi.fn();
+    const provenance = new JudgmentProvenanceLog({ dir: path.join(stateDir, 'jev-first-provenance') });
+    const { gateway, getPoint } = buildCommitmentJevFirst({ stateDir, developmentAgent: true,
+      readConfig: () => undefined, provenance: () => provenance,
+      readKey: () => null, askJev: vendor });
+    expect(getPoint().stage).toBe('shadow');
+    expect(buildCommitmentJevFirst({ stateDir, developmentAgent: false,
+      readConfig: () => undefined, provenance: () => provenance, readKey: () => null, askJev: vendor }).getPoint().stage).toBe('off');
+    expect(buildCommitmentJevFirst({ stateDir, developmentAgent: true,
+      readConfig: () => ({ enabled: false, stage: 'live' }), provenance: () => provenance,
+      readKey: () => null, askJev: vendor }).getPoint().stage).toBe('off');
+    expect(buildCommitmentJevFirst({ stateDir, developmentAgent: true,
+      readConfig: () => ({ enabled: true, stage: 'live' }), provenance: () => provenance,
+      readKey: () => null, askJev: vendor }).getPoint().stage).toBe('shadow');
+    expect(getFeatureMetricsRecorder()).not.toBeNull();
+    const evaluate = vi.fn(async () => '[{"type":"one-time-action","userRequest":"turn off auto updates","agentResponse":"I will turn off auto updates"}]');
+    const record = vi.fn();
+    const sentinel = new CommitmentSentinel({ stateDir,
+      intelligence: { evaluate } as any,
+      commitmentTracker: { getActive: () => [], record } as any,
+      jevFirst: gateway, getJevPoint: getPoint });
+    fs.writeFileSync(path.join(stateDir, 'telegram-messages.jsonl'), [
+      { messageId: 1, topicId: 8123, text: 'Please turn off auto updates.', fromUser: true, timestamp: new Date().toISOString() },
+      { messageId: 2, topicId: 8123, text: 'I will turn off auto updates.', fromUser: false, timestamp: new Date().toISOString() },
+    ].map((x) => JSON.stringify(x)).join('\n') + '\n');
+    expect(await sentinel.scan()).toBe(1);
+    expect(vendor).not.toHaveBeenCalled();
+    expect(evaluate).toHaveBeenCalledOnce();
+    expect(record).toHaveBeenCalledOnce();
+    const res = await request(app).get('/jev-first/summary').set(auth());
+    expect(res.status).toBe(200);
+    expect(res.body.points).toEqual([expect.objectContaining({
+      id: 'commitment-detect', decisions: 1, jevSettled: 0, incumbentHandled: 1,
+    })]);
+  });
 
   it('GET /decision-quality is alive (200, not 503) with the real shape', async () => {
     const res = await request(app).get('/decision-quality?sinceHours=24').set(auth());

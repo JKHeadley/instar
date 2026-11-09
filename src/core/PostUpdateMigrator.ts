@@ -98,6 +98,7 @@ import {
   jevMemoryPickerAwareness,
   machineLoadAssessmentAwareness,
   jevSignalLiveAwareness,
+  jevFirstDecisionAwareness,
   READINESS_PAUSE_ALARM_BULLET,
   READINESS_PAUSE_ALARM_MARKER,
   READINESS_STALL_NOTICE_BULLET,
@@ -9524,6 +9525,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Jev memory picker awareness card');
     }
 
+    if (!content.includes('### Jev First Decisions')) {
+      content += jevFirstDecisionAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Jev-first decision awareness card');
+    }
+
     if (!content.includes('### Jev Correction Shadow')) {
       content += jevCorrectionShadowAwareness(port);
       patched = true;
@@ -16174,6 +16181,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // Codex/Gemini agent must be able to explain it (and that it ranks Claude
       // Code's MEMORY.md), including that it ships dark and shadow-only.
       '### Jev Memory Picker',
+      // The Jev-first summary and one-provider fallback are framework-neutral.
+      '### Jev First Decisions',
       // Jev correction shadow: a server-side log-only instrument over inbound
       // user messages; any framework's agent can read its summary.
       '### Jev Correction Shadow',

@@ -372,6 +372,17 @@ export class JudgmentProvenanceLog {
     return id;
   }
 
+  /** A Jev settlement must wait for its audit row to reach disk before it can
+   * skip the incumbent. Other callers may keep using buffered recordDecision().
+   * A concurrent append failure conservatively returns null too. */
+  async recordDecisionFlushed(input: DecisionRowInput): Promise<string | null> {
+    const errorsBefore = this.counters.writeErrors;
+    const id = this.recordDecision(input);
+    if (!id) return null;
+    await this.flush();
+    return this.counters.writeErrors === errorsBefore ? id : null;
+  }
+
   /**
    * Ground-truth annotation referencing a decision row (§3.5 outcome
    * annotation; llm-decision-quality-meter §5.4.1 keying). `decisionRef`
