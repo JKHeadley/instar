@@ -533,6 +533,8 @@ export const TOPIC_STYLE = {
   INFO:    { color: 7322096,  emoji: '📢' },
   /** Yellow — needs user attention */
   ALERT:   { color: 16766590, emoji: '🔔' },
+  /** Pink — the Chief of Staff (docs/specs/chief-of-staff-topic.md §1.4) */
+  CHIEF:   { color: 16749490, emoji: '🧭' },
 } as const;
 
 /**
@@ -1171,6 +1173,8 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
   public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md §3): an owner tap on a `cos:` button; set by the server with the loop. */
+  onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string }) => Promise<'ok' | 'ignored'>) | null = null;
   /** Callback to inject text input into a tmux session. Wired by server.ts. */
   public onPromptTextResponse: ((sessionName: string, text: string) => boolean) | null = null;
   /** Callback when relay lease should extend idle timeout for a session */
@@ -2221,6 +2225,28 @@ export class TelegramAdapter implements MessagingAdapter {
    * Edit a forum topic's name and/or icon color.
    * Best-effort — silently ignores failures (topic may not exist).
    */
+  /** Pin one message in a forum topic (the Chief of Staff greeting). False on any API failure. */
+  async pinTopicMessage(topicId: number, messageId: number): Promise<boolean> {
+    try {
+      await this.apiCall('pinChatMessage', { chat_id: this.config.chatId, message_id: messageId, message_thread_id: topicId, disable_notification: true });
+      return true;
+    } catch (err) { /* @silent-fallback-ok: the caller reports an unpinned topic and retries next boot */
+      console.warn(`[telegram] pinChatMessage failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** Remove every pin in a forum topic (Chief of Staff rollback). False on any API failure. */
+  async unpinTopicMessages(topicId: number): Promise<boolean> {
+    try {
+      await this.apiCall('unpinAllForumTopicMessages', { chat_id: this.config.chatId, message_thread_id: topicId });
+      return true;
+    } catch (err) { /* @silent-fallback-ok: the caller reports the pin as still present and retries next boot */
+      console.warn(`[telegram] unpinAllForumTopicMessages failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   async editForumTopic(topicId: number, name?: string, iconColor?: number): Promise<boolean> {
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
@@ -6722,6 +6748,26 @@ export class TelegramAdapter implements MessagingAdapter {
         callback_query_id: query.id,
         text: 'Invalid button data',
       }).catch(() => {});
+      return;
+    }
+
+    // ── Chief of Staff taps (docs/specs/chief-of-staff-topic.md §3/§6): `cos:<action>:<conversation key>`.
+    // Owner-only, checked HERE against the explicit owner principal; anyone else gets "owner only" and
+    // nothing runs. The handler (the loop's ownerTap) decides what the tap means and answers plainly.
+    if (query.data.startsWith('cos:')) {
+      const owner = this.getConfiguredApprover(); // normalised: config may hold the id as a string
+      if (!owner || query.from.id !== owner) {
+        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: 'Only the owner can tap this.' }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the refusal already held */ });
+        return;
+      }
+      let answer = 'Not available right now.';
+      try {
+        const r = this.onChiefOfStaffTap ? await this.onChiefOfStaffTap({ data: query.data, fromUserId: query.from.id, callbackQueryId: query.id }) : null;
+        answer = r === 'ok' ? 'Done.' : r === 'ignored' ? 'That action no longer applies.' : answer;
+      } catch (err) { /* @silent-fallback-ok: the tap answers with a plain failure line; the handler's own log carries the cause */
+        console.warn(`[telegram] chief-of-staff tap failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: answer }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the handler's outcome is already recorded by the loop */ });
       return;
     }
 

@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-09T23:00:28.325Z",
+  "slug": "chief-of-staff-surfaces",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 424,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/StateManager.ts",
+      "src/messaging/ChiefOfStaffTopic.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 408,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

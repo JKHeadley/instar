@@ -6918,6 +6918,14 @@ export class AgentServer {
         // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
         pool: routeCtx,
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
+        // Chief of Staff §1.4: the pinned conversation + tree for owner-role callers; absent where the feature is off.
+        chiefOfStaff: options.chiefOfStaffLoop ? () => {
+          const loop = options.chiefOfStaffLoop!;
+          const t = this.state.get<number>('chief-of-staff-topic');
+          const parents = new Map<string, string | null>();
+          for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
+          return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
+        } : undefined,
         telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };

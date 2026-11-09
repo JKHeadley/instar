@@ -19,6 +19,31 @@ const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, su
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
 
+/** Chief of Staff rows: parked / breaker-tripped projects, projects waiting on the owner, a paused or soon-expiring check-in lease. */
+export function chiefOfStaffNeedRows(cos, now) {
+  // Off (503) arrives as `{ ok: false, reason: 'switched off…' }` from the console's reader (no status); a real failure is unreadable.
+  if (!cos || !cos.ok) return cos && (cos.status === 503 || /switched off/i.test(String(cos.reason || ''))) ? [] : UNREADABLE;
+  const d = cos.data;
+  if (!d || typeof d !== 'object' || !d.lease || typeof d.lease !== 'object' || !Array.isArray(d.projects)) return UNREADABLE;
+  const out = [];
+  const href = '#/work/chats';
+  const title = (p) => (typeof p.goal === 'string' && p.goal.trim() ? p.goal.trim().slice(0, 80) : String(p.conversationKey || 'a project'));
+  for (const p of d.projects) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', href));
+    else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', href));
+    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', href));
+  }
+  if (d.projects.length) {
+    if (!d.lease.live) out.push(row('cos:paused', 'Your Chief of Staff is paused until you check in', 'Say anything in its conversation.', href));
+    else if (typeof d.lease.expiresAt === 'string') {
+      const left = Date.parse(d.lease.expiresAt) - (typeof now === 'number' ? now : Date.now());
+      if (Number.isFinite(left) && left > 0 && left <= 24 * 3600 * 1000) out.push(row('cos:expiring', 'Your Chief of Staff pauses within a day unless you check in', '', href));
+    }
+  }
+  return out;
+}
+
 export const NEED_SOURCES = [
   // First, so a real problem leads Home. Only what affects the person. Internal notes stay on the Health page and never raise this count.
   { id: 'health', page: 'capacity/health', reads: { issues: '/mobile/health-issues' },
@@ -55,6 +80,9 @@ export const NEED_SOURCES = [
       if (!page.ok) return UNREADABLE;
       return page.sections.needsYou.map((r) => row(`plan:${r.key}`, r.main, r.needs, '#/work/plans?s=needsYou'));
     } },
+  // Chief of Staff (chief-of-staff-topic.md §5): what its projects need from the owner. 503 = feature off = nothing waiting.
+  { id: 'chief-of-staff', page: 'work/chats', reads: { cos: '/chief-of-staff' },
+    rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
   { id: 'secrets', page: 'people/secrets', reads: { pending: '/secrets/pending' },
     // Never the card's own key or link: both carry the one-time drop token.
     rows: ({ pending }, now) => {

@@ -8780,7 +8780,23 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
       return;
     }
-    res.json({ ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary() });
+    const cosTopic = ctx.state.get<number>('chief-of-staff-topic');
+    res.json({
+      ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary(),
+      // §1.4 surfaces: the CoS conversation's key (null until the topic exists) and the owner's display name.
+      conversationKey: typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null,
+      displayName: String(ctx.liveConfig?.get<string | undefined>('chiefOfStaff.displayName', undefined) || 'Chief of Staff'),
+    });
+  });
+  // POST /chief-of-staff/check-in — the owner's dashboard check-in (§4: a dashboard tap in an
+  // owner-authenticated console session renews the lease). PIN-gated like every owner tap; the
+  // record is signed by this machine. Served only where the loop runs (the lease holder).
+  router.post('/chief-of-staff/check-in', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const r = ctx.chiefOfStaffLoop.checkIn({ renewedVia: 'console', principal: 'console:owner', eventRef: `console:${new Date().toISOString()}` });
+    if (!r.ok) { res.status(r.reason === 'no-signer' ? 503 : 409).json({ error: r.reason }); return; }
+    res.json({ ok: true, lease: r.lease });
   });
   router.get('/chief-of-staff/projects/:key', (req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -30409,6 +30425,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // Chief of Staff taps (docs/specs/chief-of-staff-topic.md §6): like the pairing buttons, a forwarded
+    // `cos:` tap is honoured only with the lifeline proof — a Bearer holder must not be able to forge an owner tap.
+    if (typeof data === 'string' && data.startsWith('cos:') && !callbackDecision.verified) {
+      claimStore.markFailed(callbackQueryId);
+      res.status(403).json({ ok: false, error: 'chief-of-staff tap without lifeline proof' });
+      return;
+    }
     try {
       // Reconstruct a callback query object and process it through TelegramAdapter
       const query = {

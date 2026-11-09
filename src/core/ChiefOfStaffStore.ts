@@ -423,6 +423,21 @@ export function latestPerKey(entries: UnionEntry[]): Map<string, { data: Record<
   return winner;
 }
 
+export interface TreeNode { conversationKey: string; parentConversationKey: string | null; role?: 'chief-of-staff' | 'project' | 'sub-topic' }
+
+/** §1.1/§1.4: the parent link per conversation (last-writer by HLC; a tombstone removes the node). */
+export function foldTreeState(entries: UnionEntry[]): Map<string, TreeNode> {
+  const out = new Map<string, TreeNode>();
+  for (const [, w] of latestPerKey(entries)) {
+    if (w.data.recordType !== 'tree' || w.data.op === 'delete') continue;
+    const ck = w.data.conversationKey; if (typeof ck !== 'string') continue;
+    const parent = typeof w.data.parentConversationKey === 'string' ? w.data.parentConversationKey : null;
+    const role = w.data.role;
+    out.set(ck, { conversationKey: ck, parentConversationKey: parent, ...(role === 'chief-of-staff' || role === 'project' || role === 'sub-topic' ? { role } : {}) });
+  }
+  return out;
+}
+
 export interface BindingState {
   conversationKey: string;
   /** The winning binding record (null when none confirmed). */

@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-09T23:01:24.701Z",
+  "slug": "chief-of-staff-surfaces",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 424,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffLoop.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/StateManager.ts",
+      "src/messaging/ChiefOfStaffTopic.ts",
+      "src/messaging/TelegramAdapter.ts",
+      "src/scaffold/templates.ts",
+      "src/server/AgentServer.ts",
+      "src/server/mobileConversationRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 408,
+    "deletedLines": 16
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The only self-triggered sends this change adds are bounded one-shots with explicit brakes, not controllers: the owner-only drop notice is one line per sender per 24h (in-memory memo, event-driven by an inbound message, never retried); the topic greeting is sent at most once per 24h while held and never again once its message id is persisted (a retry pins the stored id); the note buttons ride the existing once-per-cadence note (ChiefOfStaffLoop, PR 3, capped by noteCadenceHours and immediateMessagesPerDay). No restart/respawn/kill/retry path is added."
+  },
+  "verdict": "blocked"
+}

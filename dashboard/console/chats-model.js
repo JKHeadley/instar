@@ -40,8 +40,43 @@ export function listRows(body) {
       machine: typeof r.machine === 'string' ? r.machine : null,
       // The unread hook (§4.10): built separately; a badge only when the server sends a count.
       unread: Number.isInteger(r.unreadCount) && r.unreadCount >= 0 ? r.unreadCount : null,
+      // Chief of Staff tree (chief-of-staff-topic.md §1.4): the parent conversation key, owner-only; absent ⇒ Unfiled.
+      parent: typeof r.parentConversationKey === 'string' ? r.parentConversationKey : null,
     });
   }
+  return out;
+}
+/** The Chief of Staff row the first page pins (chief-of-staff-topic.md §1.4), or null when the feature is off / not the first page. */
+export function listPinned(body) {
+  const p = body && body.pinned;
+  if (!p || typeof p !== 'object') return null;
+  const rows = listRows({ conversations: [p] });
+  return rows.length ? rows[0] : null;
+}
+/**
+ * Pinned-first, then the tree: the Chief of Staff row (when known) leads; conversations with a parent
+ * are drawn under that parent, depth-first, each level keeping the list's own order; everything with no
+ * parent (or an unknown one) keeps its place as "Unfiled". Each row gains `depth` (0 = top level).
+ */
+export function orderWithTree(rows, pinnedKey) {
+  const byKey = new Map(rows.map((r) => [r.key, r]));
+  const children = new Map();
+  const roots = [];
+  for (const r of rows) {
+    const parentKnown = r.parent && byKey.has(r.parent) && r.parent !== r.key;
+    if (parentKnown) { if (!children.has(r.parent)) children.set(r.parent, []); children.get(r.parent).push(r); } else roots.push(r);
+  }
+  if (pinnedKey && byKey.has(pinnedKey)) { const i = roots.findIndex((r) => r.key === pinnedKey); if (i > 0) roots.unshift(...roots.splice(i, 1)); }
+  const out = [];
+  const seen = new Set();
+  const walk = (r, depth) => {
+    if (seen.has(r.key)) return; // a cycle in the records never loops the view
+    seen.add(r.key);
+    out.push({ ...r, depth });
+    for (const c of children.get(r.key) || []) walk(c, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+  for (const r of rows) if (!seen.has(r.key)) walk(r, 0); // rows reachable only through a cycle still show
   return out;
 }
 export function listMeta(body) {
