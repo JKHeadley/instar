@@ -181,7 +181,10 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
       const m=window.createProxiedManagersForAccount(${this.options.accountNumber});
       const api=(method,params)=>{if(Date.now()>${stop})throw {code:0,type:'STEP_BUDGET'};return m.apiManager.invokeApi(method,params,{rawError:true,noErrorBox:true,stopTime:${stop}});};
       const fail=(step,e,extra)=>{const out={ok:false,step};const code=Number(e&&e.code);if(Number.isSafeInteger(code))out.code=code;
-        const type=e&&typeof e.type==='string'&&/^[A-Z_0-9]{1,48}$/.test(e.type)?e.type:undefined;if(type)out.type=type;return Object.assign(out,extra||{});};
+        const type=e&&typeof e.type==='string'&&/^[A-Z_0-9]{1,48}$/.test(e.type)?e.type:typeof e==='string'&&/^[A-Z_0-9]{1,48}$/.test(e)?e:undefined;if(type)out.type=type;
+        if(!type&&!Number.isSafeInteger(code)){const n=e&&e.constructor&&e.constructor.name;if(typeof n==='string'&&/^[A-Za-z]{1,40}$/.test(n))out.kind=n;
+          const msg=e&&typeof e.message==='string'?e.message:'';if(/^[A-Za-z0-9 _.:()'-]{1,120}$/.test(msg))out.message=msg;}
+        return Object.assign(out,extra||{});};
       const isCandidate=c=>!!c&&c._==='channel'&&!!c.pFlags&&!!c.pFlags.creator&&!!c.pFlags.megagroup&&!!c.pFlags.forum
         &&typeof c.title==='string'&&${TEST_GROUP_TITLE_PATTERN}.test(c.title);
       ${body}

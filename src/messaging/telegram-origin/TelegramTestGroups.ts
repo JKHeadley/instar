@@ -238,7 +238,7 @@ export type TestGroupCreateResult =
   | TestGroupPageFailure;
 export type TestGroupDeleteResult = { ok: true; outcome: 'deleted' | 'gone' } | TestGroupPageFailure;
 export interface TestGroupPageFailure {
-  ok: false; step: string; code?: number; type?: string; uncertain?: boolean; channelId?: string; rolledBack?: boolean;
+  ok: false; step: string; code?: number; type?: string; kind?: string; message?: string; uncertain?: boolean; channelId?: string; rolledBack?: boolean;
 }
 const STEPS = new Set(['canary', 'budget', 'list', 'bot-identity', 'create', 'create-shape', 'invite', 'promote', 'verify',
   'stale-read', 'identity-mismatch', 'delete', 'read']);
@@ -246,7 +246,9 @@ function onlyKeys(value: Record<string, unknown>, allowed: string[]): boolean {
   return Object.keys(value).every(key => allowed.includes(key));
 }
 function parseFailure(v: Record<string, unknown>): TestGroupPageFailure | null {
-  if (v.ok !== false || !onlyKeys(v, ['ok', 'step', 'code', 'type', 'uncertain', 'channelId', 'rolledBack']) ||
+  if (v.ok !== false || !onlyKeys(v, ['ok', 'step', 'code', 'type', 'kind', 'message', 'uncertain', 'channelId', 'rolledBack']) ||
+    (v.kind !== undefined && (typeof v.kind !== 'string' || !/^[A-Za-z]{1,40}$/.test(v.kind))) ||
+    (v.message !== undefined && (typeof v.message !== 'string' || !/^[A-Za-z0-9 _.:()'-]{1,120}$/.test(v.message))) ||
     typeof v.step !== 'string' || !STEPS.has(v.step) ||
     (v.code !== undefined && !Number.isSafeInteger(v.code)) ||
     (v.type !== undefined && (typeof v.type !== 'string' || !/^[A-Z_0-9]{1,48}$/.test(v.type))) ||
@@ -341,9 +343,10 @@ export class TelegramTestGroups {
    * validated by parseFailure (a safe integer, an uppercase identifier), never page text. Operations
    * run one at a time (`running`), so one field serves; admit() clears it. Without it a live
    * failure reads only "list" and cannot be diagnosed (2026-11-09 first live run). */
-  private failureDetail: { code?: number; type?: string } | null = null;
+  private failureDetail: { code?: number; type?: string; kind?: string; message?: string } | null = null;
   private noteFailure(f: TestGroupPageFailure): void {
-    this.failureDetail = { ...(f.code !== undefined ? { code: f.code } : {}), ...(f.type !== undefined ? { type: f.type } : {}) };
+    this.failureDetail = { ...(f.code !== undefined ? { code: f.code } : {}), ...(f.type !== undefined ? { type: f.type } : {}),
+      ...(f.kind !== undefined ? { kind: f.kind } : {}), ...(f.message !== undefined ? { message: f.message } : {}) };
   }
   private liveReads: number[] = [];
   private readonly now: () => number;

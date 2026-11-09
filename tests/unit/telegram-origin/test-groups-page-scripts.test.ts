@@ -20,7 +20,7 @@ import { parseTestGroupCreate, parseTestGroupDelete, parseTestGroupList } from '
 
 const SELF = '123', BOT = { username: 'instar_pr2760_livetest_bot', userId: '900' };
 type Chat = { _: string; id: number; title: string; date: number; access_hash: string; pFlags: Record<string, boolean>; participants: { _: string; user_id: number; admin_rights?: unknown }[] };
-function harness(options: { addRights?: string[]; missingInvitee?: boolean; createShape?: 'none' | 'two'; failInvite?: boolean; slice?: boolean; botFlag?: boolean; createError?: { type: string; code: number } } = {}) {
+function harness(options: { addRights?: string[]; missingInvitee?: boolean; createShape?: 'none' | 'two'; failInvite?: boolean; slice?: boolean; botFlag?: boolean; createError?: { type: string; code: number }; listThrow?: unknown } = {}) {
   const assets = ['app-fixture.js', 'apiManagerProxy-fixture.js', 'index-fixture.js'].sort();
   const bytes = new Map(assets.map(asset => [asset, `public bundle ${asset}`]));
   const assetDigests = Object.fromEntries([...bytes].map(([asset, content]) => [asset, createHash('sha256').update(content).digest('hex')]));
@@ -32,7 +32,7 @@ function harness(options: { addRights?: string[]; missingInvitee?: boolean; crea
     calls.push({ method, params: JSON.parse(JSON.stringify(params)) });
     switch (method) {
       case 'users.getUsers': return [{ _: 'user', id: Number(SELF) }];
-      case 'messages.getAllChats': return { _: options.slice ? 'messages.chatsSlice' : 'messages.chats', chats: [...chats.values()].map(c => ({ ...c })) };
+      case 'messages.getAllChats': if (options.listThrow !== undefined) throw options.listThrow; return { _: options.slice ? 'messages.chatsSlice' : 'messages.chats', chats: [...chats.values()].map(c => ({ ...c })) };
       case 'contacts.resolveUsername':
         return { peer: { _: 'peerUser', user_id: Number(BOT.userId) },
           users: [{ _: 'user', id: Number(BOT.userId), access_hash: 'bot-hash', pFlags: options.botFlag === false ? {} : { bot: true } }] };
@@ -160,6 +160,16 @@ describe('createTestGroup page script', () => {
 });
 
 describe('listTestGroups and deleteTestGroup page scripts', () => {
+  it('a plain script error reports its kind and a filtered message; unsafe text is dropped (2026-11-09 live: step list, no code)', async () => {
+    const h = harness({ listThrow: new TypeError('m.apiManager.invokeApi is not a function') });
+    const raw = await h.driver.listTestGroups({ deadline: deadline() });
+    expect(parseTestGroupList(raw)).toEqual({ ok: false, step: 'list', kind: 'TypeError', message: 'm.apiManager.invokeApi is not a function' });
+    const h2 = harness({ listThrow: new Error('chat "Family" <secret> failed') });
+    expect(parseTestGroupList(await h2.driver.listTestGroups({ deadline: deadline() }))).toEqual({ ok: false, step: 'list', kind: 'Error' });
+    const h3 = harness({ listThrow: Object.assign(new Error('x'), { type: 'CHAT_LIST_FAILED', code: 400 }) });
+    expect(parseTestGroupList(await h3.driver.listTestGroups({ deadline: deadline() }))).toEqual({ ok: false, step: 'list', code: 400, type: 'CHAT_LIST_FAILED' });
+  });
+
   it('lists only creator-owned forum supergroups with a marker title, and never other chats', async () => {
     const h = harness();
     h.operator(1, 'Family');
