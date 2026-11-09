@@ -220,9 +220,11 @@ function navItems(active) {
   const items = [{ id: 'home', label: 'Home', icon: 'home' }, ...GROUPS];
   const nav = el('nav', { class: 'nav', 'aria-label': 'Console sections' });
   for (const g of items) {
-    const a = el('a', { href: `#/${g.id}`, icon: g.icon, 'aria-current': g.id === active ? 'page' : null });
+    const onChats = g.id === 'work' && /^#\/work\/chats(\?|$)/.test(location.hash);
+    const a = el('a', { href: `#/${g.id}`, icon: g.icon, 'aria-current': g.id === active && !onChats ? 'page' : null });
     a.append(el('span', { text: g.label }));
     nav.append(a);
+    if (g.id === 'home') nav.append(conversationsNavItem());
   }
   nav.append(el('div', { class: 'nav-group-label', text: 'Elsewhere' }));
   const legacy = el('a', { href: LEGACY_DASHBOARD, icon: 'external' });
@@ -230,6 +232,24 @@ function navItems(active) {
   legacy.classList.add('nav-sub-legacy');
   nav.append(legacy);
   return nav;
+}
+
+/**
+ * Conversations at the top level of the sidebar, right under Home (Justin, 2026-11-08: "It should
+ * show directly in the sidebar menu on the top level"). It stays a Work tile too. Shown only while
+ * the same probe as that tile answers 200, so an agent with the switch off shows nothing new.
+ */
+function conversationsNavItem() {
+  const t = GROUPS.flatMap((g) => g.tabs).find((x) => x.id === 'chats');
+  const a = el('a', { href: tabHref('chats'), icon: t?.icon || 'chat', hidden: true, class: 'nav-conversations',
+    'aria-current': /^#\/work\/chats(\?|$)/.test(location.hash) ? 'page' : null });
+  a.append(el('span', { text: t?.label || 'Conversations' }));
+  if (t?.probe) {
+    fetch(t.probe, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+      .then((r) => { a.hidden = !r.ok; })
+      .catch(() => { /* @silent-fallback-ok: an unreachable probe leaves the entry hidden, as the Work tile does */ });
+  }
+  return a;
 }
 
 function renderShell(active) {
