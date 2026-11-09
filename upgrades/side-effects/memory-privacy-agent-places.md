@@ -183,3 +183,7 @@ First pass: concern. One BLOCKER: the reply route wrote the place audience key o
 The first Local Verify run on aa36e7e74 failed in e2e:
 - `memory-privacy-recovery-lifecycle` (2 tests): `memoryPrivacyStatus` called `this.isMultiPersonAgent()` and `this.scopedSessionsReady()`, but that test borrows the real method onto a stand-in object, so the route returned 500. The status now reads only the wiring and config (`scopedSessionsReadyFor`), and the two methods share that same helper.
 - `messaging-lifecycle` (1 test): passes on three local reruns. As a guard, `MessageDelivery` now checks that the session id is a string before testing it for the place marker.
+
+## Addendum: the phone's turn-on sheet reads `agentSessions` from the team context (Echo, 2026-11-08)
+
+The app reads only `GET /mobile/team/context` (owner phone), never the agent-token `GET /memory-privacy`, so the new sheet line would never have shown. `TeamRouteDeps.agentSessionsWhenOn` (optional) now feeds `agentSessions` on the team context: the live status when memory privacy is already on, otherwise what turning it on gives (`refused` when `memoryPrivacy.refuseAgentSessions` is true, else `own-place`). Absent dep or older agent: the field is `null` and the app keeps the old line. Read-only, owner phone only, no new route, no authority change. Test: `team-access-routes` "context tells the turn-on sheet what other agents will get" (81/81). Rollback: drop the field; the app falls back to the old line.
