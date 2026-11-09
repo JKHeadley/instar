@@ -3,22 +3,61 @@ title: "Context Budget: Layered Summaries"
 slug: "context-budget-layered-summaries"
 author: "echo"
 created: "2026-11-09"
-status: "draft"
+revised: "2026-11-09 (v3 — v2 folded Justin's 14:12 requirements; v3 folds the Fable 5.2 design pass)"
+status: "draft v3"
 approved: false
 commitment: "CMT-1536"
-requested-by: "Justin, topic 130742, 2026-11-09 14:01 PST"
-parent-principle: "Structure beats Willpower; Harness built-ins before our own"
+requested-by: "Justin, topic 130742, 2026-11-09 14:01 PST; refined in topic 141133, 2026-11-09 14:12 PST"
+parent-principle: "Structure beats Willpower; Harness built-ins before our own; intelligent assessment, not hard caps"
+design-participants: "Echo (Fable 5.1 session), Fable 5.2 (design pass, Appendix A and docs/specs/reports/context-budget-layered-summaries-fable52-design-pass.md)"
+review-plan: "/spec-converge with the Claude clean-door reviewer pinned to claude-fable-5-2 plus the codex and gemini families"
 review-convergence: null
 ---
 
-# Context Budget: Layered Summaries
+# Context Budget: Layered Summaries (v3)
 
-Status: **first draft, unreviewed.** No code yet. Needs `/spec-converge` and
-Justin's read before any build.
+Status: **draft v3, unreviewed.** No code yet. Needs `/spec-converge` (with Fable
+5.2 as a reviewer) and Justin's read before any build.
 
-## 1. What Justin asked for
+## 0. What changed, and why
 
-Justin, topic 130742, 2026-11-09 14:01 (his words):
+**v1 → v2 (Justin's 14:12 message).** v1 proposed a fixed 200K working budget
+with a shrink at 80% and a post-shrink readback. Justin's message, written
+before he had read the v1 summary, changed the shape: milestones instead of a
+meter; three summary horizons as an ongoing product of every topic; an Anchor of
+the original purpose with its intentional evolutions; user content protected and
+agent content folded first; Fable 5.2 in design and review.
+
+**v2 → v3 (Fable 5.2 design pass, Appendix A).** The pass found that v2 still
+had a meter in disguise (four pressure bands), that its drift check tested
+recitation rather than retention, that its fold could not be done the way it
+was described (Claude Code cannot remove a middle span), that it had no real
+rollback, and that the detail a session most often needs after a fold (tool
+output) does not live in the store the spec pointed at. v3:
+
+1. makes the **session itself** write the handoff at a clean stop (what
+   finished, what it still needs verbatim, open threads), with a small model
+   auditing it against the Anchor and the ledger; this replaces a separate seam
+   judge, chunk summarizer and readback (section 7);
+2. replaces pressure bands with **one benefit estimate** (break-even turns,
+   cache-aware), **one no-fold floor** and **one backstop**, and names the two
+   caps that remain honestly (section 7.2);
+3. defines a fold as a **transaction**: packet staged and verified on disk,
+   session snapshot, inbound lock, rollback by resume, backoff (section 9);
+4. adds a **per-topic transcript archive** so folded tool output stays
+   retrievable (section 6, L0);
+5. verifies retention with a **held-out probe**, not a readback (section 10);
+6. gives user messages **referent stubs** and gives decisions and evolutions a
+   **supersedes** link in **one ledger** (sections 6.1, 8);
+7. defers the user-words digest, retires the old rolling summary into H3, makes
+   the per-prompt hook emit only deltas, and adds backfill for existing topics.
+
+The v1 findings about today's failures (section 3) stand; they were re-verified
+on a second machine.
+
+## 1. What Justin asked for (his words)
+
+Topic 130742, 2026-11-09 14:01 PST:
 
 > "Ideally, I would like our infrastructure to be as highly optimized as
 > possible, which includes the ability to reference longer context as needed to
@@ -27,69 +66,112 @@ Justin, topic 130742, 2026-11-09 14:01 (his words):
 > this, but it seems to be failing ... we should be having some sort of rolling
 > summary on multiple fractal levels as conversations grow."
 
-He is also worried that shrinking context has caused drift before. So the bar
-is two-sided: **use far fewer tokens per turn, and do not lose the thread.**
+Topic 141133, 2026-11-09 14:12 PST (sent before he read the v1 summary):
+
+> "I think this is good, but we need to be really careful here. What we build
+> in being extremely intelligent and not just a hard cap. It's also needs to
+> reduce or impact the context being used at intelligent intervals based on
+> milestones rather than hard limits.
+>
+> We should also make sure each topic or conversation has ongoing summaries at
+> various levels, including a summary of the most recent efforts and work, a
+> summary at a midsize perspective when relevant, and a summary at a long-term
+> holistic perspective.
+>
+> Some other critical factors should be keeping an anchor of the original
+> purpose of the topic along with any intentional evolutions applied to that
+> anchor based on the user or any insights gained during the conversation.
+>
+> And finally, I personally believe that compaction in the sense we're talking
+> about here with the intelligent process should be applied asymmetrically in
+> regards to context brought in or created by the agent and context provided by
+> the user. In other words, it is my observation that user context, or context
+> created by the user, i.e. the user messages, builds up much more slowly than
+> the messages in context generated by the agent, and that the user messages
+> typically represent a much more grounded form of what the topic represents.
+> Therefore we should avoid compacting or removing the user messages or user
+> context as much as possible, unless it grows very significantly.
+>
+> Finally, please make sure Fable 5.2 is involved in the spec design and review
+> process."
+
+He is also worried that shrinking context has caused drift before. The bar is
+two-sided: **use far fewer tokens per turn, and do not lose the thread.**
 
 ## 2. What is happening today (measured 2026-11-09)
 
-- Long topic sessions run until Claude Code's own auto-compact fires at
-  roughly **968K tokens**. The build desk compacted 4 times in 2,714 turns;
-  the Instar App topic 22 times in 8,097 turns. Between compactions almost
-  every turn re-reads hundreds of thousands of tokens.
+- Long topic sessions run until Claude Code's own auto-compact fires at roughly
+  **968K tokens**. The build desk compacted 4 times in 2,714 turns; the Instar
+  App topic 22 times in 8,097 turns. Between compactions almost every turn
+  re-reads hundreds of thousands of tokens.
 - Opus 5.5 used about **4.4B tokens on the Mac Studio in 24 hours**, mostly
-  cache reads — the cost of re-reading a huge context every turn.
+  cache reads: the cost of re-reading a huge context every turn.
 - Our summaries exist but are **added on top** of the conversation; they never
-  replace it. Nothing ever makes the live context smaller except Claude Code's
+  replace it. Nothing makes the live context smaller except Claude Code's
   generic compaction near the wall.
+- **Justin's asymmetry observation holds, and by a wide margin.** The largest
+  Claude Code transcript on the Mama PC (38.5 MB, 2 compactions) breaks down
+  by characters as: user-side text 7.7% (an upper bound, since hook-injected
+  context arrives as user text), tool results 64.1%, the agent's tool inputs
+  13.1%, the agent's own prose 1.0%, other structure 14.1%. The agent and its
+  tools produce more than three quarters of the context; the human produces well
+  under a tenth. Phase 0 repeats this across the fleet's transcripts.
 
 ## 3. What already exists, and where it fails
 
-All line numbers are against `origin/main` at `d855bad39a` (2026-11-09).
+Line numbers are against `origin/main` at `d855bad39a` (2026-11-09).
 
 ### 3.1 Layers we already have
 
 | Layer | What it is | Where | Fresh? |
 |---|---|---|---|
 | Full history (verbatim) | Every topic message in SQLite with full-text search | `src/memory/TopicMemory.ts` (search at `:605`), `GET /topic/search` (`src/server/routes.ts:30954`) | Yes, written live |
-| Rolling topic summary | One LLM summary + PURPOSE line, updated incrementally | `src/memory/TopicSummarizer.ts` (threshold 20 msgs, `:45-49`), stored by `TopicMemory.saveTopicSummary` (`:671`) | **No — see 3.2** |
-| Topic / recent arc / current work | Three-level "awareness" projection written by the intent extractor | `src/core/TopicIntentExtractor.ts` (prompt `:255-276`), `src/core/TopicAwareness.ts`, rendered by `src/core/TopicIntentBriefing.ts` | Yes, per message |
+| Rolling topic summary | One LLM summary + PURPOSE line, updated incrementally | `src/memory/TopicSummarizer.ts` (threshold 20 msgs, `:45-49`), stored by `TopicMemory.saveTopicSummary` (`:671`) | **No. See 3.2** |
+| Topic / recent arc / current work | Three-level "awareness" projection written by the intent extractor | `src/core/TopicIntentExtractor.ts` (prompt `:255-276`), `src/core/TopicAwareness.ts`, rendered by `src/core/TopicIntentBriefing.ts` | Yes, per message, where the layer is enabled |
 | Decisions / facts / goals | Evidence-scored propositions; each piece of evidence keeps `sourceMessageId` and `userAuthored` | `src/core/TopicIntent.ts:60-85` | Yes |
+| Pending-confirmation records | An inferred intent the agent asks about conversationally before relying on it | `docs/specs/topic-intent-layer.md` (v14, approved 2026-05-22) | Yes |
 | Draft-vs-arc check | Signal-only check of a draft reply against settled items | `src/core/TopicIntentArcCheck.ts` | Yes (signal only) |
+
+The three awareness levels already are, in Justin's vocabulary, the recent
+effort, the mid-size perspective and the long-term perspective. v2 extends
+them; it does not build a second set.
 
 ### 3.2 Where it fails
 
 1. **The rolling summary only updates when a session ends.** It is wired to
    `sessionManager.on('sessionComplete')` (`src/commands/server.ts:13571-13585`).
    Long topic sessions rarely end, so the summary goes stale exactly where it
-   matters most. Live check on this agent's database, 2026-11-09: one topic's
-   summary is **1,516 messages behind** (last updated 2026-10-26); Justin's
-   topic 130742 is 42 messages / two days behind.
+   matters most. On the Mac Studio, 2026-11-09: one topic's summary is **1,516
+   messages behind** (last updated 2026-10-26); Justin's topic 130742 is 42
+   messages / two days behind. On the Mama PC, where sessions end often, the
+   same table is at most one message behind: the mechanism works, the trigger is
+   wrong.
 2. **Summaries are added, never substituted.** At spawn, `formatContextForSession`
    (`src/memory/TopicMemory.ts:1005`, called from `src/commands/server.ts:1551`)
    prepends summary + last 50 messages. On every prompt,
    `telegram-topic-context.sh` (`src/templates/hooks/telegram-topic-context.sh:76-102`)
-   prepends the intent briefing and the last 30 messages. All of it sits on top
-   of the full live conversation, so total context only grows.
+   prepends the intent briefing and the last 15 to 30 messages. All of it sits
+   on top of the full live conversation, so total context only grows.
 3. **The compaction-recovery hook does not run after compaction.** Settings wire
    `SessionStart` matcher `compact` to `session-start.sh` (`src/commands/init.ts:5456-5459`),
    which decides whether this is a compaction from `CLAUDE_HOOK_MATCHER`
    (generated at `src/core/PostUpdateMigrator.ts:19408`, defaulting to `startup`)
    and only then `exec`s `compaction-recovery.sh`. **The installed Claude Code
-   (2.1.321) never sets `CLAUDE_HOOK_MATCHER`** (zero occurrences in the
-   binary); it passes `source: "compact"` in the hook's stdin JSON instead. One
-   checked transcript on this machine had 12 compaction summaries, 60 ordinary
-   session-start blocks, and **zero** compaction-recovery blocks. So after every
-   compaction the agent gets the startup orientation, not the topic briefing +
-   recent messages that `compaction-recovery.sh:378-412` was written to restore.
-   This is plausibly part of the drift Justin has seen. (Needs a wider sample —
-   see Phase 0.)
+   (2.1.321) never sets `CLAUDE_HOOK_MATCHER`**: zero occurrences in the binary
+   on the Mac Studio and zero on the Mama PC; it passes `source: "compact"` in
+   the hook's stdin JSON instead. One checked transcript had 12 compaction
+   summaries, 60 ordinary session-start blocks, and **zero** compaction-recovery
+   blocks. After every compaction the agent gets the startup orientation, not
+   the topic briefing + recent messages that `compaction-recovery.sh:378-412`
+   was written to restore. This is plausibly part of the drift Justin has seen.
+   (Needs a wider sample; see Phase 0.)
 4. **The one "compact before the wall" feature was retired unused.**
-   `ProactiveCompactionSentinel` (spec `docs/specs/proactive-autonomous-compaction.md`)
-   was opt-in, never enabled anywhere, and removed on 2026-10-28
-   (`docs/specs/retire-staged-features-2026-10-25.md:38`, PR #2363). Today the
-   only server-pressed `/compact` is the context-wall recovery rung
+   `ProactiveCompactionSentinel` was opt-in, never enabled anywhere, and removed
+   on 2026-10-28 (`docs/specs/retire-staged-features-2026-10-25.md:38`, PR #2363).
+   Today the only server-pressed `/compact` is the context-wall recovery rung
    (`src/monitoring/ContextCompactionControl.ts:21-47`), which fires only after
-   the wall is hit.
+   the wall is hit. Its design, a size threshold, is also exactly what Justin has
+   now ruled out.
 5. **The pre-compaction hook only reports.** `PreCompact` runs
    `hook-event-reporter.js` (`src/data/http-hook-templates.ts:56`) feeding
    `CompactionSentinel` (`src/monitoring/CompactionSentinel.ts:226`) and the
@@ -97,183 +179,525 @@ All line numbers are against `origin/main` at `d855bad39a` (2026-11-09).
    It never shapes what the compaction keeps.
 6. **Instar never sets any Claude Code compaction setting.** No source file sets
    the auto-compact window, so every session uses the model's full ~1M window.
+7. **The topic-intent briefing is not present on every machine.** On the Mama PC
+   `GET /topic-intent/141133/briefing` and `/18330/briefing` return empty, so the
+   three awareness levels are not currently a fleet-wide guarantee. Phase 0
+   inventories where the layer is on.
 
 ## 4. What Claude Code lets us control (verified, not guessed)
 
-Verified by reading the strings of the installed binary,
-`/usr/local/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`,
-version **2.1.321**, on 2026-11-09. These are internal behaviours of a
-fast-moving program; Phase 0 re-verifies each one live before anything relies
-on it.
+Verified by reading the strings of the installed binary, version **2.1.321**, on
+two machines on 2026-11-09. These are internal behaviours of a fast-moving
+program; Phase 0 re-verifies each one live before anything relies on it.
 
 | Lever | What it does | Evidence |
 |---|---|---|
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var | Sets the auto-compact window in tokens, **100,000 to 1,000,000** (e.g. `250k`). Out-of-range values warn. | `pI=1e5`, `dW=1e6`; warning text "Set it to a size from 100k to 1M" |
-| `autoCompactWindow` setting (top-level or per model) and `/autocompact [auto\|<tokens>]` | Same window, from settings.json or a slash command (saved per model). | settings schema description; command "Set how full the context gets before auto-summarizing" |
-| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Lowers the threshold by percent — **but only when `CLAUDE_CODE_REMOTE` is set**. Not usable for our local sessions. | condition in `vre()` |
+| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env var | Sets the auto-compact window in tokens, **100,000 to 1,000,000** (e.g. `250k`). Out-of-range values warn. | `pI=1e5`, `dW=1e6`; warning "Set it to a size from 100k to 1M" |
+| `autoCompactWindow` setting (top-level or per model) and `/autocompact [auto\|<tokens>]` | Same window, from settings.json or a slash command (saved per model). | settings schema; command "Set how full the context gets before auto-summarizing" |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` | Lowers the threshold by percent, **but only when `CLAUDE_CODE_REMOTE` is set**. Not usable for our local sessions. | condition in `vre()` |
 | `DISABLE_AUTO_COMPACT`, `DISABLE_COMPACT`, `autoCompactEnabled` | Turn auto-compact (or all compaction) off. | env/setting names present |
 | `/compact [instructions]` typed into the session | Manual compaction with our own instructions. We already inject `/compact` (`src/core/SessionManager.ts:9395`). | existing code |
-| **`PreCompact` hook** | Receives `trigger` (`manual`/`auto`) and `custom_instructions`. It can **block** the compaction ("Compaction blocked by PreCompact hook") or **add instructions** that are merged into the summary prompt (`newCustomInstructions`). Applies to auto, reactive and precomputed compaction. | hook schema; `XMt(…, newCustomInstructions)`; `blockedBy` handling |
-| **`PostCompact` hook** | Receives `compact_summary`, the summary Claude wrote. We can store and check it. | hook schema |
+| **`PreCompact` hook** | Receives `trigger` (`manual`/`auto`) and `custom_instructions`. Can **block** the compaction ("Compaction blocked by PreCompact hook") or **add instructions** merged into the summary prompt (`newCustomInstructions`). Applies to auto, reactive and precomputed compaction. | hook schema; `GMt(…, newCustomInstructions)`; `blockedBy` handling |
+| **`PostCompact` hook** | Receives `trigger` and `compact_summary`, the summary Claude wrote. We can store and check it. | hook schema `hook_event_name: "PostCompact"` |
 | `SessionStart` hook, `source: "compact"` / `"clear"` | Runs after compaction or `/clear`; its output is injected into the fresh context. | hook schema `source: ["startup","resume","clear","compact","fork"]` |
-| Idle compaction (`idleCompaction` setting, `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`) | Claude Code may compact an idle session on its own, with internal gates (≥200K tokens by default, one-hour cache mode, warm cache). We have no evidence it fires for us. | `Vkr()` gate reasons |
+| Idle compaction (`idleCompaction`, `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS`) | Claude Code may compact an idle session on its own, with internal gates (≥200K tokens by default, one-hour cache mode, warm cache). No evidence it fires for us. | `Vkr()` gate reasons |
 
 Still to verify in Phase 0: the exact hook output format that sets
 `newCustomInstructions` and that blocks (stdout vs JSON field vs exit code);
 whether `/clear` can be injected the same way as `/compact`; whether the window
-setting is honoured for Opus 5.5 at 1M.
+setting is honoured for Opus 5.5 and Fable at 1M.
 
-## 5. The design
+## 5. Design principles
 
-### 5.1 The layers ("fractal" summaries)
+1. **Judgment above a floor, never a cap.** No number fires a fold by itself.
+   Numbers are floors that protect something (the last user turns, the quoted
+   decisions, the Anchor, a no-fold floor below which folding cannot pay for
+   itself) or inputs to a judgment, and each names the irreversible consequence
+   it guards. Two caps remain and are named as caps: the *critical* checkpoint
+   (7.2) and Claude Code's own compaction window (9.4). Justin asked for "not
+   *just* a hard cap"; these are the safety net under the intelligent process,
+   not the process.
+2. **Milestones, not meters.** Context is folded at seams in the work, when a
+   stretch has finished and its detail has stopped being needed. The session
+   that did the work declares and describes the seam; size only changes how
+   eager the system is to ask for one.
+3. **Three horizons, always on.** Recent effort, mid-size perspective (when a
+   phase exists), long-term holistic view: maintained for every topic, read at
+   session start, after compaction, by folds and by the drift probe. A product
+   of the topic, not a by-product of a shrink.
+4. **The Anchor is never summarized away.** The original purpose stays verbatim
+   and changes only by an attributed, quoted, statused evolution appended to it.
+5. **User words are load-bearing; agent output is scaffolding.** Fold the
+   scaffolding first and hardest. Quote the user; paraphrase the agent. Label
+   anything agent-derived as such wherever it re-enters context.
+6. **Replace, do not stack.** A fold rebuilds the live context from the layers;
+   nothing is added on top, and the per-prompt hook stops re-sending what the
+   context already holds.
+7. **Verify retention, not recitation.** Before a fold, the packet is checked
+   deterministically against the store. After it, a held-out probe asks about
+   things the folded span contained. A miss is corrected once; a second miss
+   rolls back and is counted.
+8. **A fold is a transaction.** Staged, verified, snapshotted, locked, and
+   reversible; never a `/clear` with hope attached.
+9. **Harness built-ins before our own.** Use Claude Code's hooks and window where
+   they do the job; build only the parts it cannot do (what to keep, when, and in
+   whose words).
 
-Every topic gets five layers. Each lower layer is more detailed and less often
-loaded:
+## 6. The layers
 
-| # | Layer | Size target | Updated |
-|---|---|---|---|
-| L4 | **Topic**: what this topic is for, standing goals | ~150 tokens | When it changes |
-| L3 | **Recent arc**: the current stretch of work and why | ~300 tokens | Every arc change |
-| L2 | **Current work + next step** | ~200 tokens | Every user turn |
-| D | **Decisions ledger**: each settled decision with the **user's exact words** and time | ≤ 3K tokens, newest first | Every decision |
-| L1 | **Rolling summary** of everything since the topic began, stitched from per-chunk summaries (summary of summaries) | ~2–4K tokens | Every 20 messages *while the session runs* |
-| L0 | **Full history**, verbatim, searchable | unbounded, never loaded whole | Live |
+| # | Layer | Content | Size guidance | Updated |
+|---|---|---|---|---|
+| A | **Anchor** | Original purpose, verbatim, from the opening user message(s) that state it; plus a derived, non-authoritative one-line "current purpose" rendered above it | Purpose ≤ 300 tokens verbatim | Once; the derived line whenever the ledger changes |
+| H1 | **Recent effort** | What was just done, what is in flight, the next step, what the session still needs verbatim | ~200 tokens | Every user turn and every milestone |
+| H2 | **Mid-size perspective** | The current phase: what it is for, what it has produced, what remains. **Present only when a phase exists** (6.3) | ~300 tokens | Every arc change |
+| H3 | **Long-term holistic view** | The whole topic's story, rebuilt from the chunk set C (never restitched incrementally) | ~2 to 4K tokens | Every fold; also on transcript growth (6.4) |
+| G | **Ledger** | One attributed, quoted, statused record for **decisions and evolutions** (`type: decision \| evolution`), newest first, with `supersedes` links; older entries move to a retrievable archive with quotes intact | ≤ 3K tokens live | Every decision or evolution |
+| C | **Chunk summaries** | One per folded span: what was attempted, outcome, artifacts (files, PRs, commands), open threads; pointers to message ids **and transcript entry ids**; always built from the raw span | ~300 to 600 tokens each; never loaded whole | Every fold |
+| U | **Protected user corpus** | The user's own messages, verbatim and timestamped, each with a one-line bracketed **referent stub** written at the time ("[answering: should the gate block or warn?]") | Governed by section 8 | Live |
+| L0 | **Full history** | Topic messages (TopicMemory, searchable) **and a per-topic transcript archive** of the session JSONL spans the folds removed, indexed by entry id, exempt from Claude Code's own cleanup | Unbounded; never loaded whole | Live |
 
-L4/L3/L2 already exist (the awareness projection). D is built from existing
-decision refs: the packet renders the user's original message by
-`sourceMessageId` from L0, not the extractor's paraphrase — so decisions stay in
-Justin's words. L1 exists but must be fixed to update on a message cadence, not
-on session end, and to summarise in chunks (each chunk summary kept, then
-re-summarised) so it scales to topics with thousands of messages.
+Mapping to what exists: A extends the PURPOSE line (`TopicSummarizer`) and the
+topic-level awareness; H1/H2/H3 are the awareness projection's three levels
+(`TopicIntentExtractor`), with H3 given one definition (the C-derived story) and
+the old rolling summary retired into it; G is rendered from existing decision
+refs by `sourceMessageId`, so decisions stay in the user's words, and absorbs the
+evolutions ledger; C, U and the transcript archive are new. The topic-intent
+layer becomes a **Phase 1 prerequisite with a per-topic freshness check**, since
+it is off on some machines today (3.2 item 7).
 
-### 5.2 Per-session working-context budget
+### 6.1 The Anchor and the ledger
 
-- Each topic session gets a **budget**, default 200K tokens of live context
-  (configurable per topic; desks doing heavy code reading may get more).
-- The server reads live context size from the session transcript (the same
-  JSONL the `TokenLedger` already scans) — the last turn's input + cache tokens.
-- At **80% of budget** the session is marked *due for a shrink*. Nothing
-  happens mid-turn.
+The Anchor's original purpose is written once, from the user-authored message(s)
+that state what the topic is for, with message id and time; an opening "hey" is
+skipped and the first substantive framing is used. Existing topics are
+**backfilled** (section 12, Phase 1) and the operator confirms each backfilled
+Anchor once, in the topic, in one line.
 
-### 5.3 The shrink, at the next clean stopping point
+Every change to the purpose is a ledger entry of `type: evolution`:
 
-A **clean stopping point** = the session is idle
-(`SessionManager.checkSessionWorkState === 'idle'`), it has just sent its reply,
-no tool call or build step is in flight, and no user message is waiting.
+- `cause`: `user-directed` (quote and message id of a **user-authored** message
+  required) or `insight-derived` (evidence message ids required);
+- `effect`: `additive` (extends the purpose, original intact) or `narrowing`
+  (narrows, replaces or contradicts the original purpose or a quoted decision);
+- `status`: `pending`, `confirmed`, `withdrawn`, `expired`; `supersedes`: an
+  earlier entry id when it replaces one.
 
-The shrink replaces the context, it does not add to it:
+Rules:
 
-1. Server builds the **resume packet**: L4 + L3 + L2 + D (verbatim) + L1 + the
-   **last 10–20 turns verbatim** (by token cap, ~20K) + a pointer to the
-   on-demand lookup (5.4) + any open in-session state (files being edited,
-   branch, running jobs) captured from the transcript.
-2. Server clears the conversation and starts it fresh with that packet. Two
-   routes, chosen in Phase 0 by which one Claude Code supports cleanly:
-   - **(a) Clear-and-seed**: inject `/clear`; the `SessionStart` hook with
-     `source: "clear"` prints the packet. Context becomes exactly the packet.
-   - **(b) Steered compaction**: inject `/compact`; the `PreCompact` hook
-     supplies instructions that tell Claude to keep the packet's content and
-     the verbatim decisions; the `SessionStart` (`compact`) hook re-injects the
-     packet. Less control, but stays inside Claude Code's normal path.
-3. **Backstop**: set `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for our sessions to
-   ~1.5× the budget (e.g. 300K), and have the `PreCompact` hook add our
-   packet's instructions to *every* compaction, including unplanned ones. So
-   even if our shrink never fires, no session climbs to 968K again, and every
-   compaction keeps our layers and Justin's words.
+- `user-directed` + `additive`: confirmed on write.
+- `user-directed` + `narrowing`: written `pending` with the quote; confirmed when
+  the user's next message does not object, since it was their words. The
+  derived "current purpose" line changes only on confirmation.
+- `insight-derived` + `additive`: written `pending`; surfaced through the
+  existing pending-confirmation path (`topic-intent-layer.md` v14): mentioned in
+  the next natural reply ("I'm treating X as part of this topic because Y; say
+  so if not"). Confirmed by agreement, never by "the user acted on it".
+- `insight-derived` + `narrowing`: waits for an **explicit yes**. It is carried
+  in context as pending and the drift probe does not treat it as settled.
+- A `pending` entry **expires** after a configured span (default 7 days or 200
+  user turns, whichever first) and is listed as expired, not deleted.
+- The effective purpose = original + confirmed evolutions in order, read through
+  the `supersedes` links. The verbatim record is always carried; the derived
+  line is for reading, never for authority.
 
-Fix first, regardless of the rest: make `session-start.sh` read `source` from
-its stdin JSON instead of `CLAUDE_HOOK_MATCHER`, so compaction recovery runs at
-all (3.2 item 3). That ships through `PostUpdateMigrator` so existing agents get
-it.
+### 6.2 Decisions in the same ledger
 
-### 5.4 On-demand lookup of older detail
+A `type: decision` entry carries the user's exact words, time, message id,
+`supersedes` (when it replaces an earlier decision) and `status`
+(`settled`/`superseded`). Agent-proposed decisions are marked as such and are
+`pending` until the user's words settle them. Superseded entries stay
+retrievable with their quotes; H3 may mention them, but never paraphrases a
+protected quote into a replacement for it.
+
+### 6.3 "When relevant": when H2 exists
+
+H2 is present when the extractor identifies a phase: a stretch of work with its
+own goal, part of the topic's purpose, spanning more than one milestone (a
+build, an investigation, a rollout). A topic that is a stream of unrelated small
+requests has no H2, and the packet says so. The rule is deterministic on the
+extractor's arc structure (`TopicIntent.ts` arc records).
+
+### 6.4 Cadence
+
+Horizons update on user turns and milestones, and also on **transcript growth**
+(every N transcript entries or M tokens of tool output, configurable), so a
+session doing hundreds of tool turns with no messages still keeps H1 and H3
+current. "Every 20 messages" alone would not tick in exactly the sessions that
+grow fastest.
+
+## 7. Milestone-driven folding
+
+### 7.1 Who declares a milestone
+
+Three sources, in order of authority:
+
+1. **The session itself.** The agent can declare a milestone ("this PR is merged;
+   its working span can fold"), pin a span as still needed, or veto a proposed
+   fold. It is the only party that knows what it still relies on.
+2. **Deterministic signals**: PR merged or closed; build or test run at a final
+   result; commitment or H1 next step marked done; worktree removed; release
+   published; job finished; extractor arc change. These *propose* a milestone to
+   the session.
+3. **Opportunities, not milestones**: a long idle gap, an expired prompt cache
+   (7.2), and an imminent compaction (PreCompact). They make the system *ask*;
+   they never decide.
+
+User phrases ("done", "next", "let's move on") are evidence for the extractor's
+arc judgment, never a string match.
+
+### 7.2 Benefit, floor, and the two caps
+
+The server knows each session's live context size from the transcript (the same
+JSONL `TokenLedger` scans) and the model's cache state (cache-read vs
+cache-write tokens on recent turns; the cache TTL in use). From these it
+estimates the **benefit of folding now**: the per-turn saving after the fold,
+minus the one-time cost of writing the packet into a fresh cache, expressed as
+**break-even turns**. Most of today's spend is cache reads (section 2), so a fold
+that throws away a warm cache at a small context can cost more than it saves,
+while a fold at an already-expired cache is nearly free.
+
+- **No-fold floor**: below an estimated break-even the system does not even ask
+  for a seam. Consequence named: below it, folding costs more tokens than it
+  saves.
+- **Asking eagerness**: above the floor, the better the benefit, the more
+  readily the system asks the session for a handoff at its next clean stop.
+  There are no bands; the estimate and the milestone evidence are the inputs.
+- **Cap 1, the critical checkpoint**: when the live context approaches the
+  backstop window (default: within 20%), the system asks the session to **bring
+  its work to a checkpoint** and write the handoff, rather than picking a span
+  itself. Consequence named: without it, Claude Code's generic compaction runs
+  first.
+- **Cap 2, the backstop**: Claude Code's own auto-compact window (9.4).
+
+Per-topic overrides of these numbers are deferred until Phase 3 data asks for
+them.
+
+### 7.3 Clean stopping point
+
+A fold runs only when: the session is idle (`checkSessionWorkState === 'idle'`);
+it has just sent its reply; no tool call, build step, background shell,
+subagent or scheduled wakeup is live; no user message is waiting (the fold lock
+queues any that arrive, 9.2); no commitment check-in is due within the next
+minute.
+
+### 7.4 The session-authored handoff
+
+At the clean stop, the session is asked (internally, never in the topic) to
+write one structured handoff, from its full context:
+
+- **finished**: the stretch(es) of work that completed, each with its message id
+  range and transcript entry range, outcome and artifacts;
+- **still needed verbatim**: anything from those stretches it must keep word for
+  word (a failing test's output, review comments, a plan in execution);
+- **open threads** and the next step;
+- **decisions or evolutions** it believes settled in the span, quoted.
+
+A small model **audits** the handoff against A and G (does it drop a decision,
+contradict the purpose, or treat a pending evolution as settled?) and against
+the deterministic signals (a merged PR not mentioned is asked about). The audit
+is a signal; it can send the handoff back once with specific questions. The
+handoff becomes the chunk summaries C_k for the finished spans and the new H1;
+H2 and H3 are rebuilt from the C set; G is updated with the quoted entries.
+
+### 7.5 What a fold does, honestly
+
+Claude Code cannot remove a middle span from a live context, so **every fold is
+a full rebuild**. A fold is therefore defined by **what stays verbatim**, not by
+what is removed:
+
+- the Anchor record, G (live part), U (per section 8), H3, H2 if present, H1;
+- the **verbatim tail**: everything after the last finished span the handoff
+  named, plus everything the handoff listed as still needed verbatim;
+- the lookup pointers (7.6) and the in-session state the handoff recorded.
+
+The resume packet is ordered **stable-first** so the next cache write is as
+reusable as possible: A, U, H3, G, then H2, H1, the verbatim tail, pointers. It
+opens with a fixed marker that tells the session this is its own restored
+history, not a new user request, and that agent-derived chunk summaries are
+labelled as such and are never to be treated as the user's words.
+
+### 7.6 On-demand lookup of older detail
 
 The packet tells the session how to fetch detail instead of carrying it:
 
-- `GET /topic/search?topic=N&q=…` (exists) — full-text over L0.
-- New: `GET /topic/:id/messages?around=<messageId>&n=…` — the verbatim
+- `GET /topic/search?topic=N&q=…` (exists): full-text over topic messages.
+- New: `GET /topic/:id/messages?around=<messageId>&n=…`: the verbatim
   neighbourhood of a hit.
-- New: `GET /topic/:id/summary-chunk/:k` — one L1 chunk summary, to zoom in a
-  level before reading raw messages.
+- New: `GET /topic/:id/chunks` and `/chunks/:k`: list and read chunk summaries.
+- New: `GET /topic/:id/transcript?span=<entryId>..<entryId>`: the archived raw
+  transcript span (tool output included) behind a chunk.
+- New: `GET /topic/:id/anchor`: the Anchor record and the ledger.
 
-This is what lets the budget be small: the agent zooms in only when it needs to.
+This is what lets the working size stay small: the agent zooms in only when it
+needs to, and the thing it needs (the exact error from three days ago) still
+exists.
 
-### 5.5 The anti-drift gate (post-shrink readback)
+### 7.7 The per-prompt hook stops stacking
 
-Right after a shrink, before the session continues any work:
+After Phase 1, `telegram-topic-context.sh` emits only the **delta** since the
+last prompt (new inbound messages, a changed H1 line), not the briefing plus 15
+to 30 messages. Otherwise every fold's saving is re-spent on the next prompt.
 
-1. The session is asked one fixed question: *"In two lines: what is the goal of
-   this topic right now, and what is your next step?"*
-2. A small model compares that readback against L2 + L3 + the last three
-   decisions in D. Verdict: `match`, `minor` (wording differs, same goal/step),
-   or `mismatch` (different goal, a decision dropped, or a next step that
-   contradicts a decision).
-3. `match`/`minor` → continue. `mismatch` → the session gets the specific
-   correction ("You said X; the last decision, in Justin's words, is: '…'") and
-   reads back once more. A second mismatch → the shrink is rolled back to the
-   pre-shrink transcript (resume the old session) and the event is recorded
-   for review.
+## 8. Asymmetric treatment of user and agent content
 
-This is the measurable answer to "shrinking caused drift": every shrink gets
-checked, and failures are counted, not guessed at. The readback is internal —
-it is never sent to the user.
+Measured (section 2): the agent and its tools generate over three quarters of
+the context; the user under a tenth. The user's messages are also the ground
+truth of what the topic is. So:
 
-### 5.6 Measurement
+**Definition of U.** U is sourced from TopicMemory by **sender**, never from
+transcript roles (hook injections arrive as "user" in the transcript and are not
+the user). It holds the user's typed words. Large pasted artifacts (logs, files,
+forwards) are kept whole until superseded, then by excerpt and pointer. Messages
+from other people in a shared topic are kept and attributed, but are not the
+operator's words for the Anchor or the ledger.
+
+**Protected class** (kept verbatim through every fold):
+- the Anchor's original purpose and every ledger quote;
+- U, with its referent stubs and timestamps;
+- the last N user turns, where N is a floor (default 20) whose consequence is
+  that the agent can always see what the user actually said recently.
+
+**Folding order** (what a handoff may fold first):
+1. tool results of finished work (the bulk);
+2. the agent's tool inputs (commands, file writes) of finished work;
+3. the agent's narration and progress messages;
+4. the agent's superseded intermediate artifacts (plans, lists);
+5. **only then, and only under 8.1**, user content older than the floor.
+
+**Authorship rule**: summaries of agent content paraphrase; anything that
+touches user content quotes. A chunk summary never rewrites a user sentence. A
+compaction instruction (9.4) cannot make Claude's summary hold U verbatim; only
+the reseed does, and the spec says so rather than implying otherwise.
+
+**Supersession, not deletion**: a stale instruction stays in U but its ledger
+entry is marked superseded with a link to the replacement, so protection does
+not itself cause drift.
+
+### 8.1 When the user corpus itself grows large (deferred)
+
+Justin's condition: "unless it grows very significantly." The measured share of
+real user text is under 7.7%, so for most topics U alone would not reach a
+working size that matters for a very long time. v3 therefore **measures** U per
+topic and shows it on the dashboard card, and **defers** building the
+user-words digest until a topic's U actually approaches half the no-fold floor's
+comfortable working size. When built, it folds the oldest user messages into a
+list of quotes with message ids grouped by phase, never a paraphrase; the ledger
+and the last N turns are never folded; every such fold is counted and visible.
+
+### 8.2 Agent content that is protected anyway
+
+Whatever the handoff lists as still needed verbatim stays verbatim past the
+fold: the current build's failing output, the plan being executed, the last
+reply sent to the user, review comments still being addressed.
+
+## 9. Mechanics with Claude Code
+
+### 9.1 Fix first, regardless of the rest
+
+Make `session-start.sh` read `source` from its stdin JSON instead of
+`CLAUDE_HOOK_MATCHER`, so compaction recovery runs at all (3.2 item 3). Ship it
+through `PostUpdateMigrator` so existing agents get it. Add a `PostCompact`
+hook that stores `compact_summary` per topic so unplanned compactions leave an
+auditable record. Verify fleet-wide before any backstop window is lowered
+(section 14, question 4).
+
+### 9.2 The fold transaction
+
+1. **Stage**: build the packet on disk; verify it deterministically: Anchor
+   bytes identical to the store, every ledger quote present in L0, U count and
+   last-N floor satisfied, every "still needed verbatim" span present, size
+   within the delivery limit (Phase 0 measures it).
+2. **Snapshot**: record the session id and transcript path; copy the folded
+   transcript spans into the per-topic archive (L0).
+3. **Lock**: take a per-topic fold lock; inbound user messages queue and are
+   delivered after the fold or the rollback; the topic shows nothing unusual.
+4. **Replace**: one path, chosen in Phase 0: inject `/clear`, and the
+   `SessionStart` hook with `source: "clear"` prints the packet (clear-and-seed).
+   `/compact` with steering instructions is **not** a fold path; it remains only
+   as the unplanned backstop (9.4).
+5. **Probe** (section 10). On pass, release the lock.
+6. **Rollback**: kill the cleared session and `--resume` the snapshotted
+   session id; if resume is unavailable, respawn from the snapshotted
+   transcript. Record the event; apply a backoff so the topic does not re-fold
+   for a configured span.
+
+A failure between `/clear` and the seed leaves an empty session; the staged
+packet and snapshot exist before `/clear` is sent precisely so this is
+recoverable by step 6.
+
+### 9.3 What survives a clear
+
+Background shells, subagents, scheduled wakeups, todo state and read-file
+tracking may not survive `/clear`. Their absence is a 7.3 precondition, and
+Phase 0 measures exactly what is lost and what the handoff must therefore carry.
+
+### 9.4 Backstop for unplanned compaction
+
+Set `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for topic sessions to a generous value
+(default 400K, a named cap: Claude's generic compaction runs there), and have
+the `PreCompact` hook add instructions to every compaction: keep the Anchor,
+the ledger quotes and the in-flight work. The `SessionStart` (`compact`) hook
+then re-seeds the full packet, which is the only thing that restores U. Even if
+no fold ever fires, no session climbs to 968K again.
+
+### 9.5 Multi-machine ownership
+
+The layer store (A, G, C, U, the transcript archive) lives with the topic's
+owner machine and moves with the topic through the existing working-set
+handoff; a fold never runs on a machine that does not hold the topic's lease.
+
+### 9.6 Codex sessions
+
+Codex has its own compaction lifecycle
+(`src/providers/adapters/openai-codex/control/compactionLifecycle.ts`). The
+layers, the packet and the probe are framework-neutral; the handoff prompt and
+the packet injection get a Codex adapter in a follow-up phase.
+
+## 10. Verifying retention: the held-out probe
+
+A readback ("state the goal and next step") tests recitation of a packet the
+session was just handed; it would pass while a constraint from the folded span
+is gone. So:
+
+1. **Before the fold** (9.2 step 1): deterministic verification of the packet
+   against the store.
+2. **After the seed**: a small model generates three to five questions **from
+   the pre-fold context** about things the folded span contained: constraints,
+   open threads, rejected approaches, the exact artifact names. The reseeded
+   session answers them using the packet and the lookups (7.6). Answers are
+   graded against the pre-fold context: `retained`, `retrievable` (found via a
+   lookup), `lost`.
+3. Any `lost` answer gets one specific correction and a second probe on that
+   item. A second `lost` rolls back (9.2 step 6) and is recorded.
+
+The probe turn is **suppressed** end to end: never relayed to Telegram, never
+written into H1, never fed to correction learning. Its results are the Phase 2
+and Phase 3 metric.
+
+## 11. Measurement
 
 Recorded per session and per topic, shown on one dashboard card:
 
-- tokens per turn (input + cache read + cache write), before vs after rollout;
-- live context size over time, and shrinks per day;
-- readback results: match / minor / mismatch / rolled back;
-- lookups used after a shrink (are sessions zooming in when they need to?);
-- user corrections in the 10 turns after a shrink vs baseline (from the
-  existing correction-learning records) — the drift signal Justin would feel.
+- tokens per turn, **cost-weighted** (cache read, cache write and uncached input
+  at their relative prices), before vs after rollout;
+- live context size over time; folds per day by who declared the milestone
+  (session, signal, critical checkpoint) and estimated vs realised break-even;
+- probe results: retained / retrievable / lost / rolled back;
+- **rework**: files re-read and commands re-run in the 30 turns after a fold
+  compared with baseline; the real loss signal;
+- lookups used after a fold;
+- **user-content retention**: share of user messages verbatim in context; count
+  ever folded into a digest (expected zero);
+- **Anchor stability**: evolutions per topic by cause and effect; pending,
+  confirmed, withdrawn, expired;
+- user corrections in the 30 turns after a fold vs baseline (from the existing
+  correction-learning records).
 
-Success: tokens per turn on long topics down by at least half, with readback
-mismatch under 5% and no rise in post-shrink corrections.
+Success: cost-weighted tokens per turn on long topics down by at least half;
+`lost` under 5% with zero unrecovered rollbacks per week on the pilot topic; no
+rise in rework or corrections; zero user-content folds.
 
-### 5.7 Rollout
+## 12. Rollout
 
 1. **Phase 0 — verify and fix (no behaviour change except the bug fix).**
-   Re-verify every lever in section 4 live on a throwaway agent. Fix the
-   `CLAUDE_HOOK_MATCHER` bug. Sample more transcripts to size it. Turn on
-   per-turn token measurement so we have a baseline.
-2. **Phase 1 — dark.** Build the layers (L1 cadence fix, D ledger, chunked L1),
-   the packet builder, and the readback checker. Run it in **shadow**: on each
-   long session, compute what the packet would have been and run the readback
-   check against a copy, without touching the live session. Record sizes and
-   would-be verdicts.
-3. **Phase 2 — one session.** Turn it on for one busy topic Justin picks (the
-   build desk is the obvious candidate), with the backstop window set. Watch
-   one week of numbers.
-4. **Phase 3 — fleet.** Default on for all Claude Code topic sessions, budget
-   per topic overridable. Codex sessions get the same layers and packet through
-   their own compaction lifecycle (`src/providers/adapters/openai-codex/control/compactionLifecycle.ts`)
-   in a follow-up.
+   - Fix `CLAUDE_HOOK_MATCHER` (9.1) and add the `PostCompact` record.
+   - Re-verify every lever in section 4 live on a throwaway agent.
+   - Measure **packet delivery capacity**: how much `SessionStart` output is
+     injected after `/clear`, whether it is truncated, in what role the model
+     sees it, and whether a 50K to 150K-token packet arrives intact.
+   - Measure **what survives `/clear` and `/compact`** (9.3) and whether
+     rollback by `--resume` is real, including session id and transcript path
+     continuity that `TokenLedger` and topic mapping depend on.
+   - Measure **the cost of one fold**: cache-write cost of a packet at the TTL
+     in use, per-turn saving, break-even turns; whether an idle gap past the TTL
+     makes a fold nearly free; what share of the 4.4B daily tokens comes from
+     topic sessions.
+   - Inventory which machines have the topic-intent layer on (3.2 item 7).
+   - Repeat the asymmetry measurement across the fleet's transcripts, sourcing
+     U by sender.
+2. **Phase 1 — layers, always on.** Topic-intent layer on everywhere with a
+   freshness check; Anchor and ledger with backfill and one-line operator
+   confirmation per topic; C and the transcript archive; U with referent stubs;
+   H3 rebuilt from C and the old rolling summary retired into it; delta-only
+   per-prompt hook; dashboard card. No folding yet.
+3. **Phase 2 — shadow folding.** On each long session the system asks for the
+   handoff at clean stops, builds and verifies the packet, generates the probe
+   questions and answers them **against a copy**, recording what it would have
+   done and the probe grades. Nothing touches the live session.
+4. **Phase 3 — one topic.** Folding on for the build desk (objective
+   milestones, visible rework), with the Instar App topic kept in shadow as the
+   worst cost case. One week of numbers. Backstop window set only after 9.1 is
+   verified fleet-wide.
+5. **Phase 4 — fleet.** Default on for all Claude Code topic sessions. Codex
+   adapter and per-topic overrides follow when data asks for them.
 
 Rollback at every phase: one config switch returns to today's behaviour; the
 backstop window is a separate switch.
 
-## 6. Open questions (for Justin)
+## 13. Design participation and review
 
-1. **Budget size.** Start at 200K live tokens per topic session (about a fifth
-   of today's peak)? Lower saves more but shrinks more often.
-2. **Clear-and-seed vs steered compaction.** Clear-and-seed gives us full
-   control of what the session keeps; steered compaction is safer because it
-   stays inside Claude Code's normal path. Proposal: try both in shadow, pick
-   by readback results.
-3. **Readback visibility.** The readback is internal. Should a mismatch that
-   forces a rollback also be told to you in the topic, or only shown on the
-   dashboard? (Note: in April you pushed back on telling a resumed session the
-   intent explicitly — the readback asks the session to state it, it does not
-   dictate it.)
-4. **Which topic goes first** in Phase 2 — build desk?
-5. **Unplanned compaction.** OK to lower Claude Code's own auto-compact point
-   for all our sessions (to ~300K) as an early, separate step? It is the
-   single biggest saving and is reversible with one setting.
+- **Design**: v2 was drafted by Echo (a Fable 5.1 session) and put through a
+  Fable 5.2 design pass: the full draft plus Justin's two messages, asked for
+  ranked flaws, a requirement-by-requirement check, missing mechanisms,
+  simplifications, positions on the open questions and Phase 0 checks. Its
+  output is kept verbatim in
+  `docs/specs/reports/context-budget-layered-summaries-fable52-design-pass.md`;
+  Appendix A records what v3 did with each item.
+- **Review**: `/spec-converge` runs with the Claude clean-door reviewer pinned
+  to `claude-fable-5-2` (the explicit operator pin added for this purpose),
+  alongside the codex and gemini families, so every review round has a Fable
+  5.2 read. The convergence report records each reviewer's model.
 
-## 7. Out of scope
+## 14. Open questions (for Justin), with the design pass's positions
+
+1. **First topic for Phase 3.** Proposal: the build desk, with the Instar App
+   topic in shadow alongside as the worst cost case.
+2. **Rollback visibility.** Proposal: one line to you in the topic when a fold
+   is rolled back (that is exactly the event you are worried about); corrected
+   probe misses only on the dashboard.
+3. **Insight-derived evolutions.** Proposal: an *additive* one is mentioned in
+   the next natural reply and confirmed by your agreement; one that *narrows or
+   replaces* the purpose or a quoted decision waits for an explicit yes. "You
+   acted on it" never counts as confirmation; pending entries expire.
+4. **Backstop early.** Proposal: yes, but only after the compaction-recovery
+   fix is verified fleet-wide; lowering the window first would produce more
+   compactions, each into the broken recovery path.
+5. **Starting numbers.** The no-fold floor and the critical checkpoint distance
+   are expressed as break-even estimates, set from Phase 0 and 2 measurements
+   rather than chosen now. Acceptable?
+
+## 15. Out of scope
 
 - Changing how the user-facing Telegram history is stored.
 - Any change to the constitution.
-- Non-topic job sessions (they are short-lived; revisit with numbers).
+- Non-topic job sessions (short-lived; revisit with numbers).
+- The user-words digest (8.1): measured now, built when a topic needs it.
+
+## Appendix A — Fable 5.2 design pass: disposition
+
+Full text: `docs/specs/reports/context-budget-layered-summaries-fable52-design-pass.md`.
+
+| # | Finding (short) | v3 disposition |
+|---|---|---|
+| 1 | Folded tool output is not retrievable (lives in the JSONL, not TopicMemory) | **Adopted**: per-topic transcript archive, chunk pointers to entry ids, `/topic/:id/transcript?span=` (6 L0, 7.6) |
+| 2 | Readback tests recitation, not retention | **Adopted**: deterministic pre-fold packet verification + held-out probe graded retained/retrievable/lost (9.2, 10) |
+| 3 | Neither fold path can remove a middle span; "fold its own tool output" not implementable | **Adopted**: fold defined by what stays verbatim; full rebuild stated; packet delivery contract and Phase 0 capacity check (7.5, 12) |
+| 4 | No rollback mechanism; empty session if seed fails | **Adopted**: fold transaction with staging, snapshot, lock, resume-rollback, backoff (9.2) |
+| 5 | Seam judge sees too little | **Adopted**: session-authored handoff with veto and pins; small model audits (7.1, 7.4) |
+| 6 | Per-prompt hook keeps stacking | **Adopted**: delta-only hook after Phase 1 (7.7) |
+| 7 | U lacks referents and supersession | **Adopted**: referent stubs, timestamps, `supersedes` in the ledger (6, 8) |
+| 8 | U undefined at the edges | **Adopted**: U by sender from TopicMemory; pasted artifacts by excerpt once superseded; others attributed (8) |
+| 9 | Cache economics absent | **Adopted**: break-even estimate, no-fold floor, expired cache as cheapest seam, stable-first packet order, cost-weighted metric (7.2, 7.5, 11) |
+| 10 | "Never a cap" was false; critical band picks spans blindly | **Adopted**: two caps named; critical checkpoint asks the session to checkpoint (5, 7.2) |
+| 11 | Anchor edge cases: "hey" openings, backfill, 30-entry ledgers, aside-as-purpose | **Adopted**: first substantive user framing; backfill with one-line confirmation; derived current-purpose line; user-authored quote required; `supersedes` (6.1, 12) |
+| 12 | Summary-of-summary decay; D rolls into H3 by paraphrase | **Adopted**: C always from raw spans, H3 rebuilt from C; ledger archive keeps quotes (6, 6.2) |
+| 13 | In-session state lost on `/clear` | **Adopted**: precondition + Phase 0 measurement (7.3, 9.3) |
+| Req. check | Milestones: agent-declared missing; cadence stalls on tool-only turns; H3 defined twice; "acts on it" is not confirmation; compaction instruction cannot hold U | **Adopted** (7.1, 6.4, 6, 6.1, 8) |
+| Missing | Backfill; readback suppression; injection hygiene labels; multi-machine ownership; rework metric | **Adopted** (12, 10, 7.5, 9.5, 11) |
+| Simplify | Merge judge/summary/readback into the handoff; one estimate instead of bands; one fold path; one ledger; retire the rolling summary; defer the digest; drop per-topic band overrides | **Adopted**, all seven (7.4, 7.2, 9.2, 6, 6, 8.1, 12) |
+| Positions | On the five open questions | **Carried into section 14 as proposals**; the decisions remain Justin's |
+| Phase 0 | Delivery capacity; what survives clear/compact and real rollback; cost of one fold | **Adopted** (12, Phase 0) |
+
+Nothing from the pass was rejected. Two items were adopted in a narrower form:
+the "critical" cap remains (as a checkpoint request, not a span pick), and
+`/compact` remains as the unplanned backstop rather than being removed.
