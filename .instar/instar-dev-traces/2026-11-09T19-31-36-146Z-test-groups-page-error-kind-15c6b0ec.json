@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "test-groups-page-error-kind",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T19:31:36.146Z",
+  "artifactPath": "upgrades/side-effects/test-groups-page-error-kind.md",
+  "artifactSha256": "13256eb05f9ff59baab425b45d10d580ce04fd70a46c6cfaf91505542b1243ea",
+  "coveredFiles": [
+    "docs/eli16/test-groups-page-error-kind.md",
+    "src/messaging/telegram-origin/TelegramTestGroups.ts",
+    "src/messaging/telegram-origin/TelegramWebKDriver.ts",
+    "tests/unit/telegram-origin/test-groups-page-scripts.test.ts",
+    "upgrades/next/test-groups-page-error-kind.md",
+    "upgrades/side-effects/test-groups-page-error-kind.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Diagnostic only: records error constructor name and a strictly filtered short message; no decision changes",
+  "eli16Path": "docs/eli16/test-groups-page-error-kind.md",
+  "sideEffectsPath": "upgrades/side-effects/test-groups-page-error-kind.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
