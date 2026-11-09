@@ -41,6 +41,8 @@ export const GROUPS = [
     question: 'What is being done, and what was promised?',
     tabs: [
       { id: 'sessions', label: 'Sessions', icon: 'terminal', desc: 'What is running on every machine, which one has gone quiet, and a live terminal you can watch and type into.' },
+      // Shown only when GET /mobile/browser-devices/status answers 200 (the switch is on): the probe.
+      { id: 'chats', label: 'Conversations', icon: 'chat', desc: 'Your app conversations, Telegram topics and Slack conversations, like the iPhone app: read, send, photos and files.', probe: '/mobile/browser-devices/status' },
       { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
       { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
@@ -61,10 +63,12 @@ export const GROUPS = [
     id: 'people', label: 'People', icon: 'people',
     question: 'Who is talking to whom, and with what permission?',
     tabs: [
+      { id: 'reach', label: 'Who can reach me', icon: 'people', desc: 'Everyone who can reach this agent, how, and what each person can see.' },
       { id: 'threadline', label: 'Other agents', icon: 'chat', desc: 'Who is waiting on you, whether each agent I work with is actually there, pairing new ones, and our conversations.' },
+      { id: 'notifications', label: 'Notifications', icon: 'chat', desc: 'Quiet reports and the categories you want pushed to you.' },
       { id: 'origins', label: 'Messages to you', icon: 'chat', desc: 'Who wrote each message I sent you, and the who-wrote-this footer.' },
       { id: 'mandates', label: 'Permission slips', icon: 'stamp', desc: 'What you have let agents do together, who is waiting for your approval, and every allow and refusal.' },
-      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app (the code shows here after a PIN unlock when there is no Telegram), and the phones already paired.' },
+      { id: 'phones', label: 'Phones', icon: 'phone', desc: 'Pair the Instar iPhone app: approve a waiting phone, or read its code, after your PIN (when there is no Telegram), and the phones already paired.' },
       { id: 'secrets', label: 'Passwords & keys', icon: 'lock', desc: 'Whether the agent is waiting on a password, a safe one-time link to hand one over, and the keys it already holds.' },
     ],
   },
@@ -96,28 +100,37 @@ export function allTabIds() {
 }
 
 /** Features rebuilt natively in the console, by legacy tab id. */
+/** Tiles with no legacy dashboard tab: new pages are built in the console only. */
+export const CONSOLE_ONLY_TABS = ['reach', 'chats'];
+
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
   sessions: '#/work/sessions',
+  chats: '#/work/chats',
   // Sending text or files now happens in each session's own message box.
   dropzone: '#/work/sessions',
   projects: '#/work/plans',
   initiatives: '#/work/plans',
   blockers: '#/work/plans?s=in-the-way',
   machines: '#/capacity/machines',
+  systems: '#/capacity/health',
   subscriptions: '#/capacity/accounts',
   spend: '#/capacity/costs',
   tokens: '#/capacity/costs',
   'llm-activity': '#/capacity/costs',
   'routing-map': '#/capacity/costs',
+  reach: '#/people/reach',
   origins: '#/people/messages',
+  notifications: '#/people/notifications',
   threadline: '#/people/agents',
   mandates: '#/people/mandates',
   secrets: '#/people/secrets',
   features: '#/settings/allowed',
   'preferences-learning': '#/settings/learned',
   files: '#/settings/files',
+  // The pairing code page: its own strict page, outside the console (PIN, then the code + Copy).
+  phones: '/dashboard/pair',
   'pr-pipeline': '#/work/development?s=shipping',
   throughput: '#/work/development?s=pace',
   'feedback-drain': '#/work/development?s=feedback',
@@ -131,11 +144,71 @@ export function tabHref(tabId) {
   return NATIVE_PAGES[tabId] || legacyHref(tabId);
 }
 
+/** The legacy dashboard's own address (/dashboard itself opens this console). */
+export const LEGACY_DASHBOARD = '/dashboard/legacy';
+
 /** The legacy URL for a tab. Ordinary link; nothing is embedded. */
 export function legacyHref(tabId) {
-  return `/dashboard?tab=${encodeURIComponent(tabId)}`;
+  return `${LEGACY_DASHBOARD}?tab=${encodeURIComponent(tabId)}`;
 }
 
 export function icon(name) {
   return `<svg viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+}
+
+// ── Phone mode (the Instar iPhone app) ────────────────────────────────────
+// The app shows one console page inside its own frame:
+//   /dashboard/console/?phone=1#/<page>   (or #/<page>?phone=1)
+// shows only that page's content, with no top bar, nav or Legacy link.
+// Without phone=1 nothing changes.
+
+/** Short page names the app may use, by the console's own hash path. */
+export const PHONE_PAGE_ALIASES = {
+  promises: 'work/promises',
+  plans: 'work/plans',
+  schedule: 'work/schedule',
+  development: 'work/development',
+  maturation: 'work/maturation',
+  ideas: 'work/ideas',
+  sessions: 'work/sessions',
+  chats: 'work/chats',
+  pace: 'work/pace',
+  machines: 'capacity/machines',
+  health: 'capacity/health',
+  accounts: 'capacity/accounts',
+  costs: 'capacity/costs',
+  reach: 'people/reach',
+  messages: 'people/messages',
+  agents: 'people/agents',
+  mandates: 'people/mandates',
+  secrets: 'people/secrets',
+  allowed: 'settings/allowed',
+  learned: 'settings/learned',
+  inside: 'settings/inside',
+  files: 'settings/files',
+};
+
+/** Pages that exist only in phone mode (the Pace card is a page of its own there). */
+export const PHONE_ONLY_PAGES = ['work/pace'];
+
+function queryHasPhone(query) {
+  if (typeof query !== 'string' || !query) return false;
+  try { return new URLSearchParams(query.replace(/^\?/, '')).get('phone') === '1'; } catch { return false; }
+}
+
+/**
+ * Is this load in phone mode? True when phone=1 is in the page's query
+ * (location.search) or in the hash's own query (#/accounts?phone=1).
+ */
+export function isPhoneMode(search, hash) {
+  if (queryHasPhone(search)) return true;
+  const h = typeof hash === 'string' ? hash : '';
+  const q = h.indexOf('?');
+  return q >= 0 && queryHasPhone(h.slice(q + 1));
+}
+
+/** The page path to render: in phone mode a short name resolves to its full path. */
+export function pagePath(path, phone) {
+  if (!phone) return path;
+  return Object.prototype.hasOwnProperty.call(PHONE_PAGE_ALIASES, path) ? PHONE_PAGE_ALIASES[path] : path;
 }

@@ -1127,6 +1127,17 @@ export class ServerSupervisor extends EventEmitter {
     if (this.detached) { console.log('[Supervisor] spawnServer() after detach — refusing to touch the server session'); return false; }
     if (!this.tmuxPath) return false;
 
+    // An interrupted two-rename update can leave the validated candidate
+    // unpromoted. Restore the previous runnable install before any heal/spawn.
+    if (this.stateDir) {
+      const active = path.join(this.stateDir, 'shadow-install');
+      const previous = path.join(this.stateDir, 'shadow-install.previous');
+      if (!fs.existsSync(active) && fs.existsSync(previous)) {
+        try { fs.renameSync(previous, active); }
+        catch (err) { console.error(`[Supervisor] Could not restore previous shadow install: ${err instanceof Error ? err.message : String(err)}`); }
+      }
+    }
+
     // Run preflight self-heal before every spawn attempt
     this.preflightSelfHeal();
 
@@ -1224,15 +1235,30 @@ export class ServerSupervisor extends EventEmitter {
     }
   }
 
+  /**
+   * False only when tmux itself says the session is missing. A probe that could
+   * not get an answer (spawn EAGAIN, timeout, tmux socket busy) says nothing about
+   * the server, so it counts as alive and the /health checks decide, on their slower
+   * clocks (about 60s, longer under load or in startup grace). One clean tmux answer
+   * ends the wait. Reading a failed probe as death is what the 2026-11-06 restarts
+   * of healthy servers point to.
+   */
   private isServerSessionAlive(): boolean {
     if (!this.tmuxPath) return false;
     try {
       execFileSync(this.tmuxPath, ['has-session', '-t', `=${this.serverSessionName}`], {
-        stdio: 'ignore', timeout: 5000,
+        stdio: ['ignore', 'ignore', 'pipe'], timeout: 5000,
       });
       return true;
-    } catch {
-      return false;
+    } catch (err) {
+      if (tmuxReportedSessionMissing(err)) {
+        // Keep tmux's own words: the 2026-11-06 false restarts left no record of what the probe said.
+        console.log(`[Supervisor] tmux says the session is missing: ${String((err as { stderr?: unknown }).stderr).trim()}`);
+        return false;
+      }
+      const reason = err instanceof Error ? err.message.split('\n')[0] : String(err);
+      console.warn(`[Supervisor] tmux session check got no answer (${reason}) — not treating the server as gone`);
+      return true;
     }
   }
 
@@ -2524,6 +2550,17 @@ export interface BetterSqlite3Copy {
   binaryPath: string;
   /** Absolute path to use as `--prefix` when invoking npm rebuild. */
   prefixDir: string;
+}
+
+/**
+ * True when a failed `tmux has-session` is tmux answering "no such session" or
+ * "no server". tmux also exits 1 when it cannot reach its server, so the exit
+ * code alone cannot tell the two apart; the message can.
+ */
+export function tmuxReportedSessionMissing(err: unknown): boolean {
+  const { status, stderr } = (err ?? {}) as { status?: unknown; stderr?: unknown };
+  if (typeof status !== 'number') return false; // never ran to an answer
+  return /can't find session|no server running|error connecting to .*\(No such file or directory\)/.test(String(stderr ?? ''));
 }
 
 /**

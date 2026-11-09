@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-08T23:13:50.424Z",
+  "slug": "telegram-test-groups",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 927,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/keyMaterialPaths.ts",
+      "src/data/state-coherence-registry.json",
+      "src/messaging/telegram-origin/BrowserTypes.ts",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginBrowserExecutor.ts",
+      "src/messaging/telegram-origin/OriginLocalPaths.ts",
+      "src/messaging/telegram-origin/TelegramBrowserBroker.ts",
+      "src/messaging/telegram-origin/TelegramOriginBoot.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramTestGroups.ts",
+      "src/messaging/telegram-origin/TelegramWebKDriver.ts",
+      "src/messaging/telegram-origin/types.ts",
+      "src/server/telegramOriginRoutes.ts"
+    ],
+    "addedLines": 906,
+    "deletedLines": 21
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -22,6 +22,7 @@
 
 import { FencedLease, type StaleHolderTakeoverOpts, type HandbackConsentToken } from './FencedLease.js';
 import type { LeaseRecord } from './types.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 /** Durable (git-backed) view + CAS write of the lease. */
 export interface LeaseStore {
@@ -52,6 +53,11 @@ export interface LeaseStore {
    * CAS instead, so this is a no-op there.
    */
   forceLocalExpiry?(): void;
+  /**
+   * True when this store is only this machine's own copy, so nothing durable tells it what a
+   * peer did while it was down. A takeover made meanwhile can then only be learned by asking.
+   */
+  hasNoSharedMedium?(): boolean;
   /**
    * Pull the latest durable state into the local view WITHOUT writing.
    * Used to prime a freshly-booted/joined machine with fresh data before its
@@ -177,6 +183,17 @@ export interface LeaseCoordinatorDeps {
   isPreferredAwakeAgreed?: () => boolean;
   /** True iff EVERY peer is presumed-gone by liveness-silence (Layer 3 gate). */
   allPeersPresumedGone?: () => boolean;
+  /**
+   * lease-takeover-no-shared-medium: true when this machine has a peer and no machine is
+   * named preferred, read live. Absent or false keeps today's behaviour exactly, so a
+   * single machine and a pool with a named captain are untouched.
+   */
+  survivorMayHold?: () => boolean;
+  /**
+   * session-pool-takeover-at-pairing: a joined machine that has not yet proved a lasting link to
+   * its peer. It cannot tell a dead peer from a lost one, so it does not take the lease at all.
+   */
+  acquireHeldBack?: () => boolean;
   logger?: (msg: string) => void;
 }
 
@@ -239,6 +256,10 @@ export class LeaseCoordinator {
   private lastObservedNonceEpoch = new Map<string, number>();
   private unconfirmedWriteCount = 0;
   private unconfirmedWriteReported = false;
+  /** Evidence only: the open solo-captain hold episode, so a hold records once, not per renew. */
+  private soloHoldEvidenceEpoch: number | null = null;
+  /** Evidence only: the last stale-holder takeover, to notice that holder renewing soon after. */
+  private staleTakeoverEvidence: { holder: string; epoch: number; atMono: number } | null = null;
 
   constructor(deps: LeaseCoordinatorDeps) {
     this.d = deps;
@@ -378,6 +399,20 @@ export class LeaseCoordinator {
   }
 
   /**
+   * On a store holding only this machine's copy, nothing durable says what a peer did meanwhile,
+   * so one number can be reached by both machines. Our copy at that number, once expired, says
+   * nothing: a peer's later-expiring lease there is the truth. Without this the machine would
+   * keep naming itself, serve its dead copy to the live holder, and read as a tie.
+   */
+  private peerOutranksLapsedSelf(peer: LeaseRecord, stored: LeaseRecord | null): boolean {
+    if (!this.d.store.hasNoSharedMedium?.()) return false;
+    if (peer.holder === this.selfMachineId || peer.released) return false;
+    const own = this.selfIssued?.epoch === peer.epoch ? this.selfIssued : stored;
+    if (!own || own.holder !== this.selfMachineId || !this.fl.isExpired(own, this.now())) return false;
+    return new Date(peer.expiresAt).getTime() > new Date(own.expiresAt).getTime();
+  }
+
+  /**
    * Compute the current effective epoch = max(tunnel-observed accepted, git).
    * A tunnel lease is folded in only if acceptTunnelLease passes (valid sig,
    * ≥ git floor, fresh nonce).
@@ -386,6 +421,7 @@ export class LeaseCoordinator {
     const git = this.d.store.read();
     let bestLease = git.lease;
     let epoch = git.epoch;
+    let peerOutranksSelf = false;
     if (this.d.tunnel) {
       const obs = this.d.tunnel.observed();
       if (obs.lease) {
@@ -413,10 +449,24 @@ export class LeaseCoordinator {
             this.lastObservedNonceEpoch.set(obs.lease.holder, obs.lease.epoch);
             this.lastObservedNonce.set(obs.lease.holder, obs.lease.nonce);
             this.freshObservedMonoMs.set(obs.lease.holder, this.monotonicNow());
+            if (this.staleTakeoverEvidence?.holder === obs.lease.holder) {
+              const sinceMs = this.monotonicNow() - this.staleTakeoverEvidence.atMono;
+              if (sinceMs <= 10 * 60_000) {
+                featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+                  kind: 'error',
+                  reason: 'taken-over holder was alive: its signed nonce advanced after the takeover',
+                  context: { holder: obs.lease.holder, takeoverEpoch: this.staleTakeoverEvidence.epoch, holderEpoch: obs.lease.epoch, msSinceTakeover: sinceMs },
+                });
+              }
+              this.staleTakeoverEvidence = null;
+            }
           }
           if (obs.lease.epoch > epoch) {
             bestLease = obs.lease;
             epoch = obs.lease.epoch;
+          } else if (obs.lease.epoch === epoch && this.peerOutranksLapsedSelf(obs.lease, bestLease)) {
+            bestLease = obs.lease;
+            peerOutranksSelf = true;
           }
         }
       }
@@ -431,7 +481,10 @@ export class LeaseCoordinator {
     }
     // Fold in our own freshest self-issued lease (a renewal's new expiry lives
     // here, not in coarse git). Only while not superseded by a higher epoch.
-    if (this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch) {
+    if (
+      this.selfIssued && this.selfIssued.holder === this.selfMachineId && this.selfIssued.epoch >= epoch &&
+      !(peerOutranksSelf && this.selfIssued.epoch === epoch)
+    ) {
       bestLease = this.selfIssued;
       epoch = this.selfIssued.epoch;
     }
@@ -511,9 +564,14 @@ export class LeaseCoordinator {
   private soloCaptainHoldEligible(ourEpoch: number): boolean {
     const cfg = this.d.soloCaptainHold?.();
     if (!cfg?.enabled) return false;
-    if (!this.d.isPreferredAwakeAgreed?.()) return false;
-    const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
-    if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
+    // With nobody named preferred, a dead peer and a cut link look the same and there is no
+    // captain to defer to, so the holder keeps its epoch and only a higher one ends that. A
+    // pool that names a captain keeps its rule whole, takeovers included.
+    if (!this.d.survivorMayHold?.()) {
+      if (!this.d.isPreferredAwakeAgreed?.()) return false;
+      const authorizedByPeerTakeover = this.peerTakeoverAuthorizedEpoch === ourEpoch;
+      if (!authorizedByPeerTakeover && !this.d.allPeersPresumedGone?.()) return false;
+    }
     // No higher epoch observed than the one we hold (a real takeover dominates).
     const view = this.effectiveView();
     if (view.epoch > ourEpoch) return false;
@@ -635,6 +693,19 @@ export class LeaseCoordinator {
     return res.observed.lease?.holder === this.selfMachineId;
   }
 
+  private static readonly OWN_LAPSE_PULL_DEADLINE_MS = 10_000;
+
+  /** A pull that cannot hold up acquisition: an unreachable peer is the expected case here. */
+  private async pullWithin(deadlineMs: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<void>((resolve) => { timer = setTimeout(resolve, deadlineMs); timer.unref?.(); });
+    try {
+      await Promise.race([this.pullFromPeers().catch(() => undefined), deadline]); // @silent-fallback-ok: no answer means re-acquire, which is this path's purpose
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
   /**
    * Whether the attached transport can actively PULL peer leases (Cross-Machine
    * Coherence). False on a git-only mesh — the standby pull loop is then a no-op.
@@ -749,6 +820,17 @@ export class LeaseCoordinator {
     return peer.epoch > ourEpoch;
   }
 
+  /** The store is only this machine's copy: see LeaseStore.hasNoSharedMedium. */
+  hasNoSharedMedium(): boolean {
+    return !!this.d.store.hasNoSharedMedium?.();
+  }
+
+  /** A peer's expired or released record proves nothing is being held, so it cannot be a tie. */
+  observedPeerLeaseLive(): boolean {
+    const peer = this.observedPeerLease();
+    return !!peer && !peer.released && !this.fl.isExpired(peer, this.now());
+  }
+
   /**
    * Whether the current peer-held effective lease is takeable by the normal
    * fenced acquisition rules right now. This is a scheduling hint only: callers
@@ -788,6 +870,7 @@ export class LeaseCoordinator {
   }
 
   private identityIneligibleLogged = false;
+  private heldBackLogged = false;
 
   async acquireIfEligible(): Promise<boolean> {
     // §1.1 lease rule: an unprovisioned machine that can see a live provisioned sibling does
@@ -806,6 +889,12 @@ export class LeaseCoordinator {
       return false;
     }
     this.identityIneligibleLogged = false;
+    if (this.d.acquireHeldBack?.()) {
+      if (!this.heldBackLogged) this.log('acquire skipped: no lasting link to the other machine has been proved yet');
+      this.heldBackLogged = true;
+      return false;
+    }
+    this.heldBackLogged = false;
     if (this.suspended) {
       // A suspended holder may resume only by re-acquiring cleanly below.
       this.suspended = false;
@@ -814,6 +903,7 @@ export class LeaseCoordinator {
     const liveness = this.d.getLivenessEnabled?.() ?? true;
     const legacyDead = liveness ? undefined : this.d.presumedDeadHolders({ liveness: false });
     let retries = 0;
+    let askedPeers = false;
     // eslint-disable-next-line no-constant-condition
     while (true) {
       const view = this.effectiveView();
@@ -827,10 +917,35 @@ export class LeaseCoordinator {
         this.log(`acquire skipped: ${decision.reason}`);
         return false;
       }
+      // Taking back our own lapsed lease (restart, wake): ask the peers first, once, so a
+      // takeover that happened meanwhile is seen rather than tied at the same epoch. A store
+      // holding only this machine's copy always asks: its lease says nothing about the peer,
+      // and claiming without asking is what made a pair restart each other for good. What the
+      // ask brings back lands in the view, so the check above refuses the claim on the next pass.
+      const ownLapse = view.lease?.holder === this.selfMachineId;
+      if (
+        !askedPeers &&
+        (ownLapse || !view.lease) &&
+        ((ownLapse && this.d.soloCaptainHold?.()?.enabled) || this.d.store.hasNoSharedMedium?.()) &&
+        this.d.survivorMayHold?.() &&
+        this.canPullPeers()
+      ) {
+        askedPeers = true;
+        await this.pullWithin(LeaseCoordinator.OWN_LAPSE_PULL_DEADLINE_MS);
+        continue;
+      }
       const candidate = this.fl.buildAcquisition(view.lease, this.now(), this.nextNonce());
       const res = this.casWrite(candidate);
       if (res.ok) {
         this.selfIssued = candidate;
+        if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
+          this.staleTakeoverEvidence = { holder: view.lease.holder, epoch: candidate.epoch, atMono: this.monotonicNow() };
+          featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+            kind: 'fired',
+            reason: 'took over a holder that stopped renewing',
+            context: { decision: decision.reason, holder: view.lease.holder, fromEpoch: view.lease.epoch, toEpoch: candidate.epoch },
+          });
+        }
         if (
           view.lease &&
           view.lease.holder !== this.selfMachineId &&
@@ -850,6 +965,13 @@ export class LeaseCoordinator {
       }
       // CAS lost — someone advanced. Re-evaluate against the observed state.
       const observedEpoch = res.observed.epoch;
+      if (view.lease && decision.reason.startsWith('holder-not-renewing')) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.staleHolderTakeover', {
+          kind: 'held',
+          reason: 'stale-holder takeover lost the epoch compare-and-set',
+          context: { decision: decision.reason, holder: view.lease.holder, candidateEpoch: candidate.epoch, observedEpoch, retries },
+        });
+      }
       if (observedEpoch >= candidate.epoch) {
         this.log(`CAS lost to epoch ${observedEpoch} (our candidate ${candidate.epoch}) — yielding`);
         this.emitEpoch(observedEpoch);
@@ -977,11 +1099,55 @@ export class LeaseCoordinator {
    * Returns false (and self-suspends) if the tunnel medium is configured but
    * has been unreachable for longer than the lease TTL.
    */
+  /**
+   * On a store holding only this machine's copy, a peer that just reached us over signed RPC and
+   * is reading this lease proves the link as well as a push would. It also covers the case a push
+   * cannot: a peer that is booting pulls long before it listens, and if our lease ran out in that
+   * window it would claim, swap the roles, and restart a machine. A peer that is really gone sends
+   * no pulls, so this never keeps a lease alive past a dead link. Re-signs only in the second half
+   * of the lease, so a steady 5-second pull does not churn nonces.
+   */
+  confirmHoldOnPeerPull(): void {
+    if (!this.hasNoSharedMedium() || !this.holdsLease()) return;
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) return;
+    const view = this.effectiveView();
+    if (!view.lease || view.lease.holder !== this.selfMachineId) return;
+    if (new Date(view.lease.expiresAt).getTime() - this.now() > this.fl.ttlMs / 2) return;
+    this.selfIssued = this.fl.signLease(
+      view.epoch,
+      view.lease.acquiredAt,
+      new Date(this.now() + this.fl.ttlMs).toISOString(),
+      this.nextNonce(),
+    );
+    this.markRenewOk();
+  }
+
+  /** A slow broadcast must not replace a newer lease signed while it waited (a peer's pull). */
+  private installRenewal(renewed: LeaseRecord): void {
+    if (this.selfIssued && this.selfIssued.epoch === renewed.epoch && this.selfIssued.nonce > renewed.nonce) return;
+    this.selfIssued = renewed;
+  }
+
   async renew(): Promise<boolean> {
     const view = this.effectiveView();
     if (!view.lease || view.lease.holder !== this.selfMachineId) return false;
+    // A holder never reaches acquireIfEligible's release once something keeps renewing it.
+    if (this.d.isLeaseEligible && !this.d.isLeaseEligible()) {
+      await this.relinquishAndBroadcast('identity-not-provisioned: a live sibling holds the agent identity');
+      return false;
+    }
     // Superseded: a peer verified a higher epoch. Never renew or hold the older one.
-    if (this.higherEpochEvidence() > view.epoch) return false;
+    if (this.higherEpochEvidence() > view.epoch) {
+      if (this.soloHoldEvidenceEpoch !== null) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'error',
+          reason: 'a healthy peer advanced the epoch while the sole captain was holding',
+          context: { heldEpoch: this.soloHoldEvidenceEpoch, higherEpoch: this.higherEpochEvidence() },
+        });
+        this.soloHoldEvidenceEpoch = null;
+      }
+      return false;
+    }
 
     // Re-sign with a fresh expiry (same epoch — renewal never advances it).
     const renewed = this.fl.signLease(
@@ -1009,8 +1175,16 @@ export class LeaseCoordinator {
     }
 
     if (confirmed) {
-      this.selfIssued = renewed;
+      this.installRenewal(renewed);
       this.markRenewOk();
+      if (this.soloHoldEvidenceEpoch !== null) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'held',
+          reason: 'hold ended: renewal confirmed over a medium again',
+          context: { heldEpoch: this.soloHoldEvidenceEpoch, epoch: view.epoch },
+        });
+        this.soloHoldEvidenceEpoch = null;
+      }
       return true;
     }
 
@@ -1023,14 +1197,35 @@ export class LeaseCoordinator {
     // peer's lease, so even a wrongly-presumed-gone live peer cannot double-write
     // (the intact epoch-CAS + signature fence remains the authority). The monotonic
     // self-fence stays armed whenever the presumed-gone gate is NOT satisfied.
+    // Exception, by design (lease-takeover-no-shared-medium): a pool with no named captain
+    // skips the preferred and presumed-gone gates, so during a cut both machines may believe
+    // they hold until reconnect, when the higher epoch wins.
     if (this.soloCaptainHoldEligible(view.epoch)) {
-      this.selfIssued = renewed;
+      this.installRenewal(renewed);
       this.markRenewOk(); // hold the SAME epoch — no re-acquire, no inflation
-      this.log('solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
+      if (this.soloHoldEvidenceEpoch !== view.epoch) {
+        // Once per hold, not once per 30-second renewal: a machine can hold for days.
+        this.log(this.d.survivorMayHold?.()
+          ? 'solo-captain hold: unnamed pool, no higher epoch — held lease without medium confirm'
+          : 'solo-captain hold: preferred + all peers presumed-gone + no higher epoch — held lease without medium confirm');
+        this.soloHoldEvidenceEpoch = view.epoch;
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'fired',
+          reason: 'held the lease without medium confirmation',
+          context: { epoch: view.epoch, hasTunnel: !!this.d.tunnel, peerTakeoverAuthorized: this.peerTakeoverAuthorizedEpoch === view.epoch },
+        });
+      }
       return true;
     }
 
     if (this.monotonicNow() - this.lastRenewOkMonoMs > this.fl.ttlMs) {
+      if (this.d.soloCaptainHold?.()?.enabled) {
+        featureEvidence.record('multiMachine.leaseSelfHeal.soloCaptainHold', {
+          kind: 'held',
+          reason: 'not eligible to hold: self-suspending on lapsed renewal',
+          context: { epoch: view.epoch },
+        });
+      }
       this.suspended = true;
       // Only the tunnel's early deadline is provisional; a git refresh result is final.
       this.suspendedByRenewal = this.d.tunnel ? renewed : null;

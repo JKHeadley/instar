@@ -5,19 +5,13 @@
  *
  * Spec: docs/specs/telegram-delivery-robustness.md § 7.
  *
- * Asserts that every historical SHIPPED `src/templates/scripts/
- * telegram-reply.sh` content (across the last N commits on `main`) is
- * either:
- *   - the current bundled template SHA, OR
- *   - in `PostUpdateMigrator.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS`.
+ * Asserts that historical shipped Telegram and Slack reply templates
+ * (across the last N first-parent commits) are either the current bundled
+ * template or in their respective prior-shipped SHA allowlists.
  *
- * Why: the migrator's prior-shipped set is the *only* mechanism that
- * upgrades existing on-disk relay scripts to the latest version
- * cleanly. If we ship a new template version without adding the
- * just-superseded SHA to the prior-shipped set, every previously
- * shipped agent gets a `relay-script-modified-locally` degradation
- * event on its next `instar update` — the same orphan-TODO failure
- * mode the original incident's spec called out.
+ * Why: a missing prior-shipped SHA leaves an old packaged script in place
+ * as if it were locally customized. Slack readiness then refuses inbound
+ * replies; Telegram reports relay-script-modified-locally.
  *
  * Strategy:
  *   1. Walk `git log --first-parent main -- src/templates/scripts/
@@ -42,6 +36,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PostUpdateMigrator } from '../src/core/PostUpdateMigrator.js';
+import { PRIOR_SHIPPED_SLACK_RELAY_SHA256 } from '../src/core/SlackReplyRelayInstaller.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -73,7 +68,7 @@ function gitBuffer(args: string[]): Buffer {
   });
 }
 
-function listHistoricalCommits(): Array<{ commit: string; subject: string }> {
+function listHistoricalCommits(templateRel = TEMPLATE_REL): Array<{ commit: string; subject: string }> {
   // --first-parent restricts to mainline merges, avoiding feature-branch
   // intermediate commits that may have shipped unfinished SHAs.
   let raw: string;
@@ -84,7 +79,7 @@ function listHistoricalCommits(): Array<{ commit: string; subject: string }> {
       '--first-parent',
       '--format=%H%x09%s',
       '--',
-      TEMPLATE_REL,
+      templateRel,
     ]);
   } catch (err) {
     // No git history (e.g., tarball install) — skip the lint with a
@@ -142,18 +137,47 @@ export function lintTemplateShaHistory(): LintResult {
   };
 }
 
+/** Protect the same shipped-template migration contract for Slack agents. */
+export function lintSlackTemplateShaHistory(priorShas: ReadonlySet<string> = PRIOR_SHIPPED_SLACK_RELAY_SHA256): LintResult {
+  const templateRel = 'src/templates/scripts/slack-reply.sh';
+  const currentSha = createHash('sha256')
+    .update(fs.readFileSync(path.join(REPO_ROOT, templateRel))).digest('hex');
+  const allowed = new Set(priorShas);
+  allowed.add(currentSha);
+  const commits = listHistoricalCommits(templateRel);
+  const missing: LintResult['missing'] = [];
+  const seen = new Set<string>();
+  for (const { commit, subject } of commits) {
+    let bytes: Buffer;
+    try { bytes = gitBuffer(['show', `${commit}:${templateRel}`]); }
+    catch { continue; }
+    const sha = createHash('sha256').update(bytes).digest('hex');
+    if (seen.has(sha)) continue;
+    seen.add(sha);
+    if (!allowed.has(sha)) missing.push({ sha, commit, subject });
+  }
+  return { ok: missing.length === 0, missing, scannedCommits: commits.length, currentSha };
+}
+
 async function main(): Promise<void> {
   const result = lintTemplateShaHistory();
+  const slackResult = lintSlackTemplateShaHistory();
 
-  if (result.ok) {
+  if (result.ok && slackResult.ok) {
     process.stdout.write(
       `lint-template-sha-history: OK (scanned ${result.scannedCommits} commits, ` +
-        `current sha256:${result.currentSha.slice(0, 12)}…)\n`,
+        `current sha256:${result.currentSha.slice(0, 12)}…; Slack ${slackResult.scannedCommits} commits, sha256:${slackResult.currentSha.slice(0, 12)}…)\n`,
     );
     process.exit(0);
   }
 
-  process.stderr.write(
+  if (!slackResult.ok) {
+    process.stderr.write(`lint-template-sha-history: FAIL — ${slackResult.missing.length} shipped Slack relay SHA(s) missing from PRIOR_SHIPPED_SLACK_RELAY_SHA256.\n`);
+    for (const { sha, commit, subject } of slackResult.missing) {
+      process.stderr.write(`  - ${sha}  ${commit.slice(0, 12)}  ${subject}\n`);
+    }
+  }
+  if (!result.ok) process.stderr.write(
     `lint-template-sha-history: FAIL — ${result.missing.length} historical ` +
       `telegram-reply.sh SHA(s) are not in PostUpdateMigrator` +
       `.TELEGRAM_REPLY_PRIOR_SHIPPED_SHAS (and don't match the current bundled ` +

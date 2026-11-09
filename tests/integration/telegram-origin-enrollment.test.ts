@@ -38,7 +38,7 @@ describe('origin enrollment signed mesh HTTP observations', () => {
       handlers: { 'telegram-origin': (command, sender) => handleOriginMesh({ runtime, command: command as OriginMeshCommand,
         authenticatedSender: sender, resolveKey: machineId => !revoked && machineId === 'source'
           ? { machineId, agentId: 'echo', keyId: 'source:1', keyEpoch: 1, publicKey, validFrom: 0, validUntil: null, revokedAt: null } : null }) } });
-    const app = express(); app.use(express.json()); app.use(createRoutes({ config: { authToken: 'fixture', stateDir: runtime.options.storage.stateDir, port: 0 }, telegramOrigin: runtime, meshRpcDispatcher: dispatcher } as never));
+    const app = express(); app.use(express.json()); app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'fixture', stateDir: runtime.options.storage.stateDir, port: 0 }, telegramOrigin: runtime, meshRpcDispatcher: dispatcher } as never));
     const server = await new Promise<import('node:http').Server>(resolve => { const s = app.listen(0, '127.0.0.1', () => resolve(s)); });
     cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
     const client = new MeshRpcClient({ selfMachineId: 'source', nonce: randomUUID, sign: bytes => sign(null, Buffer.from(bytes), privateKey).toString('base64url') });

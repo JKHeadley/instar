@@ -46,6 +46,8 @@ function buildManager(idFn: () => string | null | undefined) {
       const claudeSessionId = idFn();
       return [{ tmuxSession: 'echo-job-health-check-xyz', claudeSessionId }];
     },
+    findSessionByTmux: (tmuxSession: string) => mgr.state.listSessions()
+      .find((s: { tmuxSession: string }) => s.tmuxSession === tmuxSession),
     saveSession: () => {},
   };
   mgr.idlePromptSince = new Map();

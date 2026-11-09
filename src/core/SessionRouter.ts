@@ -18,8 +18,9 @@
  * timeout (it throws on timeout) — the router owns the retry/backoff/fallback loop.
  */
 
-import type { PlacementExecutor, TopicPlacement } from './PlacementExecutor.js';
+import type { PlacementDecision, PlacementExecutor, TopicPlacement } from './PlacementExecutor.js';
 import type { MachineCapacity } from './types.js';
+import { isAppOwnershipKey } from './SessionOwnership.js';
 
 export interface OwnershipView {
   owner: string | null;
@@ -39,7 +40,9 @@ export interface DeliverAck {
    * identically), and maps in the queue drain to terminal
    * `sender-deauthorized`. Old peers never emit it (version skew named).
    */
-  accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected';
+  /** `not-yet` (app-conversations-in-the-pool §2.4): an app conversation's owner can't take it right now
+   *  (mid-binding, lease gate closed). Keep it queued. Only flagged machines receive app forwards. */
+  accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet';
 }
 
 /** Sender identity captured at ingress (Durable Inbound Message Queue §2.2) —
@@ -53,6 +56,8 @@ export interface InboundSenderEnvelope {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** A team phone's person, so the machine that delivers can judge them itself (team-roles-and-access §3.6). */
+  personKey?: string;
 }
 
 export interface InboundMessage {
@@ -61,6 +66,16 @@ export interface InboundMessage {
   payload: unknown;
   topicMetadata?: TopicPlacement;
   senderEnvelope?: InboundSenderEnvelope | null;
+  /** A pool stepped down to dark: reach a peer that owns this conversation, never place one.
+   *  Anything that would place stays on this machine instead. */
+  routingOnly?: boolean;
+  /**
+   * An app conversation's emergency stop or pause (app-conversations-in-the-pool §2.4): it skips the
+   * hold for a `transferring` record and the per-session line, and goes to the current owner at once.
+   */
+  appUrgent?: 'stop' | 'pause';
+  /** Earlier messages for this app conversation still wait in the queue: this one goes behind them. */
+  appBehindHeld?: boolean;
   /** The channel scope this message arrived on — threaded into placement so a Slack channel
    *  is never placed on a machine not connected to its workspace (spec:
    *  placement-platform-workspace-aware). Populated at the inbound from the platform event
@@ -198,6 +213,12 @@ export interface SessionRouterDeps {
    */
   reclaimPlacement?: (sessionKey: string, placedOn: string) => boolean;
   /**
+   * Is a session for this key already running on THIS machine? Placement for an unowned
+   * key honours it, so turning the pool on never hops a conversation that is mid-flight.
+   * Absent means no live-session knowledge, so placement decides as before.
+   */
+  liveLocalSession?: (sessionKey: string) => boolean;
+  /**
    * Confirm a just-placed REMOTE session as the owner (status placing→active) once
    * the spawn has been dispatched to it. Without this the ownership stays 'placing'
    * forever and every later message for the session queues (bug #11). Best-effort —
@@ -207,6 +228,11 @@ export interface SessionRouterDeps {
    * the FSM only permits a claim whose machineId equals the placed owner.)
    */
   confirmClaim?: (sessionKey: string, machineId: string) => void;
+  /**
+   * Is a conversation with no ownership record served here (app-conversations-in-the-pool §2.3)? True:
+   * deliver locally. False: the lease gate is closed, so it waits. Absent ⇒ true.
+   */
+  appNoRecordServedHere?: (sessionKey: string) => boolean;
   /** Tri-state custody taking (Durable Inbound Message Queue §2.2). The
    *  production dep is QueueDrainLoop.enqueueLive (never throws; a storage
    *  failure maps to 'refused' → today's fall-through). */
@@ -228,6 +254,8 @@ export class SessionRouter {
   private readonly deps: SessionRouterDeps;
   private readonly cfg: SessionRouterConfig;
   private readonly chains = new Map<string, Promise<unknown>>();
+  /** Stops seen per app conversation. One entry per conversation ever stopped, in this process. */
+  private readonly appStopGeneration = new Map<string, number>();
 
   constructor(deps: SessionRouterDeps, cfg: SessionRouterConfig = DEFAULT_ROUTER_CONFIG) {
     this.deps = deps;
@@ -236,8 +264,15 @@ export class SessionRouter {
 
   /** Dispatch an inbound message; serialized per-session (in-order, one-in-flight). */
   route(msg: InboundMessage): Promise<RouteOutcome> {
+    // A stop or pause never waits behind this conversation's in-flight forwards. A stop also ends
+    // every forward already under way: nothing sent before it runs after it.
+    if (msg.appUrgent && isAppOwnershipKey(msg.sessionKey)) {
+      if (msg.appUrgent === 'stop') this.appStopGeneration.set(msg.sessionKey, (this.appStopGeneration.get(msg.sessionKey) ?? 0) + 1);
+      return this.dispatchApp(msg, this.appStopGeneration.get(msg.sessionKey) ?? 0);
+    }
+    const stopGeneration = this.appStopGeneration.get(msg.sessionKey) ?? 0;
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(() => this.dispatchOne(msg));
+    const next = prior.catch(() => undefined).then(() => this.dispatchOne(msg, stopGeneration));
     // Track the tail so the next message on this session waits for this one to
     // settle — and DELETE the entry once this tail settles while still current,
     // so the map is bounded by in-flight sessions, not sessions-ever-routed
@@ -259,6 +294,9 @@ export class SessionRouter {
    * (acked outcome that isn't another queued/blocked verdict).
    */
   async forceReplace(msg: InboundMessage): Promise<boolean | 'rejected' | 'local'> {
+    // app-conversations-in-the-pool §2.2: nothing in the pool places an app conversation. Its queue
+    // entry runs out at the queue's limits and the phone is told in words.
+    if (isAppOwnershipKey(msg.sessionKey)) return false;
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(() => this.placeAndClaim(msg, 'failover', true));
     const tail = next.then(() => undefined, () => undefined);
@@ -294,7 +332,82 @@ export class SessionRouter {
     return Math.min(this.cfg.deliverMessageRetryBackoffStartMs * 2 ** attempt, this.cfg.deliverMessageRetryBackoffMaxMs);
   }
 
-  private async dispatchOne(msg: InboundMessage): Promise<RouteOutcome> {
+  /**
+   * The app arm (app-conversations-in-the-pool §2.2, §2.4). No path here places: with no record it
+   * delivers on this machine (the lease holder) or waits for the lease gate; an active record elsewhere
+   * is forwarded; a transient record waits, except a stop or pause, which goes to its owner at once.
+   */
+  private async dispatchApp(msg: InboundMessage, stopGeneration: number): Promise<RouteOutcome> {
+    const stopped = (this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration;
+    if (stopped) return { action: 'queued', detail: 'app-stopped', acked: true };
+    const queue = (detail: string, owner?: string | null): RouteOutcome => {
+      // A stop that can't land now is never kept: firing later, it would stop work asked for since.
+      if (msg.appUrgent) return { action: 'queued', detail, owner, acked: false };
+      const q = this.deps.queueMessage(msg, detail);
+      return { action: 'queued', detail, owner, acked: q === 'queued' || q === 'already-queued' };
+    };
+    if (msg.appBehindHeld && !msg.appUrgent) return queue('app-behind-held');
+    const own = this.deps.resolveOwnership(msg.sessionKey);
+    if (!own.status || !own.owner) {
+      if (this.deps.appNoRecordServedHere?.(msg.sessionKey) ?? true) return { action: 'handled-locally', owner: this.deps.selfMachineId, acked: true };
+      // A stop at a closed gate runs today's local stop, which is harmless (§2.4).
+      if (msg.appUrgent) return { action: 'handled-locally', owner: this.deps.selfMachineId, detail: 'lease-gate-closed', acked: true };
+      return queue('app-lease-gate-closed');
+    }
+    const transient = own.status !== 'active';
+    if (transient && !(msg.appUrgent && own.status === 'transferring')) return queue(own.status, own.owner);
+    if (own.owner === this.deps.selfMachineId) return { action: 'handled-locally', owner: own.owner, acked: true };
+    if (!this.deps.isMachineAlive(own.owner) && !msg.appUrgent) return queue('app-owner-not-answering', own.owner);
+    return this.forwardApp(msg, own.owner, own.epoch, stopGeneration);
+  }
+
+  /** Forward to the app conversation's owner. Any answer but acceptance keeps it queued; nothing re-places. */
+  private async forwardApp(msg: InboundMessage, owner: string, epoch: number, stopGeneration: number): Promise<RouteOutcome> {
+    const stoppedOutcome = (): RouteOutcome => ({ action: 'queued', detail: attemptThrew ? 'app-stopped-unknown' : 'app-stopped', owner, acked: true });
+    const queue = (detail: string): RouteOutcome => {
+      if (msg.appUrgent) return { action: 'queued', detail, owner, acked: false };
+      // A stop landed during this attempt: queued now, it would run after the stop.
+      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return stoppedOutcome();
+      const q = this.deps.queueMessage(msg, detail);
+      return { action: 'queued', detail, owner, acked: q === 'queued' || q === 'already-queued' };
+    };
+    let target = owner;
+    let targetEpoch = epoch;
+    let reForwarded = false;
+    // A thrown attempt may have reached the owner with only its answer lost, so a stop after one can't say it never arrived.
+    let attemptThrew = false;
+    for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
+      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return stoppedOutcome();
+      try {
+        const ack = await this.deps.deliverMessage(target, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: targetEpoch, senderEnvelope: msg.senderEnvelope ?? null });
+        this.deps.onOwnerResponsive?.(target);
+        if (ack.accepted === 'duplicate') return { action: 'duplicate', owner: target, acked: true };
+        if (ack.accepted === 'queued') return { action: 'forwarded', owner: target, acked: true };
+        if (ack.accepted === 'sender-rejected') return { action: 'rejected', owner: target, detail: 'sender-deauthorized', acked: true };
+        if (ack.accepted === 'not-yet') return queue('app-owner-not-yet');
+        // stale-ownership: the record may have moved under us. A stop or pause follows it once, by
+        // re-reading the record (§2.4); anything else waits for the queue's next pass.
+        const now = this.deps.resolveOwnership(msg.sessionKey);
+        if (msg.appUrgent && !reForwarded && now.owner && now.owner !== this.deps.selfMachineId && now.owner !== target) {
+          reForwarded = true;
+          target = now.owner;
+          targetEpoch = now.epoch;
+          attempt = -1;
+          continue;
+        }
+        return queue('app-owner-stale');
+      } catch (err) { // @silent-fallback-ok — logged and retried; exhausted retries mark the owner suspect and keep the message queued
+        attemptThrew = true;
+        this.deps.log?.(`deliverMessage attempt ${attempt} to ${target} failed: ${String((err as Error)?.message ?? err)}`);
+        if (attempt < this.cfg.deliverMessageMaxRetries) await this.deps.sleep(this.backoff(attempt));
+      }
+    }
+    this.deps.markOwnerSuspect?.(target);
+    return queue('app-owner-unreachable');
+  }
+
+  private async dispatchOne(msg: InboundMessage, stopGeneration: number): Promise<RouteOutcome> {
+    if (isAppOwnershipKey(msg.sessionKey)) return this.dispatchApp(msg, stopGeneration);
     const own = this.deps.resolveOwnership(msg.sessionKey);
 
     if (own.status === 'active' && own.owner) {
@@ -383,8 +496,55 @@ export class SessionRouter {
     return this.placeAndClaim(msg, 'failover', true);
   }
 
+  /**
+   * An unowned key with a live session here stays here, so turning the pool on never hops a
+   * running conversation. Placement still runs, with this machine as the only candidate, so
+   * every mandatory check holds (online, workspace reachable, not refusing work); only cost
+   * stops counting. Any escalation, such as a blocked quota, means normal placement decides.
+   * A pin or preferred machine wins: that is an explicit request to be elsewhere.
+   */
+  private liveLocalPlacement(msg: InboundMessage, reason: 'new' | 'failover'): PlacementDecision | null {
+    if (reason !== 'new' || msg.topicMetadata?.preferredMachine) return null;
+    try {
+      if (this.deps.liveLocalSession?.(msg.sessionKey) !== true) return null;
+      const self = this.deps.selfMachineId;
+      const decision = this.deps.placement.decide({
+        sessionKey: msg.sessionKey,
+        topicMetadata: msg.topicMetadata ?? {},
+        machineRegistry: this.deps.machineRegistry().filter((m) => m.machineId === self),
+        currentOwner: undefined,
+        reason,
+        ...(msg.channel ? { channel: msg.channel } : {}),
+      });
+      return decision.outcome === 'placed' && decision.chosenMachine === self && !decision.escalationReason ? decision : null;
+    } catch (err) {
+      this.deps.log?.(`liveLocalSession for ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+      return null;
+    }
+  }
+
   private async placeAndClaim(msg: InboundMessage, reason: 'new' | 'failover', fromDead: boolean): Promise<RouteOutcome> {
-    const decision = this.deps.placement.decide({
+    if (isAppOwnershipKey(msg.sessionKey)) {
+      const q = this.deps.queueMessage(msg, 'app-never-placed');
+      return { action: 'queued', detail: 'app-never-placed', acked: q === 'queued' || q === 'already-queued' };
+    }
+    if (msg.routingOnly) {
+      // The record must change hands too: the queue refuses local delivery while it names
+      // the peer, and nothing else re-places at dark, so the message would run out of tries.
+      const held = this.deps.resolveOwnership(msg.sessionKey);
+      if (held.owner && held.owner !== this.deps.selfMachineId) {
+        const cas = this.deps.casClaimOwnership(msg.sessionKey, this.deps.selfMachineId, held.epoch);
+        if (!cas.ok) {
+          const q = this.deps.queueMessage(msg, 'routing-only-claim-lost');
+          return { action: 'queued', detail: 'routing-only-claim-lost', acked: q === 'queued' || q === 'already-queued' };
+        }
+        this.deps.confirmClaim?.(msg.sessionKey, this.deps.selfMachineId);
+      }
+      await this.deps.handleLocally(msg);
+      return { action: 'handled-locally', owner: this.deps.selfMachineId, detail: 'routing-only', acked: true };
+    }
+    const kept = this.liveLocalPlacement(msg, reason);
+    const decision = kept ?? this.deps.placement.decide({
       sessionKey: msg.sessionKey,
       topicMetadata: msg.topicMetadata ?? {},
       machineRegistry: this.deps.machineRegistry(),
@@ -427,6 +587,16 @@ export class SessionRouter {
     // CAS won → spawn on the winner (or handle locally if that's us).
     const action: RouteAction = fromDead ? 'owner-dead-replaced' : 'spawned';
     if (decision.chosenMachine === this.deps.selfMachineId) {
+      // A kept session is already running, so nothing is left for `placing` to wait on. Confirm
+      // here: only the Telegram path confirms after delivery, and a row left `placing` would
+      // queue every later Slack or drained message for this key.
+      if (kept) {
+        try {
+          this.deps.confirmClaim?.(msg.sessionKey, decision.chosenMachine);
+        } catch (err) {
+          this.deps.log?.(`confirmClaim for kept ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+        }
+      }
       await this.deps.handleLocally(msg);
       return { action: fromDead ? 'owner-dead-replaced' : 'handled-locally', owner: decision.chosenMachine, detail: 'placed-self', acked: true };
     }

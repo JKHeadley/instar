@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "session-pool-move-nudge",
+  "sessionId": "737dfb65-81b1-49d8-a671-62f227cb5bfe",
+  "timestamp": "2026-11-05T14:28:43.120Z",
+  "artifactPath": "upgrades/side-effects/session-pool-move-nudge.md",
+  "artifactSha256": "d98774088776f83c9bc601910b4fae8a048d99e59156c4372124cf469ae7844f",
+  "specPath": "docs/specs/session-pool-move-nudge.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/OwnershipNudge.ts",
+    "src/core/PeerPresencePuller.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/e2e/ownership-nudge-alive.test.ts",
+    "tests/integration/ownership-nudge-roundtrip.test.ts",
+    "tests/unit/MeshRpc.test.ts",
+    "tests/unit/OwnershipNudge.test.ts",
+    "tests/unit/PeerPresencePuller-journal.test.ts",
+    "tests/unit/PostUpdateMigrator-poolReadinessLine.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New mesh verb, no authority, converged spec.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

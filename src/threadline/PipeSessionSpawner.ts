@@ -14,6 +14,7 @@
  * - 10-minute timeout with process-group kill
  */
 
+import { claudeAuthShellPrefix, removeClaudeAuthEnvFile, writeClaudeAuthEnvFile } from '../core/claudeChildAuth.js';
 import crypto from 'node:crypto';
 import { execSync, spawn as childSpawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -448,6 +449,7 @@ export class PipeSessionSpawner {
     // Env scrub: clear BOTH frameworks' provider keys so neither leaks
     // into the spawned process. Spec 12 Rule 1a (Codex) and the legacy
     // ANTHROPIC_API_KEY hygiene both covered in one block.
+    const claudeAuthFile = this.config.framework === 'claude-code' ? writeClaudeAuthEnvFile(this.config.stateDir) : null;
     const shellCmd = [
       // ROUND-20: XAI_API_KEY and GROK_DEPLOYMENT_KEY added. This is the SIXTH
       // spawn site and it was invisible to the round-19 membership test on TWO
@@ -475,6 +477,10 @@ export class PipeSessionSpawner {
       ...Object.entries(launchSpec.envOverrides ?? {}).map(
         ([k, v]) => `export ${k}=${JSON.stringify(String(v))};`,
       ),
+      // The configured sign-in key, claude-code only and after the scrub above. A key-only agent
+      // has no stored login, so this lane answered "Not logged in" (spec cloud-key-internal-calls).
+      // Through a private file: this whole string is tmux argv.
+      ...(claudeAuthFile ? [claudeAuthShellPrefix(claudeAuthFile)] : []),
       `${quotedArgv}${allowedToolsFlag}`,
       `2>>"${path.join(this.config.stateDir, 'logs', 'pipe-sessions.log')}"`,
       `; rm -f "${promptFile}"`,
@@ -508,6 +514,7 @@ export class PipeSessionSpawner {
         execSync(`tmux has-session -t "=${sessionName}" 2>/dev/null`);
       } catch {
         // Session failed to create
+        removeClaudeAuthEnvFile(claudeAuthFile);
         try { SafeFsExecutor.safeUnlinkSync(promptFile, { operation: 'src/threadline/PipeSessionSpawner.ts:296' }); } catch { /* ignore */ }
         return { spawned: false, reason: 'tmux session failed to create' };
       }
@@ -541,6 +548,7 @@ export class PipeSessionSpawner {
       return { spawned: true, sessionName, pid };
     } catch (err) {
       // Clean up prompt file on failure
+      removeClaudeAuthEnvFile(claudeAuthFile);
       try { SafeFsExecutor.safeUnlinkSync(promptFile, { operation: 'src/threadline/PipeSessionSpawner.ts:339' }); } catch { /* ignore */ }
       return { spawned: false, reason: `spawn failed: ${err instanceof Error ? err.message : err}` };
     }
@@ -688,11 +696,13 @@ export class PipeSessionSpawner {
   }
 
   /**
-   * Kill all active pipe sessions (for shutdown).
+   * Kill all active pipe sessions, returning their names. Used at shutdown and, by memory
+   * privacy, on the multi-person flip: a pipe session runs with owner reach
+   * (memory-privacy-agent-places §3).
    */
-  killAll(): void {
-    for (const [name] of this.activeSessions) {
-      this.killPipeSession(name, 'shutdown');
-    }
+  killAll(reason = 'shutdown'): string[] {
+    const names = [...this.activeSessions.keys()];
+    for (const name of names) this.killPipeSession(name, reason);
+    return names;
   }
 }

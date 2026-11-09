@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "lease-job-definition-replication",
+  "sessionId": "6e60beaa-e310-4179-aa75-c7985b17f28f",
+  "timestamp": "2026-11-05T13:50:30.062Z",
+  "artifactPath": "upgrades/side-effects/lease-job-definition-replication.md",
+  "artifactSha256": "41b311e00080d0ae275dbaebc1c53e8f93bead81e6b8df50e26726ab13f5c070",
+  "specPath": "docs/specs/lease-job-definition-replication.md",
+  "coveredFiles": [
+    "src/localVerify/FailedFileDiagnosisPeerService.ts",
+    "tests/unit/localVerify/FailedFileDiagnosisPeerService.test.ts",
+    "upgrades/side-effects/lease-job-definition-replication.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Names the actual independent incremental reviewer and refreshes merge evidence without source or test changes.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

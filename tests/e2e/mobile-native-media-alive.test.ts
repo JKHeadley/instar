@@ -1,3 +1,4 @@
+import { NotificationSelectivityGate } from '../../src/messaging/NotificationSelectivityGate.js';
 /**
  * Feature-is-alive proof for media in app conversations (docs/specs/mobile-native-chat-media.md,
  * increment 1): an AgentServer booted on a development agent with no Telegram, no Slack and no
@@ -35,10 +36,12 @@ import { ProcessIntegrity } from '../../src/core/ProcessIntegrity.js';
 const HOST = 'echo-media-e2e.example.dev';
 const servers: AgentServer[] = [];
 const dirs: string[] = [];
+const quietGates: NotificationSelectivityGate[] = [];
 
 afterAll(async () => {
   vi.unstubAllEnvs();
   for (const s of servers) await s.stop();
+  for (const gate of quietGates) await gate.close();
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/e2e/mobile-native-media-alive.test.ts' });
 });
 
@@ -117,6 +120,17 @@ describe('media in app conversations — production wiring', () => {
     };
     expect((await send('POST', '/mobile/device/confirm', { code })).body.status).toBe('active');
     const key = (await send('POST', '/mobile/conversations', { title: 'Trip', requestId: rid() })).body.conversationKey as string;
+
+    // Regression fb-30fc4ffb-e4a: the 507 seen on a phone names the machine's nickname.
+    const identity = new MachineIdentityManager(stateDir);
+    identity.updateNickname(identity.loadIdentity().machineId, 'Mac Studio');
+    const disk = vi.spyOn(server.appConversations!.media! as any, 'diskSpace').mockReturnValue({ free: 1, total: 1e12 });
+    const refused = await send('POST', '/mobile/media/uploads', {
+      requestId: rid(), conversationRef: `app:${key}`, size: 10, sha256: 'd'.repeat(64), declaredKind: 'file', declaredType: 'text/plain', filename: 'note.txt',
+    });
+    expect(refused.status).toBe(507);
+    expect(refused.body).toMatchObject({ error: 'media-disk-floor', detail: "Mac Studio is nearly out of disk space, so the file wasn't stored." });
+    disk.mockRestore();
 
     // A photo (two chunks) and a voice note, uploaded through the production raw-body parser.
     const photo = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(1024 * 1024 + 500)]);
@@ -357,7 +371,7 @@ describe('media in app conversations — production wiring', () => {
     expect(Buffer.from(dl.body as Buffer).equals(photo)).toBe(true);
   });
 
-  it('app → Telegram (§4.9): a photo sent from the app into a topic is stored, delivered, mirrored as sendPhoto and downloadable', async () => {
+  it('app → Telegram (§4.9): authenticated media remains mirrored with Quiet by Default enforcing', async () => {
     // The Bot API is stubbed: the real adapter builds the multipart request, nothing leaves.
     const botCalls: Array<{ method: string; body: unknown }> = [];
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string, init: { body: unknown }) => {
@@ -370,6 +384,8 @@ describe('media in app conversations — production wiring', () => {
     try {
       const { server, telegram, spawned } = await boot(true, (stateDir) => {
         const tg = new TelegramAdapter({ token: 'test-token-123', chatId: '-100123', ownerUserId: 4242, authorizedUserIds: [4242], pollIntervalMs: 100 } as never, stateDir);
+        const gate = new NotificationSelectivityGate(stateDir, 'ci-machine', () => ({ enabled: true, dryRun: false }));
+        quietGates.push(gate); tg.selectivity = gate;
         tg.registerTopicSession(42, 'tg-session', 'Trip');
         return tg;
       });
@@ -418,6 +434,13 @@ describe('media in app conversations — production wiring', () => {
       expect(fs.readFileSync(pathMatch![1]!).equals(photo)).toBe(true);
       // The mirror went out as sendPhoto through the production adapter.
       expect(botCalls.map((c) => c.method)).toContain('sendPhoto');
+      const latest = telegram!.selectivity!.latestInbound(42);
+      expect(latest).toBeDefined();
+      expect(telegram!.selectivity!.decide(42, { origin: 'automated', category: 'presence-standby', sourceContext: 'presence', inboundMessageId: latest }).decision).toBe('deliver');
+      const before = botCalls.filter(c => c.method === 'sendPhoto').length;
+      expect(await telegram!.sendMediaToTopic(42, [{ data: photo, filename: 'routine.jpg', mediaType: 'image/jpeg', kind: 'photo' }], 'Routine screenshot')).toMatchObject({ recorded: true, delivered: false });
+      expect(botCalls.filter(c => c.method === 'sendPhoto')).toHaveLength(before);
+
 
       // The paired phone sees the file in the topic's history and downloads it by the topic ref.
       const hist = await send('GET', '/telegram/topics/42/messages');

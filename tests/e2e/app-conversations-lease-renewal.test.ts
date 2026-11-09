@@ -26,4 +26,17 @@ describe('Telegram-free app agent keeps its serving lease (real timers)', () => 
     expect(lease.coordinator.holdsLease()).toBe(true);
     expect(lease.lc.currentEpoch()).toBe(1);
   }, 90_000);
+
+  it('a standby built with no surface, takeover switch on, keeps what it took at an unchanged epoch', async () => {
+    const config = { messaging: [], multiMachine: { leaseSelfHeal: { soloCaptainHold: { enabled: true } } } } as unknown as InstarConfig;
+    const deps = leaseRenewalDependencies(config);
+    expect(deps).toEqual(['takeover-survivor']);
+    const lease = await originLeaseDependencyFixture({ dependency: deps[0] });
+    cleanup.push(lease.close);
+    expect(lease.config.developmentAgent).toBeUndefined();
+    expect(lease.config.multiMachine.leaseSelfHeal.resilientRenew.enabled).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 65_000));
+    expect(lease.coordinator.holdsLease()).toBe(true);
+    expect(lease.lc.currentEpoch()).toBe(1);
+  }, 90_000);
 });

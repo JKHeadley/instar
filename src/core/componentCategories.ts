@@ -67,6 +67,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   UnjustifiedStopGate: 'gate',
   CoherenceGate: 'gate',
   MessagingToneGate: 'gate',
+  AttributionJudge: 'gate', // attribution-paper-trail: is this credited to a person, and do the logged words support it?
   CoherenceReviewer: 'gate',
   // Hub-intent recognizer — infers "open this"/"tie this to <topic>?" over the
   // message + recent conversation, replacing the anchored regexes that swallowed
@@ -143,6 +144,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
   'telegram-origin-recovery': 'reflector', // diagnose unknown acceptance; never authorizes retries
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
+  'skillLearning.drafter': 'sentinel',   // skill-learning arbiter + drafter (capable tier; docs/specs/skill-learning-sentinel.md §3.3-3.5)
+  'skillLearning.reviewer': 'sentinel',  // skill-learning cross-family v1 reviewer (§3.5 table)
+  'skillLearning.classifier': 'reflector', // skill-learning sentinel: key operator requests + outcomeOfPrevRun (§3.1/§3.6)
 };
 
 /**

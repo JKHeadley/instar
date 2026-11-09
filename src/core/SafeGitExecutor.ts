@@ -52,91 +52,118 @@ import {
 // ── Verb classification ─────────────────────────────────────────────
 
 /**
- * Verbs treated as destructive. Closed enumeration; additions are spec changes.
+ * How the funnel classes a verb.
+ *   read  — every form is treated as a read.
+ *   write — every form is treated as a write.
+ *   shape — the verb has both forms; isReadOnlyShape decides per call.
  */
-export const DESTRUCTIVE_GIT_VERBS: ReadonlySet<string> = new Set([
-  'add',
-  'am',
-  'apply',
-  'branch', // shape-checked: bare `branch <name>` is destructive
-  'checkout',
-  'cherry-pick',
-  'clean',
-  'clone',
-  'commit',
-  'fetch',
-  'gc',
-  'init',
-  'merge',
-  'mv',
-  'pull',
-  'push',
-  'rebase',
-  'reset',
-  'restore',
-  'revert',
-  'rm',
-  'stash',
-  'submodule',
-  'switch',
-  'tag',
-  'update-ref',
-  // Object-database writers (no ref or working-tree change); destructive-classified so
-  // they route through execSync. local-verify's merge-tree/commit-tree path (§2 step 1).
-  'merge-tree',
-  'commit-tree',
-  'worktree', // shape-checked: `worktree list` is read-only
-  'prune',
-  'notes',
-  'replace',
-  'filter-branch',
-  'remote', // shape-checked: `remote get-url` is read-only
-  'config', // shape-checked: `config --get` is read-only
-  'format-patch', // shape-checked: --inline is destructive
-]);
+export type GitVerbClass = 'read' | 'write' | 'shape';
 
 /**
- * Read-only verbs explicitly safe to call. Closed enumeration.
+ * The one verb classification every surface reads. Closed enumeration; an
+ * addition is a spec change. A verb that is not listed is unclassified, and no
+ * surface will run it. Kept as raw entries so a test can see a duplicate, which
+ * the Map built from them would hide.
  */
-export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set([
-  'status',
-  'log',
-  'diff',
-  'show',
-  'rev-parse',
-  'rev-list',
-  'ls-files',
-  'ls-tree',
-  'ls-remote',
-  'describe',
-  'name-rev',
-  'blame',
-  'cat-file',
-  'cherry', // read-only: lists +/- patch-equivalence vs an upstream; no mutation
-  'grep',
-  'shortlog',
-  'count-objects',
-  'fsck',
-  'var',
-  'version',
-  '--version',
-  'help',
-  'write-tree',
-  'interpret-trailers',
-  'check-ref-format',
-  'symbolic-ref',
-  'show-ref',
-  'for-each-ref',
-  'merge-base',
-  'reflog', // read-only by default; reflog expire/delete is destructive (caller must use execSync)
-  'hash-object',
-  'config', // overlap with destructive set; readSync shape-check enforces --get only
-  'remote', // overlap; readSync shape-check enforces list/get-url only
-  'branch', // overlap; readSync shape-check enforces --list / -l / --show-current / -v
-  'worktree', // overlap; readSync shape-check enforces list only
-  'format-patch', // overlap; readSync shape-check rejects --inline
-  'stash', // shape-check: `stash list` / `stash show` allowed
-]);
+const GIT_VERB_CLASS_ENTRIES: ReadonlyArray<readonly [string, GitVerbClass]> = [
+  // Writes.
+  ['add', 'write'],
+  ['am', 'write'],
+  ['apply', 'write'],
+  ['checkout', 'write'],
+  ['cherry-pick', 'write'],
+  ['clean', 'write'],
+  ['clone', 'write'],
+  ['commit', 'write'],
+  ['fetch', 'write'],
+  ['gc', 'write'],
+  ['init', 'write'],
+  ['merge', 'write'],
+  ['mv', 'write'],
+  ['pull', 'write'],
+  ['push', 'write'],
+  ['rebase', 'write'],
+  ['reset', 'write'],
+  ['restore', 'write'],
+  ['revert', 'write'],
+  ['rm', 'write'],
+  ['submodule', 'write'],
+  ['switch', 'write'],
+  ['tag', 'write'],
+  ['update-ref', 'write'],
+  // Object-database writers (no ref or working-tree change); destructive-classified so
+  // they route through execSync. local-verify's merge-tree/commit-tree path (§2 step 1).
+  ['merge-tree', 'write'],
+  ['commit-tree', 'write'],
+  ['prune', 'write'],
+  ['notes', 'write'],
+  ['replace', 'write'],
+  ['filter-branch', 'write'],
+  ['write-tree', 'write'], // always writes a tree object (EVO-029)
+  // Reads.
+  ['status', 'read'],
+  ['log', 'read'],
+  ['diff', 'read'],
+  ['show', 'read'],
+  ['rev-parse', 'read'],
+  ['rev-list', 'read'],
+  ['ls-files', 'read'],
+  ['ls-tree', 'read'],
+  ['ls-remote', 'shape'], // --upload-pack / --exec run a program: refused (EVO-029)
+  ['describe', 'read'],
+  ['name-rev', 'read'],
+  ['blame', 'read'],
+  ['cat-file', 'read'],
+  ['cherry', 'read'], // lists +/- patch-equivalence vs an upstream; no mutation
+  ['grep', 'shape'], // -O runs a pager program: refused (EVO-029)
+  ['shortlog', 'read'],
+  ['count-objects', 'read'],
+  ['fsck', 'shape'], // --lost-found writes (EVO-029)
+  ['var', 'read'],
+  ['version', 'read'],
+  ['--version', 'read'],
+  ['help', 'shape'], // a topic runs man, info or a browser: refused (EVO-029)
+  ['interpret-trailers', 'shape'], // --in-place rewrites files (EVO-029)
+  ['check-ref-format', 'read'],
+  ['check-ignore', 'read'], // exit code is the answer: 0 matched, 1 no match, 128 git failed
+  ['symbolic-ref', 'shape'], // two operands, -d, -m write (EVO-029)
+  ['show-ref', 'read'],
+  ['for-each-ref', 'read'],
+  ['merge-base', 'read'],
+  ['hash-object', 'shape'], // -w writes a blob (EVO-029)
+  // Both forms; isReadOnlyShape decides.
+  ['branch', 'shape'], // bare `branch <name>` writes; --list / -l / --show-current / -v read
+  ['stash', 'shape'], // `stash list` / `stash show` read
+  ['worktree', 'shape'], // `worktree list` reads
+  ['remote', 'shape'], // `remote get-url` / `remote show` read
+  ['config', 'shape'], // `config --get` reads
+  ['format-patch', 'shape'], // --inline writes
+  ['reflog', 'shape'], // bare / show / exists read; everything else goes through execSync
+];
+
+export const GIT_VERB_CLASSES: ReadonlyMap<string, GitVerbClass> = new Map(GIT_VERB_CLASS_ENTRIES);
+
+/** Verbs a write surface can run: `write` and `shape`. Derived from the table. */
+export const DESTRUCTIVE_GIT_VERBS: ReadonlySet<string> = new Set(
+  GIT_VERB_CLASS_ENTRIES.filter(([, cls]) => cls !== 'read').map(([verb]) => verb),
+);
+
+/**
+ * Verbs a read surface can run: `read` and `shape`. Derived from the table.
+ *
+ * What a read surface guarantees (EVO-029, docs/specs/safe-git-read-surface-hardening.md):
+ * nothing the caller passes, in arguments, `-c` values or `opts.env`, names a
+ * program for git to run, except the fixed harmless binaries in the `-c` admit
+ * list (`false`, `cat`) and a transport helper that a URL scheme selects from
+ * PATH; and nothing the caller passes makes git write an object, ref, config
+ * value or file. git's own refresh of the index stat cache (under `status` and
+ * similar) is not counted as a write. Not covered: repository-local config
+ * (a repository whose `.git/config` instar does not trust must not be read
+ * through the funnel) and the inherited process environment.
+ */
+export const READONLY_GIT_VERBS: ReadonlySet<string> = new Set(
+  GIT_VERB_CLASS_ENTRIES.filter(([, cls]) => cls !== 'write').map(([verb]) => verb),
+);
 
 /**
  * Verbs that are "data-pull": they touch the object database and FETCH_HEAD
@@ -169,6 +196,7 @@ export const SOURCE_TREE_READ_TIER_VERBS: ReadonlySet<string> = new Set([
   'status',
   'cherry',
   'ls-files', // reaper checks ignored files before allowing worktree removal
+  'check-ignore', // reads ignore rules; a caller may need the answer on the source tree itself
 ]);
 
 // ── Env denylist ────────────────────────────────────────────────────
@@ -424,6 +452,8 @@ const PRE_VERB_FLAGS_NO_VALUE: ReadonlySet<string> = new Set([
 
 interface ExtractedTargets {
   verb: string;
+  /** Position of the verb in args; everything after it is the verb's arguments. */
+  verbIndex: number;
   /** All directories the subprocess could mutate (canonical). Includes:
    * - opts.cwd
    * - the `-C <dir>` target
@@ -433,84 +463,52 @@ interface ExtractedTargets {
   targets: string[];
 }
 
+interface ParsedVerb {
+  verb: string;
+  verbIndex: number;
+  /** `-c` values in order, as given. */
+  configOverrides: string[];
+  /** Raw path values of `-C`, `--git-dir` and `--work-tree`, in order. */
+  pathFlags: string[];
+}
+
 /**
- * Walk the args array skipping leading pre-verb global flags. Return:
- *   { verb, targets: [opts.cwd, -C target, --git-dir target, --work-tree target] }
- *
- * Targets are canonicalized via `realpathSync`. If realpath fails on an
- * existing path the raw value is passed through; the assertion handles
- * uncanonicalizable inputs in fail-closed fashion.
+ * Walk the leading pre-verb global flags and find the verb. Pure: no path
+ * resolution, so `run` can route on it cheaply. Throws on a missing flag value,
+ * an unrecognized leading flag, or no verb.
  */
-function extractVerbAndTargets(
-  args: readonly string[],
-  cwd: string | undefined,
-): ExtractedTargets {
-  // If cwd is not given but the args contain a `-C <dir>` redirect, default
-  // to that directory rather than process.cwd(). This preserves the
-  // semantics of `execFileSync('git', ['-C', dir, ...])` calls that pre-date
-  // the migration to SafeGitExecutor and didn't pass an explicit cwd.
-  let effectiveCwd = cwd;
-  if (effectiveCwd === undefined) {
-    for (let i = 0; i < args.length - 1; i++) {
-      if (args[i] === '-C') {
-        effectiveCwd = args[i + 1];
-        break;
-      }
-    }
-    effectiveCwd = effectiveCwd ?? process.cwd();
-  }
-  const targets: string[] = [canonicalize(effectiveCwd)];
+function parseVerb(args: readonly string[]): ParsedVerb {
+  const configOverrides: string[] = [];
+  const pathFlags: string[] = [];
   let i = 0;
+  const valueAt = (flag: string): string => {
+    const next = args[i + 1];
+    if (next === undefined) {
+      throw new Error(`SafeGitExecutor: \`${flag}\` flag missing value: ${args.join(' ')}`);
+    }
+    return next;
+  };
   while (i < args.length) {
     const a = args[i];
     if (a === undefined) break;
-
-    if (a === '-C') {
-      const next = args[i + 1];
-      if (next === undefined) {
-        throw new Error(`SafeGitExecutor: \`-C\` flag missing value: ${args.join(' ')}`);
-      }
-      targets.push(canonicalize(next));
+    if (a === '-C' || a === '--git-dir' || a === '--work-tree') {
+      pathFlags.push(valueAt(a));
       i += 2;
       continue;
     }
     if (a === '-c') {
-      // -c key=value — skip pair, no target.
-      const next = args[i + 1];
-      if (next === undefined) {
-        throw new Error(`SafeGitExecutor: \`-c\` flag missing value: ${args.join(' ')}`);
-      }
+      configOverrides.push(valueAt(a));
       i += 2;
       continue;
     }
     if (a.startsWith('--git-dir=')) {
-      const value = a.slice('--git-dir='.length);
-      targets.push(canonicalize(value));
+      pathFlags.push(a.slice('--git-dir='.length));
       i += 1;
-      continue;
-    }
-    if (a === '--git-dir') {
-      const next = args[i + 1];
-      if (next === undefined) {
-        throw new Error(`SafeGitExecutor: \`--git-dir\` flag missing value: ${args.join(' ')}`);
-      }
-      targets.push(canonicalize(next));
-      i += 2;
       continue;
     }
     if (a.startsWith('--work-tree=')) {
-      const value = a.slice('--work-tree='.length);
-      targets.push(canonicalize(value));
+      pathFlags.push(a.slice('--work-tree='.length));
       i += 1;
-      continue;
-    }
-    if (a === '--work-tree') {
-      const next = args[i + 1];
-      if (next === undefined) {
-        throw new Error(`SafeGitExecutor: \`--work-tree\` flag missing value: ${args.join(' ')}`);
-      }
-      targets.push(canonicalize(next));
-      i += 2;
       continue;
     }
     if (a.startsWith('--namespace=')) {
@@ -518,10 +516,7 @@ function extractVerbAndTargets(
       continue;
     }
     if (a === '--namespace') {
-      const next = args[i + 1];
-      if (next === undefined) {
-        throw new Error(`SafeGitExecutor: \`--namespace\` flag missing value: ${args.join(' ')}`);
-      }
+      valueAt(a);
       i += 2;
       continue;
     }
@@ -537,9 +532,68 @@ function extractVerbAndTargets(
           `add it to PRE_VERB_FLAGS_NO_VALUE or PRE_VERB_FLAGS_TAKING_VALUE if it is a legitimate git global option.`,
       );
     }
-    return { verb: a, targets: dedupeTargets(targets) };
+    return { verb: a, verbIndex: i, configOverrides, pathFlags };
   }
   throw new Error(`SafeGitExecutor: no verb found in args ${JSON.stringify(args)}`);
+}
+
+/**
+ * Find the verb (via parseVerb) and every target directory:
+ *   { verb, verbIndex, targets: [opts.cwd, -C target, --git-dir target, --work-tree target] }
+ *
+ * Targets are canonicalized via `realpathSync`. If realpath fails on an
+ * existing path the raw value is passed through; the assertion handles
+ * uncanonicalizable inputs in fail-closed fashion.
+ */
+function extractVerbAndTargets(
+  args: readonly string[],
+  cwd: string | undefined,
+): ExtractedTargets {
+  const parsed = parseVerb(args);
+  // If cwd is not given but the args contain a `-C <dir>` redirect, default
+  // to that directory rather than process.cwd(). This preserves the
+  // semantics of `execFileSync('git', ['-C', dir, ...])` calls that pre-date
+  // the migration to SafeGitExecutor and didn't pass an explicit cwd.
+  let effectiveCwd = cwd;
+  if (effectiveCwd === undefined) {
+    for (let i = 0; i < parsed.verbIndex - 1; i++) {
+      if (args[i] === '-C') {
+        effectiveCwd = args[i + 1];
+        break;
+      }
+    }
+    effectiveCwd = effectiveCwd ?? process.cwd();
+  }
+  const targets: string[] = [canonicalize(effectiveCwd)];
+  // Resolve the way git does (measured on 2.50.1): `-C <dir>` is relative to
+  // the directory git starts in (opts.cwd), and each later `-C` is relative to
+  // the one before (`-C a -C b` means a/b). git applies EVERY pre-verb `-C`
+  // before it resolves a relative `--git-dir` / `--work-tree`, wherever they
+  // sit, so those resolve against the final `-C` directory. (Before EVO-029 a
+  // relative value was resolved against this process's cwd instead.)
+  let base = path.resolve(cwd ?? process.cwd());
+  for (let i = 0; i < parsed.verbIndex; i++) {
+    const a = args[i];
+    if (a === '-C') {
+      base = path.resolve(base, args[i + 1]);
+      targets.push(canonicalize(base));
+      i++;
+    } else if (a === '-c' || a === '--namespace' || a === '--git-dir' || a === '--work-tree') {
+      i++;
+    }
+  }
+  for (let i = 0; i < parsed.verbIndex; i++) {
+    const a = args[i];
+    if (a === '--git-dir' || a === '--work-tree') {
+      targets.push(canonicalize(path.resolve(base, args[i + 1])));
+      i++;
+    } else if (a.startsWith('--git-dir=') || a.startsWith('--work-tree=')) {
+      targets.push(canonicalize(path.resolve(base, a.slice(a.indexOf('=') + 1))));
+    } else if (a === '-c' || a === '--namespace' || a === '-C') {
+      i++;
+    }
+  }
+  return { verb: parsed.verb, verbIndex: parsed.verbIndex, targets: dedupeTargets(targets) };
 }
 
 function canonicalize(p: string): string {
@@ -570,101 +624,321 @@ function dedupeTargets(targets: string[]): string[] {
 }
 
 // ── Shape checks for ambiguous verbs ────────────────────────────────
+//
+// EVO-029: a verb with a measured write or program-running form gets an
+// ADMIT-LIST grammar, not a deny-list. A deny-list was bypassed three ways in
+// review (an undocumented alias, `--` consumed as an option's value, and
+// abbreviated long options). An admit-list fails closed against all three and
+// against options a future git adds. See docs/specs/safe-git-read-surface-hardening.md.
+
+/** What a per-verb check answers. `refused`: no surface may run it. */
+type ShapeAnswer = 'read' | 'write' | 'refused';
+
+interface ReadGrammar {
+  /** Options that take no value, matched exactly. */
+  flags: ReadonlySet<string>;
+  /** Options that take a value: `--opt v`, `--opt=v`, or (short) `-ov`. */
+  valued: ReadonlySet<string>;
+  /** Most positionals the read form takes. Unset means any number. */
+  maxPositionals?: number;
+  /** Admit `-<n>` (a commit count, as in `format-patch -3`). */
+  numericFlags?: boolean;
+  /** The answer for anything outside the grammar. */
+  outside: 'write' | 'refused';
+}
 
 /**
- * Returns true if the args under a `branch` verb describe a read-only
- * invocation (`branch --list`, `branch -l`, `branch --show-current`,
- * `branch -v` (no name), bare `branch` (list mode)). Returns false for
- * destructive shapes (`branch <name>`, `branch -d`, `branch -D`,
- * `branch -m`, `branch -M`, `branch --set-upstream-to=`, etc.).
+ * Scan `verbArgs` the way git's option parser does. An admitted option that
+ * takes a separate value consumes the next argument whatever it looks like
+ * (including `--`); an unconsumed `--` ends the options; every other argument
+ * starting with `-` must be admitted exactly. Abbreviations and short-option
+ * clusters are not admitted unless listed.
  */
-function isReadOnlyBranchInvocation(verbArgs: readonly string[]): boolean {
-  // verbArgs is the slice AFTER the `branch` verb. If empty, that's `git branch` (list).
-  if (verbArgs.length === 0) return true;
-  const destructiveFlags = new Set([
-    '-d',
-    '-D',
-    '--delete',
-    '-m',
-    '-M',
-    '--move',
-    '-c',
-    '-C',
-    '--copy',
-    '--unset-upstream',
-    '--edit-description',
-    '--track',
-    '--no-track',
-  ]);
-  for (const a of verbArgs) {
-    if (destructiveFlags.has(a)) return false;
-    if (a.startsWith('--set-upstream')) return false;
-    if (!a.startsWith('-')) {
-      // Bare positional arg = branch name = create branch (destructive).
-      return false;
+function scanReadGrammar(verbArgs: readonly string[], g: ReadGrammar): ShapeAnswer {
+  return scanReadGrammarDetail(verbArgs, g).answer;
+}
+
+interface GrammarScan {
+  answer: ShapeAnswer;
+  /** Admitted no-value options that appeared AS OPTIONS (not as a value, not after `--`). */
+  seenFlags: ReadonlySet<string>;
+  positionals: number;
+}
+
+/**
+ * The scan behind scanReadGrammar. It also reports which admitted flags really
+ * appeared as options, so a per-verb rule that depends on a marker (`--list`,
+ * `--stdout`) never reads the raw argument list, where a marker can be the
+ * value of another option (`branch --format --list x`).
+ */
+function scanReadGrammarDetail(verbArgs: readonly string[], g: ReadGrammar): GrammarScan {
+  const seenFlags = new Set<string>();
+  let positionals = 0;
+  let optionsEnded = false;
+  const outside = (): GrammarScan => ({ answer: g.outside, seenFlags, positionals });
+  for (let i = 0; i < verbArgs.length; i++) {
+    const a = verbArgs[i];
+    if (optionsEnded || a === '-' || !a.startsWith('-')) {
+      positionals++;
+      continue;
     }
+    if (a === '--') {
+      optionsEnded = true;
+      continue;
+    }
+    if (g.flags.has(a)) {
+      seenFlags.add(a);
+      continue;
+    }
+    if (g.numericFlags && /^-\d+$/.test(a)) continue;
+    if (g.valued.has(a)) {
+      if (i + 1 >= verbArgs.length) return outside();
+      i++; // the value, whatever it is
+      continue;
+    }
+    if (a.startsWith('--')) {
+      const eq = a.indexOf('=');
+      if (eq > 2 && g.valued.has(a.slice(0, eq))) continue;
+      return outside();
+    }
+    // Short option with an attached value, e.g. `-e<pattern>`, `-m5`, `-tblob`.
+    if (a.length > 2 && g.valued.has(a.slice(0, 2))) continue;
+    return outside();
   }
-  return true;
+  if (g.maxPositionals !== undefined && positionals > g.maxPositionals) return outside();
+  return { answer: 'read', seenFlags, positionals };
 }
 
-function isReadOnlyRemoteInvocation(verbArgs: readonly string[]): boolean {
-  if (verbArgs.length === 0) return true; // `git remote` — list mode
+/** True when `arg` is `--<name>`, `--<name>=…`, or any abbreviation git would accept for it. */
+function matchesLongOption(arg: string, name: string): boolean {
+  if (!arg.startsWith('--')) return false;
+  const eq = arg.indexOf('=');
+  const given = eq >= 0 ? arg.slice(2, eq) : arg.slice(2);
+  return given.length > 0 && name.startsWith(given);
+}
+
+/**
+ * Universal rule: `--output=<file>` (and its abbreviations) writes a file for
+ * every verb that takes diff options. Scans every argument, past `--` too.
+ */
+function hasOutputFileOption(verbArgs: readonly string[]): boolean {
+  return verbArgs.some((a) => matchesLongOption(a, 'output'));
+}
+
+const SYMBOLIC_REF_GRAMMAR: ReadGrammar = {
+  flags: new Set(['-q', '--quiet', '--short', '--recurse', '--no-recurse']),
+  valued: new Set(),
+  maxPositionals: 1,
+  outside: 'write',
+};
+
+const HASH_OBJECT_GRAMMAR: ReadGrammar = {
+  flags: new Set(['--stdin', '--stdin-paths', '--no-filters', '--literally']),
+  valued: new Set(['-t', '--path']),
+  outside: 'write',
+};
+
+const INTERPRET_TRAILERS_GRAMMAR: ReadGrammar = {
+  flags: new Set([
+    '--trim-empty', '--no-trim-empty', '--only-trailers', '--only-input', '--unfold', '--parse',
+    '--no-divider', '--no-in-place',
+  ]),
+  valued: new Set(['--where', '--if-exists', '--if-missing', '--trailer']),
+  outside: 'write',
+};
+
+const FSCK_GRAMMAR: ReadGrammar = {
+  flags: new Set([
+    '--unreachable', '--dangling', '--no-dangling', '--root', '--tags', '--cache', '--no-reflogs',
+    '--full', '--no-full', '--connectivity-only', '--strict', '--verbose', '-v', '--name-objects',
+    '--progress', '--no-progress', '--references', '--no-references',
+  ]),
+  valued: new Set(),
+  outside: 'write',
+};
+
+const GREP_GRAMMAR: ReadGrammar = {
+  flags: new Set([
+    '-i', '--ignore-case', '-I', '-w', '--word-regexp', '-v', '--invert-match', '-n', '--line-number',
+    '-l', '--files-with-matches', '-L', '--files-without-match', '-c', '--count', '-q', '--quiet',
+    '-h', '-H', '-F', '--fixed-strings', '-E', '--extended-regexp', '-G', '--basic-regexp', '-P',
+    '--perl-regexp', '-z', '--null', '--cached', '--untracked', '--no-index', '--name-only',
+    '--full-name', '-o', '--only-matching', '--column', '--and', '--or', '--not', '--all-match',
+    '--break', '--heading',
+  ]),
+  valued: new Set(['-e', '-f', '-m', '--max-count', '-A', '-B', '-C', '--max-depth', '--threads']),
+  outside: 'refused',
+};
+
+const LS_REMOTE_GRAMMAR: ReadGrammar = {
+  flags: new Set([
+    '--exit-code', '--tags', '-t', '--heads', '--branches', '-b', '--refs', '-q', '--quiet',
+    '--symref', '--get-url',
+  ]),
+  valued: new Set(['--sort']),
+  outside: 'refused',
+};
+
+const HELP_GRAMMAR: ReadGrammar = {
+  flags: new Set([
+    '-a', '--all', '-g', '--guides', '-c', '--config', '--user-interfaces', '--developer-interfaces',
+    '--no-external-commands', '--no-aliases', '--verbose',
+  ]),
+  valued: new Set(),
+  maxPositionals: 0,
+  outside: 'refused',
+};
+
+const BRANCH_READ_FLAGS: ReadonlySet<string> = new Set([
+  '--list', '--show-current', '-v', '-vv', '--verbose', '-a', '--all', '-r', '--remotes',
+  '--color', '--no-color', '--column', '--no-column', '--abbrev', '--no-abbrev', '-i', '--ignore-case',
+  '--omit-empty',
+]);
+const BRANCH_READ_VALUED: ReadonlySet<string> = new Set([
+  '--sort', '--format', '--contains', '--no-contains', '--merged', '--no-merged', '--points-at',
+]);
+
+/**
+ * `branch` reads as a list: bare, or only list options (`--list`,
+ * `--show-current`, `-v`, `-a`, `-r`, `--sort`, `--format`, `--contains`, ...),
+ * with name patterns only when `--list` appears as an option. Anything else (a branch name,
+ * `-d`, `-m`, `-u<upstream>`, abbreviations, clusters) is a write.
+ * `--edit-description` or an abbreviation of it runs an editor: refused.
+ */
+function isReadOnlyBranchInvocation(verbArgs: readonly string[]): ShapeAnswer {
+  if (verbArgs.some((a) => matchesLongOption(a, 'edit-description'))) return 'refused';
+  const scan = scanReadGrammarDetail(verbArgs, {
+    flags: BRANCH_READ_FLAGS,
+    valued: BRANCH_READ_VALUED,
+    outside: 'write',
+  });
+  if (scan.answer !== 'read') return scan.answer;
+  // A positional is a name pattern only in list mode; otherwise it creates a branch.
+  // `-l` is not admitted at all: before git 2.19 it meant `--create-reflog`.
+  const listMode = scan.seenFlags.has('--list');
+  return scan.positionals > 0 && !listMode ? 'write' : 'read';
+}
+
+/**
+ * `remote` reads when, after any leading `-v`/`--verbose`, there is nothing,
+ * or the subcommand is `show` or `get-url` with their read options.
+ */
+function isReadOnlyRemoteInvocation(verbArgs: readonly string[]): ShapeAnswer {
+  let i = 0;
+  while (i < verbArgs.length && (verbArgs[i] === '-v' || verbArgs[i] === '--verbose')) i++;
+  if (i === verbArgs.length) return 'read';
+  const sub = verbArgs[i];
+  const rest = verbArgs.slice(i + 1);
+  if (sub === 'show') return scanReadGrammar(rest, { flags: new Set(['-n']), valued: new Set(), outside: 'write' });
+  if (sub === 'get-url') {
+    return scanReadGrammar(rest, { flags: new Set(['--push', '--all']), valued: new Set(), outside: 'write' });
+  }
+  return 'write';
+}
+
+function isReadOnlyWorktreeInvocation(verbArgs: readonly string[]): ShapeAnswer {
+  if (verbArgs.length === 0) return 'write';
+  return verbArgs[0] === 'list' ? 'read' : 'write';
+}
+
+const CONFIG_READ_ACTIONS: ReadonlySet<string> = new Set([
+  '--get', '--get-all', '--get-regexp', '--get-urlmatch', '--get-color', '--get-colorbool', '--list', '-l',
+]);
+const CONFIG_READ_FLAGS: ReadonlySet<string> = new Set([
+  '--local', '--global', '--system', '--worktree', '-z', '--null', '--name-only', '--show-origin',
+  '--show-scope', '--includes', '--no-includes', '--bool', '--int', '--bool-or-int', '--path',
+  '--expiry-date', '--fixed-value', '--all', '--regexp',
+]);
+const CONFIG_READ_VALUED: ReadonlySet<string> = new Set([
+  '-f', '--file', '--blob', '--type', '--default', '--url', '--value',
+]);
+
+/**
+ * `config` reads when every option is a known read option (exact, so an
+ * abbreviated `--fil` cannot swallow `--get` as its value) and there is
+ * positive evidence of a read: a `get`/`list` subcommand, or a read action
+ * before the first positional. git's own parser stops at the first positional,
+ * so `config k --list` sets `k` to `--list`. Editor forms (`-e`, `--edit`, an
+ * abbreviation, the `edit` subcommand) run an editor: refused.
+ */
+function isReadOnlyConfigInvocation(verbArgs: readonly string[]): ShapeAnswer {
+  // `-e` also runs the editor inside a short cluster (`config -ze`, measured).
+  const editorShort = (a: string) => /^-[A-Za-z]+$/.test(a) && a.slice(1).includes('e');
+  if (verbArgs.some((a) => editorShort(a) || matchesLongOption(a, 'edit'))) return 'refused';
+  let evidence = false;
+  let sawPositional = false;
+  for (let i = 0; i < verbArgs.length; i++) {
+    const a = verbArgs[i];
+    if (!a.startsWith('-') || a === '-') {
+      if (!sawPositional) {
+        if (a === 'edit') return 'refused';
+        if (a === 'get' || a === 'list') evidence = true;
+        sawPositional = true;
+      }
+      continue;
+    }
+    if (a === '--') return 'write';
+    if (CONFIG_READ_ACTIONS.has(a)) {
+      if (!sawPositional) evidence = true;
+      continue;
+    }
+    if (CONFIG_READ_FLAGS.has(a)) continue;
+    if (CONFIG_READ_VALUED.has(a)) {
+      i++; // its value
+      continue;
+    }
+    const eq = a.indexOf('=');
+    if (a.startsWith('--') && eq > 2 && CONFIG_READ_VALUED.has(a.slice(0, eq))) continue;
+    return 'write';
+  }
+  return evidence ? 'read' : 'write';
+}
+
+const FORMAT_PATCH_READ_GRAMMAR: ReadGrammar = {
+  flags: new Set([
+    '--stdout', '-p', '--no-stat', '--stat', '--numstat', '--shortstat', '--summary', '-k', '--keep-subject',
+    '-n', '--numbered', '-N', '--no-numbered', '--no-signature', '--signoff', '-s', '--thread',
+    '--no-thread', '--cover-letter', '--no-cover-letter', '--binary', '--no-binary', '--full-index',
+    '--zero-commit', '--minimal', '--patience', '--histogram', '--no-renames', '-M', '-C', '--root',
+    '--progress', '--quiet', '--ignore-if-in-upstream', '--no-notes', '--notes',
+  ]),
+  valued: new Set([
+    '--subject-prefix', '--signature', '--start-number', '-v', '--reroll-count', '--base',
+    '--in-reply-to', '--to', '--cc', '--add-header', '--filename-max-length',
+  ]),
+  numericFlags: true,
+  outside: 'write',
+};
+
+/**
+ * `format-patch` writes patch files unless `--stdout` really appears as an
+ * option (not as another option's value, not after `--`). Admit grammar:
+ * anything else (`-o`, `--output-directory`, unknown options) is a write.
+ */
+function isReadOnlyFormatPatchInvocation(verbArgs: readonly string[]): ShapeAnswer {
+  const scan = scanReadGrammarDetail(verbArgs, FORMAT_PATCH_READ_GRAMMAR);
+  if (scan.answer !== 'read') return scan.answer;
+  return scan.seenFlags.has('--stdout') ? 'read' : 'write';
+}
+
+function isReadOnlyStashInvocation(verbArgs: readonly string[]): ShapeAnswer {
+  if (verbArgs.length === 0) return 'write';
   const sub = verbArgs[0];
-  if (sub === '-v' || sub === '--verbose') return true;
-  if (sub === 'show' || sub === 'get-url') return true;
-  return false;
+  return sub === 'list' || sub === 'show' ? 'read' : 'write';
 }
 
-function isReadOnlyWorktreeInvocation(verbArgs: readonly string[]): boolean {
-  if (verbArgs.length === 0) return false;
-  return verbArgs[0] === 'list';
-}
-
-function isReadOnlyConfigInvocation(verbArgs: readonly string[]): boolean {
-  // Read-only config: --get, --get-all, --get-regexp, --list, -l, --get-color,
-  // --get-colorbool. Destructive: bare set, --add, --unset, --replace-all,
-  // --rename-section, --remove-section.
-  for (const a of verbArgs) {
-    if (a === '--get' || a === '--get-all' || a === '--get-regexp') return true;
-    if (a === '--list' || a === '-l') return true;
-    if (a === '--get-color' || a === '--get-colorbool') return true;
-    if (a === '--get-urlmatch') return true;
-  }
-  return false;
-}
-
-function isReadOnlyFormatPatchInvocation(verbArgs: readonly string[]): boolean {
-  // format-patch is read-only by default. --inline rewrites in-tree files
-  // and is destructive; it forces the caller to use execSync.
-  for (const a of verbArgs) {
-    if (a === '--inline') return false;
-  }
-  return true;
-}
-
-function isReadOnlyStashInvocation(verbArgs: readonly string[]): boolean {
-  if (verbArgs.length === 0) return false;
-  const sub = verbArgs[0];
-  return sub === 'list' || sub === 'show';
-}
-
-function isReadOnlyReflogInvocation(verbArgs: readonly string[]): boolean {
-  if (verbArgs.length === 0) return true;
+function isReadOnlyReflogInvocation(verbArgs: readonly string[]): ShapeAnswer {
+  if (verbArgs.length === 0) return 'read';
   const sub = verbArgs[0];
   // Default subcommand is `show` (read-only). `expire`, `delete` mutate refs.
-  return sub === 'show' || sub === 'exists';
+  return sub === 'show' || sub === 'exists' ? 'read' : 'write';
 }
 
 /**
- * Ambiguous-verb shape check. Returns true if (verb, verbArgs) describes
- * a read-only invocation. Returns false for unambiguously-destructive
- * shapes. Returns null if the verb isn't ambiguous (caller uses verb-set
- * membership).
+ * Per-verb shape check. Answers for the verbs the table marks `shape`, and
+ * `null` for every other verb (the caller uses the table class).
  */
-function isReadOnlyShape(
-  verb: string,
-  verbArgs: readonly string[],
-): boolean | null {
+function isReadOnlyShape(verb: string, verbArgs: readonly string[]): ShapeAnswer | null {
   switch (verb) {
     case 'branch':
       return isReadOnlyBranchInvocation(verbArgs);
@@ -680,19 +954,43 @@ function isReadOnlyShape(
       return isReadOnlyStashInvocation(verbArgs);
     case 'reflog':
       return isReadOnlyReflogInvocation(verbArgs);
+    case 'symbolic-ref':
+      return scanReadGrammar(verbArgs, SYMBOLIC_REF_GRAMMAR);
+    case 'hash-object':
+      return scanReadGrammar(verbArgs, HASH_OBJECT_GRAMMAR);
+    case 'interpret-trailers':
+      return scanReadGrammar(verbArgs, INTERPRET_TRAILERS_GRAMMAR);
+    case 'fsck':
+      return scanReadGrammar(verbArgs, FSCK_GRAMMAR);
+    case 'grep':
+      return scanReadGrammar(verbArgs, GREP_GRAMMAR);
+    case 'ls-remote':
+      return scanReadGrammar(verbArgs, LS_REMOTE_GRAMMAR);
+    case 'help':
+      return scanReadGrammar(verbArgs, HELP_GRAMMAR);
     default:
       return null;
   }
 }
 
-/** Return the verbArgs (slice after the verb), accounting for pre-verb flags. */
-function sliceAfterVerb(
-  args: readonly string[],
-  verb: string,
-): readonly string[] {
-  const idx = args.indexOf(verb);
-  if (idx < 0) return [];
-  return args.slice(idx + 1);
+/**
+ * `read`: the funnel classifies this as a read (see the guarantee on
+ * READONLY_GIT_VERBS). `write`: a write surface may run it. `refused`: no
+ * surface runs it. `unclassified`: the verb is not in GIT_VERB_CLASSES.
+ */
+export type GitInvocationClass = 'read' | 'write' | 'refused' | 'unclassified';
+
+/**
+ * The one answer to "what does the funnel class this invocation as". A verb
+ * outside GIT_VERB_CLASSES is `unclassified`, never read or write. Any answer
+ * that would be `read` becomes `write` when an `--output` option is present.
+ */
+export function classifyGitInvocation(verb: string, verbArgs: readonly string[]): GitInvocationClass {
+  const cls = GIT_VERB_CLASSES.get(verb);
+  if (cls === undefined) return 'unclassified';
+  const answer: ShapeAnswer = cls === 'shape' ? (isReadOnlyShape(verb, verbArgs) ?? 'write') : cls;
+  if (answer === 'read' && hasOutputFileOption(verbArgs)) return 'write';
+  return answer;
 }
 
 // ── Audit log ───────────────────────────────────────────────────────
@@ -1089,33 +1387,37 @@ export class SafeGitExecutor {
    * Synchronous destructive git execution.
    *
    * 1. Extract the verb and ALL target directories from args + opts.cwd.
-   * 2. Canonicalize each target and call assertNotInstarSourceTree on each.
-   * 3. Verify the verb is in DESTRUCTIVE_GIT_VERBS (or is an ambiguous verb
-   *    in destructive shape). Read-only verbs throw — callers must use readSync.
-   * 4. Strip env denylist; inject GIT_CONFIG_GLOBAL/SYSTEM=/dev/null.
-   * 5. Spawn git via execFileSync; return stdout.
+   * 2. Refuse an unclassified verb or a refused form, before anything else, on every surface.
+   * 3. Canonicalize each target and call assertNotInstarSourceTree on each.
+   * 4. Verify the invocation classifies as a write. Reads throw — callers must
+   *    use readSync.
+   * 5. Strip env denylist; inject GIT_CONFIG_GLOBAL/SYSTEM=/dev/null.
+   * 6. Spawn git via execFileSync; return stdout.
    *
-   * Throws SourceTreeGuardError if any target is the instar source tree.
+   * Throws SourceTreeGuardError if any target is the instar source tree and the
+   * verb is classified.
    * Throws SafeGitExecutorError on classification mismatch or arg errors.
    */
   static execSync(args: readonly string[], opts: SafeGitOptions): string {
-    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const { verb, verbIndex, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
     const targets = withLocalVerifyTargets(rawTargets, opts);
-    const verbArgs = sliceAfterVerb(args, verb);
+    const verbArgs = args.slice(verbIndex + 1);
+    const invocation = classifyGitInvocation(verb, verbArgs);
+    refuseUnrunnable(invocation, verb, opts, targets);
 
     // Run source-tree assertion against every target — unless the caller
     // explicitly opted into the narrow data-pull allowlist (fetch / etc.)
     // for the documented LAYER B + LAYER C canonical-ref read path. See
     // SafeGitOptions.sourceTreeReadOk for the rationale.
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, invocation, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
     // Verb classification.
-    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
-    if (ambiguousReadOnly === true) {
+    const shapeChecked = GIT_VERB_CLASSES.get(verb) === 'shape';
+    if (invocation === 'read' && shapeChecked) {
       // The verb is ambiguous and the shape is read-only — caller used the
       // wrong method. Fail loud rather than silently allow.
       audit('git', opts.operation, verb, targets[0], 'denied', 'read-only-shape-via-execSync');
@@ -1123,7 +1425,7 @@ export class SafeGitExecutor {
         `SafeGitExecutor.execSync called with read-only shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.readSync instead.`,
       );
     }
-    if (ambiguousReadOnly === null && !DESTRUCTIVE_GIT_VERBS.has(verb)) {
+    if (invocation === 'read') {
       // Pure read-only verb routed through execSync.
       audit('git', opts.operation, verb, targets[0], 'denied', 'readonly-verb-via-execSync');
       throw new SafeGitExecutorError(
@@ -1156,23 +1458,25 @@ export class SafeGitExecutor {
    * Async/streaming variant. Same guard semantics as execSync.
    */
   static spawn(args: readonly string[], opts: SafeGitOptions): ChildProcess {
-    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const { verb, verbIndex, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
     const targets = withLocalVerifyTargets(rawTargets, opts);
-    const verbArgs = sliceAfterVerb(args, verb);
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
+    const verbArgs = args.slice(verbIndex + 1);
+    const invocation = classifyGitInvocation(verb, verbArgs);
+    refuseUnrunnable(invocation, verb, opts, targets);
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, invocation, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
     }
 
-    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
-    if (ambiguousReadOnly === true) {
+    const shapeChecked = GIT_VERB_CLASSES.get(verb) === 'shape';
+    if (invocation === 'read' && shapeChecked) {
       audit('git', opts.operation, verb, targets[0], 'denied', 'read-only-shape-via-spawn');
       throw new SafeGitExecutorError(
         `SafeGitExecutor.spawn called with read-only shape '${verb}' — use SafeGitExecutor.readSync instead.`,
       );
     }
-    if (ambiguousReadOnly === null && !DESTRUCTIVE_GIT_VERBS.has(verb)) {
+    if (invocation === 'read') {
       audit('git', opts.operation, verb, targets[0], 'denied', 'readonly-verb-via-spawn');
       throw new SafeGitExecutorError(
         `SafeGitExecutor.spawn called with read-only verb '${verb}' — use SafeGitExecutor.readSync instead.`,
@@ -1195,23 +1499,27 @@ export class SafeGitExecutor {
    * leaving stdout consumption and process completion checks to the caller.
    */
   static readStream(args: readonly string[], opts: SafeGitOptions): ChildProcess {
-    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const parsed = parseVerb(args);
+    const { verb, verbIndex, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
     const targets = withLocalVerifyTargets(rawTargets, opts);
-    const verbArgs = sliceAfterVerb(args, verb);
-    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
-    if (ambiguousReadOnly === false) {
+    const verbArgs = args.slice(verbIndex + 1);
+    const invocation = classifyGitInvocation(verb, verbArgs);
+    refuseUnrunnable(invocation, verb, opts, targets);
+    const shapeChecked = GIT_VERB_CLASSES.get(verb) === 'shape';
+    if (invocation === 'write' && shapeChecked) {
       audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-shape-via-readStream');
       throw new SafeGitExecutorError(
         `SafeGitExecutor.readStream called with destructive shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.spawn instead.`,
       );
     }
-    if (ambiguousReadOnly === null && !READONLY_GIT_VERBS.has(verb)) {
+    if (invocation === 'write') {
       audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-verb-via-readStream');
       throw new SafeGitExecutorError(
         `SafeGitExecutor.readStream called with destructive verb '${verb}' — use SafeGitExecutor.spawn instead.`,
       );
     }
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
+    refuseReadSurfaceOverrides(parsed.configOverrides, opts, verb, targets);
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, invocation, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
@@ -1230,37 +1538,42 @@ export class SafeGitExecutor {
 
   /**
    * Read-only escape valve. Runs `git <args>` after verifying:
-   *   - Verb is in READONLY_GIT_VERBS (or is an ambiguous verb in read-only shape).
+   *   - The invocation classifies `read` (see the guarantee on READONLY_GIT_VERBS).
+   *   - Every pre-verb `-c` and every key of `opts.env` is on the read-surface admit lists.
    *   - assertNotInstarSourceTree passes against every target (defense-in-depth
    *     against repo-local aliases that could rebind a "read-only" verb).
    */
   static readSync(args: readonly string[], opts: SafeGitOptions): string {
-    const { verb, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
+    const parsed = parseVerb(args);
+    const { verb, verbIndex, targets: rawTargets } = extractVerbAndTargets(args, opts.cwd);
     const targets = withLocalVerifyTargets(rawTargets, opts);
 
     // Verb classification first, BEFORE source-tree check, so callers
     // misusing this method get a clear "use execSync" error rather than
     // a guard error first.
-    const verbArgs = sliceAfterVerb(args, verb);
-    const ambiguousReadOnly = isReadOnlyShape(verb, verbArgs);
-    if (ambiguousReadOnly === false) {
+    const verbArgs = args.slice(verbIndex + 1);
+    const invocation = classifyGitInvocation(verb, verbArgs);
+    refuseUnrunnable(invocation, verb, opts, targets);
+    const shapeChecked = GIT_VERB_CLASSES.get(verb) === 'shape';
+    if (invocation === 'write' && shapeChecked) {
       audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-shape-via-readSync');
       throw new SafeGitExecutorError(
         `SafeGitExecutor.readSync called with destructive shape '${verb} ${verbArgs.join(' ')}' — use SafeGitExecutor.execSync instead.`,
       );
     }
-    if (ambiguousReadOnly === null && !READONLY_GIT_VERBS.has(verb)) {
+    if (invocation === 'write') {
       audit('git', opts.operation, verb, targets[0], 'denied', 'destructive-verb-via-readSync');
       throw new SafeGitExecutorError(
         `SafeGitExecutor.readSync called with destructive verb '${verb}' — use SafeGitExecutor.execSync instead.`,
       );
     }
+    refuseReadSurfaceOverrides(parsed.configOverrides, opts, verb, targets);
 
     // Defense-in-depth: source-tree check on the read path too — UNLESS the
     // caller opted into the narrow read-tier allowlist (the LAYER B/C
     // canonical-ref read path that legitimately operates against the agent's
     // own instar checkout). See SafeGitOptions.sourceTreeReadOk.
-    if (!isSourceTreeCheckBypassed(verb, verbArgs, opts, targets)) {
+    if (!isSourceTreeCheckBypassed(verb, verbArgs, invocation, opts, targets)) {
       runSourceTreeChecks(targets, opts.operation, 'git', verb);
     } else {
       audit('git', opts.operation, verb, targets[0], 'allowed', 'sourceTree-bypass');
@@ -1287,36 +1600,134 @@ export class SafeGitExecutor {
   }
 
   /**
-   * Verb-aware dispatcher. Routes to readSync for known read-only verbs and to
-   * execSync otherwise. Use this from generic git() helpers that take dynamic
-   * args and don't know at the call site whether the verb is destructive.
+   * Verb-aware dispatcher. A write goes to execSync and everything else to
+   * readSync, which makes the real decision. Use this from generic git()
+   * helpers that take dynamic args and don't know at the call site whether
+   * the verb is destructive. It finds the verb past any pre-verb flags
+   * (`-C`, `-c`, `--git-dir`, ...), without resolving paths.
    */
   static run(args: readonly string[], opts: SafeGitOptions): string {
-    const verb = args[0];
-    if (verb && READONLY_GIT_VERBS.has(verb)) {
-      const verbArgs = args.slice(1);
-      const shape = isReadOnlyShape(verb, verbArgs);
-      if (shape !== false) return SafeGitExecutor.readSync(args, opts);
+    const { verb, verbIndex } = parseVerb(args);
+    if (classifyGitInvocation(verb, args.slice(verbIndex + 1)) === 'write') {
+      return SafeGitExecutor.execSync(args, opts);
     }
-    if (verb && !DESTRUCTIVE_GIT_VERBS.has(verb)) {
-      return SafeGitExecutor.readSync(args, opts);
-    }
-    if (verb) {
-      const verbArgs = args.slice(1);
-      const shape = isReadOnlyShape(verb, verbArgs);
-      if (shape === true) return SafeGitExecutor.readSync(args, opts);
-    }
-    return SafeGitExecutor.execSync(args, opts);
+    return SafeGitExecutor.readSync(args, opts);
   }
 }
 
+/**
+ * The one refusal for an invocation no surface will run: a verb outside
+ * GIT_VERB_CLASSES, or a `refused` form. Every surface calls it first.
+ */
+function refuseUnrunnable(
+  invocation: GitInvocationClass,
+  verb: string,
+  opts: SafeGitOptions,
+  targets: readonly string[],
+): void {
+  if (invocation === 'unclassified') {
+    audit('git', opts.operation, verb, targets[0], 'denied', 'unclassified-verb');
+    throw new SafeGitExecutorError(
+      `SafeGitExecutor: git verb '${verb}' is not classified. It is not in GIT_VERB_CLASSES, so no surface will run it. Adding a verb is a reviewed change to that table.`,
+    );
+  }
+  if (invocation === 'refused') {
+    audit('git', opts.operation, verb, targets[0], 'denied', 'program-running-form');
+    throw new SafeGitExecutorError(
+      `SafeGitExecutor: 'git ${verb}' in this form is refused on every surface: it runs a program or is outside the verb's known read form. Changing that is a reviewed change to its read grammar.`,
+    );
+  }
+}
+
+/**
+ * Pre-verb `-c` values a read surface admits, as exact strings. Each switches
+ * something off or pins a safe default; none supplies a command line (`false` and `cat` are fixed harmless binaries).
+ * Exactly the pairs in HARDENED_GIT_CONFIG (executorPorts.ts), so that list can
+ * always be used on a read surface.
+ */
+export const READ_SURFACE_CONFIG_ADMITTED: ReadonlySet<string> = new Set([
+  // HARDENED_GIT_CONFIG
+  'core.hooksPath=/dev/null',
+  'core.fsmonitor=false',
+  'diff.external=',
+  'core.pager=cat',
+  'commit.gpgsign=false',
+  'tag.gpgsign=false',
+  'core.attributesFile=/dev/null',
+  'protocol.file.allow=never',
+  'submodule.recurse=false',
+  'core.sshCommand=false',
+  'core.protectHFS=true',
+  'core.protectNTFS=true',
+]);
+
+/**
+ * `opts.env` keys a caller may add or change on a read surface. Admit-list, not
+ * deny-list: a caller-set HOME or XDG_CONFIG_HOME would choose a config file,
+ * GIT_TRACE* write files, and GIT_EXTERNAL_DIFF / GIT_PAGER / GIT_SSH_COMMAND
+ * name programs. A key whose value equals the inherited process environment is
+ * the host's, not the caller's, and is not judged here.
+ */
+export const READ_SURFACE_ENV_ADMITTED: ReadonlySet<string> = new Set([
+  'LANG',
+  'LANGUAGE',
+  'LC_ALL',
+  'LC_MESSAGES',
+  'GIT_TERMINAL_PROMPT',
+  'GIT_OPTIONAL_LOCKS',
+  'GIT_CONFIG_NOSYSTEM',
+]);
+
+/**
+ * Read surfaces only: refuse a pre-verb `-c` outside READ_SURFACE_CONFIG_ADMITTED
+ * and a caller-added or caller-changed `opts.env` key outside READ_SURFACE_ENV_ADMITTED. The message
+ * names the key, never the value. The inherited process environment is the
+ * host's and is not checked here.
+ */
+function refuseReadSurfaceOverrides(
+  configOverrides: readonly string[],
+  opts: SafeGitOptions,
+  verb: string,
+  targets: readonly string[],
+): void {
+  for (const pair of configOverrides) {
+    if (READ_SURFACE_CONFIG_ADMITTED.has(pair)) continue;
+    const eq = pair.indexOf('=');
+    const key = eq >= 0 ? pair.slice(0, eq) : pair;
+    audit('git', opts.operation, verb, targets[0], 'denied', 'read-surface-config-not-admitted');
+    throw new SafeGitExecutorError(
+      `SafeGitExecutor: '-c ${key}=…' is not admitted on a read surface. A read may only pass the switch-off values in READ_SURFACE_CONFIG_ADMITTED.`,
+    );
+  }
+  for (const [key, value] of Object.entries(opts.env ?? {})) {
+    if (value === process.env[key]) continue; // inherited, not the caller's
+    if (READ_SURFACE_ENV_ADMITTED.has(key)) continue;
+    audit('git', opts.operation, verb, targets[0], 'denied', 'read-surface-env-not-admitted');
+    throw new SafeGitExecutorError(
+      `SafeGitExecutor: env ${key} is not admitted on a read surface. A read may only add or change the variables in READ_SURFACE_ENV_ADMITTED.`,
+    );
+  }
+}
+
+/**
+ * The source-tree opt-outs. `sourceTreeReadOk` applies only to a read-tier verb
+ * whose invocation classifies `read`, or to `fetch` (the one data-pull verb it
+ * was written for). A write form of a read-tier verb gets the guard (EVO-029).
+ */
 function isSourceTreeCheckBypassed(
   verb: string,
   verbArgs: readonly string[],
+  invocation: GitInvocationClass,
   opts: SafeGitOptions,
   targets: readonly string[] = [],
 ): boolean {
-  if (opts.sourceTreeReadOk && SOURCE_TREE_READ_TIER_VERBS.has(verb)) return true;
+  if (
+    opts.sourceTreeReadOk &&
+    SOURCE_TREE_READ_TIER_VERBS.has(verb) &&
+    (invocation === 'read' || verb === 'fetch')
+  ) {
+    return true;
+  }
   if (opts.feedbackAttemptCloneOk && isFeedbackAttemptCloneInvocation(verb, verbArgs, targets)) return true;
   if (opts.localVerifyCloneOk && isLocalVerifyCloneInvocation(verb, verbArgs, targets, opts)) return true;
   if (opts.sourceTreeWorktreeManagerOk && isSourceTreeWorktreeManagerInvocation(verb, verbArgs)) {
@@ -1453,7 +1864,7 @@ function isLocalVerifyCloneInvocation(
     const dirs = positional(0);
     return verbArgs.includes('--bare') && dirs.every((a) => path.resolve(cwd, a) === path.resolve(scope.gitDir));
   } else if (verb === 'config') {
-    allowed = isReadOnlyConfigInvocation(verbArgs) || isWorktreeIdentityConfigWrite(verbArgs);
+    allowed = isReadOnlyConfigInvocation(verbArgs) === 'read' || isWorktreeIdentityConfigWrite(verbArgs);
   } else {
     allowed = LOCAL_VERIFY_CLONE_VERBS.has(verb);
   }
@@ -1479,11 +1890,13 @@ function isSourceTreeWorktreeManagerInvocation(verb: string, verbArgs: readonly 
   switch (verb) {
     case 'rev-parse':
     case 'check-ref-format':
-    case 'symbolic-ref':
     case 'show-ref':
       return true;
+    case 'symbolic-ref':
+      // Read forms only: a write form of symbolic-ref gets the source-tree guard (EVO-029).
+      return classifyGitInvocation(verb, verbArgs) === 'read';
     case 'config':
-      return isReadOnlyConfigInvocation(verbArgs) || isWorktreeIdentityConfigWrite(verbArgs);
+      return isReadOnlyConfigInvocation(verbArgs) === 'read' || isWorktreeIdentityConfigWrite(verbArgs);
     case 'worktree':
       return isAllowedWorktreeManagerSubcommand(verbArgs);
     default:
@@ -1565,7 +1978,10 @@ function audit(
 /** @internal — exposed for SafeGitExecutor.test.ts */
 export const _internal = {
   extractVerbAndTargets,
+  parseVerb,
   isReadOnlyShape,
+  scanReadGrammar,
+  GIT_VERB_CLASS_ENTRIES,
   sanitizeEnv,
   GIT_ENV_DENYLIST,
   repoHasLocalIdentity,

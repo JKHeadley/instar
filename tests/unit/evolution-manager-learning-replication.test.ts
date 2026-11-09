@@ -6,7 +6,7 @@
  *   - dark by default: with NO emitter injected, saveLearnings emits nothing (a strict
  *     single-machine no-op, byte-identical local behavior).
  *   - emit-on-write: an injected emitter receives a `put` per surviving learning.
- *   - PRUNE EMITS TOMBSTONE: when the learning count exceeds maxLearnings, the pruned
+ *   - PRUNE PRESERVES MEMORY: when the learning count exceeds maxLearnings, the pruned
  *     learnings emit `op:delete` tombstones — else a peer re-replicates a locally-pruned
  *     learning forever (resurrection). This is the named §3 gate.
  *   - emit is best-effort: a throwing emitter NEVER breaks the local write (the durable
@@ -70,7 +70,7 @@ describe('EvolutionManager learning-record replication emit', () => {
     }
   });
 
-  it('PRUNE EMITS TOMBSTONE: a learning pruned over maxLearnings emits op:delete (no resurrection)', () => {
+  it('PRUNE PRESERVES MEMORY: an applied learning evicted over target remains archived without delete authority', () => {
     const dir = mkDir();
     try {
       // maxLearnings=3, all unapplied. Adding the 4th prunes the OLDEST-by-keep-policy.
@@ -90,10 +90,11 @@ describe('EvolutionManager learning-record replication emit', () => {
       // The 4th applied learning tips it over max=3 ⇒ the oldest applied (lesson-0) is pruned.
       const fourth = evo.addLearning({ title: 'lesson-3', category: 'infra', description: 'd', source: { discoveredAt: '2026-06-09T00:00:00.000Z' } });
       evo.markLearningApplied(fourth.id, 'EVO-y');
-      // After the prune, fewer than 4 survive AND a tombstone fired for the pruned one.
+      // The hot list shrinks while full content remains available without erasure authority.
       const survivors = evo.listLearnings().map((l) => l.title);
       expect(survivors).not.toContain('lesson-0'); // it was pruned
-      expect(rec.deletes.map((d) => d.title)).toContain('lesson-0'); // tombstone emitted
+      expect(rec.deletes).toEqual([]);
+      expect(evo.getArchivePage({kind: 'learnings'}).entries.map(e => e.record.title)).toContain('lesson-0'); // full content remains accessible
     } finally {
       cleanup(dir);
     }

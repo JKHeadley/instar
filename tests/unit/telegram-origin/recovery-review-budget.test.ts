@@ -8,6 +8,7 @@ const stores: OriginStore[] = [];
 beforeAll(async () => { worker = await compileOriginWorker(); });
 afterEach(async () => { await Promise.all(stores.splice(0).map(store => store.close())); });
 const interval = 15 * 60_000;
+const ladder = [30_000, 60_000, 2 * 60_000, 5 * 60_000];
 async function open(stateDir = temporaryState()) {
   const store = await OriginStore.open({ stateDir, agentId: 'echo' }, worker); stores.push(store); return store;
 }
@@ -22,16 +23,17 @@ describe('durable recovery review pacing', () => {
     await first.close(); await second.close();
     const reopened = await open(stateDir);
     await reopened.admit(op); // Repeated admission must not reset the spending clock.
-    expect(await reopened.reserveRecoveryAttempt({ operationId: op.operationId, now: now + interval - 1 })).toBe(false);
-    expect(await reopened.takeRecoverableAdmissions({ now: now + interval - 1 })).toEqual([]);
-    expect((await reopened.takeRecoverableAdmissions({ now: now + interval })).map(row => row.operationId)).toEqual([op.operationId]);
-    expect(await reopened.reserveRecoveryAttempt({ operationId: op.operationId, now: now + interval })).toBe(true);
+    const due = now + ladder[0];
+    expect(await reopened.reserveRecoveryAttempt({ operationId: op.operationId, now: due - 1 })).toBe(false);
+    expect(await reopened.takeRecoverableAdmissions({ now: due - 1 })).toEqual([]);
+    expect((await reopened.takeRecoverableAdmissions({ now: due })).map(row => row.operationId)).toEqual([op.operationId]);
+    expect(await reopened.reserveRecoveryAttempt({ operationId: op.operationId, now: due })).toBe(true);
     const audit = await reopened.getOperation(op.operationId);
-    expect(audit?.recovery).toEqual({ attempts: 2, nextAttemptAt: now + 2 * interval });
+    expect(audit?.recovery).toEqual({ attempts: 2, nextAttemptAt: due + ladder[1] });
     expect(audit?.operation).toMatchObject({ deadlineAt: op.deadlineAt, maxAttempts: 9, state: 'admitted' });
     expect(audit?.attempts).toEqual([]);
     expect(audit?.children[0]).toMatchObject({ state: 'queued', attempts: 0 });
-    expect((await reopened.recoverableAdmissions({ now: now + 2 * interval }))[0]).toEqual(op);
+    expect((await reopened.recoverableAdmissions({ now: due + ladder[1] }))[0]).toEqual(op);
   });
 
   it('answers "not reserved" (false), never a lock error, while another writer holds the store', async () => {
@@ -57,15 +59,47 @@ describe('durable recovery review pacing', () => {
   it('leaves another operation eligible and bounds recovery over the original lifetime', async () => {
     const store = await open(), now = Date.now(), a = admission('a', now), b = admission('b', now);
     await store.admit(a); await store.admit(b);
-    for (let n = 0; n < 24; n++) {
-      expect(await store.reserveRecoveryAttempt({ operationId: a.operationId, now: now + n * interval })).toBe(true);
-      expect(await store.reserveRecoveryAttempt({ operationId: a.operationId, now: now + n * interval + 1 })).toBe(false);
+    // Quick at first, then the long-standing 15-minute pace. Six hours holds at most 28 starts.
+    let at = now, starts = 0;
+    while (at < a.deadlineAt) {
+      expect(await store.reserveRecoveryAttempt({ operationId: a.operationId, now: at })).toBe(true);
+      expect(await store.reserveRecoveryAttempt({ operationId: a.operationId, now: at + 1 })).toBe(false);
+      at += ladder[starts] ?? interval; starts++;
     }
+    expect(starts).toBe(28);
     for (const extra of [0, 24 * 60 * 60_000, 7 * 24 * 60 * 60_000]) {
       expect(await store.reserveRecoveryAttempt({ operationId: a.operationId, now: a.deadlineAt + extra })).toBe(false);
     }
     expect((await store.takeRecoverableAdmissions({ now })).map(row => row.operationId)).toEqual([b.operationId]);
     expect(await store.reserveRecoveryAttempt({ operationId: b.operationId, now })).toBe(true);
+  });
+
+  it('walks the ladder and stays at the 15-minute pace after it', async () => {
+    const store = await open(), now = Date.now(), op = admission('walk', now);
+    await store.admit(op);
+    let at = now;
+    for (const step of [...ladder, interval, interval]) {
+      expect(await store.reserveRecoveryAttempt({ operationId: op.operationId, now: at })).toBe(true);
+      expect((await store.getOperation(op.operationId))?.recovery?.nextAttemptAt).toBe(at + step);
+      at += step;
+    }
+    // The ladder paces recovery starts and never spends the transport budget.
+    expect((await store.getOperation(op.operationId))?.children[0]).toMatchObject({ state: 'queued', attempts: 0 });
+  });
+
+  it('never makes an uncertain send eligible, however far the ladder has advanced', async () => {
+    const store = await open(), now = Date.now(), op = admission('uncertain-after-ladder', now);
+    await store.admit(op);
+    expect(await store.reserveRecoveryAttempt({ operationId: op.operationId, now })).toBe(true);
+    const child = op.children[0];
+    const claim = await store.claim({ childId: child.childId, materializationId: child.materializations[0].materializationId, ownerBootId: 'owner', leaseMs: 60_000 });
+    if (claim.status !== 'claimed') throw new Error('fixture claim unavailable');
+    await store.markDispatched(claim.child);
+    await store.recordOutcome({ ...claim.child, outcome: 'outcome-unknown' });
+    for (const later of [ladder[0], 60_000, 15 * 60_000, 60 * 60_000]) {
+      expect(await store.reserveRecoveryAttempt({ operationId: op.operationId, now: now + later })).toBe(false);
+      expect(await store.takeRecoverableAdmissions({ now: now + later })).toEqual([]);
+    }
   });
 
   it('cannot reserve missing, suppressed, uncertain or not-yet-due work', async () => {

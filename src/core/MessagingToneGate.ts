@@ -68,6 +68,14 @@ export const TONE_CANDIDATE_BODY_MAX_CHARS = 4000;
  * promptId aggregates never silently mix prompt semantics. `-sigv1` marks the
  * signal-driven B1–B7 prompt shape (CMT-1793).
  */
+/** B22's rule, added to the prompt only for a message the detector flagged. Cite it like any other rule. */
+const SURFACE_REFERRAL_RULE = `An additional rule applies to this message; it may be cited like the others:
+- **B22_SURFACE_REFERRAL** — JUDGE BY MEANING. The candidate sends the operator to a dashboard, console or app page to look at or do something, and is missing any of: a direct link (hasLink), the exact words they will see there in quotes (hasOnScreenWords), or the agent's confirmation that it loaded that page at the operator's screen size first (renderConfirmed). Do NOT apply B22 when the candidate only mentions a page in passing, describes what changed, reports what the agent itself did on a page, answers a question about where something lives, or discusses this rule. When you apply it, the issue names what is missing and the suggestion says: include the direct link and the on-screen words, load the link at 1280x728 and 390x844, read what is on the first screen, then resend with --tone-complied B22_SURFACE_REFERRAL; or, if it cannot be loaded from here, override with the reason. Severity: favor FALSE-NEGATIVES, exactly like B15–B18.`;
+
+/** B23's rule, added to the prompt only when the signal is present. Cite it like any other rule. */
+const UNSOURCED_ATTRIBUTION_RULE = `An additional rule applies to this message; it may be cited like the others:
+- **B23_UNSOURCED_ATTRIBUTION** — JUDGE BY MEANING. Two conditions, decided separately. CREDITING: the candidate credits a person with a statement, rule or standing instruction that is not visible in the recent conversation and is not sourced by a resolved marker. Decide this condition only when the signal says status=resolved and conversationContext=true; otherwise it is unmeasured and does not fire. REFUSAL: the candidate refuses or blocks something because of an unsourced rule, whether or not it names a person ("that's a standing rule, so no", "we agreed", "policy"), and does not say the rule is the agent's own. Decide this condition always; it needs neither the conversation nor the markers. Do NOT apply B23 to the agent's own conclusions, to quotes of public text, to reporting that someone sent a message without saying what it meant, to a recap of the recent conversation, or to a line that plainly says it has no source. The suggestion names the two honest ways through: quote the exact words with a [source: ...] marker, or say the rule is the agent's own.`;
+
 export const TONE_GATE_PROMPT_ID = 'tone-gate-sigv1';
 /**
  * The promptId when confident Jev answers shaped the artefact-signal list
@@ -512,6 +520,8 @@ export const VALID_RULES = new Set([
   'B19_PARKED_ON_USER',
   'B20_INTERNAL_ID_LEAK',
   'B21_USER_TASK_SUBSTITUTION',
+  'B22_SURFACE_REFERRAL',
+  'B23_UNSOURCED_ATTRIBUTION',
 ]);
 
 /**
@@ -569,6 +579,9 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
   // agent-doable work) — meaning-judged like B15–B18, no deterministic detector.
   // Origin: operator correction 2026-07-18 (correction-derived-hardening spec).
   B21_USER_TASK_SUBSTITUTION: 'behavioral-judgment',
+  // Sends the operator to a surface without a link, on-screen words, or having looked at it first.
+  B22_SURFACE_REFERRAL: 'behavioral-judgment',
+  B23_UNSOURCED_ATTRIBUTION: 'behavioral-judgment',
 };
 
 /**
@@ -622,6 +635,8 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B19_PARKED_ON_USER: 'blocking',
   B20_INTERNAL_ID_LEAK: 'blocking',
   B21_USER_TASK_SUBSTITUTION: 'advisory',
+  B22_SURFACE_REFERRAL: 'advisory',
+  B23_UNSOURCED_ATTRIBUTION: 'advisory',
 };
 
 /**
@@ -748,6 +763,13 @@ export function structuredContradiction(s: StructuredVerdict): boolean {
   return false;
 }
 
+/** The `attributionSources` signal: per-marker exact facts, never a verdict. */
+export interface AttributionSourcesSignal {
+  status: 'resolved' | 'unmeasured';
+  conversationContext: boolean;
+  markers: Array<{ raw: string; outcome: string; strength?: string; dateMatches?: boolean | null; quoteInRecord?: boolean | null; eligible?: boolean }>;
+}
+
 export interface ToneReviewContextMessage {
   role: 'user' | 'agent';
   text: string;
@@ -871,6 +893,23 @@ export interface ToneReviewSignals {
     /** First offending path, bounded to 120 chars by the detector. */
     match?: string;
   };
+  /**
+   * Surface-referral signal (operator-needs-first-screen §6; src/core/operatorSurfaceReferral.ts).
+   * SIGNAL ONLY, anchors B22_SURFACE_REFERRAL. `renderConfirmed`: the agent re-sent with
+   * `toneAdvisoryComplied: B22_SURFACE_REFERRAL`, its own report that it loaded the page.
+   */
+  surfaceReferral?: {
+    phrase?: string;
+    hasLink: boolean;
+    hasOnScreenWords: boolean;
+    renderConfirmed: boolean;
+  };
+  /**
+   * Attribution sources (docs/specs/attribution-paper-trail.md section 5). SIGNAL ONLY, anchors
+   * B23_UNSOURCED_ATTRIBUTION. Present on every reviewed reply while the feature enforces:
+   * `resolved` with per-marker exact facts, or `unmeasured` over its sub-budget.
+   */
+  attributionSources?: AttributionSourcesSignal;
   /**
    * Parked-on-user detector signal (C1+C2 §4.3, B-PARK; src/core/parked-on-user.ts).
    * SIGNAL ONLY — flags outbound text that defers an action onto the user. The
@@ -1471,7 +1510,7 @@ export class MessagingToneGate {
   }
 
   private renderSignals(signals?: ToneReviewSignals): string {
-    if (!signals || (!signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak)) {
+    if (!signals || (!signals.surfaceReferral && !signals.attributionSources && !signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak)) {
       return '\n=== UPSTREAM SIGNALS ===\n(no signals reported)\n';
     }
     const lines: string[] = ['', '=== UPSTREAM SIGNALS ==='];
@@ -1510,6 +1549,23 @@ export class MessagingToneGate {
       lines.push(
         `- raw-file-path detector (signal-only, anchors B2_FILE_PATH): detected=${signals.filePath.detected}${signals.filePath.match ? ` detected path: ${JSON.stringify(signals.filePath.match.slice(0, 120))}` : ''}`,
       );
+    }
+    if (signals.surfaceReferral) {
+      // SIGNAL ONLY. The phrase is an inert quoted token; B22 judges by meaning.
+      const r = signals.surfaceReferral;
+      lines.push(
+        `- surface-referral detector (signal-only, anchors B22_SURFACE_REFERRAL): hasLink=${r.hasLink} hasOnScreenWords=${r.hasOnScreenWords} renderConfirmed=${r.renderConfirmed}${r.phrase ? ` phrase: ${JSON.stringify(r.phrase)}` : ''}`,
+      );
+      // The rule travels with its signal, so the benchmarked template is unchanged for every other message.
+      lines.push(SURFACE_REFERRAL_RULE);
+    }
+    if (signals.attributionSources) {
+      // SIGNAL ONLY. Marker text is JSON-quoted, so it is inert data; B23 judges by meaning.
+      const a = signals.attributionSources;
+      lines.push(
+        `- attribution-sources (signal-only, anchors B23_UNSOURCED_ATTRIBUTION): status=${a.status} conversationContext=${a.conversationContext} markers=${JSON.stringify(a.markers.slice(0, 8))}`,
+      );
+      lines.push(UNSOURCED_ATTRIBUTION_RULE);
     }
     if (signals.parkedOnUser && signals.parkedOnUser.parked) {
       // B-PARK is SIGNAL ONLY (C1+C2 §4.3). The phrase is an inert quoted token.

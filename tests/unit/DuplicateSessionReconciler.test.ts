@@ -751,3 +751,13 @@ describe('provenance + status surfaces', () => {
     expect(s.config.echoConfirmTicks).toBe(3);
   });
 });
+
+describe('an app conversation is not this reconciler\'s to converge (app-conversations-in-the-pool §2.7)', () => {
+  it('the close-on-loss rule owns a split app conversation', async () => {
+    const src = (await import('node:fs')).readFileSync('src/monitoring/DuplicateSessionReconciler.ts', 'utf-8');
+    const at = src.indexOf('private async reconcileOne(');
+    const body = src.slice(at, at + 700);
+    expect(body).toContain("cand.platform === 'app' || sessionKey.startsWith('app:')");
+    expect(body.indexOf("sessionKey.startsWith('app:')")).toBeLessThan(body.indexOf('topicHasAuthorityInMotion'));
+  });
+});

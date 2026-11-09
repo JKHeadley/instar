@@ -14,8 +14,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveChannels,
+  mergeAgentChannel,
   type ChannelDefinition,
   type ChannelProbeResult,
+  type ChannelReport,
 } from '../../src/core/channelRegistry.js';
 
 const FIXED_NOW = () => '2026-07-26T20:30:00.000Z';
@@ -26,6 +28,24 @@ function def(id: string, probe: () => Promise<ChannelProbeResult>): ChannelDefin
 
 const ok = (): Promise<ChannelProbeResult> =>
   Promise.resolve({ state: 'working', direction: 'bidirectional', detail: 'probed and usable' });
+
+describe('agent channel projection', () => {
+  const local: ChannelReport = { id: 'user-slack', audience: 'user', purpose: 'reply', whenPreferred: 'Slack', cost: 'free',
+    state: 'not-configured', direction: 'none', detail: 'No local adapter.', probeFailed: false };
+  it('finds a working sibling channel', () => {
+    expect(mergeAgentChannel(local, [{ machine: 'Studio', report: { ...local, state: 'working', direction: 'bidirectional' } }]))
+      .toMatchObject({ state: 'working', direction: 'bidirectional', detail: expect.stringContaining('Studio') });
+  });
+  it('keeps an unchecked sibling unknown', () => {
+    expect(mergeAgentChannel(local, [{ machine: 'Studio', report: null }])).toMatchObject({ state: 'unknown', probeFailed: true });
+    expect(mergeAgentChannel(local, [], 1)).toMatchObject({ state: 'unknown', probeFailed: true });
+  });
+  it('reports absent only after every known sibling answers', () => {
+    expect(mergeAgentChannel(local, [{ machine: 'Studio', report: local }])).toMatchObject({ state: 'not-configured' });
+    expect(mergeAgentChannel(local, [{ machine: 'Studio', report: { ...local, state: 'broken' } }]))
+      .toMatchObject({ state: 'unknown' });
+  });
+});
 
 describe('channel registry — absence is impossible', () => {
   it('REGRESSION: a channel whose probe THROWS still gets a row', async () => {

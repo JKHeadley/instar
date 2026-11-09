@@ -8,7 +8,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GROUPS, allTabIds, legacyHref, ICONS, MERGED, NATIVE_PAGES } from '../../dashboard/console/nav-model.js';
+import { GROUPS, CONSOLE_ONLY_TABS, allTabIds, legacyHref, ICONS, MERGED, NATIVE_PAGES, LEGACY_DASHBOARD, tabHref } from '../../dashboard/console/nav-model.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const HTML = fs.readFileSync(path.resolve(__dirname, '../../dashboard/index.html'), 'utf-8');
@@ -26,7 +26,7 @@ describe('console navigation', () => {
     expect(legacy.length).toBeGreaterThanOrEqual(29);
     const ids = allTabIds();
     expect(new Set(ids).size).toBe(ids.length);
-    expect([...ids].sort()).toEqual([...legacy].sort());
+    expect(ids.filter((id) => !CONSOLE_ONLY_TABS.includes(id)).sort()).toEqual([...legacy].sort());
   });
 
   it('no tile only says where its content moved; every merged tab still redirects to its page', () => {
@@ -39,8 +39,15 @@ describe('console navigation', () => {
   });
 
   it('links to the legacy dashboard by ordinary URL', () => {
-    expect(legacyHref('files')).toBe('/dashboard?tab=files');
-    expect(legacyHref('a b')).toBe('/dashboard?tab=a%20b');
+    expect(legacyHref('files')).toBe('/dashboard/legacy?tab=files');
+    expect(legacyHref('a b')).toBe('/dashboard/legacy?tab=a%20b');
+    // /dashboard itself opens the console now, so a legacy link must name the legacy page.
+    expect(LEGACY_DASHBOARD).toBe('/dashboard/legacy');
+  });
+
+  it('the Phones tile opens the pairing code page (dashboard-console-default-and-pair-page §3.2)', () => {
+    expect(NATIVE_PAGES.phones).toBe('/dashboard/pair');
+    expect(tabHref('phones')).toBe('/dashboard/pair');
   });
 
   it('every tile has a plain-language description and a known icon', () => {

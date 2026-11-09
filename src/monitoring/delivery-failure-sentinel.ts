@@ -61,6 +61,12 @@ import { DegradationReporter } from './DegradationReporter.js';
 export interface SentinelConfig {
   /** Backstop watchdog tick interval. Default 5 minutes (spec §3a). */
   watchdogIntervalMs?: number;
+  /**
+   * Tick interval when the origin outbox owns recovery. Default 30s, the first
+   * retry step a refused send is given; at the 5-minute backstop a reply due in
+   * 30s waited minutes. Every attempt still passes the outbox's claim fence.
+   */
+  originRecoveryIntervalMs?: number;
   /** Per-entry lease duration. Default 90s (spec §3b). */
   leaseDurationMs?: number;
   /** Per-topic delivery rate cap. Default 30s (spec §3c). */
@@ -150,6 +156,7 @@ export interface SentinelDeps {
 
 const DEFAULTS: Required<SentinelConfig> = {
   watchdogIntervalMs: 5 * 60 * 1000,
+  originRecoveryIntervalMs: 30 * 1000,
   leaseDurationMs: 90 * 1000,
   perTopicRateMs: 30 * 1000,
   maxConcurrent: 4,
@@ -202,6 +209,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     super();
     this.cfg = {
       watchdogIntervalMs: config.watchdogIntervalMs ?? DEFAULTS.watchdogIntervalMs,
+      originRecoveryIntervalMs: config.originRecoveryIntervalMs ?? DEFAULTS.originRecoveryIntervalMs,
       leaseDurationMs: config.leaseDurationMs ?? DEFAULTS.leaseDurationMs,
       perTopicRateMs: config.perTopicRateMs ?? DEFAULTS.perTopicRateMs,
       maxConcurrent: config.maxConcurrent ?? DEFAULTS.maxConcurrent,
@@ -278,7 +286,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
       this.tick().catch((err) => {
         console.warn('[delivery-sentinel] watchdog tick failed:', err);
       });
-    }, this.cfg.watchdogIntervalMs);
+    }, this.deps.recoverOrigin ? this.cfg.originRecoveryIntervalMs : this.cfg.watchdogIntervalMs);
     // Don't keep the process alive just for this timer.
     if (typeof this.watchdog.unref === 'function') {
       this.watchdog.unref();
@@ -377,18 +385,18 @@ export class DeliveryFailureSentinel extends EventEmitter {
     for (const [topicId, rows] of grouped.entries()) {
       if (rows.length > this.cfg.stampedeThreshold) {
         await this.handleStampede(topicId, rows);
-        toProcess.push(rows[rows.length - 1]); // most recent
+        toProcess.push(rows[rows.length - 1]); // the stampede policy explicitly drops older rows
         continue;
       }
       // Per-topic rate cap: ≤1 delivery per topic per perTopicRateMs.
-      // Drop all but the oldest queued row for this topic on this tick.
+      // Send only the oldest queued row for this topic on this tick.
       const last = this.lastTopicDelivery.get(topicId) ?? 0;
       if (this.deps.now() - last < this.cfg.perTopicRateMs) {
         continue; // skip this topic this tick
       }
-      // Otherwise process all rows on this topic up to maxConcurrent
-      // total — most-recent first per stampede semantics.
-      toProcess.push(rows[rows.length - 1]);
+      // Keep ordinary queued replies in their original order. The stampede
+      // branch above is the only policy that intentionally keeps the latest.
+      toProcess.push(rows[0]);
       // Also queue the older ones for next tick — they'll be re-selected
       // because we don't transition them on this pass.
     }
@@ -560,7 +568,7 @@ export class DeliveryFailureSentinel extends EventEmitter {
     return lease < this.deps.now();
   }
 
-  private async processRow(row: PendingRelayRow): Promise<'recovered' | 'escalated' | 'tone-gated' | 'retry' | 'ambiguous'> {
+  private async processRow(row: PendingRelayRow): Promise<'recovered' | 'quiet-recorded' | 'escalated' | 'tone-gated' | 'retry' | 'ambiguous'> {
     // Claim the row — write the lease.
     const leaseUntil = new Date(this.deps.now() + this.cfg.leaseDurationMs).toISOString();
     let claimedBy = `${this.deps.bootId}:${process.pid}:${leaseUntil}`;
@@ -668,6 +676,15 @@ export class DeliveryFailureSentinel extends EventEmitter {
       timeSinceFirstMs: this.deps.now() - Date.parse(row.attempted_at),
       now: this.deps.now,
     });
+
+    if (resp.status === 200) {
+      let receipt: { recorded?: boolean; delivered?: boolean; quietId?: string } = {};
+      try { receipt = JSON.parse(resp.body); } catch { /* @silent-fallback-ok: legacy text responses retain existing recovery handling */ }
+      if (receipt.recorded === true && receipt.delivered === false && typeof receipt.quietId === 'string' && receipt.quietId.length <= 200) {
+        if (!transitionOwned('quiet-recorded', { attempts: row.attempts + 1, http_code: 200, error_body: receipt.quietId })) return 'retry';
+        return 'quiet-recorded'; // No delivered counter, recovered marker, or delivery latch.
+      }
+    }
 
     if (decision.action === 'finalize-success') {
       // Update last-delivery time for per-topic rate cap.

@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-06T04:53:29.921Z",
+  "slug": "measurement-subjects",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/monitoring/BlockerLifecycleService.ts",
+      "src/monitoring/MeasurementContractVersion.ts",
+      "src/monitoring/MeasurementSubject.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

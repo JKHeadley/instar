@@ -71,8 +71,28 @@
   ],
   "nonBlocking": [
     {
+      "path": "src/templates/scripts/browser/xdrive.sh",
+      "sha256": "d11b7de0dad9621ca8b54ab249412c23cd974027de894678688409e99ed261bc",
+      "reason": "normal-chrome-linux: operator-invoked browser helper; refuses its own bad arguments or an unsafe moment on the invariant floors of docs/specs/normal-chrome-linux.md, and gates no message, session or other agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/x-drive.py",
+      "sha256": "9fcb321165f91a89d5f80105622116e96d110547d37ef53f9c7f9e12b82fb8bf",
+      "reason": "normal-chrome-linux: operator-invoked browser helper; refuses its own bad arguments or an unsafe moment on the invariant floors of docs/specs/normal-chrome-linux.md, and gates no message, session or other agent action"
+    },
+    {
+      "path": "src/templates/scripts/browser/xdrive-provision.sh",
+      "sha256": "765bcc3500a449c7ec8092a8b813e139dd84cc1f0371b8f72ac05a83a7746a2f",
+      "reason": "normal-chrome-linux: the detached installer the agent's own boot starts; it refuses only its own failed steps (a wrong key fingerprint installs nothing) and gates no message, session or other agent action"
+    },
+    {
+      "path": "src/templates/scripts/smart-fetch.py",
+      "sha256": "e9cf76eacafad745549deb0dc5f27a810a9e4724b20bd738946668dcb859b89c",
+      "reason": "Newly in the population when the lint widened to .py (normal-chrome-linux): a page-fetching helper an agent runs; it reports fetch results and gates no message, session or other agent action"
+    },
+    {
       "path": "src/templates/scripts/app-reply.sh",
-      "sha256": "4aaa5d366db94eb2282fa1e4bce4e717c0c84618aec8f4c653d56c8c5bb39a39",
+      "sha256": "989a677291ac3c066d5063e91f5f43dea6a5c105fdec39309e38c6d56fc5b815",
       "reason": "Declared 2026-11-01 (mobile-native-conversations inc 1): a thin relay. Every send decision (bind token, ownership, tone gate, duplicate suppression) is made by POST /app/session-reply in TypeScript; the script only reads stdin, JSON-escapes, posts, and reports the server answer. It refuses nothing on its own (a missing binding or malformed delivery id is passed through for the server to refuse or replace). Re-declared 2026-11-01 (mobile-native-chat-media inc 1): --file only turns paths into absolute paths for the JSON body; which files may be sent (confinement, key material, hard links, the credential wall) is decided by the server route. The only local exits are usage errors (--file with no path, no text and no file). Re-declared 2026-11-03 (message-origin-all-platforms): the script now also forwards the session's origin credential header (read from its own tmux environment when present, dropped unless it carries the ior1_ prefix); it refuses nothing on that basis, and the server records unknown evidence when the header is absent."
     },
     {
@@ -112,18 +132,18 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-js.sh",
-      "sha256": "f218690b4d389836cc2e54c61b36cbd619c78cf9206639d0616226ff59bc91e1",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+      "sha256": "ab24f08d352b983068fb8869b9ffa45eb3db0109461e3a12041739dc8bc2fb06",
+      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto."
     },
     {
       "path": "src/templates/scripts/browser/chrome-launch.sh",
-      "sha256": "66c0fe5f11e763f6039e4a241a88a1e36c9dd47bc302e8f8e561e1ab4965a587",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action; normal-chrome-cross-platform: also refuses a non-URL in the url slot (a launch flag) and launches in the background"
+      "sha256": "f22fb68c00d9705b6de194e64a7c960f315160b99e18d8e62dfa6c62e12f1de6",
+      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action; normal-chrome-cross-platform: also refuses a non-URL in the url slot (a launch flag) and launches in the background; chrome-keep-drawing-when-locked: adds two fixed rendering flags, still no decision"
     },
     {
       "path": "src/templates/scripts/browser/chrome-mainworld.sh",
-      "sha256": "d63cc4210d51313ed9d2dfaca910d3dde390b3fa1b21bb0f13d1289ef596aa01",
-      "reason": "normal-chrome-builtin-skill: an operator-invoked helper the agent runs by hand; it refuses only its own bad arguments (non-macOS, profile outside the agent home, wrong origin) and gates no message, session or agent action"
+      "sha256": "4a484b7ad45716ea932f529f04a9e79cbfede1c9e08d8bb91182e62f08f2f3bd",
+      "reason": "account-action-safety: transport of TypeScript-owned src/data/accountPageSafetyScript.ts review signals. A flagged current page gets an advisory before caller code; the context-rich session agent may continue unchanged using a current fingerprint and nonsecret reasoning. Shell owns no recovery-policy veto."
     },
     {
       "path": "src/templates/scripts/browser/native-drive.ps1",
@@ -132,7 +152,7 @@
     },
     {
       "path": "src/templates/scripts/browser/ndrive.sh",
-      "sha256": "df046c435ec74bc31da0433a6ae31347b5be4b3ef14d35da37dd979f6d24cb96",
+      "sha256": "d14c4fb79764308e26413b439214ffd9334df5823bfb6f4bbc8da74543266265",
       "reason": "normal-chrome-cross-platform: the WSL wrapper for native-drive.ps1 (the Instar entry point on Windows); it refuses only its own bad arguments (no powershell.exe, the operator's Chrome profile folder, a non-local or malformed profile path, a non-URL in a url slot, a non-chrome.exe executable, an unattended-machine override with no operator record) or an unsafe moment (canfocus before invoke), and gates no message, session or other agent action"
     },
     {
@@ -147,8 +167,8 @@
     },
     {
       "path": "src/templates/scripts/instar-watchdog.sh",
-      "sha256": "207d3cf08ac5bd1030dd35f6d30f472aef9c087e5635e23d92bd574d6291af6b",
-      "reason": "monitors/self-heals/escalates; recovery, not refusal of a user or tool action"
+      "sha256": "26d825029b02c4232077dc337c1e0d42fa98760bd746cb74604e50860ebc033d",
+      "reason": "Re-reviewed 2026-11-06: finite exact-agent holds and shared rule ownership constrain only internal owned watchdog actions. Active enrolled rules perform bounded fixed stop/bootstrap and skip npm, interpreter and wrapper rewrites; inactive agents keep ordinary supervision. Typed admission serializes mutation/update authority, not user or tool decisions. Real shell regression covers scope, expiry and tamper refusal."
     },
     {
       "path": "src/templates/scripts/instar-worktree-create.sh",
@@ -162,8 +182,8 @@
     },
     {
       "path": "src/templates/scripts/secret-drop-retrieve.mjs",
-      "sha256": "fb5b4e3d31f7b7398ced63fd9578477dce4fc13e4890a77ac1edbc1221d8eb54",
-      "reason": "boundary case: secret-handoff error/consume semantics, not an enforcement block"
+      "sha256": "ef56b003da3f252ea526e0f88e99d7066059e476fc9a42d90c5215e555430178",
+      "reason": "Re-declared 2026-11-04 (normal-chrome-linux: for a browser password it refuses stdout, --run and --consume, which is a refusal of its own operation on a value the person marked for one site; it gates no message or session). boundary case: secret-handoff error/consume semantics, not an enforcement block"
     },
     {
       "path": "src/templates/scripts/secret-get.mjs",
@@ -177,18 +197,23 @@
     },
     {
       "path": "src/templates/scripts/browser/chrome-close.sh",
-      "sha256": "2a131eebd032d0f7830092f67b4719a26038bc877214a1d66c6773ea8c055f0f",
+      "sha256": "59da66ae11a5f679a244d910a79de1577534b54615f51520774a5b8325eaec8b",
       "reason": "machine-self-maintenance Part B: dry-run in this release; records the completion signal and reports what a close would do. It closes nothing and gates no message, session or agent action"
     },
     {
       "path": "src/templates/scripts/browser/chrome-renew.sh",
-      "sha256": "4ba2be6ceb94c6fe513e4180dfc265a32d7dcdf5e4af1c8a0f659cdf92c78443",
+      "sha256": "bb78aab49c0c20d77a70e8a6e0ada351b509540476651f9fc62687093a25b50a",
       "reason": "machine-self-maintenance Part B: an agent-invoked helper that renews a browser's ledger lease; refuses only its own bad arguments and gates no message, session or agent action"
     },
     {
       "path": "src/templates/scripts/browser/chrome-unsaved.sh",
-      "sha256": "1e282d427b7520e6a5b4e9a69454080f1e45b9cdee1e56aafabe9ba14f293857",
+      "sha256": "972b35531c891c778af57e5fd9172a055588c662d34693315ea196cb43da70cc",
       "reason": "machine-self-maintenance Part B: a read-only per-tab unsaved-input check; prints yes/no/unreadable per tab and gates nothing itself (the watch-only sweep and chrome-close.sh only record its answer)"
+    },
+    {
+      "path": "src/templates/scripts/threadline-reply.sh",
+      "sha256": "2c24fd497c4e98488e1a120909b4d4330d2aab79672e33077de2f73acfb9ea93",
+      "reason": "memory-privacy-agent-places: a reply relay; it refuses only its own empty input, and every send decision (recipient, thread, ownership) is the server route's, in TypeScript"
     }
   ]
 }

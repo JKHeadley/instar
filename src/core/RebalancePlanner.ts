@@ -63,7 +63,7 @@ export interface RebalanceMove {
   reason: string;
 }
 
-function sessionRatio(m: MachineCapacity): number {
+export function sessionRatio(m: MachineCapacity): number {
   return m.maxSessions && m.maxSessions > 0 ? (m.activeSessionCount ?? 0) / m.maxSessions : 0;
 }
 

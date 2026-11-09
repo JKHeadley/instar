@@ -24,7 +24,7 @@ import type { InstarConfig } from '../../src/core/types.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
-import { NO_SESSION_REASON } from '../../src/server/mobileSessionRoutes.js';
+import { findRemoteSession, NO_SESSION_REASON } from '../../src/server/mobileSessionRoutes.js';
 
 const HOST = 'echo-open-session-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -120,8 +120,12 @@ describe('open session — production wiring', () => {
     });
     expect(typeof after.body.machineNickname === 'string' || after.body.machineNickname === null).toBe(true);
 
-    // The link opens the dashboard served by this server, which focuses `?session=`.
-    const dash = await request(app).get('/dashboard?session=app-session-1');
+    // The link opens the dashboard served by this server, which focuses `?session=`. A /dashboard
+    // link with a query goes to the legacy page with the query kept (dashboard-console-default spec §3.1).
+    const hop = await request(app).get('/dashboard?session=app-session-1');
+    expect(hop.status).toBe(302);
+    expect(hop.headers.location).toBe('/dashboard/legacy?session=app-session-1');
+    const dash = await request(app).get(hop.headers.location);
     expect(dash.status).toBe(200);
     expect(dash.text).toContain("params.get('session')");
     expect(dash.text).toContain('selectSession(match.tmuxSession, match)');
@@ -131,5 +135,13 @@ describe('open session — production wiring', () => {
     expect(bearer.status).toBe(403);
     expect((await send('GET', `/mobile/conversations/session?ref=${encodeURIComponent('app:33333333-3333-4333-8333-333333333333')}`)).status).toBe(404);
     expect((await send('GET', '/mobile/conversations/session?ref=nope')).status).toBe(400);
+
+    // Open session on any machine: the production pool listing this server serves is the source the
+    // route reads for a session on another machine. It parses here, and a machine not in it is not found
+    // (a missing peer is never guessed at). This server's own sessions are not "remote".
+    const listing = await auth(request(app).get('/sessions?scope=pool'));
+    expect(listing.status).toBe(200);
+    const ref = { kind: 'app' as const, ref: `app:${key}`, key };
+    expect(findRemoteSession(listing.body, ref, 'm_absent_peer').state).toBe('none');
   });
 });

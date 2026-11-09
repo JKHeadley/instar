@@ -1,3 +1,4 @@
+import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../../src/data/accountPageSafetyScript.js';
 /**
  * /normal-chrome-browser built-in skill + its .instar/scripts/browser/ helpers
  * (specs docs/specs/normal-chrome-builtin-skill.md, docs/specs/normal-chrome-cross-platform.md).
@@ -44,7 +45,7 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     const content = fs.readFileSync(skillPath(), 'utf-8');
     expect(content).toMatch(/^---\nname: normal-chrome-browser\n/);
     expect(content).toContain('user_invocable: "true"');
-    expect(content).toContain('instar_skill_version: "2"');
+    expect(content).toContain('instar_skill_version: "3"');
     expect(content).toBe(NORMAL_CHROME_BROWSER_SKILL_CONTENT);
   });
 
@@ -70,7 +71,7 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
     expect(content).toContain('ERR wsl-only');
     expect(content).toContain('ERR macos-only');
     expect(content).toContain('ERR windows-only');
-    expect(content).toContain('ACT-138');
+    expect(content).toContain('### Linux (xdrive.sh, the agent display)');
     expect(content).not.toContain('**macOS only.**');
     // Both driver sections, the marker heading, the capability note, invoke named, the forward-window decision.
     expect(content).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
@@ -109,9 +110,9 @@ describe('installBuiltinSkills — normal-chrome-browser', () => {
   });
 
   it('the Windows appendix carries the marker, the Windows section and the Linux statement', () => {
-    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.startsWith(NORMAL_CHROME_BROWSER_SKILL_MARKER)).toBe(true);
+    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX.startsWith('## Drivers by operating system')).toBe(true);
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain(NORMAL_CHROME_BROWSER_WINDOWS_SECTION.trim());
-    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain('### Linux (no Windows underneath)');
+    expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain(NORMAL_CHROME_BROWSER_SKILL_MARKER);
     expect(NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX).toContain('Your edited copy of the skill was kept');
   });
 
@@ -135,13 +136,13 @@ describe('installBrowserScripts', () => {
 
   it('writes all five helpers, executable and byte-preserving', () => {
     const written = installBrowserScripts(tmp);
-    expect(written).toEqual([...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES]);
-    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh']);
+    expect(written).toEqual([...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, 'xdrive-provision.sh']);
+    expect(BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'account-page-safety.js', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py']);
     expect(MACOS_BROWSER_SCRIPT_NAMES).toEqual(['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh']);
     for (const name of BROWSER_SCRIPT_NAMES) {
       const stat = fs.statSync(target(name));
       expect(stat.mode & 0o777).toBe(0o755);
-      expect(fs.readFileSync(target(name))).toEqual(fs.readFileSync(path.join(TEMPLATE_DIR, name)));
+      expect(fs.readFileSync(target(name))).toEqual(name === 'account-page-safety.js' ? Buffer.from(ACCOUNT_PAGE_SAFETY_SCRIPT) : fs.readFileSync(path.join(TEMPLATE_DIR, name)));
     }
   });
 
@@ -173,7 +174,7 @@ describe('installBrowserScripts', () => {
 
   it('shipped scripts carry no machine-specific path, site name or account identity', () => {
     for (const name of BROWSER_SCRIPT_NAMES) {
-      const src = fs.readFileSync(path.join(TEMPLATE_DIR, name), 'utf-8');
+      const src = name === 'account-page-safety.js' ? ACCOUNT_PAGE_SAFETY_SCRIPT : fs.readFileSync(path.join(TEMPLATE_DIR, name), 'utf-8');
       expect(src, name).not.toMatch(/\/Users\/|\/home\/|mama_pc|headl|@gmail/i);
     }
   });
@@ -442,7 +443,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     expect(prefs.browser.allow_javascript_apple_events).toBe(true);
     const opened = fs.readFileSync(openLog, 'utf-8');
     expect(opened).toContain('-g -na Google Chrome --args'); // -g: never brings Chrome to the foreground
-    expect(opened).toContain(`--user-data-dir=${dir} HTTPS://example.com`);
+    expect(opened).toContain(`--user-data-dir=${dir} --disable-backgrounding-occluded-windows --disable-renderer-backgrounding HTTPS://example.com`);
     expect(opened).not.toContain('remote-debugging');
   });
 
@@ -484,7 +485,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     stub('uname', 'echo Darwin');
     stub('ps', `echo "  9 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir('p')}"`);
     const log = path.join(tmp, 'osa.log');
-    stub('osascript', `cat >/dev/null; printf '%s\\n' "$JS" >> ${log}; if [ "$MODE" = wrong ]; then echo "\${NONCE}wrong-origin:https://example.com"; else echo "\${NONCE}ok:fine"; fi`);
+    stub('osascript', `cat >/dev/null; printf '%s\\n__CALL_END__\\n' "$JS" >> ${log}; if [ "$MODE" = wrong ]; then echo "\${NONCE}wrong-origin:https://example.com"; else echo "\${NONCE}ok:fine"; fi`);
     const args = ['p', 'document.querySelector("b").click()', 'https://claude.ai'];
     const wrong = run('chrome-js.sh', args, { MODE: 'wrong' });
     expect(wrong.status).toBe(3);
@@ -492,7 +493,7 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
     const right = run('chrome-js.sh', args, { MODE: 'right' });
     expect(right.status).toBe(0);
     expect(right.stdout.trim()).toBe('fine');
-    const sent = fs.readFileSync(log, 'utf-8').trim().split('\n');
+    const sent = fs.readFileSync(log, 'utf-8').split('\n__CALL_END__\n').map(s => s.trim()).filter(Boolean);
     expect(sent).toHaveLength(2); // one Apple Event per call: check and action are never split
     expect(sent[0]).toContain('(location.origin==="https://claude.ai") ? (function(){try{return "nc');
     expect(sent[0]).toContain('eval("document.querySelector(\\"b\\").click()")');
@@ -513,6 +514,43 @@ describe('browser helper scripts — behaviour with stubbed system tools', () =>
       expect(r.status, body).toBe(code);
       expect(r.stdout.trim().startsWith(out), r.stdout).toBe(true);
     }
+  });
+
+  it('installed Chrome wrapper signals the whole recovery page before eval and permits reviewed actions', () => {
+    stub('uname', 'echo Darwin');
+    stub('ps', `echo "  9 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir('p')}"`);
+    const runner = path.join(tmp, 'browser.cjs');
+    fs.writeFileSync(runner, `const vm=require('node:vm');
+      const text='x'.repeat(12000)+' Your account will be temporarily suspended for 72 hours.';
+      const document={body:{innerText:text,dataset:{}},querySelectorAll:()=>[],createElement:()=>({remove(){}})};
+      const context=vm.createContext({document,location:{href:'https://www.npmjs.com/login',origin:'https://www.npmjs.com'},URL});
+      document.head={appendChild:s=>vm.runInContext(s.textContent,context)};
+      console.log(vm.runInContext(process.env.JS,context));`);
+    stub('osascript', `cat >/dev/null; node '${runner}'`);
+    const blocked = run('chrome-js.sh', ['p', '"CALLER EXECUTED"', 'https://www.npmjs.com']);
+    expect(blocked.status).toBe(0);
+    expect(JSON.parse(blocked.stdout).kind).toBe('account-action-review');
+    expect(blocked.stdout).not.toContain('CALLER EXECUTED');
+    const first = run('chrome-js.sh', ['p', '--read-page', 'https://www.npmjs.com']);
+    expect(first.status).toBe(0);
+    expect(JSON.parse(first.stdout)).toMatchObject({ complete: false, nextOffset: 6000 });
+    const last = run('chrome-js.sh', ['p', '--read-page', 'https://www.npmjs.com', '12000']);
+    expect(last.status).toBe(0);
+    expect(JSON.parse(last.stdout)).toMatchObject({ complete: true, nextOffset: null });
+    expect(JSON.parse(last.stdout).text).toContain('temporarily suspended');
+    const bypass = run('chrome-mainworld.sh', ['p', 'R="CALLER EXECUTED"', 'https://www.npmjs.com']);
+    expect(bypass.status).toBe(0);
+    expect(JSON.parse(bypass.stdout).kind).toBe('account-action-review');
+    const fingerprint = JSON.parse(first.stdout).pageFingerprint;
+    const accepted = run('chrome-js.sh', ['p', '"CALLER EXECUTED"', 'https://www.npmjs.com', '--reviewed-page', fingerprint, '--review-reason', 'Full page reviewed: this is a read-only support inspection.']);
+    expect(accepted.status).toBe(0);
+    expect(accepted.stdout.trim()).toBe('CALLER EXECUTED');
+    expect(accepted.stderr).toContain('reasonSha256');
+    const mainworldAccepted = run('chrome-mainworld.sh', ['p', 'R="CALLER EXECUTED"', 'https://www.npmjs.com', '--reviewed-page', fingerprint, '--review-reason', 'Full page reviewed: read-only support inspection in mainworld.']);
+    expect(mainworldAccepted.status).toBe(0);
+    expect(mainworldAccepted.stdout.trim()).toBe('CALLER EXECUTED');
+    const stale = run('chrome-js.sh', ['p', '"CALLER EXECUTED"', 'https://www.npmjs.com', '--reviewed-page', 'old-page', '--review-reason', 'Reviewed the older page']);
+    expect(JSON.parse(stale.stdout).kind).toBe('account-action-review');
   });
 
   it('chrome-js.sh reports NO_PID when that profile is not open', () => {

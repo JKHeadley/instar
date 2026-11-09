@@ -73,7 +73,7 @@ const sha = (s: string): string => crypto.createHash('sha256').update(s).digest(
 export interface BoundOrigin { host: string; kind: 'cloudflare' | 'tailscale' }
 
 /** Who a pairing link is for (people and roles §3.2); absent ⇒ the owner. Server memory only. */
-export interface PairingPerson { userId: string | null; role: 'owner' | 'msp' }
+export interface PairingPerson { userId: string | null; role: 'owner' | 'msp' | 'team' }
 
 interface CodeEntry { expiresAt: number; label: string | null; tokenHash: string; bound: BoundOrigin | null; person: PairingPerson | null }
 
@@ -130,6 +130,13 @@ export class PairingCodeStore {
     if (this.failureTimes.length >= MAX_FAILED_REDEEMS) return { ok: false, reason: 'too-many-attempts' };
     this.failureTimes.push(this.now());
     return { ok: false, reason: 'invalid' };
+  }
+
+  /** Who a live code is for, without taking it: a refusal here must not burn the link. */
+  peekPerson(code: unknown): PairingPerson | null {
+    this.prune();
+    if (typeof code !== 'string' || !CODE_PATTERN.test(code)) return null;
+    return this.codes.get(sha(code))?.person ?? null;
   }
 
   liveCount(): number { this.prune(); return this.codes.size; }

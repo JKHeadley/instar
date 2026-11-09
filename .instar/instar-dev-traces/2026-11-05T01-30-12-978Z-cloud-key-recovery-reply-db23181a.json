@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "slug": "cloud-key-recovery-reply",
+  "sessionId": "62841c36-23ac-4ea9-949c-fa3d92acf5f1",
+  "timestamp": "2026-11-05T01:30:12.978Z",
+  "artifactPath": "upgrades/side-effects/cloud-key-recovery-reply.md",
+  "artifactSha256": "3837be986e80ec997d42aef1b241fd895962e03354ae210d3aaae8a7ed4a6b89",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ClaudeKeyHealth.ts",
+    "src/core/claudeKeyRecovery.ts",
+    "tests/unit/ClaudeKeyHealth.test.ts",
+    "upgrades/cloud-key-recovery-reply.eli16.md",
+    "upgrades/next/cloud-key-recovery-reply.md",
+    "upgrades/side-effects/cloud-key-recovery-reply.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Follow-up to merged #2762 from an independent constitution read: an answer is awaited only when messages were held. A revert restores #2762 behaviour.",
+  "eli16Path": "upgrades/cloud-key-recovery-reply.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cloud-key-recovery-reply.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "duplicateBuildCheck": {
+    "verdict": "likely-duplicate",
+    "cause": "concurrency",
+    "causes": [
+      "concurrency"
+    ],
+    "decision": "proceed",
+    "reason": "Follow-up to merged #2695 (same topic 137264): fixes the recovery reply fault found in the 136880 nimbus drill and the unread operator notice. Not a duplicate; PR 1271 is unrelated SessionManager work.",
+    "acknowledgedEvidenceIds": [
+      "EV-1",
+      "EV-2",
+      "EV-3",
+      "EV-4",
+      "EV-5"
+    ],
+    "checkedAt": "2026-11-04T23:38:00.187Z",
+    "specSlug": "cloud-key-internal-calls"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-06T03:40:00.882Z",
+  "slug": "session-pool-takeover-at-pairing",
+  "carriers": {
+    "CMT-1381": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "I will build a way for two paired machines to find each other again with no git remote and no paid service, so a pair that only has quick tunnels, or a proved pair whose laptop left home and whose tunnels both restarted, reconnects instead of staying split. Takeover at pairing (topic 137054) ships the guard only: no takeover hold without a proven lasting link."
+    }
+  }
+}

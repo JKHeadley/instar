@@ -38,6 +38,12 @@ export interface SecretField {
 }
 
 export interface SecretRequest {
+  /**
+   * The only site this value may be typed into, shown on the form so the person sees it. A submission
+   * carrying it leaves only through the helper's --browser mode and is never persisted
+   * (docs/specs/normal-chrome-linux.md, "Passwords through Secret Drop").
+   */
+  browserHost?: string;
   /** Unique token for the URL */
   token: string;
   /** CSRF token embedded in the form */
@@ -83,6 +89,12 @@ export interface SecretSubmission {
   label: string;
   /** The topic to notify */
   topicId?: number;
+  /**
+   * The only site this value may be typed into, shown on the form so the person sees it. A submission
+   * carrying it leaves only through the helper's --browser mode and is never persisted
+   * (docs/specs/normal-chrome-linux.md, "Passwords through Secret Drop").
+   */
+  browserHost?: string;
 }
 
 export interface CreateSecretRequestOptions {
@@ -94,6 +106,12 @@ export interface CreateSecretRequestOptions {
   fields?: SecretField[];
   /** Telegram topic to notify on receipt */
   topicId?: number;
+  /**
+   * The only site this value may be typed into, shown on the form so the person sees it. A submission
+   * carrying it leaves only through the helper's --browser mode and is never persisted
+   * (docs/specs/normal-chrome-linux.md, "Passwords through Secret Drop").
+   */
+  browserHost?: string;
   /** TTL in milliseconds (default: 15 minutes) */
   ttlMs?: number;
   /** Callback when secret is received */
@@ -181,6 +199,7 @@ export function buildSignedSubmission(
 export interface StuckConsumerEvent {
   token: string;
   label: string;
+  browserHost?: string;
   topicId?: number;
   receivedAt: string;
   minutesUntilCleanup: number;
@@ -253,6 +272,7 @@ export class SecretDrop {
       onReceive: options.onReceive,
       agentName: this.agentName,
       senderVerification: options.senderVerification,
+      browserHost: options.browserHost,
     };
 
     this.pending.set(token, request);
@@ -336,6 +356,7 @@ export class SecretDrop {
       receivedAt: new Date().toISOString(),
       label: request.label,
       topicId: request.topicId,
+      browserHost: request.browserHost,
     };
 
     // Store submission for retrieval behind a SLIDING idle window.
@@ -371,6 +392,7 @@ export class SecretDrop {
       const event: StuckConsumerEvent = {
         token,
         label: stillPresent.label,
+        browserHost: stillPresent.browserHost,
         topicId: stillPresent.topicId,
         receivedAt: stillPresent.receivedAt,
         minutesUntilCleanup: Math.max(0, Math.ceil((cleanupAt - Date.now()) / 60_000)),
@@ -531,20 +553,33 @@ export class SecretDrop {
    * Render the secret submission form as self-contained HTML.
    */
   renderForm(request: SecretRequest): string {
-    const fieldsHtml = request.fields.map(field => `
+    // A masked field carries a show/hide (eye) toggle so the person can check
+    // what they typed before sending (CMT-1250). The value never leaves the
+    // page because of it: the toggle only flips the input's type locally.
+    const fieldsHtml = request.fields.map(field => {
+      const masked = field.masked !== false;
+      const id = `field-${escapeAttr(field.name)}`;
+      return `
       <div class="field">
-        <label for="field-${escapeAttr(field.name)}">${escapeHtml(field.label)}</label>
-        <input
-          type="${field.masked !== false ? 'password' : 'text'}"
-          id="field-${escapeAttr(field.name)}"
-          name="${escapeAttr(field.name)}"
-          placeholder="${escapeAttr(field.placeholder || '')}"
-          autocomplete="off"
-          spellcheck="false"
-          required
-        >
+        <label for="${id}">${escapeHtml(field.label)}</label>
+        <div class="input-wrap${masked ? ' has-reveal' : ''}">
+          <input
+            type="${masked ? 'password' : 'text'}"
+            id="${id}"
+            name="${escapeAttr(field.name)}"
+            placeholder="${escapeAttr(field.placeholder || '')}"
+            autocomplete="off"
+            spellcheck="false"
+            required
+          >${masked ? `
+          <button type="button" class="reveal-btn" data-reveal-for="${id}" aria-controls="${id}" aria-pressed="false" aria-label="Show what you typed" title="Show what you typed">
+            <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="eye-closed" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.2 4.2M6.6 6.6C3.7 8.4 2 12 2 12s3.6 7 10 7a9.9 9.9 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>` : ''}
+        </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     const minutesLeft = Math.max(0, Math.ceil((request.expiresAt - Date.now()) / 60_000));
 
@@ -632,6 +667,19 @@ export class SecretDrop {
       border-color: #533483;
       background: #fff;
     }
+    .input-wrap { position: relative; }
+    .input-wrap.has-reveal input { padding-right: 3rem; }
+    .reveal-btn {
+      position: absolute; top: 50%; right: 0.35rem; transform: translateY(-50%);
+      width: 44px; height: 44px; display: flex; align-items: center; justify-content: center;
+      background: none; border: none; border-radius: 6px; cursor: pointer; color: #888;
+    }
+    .reveal-btn:hover, .reveal-btn:focus-visible { color: #533483; }
+    .reveal-btn:focus-visible { outline: 2px solid #533483; outline-offset: -2px; }
+    .reveal-btn svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .reveal-btn .eye-closed { display: none; }
+    .reveal-btn[aria-pressed="true"] .eye-open { display: none; }
+    .reveal-btn[aria-pressed="true"] .eye-closed { display: block; }
     .submit-btn {
       width: 100%;
       padding: 0.8rem;
@@ -691,6 +739,7 @@ export class SecretDrop {
       <div class="agent-badge"><span class="dot"></span> ${escapeHtml(request.agentName)}</div>
       <h1>${escapeHtml(request.label)}</h1>
       ${request.description ? `<p class="description">${escapeHtml(request.description)}</p>` : ''}
+      ${request.browserHost ? `<p class="description"><strong>This will be typed into ${escapeHtml(request.browserHost)}.</strong> It goes nowhere else.</p>` : ''}
       <p class="expiry">This link expires in ${minutesLeft} minute${minutesLeft !== 1 ? 's' : ''} and can only be used once.</p>
       <div class="error-banner" id="error-banner"></div>
       <form id="secret-form">
@@ -712,7 +761,22 @@ export class SecretDrop {
     </div>
   </div>
   <script>
+    document.querySelectorAll('.reveal-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const input = document.getElementById(btn.getAttribute('data-reveal-for'));
+        if (!input) return;
+        const show = input.type === 'password';
+        input.type = show ? 'text' : 'password';
+        btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+        const word = show ? 'Hide what you typed' : 'Show what you typed';
+        btn.setAttribute('aria-label', word);
+        btn.setAttribute('title', word);
+        input.focus();
+      });
+    });
     document.getElementById('secret-form').addEventListener('submit', async (e) => {
+      // Re-mask before sending, so nothing stays visible on a shared screen.
+      document.querySelectorAll('.reveal-btn[aria-pressed="true"]').forEach((b) => b.click());
       e.preventDefault();
       const btn = document.getElementById('submit-btn');
       const errorBanner = document.getElementById('error-banner');

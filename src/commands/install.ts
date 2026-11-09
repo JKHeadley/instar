@@ -5,6 +5,9 @@
  * output goes to a log. The ledger in ./install/progress.ts lets a harness poll it and `--resume`
  * continue it.
  */
+import { storageMachineName } from '../core/storageMachineName.js';
+import { looksLikeClaudeToken, writeClaudeKeyToConfig as writeClaudeToken } from '../core/claudeChildAuth.js';
+import { codePageUrlForOrigin } from '../server/dashboardPaths.js';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { randomInt } from 'node:crypto';
 import fs from 'node:fs';
@@ -21,6 +24,7 @@ import { checkPrerequisites } from '../core/Prerequisites.js';
 import { packageInstallCommand } from '../core/packageInstall.js';
 
 export { packageInstallCommand };
+export { tailscaleOperatorCommand, userNpmPrefix } from '../install/doorSteps.js';
 import {
   buildInstallFlow,
   INSTALL_DOOR_LABELS,
@@ -36,12 +40,17 @@ import {
   detectDoorPath,
   detectInstallDoors,
   detectRunningDoor,
-  doorSignInArgs,
-  redetectDoorPath,
   hasBrowser,
   proveDoorSignedIn,
   type SignedInVerdict,
-} from './install/doors.js';
+} from '../install/doors.js';
+import {
+  commandExists,
+  doorInstallStep,
+  doorSignInStep,
+  tailscaleOperatorStep,
+  type ResumeWords,
+} from '../install/doorSteps.js';
 import {
   installProgressPath,
   newInstallProgress,
@@ -59,8 +68,6 @@ const SERVER_READY_TIMEOUT_MS = 60_000;
 const HANDOVER_TIMEOUT_MS = 120_000;
 const PAIRING_READY_TIMEOUT_MS = 60_000;
 const PACKAGE_INSTALL_TIMEOUT_MS = 10 * 60_000;
-/** Long enough for a sign-in that can't start, with no display or opener, to have already exited. */
-const LOGIN_STARTUP_CHECK_MS = 2000;
 
 export interface PreflightFacts {
   platform: NodeJS.Platform;
@@ -90,7 +97,7 @@ export function preflightRefusal(facts: PreflightFacts): { message: string; next
     const need = (MIN_FREE_BYTES / 1024 ** 3).toFixed(1);
     const have = (facts.freeBytes / 1024 ** 3).toFixed(1);
     return {
-      message: `Instar needs about ${need} GB of free disk space, and this computer has ${have} GB.`,
+      message: `Instar needs about ${need} GB of free disk space, and ${storageMachineName()} has ${have} GB.`,
       nextStep: 'Free some space, then run instar install --resume.',
     };
   }
@@ -126,10 +133,6 @@ export function gitWorks(): boolean {
   }
 }
 
-function commandExists(command: string): boolean {
-  return spawnSync('which', [command], { stdio: 'ignore' }).status === 0;
-}
-
 /** How this computer can install tmux, or null when the person has to. Names any sudo it needs. */
 export function tmuxInstallCommand(
   platform: NodeJS.Platform = process.platform,
@@ -155,58 +158,6 @@ export function sqliteInstallCommand(
   return null;
 }
 
-/**
- * Whether this Linux user needs Tailscale operator rights, and the command that grants them.
- * Without them, setting up the agent's private Tailscale address for the phone app fails
- * (fresh server, 2026-11-02). Null when Tailscale is absent, the user is root, the rights are
- * already granted, or the answer can't be read.
- */
-export function tailscaleOperatorCommand(
-  user: string,
-  readPrefs: () => string | null,
-  platform: NodeJS.Platform = process.platform,
-  uid: number | null = typeof process.getuid === 'function' ? process.getuid() : null,
-): string[] | null {
-  if (platform !== 'linux' || uid === 0 || !user) return null;
-  const raw = readPrefs();
-  if (raw === null) return null;
-  let prefs: unknown;
-  try {
-    prefs = JSON.parse(raw);
-  } catch {
-    // @silent-fallback-ok: unreadable prefs mean we can't tell, so we leave Tailscale alone
-    return null;
-  }
-  if (!prefs || typeof prefs !== 'object') return null;
-  if ((prefs as { OperatorUser?: unknown }).OperatorUser === user) return null;
-  return ['sudo', 'tailscale', 'set', `--operator=${user}`];
-}
-
-function readTailscalePrefs(): string | null {
-  if (!commandExists('tailscale')) return null;
-  try {
-    return execFileSync('tailscale', ['debug', 'prefs'], { encoding: 'utf-8', timeout: 10_000, stdio: ['ignore', 'pipe', 'ignore'] });
-  } catch {
-    // @silent-fallback-ok: Tailscale not running or not readable; nothing to set up
-    return null;
-  }
-}
-
-/** Where a door can install when the global npm folder isn't writable. Its bin folder is one detection checks. */
-export function userNpmPrefix(home: string = os.homedir()): string {
-  return path.join(home, '.local');
-}
-
-function npmGlobalWritable(): boolean {
-  try {
-    const prefix = execFileSync('npm', ['config', 'get', 'prefix'], { encoding: 'utf-8', timeout: 15_000 }).trim();
-    fs.accessSync(path.join(prefix, 'lib'), fs.constants.W_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** What the single consent lists, including any sudo, so nothing is installed silently (spec 4.1). */
 export function describeInstallPlan(answers: WizardAnswers): string[] {
   const lines: string[] = [];
@@ -229,6 +180,11 @@ export function describeInstallPlan(answers: WizardAnswers): string[] {
   if (answers.autostartConsent !== false) lines.push('Start your agent automatically after a reboot');
   return lines;
 }
+
+const INSTALL_RESUME_WORDS: ResumeWords = {
+  resume: 'run instar install --resume',
+  elsewhere: 'run instar install --resume in your own terminal, for example over SSH',
+};
 
 export interface InstallEnv {
   logFile: string;
@@ -335,26 +291,7 @@ export function restrictToOwner(file: string): void {
   }
 }
 
-/** A Claude token from `claude setup-token`. Checked by shape only: it lasts a year and is used at the first session. */
-export function looksLikeClaudeToken(value: string): boolean {
-  return /^sk-ant-oat\d*-[A-Za-z0-9_-]{20,}$/.test(value.trim());
-}
-
-/**
- * Writes the server sign-in token where sessions read it: `sessions.credentials.anthropic`
- * as an oauth-token (fb-7cb86d4b-1fd, read since 1.3.1615). Never the legacy field.
- */
-export function writeClaudeToken(configFile: string, token: string): void {
-  const config = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
-  const sessions = (config.sessions && typeof config.sessions === 'object' ? config.sessions : {}) as Record<string, unknown>;
-  const credentials = (sessions.credentials && typeof sessions.credentials === 'object' ? sessions.credentials : {}) as Record<string, unknown>;
-  credentials.anthropic = { kind: 'oauth-token', value: token.trim() };
-  sessions.credentials = credentials;
-  config.sessions = sessions;
-  const tmp = `${configFile}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 });
-  fs.renameSync(tmp, configFile);
-}
+export { looksLikeClaudeToken, writeClaudeToken };
 
 export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./setup-wizard/state-machine.js').WizardActionKind, StepHandler>> {
   const resume = 'Then run instar install --resume.';
@@ -422,36 +359,16 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
 
     // Optional: Tailscale operator rights on Linux, so the agent can give the phone app its
     // private address. Never stops the install.
-    'install-tailscale-operator': async () => {
-      const command = tailscaleOperatorCommand(os.userInfo().username, readTailscalePrefs);
-      if (!command) return { kind: 'done' };
-      if (env.interactive || env.sudoReady()) {
-        env.runLogged(command[0], command.slice(1), 60_000);
-        if (tailscaleOperatorCommand(os.userInfo().username, readTailscalePrefs) === null) return { kind: 'done' };
-      }
-      return {
-        kind: 'done',
-        note: `To let the phone app reach your agent over Tailscale, run ${command.join(' ')} once.`,
-      };
-    },
+    'install-tailscale-operator': async () => tailscaleOperatorStep(env),
 
-    'door-install': async (answers) => {
-      const door = answers.door!;
-      if (detectDoorPath(door)) return { kind: 'done' };
-      const pkg = DOOR_NPM_PACKAGE[door];
-      const args = npmGlobalWritable()
-        ? ['install', '-g', pkg]
-        : ['install', '-g', '--prefix', userNpmPrefix(), pkg];
-      const code = env.runLogged('npm', args, PACKAGE_INSTALL_TIMEOUT_MS);
-      if (code === 0 && redetectDoorPath(door)) return { kind: 'done' };
-      return {
-        kind: 'failed',
-        message: `I couldn't install ${INSTALL_DOOR_LABELS[door]}. Details are in ${env.logFile}.`,
-        nextStep: `Install ${pkg} yourself. ${resume}`,
-      };
-    },
+    'door-install': async (answers) => doorInstallStep(env, answers.door!, INSTALL_RESUME_WORDS),
 
-    'door-sign-in': async (answers, progress) => signInStep(env, answers.door!, progress, claudeToken),
+    'door-sign-in': async (answers, progress) => doorSignInStep(env, answers.door!, {
+      words: INSTALL_RESUME_WORDS,
+      awaiting: progress.awaiting,
+      claudeTokenHeld: claudeToken.value !== null,
+      obtainClaudeToken: () => askClaudeToken(env, claudeToken),
+    }),
 
     'agent-init': async (answers) => {
       const file = agentConfigFile(answers);
@@ -565,7 +482,7 @@ export function buildInstallHandlers(env: InstallEnv): Partial<Record<import('./
         if (pairing.tailscale) env.print('  Your iPhone needs Tailscale on, signed in to the same account as this computer.');
         env.print(telegram
           ? '  The app then asks for a code. Your agent sends it to you privately in Telegram.'
-          : `  The app then asks for a code. To see it, open ${origin}/dashboard on your phone, enter your PIN, and open Phones.`);
+          : `  The app then asks for a code. To see it, open ${codePageUrlForOrigin(origin!)} on your phone and enter your PIN. Tap Copy, then paste it into the app.`);
       }
       env.print('');
       return { kind: 'done' };
@@ -606,68 +523,6 @@ async function askClaudeToken(env: InstallEnv, claudeToken: { value: string | nu
     env.print('  That doesn\'t look like a token from claude setup-token. It starts with sk-ant-oat.');
   }
   return false;
-}
-
-async function signInStep(
-  env: InstallEnv,
-  door: InstallDoor,
-  progress: InstallProgress,
-  claudeToken: { value: string | null } = { value: null },
-): Promise<StepResult> {
-  const label = INSTALL_DOOR_LABELS[door];
-  if (door === 'claude-code' && claudeToken.value) return { kind: 'done' };
-  const verdict = await env.proveSignedIn(door);
-  if (verdict === 'signed-in') return { kind: 'done' };
-  // A server has no browser, and Claude's sign-in page can show a puzzle to data-centre
-  // addresses (Cirrus, 2026-11-02). A token made on any computer with a browser avoids both.
-  if (door === 'claude-code' && verdict === 'signed-out' && (await askClaudeToken(env, claudeToken))) {
-    return { kind: 'done', note: 'Claude will use the token you pasted.' };
-  }
-  if (verdict === 'unknown') {
-    return { kind: 'done', note: `I can't tell whether ${label} is signed in, so I'm leaving it as it is. If it asks you to sign in later, do that then.` };
-  }
-  const command = env.doorPath(door);
-  if (!command) return { kind: 'failed', message: `${label} isn't installed.`, nextStep: 'Run instar install --resume.' };
-
-  const previous = progress.awaiting?.loginPid;
-  const previousStamp = progress.awaiting?.loginStamp;
-  const stillRunning = previous !== undefined && previousStamp !== undefined && env.processStamp(previous) === previousStamp;
-
-  if (env.interactive) {
-    // A sign-in left waiting in the background would compete with this one.
-    if (stillRunning) env.stopProcess(previous);
-    env.print(`  Sign in to ${label} now. This uses your own account, and Instar never sees the password.`);
-    env.runAttached(command, doorSignInArgs(door, env.browser));
-    if ((await env.proveSignedIn(door)) === 'signed-out') {
-      return { kind: 'failed', message: `${label} still isn't signed in.`, nextStep: 'Run instar install --resume to try again.' };
-    }
-    return { kind: 'done' };
-  }
-
-  const inYourTerminal = `run instar install --resume in your own terminal, for example over SSH`;
-  if (!env.browser) {
-    return { kind: 'awaiting-person', instruction: `There's no browser here to sign in to ${label} with, so ${inYourTerminal}.` };
-  }
-  if (stillRunning) {
-    return {
-      kind: 'awaiting-person',
-      instruction: `Finish signing in to ${label} in the window that opened, then run instar install --resume.`,
-      loginPid: previous,
-      loginStamp: previousStamp,
-    };
-  }
-  const pid = env.startDetached(command, doorSignInArgs(door, true));
-  if (pid !== null) await env.sleep(LOGIN_STARTUP_CHECK_MS);
-  const stamp = pid !== null ? env.processStamp(pid) : null;
-  if (pid === null || stamp === null) {
-    return { kind: 'awaiting-person', instruction: `I couldn't open a window to sign in to ${label}, so ${inYourTerminal}.` };
-  }
-  return {
-    kind: 'awaiting-person',
-    instruction: `Finish signing in to ${label} in the window that opened, then run instar install --resume. If no window opened, ${inYourTerminal}.`,
-    loginPid: pid,
-    loginStamp: stamp,
-  };
 }
 
 /**

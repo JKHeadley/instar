@@ -8,7 +8,8 @@ import {
   buildProfile, buildHistory, buildGuards, buildSuggestions, buildFeatures, flattenFeature, profileChanges,
   walkToEnabled, canTurnOff, canUndoOff, needsConsent, facts, applyText, refusalText, PROFILE_LABEL, PROFILE_SENTENCE, STATE_WORD,
 } from './allowed-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession } from './ui.js';
+import { buildServices } from './services-model.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, actionButton, askPin, operatorSession, forgetOperatorSession, firstPaint, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 
 const featureErrors = new Map(); // feature id → the server's last refusal, shown beside the row
@@ -40,10 +41,11 @@ const errWords = (r) => {
 
 export async function renderAllowed(main, ctx) {
   const { get, post } = ctx;
-  if (!main.querySelector('.allowed-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’m allowed to do' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [auto, hist, elev, guardsRes, featRes] = await Promise.all([
-    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'),
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’m allowed to do' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  const [auto, hist, elev, guardsRes, featRes, servicesRes] = await Promise.all([
+    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'), get('/recommended-services'),
   ]);
+  const services = buildServices(servicesRes);
   const profile = buildProfile(auto);
   const history = buildHistory(hist);
   const suggestions = buildSuggestions(elev);
@@ -53,12 +55,14 @@ export async function renderAllowed(main, ctx) {
 
   const eyebrow = `Settings · What I’m allowed to do${guards.ok && guards.multi && guards.selfName ? ` · ${guards.selfName}` : ''}`;
   setKids(main, el('div', { class: 'allowed-page' },
+    // warning-path: pageHead
     pageHead({ eyebrow, headline: profile.ok ? profile.sentence : 'What I’m allowed to do', sub: profile.ok ? null : profile.reason, tone: guards.ok && guards.counts.look ? 'attn' : profile.ok ? 'ok' : 'muted', facts: facts({ profile, guards, features, suggestions }) }),
     el('div', { class: 'page-sections' },
       profileBlock(profile, post, refresh),
       guardsBlock(guards, refresh),
       suggestionsBlock(suggestions, post, refresh),
       featuresBlock(features, refresh),
+      servicesBlock(services),
       history.ok ? section({ id: 'history', title: 'History', rows: history.rows, collapsed: true, empty: 'The profile has never been changed.' })
         : el('section', { class: 'list-section', id: 'sec-history' }, note(history.reason)),
     ),
@@ -66,8 +70,7 @@ export async function renderAllowed(main, ctx) {
 
   const want = new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
   if (want) {
-    const sec = main.querySelector(`#sec-${want}`);
-    if (sec) sec.scrollIntoView({ block: 'start' });
+    arrivalScroll(main.querySelector(`#sec-${want}`));
   }
 }
 
@@ -113,6 +116,7 @@ function guardsBlock(guards, refresh) {
   }
   const open = (r) => (r.record ? openGuard(r, refresh) : null);
   return el('div', { class: 'guard-block', id: 'sec-guards' },
+    // warning-path: row
     section({ id: 'guards-look', title: guards.counts.look ? 'Safety checks · need a look' : 'Safety checks', rows: [...guards.look, ...guards.failed], empty: 'Every safety check is where it should be.', onRow: open, tone: guards.counts.look ? 'attn' : null }),
     section({ id: 'guards-others', title: `${guards.counts.others} others`, rows: guards.others, collapsed: true, onRow: open }));
 }
@@ -178,6 +182,14 @@ function suggestionsBlock(sg, post, refresh) {
 }
 
 // ── Features ──────────────────────────────────────────────────────────────
+// ── Outside services ──────────────────────────────────────────────────────
+function servicesBlock(services) {
+  if (!services.ok) return el('section', { class: 'list-section', id: 'sec-services' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Outside services' })), cantTell(services.reason));
+  const wrap = section({ id: 'services', title: 'Outside services', rows: services.rows, onRow: (r) => sheet({ title: r.main }, story(r.lines), r.action ? el('a', { class: 'btn-primary btn-inline', href: r.action.href, text: r.action.label }) : null) });
+  if (services.note) wrap.querySelector('.list-head').after(note(services.note));
+  return wrap;
+}
+
 function featuresBlock(features, refresh) {
   const wrap = el('section', { class: 'list-section', id: 'sec-features' });
   if (!features.ok) { wrap.append(el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Features' })), cantTell(features.reason)); return wrap; }

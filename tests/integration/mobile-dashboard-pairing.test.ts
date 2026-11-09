@@ -85,6 +85,8 @@ function signed(app: express.Express, dev: ReturnType<typeof makeDevice>, device
 async function redeemNew(app: express.Express) {
   const m = await bearer(request(app).post('/mobile/pairing-codes')).send({ label: 'mine' });
   expect(m.status).toBe(200);
+  // Mint names the code page on the link's own origin whenever the code will be shown on the dashboard.
+  if (m.body.codePageUrl !== undefined) expect(m.body.codePageUrl).toBe(`${new URLSearchParams(String(m.body.link).split('#')[1]).get('o')}/dashboard/pair`);
   const dev = makeDevice();
   const r = await request(app).post('/mobile/pairing-codes/redeem').set('Host', HOST).send({ code: m.body.code, deviceName: 'iPhone', devicePublicKey: dev.publicKey });
   return { dev, r, deviceId: r.body.deviceId as string };
@@ -99,7 +101,13 @@ describe('pairing without Telegram (dashboard path)', () => {
     const ctx = setup();
     const { dev, r, deviceId } = await redeemNew(ctx.app);
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ deviceId, agentName: 'echo', status: 'pending', approval: 'dashboard', codeFormat: 'digits' });
+    // dashboard-console-default-and-pair-page §3.3: the code page on the host the phone redeemed on,
+    // the device only in the fragment.
+    // mobile-pairing-approve §3.5 adds confirmWith, fingerprint and expiresAt.
+    expect(r.body).toEqual({ deviceId, agentName: 'echo', status: 'pending', approval: 'dashboard', codeFormat: 'digits',
+      codePageUrl: `https://${HOST}/dashboard/pair#d=${encodeURIComponent(deviceId)}`,
+      // mobile-pairing-introducer §3.4: the code is on the pairing page (the same link).
+      confirmWith: ['code'], codeAt: 'pairing-page', fingerprint: expect.any(String), expiresAt: expect.any(String) });
     expect(ctx.dms).toHaveLength(0);
 
     // Bearer alone: refused. A wrong session: refused. A device: not on its allowlist.
@@ -200,8 +208,11 @@ describe('pairing without Telegram (dashboard path)', () => {
 describe('pairing path selection', () => {
   it('a Telegram owner present: the code goes to the private chat, not the dashboard (unchanged)', async () => {
     const ctx = setup({ withAdapter: true, telegramOwner: true });
+    const m = await bearer(request(ctx.app).post('/mobile/pairing-codes')).send({ label: 'mine' });
+    expect(m.body.codePageUrl).toBeUndefined(); // the code goes to Telegram: no code page to hand out
     const { r } = await redeemNew(ctx.app);
     expect(r.body).toMatchObject({ status: 'pending', approval: 'telegram' });
+    expect(r.body.codePageUrl).toBeUndefined();
     expect(ctx.dms).toHaveLength(1);
     expect((await approvals(ctx.app, SESSION)).body).toEqual({ approval: 'telegram', approvals: [] });
   });

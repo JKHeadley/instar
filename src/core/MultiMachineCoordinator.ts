@@ -36,6 +36,7 @@ import { serveProgressFresh } from './serveProgress.js';
 import { decideZombieRelinquish, sharedG1ZombieRelinquishLedger } from './zombieRelinquish.js';
 import { getCurrentBootId } from '../server/boot-id.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { MachineRole, MachineIdentity, MultiMachineConfig, CoordinationMode } from './types.js';
 
 /** Observability shape for /health.multiMachine.syncStatus (spec §11). */
@@ -134,6 +135,8 @@ const MIN_RENEW_RETRY_MS = 1_000;
  * 30s leaves a 3× margin while keeping the write off every lease tick.
  */
 const POLL_INTENT_REFRESH_MS = 30_000;
+/** Evidence only: how long after a silent-standby relinquish to look for a new holder. */
+const SILENT_STANDBY_EVIDENCE_CHECK_MS = 5 * 60_000;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -291,6 +294,16 @@ export class MultiMachineCoordinator extends EventEmitter {
   private leaseStallSurfaced: boolean = false;
   /** F3 — per-incarnation latch so a silent standby relinquishes its held lease once. */
   private silentStandbyRelinquished: boolean = false;
+  /** Evidence only: when to check whether anyone took the lease a silent standby gave up. */
+  private silentStandbyEvidenceCheckAtMs: number | null = null;
+  /** Evidence only: the last G2 decision recorded, so a repeated decision is not a row per cadence. */
+  private g2EvidenceKey: string | null = null;
+  /** Evidence only: the last poll intent recorded, and an open write-failure episode. */
+  private pollIntentEvidence: boolean | null = null;
+  private pollIntentWriteFailEvidenced = false;
+  /** Evidence only: the open churn-breaker latch episode. */
+  private churnEvidenceLatched = false;
+  private churnEvidenceExhausted = false;
   /**
    * U4.3 — the rope-health registration handle (the resolver instance is a
    * closure-local in server.ts; the prober registers its merged view here so
@@ -328,6 +341,16 @@ export class MultiMachineCoordinator extends EventEmitter {
 
   /** This machine's identity (null if not initialized). */
   get identity(): MachineIdentity | null { return this._identity; }
+
+  private leaseHold: (() => boolean) | null = null;
+
+  /** A condition that keeps this machine from taking the lease. It never gives one up. */
+  setLeaseHold(hold: () => boolean): void { this.leaseHold = hold; }
+
+  /** When a peer's lease was last seen, on this machine's clock, or null. */
+  leaseObservedAt(machineId: string): number | null {
+    return this.leaseCoordinator?.peerLeaseObservations().get(machineId)?.observedAtMs ?? null;
+  }
 
   /** Whether this machine is the awake (primary) machine. */
   get isAwake(): boolean { return this._role === 'awake'; }
@@ -689,6 +712,17 @@ export class MultiMachineCoordinator extends EventEmitter {
     return this.enrollLeaseRenewalDependency('telegram-origin-writer');
   }
 
+  /** A peer's signed pull is about to read our lease. Same limits as the renew timer. */
+  noteLeasePeerPull(): void {
+    if (this.leaseRenewStopped || !this.leaseCoordinator || this.isLeaseObserveOnly || !this.resilientRenewEnabled()) return;
+    try {
+      this.leaseCoordinator.confirmHoldOnPeerPull();
+    } catch (err) {
+      // @silent-fallback-ok: a read-only pull must still be answered; the renew timer retries.
+      console.warn(`[MultiMachine] could not extend the lease on a peer pull: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** Any conversation surface that admits work only while this machine holds the
    * lease (the Telegram origin writer, native app conversations) enrolls the same
    * holder-only renewal carrier. Without it a non-development agent's lease lapses
@@ -834,17 +868,28 @@ export class MultiMachineCoordinator extends EventEmitter {
         peerConfirmsGlobalOutage: false, // refinement → local-failure-safe direction
       });
       sharedG1ZombieRelinquishLedger.record(decision, nowIso);
+      const zombieEvidenceContext = {
+        action: decision.action, dryRun: cfg.dryRun, staleStreak: this._g1RelinquishStreak,
+        pollAttemptedFresh, pollSucceededFresh, serveProgressedFresh,
+      };
+      if (!decision.relinquish && decision.action !== 'healthy' && decision.action !== 'not-applicable') {
+        // Runs on the evaluator's cadence, so a held state is one row per hour, not per tick.
+        featureEvidence.recordAtMostEvery('multiMachine.zombieRelinquish', `held|${decision.reason}`, 60 * 60 * 1000, { kind: 'held', reason: decision.reason, context: zombieEvidenceContext });
+      }
       if (decision.relinquish && !cfg.dryRun) {
         // Quiesce + relinquish (signed tombstone). Best-effort — a failure retries next tick.
         try {
           await this.leaseCoordinator.relinquishAndBroadcast();
           this._g1RelinquishStreak = 0;
           console.log(`[MultiMachine] [g1-relinquish] zombie holder relinquished (${decision.reason})`);
+          featureEvidence.record('multiMachine.zombieRelinquish', { kind: 'fired', reason: decision.reason, context: zombieEvidenceContext });
         } catch (err) {
           console.error(`[MultiMachine] [g1-relinquish] relinquish failed: ${(err as Error).message}`);
+          featureEvidence.record('multiMachine.zombieRelinquish', { kind: 'error', reason: 'relinquish-failed', context: zombieEvidenceContext });
         }
       } else if (decision.relinquish && cfg.dryRun) {
         console.log(`[MultiMachine] [g1-relinquish] DRY-RUN would relinquish (${decision.reason})`);
+        featureEvidence.recordAtMostEvery('multiMachine.zombieRelinquish', `would|${decision.reason}`, 60 * 60 * 1000, { kind: 'fired', reason: `would-relinquish: ${decision.reason}`, context: zombieEvidenceContext });
       }
       return { decision: decision.action, relinquished: decision.relinquish && !cfg.dryRun };
     } finally {
@@ -900,6 +945,17 @@ export class MultiMachineCoordinator extends EventEmitter {
       globalOutageEvidence: false,
     });
     sharedG2NobodyPollingLedger.recordClaim(decision, nowIso);
+    const g2Key = `${decision.action}|${decision.reason}|${cfg.dryRun}`;
+    if (g2Key !== this.g2EvidenceKey) {
+      this.g2EvidenceKey = g2Key;
+      if (decision.action !== 'claim' && decision.action !== 'no-op' && decision.action !== 'await-confirm') {
+        featureEvidence.record('multiMachine.nobodyPollingRecovery', {
+          kind: decision.action === 'fail-closed' ? 'error' : 'held',
+          reason: `${decision.action}: ${decision.reason}`,
+          context: { verdict: verdict.verdict, silenceConfirmed, silenceStreak: this._g2SilenceStreak, machines: capacities.length, online: capacities.filter((c) => c.online).length, claimant: decision.claimant, dryRun: cfg.dryRun },
+        });
+      }
+    }
     const outcome = await applyNobodyPollingRecovery({
       decision,
       dryRun: cfg.dryRun,
@@ -951,9 +1007,18 @@ export class MultiMachineCoordinator extends EventEmitter {
       });
       this.lastPollIntentKey = `${shouldPoll}|${normalizedRole}|${epoch}`;
       this.lastPollIntentWriteMs = Date.now();
+      this.pollIntentWriteFailEvidenced = false;
       return true;
     } catch (err) {
       console.log(`[MultiMachine] [poll-intent] write failed (non-fatal): ${(err as Error).message}`);
+      if (!this.pollIntentWriteFailEvidenced) {
+        this.pollIntentWriteFailEvidenced = true;
+        featureEvidence.record('multiMachine.pollFollowsLease', {
+          kind: 'error',
+          reason: 'poll intent write failed',
+          context: { shouldPoll, role: normalizedRole, epoch, code: (err as NodeJS.ErrnoException).code ?? null },
+        });
+      }
       return false;
     }
   }
@@ -972,7 +1037,23 @@ export class MultiMachineCoordinator extends EventEmitter {
     const key = `${shouldPoll}|${role === 'awake' ? 'awake' : 'standby'}|${this.leaseCoordinator.currentEpoch()}`;
     const unchanged = key === this.lastPollIntentKey;
     if (unchanged && Date.now() - this.lastPollIntentWriteMs < POLL_INTENT_REFRESH_MS) return;
-    this.writeLeasePollIntent(shouldPoll, role);
+    const wrote = this.writeLeasePollIntent(shouldPoll, role);
+    if (wrote && this.pollIntentEvidence !== shouldPoll) this.recordPollIntentEvidence(shouldPoll, role);
+  }
+
+  /** Evidence only: one row per change of the published poll intent, never one per reconcile. */
+  private recordPollIntentEvidence(shouldPoll: boolean, role: MachineRole): void {
+    const first = this.pollIntentEvidence === null;
+    this.pollIntentEvidence = shouldPoll;
+    try {
+      const holder = this.leaseCoordinator?.currentHolder?.() ?? null;
+      const nobody = !shouldPoll && !first && !holder;
+      featureEvidence.record('multiMachine.pollFollowsLease', {
+        kind: nobody ? 'error' : 'fired',
+        reason: nobody ? 'poll intent stopped with no lease holder visible, so nobody may be polling' : (shouldPoll ? 'poll intent start' : 'poll intent stop'),
+        context: { shouldPoll, role, holder, epoch: this.leaseCoordinator?.currentEpoch?.() ?? null, firstThisBoot: first },
+      });
+    } catch { /* @silent-fallback-ok — evidence only; a partial coordinator must not break the lease tick */ }
   }
 
   /**
@@ -983,7 +1064,14 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private resilientRenewEnabled(): boolean {
     const explicit = this.config.multiMachine?.leaseSelfHeal?.resilientRenew?.enabled;
-    return explicit ?? (this.originLeaseRenewalOwners.size > 0 || resolveDevAgentGate(undefined, this.config));
+    // A store holding only this machine's copy has no other way to keep a held lease alive between
+    // heartbeats. Without the timer the peer's pull takes the lease in every gap, and each swap is a
+    // role change that restarts a machine, whatever conversation surfaces the agent has.
+    return explicit ?? (
+      this.originLeaseRenewalOwners.size > 0
+      || !!this.leaseCoordinator?.hasNoSharedMedium()
+      || resolveDevAgentGate(undefined, this.config)
+    );
   }
 
   /** B3 — the renew cadence, clamped so it is always comfortably under the TTL. */
@@ -1349,7 +1437,15 @@ export class MultiMachineCoordinator extends EventEmitter {
     this.leaseTickStartMonoMs = this.monoNowMs(); // F1b — for the watchdog's ceiling-gated guard reset
     // B2 — advance the churn breaker so a settled system auto-resets the latch
     // after a calm window (no-op when the churnDetector gate is off).
-    this.getChurnBreaker()?.tick();
+    const churnTick = this.getChurnBreaker()?.tick();
+    if (churnTick && this.churnEvidenceLatched && !churnTick.latched) {
+      this.churnEvidenceLatched = false;
+      featureEvidence.record('multiMachine.leaseSelfHeal.churnDetector', {
+        kind: 'held',
+        reason: 'breaker reset after a calm window',
+        context: { flipsInWindow: churnTick.flipsInWindow, latchesInHour: churnTick.latchesInHour },
+      });
+    }
     try {
       this.leaseCoordinator.sampleLiveness?.();
       if (this.isLeaseObserveOnly) {
@@ -1366,7 +1462,33 @@ export class MultiMachineCoordinator extends EventEmitter {
           this.leaseCoordinator.currentHolder() === this._identity.machineId
         ) {
           this.silentStandbyRelinquished = true;
-          await this.withTickTimeout('relinquishAndBroadcast', () => this.leaseCoordinator!.relinquishAndBroadcast());
+          const relinquishEpoch = this.leaseCoordinator.currentEpoch?.() ?? null;
+          try {
+            await this.withTickTimeout('relinquishAndBroadcast', () => this.leaseCoordinator!.relinquishAndBroadcast());
+          } catch (err) {
+            featureEvidence.record('multiMachine.leaseSelfHeal.silentStandbyRelinquish', {
+              kind: 'error',
+              reason: 'relinquish failed or timed out',
+              context: { epoch: relinquishEpoch, error: err instanceof Error ? err.message.slice(0, 80) : 'unknown' },
+            });
+            throw err;
+          }
+          this.silentStandbyEvidenceCheckAtMs = Date.now() + SILENT_STANDBY_EVIDENCE_CHECK_MS;
+          featureEvidence.record('multiMachine.leaseSelfHeal.silentStandbyRelinquish', {
+            kind: 'fired',
+            reason: 'silent standby gave up the lease it still held',
+            context: { epoch: relinquishEpoch, holderAfter: this.leaseCoordinator.currentHolder() },
+          });
+        }
+        if (this.silentStandbyEvidenceCheckAtMs !== null && Date.now() >= this.silentStandbyEvidenceCheckAtMs) {
+          this.silentStandbyEvidenceCheckAtMs = null;
+          if (!this.leaseCoordinator.currentHolder()) {
+            featureEvidence.record('multiMachine.leaseSelfHeal.silentStandbyRelinquish', {
+              kind: 'error',
+              reason: 'nobody holds the lease after the silent standby gave it up',
+              context: { epoch: this.leaseCoordinator.currentEpoch?.() ?? null, waitedMs: SILENT_STANDBY_EVIDENCE_CHECK_MS },
+            });
+          }
         }
         // Silent standby: never acquire/renew — just reconcile role to the
         // observed holder (effectiveView folds the primary's broadcast lease).
@@ -1390,7 +1512,8 @@ export class MultiMachineCoordinator extends EventEmitter {
         // machine creates no contention to leapfrog, so no agreement-gossip needed).
         this.reconcileRoleToLease('lease-tick-defer-preferred');
       } else {
-        await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
+        // A machine that cannot honour team access must not start serving (team-roles-and-access, "Step 2b").
+        if (!this.leaseHold?.()) await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
         this.reconcileRoleToLease('lease-tick');
       }
     } catch {
@@ -1455,6 +1578,22 @@ export class MultiMachineCoordinator extends EventEmitter {
           `${v.exhausted ? ' (EXHAUSTED — operator attention)' : ''} — ` +
           `${dryRun ? `would hold role '${wouldRole}' (dry-run)` : `holding role '${wouldRole}'`}`,
         );
+        if (!this.churnEvidenceLatched) {
+          this.churnEvidenceLatched = true;
+          featureEvidence.record('multiMachine.leaseSelfHeal.churnDetector', {
+            kind: 'fired',
+            reason: dryRun ? 'would latch the flap breaker' : 'latched the flap breaker',
+            context: { flipsInWindow: v.flipsInWindow, latchesInHour: v.latchesInHour, wouldRole, dryRun, transitionReason: reason },
+          });
+        }
+        if (v.exhausted && !this.churnEvidenceExhausted) {
+          this.churnEvidenceExhausted = true;
+          featureEvidence.record('multiMachine.leaseSelfHeal.churnDetector', {
+            kind: 'error',
+            reason: 'breaker exhausted its latch budget: stays latched until the operator clears it',
+            context: { flipsInWindow: v.flipsInWindow, latchesInHour: v.latchesInHour, wouldRole, dryRun },
+          });
+        }
       }
     }
   }
@@ -1589,7 +1728,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const weHold = this.leaseCoordinator.holdsLease();
     const peer = this.leaseCoordinator.observedPeerLease();
     const ourEpoch = this.leaseCoordinator.currentEpoch();
-    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch && this.leaseCoordinator.observedPeerLeaseLive());
     if (contested && !this.leasePullContested) {
       this.leasePullContested = true;
       console.warn(
@@ -1634,7 +1773,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const ourEpoch = this.leaseCoordinator.currentEpoch();
     // A genuine same-epoch contested tie: we still hold AND a peer claims a
     // different-holder lease at our epoch (or higher-but-equal after a leapfrog).
-    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch && this.leaseCoordinator.observedPeerLeaseLive());
     if (!contested) {
       // Falling edge — the tie resolved (we adopted the winner, or it cleared).
       // Drop the episode so a future contested tie starts a fresh latch.

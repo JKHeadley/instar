@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/ropeSinkRouter.ts');
 /**
  * Rope escalation sink router (calm-transient-episode-alerting M-P3).
  *
@@ -69,7 +71,7 @@ export function makeRopeSinkRouter(deps: RopeSinkDeps): (item: RopeSinkItem) => 
         audit('deduped', { count: st.count });
         const existing = deps.telegram()?.getAttentionItem(st.itemId);
         if (existing?.topicId !== undefined && deps.telegram()?.attentionHubAdmits?.(st.itemId) !== false) {
-          void deps.telegram()?.sendToTopic(existing.topicId, `${st.count}th ${cls} episode for this rope in 24 h — a recurring rope is worth a look at the link itself.`, { silent: true })?.catch?.(() => {});
+          void withNotificationEnvelope(stampNotification(), async () => deps.telegram()?.sendToTopic(existing.topicId!, `${st.count}th ${cls} episode for this rope in 24 h — a recurring rope is worth a look at the link itself.`, { silent: true }))?.catch?.(() => {});
         }
         return;
       }

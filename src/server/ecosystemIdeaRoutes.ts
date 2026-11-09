@@ -5,6 +5,7 @@
  * operator's act: PIN plan and commit, never a bearer token alone, and a machine not holding
  * the lease answers 409 naming the holder. 503 when dark, or `no-source` with no roots.
  */
+import { operatorError } from '../core/storageMachineName.js';
 import crypto from 'node:crypto';
 import type { Request, Response, Router } from 'express';
 import { RenderedPlanStore, PlanCommitError } from '../core/RenderedPlanStore.js';
@@ -40,8 +41,8 @@ const intent = (req: Request, res: Response): boolean => {
 
 const safely = (res: Response, fn: () => unknown): void => {
   try { res.json(fn()); } catch (error) {
-    if (error instanceof EpochFencedError) { res.status(409).json({ error: 'stale-epoch', detail: error.message }); return; }
-    res.status(400).json({ error: error instanceof Error ? error.message.slice(0, 200) : 'failed' });
+    if (error instanceof EpochFencedError) { res.status(409).json({ error: 'stale-epoch', detail: operatorError(error, res.app?.locals?.stateDir) }); return; }
+    res.status(400).json({ error: error instanceof Error ? operatorError(error, res.app?.locals?.stateDir).slice(0, 200) : 'failed' });
   }
 };
 

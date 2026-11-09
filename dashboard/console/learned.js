@@ -3,13 +3,22 @@
 // How you like things (the learned preferences), Two machines disagree (only when
 // any), Things I'm still watching (corrections not yet a preference), Earlier
 // corrections (collapsed, paged with the ledger's own cursor), and the quiet line
-// "To change one, tell me in chat." Read only: no write route is called from here.
+// "To change one, tell me in chat." Plus "What I've learned to do" (the Skill Learning
+// Sentinel, docs/specs/skill-learning-sentinel.md §3.10): proposals first, each with Agree /
+// Disagree (operator PIN in that request's body), then learned skills. "Waiting for your OK"
+// (slice 2, spec §3.5): a skill written in live mode but not switched on until the Confirm /
+// Reject tap, above the proposals, with its description, paraphrases and the reason it waits on
+// the first screen. Drafter text (descriptions, paraphrases) is rendered as text, never as markup.
+// Slice 3 (spec §3.8): "Retired" (why, where the bytes are, Restore with the PIN), "Locked" (the conflict
+// in words, "still rendered on <machine>" until the tick archives it, where the archive is), and the
+// de-emphasised retire-all control that shows the re-arm date once used.
 
 import {
   buildPreferences, buildCorrections, buildConflicts, machineNames, learnedHeadline, learnedFacts,
   correctionsUrl, kindWords, confidenceWords, correctionStatusWords, ADVISORY_LINE,
+  buildLearnedSkillsView, DISAGREE_REASONS, buildPending, buildRetired, buildLocked, retireAllWords,
 } from './learned-model.js';
-import { el, setKids, pageHead, section, sheet, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, askLink, askPin, markNeed } from './ui.js';
 
 const PAGE = 20;
 // The last good preferences build, so a failed refresh shows it with its age (stale) instead of nothing.
@@ -20,11 +29,17 @@ let olderPages = [];
 const CORRECTION_KEYS = ['id', 'kind', 'status', 'occurrenceCount', 'detectedAt', 'updatedAt', 'dayBucket', 'topicId', 'routedVia', 'verifyWindowStart', 'verifyWindowEnd', 'reopenCount', 'dedupeKey'];
 
 export async function renderLearned(main, ctx) {
-  const { get } = ctx;
-  if (!main.querySelector('.learned-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’ve learned about you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [prefsRes, firstPage, conflictsRes, poolRes] = await Promise.all([
-    get('/preferences/session-context'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'),
+  const { get, post } = ctx;
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’ve learned about you' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
+  const [prefsRes, firstPage, conflictsRes, poolRes, skillsRes, attentionRes] = await Promise.all([
+    get('/preferences/session-context'), get(correctionsUrl(null, PAGE)), get('/state/conflicts'), get('/pool'), get('/skills/learned'),
+    get('/attention?scope=pool&status=OPEN'),
   ]);
+  const skillAttention = buildSkillAttention(attentionRes);
+  const learnedSkills = buildLearnedSkillsView(skillsRes);
+  const pendingSkills = buildPending(skillsRes);
+  const retiredSkills = buildRetired(skillsRes, Date.now());
+  const lockedSkills = buildLocked(skillsRes);
   const now = Date.now();
   const prefs = buildPreferences(prefsRes, { lastGood, now });
   if (prefs.ok && !prefs.stale) lastGood = { prefs, at: now };
@@ -34,7 +49,21 @@ export async function renderLearned(main, ctx) {
   const h = learnedHeadline({ prefs, corrections });
 
   const parts = [pageHead({ eyebrow: 'Settings · What I’ve learned about you', headline: h.text, tone: h.tone, facts: learnedFacts({ prefs, corrections, conflicts }) })];
-  const sections = [prefsBlock(prefs)];
+  // A skill waiting for your OK leads the page, then a proposal waiting for a verdict (first screen, Home counts both);
+  // otherwise the skills section follows the preferences. An off / failed answer is said once, in the skills section; an
+  // answer that lists skills but no pending list is said here (unreadable is never "nothing waiting").
+  const skillsSection = skillsBlock(learnedSkills, { post, refresh });
+  if (skillAttention.rows.length) skillsSection.append(skillAttentionBlock(skillAttention));
+  const sections = pendingSkills.ok && pendingSkills.rows.length ? [pendingBlock(pendingSkills, { post, refresh })]
+    : !pendingSkills.ok && !pendingSkills.off && learnedSkills.ok ? [el('section', { class: 'list-section', id: 'sec-pending' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Waiting for your OK' })), cantTell(pendingSkills.reason))] : [];
+  sections.push(...(learnedSkills.pendingCount ? [skillsSection, prefsBlock(prefs)] : [prefsBlock(prefs), skillsSection]));
+  // Locked and retired skills follow the skills section: present only when there are any (an off / failed answer was said once above).
+  if (lockedSkills.ok && lockedSkills.rows.length) sections.push(lockedBlock(lockedSkills, { post, refresh }));
+  if (retiredSkills.ok && retiredSkills.rows.length) sections.push(retiredBlock(retiredSkills, { post, refresh }));
+  else if (!retiredSkills.ok && !retiredSkills.off && learnedSkills.ok) sections.push(el('section', { class: 'list-section', id: 'sec-retired' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Retired' })), cantTell(retiredSkills.reason)));
+  // Retire-all: a de-emphasised control of its own, only when there is something to retire or a hold to show; never inside the skills section.
+  const retireAllLine = skillsRes && skillsRes.ok ? retireAllWords(skillsRes.data, now) : null;
+  if (learnedSkills.ok && (learnedSkills.skills.length || retireAllLine)) sections.push(retireAllBlock({ post, refresh }, retireAllLine, learnedSkills.skills.length > 0));
   if (!conflicts.hidden) sections.push(conflictsBlock(conflicts));
   sections.push(...correctionsBlocks(corrections, { get, refresh }));
   sections.push(el('p', { class: 'card-note learned-change', text: 'To change one, tell me in chat.' }));
@@ -80,11 +109,232 @@ function prefCard(p, prefs) {
   return b;
 }
 
+// ── Waiting for your OK (pending learned skills) ──────────────────────────
+function pendingBlock(view, deps) {
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Waiting for your OK' }), el('span', { class: 'list-count', text: String(view.rows.length) }));
+  // No preamble: the card itself says why it waits, so the description and Confirm stay on a phone's first screen.
+  const wrap = el('section', { class: 'list-section', id: 'sec-pending' }, head,
+    el('div', { class: 'skill-pending-list' }, view.rows.map((p) => pendingCard(p, deps))));
+  return markNeed(wrap, 'learned-pending');
+}
+
+function pendingCard(p, deps) {
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const card = el('div', { class: 'need-card skill-pending', 'data-pending': p.name },
+    el('span', { class: 'need-title', text: p.body }),
+    p.paraphrases.length ? el('ul', { class: 'skill-paraphrases' }, p.paraphrases.map((t) => el('li', { class: 'need-sub', text: `“${t}”` }))) : null,
+    el('span', { class: 'need-sub', text: [p.name, p.createdWords, p.reviewedWords].filter(Boolean).join(' · ') }),
+    el('span', { class: 'need-sub skill-pending-why', text: p.reasonWords }),
+    p.harmWords ? el('span', { class: 'need-sub skill-harm', text: p.harmWords }) : null);
+  const path = (verb) => `/skills/learned/pending/${encodeURIComponent(p.name)}/${verb}`;
+  const confirm = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Confirm', 'data-confirm': p.name });
+  const reject = el('button', { class: 'btn-quiet', type: 'button', text: 'Reject', 'data-reject': p.name });
+  const tap = async (verb, ask, done) => {
+    const pin = await askPin({ ...ask, adapter: 'body' });
+    if (!pin) return;
+    confirm.disabled = true; reject.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin }; pin.pin = '';
+    const r = await deps.post(path(verb), body);
+    body.pin = '';
+    status.textContent = r.ok ? done : (r.reason || 'That did not work.');
+    if (r.ok) setTimeout(deps.refresh, 900); else { confirm.disabled = false; reject.disabled = false; }
+  };
+  confirm.addEventListener('click', () => tap('confirm',
+    { title: 'Switch this skill on?', explain: 'Confirming needs your PIN so an agent can never confirm for you. It goes in this one request and is not kept.' },
+    'Confirmed. I will use it from the next conversation.'));
+  reject.addEventListener('click', () => tap('reject',
+    { title: 'Reject this skill?', explain: 'Rejecting needs your PIN too, so an agent can never answer for you. The skill goes back to being a proposal; it goes in this one request and is not kept.' },
+    'Rejected. It is a proposal again and I will not use it.'));
+  card.append(el('div', { class: 'sheet-actions' }, confirm, reject), status);
+  return card;
+}
+
+// ── Needs your look (open skill-learning attention items, spec §3.10) ─────
+// Read from the attention queue the page already has a route for (no new need
+// source: Home counts `needsUser` items through its health source). Each item
+// is one plain line with its numbers; the self-heal that ran first is in the
+// summary. A failed read shows nothing here — Home says the queue is unreadable.
+const SKILL_ATTENTION_CATEGORY = 'skill-learning';
+
+/** The open skill-learning items out of GET /attention: `{ ok, rows }`; a bad answer is `ok: false` with no rows. */
+export function buildSkillAttention(res) {
+  if (!res || !res.ok) return { ok: false, rows: [] };
+  const items = res.data && Array.isArray(res.data.items) ? res.data.items : null;
+  if (!items) return { ok: false, rows: [] };
+  const rows = [];
+  for (const it of items) {
+    if (!it || it.category !== SKILL_ATTENTION_CATEGORY) continue;
+    const status = typeof it.status === 'string' ? it.status : 'OPEN';
+    if (status === 'DONE' || status === 'WONT_DO') continue;
+    const m = /^skill-learning:(\d):/.exec(String(it.id || ''));
+    rows.push({
+      id: String(it.id || ''), item: m ? Number(m[1]) : null,
+      title: String(it.title || ''), summary: String(it.summary || ''),
+      needsUser: it.needsUser === true, silent: it.silent === true,
+      priority: typeof it.priority === 'string' ? it.priority : 'NORMAL',
+      machine: typeof it.machineNickname === 'string' ? it.machineNickname : (typeof it.machineId === 'string' ? it.machineId : null),
+      at: typeof it.updatedAt === 'string' ? it.updatedAt : (typeof it.createdAt === 'string' ? it.createdAt : null),
+    });
+  }
+  rows.sort((a, b) => Number(b.needsUser) - Number(a.needsUser) || (b.at || '').localeCompare(a.at || ''));
+  return { ok: true, rows };
+}
+
+function skillAttentionBlock(view) {
+  const wrap = el('div', { class: 'skill-attention', id: 'sec-skill-attention' },
+    el('h3', { class: 'eyebrow', text: 'Needs your look' }),
+    el('ul', { class: 'skill-attention-list' }, view.rows.map((r) => el('li', { class: `skill-attention-item${r.needsUser ? ' needs-user' : ''}`, 'data-attention': r.id },
+      el('span', { class: 'need-title', text: r.title }),
+      el('span', { class: 'need-sub', text: r.summary }),
+      el('span', { class: 'need-sub', text: [r.needsUser ? 'Waiting for you' : 'For your eyes only', r.machine].filter(Boolean).join(' · ') })))));
+  return wrap;
+}
+
+// ── What I've learned to do ───────────────────────────────────────────────
+function skillsBlock(view, deps) {
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'What I’ve learned to do' }),
+    view.ok && view.pendingCount ? el('span', { class: 'list-count', text: String(view.pendingCount) }) : null);
+  const wrap = el('section', { class: 'list-section', id: 'sec-skills' }, head);
+  if (!view.ok) {
+    wrap.append(view.off ? el('p', { class: 'empty-line', text: view.reason }) : cantTell(view.reason));
+    return wrap;
+  }
+  if (view.empty) {
+    wrap.append(el('p', { class: 'empty-line', text: view.empty }));
+  } else {
+    if (view.proposals.length) wrap.append(el('div', { class: 'skill-proposals' }, view.proposals.map((p) => proposalCard(p, deps))));
+    if (view.skills.length) wrap.append(el('ul', { class: 'skill-lines' }, view.skills.map((s) => el('li', { class: 'skill-line', 'data-skill': s.name, text: s.text }))));
+  }
+  if (view.modeWords) wrap.append(note(view.modeWords));
+  wrap.append(el('p', { class: 'card-note skill-cost', text: view.costWords }));
+  return view.pendingCount ? markNeed(wrap, 'skill-learning-proposals') : wrap;
+}
+
+/** De-emphasised, its own small section after the skills: the hold line (re-arm date) when any, and a link-style button while there are skills to retire. */
+function retireAllBlock(deps, line, anySkills) {
+  const wrap = el('section', { class: 'list-section skill-retire-all-section', id: 'sec-retire-all' });
+  if (line) wrap.append(note(line));
+  if (anySkills) wrap.append(retireAllControl(deps));
+  return wrap;
+}
+
+function retireAllControl(deps) {
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const btn = el('button', { class: 'link-btn skill-retire-all', type: 'button', text: 'Retire every learned skill…', 'data-retire-all': '1' });
+  btn.addEventListener('click', async () => {
+    const pin = await askPin({ title: 'Retire every learned skill?', explain: 'Each one is archived, never deleted, and I draft nothing new for 14 days — the review date shows here after. This needs your PIN; it goes in this one request and is not kept.', adapter: 'body' });
+    if (!pin) return;
+    btn.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin }; pin.pin = '';
+    const r = await deps.post('/skills/learned/retire-all', body);
+    body.pin = '';
+    status.textContent = r.ok ? `Retired ${Array.isArray(r.data && r.data.retired) ? r.data.retired.length : 'them'}. I draft nothing new until the review date shown after refresh.` : (r.reason || 'That did not work.');
+    if (r.ok) setTimeout(deps.refresh, 900); else btn.disabled = false;
+  });
+  return el('div', { class: 'skill-retire-all-wrap' }, btn, status);
+}
+
+// ── Locked ────────────────────────────────────────────────────────────────
+function lockedBlock(view, deps) {
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Locked' }), el('span', { class: 'list-count', text: String(view.rows.length) }));
+  return el('section', { class: 'list-section', id: 'sec-locked' }, head, el('div', { class: 'skill-locked-list' }, view.rows.map((r) => lockedCard(r, deps))));
+}
+
+function lockedCard(r, deps) {
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const card = el('div', { class: 'need-card skill-locked muted-card', 'data-locked': r.name },
+    el('span', { class: 'need-title', text: r.line }),
+    el('span', { class: 'need-sub', text: r.conflictWords }),
+    el('span', { class: `need-sub skill-locked-where${r.stillRendered ? ' skill-still-rendered' : ''}`, text: r.renderedWords }));
+  const unlock = el('button', { class: 'btn-quiet', type: 'button', text: 'Unlock', 'data-unlock': r.name });
+  unlock.addEventListener('click', async () => {
+    const pin = await askPin({ title: 'Unlock this skill?', explain: 'I will render it again and may patch it after corrections. This needs your PIN; it goes in this one request and is not kept.', adapter: 'body' });
+    if (!pin) return;
+    unlock.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin }; pin.pin = '';
+    const r2 = await deps.post(`/skills/learned/${encodeURIComponent(r.name)}/unlock`, body);
+    body.pin = '';
+    status.textContent = r2.ok ? 'Unlocked. I will use it again from the next conversation.' : (r2.reason || 'That did not work.');
+    if (r2.ok) setTimeout(deps.refresh, 900); else unlock.disabled = false;
+  });
+  card.append(el('div', { class: 'sheet-actions' }, unlock), status);
+  return card;
+}
+
+// ── Retired ───────────────────────────────────────────────────────────────
+function retiredBlock(view, deps) {
+  const head = el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Retired' }), el('span', { class: 'list-count', text: String(view.rows.length) }));
+  return el('section', { class: 'list-section', id: 'sec-retired' }, head, el('div', { class: 'skill-retired-list' }, view.rows.map((r) => retiredCard(r, deps))));
+}
+
+function retiredCard(r, deps) {
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const card = el('div', { class: 'need-card skill-retired muted-card', 'data-retired': r.name },
+    el('span', { class: 'need-title', text: `${r.name} — ${r.whyWords}` }),
+    r.harmWords ? el('span', { class: 'need-sub skill-harm', text: r.harmWords }) : null,
+    r.byWords ? el('span', { class: 'need-sub', text: r.byWords }) : null,
+    r.stillActiveWords ? el('span', { class: 'need-sub skill-retire-blocked', text: r.stillActiveWords }) : null,
+    el('span', { class: 'need-sub skill-retired-where', text: r.whereWords }));
+  if (r.aside) return card; // interrupted: nothing to restore until the next check finishes the retire
+  const restore = el('button', { class: 'btn-quiet', type: 'button', text: 'Restore', 'data-restore': r.name });
+  restore.addEventListener('click', async () => {
+    const pin = await askPin({ title: 'Restore this skill?', explain: `${r.harm ? 'It was retired for harm. ' : ''}I check it again and a different reviewer looks at it; then it waits for your OK before I use it. This needs your PIN; it goes in this one request and is not kept.`, adapter: 'body' });
+    if (!pin) return;
+    restore.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin }; pin.pin = '';
+    const r2 = await deps.post(`/skills/learned/${encodeURIComponent(r.name)}/restore`, body);
+    body.pin = '';
+    status.textContent = r2.ok ? 'Restored. It waits for your OK above before I use it.' : (r2.reason || 'That did not work.');
+    if (r2.ok) setTimeout(deps.refresh, 900); else restore.disabled = false;
+  });
+  card.append(el('div', { class: 'sheet-actions' }, restore), status);
+  return card;
+}
+
+function proposalCard(p, deps) {
+  const status = el('p', { class: 'action-status', role: 'status' });
+  const card = el('div', { class: `need-card skill-proposal${p.pending ? '' : ' muted-card'}`, 'data-proposal': p.name },
+    el('span', { class: 'need-title', text: p.description }),
+    p.paraphrases.length ? el('ul', { class: 'skill-paraphrases' }, p.paraphrases.map((t) => el('li', { class: 'need-sub', text: `“${t}”` }))) : null,
+    el('span', { class: 'need-sub', text: [p.name, p.createdWords].filter(Boolean).join(' · ') }),
+    p.dissent ? el('span', { class: 'need-sub skill-dissent', text: p.dissent }) : null,
+    p.waiting ? el('span', { class: 'need-sub', text: p.waiting }) : null);
+  if (!p.pending) { card.append(el('span', { class: 'need-sub', text: p.decided })); return card; }
+  const path = (verdict) => `/skills/learned/proposals/${encodeURIComponent(p.name)}/${verdict}`;
+  const agree = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Agree', 'data-agree': p.name });
+  agree.addEventListener('click', async () => {
+    const pin = await askPin({ title: 'Agree with this?', explain: 'Agreeing needs your PIN so an agent can never agree for you. It goes in this one request and is not kept.', adapter: 'body' });
+    if (!pin) return;
+    agree.disabled = true; disagree.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin }; pin.pin = '';
+    const r = await deps.post(path('agree'), body);
+    body.pin = '';
+    status.textContent = r.ok ? 'Agreed. Noted for the next review.' : (r.reason || 'That did not work.');
+    if (r.ok) setTimeout(deps.refresh, 900); else { agree.disabled = false; disagree.disabled = false; }
+  });
+  const reason = el('select', { class: 'reason-select', 'aria-label': 'Why you disagree', 'data-reason': p.name },
+    DISAGREE_REASONS.map((o) => el('option', { value: o.value, text: o.label })));
+  const disagree = el('button', { class: 'btn-quiet', type: 'button', text: 'Disagree', 'data-disagree': p.name });
+  disagree.addEventListener('click', async () => {
+    const why = reason.value;
+    const pin = await askPin({ title: 'Disagree with this?', explain: `“${reason.options[reason.selectedIndex].textContent}” — disagreeing needs your PIN too, so an agent can never answer for you. It goes in this one request and is not kept.`, adapter: 'body' });
+    if (!pin) return;
+    agree.disabled = true; disagree.disabled = true; status.textContent = 'Working…';
+    const body = { pin: pin.pin, reason: why }; pin.pin = '';
+    const r = await deps.post(path('disagree'), body);
+    body.pin = '';
+    status.textContent = r.ok ? 'Noted. I will not draft this one again.' : (r.reason || 'That did not work.');
+    if (r.ok) setTimeout(deps.refresh, 900); else { agree.disabled = false; disagree.disabled = false; }
+  });
+  card.append(el('div', { class: 'sheet-actions' }, agree, el('span', { class: 'disagree-with' }, reason, disagree)), status);
+  return card;
+}
+
 // ── Two machines disagree ─────────────────────────────────────────────────
 function conflictsBlock(conflicts) {
   if (!conflicts.ok) return el('section', { class: 'list-section', id: 'sec-conflicts' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'Two machines disagree' })), el('p', { class: 'card-note', text: conflicts.reason }));
   return section({ id: 'conflicts', title: 'Two machines disagree', rows: conflicts.rows, onRow: (r) => sheet({ title: 'Machines disagree' },
-    story([{ label: 'What happened', text: r.main }, { label: 'When', text: r.sub }, { label: 'What I do meanwhile', text: 'I use both versions as hints. Settling it from here comes later; for now, tell me in chat which one you mean.' }]),
+    askLink(r.main), story([{ label: 'What happened', text: r.main }, { label: 'When', text: r.sub }, { label: 'What I do meanwhile', text: 'I use both versions as hints. Settling it from here comes later; for now, tell me in chat which one you mean.' }]),
     details({ ...r.record, versions: r.record.versions }, ['conflictId', 'recordKey', 'versions', 'firstSeenAt', 'lastSeenAt', 'recurrenceCount', 'forcedResolution'])) });
 }
 

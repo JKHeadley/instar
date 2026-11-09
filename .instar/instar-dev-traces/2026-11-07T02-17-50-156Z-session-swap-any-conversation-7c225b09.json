@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "session-swap-any-conversation",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T02:17:50.156Z",
+  "artifactPath": "upgrades/side-effects/session-swap-any-conversation.md",
+  "artifactSha256": "f28d0f911bfe2256929565b4dc5974ad41a1d4f08840d4c5a6c6bc1643e9f886",
+  "specPath": "docs/specs/session-swap-any-conversation.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/appInboundDispatch.ts",
+    "src/core/conversationPorts.ts",
+    "tests/unit/app-conversation-service.test.ts",
+    "tests/unit/slack-thread-session-wiring.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on the same Tier 2 change: silent-fallback markers and two source-scan test anchors, found by the full unit run.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

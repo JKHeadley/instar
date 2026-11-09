@@ -20,6 +20,7 @@
  * Output: human-readable summary by default, JSON when `--json` is set.
  */
 
+import { configureClaudeChildAuth } from '../core/claudeChildAuth.js';
 import pc from 'picocolors';
 import path from 'node:path';
 import { loadConfig, ensureStateDir } from '../core/Config.js';
@@ -125,6 +126,7 @@ export async function route(taskPrompt: string, options: RouteCommandOptions): P
 
   const config = loadConfig(options.dir);
   ensureStateDir(config.stateDir);
+  configureClaudeChildAuth(() => (config.sessions?.claudeChildAuth?.enabled === false ? undefined : config.sessions?.anthropicApiKey), () => config.sessions?.anthropicBaseUrl);
 
   const framework = resolveFramework(options.framework, config.sessions.framework);
   const intelligence = buildIntelligenceProvider({

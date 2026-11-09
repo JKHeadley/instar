@@ -1,0 +1,49 @@
+{
+  "ts": "2026-11-06T21:01:04.197Z",
+  "slug": "skill-learning-sentinel-slice0",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 1488,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/server.ts",
+      "src/config/ConfigDefaults.ts",
+      "src/core/BackupManager.ts",
+      "src/core/MachineIdentity.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionMaintenanceRunner.ts",
+      "src/core/SessionManager.ts",
+      "src/core/SyncOrchestrator.ts",
+      "src/core/skillCanonicalFrontmatter.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/LearnedSkillReconciler.ts",
+      "src/providers/parity/rules/skillParityRule.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1446,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "LearnedSkillReconciler registered as controller learned-skill-reconciler in selfActionRegistry (boundK 8, perTargetBoundK 1); steady state renders nothing — the convergence ratchet test fails if its emits do not settle"
+    }
+  },
+  "verdict": "pass"
+}

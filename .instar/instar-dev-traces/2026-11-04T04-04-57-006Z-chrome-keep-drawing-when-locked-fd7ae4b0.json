@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "chrome-keep-drawing-when-locked",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T04:04:57.006Z",
+  "artifactPath": "upgrades/side-effects/chrome-keep-drawing-when-locked.md",
+  "artifactSha256": "6a5aa3e5e9ff2272c4a551bc3d24e4e44eefb031df1d77c383525ec0a64d3008",
+  "coveredFiles": [
+    "scripts/blocking-decision-surfaces-baseline.json",
+    "src/templates/scripts/browser/chrome-launch.sh",
+    "tests/unit/browser-care-scripts.test.ts",
+    "tests/unit/normal-chrome-browser-skill.test.ts",
+    "upgrades/next/chrome-keep-drawing-when-locked.md",
+    "upgrades/side-effects/chrome-keep-drawing-when-locked.eli16.md",
+    "upgrades/side-effects/chrome-keep-drawing-when-locked.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "two fixed rendering flags in the macOS Chrome launcher; revert undoes it; measured fix",
+  "eli16Path": "upgrades/side-effects/chrome-keep-drawing-when-locked.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/chrome-keep-drawing-when-locked.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "fixed launch argument, no loop"
+  }
+}

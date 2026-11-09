@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/QuotaNotifier.ts');
 import { deterministicAutomationAuthor, unknownAutomationAuthor, type OriginAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 /**
  * Quota Notifier — sends alerts when quota thresholds are crossed.
@@ -131,7 +133,7 @@ export class QuotaNotifier {
       return;
     }
     try {
-      await this.sendToTopic(this.alertTopicId, text, author);
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic!(this.alertTopicId!, text, { ...(author) }));
     } catch (err) {
       console.error('[QuotaNotifier] Failed to send:', err);
     }

@@ -3,6 +3,7 @@
  * after recovery, never acquire execution authority from an evidence mirror.
  */
 import { Worker } from 'node:worker_threads';
+import Database from 'better-sqlite3';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import type {
   AdmissionResult, ArchiveResult, ClaimFence, ClaimInput, ClaimResult, DerivedMaterializationInput,
@@ -52,7 +53,7 @@ function workerInputBytes(input: unknown, maximum: number): number {
   }
   return bytes;
 }
-const READS = new Set(['listHeldOperations', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
+const READS = new Set(['listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates']);
 // Request deadlines protect an already-running worker operation. Starting a
 // fresh worker is a different boundary: under host pressure Node can defer the
 // worker bootstrap well beyond an ordinary DB request without the worker being
@@ -69,6 +70,23 @@ const DEFAULT_STALL_TIMEOUT_MS = 30_000;
 // stayed failure-free this long; one served response between recurring stalls
 // must not buy a fresh budget (or a fresh report).
 const DEFAULT_RESTART = { baseDelayMs: 1000, maxDelayMs: 30_000, maxAttempts: 6, healthyWindowMs: 5 * 60_000 };
+
+// Node unloads a native addon when the last thread that loaded it exits, and a
+// worker loads the SQLite addon before its final garbage collection has run the
+// addon's own clean-up for that worker's databases. If no other thread holds the
+// addon at that moment, the clean-up jumps into unloaded code and the whole
+// process dies with SIGSEGV (2026-11-08: the store-retention test process died
+// after its heaviest store closed, on the Studio, the M5 and the Mac Mini). The
+// parent loads it once and keeps it for the life of the process, so a worker
+// exit can never unload it. This is a load only: no database is opened here
+// beyond an in-memory one closed at once, and no store work moves to this thread.
+let sqliteAddonHeld = false;
+export function holdSqliteAddonForWorkers(open: () => { close(): unknown } = () => new Database(':memory:')): boolean {
+  if (sqliteAddonHeld) return true;
+  try { open().close(); sqliteAddonHeld = true; }
+  catch { /* @silent-fallback-ok: the worker then fails its own startup on the same load and reports it through the restart path */ }
+  return sqliteAddonHeld;
+}
 
 export type OriginStoreState = 'starting' | 'ready' | 'restarting' | 'exhausted' | 'closed';
 export interface OriginStoreHealth {
@@ -132,6 +150,7 @@ export class OriginStore {
       maxDelayMs > 15 * 60_000 || maxAttempts < 0 || maxAttempts > 100 || healthyWindowMs < 1 || healthyWindowMs > 24 * 60 * 60_000) throw new Error('origin-store:invalid-restart-policy');
     for (const key of ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot']) if (process.env[key]) this.env[key] = process.env[key];
     if (carry) { this.consecutiveFailures = carry.consecutiveFailures; this.downSince = carry.downSince; }
+    holdSqliteAddonForWorkers();
     this.spawn();
   }
   /** workerUrl exists for tests exercising the same compiled worker in isolation. */
@@ -334,6 +353,8 @@ export class OriginStore {
     holdReason?: string; holdDetail?: Record<string, unknown> | null }): Promise<boolean> { return this.call('recordOperationState', input); }
   /** a2a-single-agent-identity §4.2 — durable held rows (read-only). */
   listHeldOperations(input: { limit?: number; holdReason?: string; now?: number } = {}): Promise<HeldOperationRow[]> { return this.call('listHeldOperations', input); }
+  listSessionDeliveryExceptions(input: { afterPreparedAt?: number; afterOperationId?: string; limit?: number } = {}): Promise<ReturnType<import('./OriginStoreBackend.js').OriginStoreBackend['listSessionDeliveryExceptions']>> { return this.call('listSessionDeliveryExceptions', input); }
+
   /** attention-lifecycle-close-on-cause §3.3 — held `lease-not-held` operations still unresolved for a topic (read-only). */
   unresolvedHeldOperationCount(topicId: string): Promise<number> { return this.call('unresolvedHeldOperationCount', topicId); }
   markHoldExpiryReported(input: { operationId: string; now?: number }): Promise<boolean> { return this.call('markHoldExpiryReported', input); }

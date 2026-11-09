@@ -28,7 +28,42 @@ export const SCRIPT_RUNNER_FIRST_WAVE_DISABLED_SLUGS = [
 ] as const;
 
 /** Fields shared across ALL agent types and contexts (init + migration) */
+/**
+ * Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3). The single
+ * shipped copy: SHARED_DEFAULTS reads it for fresh installs and
+ * PostUpdateMigrator.migrateConfigSkillLearningDefaults adds it, whole, to an
+ * existing agent whose config lacks `monitoring.skillLearning`. `enabled` is the
+ * kill switch (false ⇒ off on every agent; read at boot, so a restart applies a
+ * change — `restartNeeded: true` on its ladder entry).
+ */
+export const SKILL_LEARNING_DEFAULTS = Object.freeze({
+  enabled: false,
+  mode: 'shadow',
+  floor: { minOccurrences: 2, minCorroboratedCleanRuns: 1 },
+  defaultGate: { minSupport: 3, minDistinctDays: 2, minDistinctSessions: 2, windowDays: 30 },
+  shadow: { minDisagreementsSampled: 5, verdictReaskDays: 14 },
+  growthSignals: { createdPerWeekNotice: 4 },
+  evidence: { runSliceBytesPerRun: 98304, promptBudgetBytes: 262144, transcriptScanBytes: 4194304 },
+  retire: { minCorroboratedRuns: 3, defaultScoreFloor: 0.4, defaultMisfireFloor: 0.3, defaultUnusedDays: 60, measurableFloor: 0.2 },
+  review: { requireDifferentFamily: true, minCorrectedRunsSameFamily: 2, revertBreakerPer30d: 2 },
+  llm: { maxDailyCents: 50, batchSize: 20 },
+  tickMinutes: 10,
+  // Live kill switch for the every-machine rendering reconcile (decision 19); server.ts reads it.
+  reconcile: { enabled: true },
+} as const);
+
 const SHARED_DEFAULTS: Record<string, unknown> = {
+  notifications: {
+    selectivity: {
+      dryRun: true,
+      push: { categories: {} },
+      digest: {
+        enabled: false,
+        cadence: 'daily',
+      },
+      quietStore: { retentionDays: 30, maxEntries: 20000 },
+    },
+  },
   // Native operator desktop access is a privileged full-machine capability.
   // Every new and existing agent stays dark until a deliberate local opt-in;
   // production also requires the developmentAgent role and live host checks.
@@ -257,18 +292,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     missingLoginSession: {
       dryRun: true,
     },
-    // AutonomousProgressHeartbeat — hedged, change-gated, sparse liveness backstop
-    // for an autonomous run gone silent-to-user while its output is still moving.
-    // DEV-GATED: `enabled` is OMITTED so resolveDevAgentGate decides — LIVE on a
-    // developmentAgent (dogfood), DARK on the fleet (GET /autonomous-heartbeat
-    // 503s). NEVER hardcode `enabled: false` here (it would dark dev agents too).
-    // `dryRun: true` holds it to "would emit" logging (same cooldown/budget gates
-    // as live, no per-tick flood) until the dev soak proves it quiet. The
-    // threshold/tick/backoff defaults live in the component; persisting only
-    // dryRun keeps applyDefaults() add-missing-only. Spec:
-    // docs/specs/autonomous-progress-heartbeat.md.
+    // Legacy heartbeat settings retained for existing config compatibility.
+    // server.ts now makes autonomous-run reporting live on every machine and
+    // ignores the old enabled/dryRun/cap switches. The tick and recent-output
+    // window remain tuning inputs; output only changes truthful wording.
     autonomousHeartbeat: {
-      dryRun: true,
+      tickIntervalMs: 60_000,
+      recentOutputChangeWindowMs: 300_000,
     },
     // Periodic Goal Re-Alignment Phase 1 ("see it"). DEV-GATED: enabled is
     // deliberately omitted so it runs on the development agent and stays dark
@@ -460,6 +490,27 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       reapIntervalMs: 86_400_000,
       initialPassDelayMs: 900_000,
       maxReapsPerPass: 20,
+    },
+    // DiskSteward (docs/specs/disk-steward.md) — every machine watches its own
+    // free space and posts in the "Disk space (all machines)" topic when it gets
+    // low. Watching and posting are on for everyone. The cleanup of two tool
+    // caches (npm cache over 5 GiB, Xcode build files older than a day) deletes
+    // files, so it is OFF by default; the update migration turns it on only for
+    // development agents that have no value set.
+    diskSteward: {
+      enabled: true,
+      sampleIntervalMs: 900_000,
+      warnPercent: 15,
+      warnMinGiB: 100,
+      escalatePercent: 10,
+      escalateMinGiB: 60,
+      forecastEscalateDays: 3,
+      prune: {
+        enabled: false,
+        dryRun: false,
+        minIntervalMs: 21_600_000,
+        npmCacheMaxGiB: 5,
+      },
     },
     // OrphanedWorkSentinel — the silent-uncommitted-death backstop (2026-06-12,
     // topic 22367): detects an agent worktree with uncommitted work whose owning
@@ -694,6 +745,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       captureBacklogDrainPerTick: 5,
       captureBacklogMaxRetries: 3,
     },
+    // Skill-learning sentinel: the whole block, kill switch off (see SKILL_LEARNING_DEFAULTS).
+    skillLearning: structuredClone(SKILL_LEARNING_DEFAULTS) as Record<string, unknown>,
     // Both omit `enabled`: resolveDevAgentGate makes them live on development
     // agents and dark on the fleet. v1 remains observe-only via dryRun:true.
     correctionClassReview: {
@@ -1212,6 +1265,10 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // Track H). This is the migration-parity path: every existing agent gets the dark
   // defaults on update. The `stage` field is StageAdvancer-write-only at runtime.
   multiMachine: {
+    // Shared init + PostUpdateMigrator defaults: setup is visible, host grants
+    // stay inert until an owner enrolls this machine through the phone control.
+    // enabled is omitted: the observer is live on dev agents, fleet-dark.
+    serverDownRecovery: {},
     // Machine identity recovery (machine-self-assertion). All three `enabled`
     // fields are deliberately omitted: live on the development agent, dark on
     // fleet. Dry-run prevents trust/routing mutation during the soak.
@@ -1565,6 +1622,8 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       promotionModel: 'off',
       promotionCeiling: 'dark',
       promotionTickMs: 60000,
+      // Telegram topics the rebalance proof may move; empty ⇒ the route refuses everything.
+      rebalanceProofTopics: [],
       clockSkewToleranceMs: 300000,
       maxExpectedNtpDriftMs: 250,
       machineRecordEvictionMs: 86400000,
@@ -2059,6 +2118,19 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       sweepIntervalMs: 21_600_000,
       dryRun: true,
     },
+    // promise-review-and-priority: the agent reviews its own open promises.
+    // `enabled` DELIBERATELY OMITTED — resolved by the developmentAgent gate
+    // (live on dev, dark on the fleet). Closures ship in shadow
+    // (closureDryRun) until the maturation ladder graduates them.
+    promiseReview: {
+      closureDryRun: true,
+      batchSize: 30,
+      maxClosuresPerRun: 15,
+      maxClosuresPerDay: 60,
+      rereviewAfterDays: 7,
+      highRereviewAfterDays: 1,
+      reopenWindowDays: 30,
+    },
     agentOwnedFollowthrough: {
       dryRun: true,
       // externalBlockWindowMs / externalBlockCeilingMs / externalBlockSweepMs:
@@ -2167,6 +2239,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
     switchNowConfirmTtlMs: 300000,        // §8 'switch now' validity window
     defaults: {},                         // per-topic config-default profiles (§5.2)
   },
+  // Attribution paper trail (docs/specs/attribution-paper-trail.md). `enabled` is deliberately
+  // OMITTED so resolveDevAgentGate decides at runtime: live on a dev agent, dark on the fleet.
+  // Registered in DEV_GATED_FEATURES. `record` refuses nothing and the hook does not wait;
+  // `enforce` stays opt-in, because an update never adds a restriction to an existing agent.
+  attribution: {
+    mode: 'record',
+  },
   // Live credential re-pointing (spec: live-credential-repointing-rebalancer.md).
   // developmentAgent dark-feature gate (operator directive 2026-06-13): `enabled` is
   // OMITTED so resolveDevAgentGate resolves it LIVE on a dev agent + DARK on the fleet
@@ -2178,6 +2257,15 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // (a baked-in false would dark dev agents too — the #1001 shape the dark-gate lint
   // forbids for a dev-gated block).
   subscriptionPool: {
+    // Usage-wall rescue (docs/specs/usage-wall-rescue.md) — ON by default,
+    // operator-approved 2026-11-04. A session at its account's usage wall moves
+    // to an account with room; spawns are tagged with a pool account. Only
+    // EFFECTIVE when the pool holds 2+ usable accounts of the framework, so a
+    // 0/1-account agent is unchanged. Existing agents receive this through
+    // applyDefaults (add-missing): an operator's explicit `false` is kept.
+    wallRescue: {
+      enabled: true,
+    },
     // Assisted re-login is authority-bearing browser + credential work. Ship
     // fleet-dark and dry-run-first; a development install must still make an
     // explicit local promotion to approval/live after its controlled canary.

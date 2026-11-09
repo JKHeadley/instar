@@ -30,8 +30,30 @@ const CLASSIFIER = String.raw`function classify(tool, input, methods, managedDir
     if (/--(?:user-data-dir|profile-directory|remote-debugging-(?:port|pipe))\b/.test(text) && /web\.telegram\.org/i.test(text)) return 'telegram-browser-broker-required';
   }
   if ((browser || shell && /(?:chromium|chrome|playwright|--user-data-dir|--remote-debugging)/i.test(text)) &&
-    managedDirs.some(dir => text.includes(dir))) return 'managed-telegram-profile-private';
+    managedDirs.some(dir => namesManagedDir(text, dir))) return 'managed-telegram-profile-private';
   return null;
+  // A managed dir counts only as a whole path component: the next character
+  // must not continue a file name, so ".../justin-telegram-room4" is not
+  // ".../justin-telegram", while ".../justin-telegram/", a quoted path, or a
+  // path followed by whitespace, a shell separator or end of text still is.
+  function namesManagedDir(haystack, dir) {
+    const base = String(dir).replace(/[\/\\]+$/, '');
+    if (!base) return false;
+    // A ".." step can reach the managed dir by its own name from anywhere
+    // (".../justin-telegram-room4/../justin-telegram"), so its name after a
+    // ".." step counts too.
+    const name = base.split(/[\/\\]/).pop();
+    // Repeated separators and "./" steps do not change where a path leads.
+    const tidy = value => value.replace(/[\/\\]+/g, run => run[0]).replace(/([\/\\])(?:\.[\/\\])+/g, '$1');
+    const needles = [base, tidy(base), '../' + name, '..\\' + name];
+    return [haystack, tidy(haystack)].some(text => needles.some(needle => wholeComponent(text, needle)));
+  }
+  function wholeComponent(haystack, needle) {
+    for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + 1)) {
+      if (!/[A-Za-z0-9._-]/.test(haystack.charAt(at + needle.length))) return true;
+    }
+    return false;
+  }
 }`;
 
 export function originToolGuardHook(): string {

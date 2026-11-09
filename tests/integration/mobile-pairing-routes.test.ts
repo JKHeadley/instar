@@ -168,12 +168,42 @@ describe('mobile pairing routes', () => {
     expect(ctx.svc.devices.get(deviceId)!.wrongCodes ?? []).toHaveLength(0);
   });
 
-  it('revoke: a device only itself, bearer any; a revoked device is refused', async () => {
+  it('revoke: an active owner phone may remove another phone here; an MSP or pending phone only itself; no forwarding from a device', async () => {
+    // docs/specs/mobile-native-phones-messages.md §3.3.
+    const ctx = setup();
+    const owner = await pairDevice(ctx);
+    await signed(ctx.app, owner.dev, owner.deviceId, 'POST', '/mobile/device/confirm', { code: codeFrom(ctx.dms[0]) });
+    // A pending phone (owner person, not yet confirmed) cannot remove another phone.
+    const pending = await pairDevice(ctx);
+    const third = await pairDevice(ctx);
+    await signed(ctx.app, third.dev, third.deviceId, 'POST', '/mobile/device/confirm', { code: codeFrom(ctx.dms[ctx.dms.length - 1]) });
+    const byPending = await signed(ctx.app, pending.dev, pending.deviceId, 'POST', `/mobile/devices/${third.deviceId}/revoke`, {});
+    expect(byPending.status).toBe(403);
+    expect(byPending.body.error).toBe('owner-phone-required');
+    // An MSP phone cannot either.
+    fs.writeFileSync(path.join(ctx.config.stateDir, 'users.json'), JSON.stringify([{ id: 'helper', name: 'Helper', channels: [], permissions: ['user'] }]));
+    ctx.svc.devices.setPerson(third.deviceId, { userId: 'helper', role: 'msp' });
+    const byMsp = await signed(ctx.app, third.dev, third.deviceId, 'POST', `/mobile/devices/${pending.deviceId}/revoke`, {});
+    expect(byMsp.status).toBe(403);
+    expect(byMsp.body.error).toBe('owner-phone-required');
+    expect(ctx.svc.devices.get(pending.deviceId)!.status).toBe('pending');
+    // The active owner phone removes the MSP phone, which is then refused.
+    const byOwner = await signed(ctx.app, owner.dev, owner.deviceId, 'POST', `/mobile/devices/${third.deviceId}/revoke`, {});
+    expect(byOwner.status).toBe(200);
+    expect(byOwner.body.revoked).toBe(true);
+    expect(ctx.svc.devices.get(third.deviceId)!.status).toBe('revoked');
+    expect((await signed(ctx.app, third.dev, third.deviceId, 'GET', '/sessions')).status).toBe(401);
+    // An id this machine does not hold: 404 from a device, never forwarded.
+    const unknown = await signed(ctx.app, owner.dev, owner.deviceId, 'POST', '/mobile/devices/dev-elsewhere/revoke', {});
+    expect(unknown.status).toBe(404);
+    expect(unknown.body.error).toBe('unknown-device');
+  });
+
+  it('revoke: a device itself, bearer any; a revoked device is refused', async () => {
     const ctx = setup();
     const a = await pairDevice(ctx);
     await signed(ctx.app, a.dev, a.deviceId, 'POST', '/mobile/device/confirm', { code: codeFrom(ctx.dms[0]) });
     const b = await pairDevice(ctx);
-    expect((await signed(ctx.app, a.dev, a.deviceId, 'POST', `/mobile/devices/${b.deviceId}/revoke`, {})).status).toBe(403);
     expect((await request(ctx.app).post(`/mobile/devices/${a.deviceId}/revoke`).set('Authorization', 'Bearer tok-1').send({})).body.revoked).toBe(true);
     expect((await signed(ctx.app, a.dev, a.deviceId, 'GET', '/sessions')).status).toBe(401);
     const list = await request(ctx.app).get('/mobile/devices').set('Authorization', 'Bearer tok-1');

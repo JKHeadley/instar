@@ -461,10 +461,17 @@ struct InstarDesktopHost {
                 }
             }
         case "state-op":
+            // A failure names itself on stderr with one fixed word, so Node can
+            // say why instead of a bare "unavailable".
+            func refuse(_ reason: String) -> Never {
+                fputs("state-op: \(reason)\n", stderr)
+                exit(69)
+            }
             let data = FileHandle.standardInput.readDataToEndOfFile()
             guard data.count <= 8_192, let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let root = raw["root"] as? String, let reply = LockedStore.perform(root: root, op: raw),
-                  let line = try? JSONSerialization.data(withJSONObject: reply) else { exit(69) }
+                  let root = raw["root"] as? String else { refuse("request-invalid") }
+            guard let reply = LockedStore.perform(root: root, op: raw) else { refuse(LockedStore.lastFailure ?? "op-invalid") }
+            guard let line = try? JSONSerialization.data(withJSONObject: reply) else { refuse("reply-unencodable") }
             FileHandle.standardOutput.write(line)
         case "relock-guard":
             runRelockGuard(root: CommandLine.arguments[2], key: CommandLine.arguments[3])
@@ -889,24 +896,49 @@ enum LockedStore {
 
     private static func nowMs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
+    /// Why the last store call returned nil, as a fixed word. The state-op verb
+    /// writes it to stderr so Node can name the refusal; it never holds a path,
+    /// a value or anything a caller sent.
+    static var lastFailure: String?
+
+    private static func failed<T>(_ reason: String) -> T? { lastFailure = reason; return nil }
+
+    /// Creates each missing directory down to root, every new one 0700. A thin
+    /// build has no retained helper, so ~/.instar/desktop-helper may not exist
+    /// yet; existing directories keep their mode.
+    static func ensureDirectory(_ root: String) -> Bool {
+        guard root.hasPrefix("/") else { return false }
+        var current = ""
+        var info = stat()
+        for part in root.split(separator: "/", omittingEmptySubsequences: true) {
+            current += "/" + part
+            // Only a missing component is made; a parent that exists is left alone.
+            if stat(current, &info) == 0 { continue }
+            if mkdir(current, 0o700) != 0 && errno != EEXIST { return false }
+        }
+        return lstat(root, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+    }
+
     static func withLock<T>(root: String, _ body: (inout [String: Any]) -> T) -> T? {
-        guard mkdir(root, 0o700) == 0 || errno == EEXIST else { return nil }
+        guard ensureDirectory(root) else { return failed("store-root-uncreatable") }
         let fd = open(path(root, "state.lock"), O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, mode_t(0o600))
-        guard fd >= 0 else { return nil }
+        guard fd >= 0 else { return failed("store-lock-unopenable") }
         defer { close(fd) }
-        guard flock(fd, LOCK_EX) == 0 else { return nil }
+        guard flock(fd, LOCK_EX) == 0 else { return failed("store-lock-unavailable") }
         let file = path(root, "locked-state.json")
         var state: [String: Any] = [:]
         if let data = FileManager.default.contents(atPath: file) {
             // Never rewrite what cannot be read: that would erase relock duties.
-            guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return failed("store-unreadable")
+            }
             state = parsed
         }
         let result = body(&state)
-        guard let data = try? JSONSerialization.data(withJSONObject: state) else { return nil }
+        guard let data = try? JSONSerialization.data(withJSONObject: state) else { return failed("store-unencodable") }
         let temporary = file + ".\(getpid()).tmp"
         guard FileManager.default.createFile(atPath: temporary, contents: data, attributes: [.posixPermissions: 0o600]),
-              rename(temporary, file) == 0 else { return nil }
+              rename(temporary, file) == 0 else { return failed("store-unwritable") }
         return result
     }
 
@@ -985,8 +1017,15 @@ enum LockedStore {
             return ["gone": InstarDesktopHost.killRecorded(pid: pid_t(pid), start: start)]
         }
         if name == "read" {
-            guard let state = readOnly(root: root) else { return nil }
-            return ["state": state, "attempts": currentAttempts(state),
+            guard let state = readOnly(root: root) else { return failed("store-unreadable") }
+            // Node reads the whole store on every status check; its reply cap is 64,000 bytes.
+            // A store that outgrew it before pruning by count is read through the same trim.
+            var view = state
+            if var markers = view["markers"] as? [String: Any] {
+                for key in prunableKeys(markers) { markers[key] = nil }
+                view["markers"] = markers
+            }
+            return ["state": view, "attempts": currentAttempts(state),
                     "bootSession": bootUUID() ?? "", "loginSession": sessionUUID() ?? ""]
         }
         return withLock(root: root) { state -> [String: Any] in
@@ -1060,17 +1099,31 @@ enum LockedStore {
         }
     }
 
-    /// Keeps the store small: finished duties older than a week carry nothing.
+    /// Finished duties kept beyond those still owed or unreported, newest first.
+    /// About 500 bytes each, so this stays far under Node's 64,000-byte read.
+    static let keptFinished = 30
+
+    /// Keeps the store small: finished duties older than a week carry nothing, and
+    /// only the newest `keptFinished` of them are kept even within the week, so a
+    /// Mac that unlocks often never outgrows the read (126 did, fb-3a84590d-1e8).
     private static func pruneOld(_ state: inout [String: Any]) {
         guard var markers = state["markers"] as? [String: Any] else { return }
+        for key in prunableKeys(markers) { markers[key] = nil }
+        state["markers"] = markers
+    }
+
+    /// Keys that carry nothing: finished (and, if a failed relock, already reported),
+    /// and either older than a week or past the newest `keptFinished`.
+    static func prunableKeys(_ markers: [String: Any]) -> [String] {
         let cutoff = nowMs() - 7 * 24 * 3_600_000
+        var finished: [(key: String, created: Int64)] = []
         for (key, value) in markers {
             guard let entry = value as? [String: Any], isTerminal(entry["state"] as? String),
-                  entry["state"] as? String != "relock-failed" || entry["reported"] as? Bool == true,
-                  ((entry["createdAt"] as? NSNumber)?.int64Value ?? 0) < cutoff else { continue }
-            markers[key] = nil
+                  entry["state"] as? String != "relock-failed" || entry["reported"] as? Bool == true else { continue }
+            finished.append((key, (entry["createdAt"] as? NSNumber)?.int64Value ?? 0))
         }
-        state["markers"] = markers
+        finished.sort { $0.created != $1.created ? $0.created > $1.created : $0.key > $1.key }
+        return finished.enumerated().filter { $0.offset >= keptFinished || $0.element.created < cutoff }.map { $0.element.key }
     }
 
     static func isTerminal(_ state: String?) -> Bool {
@@ -1166,12 +1219,22 @@ extension InstarDesktopHost {
     }
 
     /// `loginwindow`, `other`, `none` or `unreadable`.
+    /// IOConsoleUsers is a PROPERTY of the IOResources entry, not an entry of
+    /// its own: opening it as a child path of IOResources returns no entry, which
+    /// read as "unreadable" on every Mac and refused every password.
+    static let secureInputRegistryPath = "IOService:/IOResources"
+
     static func secureInputOwner() -> String {
-        let root = IORegistryEntryFromPath(kIOMainPortDefault, "IOService:/IOResources/IOConsoleUsers")
+        let root = IORegistryEntryFromPath(kIOMainPortDefault, secureInputRegistryPath)
         defer { IOObjectRelease(root) }
         guard root != 0, let users = IORegistryEntryCreateCFProperty(root, "IOConsoleUsers" as CFString,
             kCFAllocatorDefault, 0)?.takeRetainedValue() as? [[String: Any]] else { return "unreadable" }
-        guard let pid = users.compactMap({ $0["kCGSSessionSecureInputPID"] as? Int32 }).first(where: { $0 > 0 }) else { return "none" }
+        // Only the session on the console counts: a password field in another
+        // account's background session says nothing about this screen. With no
+        // session on the console (the login window) every entry is still read.
+        let onConsole = users.filter { $0["kCGSSessionOnConsoleKey"] as? Bool == true }
+        guard let pid = (onConsole.isEmpty ? users : onConsole)
+            .compactMap({ $0["kCGSSessionSecureInputPID"] as? Int32 }).first(where: { $0 > 0 }) else { return "none" }
         var name = [CChar](repeating: 0, count: 256)
         guard proc_name(pid, &name, 256) > 0 else { return "unreadable" }
         return String(cString: name) == "loginwindow" ? "loginwindow" : "other"
@@ -1303,7 +1366,11 @@ extension InstarDesktopHost {
     }
 
     private static func secureTargetHolds() -> Bool {
-        (CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? Bool == true
+        // This helper's own session must be the one on screen: after a user switch
+        // the keystrokes would land on another account's lock screen.
+        let state = CGSessionCopyCurrentDictionary() as? [String: Any]
+        return state?["CGSSessionScreenIsLocked"] as? Bool == true
+            && state?[kCGSessionOnConsoleKey as String] as? Bool == true
             && shieldWindowPresent() && secureInputOwner() == "loginwindow"
     }
 

@@ -26,11 +26,28 @@ export interface GitLeaseStoreDeps {
   pullRebase: () => boolean;
   /** Commit + push the registry; false on non-ff/no-op. */
   commitAndPush: (message: string, paths: string[]) => boolean;
+  /**
+   * True when a local write is all the medium there is: no git remote, at least one peer,
+   * and the switch that lets a survivor hold is on. Read only after a failed push, so the
+   * healthy path pays nothing, and read each time, so adding a remote needs no restart.
+   * Absent or false keeps a failed push a lost CAS (docs/specs/lease-takeover-no-shared-medium.md).
+   */
+  localCommitIsFinal?: () => boolean;
+  /**
+   * True when the repository has no git remote, so this store holds only this machine's copy
+   * (as LocalLeaseStore does); false or null (unreadable) keeps today's behaviour.
+   */
+  hasNoRemote?: () => boolean | null;
+  /** Clock for the remote-check cache (tests). */
+  now?: () => number;
   logger?: (msg: string) => void;
 }
 
+const NO_REMOTE_CACHE_MS = 60_000;
+
 export class GitLeaseStore implements LeaseStore {
   private readonly d: GitLeaseStoreDeps;
+  private noRemoteCache: { at: number; value: boolean } | null = null;
 
   constructor(deps: GitLeaseStoreDeps) {
     this.d = deps;
@@ -38,6 +55,23 @@ export class GitLeaseStore implements LeaseStore {
 
   private log(m: string): void {
     this.d.logger?.(`[git-lease] ${m}`);
+  }
+
+  /**
+   * No remote means no shared medium: a peer learns of this lease only over the lease wire, as
+   * with LocalLeaseStore, so the coordinator applies the same rules (ask before claiming, fold a
+   * live peer lease over an expired own copy, renew, confirm on a peer pull). Without this a
+   * restarted machine on a git home with no remote claims without asking and ties with the live
+   * holder (proof-2, 2026-11-08; fb-c51067c6-148 follow-up). Read often, so the answer is kept
+   * for a minute: adding a remote takes effect within a minute, with no restart.
+   */
+  hasNoSharedMedium(): boolean {
+    const now = (this.d.now ?? Date.now)();
+    if (this.noRemoteCache && now - this.noRemoteCache.at < NO_REMOTE_CACHE_MS) return this.noRemoteCache.value;
+    let value = false;
+    try { value = this.d.hasNoRemote?.() === true; } catch { value = false; } // @silent-fallback-ok: unreadable keeps today's behaviour
+    this.noRemoteCache = { at: now, value };
+    return value;
   }
 
   read(): { lease: LeaseRecord | null; epoch: number } {
@@ -92,6 +126,16 @@ export class GitLeaseStore implements LeaseStore {
       return { ok: true, observed: { lease: candidate, epoch: candidate.epoch } };
     }
 
+    // 4b. Nowhere to push: the commit is the write. Only this exact candidate counts, so a
+    //     registry someone else changed is never read as our success.
+    if (this.d.localCommitIsFinal?.()) {
+      const written = this.d.loadRegistry().lease;
+      if (written && written.holder === candidate.holder && written.epoch === candidate.epoch && written.nonce === candidate.nonce) {
+        this.log(`lease epoch ${candidate.epoch} written locally: this pair has no git remote`);
+        return { ok: true, observed: { lease: candidate, epoch: candidate.epoch } };
+      }
+    }
+
     // 5. Push rejected (a peer advanced) or no-op. Re-read after a pull and
     //    report the observed state so the caller re-evaluates / retries.
     this.d.pullRebase();
@@ -99,6 +143,20 @@ export class GitLeaseStore implements LeaseStore {
     const observedEpoch = reg.lease?.epoch ?? 0;
     this.log(`push rejected/no-op; observed epoch now ${observedEpoch}`);
     return { ok: false, observed: { lease: reg.lease ?? null, epoch: observedEpoch } };
+  }
+
+  /**
+   * Same-epoch tie loser on a pair with no remote: read as expired from now on, keeping the
+   * epoch as the floor. A store with a remote settles ties by CAS, so this stays a no-op
+   * there, and nothing here is committed: the winner's higher epoch replaces it.
+   */
+  forceLocalExpiry(): void {
+    if (!this.d.localCommitIsFinal?.()) return;
+    const reg = this.d.loadRegistry();
+    if (!reg.lease || reg.lease.holder !== this.d.machineId) return;
+    reg.lease = { ...reg.lease, expiresAt: new Date(0).toISOString() };
+    this.d.saveRegistry(reg);
+    this.log(`local self-lease forced expired (epoch ${reg.lease.epoch} kept as floor)`);
   }
 
   refresh(lease: LeaseRecord): boolean {

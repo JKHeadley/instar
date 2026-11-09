@@ -55,7 +55,7 @@ async function harness(buildId: () => string) {
   runtime.browsers.set('operator', { executor, resolvePeer: destination => executor.broker.resolvePeer(destination) });
   const app = express(); app.use(express.json());
   app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-  app.use(createRoutes({ config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
+  app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'agent-test', stateDir, port: 0, projectName: 'echo',
     messaging: [{ type: 'telegram', enabled: true, config: { token: '123:x', chatId: '-100123', lifelineTopicId: 7848 } }] },
     telegramOrigin: runtime, sessionManager: { clearInjectionTracker: () => undefined } } as never));
   const send = () => request(app).post('/telegram/browser/operator/send').set('Authorization', 'Bearer agent-test')
@@ -79,7 +79,14 @@ describe('Telegram browser route under Web K drift', () => {
       failedBuilds: ['unrecognized:new-build'], failures: 2, attentionPending: false })]);
     // Repeated requests during the 15-minute floor neither start a browser nor raise a second item.
     expect((await h.send()).status).toBe(409);
-    expect((await h.snapshot()).status).toBe(409);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const held = await h.snapshot();
+      expect(held.status).toBe(409);
+      // The cause is logged server-side by class and message, never returned to the caller.
+      expect(held.body).toEqual({ error: 'telegram-browser-snapshot-unavailable' });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[telegram-origin\] browser snapshot unavailable: profile=operator class=\w+ message=\S/));
+    } finally { warn.mockRestore(); }
     expect(h.factory).toHaveBeenCalledTimes(2);
     expect(h.attention).toHaveBeenCalledOnce();
   });

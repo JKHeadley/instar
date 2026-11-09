@@ -1,0 +1,9 @@
+# Scheduled jobs and the global session limit — plain English
+
+The first job-alert fix reached the Mac Studio and exposed a second limit. The Studio had twenty running conversations, which filled its ordinary session allowance. Health Check was refused before it reached the six-slot subscription lane. That refusal still counted as a failed job, so a machine with busy conversations could keep producing alerts and miss checks even after the first fix.
+
+This correction makes a full global session pool a typed waiting condition, just like a full subscription lane. A scheduled job that reaches the limit waits in the existing priority queue. Its failure count does not rise, and it is retried every fifteen seconds when room becomes available. The scheduler pauses any old per-job failure reminder while the job waits; a real failure after the retry starts the normal failure alert again.
+
+People can open conversations beyond the ordinary limit because a conversation is an immediate request. To keep that choice from blocking all scheduled checks, one scheduled job may borrow a single additional session place while the host's memory is healthy. The loan is limited to one running or starting job at a time, even if several jobs trigger together. The hard safety limit of three times the configured session allowance remains in place. High memory pressure closes the loan, and the six-slot subscription lane still has its own cap. This keeps the protection that matters after the June 2026 laptop memory failure.
+
+This is a small, reversible correction to the already shipped capacity episode. It adds no new notification type or destination. A short wait remains silent; a long wait still produces one plain Attention message for the episode. The live Studio check that prompted this change found twenty conversations and Health Check's existing “Max sessions” errors; the new behavior must be verified on the next installed release before it can be called live.

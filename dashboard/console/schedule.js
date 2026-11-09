@@ -10,7 +10,7 @@
 import {
   buildSchedulePage, buildHistory, markText, storySentence, storyLines, jobActions, toggleConfirm, runStartWords, runFollowWords, saveRefusalWords, originWords, scheduleWords, ago, HISTORY_LIMIT, STRIP_LIMIT,
 } from './schedule-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, noteLinked, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, noteLinked, cantTell, firstPaint, arrivalScroll } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 
@@ -35,7 +35,7 @@ async function send(method, path, body) {
 
 export async function renderSchedule(main, ctx) {
   const { get } = ctx;
-  if (!main.querySelector('.schedule-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the schedule' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading the schedule' })));
   const [local, pool, machines, history, migration, reconcile] = await Promise.all([
     get('/jobs'), get('/jobs?scope=pool', 8000), get('/pool'), get('/jobs/history?limit=500'), get('/jobs/migration-status'), get('/jobs/reconcile'),
   ]);
@@ -55,6 +55,7 @@ function paint() {
   const { sections: s, counts: n } = page;
   const open = (r) => openJob(r, { get: ctx.get, refresh });
 
+  // warning-path: row
   const needs = section({ id: 'needs', title: 'Needs a look', tone: n.failing ? 'bad' : 'attn', rows: s.needs, empty: 'Nothing is late, failing or running long.', onRow: open });
   const coming = section({ id: 'coming', title: 'Coming up', rows: s.coming, empty: n.total ? 'No job has a recorded next run.' : 'Nothing is scheduled.', onRow: open });
 
@@ -82,10 +83,7 @@ function paint() {
   const params = new URLSearchParams(path[1] || '');
   const want = params.get('s');
   if (want) {
-    const sec = main.querySelector(`#sec-${want}`);
-    const head = sec && sec.querySelector('button.list-head[aria-expanded="false"]');
-    if (head) head.click();
-    if (sec) sec.scrollIntoView({ block: 'start' });
+    arrivalScroll(main.querySelector(`#sec-${want}`), { open: true });
   }
   const slug = params.get('job');
   if (slug && !sheetIsOpen()) {

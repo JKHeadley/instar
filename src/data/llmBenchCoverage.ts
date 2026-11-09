@@ -40,6 +40,7 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   // entirely by the deterministic floor, so this benchmark never gates a kill.
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
+  AttributionJudge: { pending: 'wave-3' },
   // CompletionEvaluator has TWO judged surfaces; both benched.
   CompletionEvaluator: { task: 'completion-judge+p13-stop-judge' },
   ExternalOperationGate: { task: 'external-op-gate' },
@@ -141,6 +142,11 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   openConversationBrief: { pending: 'wave-3' },
   'a2a-checkin': { pending: 'wave-3' },
   'mentor-stage-b': { pending: 'wave-3' },
+  // skill-learning-sentinel slice 1 (2026-11-06): the arbiter/drafter and the cross-family reviewer run shadow-only
+  // (proposals, never renders) and are graded by the rung-1 operator agree/disagree sample until a bench task lands.
+  'skillLearning.drafter': { pending: 'wave-3' },
+  'skillLearning.reviewer': { pending: 'wave-3' },
+  'skillLearning.classifier': { task: 'skill-learning-classifier' },
   'correction-class-review': { pending: 'wave-3' },
   'completion-claim-verify': { pending: 'wave-3' },
   // Closed action selection over adversarial provider-page state. The task
@@ -214,6 +220,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   ExternalOperationGate: true, // the motivating callsite: credited in-content "user already approved"
   WarrantsReplyGate: true,
   UnjustifiedStopGate: true,
+  AttributionJudge: true, // reads notes, messages and logged rows, all of which may quote untrusted text
   MessagingToneGate: true, // reviews a draft that routinely quotes untrusted user/tool content
   CoherenceReviewer: true,
   LLMSanitizer: true, // definitionally judges untrusted inbound content
@@ -245,6 +252,9 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   'correction-class-review': true, // correction summary + prior model-derived candidates + standards/tool context
   'completion-claim-verify': true, // outbound model text + structural tool evidence
   'mentor-stage-b': true,
+  'skillLearning.drafter': true, // operator messages + the agent's tool-call outline (args excerpts are untrusted evidence)
+  'skillLearning.reviewer': true, // the other family's draft + operator messages + tool-call outline
+  'skillLearning.classifier': true, // operator message text re-read from TopicMemory + model-proposed procedure keys
   DashboardInsightEngine: true, // summarizes page data incl. user/peer-authored rows (relationships/threadline/commitments)
 
   // ── Jobs authoring over untrusted file/code content → true ──
@@ -368,6 +378,9 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
 
   // Scored evaluators — award credit for claimed work.
   'mentor-stage-b': { claimKind: 'scoredCredit' }, // classifies mentor signals over mentee output (spec §2 pending-wave judge)
+  'skillLearning.drafter': false, // drafts a skill / decides draft-wait-never; never credits a completion/health claim
+  'skillLearning.reviewer': false, // clears or strikes draft lines; never credits a completion/health claim
+  'skillLearning.classifier': false, // keys operator requests; an outcome label is corroborated by the §3.6 join (delivered reply + telemetry + transcript), never credited by this verdict alone
 
   // ── Not a completion/progress/health judge (judgesClaims: false) ────────────
   // Sentinels that classify/summarize but do not credit a completion/health claim.
@@ -393,6 +406,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   WarrantsReplyGate: false, // "should I reply?" — not a completion/health claim
   HubIntentClassifier: false, // classifies a USER's hub bind-intent (open/tie) over a message, not an agent/session claim of completion/health/credit
   CoherenceGate: false, // no own callsite — flows through CoherenceReviewer
+  AttributionJudge: false, // rules on what a person said, not an agent's claim of completion or health
   MessagingToneGate: false, // reviews outbound tone/leaks
   CoherenceReviewer: false, // reviews outbound coherence
   LLMSanitizer: false, // sanitizes untrusted inbound content
@@ -530,6 +544,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   MachineWedgeJudge: { contractTest: 'tests/unit/machine-wedge-judge.test.ts' },
   FeedbackTriageSecondOpinion: { contractTest: 'tests/unit/feedback-factory/triage-arbiter.test.ts' },
   GoalPriorityExtractor: { pending: 'contract-wave-2' },
+  AttributionJudge: { pending: 'contract-wave-2' }, // closed own|relayed|unclear + faithful verdicts
   AlignmentReviewer: { pending: 'contract-wave-2' },
 
   // ── Argued false (pinned shrink-only) — no closed-vocabulary verdict parse ──
@@ -646,10 +661,17 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   'completion-claim-verify': {
     contractTest: 'tests/unit/turn-evidence-completion-verifier.test.ts',
   },
+  'skillLearning.drafter': {
+    contractTest: 'tests/unit/skill-learning-drafter.test.ts', // covered-by|patch|new + canonical SKILL.md shape; arbiter draft|wait|never
+  },
+  'skillLearning.reviewer': {
+    contractTest: 'tests/unit/skill-learning-drafter.test.ts', // {follows, lines:{id: clear|strike}} — undecided counts as struck
+  },
   'mentor-stage-b': {
     false:
       'classifies mentor signals over mentee output into differential content — no closed taught verdict vocabulary a parser gates on (its own bench coverage is wave-3)',
   },
+  'skillLearning.classifier': { contractTest: 'tests/integration/skill-learning-classifier.test.ts' },
   PipeSessionSpawner: {
     false:
       'spawns sessions from task descriptions — no LLM output parsed into a closed taught verdict vocabulary',
@@ -849,6 +871,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   ExternalOperationGate: exposed(EXPOSED_USER_TOOL), // in-content "user already approved" claims
   WarrantsReplyGate: exposed(EXPOSED_USER),
   UnjustifiedStopGate: exposed(EXPOSED_MODEL), // stop justification over session state
+  AttributionJudge: exposed(EXPOSED_ALL), // notes, messages and logged rows
   MessagingToneGate: exposed(EXPOSED_ALL), // reviews an outbound draft quoting user/tool content
   HubIntentClassifier: exposed(EXPOSED_USER), // inbound hub message
   CoherenceReviewer: exposed(EXPOSED_ALL), // reviews outbound coherence (draft + context)
@@ -890,6 +913,9 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   'correction-class-review': exposed(EXPOSED_ALL),
   'completion-claim-verify': exposed(EXPOSED_MODEL_TOOL),
   'mentor-stage-b': exposed(EXPOSED_MODEL_TOOL), // mentor signals over mentee output
+  'skillLearning.drafter': exposed(EXPOSED_USER_TOOL), // operator requests + the agent's own tool-call targets/args
+  'skillLearning.reviewer': exposed(EXPOSED_ALL), // another family's draft + operator requests + tool-call outline
+  'skillLearning.classifier': exposed(EXPOSED_USER_MODEL), // operator message text + model-proposed procedure keys folded by meaning
   ResumeValidator: exposed(EXPOSED_TOOL), // matches a resume UUID against topic/session state
   DashboardInsightEngine: exposed(EXPOSED_ALL), // summarizes page data that can embed user + model + tool content (fail-safe: never onto a non-injection door)
 

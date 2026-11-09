@@ -1,4 +1,12 @@
+import { categoryForAttention } from './notificationCategories.js';
+import { notificationStamper, responseNotificationStamper, withNotificationEnvelope } from './notificationStampers.js';
+const stampNotification = notificationStamper('src/messaging/TelegramAdapter.ts');
+const stampResponse = responseNotificationStamper('src/messaging/TelegramAdapter.ts');
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
+import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
+import { consolePageUrl } from '../server/dashboardPaths.js';
 import { recordTelegramEditRejection, takeTelegramEditRejection } from './TelegramEditRejection.js';
 /**
  * Telegram Messaging Adapter — send/receive messages via Telegram Bot API.
@@ -19,6 +27,7 @@ import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKind
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
@@ -50,8 +59,9 @@ import { buildStallAlertDecisionContext } from './shared/StallAlertDecisionConte
 import { DP_TELEGRAM_STALL_CONFIRM } from '../data/provenanceCoverage.js';
 import { AspAuthorshipJoin, type MessageAuthorship } from '../core/AspAuthorshipJoin.js';
 import { INVITE_PREFIX } from '../threadline/PairingInvite.js';
-import { normalizeInboundThread, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
+import { normalizeInboundThread, inboundTopicId, toWireParams, isIssuesTopicId, ISSUES_TOPIC_OFFSET } from './telegramTopicSpace.js';
 import { admitItemToHub, attentionPriorityRank, recordHeldHubPost, resolveHubFilterMode, type AttentionHubFilterMode } from './attentionHubPolicy.js';
+import { topicRef } from './shared/topicRef.js';
 import {
   attentionConditionKeyOf, classifyAttentionLifecycle, decideAttentionExpiry, isOpenAttentionStatus, mayReopenInPlace,
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
@@ -233,6 +243,9 @@ interface PendingPromptReply {
 }
 
 export interface SendResult {
+  delivered?: true;
+  recorded?: false;
+  quietId?: never;
   /** Telegram message ID */
   messageId: number;
   /** Topic the message was sent to */
@@ -307,6 +320,8 @@ interface LogEntry {
   topicId: number | null;
   text: string;
   fromUser: boolean;
+  /** Sent by a team member's phone: not the owner's words, whatever else this row says. */
+  teamPhone?: boolean;
   timestamp: string;
   sessionName: string | null;
   senderName?: string;
@@ -325,7 +340,7 @@ interface LogEntry {
   deviceId?: string;
   eventId?: string;
   /** People and roles: the app sender's role and registry person (MSP only; namespaced by machine). */
-  senderRole?: 'owner' | 'msp';
+  senderRole?: 'owner' | 'msp' | 'team';
   senderPerson?: { machineId: string; userId: string };
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
@@ -360,6 +375,9 @@ export interface AgentMessageHookInput {
 export type AgentMessageHook = (input: AgentMessageHookInput) => Promise<{ handled: boolean }>;
 
 export interface AttentionItem {
+  /** Owning conversations, distinct from the shared delivery topic. */
+  contextTopicIds?: number[];
+  quietNotificationId?: string;
   id: string;
   title: string;
   summary: string;
@@ -381,13 +399,10 @@ export interface AttentionItem {
   /** How the item was closed, as given on the status change (PATCH /attention/:id `resolution`). */
   resolution?: string;
   /**
-   * Routing lane. When `'agent-health'`, this is a routine SELF-HEALTH /
-   * housekeeping notice about the agent's OWN internal state (a stale-looking
-   * session, a peer it can't reach, etc.) rather than something the USER must act
-   * on. Such items are routed into ONE calm, persistently-named "🩺 Agent Health"
-   * topic from the very first item — they never spawn their own per-item topic
-   * (even under budget, even if mis-tagged HIGH), and same-entity re-escalations
-   * are suppression-deduped so the lane stays quiet. Absent ⇒ today's behavior.
+   * Routing lane. Agent Health describes the agent's own internal state.
+   * Routine observations stay in the attention record; only an explicit
+   * `needsUser` decision permits a Telegram post to the shared Agent Health
+   * topic. No per-item topic is created. Absent ⇒ ordinary routing.
    */
   lane?: 'agent-health';
   /**
@@ -585,6 +600,8 @@ interface PendingPromise {
 /** Longest a send waits at boot for the forward-to-holder wiring (see holderForwardReady). */
 export const HOLDER_FORWARD_WIRING_WAIT_MS = 30_000;
 
+const UNKNOWN_OWNER_TAP_REFUSAL = "I can't confirm who my owner is on this machine yet, so this button can't be answered here.";
+
 /** One file a Telegram inbound handler downloaded (media spec §4.9). */
 export interface TelegramInboundMedia {
   topicId: number;
@@ -601,6 +618,11 @@ export interface TelegramInboundMedia {
 export type TelegramInboundMediaHook = (info: TelegramInboundMedia) => Promise<void> | void;
 
 export class TelegramAdapter implements MessagingAdapter {
+  public selectivity: NotificationSelectivityGate | null = null;
+  /** The mandatory origin dispatcher classifies local, relayed and recovery operations. */
+  public selectivityDelegated = false;
+  private readonly commandReceipts = new WeakMap<SendResult, { topicId: number; messageId: number; until: number; inboundMessageId: string }>();
+  private readonly selectivityAdmitted = new AsyncLocalStorage<boolean>();
   readonly platform = 'telegram';
 
   private config: TelegramConfig;
@@ -658,6 +680,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * same handler, which still checks owner, chat and the one-time token (spec §6.1 r7). Before
    * this, a polling agent (PP, 2026-10-21) could only say "use the dashboard".
    */
+  /** Called once each time polling recovers after errors (consecutive poll errors back to zero). */
+  private readonly reconnectListeners: Array<() => void> = [];
+  onReconnect(listener: () => void): void { this.reconnectListeners.push(listener); }
   private pairingHandler: PollingPairingHandler | null = null;
   setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
   hasPairingHandler(): boolean { return this.pairingHandler !== null; }
@@ -822,7 +847,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // Message log callback — fires on every message logged (inbound and outbound).
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
-  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance }) => void) | null = null;
+  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; teamPhone?: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance }) => void) | null = null;
 
   /**
    * Scope-accretion ratification observer (spec autonomous-scope-accretion-
@@ -852,7 +877,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * invariant that avoids the 409-poller-conflict incident). Returns the sent
    * message's SendResult, or null if the relay could not deliver.
    */
-  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | null>) | null = null;
+  public outboundRelay: ((topicId: number, text: string, options?: { silent?: boolean; formatMode?: 'html'; kindMetadata?: Record<string, unknown>; provenance?: Exclude<MessageProvenance, 'user'> }) => Promise<SendResult | QuietReceipt | null>) | null = null;
 
   /**
    * True when a `sendToTopic` will RELAY through the lease holder rather than
@@ -962,6 +987,8 @@ export class TelegramAdapter implements MessagingAdapter {
   // Prompt Gate — relay prompts to Telegram and handle responses
   private callbackRegistry: CallbackRegistry;
   private pendingPromptReply = new Map<number, PendingPromptReply>(); // topicId → pending
+  private callbackApproverResolver: (() => number | undefined) | null = null;
+  private noApproverReported = new Set<string>();
   private promptGateDisclosureSent = new Set<number>(); // topicIds that have seen the disclosure
 
   /**
@@ -973,6 +1000,27 @@ export class TelegramAdapter implements MessagingAdapter {
    * trust the click came from the owner.
    */
   private tunnelConsentHandler: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null = null;
+  /** Offer-list buttons (docs/specs/recommended-services.md, Offers). Wired by the recommended-services routes. */
+  private recommendedOfferHandler: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
+  setRecommendedOfferHandler(fn: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.recommendedOfferHandler = fn; }
+
+  /** One offer list with its buttons, in the owner's conversation. The message id is the delivery proof the offer ledger records. */
+  async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
+    try {
+      // Telegram allows up to 8 buttons a row; one per row keeps the names readable on a phone.
+      const result = await this.apiCall('sendMessage', {
+        chat_id: this.config.chatId,
+        message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
+        text,
+        reply_markup: { inline_keyboard: buttons.map((b) => [{ text: b.text, callback_data: b.data }]) },
+      }) as { message_id: number };
+      return typeof result?.message_id === 'number' ? result.message_id : null;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: null means "not delivered", and the offer stays pending
+      console.warn(`[telegram] sendOfferList failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
   /**
    * UNIFIED-SESSION-LIFECYCLE bonus — fired when a Telegram forum topic is
    * renamed. Wired in server.ts to update the bound session's display name
@@ -1048,17 +1096,65 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
+  /**
+   * The owner's Approve tap on a waiting phone (docs/specs/mobile-pairing-approve.md §3.2). The same
+   * check as Decline: verified, from the owner, in the owner's private chat. A tap the lifeline did
+   * not prove never counts, even before the ingress guard is armed.
+   */
+  async handleMobileApprove(t: { callbackQueryId: string | number; data: string; fromUserId: number | undefined; chatId: number | string | undefined; messageId?: number; verified: boolean }): Promise<'approved' | 'refused' | 'unknown' | 'held'> {
+    const owner = this.getOwnerUserId();
+    const m = /^md:a:([0-9a-f]{24})$/.exec(t.data);
+    if (!t.verified || !owner || t.fromUserId !== owner || String(t.chatId) !== String(owner) || !m) {
+      await this.answerCallback(t.callbackQueryId, 'Only the owner can do this.');
+      return 'refused';
+    }
+    const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
+    const browser = r.client === 'browser';
+    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? (browser ? 'Approved. That browser is set up.' : 'Approved. That phone is paired.') : r.text);
+    if (r.outcome === 'approved') {
+      // The code stays in the message: a shipped app's code box only submits a complete-looking code,
+      // and once the phone is active any such code finishes it. Only the buttons go.
+      if (typeof t.messageId === 'number') await this.apiCall('editMessageReplyMarkup', { chat_id: owner, message_id: t.messageId, reply_markup: { inline_keyboard: [] } }).catch(() => {
+        // @silent-fallback-ok — tidying only: the old buttons answer "already ended"
+      });
+      // A validated owner tap and consumed pairing nonce establish this reply; scope its
+      // capability to the existing owner-DM funnel without altering any topic's waiting state.
+      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(browser
+        ? 'Approved. That browser can now use your conversations with this agent. If the dashboard still shows a code box, type the code above to finish. You can remove the browser any time on the Phones page.'
+        : 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
+      ));
+      return 'approved';
+    }
+    return r.outcome === 'ended' ? 'unknown' : 'held';
+  }
+
+  /** Replace a finished pairing message, so a dead code and stale buttons leave the chat. Best-effort. */
+  private async closeOwnerPairingMessage(owner: number, messageId: number | undefined, text: string): Promise<void> {
+    if (typeof messageId !== 'number') return;
+    await this.apiCall('editMessageText', { chat_id: owner, message_id: messageId, text }).catch(() => {
+      // @silent-fallback-ok — tidying only: the decision is recorded and the old buttons answer "already ended"
+    });
+  }
+
   /** The owner's Decline tap on a phone-pairing code. Counts only when verified, from the owner, in the owner's private chat. */
-  async handleMobileDecline(t: { callbackQueryId: string | number; data: string; fromUserId: number | undefined; chatId: number | string | undefined; verified: boolean }): Promise<'declined' | 'refused' | 'unknown'> {
+  async handleMobileDecline(t: { callbackQueryId: string | number; data: string; fromUserId: number | undefined; chatId: number | string | undefined; messageId?: number; verified: boolean }): Promise<'declined' | 'refused' | 'unknown'> {
     const owner = this.getOwnerUserId();
     const m = /^md:d:([0-9a-f]{24})$/.exec(t.data);
     if (!t.verified || !owner || t.fromUserId !== owner || String(t.chatId) !== String(owner) || !m) {
       await this.answerCallback(t.callbackQueryId, 'Only the owner can do this.');
       return 'refused';
     }
-    const r = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
-    await this.answerCallback(t.callbackQueryId, r === 'declined' ? 'Declined. That phone will not be paired.' : 'This pairing has already ended.');
-    return r;
+    const raw = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
+    const r = typeof raw === 'string' ? raw : raw.result;
+    const browser = typeof raw !== 'string' && raw.client === 'browser';
+    // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
+    // way is answered "already approved", never as declined.
+    const toast = r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
+      : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
+      : 'This pairing has already ended.';
+    await this.answerCallback(t.callbackQueryId, toast);
+    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.');
+    return r === 'declined' ? 'declined' : 'unknown';
   }
 
   /** The small toast answering a button tap. Best-effort. */
@@ -1246,17 +1342,17 @@ export class TelegramAdapter implements MessagingAdapter {
       if (this.batcher && this.batcher.isEnabled()) {
         const flushed = await this.batcher.flushAll();
         if (flushed > 0) {
-          await this.sendToTopic(topicId, `Flushed ${flushed} batched notification${flushed === 1 ? '' : 's'}.`).catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Flushed ${flushed} batched notification${flushed === 1 ? '' : 's'}.`)).catch(() => {});
         } else {
-          await this.sendToTopic(topicId, 'No batched notifications to flush.').catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'No batched notifications to flush.')).catch(() => {});
         }
       } else if (this.onFlushNotifications) {
         this.onFlushNotifications(topicId).catch(err => {
           console.error('[telegram] Flush notifications failed:', err);
-          this.sendToTopic(topicId, 'Failed to flush notifications.').catch(() => {});
+          withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Failed to flush notifications.')).catch(() => {});
         });
       } else {
-        await this.sendToTopic(topicId, 'Notification batching is not enabled.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Notification batching is not enabled.')).catch(() => {});
       }
       return true;
     }, { description: 'Flush batched notifications' });
@@ -1265,12 +1361,12 @@ export class TelegramAdapter implements MessagingAdapter {
       const topicId = parseInt(ctx.channelId, 10);
       const filterUnclaimed = ctx.args.includes('unclaimed');
       if (!this.onListSessions) {
-        await this.sendToTopic(topicId, 'Session listing not available.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Session listing not available.')).catch(() => {});
         return true;
       }
       const sessions = this.onListSessions();
       if (sessions.length === 0) {
-        await this.sendToTopic(topicId, 'No sessions running.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'No sessions running.')).catch(() => {});
         return true;
       }
       const lines: string[] = [];
@@ -1279,13 +1375,13 @@ export class TelegramAdapter implements MessagingAdapter {
         const claimed = linkedTopic !== null;
         if (filterUnclaimed && claimed) continue;
         const status = s.alive ? '\u2705' : '\u274c';
-        const claimTag = claimed ? ` (topic ${linkedTopic})` : ' \u{1f7e1} unclaimed';
+        const claimTag = claimed ? ` (${topicRef(linkedTopic)})` : ' \u{1f7e1} unclaimed';
         lines.push(`${status} ${s.name}${claimTag}`);
       }
       if (lines.length === 0) {
-        await this.sendToTopic(topicId, filterUnclaimed ? 'No unclaimed sessions.' : 'No sessions.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, filterUnclaimed ? 'No unclaimed sessions.' : 'No sessions.')).catch(() => {});
       } else {
-        await this.sendToTopic(topicId, lines.join('\n')).catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, lines.join('\n'))).catch(() => {});
       }
       return true;
     }, { description: 'List sessions', platforms: ['telegram'] });
@@ -1294,17 +1390,17 @@ export class TelegramAdapter implements MessagingAdapter {
       const topicId = parseInt(ctx.channelId, 10);
       const sessionName = ctx.args;
       if (!sessionName) {
-        await this.sendToTopic(topicId, `Please include a session name — e.g. /${ctx.command} my-session`).catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Please include a session name — e.g. /${ctx.command} my-session`)).catch(() => {});
         return true;
       }
       const existingSession = this.getSessionForTopic(topicId);
       if (existingSession) {
-        await this.sendToTopic(topicId, `This topic is already linked to "${existingSession}". Use /unlink first.`).catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `This topic is already linked to "${existingSession}". Use /unlink first.`)).catch(() => {});
         return true;
       }
       this.registerTopicSession(topicId, sessionName);
       const verb = ctx.command === 'claim' ? 'Claimed' : 'Linked';
-      await this.sendToTopic(topicId, `${verb} session "${sessionName}" ${ctx.command === 'claim' ? 'into' : 'to'} this topic.`).catch(() => {});
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `${verb} session "${sessionName}" ${ctx.command === 'claim' ? 'into' : 'to'} this topic.`)).catch(() => {});
       return true;
     }, { description: 'Link a session to this topic', platforms: ['telegram'] });
 
@@ -1312,11 +1408,11 @@ export class TelegramAdapter implements MessagingAdapter {
       const topicId = parseInt(ctx.channelId, 10);
       const sessionName = this.getSessionForTopic(topicId);
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'No session linked to this topic.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'No session linked to this topic.')).catch(() => {});
         return true;
       }
       this.unregisterTopic(topicId);
-      await this.sendToTopic(topicId, `Unlinked session "${sessionName}" from this topic.`).catch(() => {});
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Unlinked session "${sessionName}" from this topic.`)).catch(() => {});
       return true;
     }, { description: 'Unlink session from topic', platforms: ['telegram'] });
 
@@ -1324,24 +1420,24 @@ export class TelegramAdapter implements MessagingAdapter {
       const topicId = parseInt(ctx.channelId, 10);
       const sessionName = this.getSessionForTopic(topicId);
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'No session linked to this topic.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'No session linked to this topic.')).catch(() => {});
         return true;
       }
       if (!this.onInterruptSession) {
-        await this.sendToTopic(topicId, 'Interrupt not available (no handler registered).').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Interrupt not available (no handler registered).')).catch(() => {});
         return true;
       }
       try {
         const success = await this.onInterruptSession(sessionName);
         this.clearStallForTopic(topicId);
         if (success) {
-          await this.sendToTopic(topicId, `Nudged "${sessionName}" \u2014 it should resume shortly.`).catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Nudged "${sessionName}" \u2014 it should resume shortly.`)).catch(() => {});
         } else {
-          await this.sendToTopic(topicId, `Failed to interrupt "${sessionName}" \u2014 session may not exist.`).catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Failed to interrupt "${sessionName}" \u2014 session may not exist.`)).catch(() => {});
         }
       } catch (err) {
         console.error(`[telegram] Interrupt failed:`, err);
-        await this.sendToTopic(topicId, 'Couldn\'t interrupt the session. It may have already ended.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Couldn\'t interrupt the session. It may have already ended.')).catch(() => {});
       }
       return true;
     }, { description: 'Send Escape to unstick a stalled session' });
@@ -1350,21 +1446,21 @@ export class TelegramAdapter implements MessagingAdapter {
       const topicId = parseInt(ctx.channelId, 10);
       const sessionName = this.getSessionForTopic(topicId);
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'No session linked to this topic.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'No session linked to this topic.')).catch(() => {});
         return true;
       }
       if (!this.onRestartSession) {
-        await this.sendToTopic(topicId, 'Restart not available (no handler registered).').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Restart not available (no handler registered).')).catch(() => {});
         return true;
       }
       this.clearStallForTopic(topicId);
-      await this.sendToTopic(topicId, `Restarting "${sessionName}"...`).catch(() => {});
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Restarting "${sessionName}"...`)).catch(() => {});
       try {
         await this.onRestartSession(sessionName, topicId);
-        await this.sendToTopic(topicId, 'Session restarted.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Session restarted.')).catch(() => {});
       } catch (err) {
         console.error(`[telegram] Restart failed:`, err);
-        await this.sendToTopic(topicId, 'Restart didn\'t work. The session may need to be recreated — try sending a new message.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Restart didn\'t work. The session may need to be recreated — try sending a new message.')).catch(() => {});
       }
       return true;
     }, { description: 'Kill and respawn session' });
@@ -1378,7 +1474,7 @@ export class TelegramAdapter implements MessagingAdapter {
         `Topic mappings: ${s.topicMappings}`,
         `Pending stall alerts: ${s.pendingStalls}`,
       ];
-      await this.sendToTopic(topicId, lines.join('\n')).catch(() => {});
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, lines.join('\n'))).catch(() => {});
       return true;
     }, { description: 'Show adapter status' });
 
@@ -1388,10 +1484,10 @@ export class TelegramAdapter implements MessagingAdapter {
       if (this.onSwitchAccountRequest) {
         this.onSwitchAccountRequest(ctx.args, topicId).catch(err => {
           console.error('[telegram] Switch account failed:', err);
-          this.sendToTopic(topicId, 'Account switch didn\'t work. Try again or use /quota to check status.').catch(() => {});
+          withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Account switch didn\'t work. Try again or use /quota to check status.')).catch(() => {});
         });
       } else {
-        await this.sendToTopic(topicId, 'Account switching not available.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Account switching not available.')).catch(() => {});
       }
       return true;
     }, { description: 'Switch active Claude account' });
@@ -1401,10 +1497,10 @@ export class TelegramAdapter implements MessagingAdapter {
       if (this.onQuotaStatusRequest) {
         this.onQuotaStatusRequest(topicId).catch(err => {
           console.error('[telegram] Quota status failed:', err);
-          this.sendToTopic(topicId, 'Couldn\'t check quota right now. Try again in a moment.').catch(() => {});
+          withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Couldn\'t check quota right now. Try again in a moment.')).catch(() => {});
         });
       } else {
-        await this.sendToTopic(topicId, 'Quota status not available.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Quota status not available.')).catch(() => {});
       }
       return true;
     }, { description: 'Show multi-account quota summary' });
@@ -1415,10 +1511,10 @@ export class TelegramAdapter implements MessagingAdapter {
       if (this.onLoginRequest) {
         this.onLoginRequest(email, topicId).catch(err => {
           console.error('[telegram] Login flow failed:', err);
-          this.sendToTopic(topicId, 'Login didn\'t complete. Try again, or the auth service may be temporarily unavailable.').catch(() => {});
+          withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Login didn\'t complete. Try again, or the auth service may be temporarily unavailable.')).catch(() => {});
         });
       } else {
-        await this.sendToTopic(topicId, 'Login not available.').catch(() => {});
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, 'Login not available.')).catch(() => {});
       }
       return true;
     }, { description: 'Seamless OAuth login from Telegram' });
@@ -1563,31 +1659,8 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  async send(message: OutgoingMessage): Promise<SendResult> {
-    const topicId = message.channel?.identifier;
-    const params: Record<string, unknown> = {
-      chat_id: this.config.chatId,
-      text: message.content,
-      parse_mode: 'Markdown',
-    };
-
-    if (topicId && !isGeneralTopic(parseInt(topicId, 10))) {
-      params.message_thread_id = parseInt(topicId, 10);
-    }
-
-    try {
-      const result = await this.apiCall('sendMessage', params) as { message_id: number };
-      return { messageId: result.message_id, topicId: topicId ? parseInt(topicId, 10) : undefined };
-    } catch (err) {
-      // Only retry without parse_mode on 400 errors (likely Markdown parse failures)
-      const errMsg = err instanceof Error ? err.message : String(err);
-      if (errMsg.includes('(400)') && params.parse_mode) {
-        delete params.parse_mode;
-        const result = await this.apiCall('sendMessage', params) as { message_id: number };
-        return { messageId: result.message_id, topicId: topicId ? parseInt(topicId, 10) : undefined };
-      }
-      throw err;
-    }
+  async send(message: OutgoingMessage): Promise<SendResult | QuietReceipt> {
+    return withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(Number(message.channel?.identifier ?? 1), message.content, { parseFailureRetryOnly: true }));
   }
 
   /**
@@ -1613,10 +1686,11 @@ export class TelegramAdapter implements MessagingAdapter {
     via?: 'mobile-device';
     deviceId?: string;
     eventId?: string;
-    senderRole?: 'owner' | 'msp';
+    senderRole?: 'owner' | 'msp' | 'team';
     senderPerson?: { machineId: string; userId: string };
   }): void {
     const fromApp = entry.via === 'mobile-device';
+    if (entry.telegramUserId && this.isAuthorized(entry.telegramUserId)) this.selectivity?.observeInbound(entry.topicId, entry.messageId, entry.telegramUserId === this.getOwnerUserId() && entry.forwarded === false, Date.parse(entry.timestamp));
     this.appendToLog({
       messageId: entry.messageId,
       topicId: entry.topicId,
@@ -1634,6 +1708,18 @@ export class TelegramAdapter implements MessagingAdapter {
       provenance: 'user',
     });
   }
+
+  /** A durable origin recovery bypasses sendToTopic, so mirror its confirmed
+   * Telegram receipt into the same history used by normal session replies. */
+  logRecoveredOriginMessage(entry: { chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; producerKind: string }): void {
+    if (!Number.isSafeInteger(entry.messageId) || entry.messageId <= 0) return;
+    const topicId = inboundTopicId(entry.chatId, entry.threadId, this.topicSpace());
+    this.appendToLog({ messageId: entry.messageId, topicId, text: entry.text,
+      fromUser: false, forwarded: false, timestamp: new Date(entry.acceptedAt).toISOString(),
+      sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance: entry.producerKind === 'session' ? 'agent' : 'automation' });
+  }
+
 
   /**
    * Send a message to a specific forum topic.
@@ -1659,6 +1745,18 @@ export class TelegramAdapter implements MessagingAdapter {
     } catch { /* history is best-effort here; the send outcome is already decided */ }
   }
 
+  /** A held standby reply was later confirmed by the lease holder. Record the
+   * Telegram receipt in the topic owner's history; no new send occurs here. */
+  recordRecoveredOutbound(topicId: number, text: string, messageId: number, provenance: Exclude<MessageProvenance, 'user'> = 'automation'): void {
+    if (!Number.isSafeInteger(topicId) || topicId < 1 || !Number.isSafeInteger(messageId) || messageId < 1) return;
+    this.appendToLog({
+      messageId, topicId, text, fromUser: false, forwarded: false,
+      timestamp: new Date().toISOString(),
+      sessionName: this.topicToSession.get(topicId) ?? null,
+      provenance,
+    });
+  }
+
   /**
    * Send files into a topic (docs/specs/mobile-native-chat-media.md §4.9: the mirror of a photo or
    * file the operator sent from the Instar app). One file goes up as sendPhoto / sendVideo /
@@ -1674,49 +1772,90 @@ export class TelegramAdapter implements MessagingAdapter {
     files: ReadonlyArray<{ data: Uint8Array; filename: string; mediaType: string; kind: TelegramMediaKind }>,
     caption: string | null,
     options?: { silent?: boolean },
-  ): Promise<{ messageIds: number[] }> {
-    if (files.length < 1 || files.length > 10) throw new Error('telegram media send: between 1 and 10 files');
-    if (typeof this.config.token !== 'string' || this.config.token.length === 0) {
-      throw new Error('telegram media send: this machine has no usable bot token');
+  ): Promise<{ messageIds: number[] } | QuietReceipt> {
+    try {
+      if (files.length < 1 || files.length > 10) throw new Error('telegram media send: between 1 and 10 files');
+      if (this.selectivity && !this.selectivityDelegated) {
+        const routed = await this.selectivity.route(topicId, caption || `Media notice (${files.length} attachments)`, notificationContext.getStore());
+        if (routed.receipt) return routed.receipt;
+      }
+      if (typeof this.config.token !== 'string' || this.config.token.length === 0) {
+        throw new Error('telegram media send: this machine has no usable bot token');
+      }
+      const base: Record<string, unknown> = { chat_id: this.config.chatId };
+      if (!isGeneralTopic(topicId)) base.message_thread_id = topicId;
+      if (options?.silent) base.disable_notification = true;
+      const params = toWireParams(base, this.topicSpace());
+      const form = new FormData();
+      for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) form.append(k, String(v));
+      const blob = (f: { data: Uint8Array; mediaType: string }) => new Blob([new Uint8Array(f.data)], { type: multipartMediaType(f.mediaType) });
+      let method: string;
+      // Kinds Telegram refuses (HEIC photos, non-MP4 video) go up as documents.
+      files = files.map((f) => ({ ...f, kind: telegramKindFor(f.kind, f.mediaType) }));
+      if (files.length === 1) {
+        const one = files[0]!;
+        const m = telegramMethodFor(one.kind);
+        method = m.method;
+        if (caption) form.append('caption', caption);
+        form.append(m.field, blob(one), multipartFileName(one.filename));
+      } else {
+        method = 'sendMediaGroup';
+        const types = telegramGroupTypes(files.map((f) => f.kind));
+        form.append('media', JSON.stringify(files.map((_f, i) => ({ type: types[i], media: `attach://file${i}`, ...(i === 0 && caption ? { caption } : {}) }))));
+        files.forEach((f, i) => form.append(`file${i}`, blob(f), multipartFileName(f.filename)));
+      }
+      const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
+      // Files take longer than a text send; the clock starts after origin review/storage/capacity.
+      const response = await telegramFetch(`https://api.telegram.org/bot${this.config.token}/${method}`, {
+        method: 'POST', body: form, networkTimeoutMs: 120_000,
+      });
+      if (!response.ok) throw new Error(`Telegram API error ${safeUrl} (${response.status}): ${(await response.text()).slice(0, 300)}`);
+      const data = await response.json() as { ok: boolean; result: unknown };
+      if (!data.ok) throw new Error(`Telegram API returned not ok for ${method}`);
+      const results = Array.isArray(data.result) ? data.result : [data.result];
+      return { messageIds: results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n)) };
+    } catch (error) {
+      if (error instanceof QuietRecordedError) return error.receipt;
+      throw error;
     }
-    const base: Record<string, unknown> = { chat_id: this.config.chatId };
-    if (!isGeneralTopic(topicId)) base.message_thread_id = topicId;
-    if (options?.silent) base.disable_notification = true;
-    const params = toWireParams(base, this.topicSpace());
-    const form = new FormData();
-    for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null) form.append(k, String(v));
-    const blob = (f: { data: Uint8Array; mediaType: string }) => new Blob([new Uint8Array(f.data)], { type: multipartMediaType(f.mediaType) });
-    let method: string;
-    // Kinds Telegram refuses (HEIC photos, non-MP4 video) go up as documents.
-    files = files.map((f) => ({ ...f, kind: telegramKindFor(f.kind, f.mediaType) }));
-    if (files.length === 1) {
-      const one = files[0]!;
-      const m = telegramMethodFor(one.kind);
-      method = m.method;
-      if (caption) form.append('caption', caption);
-      form.append(m.field, blob(one), multipartFileName(one.filename));
-    } else {
-      method = 'sendMediaGroup';
-      const types = telegramGroupTypes(files.map((f) => f.kind));
-      form.append('media', JSON.stringify(files.map((_f, i) => ({ type: types[i], media: `attach://file${i}`, ...(i === 0 && caption ? { caption } : {}) }))));
-      files.forEach((f, i) => form.append(`file${i}`, blob(f), multipartFileName(f.filename)));
-    }
-    const safeUrl = `https://api.telegram.org/bot[REDACTED]/${method}`;
-    // Files take longer than a text send; the clock starts after origin review/storage/capacity.
-    const response = await telegramFetch(`https://api.telegram.org/bot${this.config.token}/${method}`, {
-      method: 'POST', body: form, networkTimeoutMs: 120_000,
-    });
-    if (!response.ok) throw new Error(`Telegram API error ${safeUrl} (${response.status}): ${(await response.text()).slice(0, 300)}`);
-    const data = await response.json() as { ok: boolean; result: unknown };
-    if (!data.ok) throw new Error(`Telegram API returned not ok for ${method}`);
-    const results = Array.isArray(data.result) ? data.result : [data.result];
-    return { messageIds: results.map((r) => Number((r as { message_id?: unknown })?.message_id)).filter((n) => Number.isSafeInteger(n)) };
   }
 
-  async sendToTopic(
+  async sendToTopic(topicId: number, text: string,
+    options?: Parameters<TelegramAdapter['sendToTopicDelivered']>[2]): Promise<SendResult | QuietReceipt> {
+    const envelope = options?.envelope ?? notificationContext.getStore();
+    return await this.selectivityScope(envelope, async () => {
+      try {
+        if (this.selectivity && !this.selectivityDelegated && !this.willRelay()) {
+          const routed = await this.selectivity.route(topicId, text, envelope);
+          if (routed.receipt) return routed.receipt;
+        }
+        const sent = await this.selectivityAdmitted.run(true, () => this.sendToTopicDelivered(topicId, text, options));
+        if (envelope?.category === 'command-response' && envelope.inboundMessageId) this.commandReceipts.set(sent, { topicId, messageId: sent.messageId, until: Date.now() + 900000, inboundMessageId: envelope.inboundMessageId });
+        if (!options?.operatorMirror && !envelope?.inboundMirror && (isVerifiedReplyEnvelope(envelope) || envelope?.category === 'command-response')) this.selectivity?.markAnswered(topicId);
+        return sent;
+      } catch (error) { if (error instanceof QuietRecordedError) return error.receipt; throw error; }
+    });
+  }
+  /** One completion edit bound to this adapter's actual command receipt. */
+  async editCommandResponse(topicId: number, receipt: SendResult, text: string): Promise<void> {
+    const bound = this.commandReceipts.get(receipt);
+    if (!bound || bound.topicId !== topicId || Date.now() > bound.until) throw new Error('Command response receipt is missing or expired');
+    this.commandReceipts.delete(receipt);
+    const destination = toWireParams({ chat_id: this.config.chatId, message_thread_id: topicId }, this.topicSpace());
+    await notificationContext.run(verifiedReplyEnvelope('receipt-bound-command-update'), () => this.editMessageWithRetry(bound.messageId, text, 3, destination.chat_id as string));
+  }
+
+  private selectivityScope<T>(envelope: OutboundEnvelope | undefined, fn: () => T): T {
+    return envelope ? notificationContext.run(envelope, fn) : fn();
+  }
+
+  private async sendToTopicDelivered(
     topicId: number,
     text: string,
     options?: {
+      envelope?: OutboundEnvelope;
+      /** Preserve MessagingAdapter.send retry semantics: only a rejected parse is safe to retry. */
+      parseFailureRetryOnly?: boolean;
       silent?: boolean;
       skipStallClear?: boolean;
       /** Kind metadata (messageKind/senderClass/advisoryAck…) forwarded to
@@ -1737,8 +1876,8 @@ export class TelegramAdapter implements MessagingAdapter {
        *  attention-hub post) — the send carries `parse_mode: 'HTML'` +
        *  `_formatMode: 'html'` so applyTelegramFormatter's markdown converter
        *  does not re-escape the tags into literal `<b>`/`<i>` text (the
-       *  2026-07-11 attention-hub rendering bug). Direct sends only; a relayed
-       *  (tokenless-standby) send keeps today's default formatting. */
+       *  2026-07-11 attention-hub rendering bug). Relays carry this mode to
+       *  the holder too. */
       formatMode?: 'html';
       /** mobile-operator-chat mirror: the operator's own app message copied into the
        *  topic. Writes no outbound history row (the inbound row already exists) and
@@ -1790,7 +1929,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // machine, throws OriginForwardSettledLocallyError so the send proceeds locally below.
     const forwardRoute = hasUsableBotToken && this.outboundRelay ? (this.holderForwardPolicy?.decide() ?? 'local') : 'local';
     if (hasUsableBotToken && options?.gateSkippedForRelay && forwardRoute === 'local') throw new OriginForwardSettledLocallyError();
-    let relayed: SendResult | null | undefined;
+    let relayed: SendResult | QuietReceipt | null | undefined;
     if ((!hasUsableBotToken || forwardRoute !== 'local') && this.outboundRelay) {
       // Tokenless standby (bug #7): relay the send through the Telegram-owning router
       // instead of calling the API with no token. The rest of this method's bookkeeping
@@ -1816,6 +1955,7 @@ export class TelegramAdapter implements MessagingAdapter {
       try {
         relayed = await this.outboundRelay(topicId, text, {
           silent: options?.silent,
+          formatMode: options?.formatMode,
           kindMetadata: options?.kindMetadata,
           provenance: options?.provenance ?? 'automation',
         });
@@ -1828,6 +1968,7 @@ export class TelegramAdapter implements MessagingAdapter {
         throw new Error('telegram outbound relay failed (tokenless standby, router unreachable)');
       }
     }
+    if (relayed?.recorded) throw new QuietRecordedError(relayed);
     if (relayed) {
       result = { message_id: relayed.messageId };
     } else if (options?.formatMode === 'html') {
@@ -1860,7 +2001,8 @@ export class TelegramAdapter implements MessagingAdapter {
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof TelegramOriginHoldError) this.logDeliveredDespiteHold(err, topicId, text, options?.provenance);
-        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (err instanceof QuietRecordedError || err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (options?.parseFailureRetryOnly && !(err instanceof Error && err.message.includes('(400)'))) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     } else {
@@ -1890,7 +2032,8 @@ export class TelegramAdapter implements MessagingAdapter {
         // after Telegram rejects the parse, and this refuses it anyway. The refusal is still right
         // for the case it was built for and wrong for that one; both ride CMT-1260.
         if (err instanceof TelegramOriginHoldError) this.logDeliveredDespiteHold(err, topicId, text, options?.provenance);
-        if (err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (err instanceof QuietRecordedError || err instanceof InvisiblePayloadRefusedError || err instanceof TelegramOriginHoldError) throw err;
+        if (options?.parseFailureRetryOnly && !(err instanceof Error && err.message.includes('(400)'))) throw err;
         result = await this.apiCall('sendMessage', params) as { message_id: number };
       }
     }
@@ -1957,7 +2100,7 @@ export class TelegramAdapter implements MessagingAdapter {
       });
     } else {
       // No batcher or disabled — send directly
-      await this.sendToTopic(topicId, text);
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, text));
     }
   }
 
@@ -1970,7 +2113,7 @@ export class TelegramAdapter implements MessagingAdapter {
       enabled: true,
       ...config,
     });
-    this.batcher.setSendFunction((topicId, text) => this.sendToTopic(topicId, text));
+    this.batcher.setSendFunction(async (topicId, text) => requireTelegramDelivery(await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, text))));
     return this.batcher;
   }
 
@@ -2153,6 +2296,43 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /**
+   * Who may answer an authority-bearing button (ACT-115). Wider than getOwnerUserId(), which also
+   * addresses owner DMs: it adds the one verified operator (resolveApprovalOwner). No answer means
+   * nobody may tap, never that anybody may.
+   */
+  setCallbackApproverResolver(resolve: () => number | undefined): void {
+    this.callbackApproverResolver = resolve;
+  }
+
+  /** The configured owner, normalized the way pairing reads it: config is raw JSON, so an id may be a string. */
+  private getConfiguredApprover(): number | undefined {
+    return resolveApprovalOwner(this.getOwnerUserId(), [], []);
+  }
+
+  private getCallbackApprover(): number | undefined {
+    const configured = this.getConfiguredApprover();
+    if (configured !== undefined) return configured;
+    try {
+      return this.callbackApproverResolver?.();
+    } catch {
+      // @silent-fallback-ok: an unresolved owner refuses the tap, which is the safe answer
+      return undefined;
+    }
+  }
+
+  private reportNoCallbackApprover(feature: string): void {
+    if (this.noApproverReported.has(feature)) return;
+    this.noApproverReported.add(feature);
+    DegradationReporter.getInstance().report({
+      feature: `TelegramAdapter.${feature}`,
+      primary: 'Only the verified owner can answer this button',
+      fallback: 'The tap was refused, because no single verified owner is known yet',
+      reason: feature === 'tunnelConsent' ? 'No ownerUserId is configured, and this button needs a configured owner' : 'No ownerUserId is configured and no single verified operator exists',
+      impact: 'This button cannot be answered from Telegram until the owner is known',
+    });
+  }
+
+  /**
    * Send a private DM to the owner principal. Telegram's bot API
    * permits the bot to initiate a DM only after the user has messaged
    * the bot at least once; if the user has never DM'd the bot, the
@@ -2175,15 +2355,19 @@ export class TelegramAdapter implements MessagingAdapter {
    * sent only to the owner's private chat, with an optional Decline button. Resolves to the
    * Telegram message id when Telegram accepted it, else null.
    */
-  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | null): Promise<number | null> {
+  async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null): Promise<number | null> {
     const owner = this.getOwnerUserId();
     if (!owner) return null;
+    const buttons = Array.isArray(button) ? button : button ? [button] : [];
     try {
-      const result = await this.apiCall('sendMessage', {
+      // Only the owner's own pairing and browser-setup messages come here (the code, Approve and
+      // Decline). The owner is waiting on the screen that asked for it, so it must never be held as a
+      // quiet notification: that answered 409 "could not send you the approval message" (2026-11-08).
+      const result = await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.apiCall('sendMessage', {
         chat_id: owner,
         text,
-        ...(button ? { reply_markup: { inline_keyboard: [[{ text: button.text, callback_data: button.data }]] } } : {}),
-      }) as { message_id: number };
+        ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
+      })) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409
@@ -2196,7 +2380,9 @@ export class TelegramAdapter implements MessagingAdapter {
   public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
-  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
+  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown' | 'already-approved' | { result: 'declined' | 'unknown' | 'already-approved'; client?: 'phone' | 'browser' }) | null = null;
+  /** Approve instead of a code (mobile-pairing-approve §3.2): the owner's Approve tap. Wired by AgentServer. */
+  public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
 
@@ -2382,13 +2568,13 @@ export class TelegramAdapter implements MessagingAdapter {
         // Send a one-time setup hint: mute this topic to avoid unread badges.
         // The bot can't mute topics for users (client-side setting), so we guide them.
         try {
-          await this.sendToTopic(topic.topicId, [
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topic.topicId, [
             '💡 *Tip*: Mute this topic to avoid notification badges.',
             '',
             'Long-press this topic → Mute → Forever.',
             '',
             '_The latest dashboard link will always be pinned here._',
-          ].join('\n'), { silent: true });
+          ].join('\n'), { silent: true }));
         } catch {
           // @silent-fallback-ok — guidance message is nice-to-have
         }
@@ -2500,7 +2686,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Fallback: send a new message, pin it, and save for future edits
     try {
-      const result = await this.sendToTopic(topicId, message, { silent: true });
+      const result = await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, message, { silent: true }));
 
       if (result.messageId) {
         // Unpin old pins, then pin the new message
@@ -2548,9 +2734,11 @@ export class TelegramAdapter implements MessagingAdapter {
 
   private formatDashboardMessage(url: string, pin: string | null, isNamed: boolean): string {
     const dashboardUrl = url + '/dashboard';
+    // /dashboard opens the console; the quick links go to its own pages (a `?tab=` link would
+    // open the legacy dashboard).
     const quickLinks = [
-      `Sessions: ${dashboardUrl}?tab=sessions`,
-      `Files: ${dashboardUrl}?tab=files`,
+      `Sessions: ${consolePageUrl(url, '#/work/sessions')}`,
+      `Files: ${consolePageUrl(url, '#/settings/files')}`,
     ];
 
     // A null PIN means the value could not be resolved. NEVER substitute an
@@ -2841,7 +3029,7 @@ export class TelegramAdapter implements MessagingAdapter {
           gatedMessage += `\n\nYour request has been noted and forwarded to the admin.`;
 
           // Reply in the group's General topic (since unknown users don't have their own topic)
-          await this.sendToTopic(GENERAL_TOPIC_ID, gatedMessage).catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID, gatedMessage)).catch(() => {});
 
           // Notify admin via callback
           if (this.onNotifyAdminJoinRequest) {
@@ -2862,9 +3050,9 @@ export class TelegramAdapter implements MessagingAdapter {
           if (trimmedText && this.onValidateInviteCode) {
             const result = await this.onValidateInviteCode(trimmedText, telegramUserId);
             if (result.valid) {
-              await this.sendToTopic(GENERAL_TOPIC_ID,
-                `Welcome, ${firstName}! Your invite code has been accepted. Setting up your account...`,
-              ).catch(() => {});
+              await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID,
+                `Welcome, ${firstName}! Your invite code has been accepted. Setting up your account...`
+              )).catch(() => {});
               // Trigger mini-onboarding after successful invite validation
               if (this.onStartMiniOnboarding) {
                 await this.onStartMiniOnboarding(telegramUserId, firstName, username).catch(err => {
@@ -2873,7 +3061,7 @@ export class TelegramAdapter implements MessagingAdapter {
               }
               return;
             } else if (result.error) {
-              await this.sendToTopic(GENERAL_TOPIC_ID, result.error).catch(() => {});
+              await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID, result.error!)).catch(() => {});
               return;
             }
           }
@@ -2883,27 +3071,27 @@ export class TelegramAdapter implements MessagingAdapter {
           if (contactHint) {
             inviteMessage += `\n\n${contactHint}`;
           }
-          await this.sendToTopic(GENERAL_TOPIC_ID, inviteMessage).catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID, inviteMessage)).catch(() => {});
           break;
         }
 
         case 'open': {
           // Start mini-onboarding via callback
           if (this.onStartMiniOnboarding) {
-            await this.sendToTopic(GENERAL_TOPIC_ID,
-              `Hi ${firstName}! Welcome! Setting up your account...`,
-            ).catch(() => { /* @silent-fallback-ok — supplementary notification */ });
+            await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID,
+              `Hi ${firstName}! Welcome! Setting up your account...`
+            )).catch(() => { /* @silent-fallback-ok — supplementary notification */ });
             await this.onStartMiniOnboarding(telegramUserId, firstName, username).catch(err => {
               // @silent-fallback-ok — supplementary notification
               console.error(`[telegram] Failed to start mini-onboarding: ${err}`);
-              this.sendToTopic(GENERAL_TOPIC_ID,
-                `Sorry ${firstName}, there was an issue setting up your account. Please try again later.`,
-              ).catch(() => { /* @silent-fallback-ok — error notification, primary logged */ });
+              withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID,
+                `Sorry ${firstName}, there was an issue setting up your account. Please try again later.`
+              )).catch(() => { /* @silent-fallback-ok — error notification, primary logged */ });
             });
           } else {
-            await this.sendToTopic(GENERAL_TOPIC_ID,
-              `Hi ${firstName}! Registration is currently being set up. Please try again later.`,
-            ).catch(() => { /* @silent-fallback-ok — unavailable notification */ });
+            await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID,
+              `Hi ${firstName}! Registration is currently being set up. Please try again later.`
+            )).catch(() => { /* @silent-fallback-ok — unavailable notification */ });
           }
           break;
         }
@@ -2911,9 +3099,9 @@ export class TelegramAdapter implements MessagingAdapter {
         default: {
           // Unknown policy — fall back to gated message
           console.warn(`[telegram] Unknown registration policy: ${policy}`);
-          await this.sendToTopic(GENERAL_TOPIC_ID,
-            `Hi ${firstName}! ${displayName} is not currently accepting new users.`,
-          ).catch(() => {});
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(GENERAL_TOPIC_ID,
+            `Hi ${firstName}! ${displayName} is not currently accepting new users.`
+          )).catch(() => {});
         }
       }
     } catch (err) {
@@ -3051,102 +3239,20 @@ export class TelegramAdapter implements MessagingAdapter {
     }
   }
 
-  /**
-   * Actively resolve a topic's name from Telegram by sending a temporary probe message
-   * that replies to the topic's service message (whose message_id = topic_id).
-   * The API response includes reply_to_message.forum_topic_created.name.
-   * The probe message is deleted immediately after.
-   */
+  /** Return a captured topic name. Sending a temporary message to discover a
+   * missing name can leave a visible dot when deletion or routing is delayed. */
   async resolveTopicName(topicId: number): Promise<string | null> {
-    if (this.notAForum) return null;
-    await this.awaitHolderForwardWiring();
-    // The probe is a real message. A machine that would not send locally (it
-    // forwards to the lease holder) cannot probe: a direct send is held and its
-    // "." replayed into the topic later. Fall back to the stored/default name.
-    if (typeof this.config.token === 'string' && this.config.token.length > 0 && this.outboundRelay
-      && (this.holderForwardPolicy?.decide() ?? 'local') !== 'local') return null;
-    try {
-      // Send a temp message replying to the topic creation service message
-      const result = await this.apiCall('sendMessage', {
-        chat_id: this.config.chatId,
-        text: '.', // minimal probe message — deleted immediately after
-        message_thread_id: topicId,
-        reply_to_message_id: topicId,
-      }) as { message_id: number; chat?: { id: number }; reply_to_message?: { forum_topic_created?: { name: string } } };
-
-      // Extract topic name from the reply target
-      const name = result.reply_to_message?.forum_topic_created?.name;
-
-      // Delete the probe message immediately (in the chat it landed in — the issues
-      // group for an issues topic)
-      try {
-        await this.apiCall('deleteMessage', {
-          chat_id: result.chat?.id ?? this.config.chatId,
-          message_id: result.message_id,
-        });
-      } catch {
-        // @silent-fallback-ok — best-effort cleanup
-      }
-
-      if (name) {
-        this.topicToName.set(topicId, name);
-        this.saveRegistry();
-        console.log(`[telegram] Resolved topic name: ${topicId} → "${name}"`);
-        return name;
-      }
-    } catch (err) {
-      const errStr = String(err);
-      console.log(`[telegram] Could not resolve topic name for ${topicId}: ${err}`);
-      // A definite refusal by Telegram (HTTP 400), not a transient failure.
-      if (/telegram-400|Bad Request|message thread not found|TOPIC_DELETED/i.test(errStr)) this.lastProbeRefused = topicId;
-      // If the topic was deleted, mark it so we don't retry resolution on every startup
-      if (errStr.includes('message thread not found') || errStr.includes('TOPIC_DELETED')) {
-        this.topicToName.set(topicId, `[deleted] topic-${topicId}`);
-        this.saveRegistry();
-      }
-    }
-    return null;
+    return this.getTopicName(topicId);
   }
 
   /**
    * Resolve all topic names that are still using the fallback "topic-NNNN" pattern.
    * Called on startup to backfill names for topics created before name tracking.
    */
-  private static readonly PROBE_REFUSAL_BACKOFF_MS = 7 * 24 * 60 * 60 * 1000;
-  private lastProbeRefused: number | null = null;
-  private probeRefusalsPath(): string { return path.join(this.stateDir, 'topic-name-probe-refusals.json'); }
-  private readProbeRefusals(): Record<number, number> {
-    try {
-      const raw = JSON.parse(fs.readFileSync(this.probeRefusalsPath(), 'utf-8')) as Record<string, unknown>;
-      const out: Record<number, number> = {};
-      for (const [k, v] of Object.entries(raw)) if (Number.isSafeInteger(Number(k)) && typeof v === 'number') out[Number(k)] = v;
-      return out;
-    } catch { return {}; } // @silent-fallback-ok: no record yet means every topic may be probed
-  }
-  private writeProbeRefusals(r: Record<number, number>): void {
-    try { fs.writeFileSync(this.probeRefusalsPath(), JSON.stringify(r)); } catch { /* @silent-fallback-ok: worst case the topic is probed again next start */ }
-  }
-
+  /** Unknown names keep their fallback label until a real Telegram service
+   * update supplies the name. No user-visible network probe is permitted. */
   async resolveUnknownTopicNames(): Promise<void> {
-    const unknowns: number[] = [];
-    for (const topicId of this.topicToSession.keys()) {
-      if (!this.getTopicName(topicId)) unknowns.push(topicId);
-    }
-    // General (1) has no creation message to reply to, and a topic Telegram
-    // refused recently (deleted, or not in this chat) is not asked again every
-    // start: each refused probe is a real refused send (2026-11-02: ~190 a week).
-    const refused = this.readProbeRefusals();
-    const now = Date.now();
-    const toProbe = unknowns.filter((id) => id > 1 && !(now - (refused[id] ?? 0) < TelegramAdapter.PROBE_REFUSAL_BACKOFF_MS));
-    if (toProbe.length === 0) return;
-    console.log(`[telegram] Resolving ${toProbe.length} unknown topic names...`);
-    for (const topicId of toProbe) {
-      this.lastProbeRefused = null;
-      const ok = await this.resolveTopicName(topicId);
-      if (ok === null && this.lastProbeRefused === topicId) { refused[topicId] = Date.now(); this.writeProbeRefusals(refused); }
-      // Small delay to avoid hitting rate limits
-      await new Promise(r => setTimeout(r, 200));
-    }
+    return;
   }
 
   // ── Topic Purpose Management ─────────────────────────────────
@@ -3462,6 +3568,14 @@ export class TelegramAdapter implements MessagingAdapter {
 
       pending.alerted = true;
 
+      // SessionMonitor is the sole owner of dead-session recovery and its
+      // failure notice. Triage can itself send a stopped notice, so do not
+      // invoke it for an already dead session.
+      if (!alive) {
+        console.log(`[telegram] Dead session ${pending.sessionName} awaits monitor recovery for topic ${pending.topicId}`);
+        continue;
+      }
+
       // Try LLM-powered triage first if available
       if (this.onStallDetected) {
         try {
@@ -3478,6 +3592,8 @@ export class TelegramAdapter implements MessagingAdapter {
         }
       }
 
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(pending.sessionName)) continue;
+
       // Classify the stall — check if it's a quota death
       let isQuotaDeath = false;
       if (this.onClassifySessionDeath) {
@@ -3485,12 +3601,12 @@ export class TelegramAdapter implements MessagingAdapter {
           const classification = await this.onClassifySessionDeath(pending.sessionName);
           if (classification && classification.cause === 'quota_exhaustion') {
             isQuotaDeath = true;
-            this.sendToTopic(
+            withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(
               pending.topicId,
               `\ud83d\udd34 Session hit quota limit \u2014 "${pending.sessionName}" can't respond.\n\n` +
               `${classification.detail}\n\n` +
-              `Use /quota to check accounts, /switch-account to switch, or /login to authenticate a new account.`,
-            ).catch(err => {
+              `Use /quota to check accounts, /switch-account to switch, or /login to authenticate a new account.`
+            )).catch(err => {
               console.error(`[telegram] Quota stall alert failed: ${err}`);
             });
           }
@@ -3511,12 +3627,12 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlert) {
+        if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(pending.sessionName))) {
           const status = alive ? 'running but not responding' : 'no longer running';
-          this.sendToTopic(
+          withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(
             pending.topicId,
-            `\u26a0\ufe0f No response after ${minutesAgo} minutes. "${pending.sessionName}" is ${status}.\n\nYour message: "${pending.messageText}..."${alive ? '\n\nTry /interrupt to nudge it, or /restart to start fresh.' : '\n\nSend another message and a new session will start automatically.'}`,
-          ).catch(err => {
+            `\u26a0\ufe0f No response after ${minutesAgo} minutes. "${pending.sessionName}" is ${status}.\n\nYour message: "${pending.messageText}..."`,
+          )).catch(err => {
             console.error(`[telegram] Stall alert failed: ${err}`);
           });
         }
@@ -3539,6 +3655,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const alive = this.onIsSessionAlive
           ? this.onIsSessionAlive(promise.sessionName)
           : true;
+        if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
 
         // Delegate to triage nurse if available
         if (this.onStallDetected) {
@@ -3563,6 +3680,8 @@ export class TelegramAdapter implements MessagingAdapter {
           }
         }
 
+        if (this.onIsSessionAlive && !this.onIsSessionAlive(promise.sessionName)) continue;
+
         // Fallback: LLM-gated user-facing alert
         const promiseMinutesAgo = Math.round((now - promise.promisedAt) / 60000);
         const shouldAlertPromise = await this.confirmStallAlert({
@@ -3573,16 +3692,10 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlertPromise) {
-          if (!alive) {
-            await this.sendToTopic(topicId,
-              `The session stopped unexpectedly after saying "${promise.promiseText}". Sending a new message will auto-spawn a fresh session.`
-            ).catch(() => {});
-          } else {
-            await this.sendToTopic(topicId,
-              `It's been ${promiseMinutesAgo} minutes since the session said "${promise.promiseText}" — checking on it now...`
-            ).catch(() => {});
-          }
+        if (shouldAlertPromise && (!this.onIsSessionAlive || this.onIsSessionAlive(promise.sessionName))) {
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
+            `It's been ${promiseMinutesAgo} minutes since the session said "${promise.promiseText}" — checking on it now...`
+          )).catch(() => {});
         }
       }
 
@@ -3609,6 +3722,9 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   private async handleSharedStallEvent(event: StallEvent, alive: boolean): Promise<void> {
     const topicId = parseInt(event.channelId, 10);
+    // The shared detector may still hold an old session name while a
+    // replacement answers. Leave dead-session handling to SessionMonitor.
+    if (!alive || (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName))) return;
 
     // Phase 1e: Emit to event bus
     if (this.eventBus) {
@@ -3646,6 +3762,8 @@ export class TelegramAdapter implements MessagingAdapter {
         }
       }
 
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName)) return;
+
       // Classify — check if it's a quota death
       let isQuotaDeath = false;
       if (this.onClassifySessionDeath) {
@@ -3653,12 +3771,12 @@ export class TelegramAdapter implements MessagingAdapter {
           const classification = await this.onClassifySessionDeath(event.sessionName);
           if (classification && classification.cause === 'quota_exhaustion') {
             isQuotaDeath = true;
-            this.sendToTopic(
+            withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(
               topicId,
               `\ud83d\udd34 Session hit quota limit \u2014 "${event.sessionName}" can't respond.\n\n` +
               `${classification.detail}\n\n` +
-              `Use /quota to check accounts, /switch-account to switch, or /login to authenticate a new account.`,
-            ).catch(err => console.error(`[telegram] Quota stall alert failed: ${err}`));
+              `Use /quota to check accounts, /switch-account to switch, or /login to authenticate a new account.`
+            )).catch(err => console.error(`[telegram] Quota stall alert failed: ${err}`));
           }
         } catch { /* Classification failed — fall through */ }
       }
@@ -3672,12 +3790,12 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlert) {
+        if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(event.sessionName))) {
           const status = alive ? 'running but not responding' : 'no longer running';
-          this.sendToTopic(
+          withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(
             topicId,
-            `\u26a0\ufe0f No response after ${event.minutesElapsed} minutes. Session "${event.sessionName}" is ${status}.\n\nMessage: "${event.messageText}..."${alive ? '\n\nTry /interrupt to unstick, or /restart to respawn.' : '\n\nSend another message to auto-respawn.'}`,
-          ).catch(err => console.error(`[telegram] Stall alert failed: ${err}`));
+            `\u26a0\ufe0f No response after ${event.minutesElapsed} minutes. Session "${event.sessionName}" is ${status}.\n\nMessage: "${event.messageText}..."`,
+          )).catch(err => console.error(`[telegram] Stall alert failed: ${err}`));
         }
       }
     } else if (event.type === 'promise-expired') {
@@ -3693,6 +3811,8 @@ export class TelegramAdapter implements MessagingAdapter {
         }
       }
 
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName)) return;
+
       const shouldAlert = await this.confirmStallAlert({
         type: 'promise-expired',
         sessionName: event.sessionName,
@@ -3701,16 +3821,10 @@ export class TelegramAdapter implements MessagingAdapter {
         sessionAlive: alive,
       });
 
-      if (shouldAlert) {
-        if (!alive) {
-          await this.sendToTopic(topicId,
-            `The session stopped unexpectedly after saying "${event.messageText}". Sending a new message will auto-spawn a fresh session.`
-          ).catch(() => {});
-        } else {
-          await this.sendToTopic(topicId,
-            `It's been ${event.minutesElapsed} minutes since the session said "${event.messageText}" — checking on it now...`
-          ).catch(() => {});
-        }
+      if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(event.sessionName))) {
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
+          `It's been ${event.minutesElapsed} minutes since the session said "${event.messageText}" — checking on it now...`
+        )).catch(() => {});
       }
     }
   }
@@ -3859,17 +3973,17 @@ export class TelegramAdapter implements MessagingAdapter {
       if (this.batcher && this.batcher.isEnabled()) {
         const flushed = await this.batcher.flushAll();
         if (flushed > 0) {
-          await this.sendToTopic(topicId, `Flushed ${flushed} batched notification${flushed === 1 ? '' : 's'}.`).catch(() => {});
+          await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Flushed ${flushed} batched notification${flushed === 1 ? '' : 's'}.`)).catch(() => {});
         } else {
-          await this.sendToTopic(topicId, 'No batched notifications to flush.').catch(() => {});
+          await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'No batched notifications to flush.')).catch(() => {});
         }
       } else if (this.onFlushNotifications) {
         this.onFlushNotifications(topicId).catch(err => {
           console.error('[telegram] Flush notifications failed:', err);
-          this.sendToTopic(topicId, 'Failed to flush notifications.').catch(() => {});
+          withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Failed to flush notifications.')).catch(() => {});
         });
       } else {
-        await this.sendToTopic(topicId, 'Notification batching is not enabled.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Notification batching is not enabled.')).catch(() => {});
       }
       return true;
     }
@@ -3878,13 +3992,13 @@ export class TelegramAdapter implements MessagingAdapter {
     if (cmd === '/sessions' || cmd.startsWith('/sessions ')) {
       const filterUnclaimed = cmd.includes('unclaimed');
       if (!this.onListSessions) {
-        await this.sendToTopic(topicId, 'Session listing not available.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Session listing not available.')).catch(() => {});
         return true;
       }
 
       const sessions = this.onListSessions();
       if (sessions.length === 0) {
-        await this.sendToTopic(topicId, 'No sessions running.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'No sessions running.')).catch(() => {});
         return true;
       }
 
@@ -3895,14 +4009,14 @@ export class TelegramAdapter implements MessagingAdapter {
         if (filterUnclaimed && claimed) continue;
 
         const status = s.alive ? '\u2705' : '\u274c';
-        const claimTag = claimed ? ` (topic ${linkedTopic})` : ' \u{1f7e1} unclaimed';
+        const claimTag = claimed ? ` (${topicRef(linkedTopic)})` : ' \u{1f7e1} unclaimed';
         lines.push(`${status} ${s.name}${claimTag}`);
       }
 
       if (lines.length === 0) {
-        await this.sendToTopic(topicId, filterUnclaimed ? 'No unclaimed sessions.' : 'No sessions.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, filterUnclaimed ? 'No unclaimed sessions.' : 'No sessions.')).catch(() => {});
       } else {
-        await this.sendToTopic(topicId, lines.join('\n')).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, lines.join('\n'))).catch(() => {});
       }
       return true;
     }
@@ -3923,7 +4037,7 @@ export class TelegramAdapter implements MessagingAdapter {
     //   /local-model off / none            → revert to cloud Codex
     if (cmd === '/local-model' || cmd.startsWith('/local-model ')) {
       if (!this.onLocalModelCommand) {
-        await this.sendToTopic(topicId, 'Local-model routing not available — server did not wire the /local-model handler.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Local-model routing not available — server did not wire the /local-model handler.')).catch(() => {});
         return true;
       }
       const argText = cmd === '/local-model' ? '' : text.trim().slice('/local-model '.length).trim();
@@ -3936,9 +4050,9 @@ export class TelegramAdapter implements MessagingAdapter {
       }
       try {
         const result = await this.onLocalModelCommand(topicId, provider, model);
-        await this.sendToTopic(topicId, result.message).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, result.message)).catch(() => {});
       } catch (err) {
-        await this.sendToTopic(topicId, `Local-model switch failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Local-model switch failed: ${err instanceof Error ? err.message : String(err)}`)).catch(() => {});
       }
       return true;
     }
@@ -3951,7 +4065,7 @@ export class TelegramAdapter implements MessagingAdapter {
     //   /route codex-cli   → switch this topic to Codex
     if (cmd === '/route' || cmd.startsWith('/route ')) {
       if (!this.onRouteCommand) {
-        await this.sendToTopic(topicId, 'Routing not available — server did not wire the /route handler.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Routing not available — server did not wire the /route handler.')).catch(() => {});
         return true;
       }
       const arg = cmd === '/route' ? '' : text.trim().slice('/route '.length).trim().toLowerCase();
@@ -3959,9 +4073,9 @@ export class TelegramAdapter implements MessagingAdapter {
       try {
         // §10.1: forward the authenticated sender uid down to the write.
         const result = await this.onRouteCommand(topicId, requested, userId);
-        await this.sendToTopic(topicId, result.message).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, result.message)).catch(() => {});
       } catch (err) {
-        await this.sendToTopic(topicId, `Routing failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Routing failed: ${err instanceof Error ? err.message : String(err)}`)).catch(() => {});
       }
       return true;
     }
@@ -3978,15 +4092,15 @@ export class TelegramAdapter implements MessagingAdapter {
     //   /topic clear · /topic undo · /topic re-apply
     if (cmd === '/topic' || cmd.startsWith('/topic ')) {
       if (!this.onTopicProfileCommand) {
-        await this.sendToTopic(topicId, 'Topic profiles not available — server did not wire the /topic handler.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Topic profiles not available — server did not wire the /topic handler.')).catch(() => {});
         return true;
       }
       const argText = cmd === '/topic' ? '' : text.trim().slice('/topic '.length).trim();
       try {
         const result = await this.onTopicProfileCommand(topicId, argText, userId);
-        await this.sendToTopic(topicId, result.message).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, result.message)).catch(() => {});
       } catch (err) {
-        await this.sendToTopic(topicId, `Topic profile change failed: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Topic profile change failed: ${err instanceof Error ? err.message : String(err)}`)).catch(() => {});
       }
       return true;
     }
@@ -3995,19 +4109,19 @@ export class TelegramAdapter implements MessagingAdapter {
     if (cmd.startsWith('/claim ')) {
       const sessionName = text.trim().slice(7).trim();
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'Please include a session name — e.g. /claim my-session').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Please include a session name — e.g. /claim my-session')).catch(() => {});
         return true;
       }
 
       // Check if already claimed
       const existingSession = this.getSessionForTopic(topicId);
       if (existingSession) {
-        await this.sendToTopic(topicId, `This topic is already linked to "${existingSession}". Use /unlink first.`).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `This topic is already linked to "${existingSession}". Use /unlink first.`)).catch(() => {});
         return true;
       }
 
       this.registerTopicSession(topicId, sessionName);
-      await this.sendToTopic(topicId, `Claimed session "${sessionName}" into this topic.`).catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Claimed session "${sessionName}" into this topic.`)).catch(() => {});
       return true;
     }
 
@@ -4015,18 +4129,18 @@ export class TelegramAdapter implements MessagingAdapter {
     if (cmd.startsWith('/link ')) {
       const sessionName = text.trim().slice(6).trim();
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'Please include a session name — e.g. /link my-session').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Please include a session name — e.g. /link my-session')).catch(() => {});
         return true;
       }
 
       const existingSession = this.getSessionForTopic(topicId);
       if (existingSession) {
-        await this.sendToTopic(topicId, `This topic is already linked to "${existingSession}". Use /unlink first.`).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `This topic is already linked to "${existingSession}". Use /unlink first.`)).catch(() => {});
         return true;
       }
 
       this.registerTopicSession(topicId, sessionName);
-      await this.sendToTopic(topicId, `Linked session "${sessionName}" to this topic.`).catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Linked session "${sessionName}" to this topic.`)).catch(() => {});
       return true;
     }
 
@@ -4034,12 +4148,12 @@ export class TelegramAdapter implements MessagingAdapter {
     if (cmd === '/unlink') {
       const sessionName = this.getSessionForTopic(topicId);
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'No session linked to this topic.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'No session linked to this topic.')).catch(() => {});
         return true;
       }
 
       this.unregisterTopic(topicId);
-      await this.sendToTopic(topicId, `Unlinked session "${sessionName}" from this topic.`).catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Unlinked session "${sessionName}" from this topic.`)).catch(() => {});
       return true;
     }
 
@@ -4047,12 +4161,12 @@ export class TelegramAdapter implements MessagingAdapter {
     if (cmd === '/interrupt') {
       const sessionName = this.getSessionForTopic(topicId);
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'No session linked to this topic.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'No session linked to this topic.')).catch(() => {});
         return true;
       }
 
       if (!this.onInterruptSession) {
-        await this.sendToTopic(topicId, 'Interrupt not available (no handler registered).').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Interrupt not available (no handler registered).')).catch(() => {});
         return true;
       }
 
@@ -4061,13 +4175,13 @@ export class TelegramAdapter implements MessagingAdapter {
         // Clear stall tracking — user is actively intervening
         this.clearStallForTopic(topicId);
         if (success) {
-          await this.sendToTopic(topicId, `Nudged "${sessionName}" \u2014 it should resume shortly.`).catch(() => {});
+          await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Nudged "${sessionName}" \u2014 it should resume shortly.`)).catch(() => {});
         } else {
-          await this.sendToTopic(topicId, `Failed to interrupt "${sessionName}" \u2014 session may not exist.`).catch(() => {});
+          await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Failed to interrupt "${sessionName}" \u2014 session may not exist.`)).catch(() => {});
         }
       } catch (err) {
         console.error(`[telegram] Interrupt failed:`, err);
-        await this.sendToTopic(topicId, 'Couldn\'t interrupt the session. It may have already ended.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Couldn\'t interrupt the session. It may have already ended.')).catch(() => {});
       }
       return true;
     }
@@ -4076,24 +4190,24 @@ export class TelegramAdapter implements MessagingAdapter {
     if (cmd === '/restart') {
       const sessionName = this.getSessionForTopic(topicId);
       if (!sessionName) {
-        await this.sendToTopic(topicId, 'No session linked to this topic.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'No session linked to this topic.')).catch(() => {});
         return true;
       }
 
       if (!this.onRestartSession) {
-        await this.sendToTopic(topicId, 'Restart not available (no handler registered).').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Restart not available (no handler registered).')).catch(() => {});
         return true;
       }
 
       // Clear stall tracking — user is actively intervening
       this.clearStallForTopic(topicId);
-      await this.sendToTopic(topicId, `Restarting "${sessionName}"...`).catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `Restarting "${sessionName}"...`)).catch(() => {});
       try {
         await this.onRestartSession(sessionName, topicId);
-        await this.sendToTopic(topicId, 'Session restarted.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Session restarted.')).catch(() => {});
       } catch (err) {
         console.error(`[telegram] Restart failed:`, err);
-        await this.sendToTopic(topicId, 'Restart didn\'t work. The session may need to be recreated — try sending a new message.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Restart didn\'t work. The session may need to be recreated — try sending a new message.')).catch(() => {});
       }
       return true;
     }
@@ -4107,19 +4221,19 @@ export class TelegramAdapter implements MessagingAdapter {
         `Topic mappings: ${s.topicMappings}`,
         `Pending stall alerts: ${s.pendingStalls}`,
       ];
-      await this.sendToTopic(topicId, lines.join('\n')).catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, lines.join('\n'))).catch(() => {});
       return true;
     }
 
     // /triage — show triage status for this topic
     if (cmd === '/triage') {
       if (!this.onGetTriageStatus) {
-        await this.sendToTopic(topicId, 'Triage system not available.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Triage system not available.')).catch(() => {});
         return true;
       }
       const status = this.onGetTriageStatus(topicId);
       if (!status || !status.active) {
-        await this.sendToTopic(topicId, '🔍 No active triage for this topic. Session appears to be operating normally.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, '🔍 No active triage for this topic. Session appears to be operating normally.')).catch(() => {});
       } else {
         const lines = [
           `🔍 Active triage for this topic:`,
@@ -4127,7 +4241,7 @@ export class TelegramAdapter implements MessagingAdapter {
           `Checks: ${status.checkCount}`,
           status.lastCheck ? `Last check: ${status.lastCheck}` : '',
         ].filter(Boolean);
-        await this.sendToTopic(topicId, lines.join('\n')).catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, lines.join('\n'))).catch(() => {});
       }
       return true;
     }
@@ -4139,10 +4253,10 @@ export class TelegramAdapter implements MessagingAdapter {
       if (this.onSwitchAccountRequest) {
         this.onSwitchAccountRequest(target, topicId).catch(err => {
           console.error('[telegram] Switch account failed:', err);
-          this.sendToTopic(topicId, 'Account switch didn\'t work. Try again or use /quota to check status.').catch(() => {});
+          withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Account switch didn\'t work. Try again or use /quota to check status.')).catch(() => {});
         });
       } else {
-        await this.sendToTopic(topicId, 'Account switching not available.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Account switching not available.')).catch(() => {});
       }
       return true;
     }
@@ -4152,10 +4266,10 @@ export class TelegramAdapter implements MessagingAdapter {
       if (this.onQuotaStatusRequest) {
         this.onQuotaStatusRequest(topicId).catch(err => {
           console.error('[telegram] Quota status failed:', err);
-          this.sendToTopic(topicId, 'Couldn\'t check quota right now. Try again in a moment.').catch(() => {});
+          withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Couldn\'t check quota right now. Try again in a moment.')).catch(() => {});
         });
       } else {
-        await this.sendToTopic(topicId, 'Quota status not available.').catch(() => {});
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Quota status not available.')).catch(() => {});
       }
       return true;
     }
@@ -4168,10 +4282,10 @@ export class TelegramAdapter implements MessagingAdapter {
         this.onLoginRequest(email, topicId).catch(err => {
           // @silent-fallback-ok — login error, user notified
           console.error('[telegram] Login flow failed:', err);
-          this.sendToTopic(topicId, 'Login didn\'t complete. Try again, or the auth service may be temporarily unavailable.').catch(() => { /* @silent-fallback-ok — secondary notification */ });
+          withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Login didn\'t complete. Try again, or the auth service may be temporarily unavailable.')).catch(() => { /* @silent-fallback-ok — secondary notification */ });
         });
       } else {
-        await this.sendToTopic(topicId, 'Login not available.').catch(() => { /* @silent-fallback-ok — secondary notification */ });
+        await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, 'Login not available.')).catch(() => { /* @silent-fallback-ok — secondary notification */ });
       }
       return true;
     }
@@ -4243,6 +4357,15 @@ export class TelegramAdapter implements MessagingAdapter {
    * the full multi-MB log: the measured cause of the 2026-06-05 event-loop
    * stalls.) Requests beyond the cache window fall through to a direct file scan.
    */
+  /**
+   * The in-memory per-topic tail ONLY — never reads the log file. null when the
+   * topic is not cached (promise-review-and-priority: a message-evidence lookup
+   * must not block the event loop; an uncached topic is "unverifiable").
+   */
+  getCachedTopicTail(topicId: number): ReadonlyArray<{ messageId: number; timestamp: string; fromUser: boolean; sessionName: string | null }> | null {
+    return this.topicTailCache.get(topicId) ?? null;
+  }
+
   getTopicHistory(topicId: number, limit: number = 20): LogEntry[] {
     if (limit <= TelegramAdapter.TAIL_CACHE_LIMIT) {
       const cached = this.topicTailCache.get(topicId);
@@ -4573,16 +4696,54 @@ export class TelegramAdapter implements MessagingAdapter {
       ...(item.description !== undefined ? { description: fix(item.description) as string } : {}) };
   }
 
-  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly: true }): Promise<AttentionItem> {
+  async createAttentionItem(rawItem: AttentionObservation, routing?: { hubOnly?: true; recordOnly?: true }): Promise<AttentionItem> {
     const item = this.nameAttentionText(rawItem);
     // One row per condition (attention-lifecycle-close-on-cause §3.1): an
     // observation that lands on an existing row refreshes/reopens it instead
     // of creating a sibling. Only a genuinely new condition reaches the
     // routing below.
     const admitted = this.admitAttentionObservation(item);
+    // Reconciliation accepts durable evidence without initiating Telegram work,
+    // independently of selectivity rollout or category push preferences.
+    if (routing?.recordOnly) {
+      const attention = admitted.item;
+      this.attentionItems.set(attention.id, attention);
+      attention.hubHeld = true; attention.coalesced = true;
+      this.saveAttentionItems();
+      return attention;
+    }
+    if (this.selectivity?.holdsCategory(categoryForAttention(item.sourceContext, item.lane))) {
+      const attention = admitted.item;
+      this.attentionItems.set(attention.id, attention);
+      attention.hubHeld = true; attention.coalesced = true;
+      this.saveAttentionItems();
+      for (const contextTopicId of (item.contextTopicIds?.length ? item.contextTopicIds.slice(0, 1000) : [attention.topicId ?? 1])) {
+        const routed = await this.selectivity.route(contextTopicId, `${item.title}\n${item.summary ?? item.description ?? ''}`, {
+          origin: 'automated', category: categoryForAttention(item.sourceContext, item.lane), sourceContext: item.sourceContext ?? item.category ?? 'attention',
+        });
+        attention.quietNotificationId = routed.receipt?.quietId;
+      }
+      this.saveAttentionItems();
+      return attention;
+    }
     if (admitted.kind === 'existing') {
-      if (admitted.repost && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic')) {
-        const hubTopicId = await this.routeToAttentionHub(admitted.item);
+      const healthLane = item.lane === 'agent-health' || admitted.item.lane === 'agent-health';
+      if (healthLane) {
+        admitted.item.lane = 'agent-health';
+        admitted.item.needsUser = item.needsUser === true;
+        this.saveAttentionItems();
+      }
+      if (healthLane && item.needsUser !== true && !this.selectivity?.categoryPushEnabled('agent-health')) {
+        this.holdRoutineAgentHealth(admitted.item);
+        return admitted.item;
+      }
+      const actionableTransition = healthLane && admitted.item.hubHeld === true
+        && isOpenAttentionStatus(admitted.item.status);
+      if ((admitted.repost || actionableTransition)
+        && (routing?.hubOnly || this.attentionRoutingMode === 'single-topic' || healthLane)) {
+        const hubTopicId = healthLane && this.agentHealthLaneCfg.enabled
+          ? await this.routeToAgentHealthLane(admitted.item)
+          : await this.routeToAttentionHub(admitted.item);
         admitted.item.coalesced = true;
         if (hubTopicId !== null) admitted.item.topicId = hubTopicId;
       }
@@ -4596,14 +4757,18 @@ export class TelegramAdapter implements MessagingAdapter {
     this.attentionItems.set(item.id, attention);
     this.saveAttentionItems();
 
-    // ── Agent-Health lane (calm self-health notices) ─────────────────────
-    // A routine self-health/housekeeping notice routes into ONE named "🩺 Agent
-    // Health" topic from the very first item — it never spawns its own topic
-    // (even under budget, even if mis-tagged HIGH) and same-entity re-escalations
-    // are suppression-deduped. This runs BEFORE the flood guard and bypasses it
-    // entirely, so a stale-session/peer-unreachable feature can never flood
-    // topic-after-topic. Only items that explicitly opt in are affected.
-    if (!routing?.hubOnly && this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
+    // Agent Health is a record of the agent's own housekeeping. A priority
+    // label is not evidence that the operator can act. Only an explicit
+    // needsUser decision at the producer may turn it into a Telegram push.
+    // Keep this ahead of both lane routing and the hub-only upsert path.
+    if (item.lane === 'agent-health' && item.needsUser !== true && !this.selectivity?.categoryPushEnabled('agent-health')) {
+      this.holdRoutineAgentHealth(attention);
+      return attention;
+    }
+
+    // An Agent Health item that truly needs the user keeps the established
+    // lane destination. Routine observations returned above, without egress.
+    if (this.agentHealthLaneCfg.enabled && item.lane === 'agent-health') {
       const laneTopicId = await this.routeToAgentHealthLane(attention);
       attention.coalesced = true;
       if (laneTopicId !== null) attention.topicId = laneTopicId;
@@ -4617,7 +4782,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // below is the opt-out. Deliberately NOT registered in the per-item topic
     // maps (many items share the hub — see the coalesce-path comment below);
     // hub items are managed via /attention (PATCH / dashboard), not /ack.
-    if (routing?.hubOnly || this.attentionRoutingMode === 'single-topic') {
+    if (routing?.hubOnly || this.attentionRoutingMode === 'single-topic' || this.selectivity?.isEnforcing()) {
       const hubTopicId = await this.routeToAttentionHub(attention);
       attention.coalesced = true;
       if (hubTopicId !== null) attention.topicId = hubTopicId;
@@ -4726,6 +4891,38 @@ export class TelegramAdapter implements MessagingAdapter {
     return attention;
   }
 
+  /** Persist an attention item and confirm that its notice reached Telegram.
+   * Existing items may be reminded; a failed hub post is retried through the
+   * ordinary send path instead of being mistaken for delivery. */
+  async createAttentionItemConfirmed(item: AttentionObservation): Promise<AttentionItem> {
+    const before = this.attentionHubLastPost.get(item.id);
+    const row = await this.createAttentionItem(item, { hubOnly: true });
+    if (row.hubHeld && this.selectivity?.isEnforcing()) return row;
+    if (this.attentionHubLastPost.get(row.id) !== before) return row;
+    if (!this.attentionHubAdmits(row.id)) throw new Error('attention-hub-filter-held');
+    const topicId = row.topicId ?? await this.ensureAttentionHubTopic();
+    if (topicId === null) throw new Error('attention-hub-unavailable');
+    const message = `${row.title}\n\n${row.summary ?? row.description ?? ''}`;
+    try {
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, message));
+    } catch (error) {
+      if (!(error instanceof TelegramOriginHoldError && error.reason === 'duplicate-content')) throw error;
+    }
+    if (row.hubHeld) return row;
+    this.attentionHubLastPost.set(row.id, { at: Date.now(), priority: row.priority });
+    return row;
+  }
+
+  private holdRoutineAgentHealth(item: AttentionItem): void {
+    item.hubHeld = true;
+    item.coalesced = true;
+    this.saveAttentionItems();
+    recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
+      kind: 'item', reason: 'agent-health-routine', id: item.id,
+      category: item.category, priority: item.priority, title: item.title,
+    });
+  }
+
   /**
    * Create an attention item, or REFRESH + REOPEN the same durable id when it already exists
    * (updated body/title, status back to OPEN, re-posted to the Attention hub). `createAttentionItem`
@@ -4735,16 +4932,17 @@ export class TelegramAdapter implements MessagingAdapter {
    * per-item topic is never re-spawned by an upsert.
    */
   async upsertAttentionItem(
-    item: AttentionObservation,
+    item: AttentionObservation, routing?: { recordOnly: true },
   ): Promise<AttentionItem> {
     // Refresh + reopen now live in the shared admission helper, so this is the
     // hub-only spelling of createAttentionItem (an upsert never spawns a per-item topic).
-    return this.createAttentionItem(item, { hubOnly: true });
+    return this.createAttentionItem(item, { hubOnly: true, ...routing });
   }
 
   /**
-   * Create the first Agent-Health item for an entity, or refresh and visibly
-   * reopen the same durable item when the condition returns after recovery.
+   * Create the first Agent-Health item for an entity, or refresh and reopen
+   * the same durable item when the condition returns after recovery. Routine
+   * recurrences remain in the record without a Telegram post.
    *
    * `createAttentionItem` intentionally dedupes on id and returns the existing
    * row unchanged. That is right for retries inside one episode but would hide
@@ -4764,6 +4962,7 @@ export class TelegramAdapter implements MessagingAdapter {
 
     const wasClosed = !isOpenAttentionStatus(existing.status);
     Object.assign(existing, item, {
+      needsUser: item.needsUser === true,
       status: 'OPEN' as const,
       updatedAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
@@ -4771,6 +4970,12 @@ export class TelegramAdapter implements MessagingAdapter {
       ...(wasClosed ? { episode: (existing.episode ?? 1) + 1, closedBy: undefined, resolution: undefined } : {}),
     });
     this.saveAttentionItems();
+
+    if (item.needsUser !== true && !this.selectivity?.categoryPushEnabled('agent-health') || this.selectivity?.holdsCategory('agent-health')) {
+      this.holdRoutineAgentHealth(existing);
+      return existing;
+    }
+    if (existing.hubHeld) { existing.hubHeld = false; this.saveAttentionItems(); }
 
     const topicId = await this.ensureAgentHealthLaneTopic();
     if (topicId === null) {
@@ -4782,7 +4987,7 @@ export class TelegramAdapter implements MessagingAdapter {
       '<i>This condition returned after recovery; the existing item was reopened.</i>',
     ].join('\n');
     try {
-      await this.sendToTopic(topicId, line, { formatMode: 'html' });
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, line, { formatMode: 'html' }));
     } catch (err) {
       // A duplicate-content hold means this exact notice was already accepted
       // in this topic within the dedup window: the operator has it. Treating
@@ -4835,6 +5040,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * null if Telegram is unavailable (the item is still recorded in the store).
    */
   private async routeToAgentHealthLane(item: AttentionItem): Promise<number | null> {
+    if (item.hubHeld) { item.hubHeld = false; this.saveAttentionItems(); }
     const key = this.healthKeyFor(item);
     const now = Date.now();
     const last = this.agentHealthKeyRing.get(key);
@@ -4866,9 +5072,10 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (topicId === null) return null;
 
+    const summary = String(item.summary ?? '').trim();
     const line = [
-      `<b>${this.escapeHtml(item.title)}</b>`,
-      this.escapeHtml(String(item.summary ?? '').slice(0, 400)),
+      `<b>${this.escapeHtml(item.title.slice(0, 160))}</b>`,
+      summary === item.title.trim() ? '' : this.escapeHtml(summary.slice(0, 240)),
     ].filter(Boolean).join('\n');
     // `line` is caller-authored, already-escaped Telegram HTML (<b> title +
     // escaped summary). It MUST be sent with formatMode:'html' so the markdown
@@ -4878,7 +5085,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // @silent-fallback-ok — best-effort lane post; the item is already recorded in
     // the attention store, so a transient send failure is non-fatal. If the topic
     // was deleted out from under us, drop the cached id so it's recreated next time.
-    await this.sendToTopic(topicId, line, { formatMode: 'html' }).catch(() => { this.agentHealthTopicId = null; });
+    const sent = await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, line, { envelope: this.attentionEnvelope(item), formatMode: 'html' })).catch(() => { this.agentHealthTopicId = null; });
+    if (sent?.recorded || !sent) { item.hubHeld = true; this.saveAttentionItems(); return null; }
+    item.hubHeld = false; this.saveAttentionItems();
     return topicId;
   }
 
@@ -4914,7 +5123,7 @@ export class TelegramAdapter implements MessagingAdapter {
       // Persist so a restart reuses it and other machines can adopt it.
       try { this.config.systemTopics?.recordAgentHealthTopicId?.(topic.topicId); }
       catch (err) { console.warn(`[telegram] agent-health lane: could not record topic ${topic.topicId}: ${err}`); }
-      if (!topic.reused) {
+      if (!topic.reused && !this.selectivity?.isEnforcing()) {
         const intro = [
           `This is your <b>calm agent-health lane</b>. When I notice something about my OWN sessions — one that looks stuck, a peer I can't reach — the routine heads-up lands HERE instead of spawning a new topic each time.`,
           ``,
@@ -4999,7 +5208,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // @silent-fallback-ok — best-effort coalesce line; the item is already
     // recorded + audit-logged, so a transient send failure is non-fatal. If the
     // topic was deleted out from under us, drop the mapping so it's recreated.
-    await this.sendToTopic(topicId, line).catch(() => {
+    await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, line)).catch(() => {
       this.floodNoticeTopicByBucket.delete(bucket);
     });
     return topicId;
@@ -5053,9 +5262,13 @@ export class TelegramAdapter implements MessagingAdapter {
    * per-item topic. Returns the hub topic id, or null if Telegram is
    * unavailable (the item is still recorded in the store).
    */
+  private attentionEnvelope(item: AttentionItem): OutboundEnvelope {
+    return { origin: 'automated', category: categoryForAttention(item.sourceContext, item.lane),
+      sourceContext: item.sourceContext ?? item.category ?? 'attention' };
+  }
   private async routeToAttentionHub(item: AttentionItem): Promise<number | null> {
     const decision = admitItemToHub(item, this.attentionHubFilterMode);
-    if (!decision.admit) {
+    if (!decision.admit && !this.selectivity?.categoryPushEnabled(categoryForAttention(item.sourceContext, item.lane))) {
       item.hubHeld = true;
       this.saveAttentionItems();
       recordHeldHubPost(path.join(this.botStateDir, 'logs'), {
@@ -5100,7 +5313,8 @@ export class TelegramAdapter implements MessagingAdapter {
     }
     if (typeof injected === 'number' && injected > 0) {
       try {
-        await this.sendToTopic(injected, detail, { formatMode: 'html', silent: item.silent === true });
+        const sent = await this.sendToTopic(injected, detail, { envelope: this.attentionEnvelope(item), formatMode: 'html', silent: item.silent === true });
+        if (sent.recorded) { item.hubHeld = true; this.saveAttentionItems(); return null; }
         markPosted();
         return injected;
       } catch (err) {
@@ -5128,7 +5342,7 @@ export class TelegramAdapter implements MessagingAdapter {
     // Best-effort hub post; the item is already recorded in the attention
     // store. If the hub was deleted out from under us, drop the cached id so
     // it's recreated next time.
-    await this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true })
+    await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, detail, { formatMode: 'html', silent: item.silent === true }))
       .then(markPosted)
       .catch(() => { this.attentionHubTopicId = null; }); // @silent-fallback-ok
     return topicId;
@@ -5142,6 +5356,8 @@ export class TelegramAdapter implements MessagingAdapter {
   attentionHubAdmits(itemId: string): boolean {
     const item = this.attentionItems.get(itemId);
     if (!item) return true;
+    if (this.selectivity?.isEnforcing()) return this.selectivity.categoryPushEnabled(categoryForAttention(item.sourceContext, item.lane));
+    if (item.lane === 'agent-health' && item.needsUser !== true) return false;
     return admitItemToHub(item, this.attentionHubFilterMode).admit;
   }
 
@@ -5204,7 +5420,7 @@ export class TelegramAdapter implements MessagingAdapter {
       };
       // calm-alerting M-P2 (legacy per-item routing): a silent status update
       // posts the line without a buzz \u2014 the one-buzz promise scoped honestly.
-      await this.sendToTopic(topicId, `Status \u2192 ${labels[status] || status}`, opts?.silent === true ? { silent: true } : undefined).catch(() => {});
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, `Status \u2192 ${labels[status] || status}`, { ...(opts?.silent === true ? { silent: true } : undefined) })).catch(() => {});
 
       // Auto-close/reopen topic
       try {
@@ -5347,9 +5563,10 @@ export class TelegramAdapter implements MessagingAdapter {
    * closes a security item. `idPrefix` must end in a delimiter so `:ep-1` can
    * never match `:ep-10`.
    */
-  clearAttentionCondition(match: { conditionKey?: string; id?: string; idPrefix?: string }, resolution: string): { closed: number; refusedSticky: number } {
+  clearAttentionCondition(match: { conditionKey?: string; id?: string; idPrefix?: string }, resolution: string, options?: { reconcile: true }): { closed: number; refusedSticky: number } {
     const result = { closed: 0, refusedSticky: 0 };
-    if (!this.attentionLifecycleConfig().enabled) return result;
+    // Receipt-backed producer reconciliation is independent of automatic sweeps.
+    if (!this.attentionLifecycleConfig().enabled && !options?.reconcile) return result;
     if (match.idPrefix !== undefined && !/[:\-_./|]$/.test(match.idPrefix)) {
       throw new Error(`attention clear idPrefix must end in a delimiter (got "${match.idPrefix}")`);
     }
@@ -5716,6 +5933,13 @@ export class TelegramAdapter implements MessagingAdapter {
 
     try {
       const updates = await this.getUpdates();
+      // The poll-error-to-zero edge (docs/specs/backup-email-sending.md): one reconnect signal, so parked work that
+      // was waiting for Telegram (the email fallback's 24-hour breaker) resumes.
+      if (this.consecutivePollErrors > 0) {
+        for (const listener of this.reconnectListeners) {
+          try { listener(); } catch { /* @silent-fallback-ok — a listener's failure never touches polling */ }
+        }
+      }
       this.consecutivePollErrors = 0; // Reset on success
 
       // Offset range sanity check: if received update_ids are significantly lower
@@ -5802,11 +6026,25 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** This adapter's Telegram chats, for the issues-group topic mapping. */
+  notificationTopicId(chatId: string | null, topicId: string | null): number {
+    const chat = chatId?.startsWith('channel:') ? '-100' + chatId.slice(8) : chatId?.startsWith('chat:') ? '-' + chatId.slice(5) : chatId?.startsWith('user:') ? chatId.slice(5) : chatId;
+    return inboundTopicId(chat ?? this.config.chatId, topicId === null ? 1 : Number(topicId), this.topicSpace()) ?? 1;
+  }
   private topicSpace(): { mainChatId: string; issuesChatId?: string } {
     return { mainChatId: this.config.chatId, issuesChatId: this.config.issuesChatId };
   }
 
   private async processUpdate(update: TelegramUpdate): Promise<void> {
+    const msg = update.message;
+    if (msg?.from && !msg.from.is_bot && this.isAuthorized(msg.from.id) && this.selectivity) {
+      const topicId = inboundTopicId(String(msg.chat.id), msg.message_thread_id ?? 1, this.topicSpace()) ?? 1;
+      this.selectivity.observeInbound(topicId, msg.message_id, msg.from.id === this.getOwnerUserId() && !('forward_origin' in msg || 'forward_from' in msg || 'forward_date' in msg), msg.date * 1000);
+      return notificationContext.run({ origin: 'automated', category: 'command-response',
+        sourceContext: 'telegram-inbound', inboundMessageId: String(msg.message_id) }, () => this.processUpdateDelivered(update));
+    }
+    return this.processUpdateDelivered(update);
+  }
+  private async processUpdateDelivered(update: TelegramUpdate): Promise<void> {
     // Handle callback queries from inline keyboard buttons (Prompt Gate)
     if (update.callback_query) {
       await this.processCallbackQuery(update.callback_query);
@@ -5832,12 +6070,12 @@ export class TelegramAdapter implements MessagingAdapter {
         }).catch((err: unknown) => {
           // Never leave a forwarded invite unanswered (Echo's review): fall back to the dashboard line.
           console.warn(`[telegram] pairing invite handler failed: ${err instanceof Error ? err.message : String(err)}`);
-          void this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK).catch(() => {});
+          void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
         });
         return;
       }
       if (this.isAuthorized(msg.from.id)) {
-        void this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK).catch(() => {});
+        void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
       }
       return;
     }
@@ -5896,10 +6134,10 @@ export class TelegramAdapter implements MessagingAdapter {
         || (msg as unknown as Record<string, unknown>).forward_date),
     });
     if (desktopApproval.matched) {
-      await this.sendToTopic(numericTopicId, desktopApproval.approved
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(numericTopicId, desktopApproval.approved
         ? 'Remote desktop approved. Return to the dashboard to connect.'
         : 'Remote desktop approval was not accepted. Check the request or ask for a new code.',
-      { provenance: 'automation' }).catch(() => {});
+      { provenance: 'automation' })).catch(() => {});
       return;
     }
 
@@ -6017,7 +6255,7 @@ export class TelegramAdapter implements MessagingAdapter {
             }
             // The text a PERSON reads is keyed on the kill OUTCOME — it used to
             // say "Session terminated." for a kill that failed (W26 lane 1).
-            await this.sendToTopic(numericTopicId, emergencyStopUserMessage(sessionName, killed)).catch(() => {});
+            await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(numericTopicId, emergencyStopUserMessage(sessionName, killed))).catch(() => {});
           } else if (classification.category === 'pause' && sessionName) {
             console.log(`[sentinel] Pause for session "${sessionName}" in topic ${numericTopicId}`);
             if (this.onSentinelPauseSession) {
@@ -6027,14 +6265,14 @@ export class TelegramAdapter implements MessagingAdapter {
             if (classification.reason) {
               console.log(`[sentinel] Pause reason: ${classification.reason}`);
             }
-            await this.sendToTopic(numericTopicId,
+            await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(numericTopicId,
               `Session paused.\n\nSend a message to resume.`
-            ).catch(() => {});
+            )).catch(() => {});
           } else if (!sessionName) {
             // No active session — just acknowledge the stop/pause signal
-            await this.sendToTopic(numericTopicId,
+            await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(numericTopicId,
               `No active session to ${classification.category === 'emergency-stop' ? 'stop' : 'pause'}.`
-            ).catch(() => {});
+            )).catch(() => {});
           }
           return; // Don't route to session — sentinel handled it
         }
@@ -6111,7 +6349,7 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.downloadFile(voice.file_id, filepath);
     } catch (err) {
       console.error(`[telegram] Failed to download voice: ${err}`);
-      await this.sendToTopic(topicId, `(Voice message received but download failed)`).catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, `(Voice message received but download failed)`)).catch(() => {});
       return;
     }
 
@@ -6177,9 +6415,9 @@ export class TelegramAdapter implements MessagingAdapter {
       const errMsg = err instanceof Error ? err.message : String(err);
       const isNotConfigured = errMsg.includes('No voice transcription provider configured');
       const replyText = isNotConfigured
-        ? '\ud83c\udfa4 Voice transcription is not configured. To enable it, set GROQ_API_KEY or OPENAI_API_KEY in your environment.'
+        ? "\ud83c\udfa4 I can't read voice notes yet: no transcription service is set up. Ask me to set up voice transcription and I'll do it, with one yes from you."
         : `(Voice message received but transcription failed: ${errMsg})`;
-      await this.sendToTopic(topicId, replyText).catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, replyText)).catch(() => {});
     } finally {
       // Clean up voice file after processing
       try { SafeFsExecutor.safeUnlinkSync(filepath, { operation: 'src/messaging/TelegramAdapter.ts:3477' }); } catch { /* ignore */ }
@@ -6258,7 +6496,7 @@ export class TelegramAdapter implements MessagingAdapter {
       }
     } catch (err) {
       console.error(`[telegram] Failed to download photo: ${err}`);
-      await this.sendToTopic(topicId, '(Photo received but I couldn\'t process it. Try sending it again.)').catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, '(Photo received but I couldn\'t process it. Try sending it again.)')).catch(() => {});
     }
   }
 
@@ -6334,7 +6572,7 @@ export class TelegramAdapter implements MessagingAdapter {
       }
     } catch (err) {
       console.error(`[telegram] Failed to download document: ${err}`);
-      await this.sendToTopic(topicId, '(Document received but I couldn\'t process it. Try sending it again.)').catch(() => {});
+      await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, '(Document received but I couldn\'t process it. Try sending it again.)')).catch(() => {});
     }
   }
 
@@ -6485,7 +6723,13 @@ export class TelegramAdapter implements MessagingAdapter {
     // owner's private chat. Read from getUpdates here, so authentic.
     if (query.data.startsWith('md:d:')) {
       await this.handleMobileDecline({ callbackQueryId: query.id, data: query.data, fromUserId: query.from.id,
-        chatId: query.message?.chat?.id, verified: true });
+        chatId: query.message?.chat?.id, messageId: query.message?.message_id, verified: true });
+      return;
+    }
+    // ── Mobile pairing Approve (docs/specs/mobile-pairing-approve.md §3.2): the same check as Decline.
+    if (query.data.startsWith('md:a:')) {
+      await this.handleMobileApprove({ callbackQueryId: query.id, data: query.data, fromUserId: query.from.id,
+        chatId: query.message?.chat?.id, messageId: query.message?.message_id, verified: true });
       return;
     }
 
@@ -6496,9 +6740,34 @@ export class TelegramAdapter implements MessagingAdapter {
     // may approve routing private traffic through a third-party relay.
     // We use getOwnerUserId() (the explicit owner principal), NOT the
     // broader authorizedUserIds set.
+    // ── Offer-list buttons (docs/specs/recommended-services.md; telegram-button-approval.md §1).
+    // `rs:n:` is S-class (a no: less action, undoable on the confirm page, bounded per hour by the handler),
+    // so anyone in the owner's conversation may tap it. `rs:y:` is P-class and owner-only; the handler also
+    // limits it to address services. The nonce is single-use on the handler's side.
+    if (query.data.startsWith('rs:')) {
+      const m = /^rs:([ny]):([0-9a-f]{32})$/.exec(query.data);
+      if (!m) {
+        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: 'Invalid button' }).catch(() => {});
+        return;
+      }
+      const approver = this.getConfiguredApprover();
+      const fromIsOwner = approver !== undefined && query.from.id === approver;
+      let statusText = 'My dashboard has the list.';
+      if (this.recommendedOfferHandler) {
+        try {
+          statusText = await this.recommendedOfferHandler({ action: m[1] === 'y' ? 'yes' : 'no', nonce: m[2]!, fromIsOwner });
+        } catch {
+          statusText = 'Could not take that. My dashboard has the list.';
+        }
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: statusText, show_alert: statusText.length > 60 }).catch(() => {});
+      return;
+    }
+
     if (query.data.startsWith('tc:')) {
-      const owner = this.getOwnerUserId();
-      if (owner && query.from.id !== owner) {
+      const owner = this.getConfiguredApprover();
+      if (owner === undefined) this.reportNoCallbackApprover('tunnelConsent');
+      if (owner === undefined || query.from.id !== owner) {
         await this.apiCall('answerCallbackQuery', {
           callback_query_id: query.id,
           text: 'Only the owner can approve this',
@@ -6544,11 +6813,12 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Authorization check: verify sender is the configured owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && query.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || query.from.id !== ownerId) {
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
-        text: 'Only the session owner can respond to prompts',
+        text: ownerId === undefined ? UNKNOWN_OWNER_TAP_REFUSAL : 'Only the session owner can respond to prompts',
       }).catch(() => {});
       // Do NOT resolve the token — preserve it for the real owner
       return;
@@ -6666,8 +6936,9 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     // Verify sender is the authorized owner
-    const ownerId = this.config.promptGate?.ownerId;
-    if (ownerId && msg.from.id !== ownerId) {
+    const ownerId = this.getCallbackApprover();
+    if (ownerId === undefined) this.reportNoCallbackApprover('promptGate');
+    if (ownerId === undefined || msg.from.id !== ownerId) {
       return false; // Not the owner — fall through to normal routing
     }
 
@@ -6795,9 +7066,9 @@ export class TelegramAdapter implements MessagingAdapter {
         console.log(`[prompt-gate] Relay expired for topic ${topicId} (${Math.round(age / 1000)}s)`);
       } else if (age > reminderMs && !pending.reminderSent) {
         // Send reminder
-        await this.sendToTopic(topicId,
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
           '\u23f3 Still waiting for your response on the prompt above.'
-        ).catch(() => {});
+        )).catch(() => {});
         pending.reminderSent = true;
       }
     }
@@ -6820,7 +7091,28 @@ export class TelegramAdapter implements MessagingAdapter {
     return (result as TelegramUpdate[]) ?? [];
   }
 
+  /**
+   * Human readers of the group, for memory privacy: members less the bots listed
+   * as administrators. A bot that is not an admin counts as a person, because
+   * Telegram offers no way to list it. That errs toward treating the group as shared.
+   */
+  async groupReaderCount(): Promise<number | null> {
+    const count = await this.apiCall('getChatMemberCount', { chat_id: this.config.chatId }) as number;
+    const admins = await this.apiCall('getChatAdministrators', { chat_id: this.config.chatId }) as Array<{ user?: { is_bot?: boolean } }>;
+    if (typeof count !== 'number' || !Array.isArray(admins)) return null;
+    return count - admins.filter((a) => a.user?.is_bot === true).length;
+  }
+
+  /** The place key for the whole group: every forum topic has the same readers. */
+  get memoryPlaceKey(): string {
+    return `telegram:${this.config.chatId}`;
+  }
+
   private async apiCall(method: string, params: Record<string, unknown>, retryCount: number = 0): Promise<unknown> {
+    if (method === 'sendMessage' && retryCount === 0 && this.selectivity && !this.selectivityDelegated && !this.selectivityAdmitted.getStore()) {
+      const routed = await this.selectivity.route(Number(params.message_thread_id ?? 1), String(params.text ?? ''), notificationContext.getStore());
+      if (routed.receipt) throw new QuietRecordedError(routed.receipt);
+    }
     // THE FUNNEL for this class. Nothing reaches the Telegram API from here without passing through
     // it, and the egress door below is where the content decision is made.
     //
@@ -6923,6 +7215,7 @@ export class TelegramAdapter implements MessagingAdapter {
       throw new Error(`Telegram API returned not ok: ${JSON.stringify(data)}`);
     }
 
+    if (data.result && typeof data.result === 'object' && (data.result as QuietReceipt).recorded === true) throw new QuietRecordedError(data.result as QuietReceipt);
     return data.result;
   }
 }

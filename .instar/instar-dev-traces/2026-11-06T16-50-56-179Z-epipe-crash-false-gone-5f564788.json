@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "epipe-crash-false-gone",
+  "sessionId": "b2e08e3a-63ef-459a-8580-3efd892e8a6e",
+  "timestamp": "2026-11-06T16:50:56.179Z",
+  "artifactPath": "upgrades/side-effects/epipe-crash-false-gone.md",
+  "artifactSha256": "32486c15f80a917f3ed93579643d288325e86418b9e07595579159b6301fd1a9",
+  "coveredFiles": [
+    "src/data/stageBCertifiedSet.ts",
+    "upgrades/side-effects/epipe-crash-false-gone.eli16.md",
+    "upgrades/side-effects/epipe-crash-false-gone.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Classification entry for the new helper in the same fix; no behavior change.",
+  "eli16Path": "upgrades/side-effects/epipe-crash-false-gone.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/epipe-crash-false-gone.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Classifies pipeErrorGuard, added earlier in this same branch, for the Stage-B closure check."
+  }
+}

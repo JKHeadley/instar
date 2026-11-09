@@ -210,6 +210,10 @@ export interface ProvenanceCoverageEntry {
 // string (the census is the single source of truth).
 // ───────────────────────────────────────────────────────────────────────────
 
+/** Attribution judge — does this text credit a person, and do the logged words support it?
+ * (AttributionJudge; docs/specs/attribution-paper-trail.md section 4). */
+export const DP_ATTRIBUTION_JUDGE = 'attribution-judge';
+
 /** External-hog kill/leave decision point — the classifier verdict inside the
  * scan-tick decision loop (ExternalHogScanTick; spec §5.3 first customer). */
 export const DP_EXTERNAL_HOG_KILL_LEAVE = 'external-hog-kill-leave';
@@ -339,6 +343,10 @@ export const DP_MENTOR_STAGE_B_CLASSIFY = 'mentor-stage-b-classify';
 /** Redacted closed browser snapshot → one action from the deterministic allowlist. */
 export const DP_SUBSCRIPTION_RELOGIN_ACTION = 'subscription-relogin-action';
 
+/** Skill-learning batch classifier — repeatable? procedureKey (fold by meaning), outcomeOfPrevRun
+ * (skillLearning.classifier; docs/specs/skill-learning-sentinel.md §3.1, §3.6, §4). */
+export const DP_SKILL_LEARNING_CLASSIFY = 'skill-learning-classify';
+
 // ───────────────────────────────────────────────────────────────────────────
 // The census
 // ───────────────────────────────────────────────────────────────────────────
@@ -454,6 +462,18 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Cross-family second opinion for the triage never-ignore floor; it runs on a dedicated per-framework provider outside the shared router (so the seam cannot mint its row yet). Its verdicts are recorded triage-side as floor outcomes and medium-strength grades; router enrollment is queued in the uniform-provenance backlog.',
+  },
+  {
+    decisionPoint: DP_ATTRIBUTION_JUDGE,
+    component: 'AttributionJudge',
+    status: 'wired',
+    volumeClass: 'budget:500',
+    contentClass: 'content-bearing',
+    reason:
+      'Rules on what a note or message credits to a person. Provenance stores only hashes and bounds of the text; the claim text lives in the feature\'s own scrubbed ledger.',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The shadow step compares verdicts against a labelled set by hand; an outcome rule needs those labels first (docs/specs/attribution-paper-trail.md, maturation plan).',
   },
   {
     decisionPoint: DP_GOAL_PRIORITY_EXTRACT,
@@ -1114,6 +1134,24 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Recurring-correction distillation into a durable preference; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
+    decisionPoint: 'skill-learning-draft',
+    component: 'skillLearning.drafter',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Skill-learning arbiter (draft/wait/never) and drafter (covered-by/patch/new) over operator requests and tool-call outlines; ' +
+      'the sentinel records each call directly through JudgmentProvenanceLog (arbiter: true) pending seam enrolment in the ACT-1193 backlog.',
+  },
+  {
+    decisionPoint: 'skill-learning-review',
+    component: 'skillLearning.reviewer',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Cross-family v1 review of a skill draft (follows / clear-or-strike each flagged line); recorded directly through ' +
+      'JudgmentProvenanceLog by the sentinel pending seam enrolment in the ACT-1193 backlog.',
+  },
+  {
     decisionPoint: DP_MENTOR_STAGE_B_CLASSIFY,
     component: 'mentor-stage-b',
     status: 'wired',
@@ -1126,6 +1164,21 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'settlement, so provenance is collected without treating persistence as truth.',
     reason:
       'Mentor-signal classification over bounded mentee output; context stores exact signal and prompt identities without log or session text.',
+  },
+  {
+    decisionPoint: DP_SKILL_LEARNING_CLASSIFY,
+    component: 'skillLearning.classifier',
+    status: 'wired',
+    volumeClass: 'budget:200',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A verdict (repeatable / procedureKey / outcomeOfPrevRun) is graded by the sentinel\'s own §3.6 corroboration ' +
+      'and the weekly operator label sample, which are not correlation-bound to each settlement yet; provenance is the ' +
+      'precondition of every verdict (§4: no record, no action) and is collected before an outcome rule exists.',
+    reason:
+      'Batch classification of operator request rows; context stores source and prompt identities (hashes), counts and ' +
+      'booleans — never message text (the ledger holds only the pointer and the scrubbed paraphrase).',
   },
 
   // ── Argued exemptions (closed taxonomy; pinned shrink-only) ──────────────

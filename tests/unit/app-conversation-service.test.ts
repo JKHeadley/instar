@@ -117,7 +117,8 @@ describe('production wiring (src/commands/server.ts)', () => {
     const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'commands', 'server.ts'), 'utf8');
     const start = src.indexOf('const appSvc = new AppConversationService({');
     expect(start).toBeGreaterThan(0);
-    const block = src.slice(start, start + 6000);
+    // The app block grew with session-swap-any-conversation's starter wiring.
+    const block = src.slice(start, start + 9000);
     for (const needle of ['onEmergencyStop', "resumeQueue?.pause('message-sentinel emergency stop')", 'stopAutonomousTopic(', 'recordOperatorStop(alias)', 'relayReady:', 'setReplicationHook(', 'spawnAdmission: () => _spawnAdmission']) {
       expect(block).toContain(needle);
     }

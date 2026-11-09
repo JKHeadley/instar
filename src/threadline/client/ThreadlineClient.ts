@@ -14,6 +14,7 @@ import { RELAY_ERROR_CODES } from '../relay/types.js';
 import { IdentityManager, type IdentityInfo } from './IdentityManager.js';
 import { MessageEncryptor, type PlaintextMessage } from './MessageEncryptor.js';
 import { AUTO_ACK_TYPE, encodePlaintextPayload, decodePlaintextPayload } from '../autoAck.js';
+import { ACK_KINDS_VERSION, type KindedAckWire } from '../requiredAck.js';
 import { RelayClient } from './RelayClient.js';
 import { derivePairingIdV2, edPublicToX25519, isX25519BoundToIdentity } from '../ThreadlineCrypto.js';
 import { buildPairVerifyReceipt, PAIR_VERIFY_OP } from '../PairVerifyReceipt.js';
@@ -116,6 +117,24 @@ interface ClientAffinityEntry {
  * D9) and could not be built or handed to the relay. Nothing went on the wire, and no
  * plaintext or relay-key fallback is attempted. The relay-send route answers it 502.
  */
+/**
+ * a2a-required-acknowledgment D1: a `read` whose trigger arrived encrypted never
+ * downgrades to plaintext. Thrown when the keys are gone (they empty on restart);
+ * the caller's pending row waits for them to return, or expires.
+ */
+export class KindedAckKeysUnavailableError extends Error {
+  readonly code = 'kinded-ack-keys-unavailable';
+  constructor(recipient: string) {
+    super(`No encryption keys for ${recipient.slice(0, 12)}: this acknowledgment stays pending`);
+    this.name = 'KindedAckKeysUnavailableError';
+  }
+}
+
+/** a2a-required-acknowledgment D1: every encrypted wire message advertises kinded-ack support. */
+function withAckKindsStamp(message: PlaintextMessage): PlaintextMessage {
+  return { ...message, ackKinds: ACK_KINDS_VERSION };
+}
+
 export class EncryptToPinnedSendError extends Error {
   readonly code = 'encrypted-send-to-pinned-failed';
   /** Why: the pin was unavailable (lookup-failed / resolver-error / malformed-pinned-key) or the encrypted send itself failed. */
@@ -454,7 +473,7 @@ export class ThreadlineClient extends EventEmitter {
     const tId = threadId
       ?? this.peekClientAffinity(recipientId)
       ?? `thread-${this.nowFn()}-${Math.random().toString(36).slice(2, 8)}`;
-    const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message, messageId);
+    const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, withAckKindsStamp(message), messageId);
     this.relayClient.sendMessage(envelope);
     this.noteSent(envelope.messageId);
     this.recordClientAffinity(recipientId, tId);
@@ -493,6 +512,54 @@ export class ThreadlineClient extends EventEmitter {
   }
 
   /**
+   * Send a kinded ack (docs/specs/a2a-required-acknowledgment.md D1).
+   *
+   * Encrypted when the peer is pinned, or when its keys are known AND the
+   * triggering message arrived encrypted; plaintext otherwise. A summary restates
+   * the request, a plaintext ack to a key-holding peer fails to decrypt on arrival,
+   * and an encrypted ack to a peer without our keys would decode as an unreadable
+   * message and be routed. A `read` whose trigger arrived encrypted never
+   * downgrades: with the keys gone it throws, and the pending row waits.
+   *
+   * Records NO thread affinity, so a receipt cannot move later sends onto its thread.
+   */
+  sendKindedAck(
+    recipientId: AgentFingerprint,
+    ack: KindedAckWire,
+    text: string,
+    opts: { threadId?: string | null; triggerEncrypted: boolean },
+  ): string {
+    if (!this.relayClient || !this.identity) throw new Error('Not connected');
+    const tId = opts.threadId || `thread-${this.nowFn()}-${Math.random().toString(36).slice(2, 8)}`;
+    const pinned = this.resolveEncryptTo(recipientId, 'send');
+    if (pinned.kind === 'fail') {
+      throw new EncryptToPinnedSendError(String(recipientId), new Error(`pinned key unavailable (${pinned.reason})`), pinned.reason);
+    }
+    const message: PlaintextMessage = { content: text, type: AUTO_ACK_TYPE, ack };
+    if (pinned.kind === 'key') {
+      if (!this.encryptor) throw new Error('Not connected');
+      const envelope = this.encryptor.encrypt(pinned.key, edPublicToX25519(pinned.key), tId, message);
+      this.relayClient.sendMessage(envelope);
+      this.noteSent(envelope.messageId);
+      return envelope.messageId;
+    }
+    if (opts.triggerEncrypted) {
+      const known = this.knownAgents.get(recipientId);
+      if (known?.publicKey && known?.x25519PublicKey && this.encryptor) {
+        const envelope = this.encryptor.encrypt(known.publicKey, known.x25519PublicKey, tId, message);
+        this.relayClient.sendMessage(envelope);
+        this.noteSent(envelope.messageId);
+        return envelope.messageId;
+      }
+      // Never downgrade: a peer holding our keys drops a plaintext ack as a decrypt
+      // error, and a summary must not reach the relay. Pending rows retry; a
+      // best-effort `held` already catches this.
+      throw new KindedAckKeysUnavailableError(String(recipientId));
+    }
+    return this.sendPlaintextRaw(AUTO_ACK_TYPE, recipientId, text, tId, undefined, undefined, ack);
+  }
+
+  /**
    * Every typed plaintext send funnels here. Ordinary chat (`type: 'chat'`) to a pinned invite
    * peer is NEVER sent as plaintext (spec D9): when the pin resolves, it goes ENCRYPTED to the
    * pinned key instead (same path as sendAuto); when it cannot be resolved or is malformed, it
@@ -524,6 +591,7 @@ export class ThreadlineClient extends EventEmitter {
     threadId?: string,
     callerMessageId?: string,
     resend?: boolean,
+    ack?: KindedAckWire,
   ): string {
     if (!this.relayClient || !this.identity) {
       throw new Error('Not connected');
@@ -533,7 +601,12 @@ export class ThreadlineClient extends EventEmitter {
     const messageId = callerMessageId || crypto.randomUUID();
 
     // Encode as base64 JSON payload (same format as inbound unknown-sender messages)
-    const payload = encodePlaintextPayload(content, type, resend);
+    const payload = encodePlaintextPayload(content, type, resend, {
+      // a2a-required-acknowledgment D1: chat advertises kinded-ack support; a
+      // control op or a delivery ack is not chat and says nothing about it.
+      ...(type === 'chat' ? { ackKinds: ACK_KINDS_VERSION } : {}),
+      ...(ack ? { ack } : {}),
+    });
 
     // Send as a raw envelope through the relay
     const envelope = {
@@ -686,7 +759,7 @@ export class ThreadlineClient extends EventEmitter {
     const tId = threadId
       ?? this.peekClientAffinity(recipientId)
       ?? `thread-${this.nowFn()}-${Math.random().toString(36).slice(2, 8)}`;
-    const envelope = this.encryptor.encrypt(pinned, edPublicToX25519(pinned), tId, message, callerMessageId);
+    const envelope = this.encryptor.encrypt(pinned, edPublicToX25519(pinned), tId, withAckKindsStamp(message), callerMessageId);
     this.relayClient.sendMessage(envelope);
     this.noteSent(envelope.messageId);
     this.recordClientAffinity(recipientId, tId);

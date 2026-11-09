@@ -166,6 +166,22 @@ describe('spawnInteractiveSession: resume-failure fallback', () => {
     expect(freshAttempts.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('keeps an auto-named conversation session registered under the live fallback name', async () => {
+    killStartupAttempts = 1;
+    const registeredName = await manager.spawnInteractiveSession(
+      '[telegram:42] hello', undefined,
+      { telegramTopicId: 42, resumeSessionId: 'stale-uuid-deadbeef' },
+    );
+    const start = Date.now();
+    while (newSessionInvocations.filter(n => n.args[0] === 'new-session').length < 2 && Date.now() - start < 5000) {
+      await new Promise(r => setTimeout(r, 50));
+    }
+    const createdNames = newSessionInvocations
+      .filter(n => n.args[0] === 'new-session')
+      .map(n => n.args[n.args.indexOf('-s') + 1]);
+    expect(createdNames).toEqual([registeredName, registeredName]);
+  });
+
   it('does not retry when there is no --resume to fall back from', async () => {
     let resumeFailedFired = false;
     manager.on('resumeFailed', () => { resumeFailedFired = true; });

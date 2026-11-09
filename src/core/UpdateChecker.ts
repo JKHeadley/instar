@@ -11,10 +11,11 @@
  * GitHub releases API for changelogs.
  */
 
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import type { UpdateInfo, UpdateResult } from './types.js';
 
@@ -23,6 +24,7 @@ import { PostUpdateMigrator } from './PostUpdateMigrator.js';
 import type { MigratorConfig } from './PostUpdateMigrator.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { withSyncOp } from './InFlightSyncOpMarker.js';
 
 const GITHUB_RELEASES_URL = 'https://api.github.com/repos/JKHeadley/instar/releases';
 
@@ -48,6 +50,9 @@ export interface UpdateCheckerConfig {
   /** Server listen host (native-hook-events loopback gate). */
   host?: string;
 }
+
+/** Generous bound for one recursive xattr pass: it no longer holds the server, and the old call had none. */
+const XATTR_STRIP_TIMEOUT_MS = 600_000;
 
 export class UpdateChecker {
   private stateDir: string;
@@ -138,14 +143,50 @@ export class UpdateChecker {
    * delays where @latest still resolves to the old version for several minutes
    * after a new version is published. Retries up to 3 times with backoff.
    */
+  /** Install an explicitly selected development artifact through the normal
+   * candidate/native-probe/promotion/migration pipeline. No registry publishing
+   * credentials or recovery codes are involved. The caller supplies a digest
+   * obtained through its trusted release channel, never from an arbitrary URL.
+   */
+  async applyDevelopmentArtifact(artifact: { path: string; version: string; sha512: string }): Promise<UpdateResult> {
+    if (!/^\d+\.\d+\.\d+-dev\.\d+\.[a-f0-9]{12}$/.test(artifact.version)) {
+      throw new Error('Expected a development artifact version');
+    }
+    if (!/^[a-f0-9]{128}$/.test(artifact.sha512)) throw new Error('Expected a SHA-512 digest');
+    const artifactPath = path.resolve(artifact.path);
+    // Snapshot before verification so a changing source file cannot swap the
+    // bytes npm installs after the digest check.
+    const snapshotDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-dev-artifact-'));
+    const snapshot = path.join(snapshotDir, 'instar.tgz');
+    try {
+      fs.copyFileSync(artifactPath, snapshot, fs.constants.COPYFILE_EXCL);
+      const hash = createHash('sha512');
+      for await (const chunk of fs.createReadStream(snapshot)) hash.update(chunk);
+      if (hash.digest('hex') !== artifact.sha512) throw new Error('Development artifact checksum mismatch');
+      return await this.applySelectedUpdate({
+        currentVersion: this.getInstalledVersion(), latestVersion: artifact.version,
+        updateAvailable: true, checkedAt: new Date().toISOString(),
+      }, snapshot);
+    } finally {
+      SafeFsExecutor.safeRmSync(snapshotDir, { recursive: true, force: true, operation: 'UpdateChecker.developmentArtifact:cleanup' });
+    }
+  }
+
   async applyUpdate(): Promise<UpdateResult> {
-    const previousVersion = this.getInstalledVersion();
+    return this.applySelectedUpdate(await this.check());
+  }
+
+  private async applySelectedUpdate(info: UpdateInfo, localTarball?: string): Promise<UpdateResult> {
+    // An explicit installer can run from a build checkout for a different
+    // agent. Its module version is not the version being replaced.
+    const previousVersion = localTarball
+      ? this.getShadowInstalledVersion() ?? this.getInstalledVersion()
+      : this.getInstalledVersion();
 
     // Check what the registry has. Note: even if getInstalledVersion() returns
     // the latest (e.g., after a previous install updated files in place),
     // we still need to install+restart since the running process has old code.
     // The caller (AutoUpdater) is responsible for loop prevention.
-    const info = await this.check();
     if (!info.updateAvailable) {
       // Files on disk match the registry — but running code may be stale.
       // Return success with restartNeeded based on whether the process version
@@ -172,14 +213,17 @@ export class UpdateChecker {
     let lastError: string | null = null;
     let newVersion = 'unknown';
 
-    // Install to local shadow directory — each agent owns its version
+    // Keep the active install untouched until the candidate is runnable. npm
+    // can remove native bindings during an in-place install or interrupted build.
     const shadowDir = path.join(this.stateDir, 'shadow-install');
-    fs.mkdirSync(shadowDir, { recursive: true });
-
-    // Ensure shadow dir has a package.json (npm install requires it)
-    const shadowPkgPath = path.join(shadowDir, 'package.json');
-    if (!fs.existsSync(shadowPkgPath)) {
-      fs.writeFileSync(shadowPkgPath, JSON.stringify({ name: 'instar-shadow', private: true }, null, 2));
+    const candidateDir = path.join(this.stateDir, `shadow-install.pending-${randomUUID()}`);
+    const previousDir = path.join(this.stateDir, 'shadow-install.previous');
+    // Recover an interrupted promotion before touching either install. The
+    // supervisor and boot wrapper perform the same recovery before startup.
+    if (!fs.existsSync(shadowDir) && fs.existsSync(previousDir)) {
+      fs.renameSync(previousDir, shadowDir);
+    } else {
+      this.retireLeftoverPrevious();
     }
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
@@ -189,84 +233,77 @@ export class UpdateChecker {
       }
 
       try {
+        // A retry starts clean; a partial npm install cannot satisfy validation.
+        if (fs.existsSync(candidateDir)) {
+          SafeFsExecutor.safeRmSync(candidateDir, { recursive: true, force: true, operation: 'UpdateChecker.applyUpdate:reset-candidate' });
+        }
+        fs.mkdirSync(candidateDir, { recursive: true });
+        fs.writeFileSync(path.join(candidateDir, 'package.json'), JSON.stringify({ name: 'instar-shadow', private: true }, null, 2));
         // Install to local shadow directory instead of global.
         // --ignore-scripts prevents cloudflared's postinstall binary download from
         // failing with ENOENT in environments where the download path doesn't exist.
         // The cloudflared binary is installed lazily on-demand by TunnelManager when
         // the tunnel feature is first used (via install(bin) from the cloudflared package).
         await this.execAsync('npm', [
-          'install', `instar@${targetVersion}`,
+          'install', localTarball ?? `instar@${targetVersion}`,
           '--ignore-scripts',
-          '--prefix', shadowDir,
+          '--prefix', candidateDir,
         ], 120000);
 
         // Rebuild native modules after --ignore-scripts installation.
         // --ignore-scripts skips better-sqlite3's build step, leaving no .node binaries.
         // Without this, TopicMemory and SemanticMemory fail silently on shadow installs.
         // better-sqlite3 uses node-gyp and can rebuild from source in ~30 seconds.
-        try {
-          await this.execAsync('npm', [
-            'rebuild', 'better-sqlite3',
-            '--prefix', shadowDir,
-          ], 60000);
-          console.log(`[UpdateChecker] Rebuilt better-sqlite3 native bindings in shadow install`);
-        } catch (rebuildErr) {
-          // Non-fatal: fallback SQLite behavior (legacy JSONL) handles the case
-          console.warn(`[UpdateChecker] better-sqlite3 rebuild failed (legacy fallback active): ${rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr)}`);
-        }
+        await this.execAsync('npm', [
+          'rebuild', 'better-sqlite3',
+          '--prefix', candidateDir,
+        ], 60000);
+        console.log('[UpdateChecker] Rebuilt better-sqlite3 native bindings in candidate install');
 
         // Strip extended attributes on macOS that may block launchd's restricted sandbox.
         // com.apple.quarantine can cause EPERM; com.apple.provenance is kernel-protected
         // on macOS 15+ (Sequoia) and can't actually be removed, but the attempt is harmless.
         if (os.platform() === 'darwin') {
-          for (const attr of ['com.apple.quarantine', 'com.apple.provenance']) {
-            try {
-              execFileSync('xattr', ['-rd', attr, shadowDir], { stdio: 'ignore' });
-            } catch {
-              // Non-fatal: attribute may not exist or may be kernel-protected
-            }
-          }
-          console.log(`[UpdateChecker] Attempted xattr cleanup on shadow install`);
+          await this.stripCandidateXattrs(candidateDir);
+          console.log('[UpdateChecker] Attempted xattr cleanup on candidate install');
         }
 
-        // Pre-restart validation: verify node can actually load the new CLI.
-        // If this fails, the update installed but the binary is inaccessible
-        // (e.g., launchd sandbox restrictions). Better to detect now than crash-loop.
-        const newCliPath = path.join(shadowDir, 'node_modules', 'instar', 'dist', 'cli.js');
-        try {
-          execFileSync(process.execPath, ['-e', `require("fs").readFileSync(${JSON.stringify(newCliPath)})`], {
-            stdio: 'ignore',
-            timeout: 10000,
-          });
-        } catch (accessErr) {
-          console.error(`[UpdateChecker] WARNING: New CLI at ${newCliPath} is not accessible by node: ${accessErr instanceof Error ? accessErr.message : String(accessErr)}`);
-          console.error(`[UpdateChecker] The update was installed but may fail on restart. Check file permissions and macOS security settings.`);
-        }
+        // Probe the actual required dependency with the Node binary that will
+        // start the agent. A successful npm exit alone proves neither presence
+        // nor loadability of the native binding.
+        newVersion = await this.validateCandidate(candidateDir, targetVersion);
       } catch (err) {
-        lastError = err instanceof Error ? err.message : String(err);
+        lastError = `Candidate update validation or native rebuild failed: ${err instanceof Error ? err.message : String(err)}`;
+        newVersion = 'unknown';
+        console.error(`[UpdateChecker] ${lastError}; keeping the active install`);
         continue;
       }
 
-      // Verify the update was applied by reading the local install
       try {
-        const localPkgPath = path.join(shadowDir, 'node_modules', 'instar', 'package.json');
-        if (fs.existsSync(localPkgPath)) {
-          const pkg = JSON.parse(fs.readFileSync(localPkgPath, 'utf-8'));
-          newVersion = pkg.version || 'unknown';
-        }
-      } catch {
+        // Same filesystem: promote the validated candidate, retaining the
+        // previous install until the new path is in place. Restore on error.
+        await this.ensurePromotionRecovery();
+        this.promoteCandidate(candidateDir);
+        break;
+      } catch (err) {
+        lastError = `Candidate promotion failed: ${err instanceof Error ? err.message : String(err)}`;
         newVersion = 'unknown';
+        console.error(`[UpdateChecker] ${lastError}`);
+        if (!fs.existsSync(shadowDir)) break; // preserve both backup and candidate for startup recovery
       }
-
-      if (newVersion === targetVersion) {
-        break; // Success
-      }
-
-      lastError = `Installed version is ${newVersion}, expected ${targetVersion}`;
-      console.log(`[UpdateChecker] Attempt ${attempt + 1}: ${lastError}`);
     }
 
     const success = newVersion === targetVersion;
+    if (success && fs.existsSync(previousDir)) {
+      try {
+        SafeFsExecutor.safeRmSync(previousDir, { recursive: true, force: true, operation: 'UpdateChecker.applyUpdate:retire-previous' });
+      } catch (err) {
+        console.warn(`[UpdateChecker] Could not retire previous install: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (fs.existsSync(candidateDir) && fs.existsSync(shadowDir)) {
+      SafeFsExecutor.safeRmSync(candidateDir, { recursive: true, force: true, operation: 'UpdateChecker.applyUpdate:cleanup-candidate' });
+    }
 
     // Save rollback info on successful update
     if (success) {
@@ -301,13 +338,13 @@ export class UpdateChecker {
         try {
           const args = [...baseArgs, 'migrate'];
           if (this.migratorConfig.projectDir) args.push('--dir', this.migratorConfig.projectDir);
-          output = await this.execAsync(cmd, args, 30000);
+          output = await this.execAsync(cmd, args, 30000, 64 * 1024 * 1024);
         } catch (dirErr) {
           const dirErrMsg = dirErr instanceof Error ? dirErr.message : String(dirErr);
           const dirErrStderr = (dirErr as Error & { stderr?: string }).stderr || '';
           if (dirErrMsg.includes('unknown option') && dirErrMsg.includes('--dir')) {
             // Old binary — retry without --dir
-            output = await this.execAsync(cmd, [...baseArgs, 'migrate'], 30000);
+            output = await this.execAsync(cmd, [...baseArgs, 'migrate'], 30000, 64 * 1024 * 1024);
           } else if (dirErrStderr.includes('unknown command')) {
             // Very old binary without migrate command — skip CLI migration gracefully.
             // The in-memory migrator still runs as a safety net on server startup.
@@ -381,10 +418,85 @@ export class UpdateChecker {
       newVersion,
       message: success
         ? `Updated from v${previousVersion} to v${newVersion}.${migrationSummary}${upgradeGuideNote} ${info.changeSummary || 'Restart to use the new version.'}`
-        : `Update command ran but version didn't change (still v${previousVersion}). May need manual intervention.`,
+        : `Update failed; kept the previous runnable install (v${previousVersion}). ${lastError ?? 'Candidate did not validate.'} The update will be retried.`,
       restartNeeded: success,
       healthCheck: 'skipped', // Can't check health until after restart
     };
+  }
+
+  /** The same startup proof is required for forward updates and rollbacks. */
+  private async validateCandidate(candidateDir: string, targetVersion: string): Promise<string> {
+    const newCliPath = path.join(candidateDir, 'node_modules', 'instar', 'dist', 'cli.js');
+    const localPkgPath = path.join(candidateDir, 'node_modules', 'instar', 'package.json');
+    const installed = JSON.parse(fs.readFileSync(localPkgPath, 'utf-8')) as { version?: string };
+    const newVersion = installed.version ?? 'unknown';
+    if (newVersion !== targetVersion) throw new Error(`Installed version is ${newVersion}, expected ${targetVersion}`);
+    const nodeSymlink = path.join(this.stateDir, 'bin', 'node');
+    const nodeRuntime = fs.existsSync(nodeSymlink) ? nodeSymlink : process.execPath;
+    await this.execAsync(nodeRuntime, ['--check', newCliPath], 10000);
+    const startupVersion = await this.execAsync(nodeRuntime, [newCliPath, '--version'], 15000);
+    if (startupVersion !== targetVersion) throw new Error(`CLI startup reported ${startupVersion || 'no version'}, expected ${targetVersion}`);
+    const probe = `const {createRequire}=require('node:module'); const Database=createRequire(process.argv[1])('better-sqlite3'); const db=new Database(':memory:'); try { const row=db.prepare('SELECT 1 AS value').get(); if (row.value !== 1) throw new Error('SQLite query returned an unexpected result'); } finally { db.close(); }`;
+    await this.execAsync(nodeRuntime, ['-e', probe, newCliPath], 10000);
+    return newVersion;
+  }
+
+  /**
+   * A backup beside a usable active install is left over from an update whose cleanup was interrupted;
+   * a restart mid-delete leaves it partial. Promotion refuses to overwrite a backup, so keeping it would
+   * fail every later update and rollback until someone removed it by hand. Without the active install's
+   * entry file the backup may be the only good copy, so it stays.
+   */
+  private retireLeftoverPrevious(): void {
+    const shadowDir = path.join(this.stateDir, 'shadow-install');
+    const previousDir = path.join(this.stateDir, 'shadow-install.previous');
+    if (!fs.existsSync(previousDir)) return;
+    if (!fs.existsSync(path.join(shadowDir, 'node_modules', 'instar', 'dist', 'cli.js'))) {
+      console.warn('[UpdateChecker] Keeping the previous install: the active install has no entry file');
+      return;
+    }
+    console.warn('[UpdateChecker] Retiring a leftover previous install from an interrupted update');
+    try {
+      withSyncOp(() => SafeFsExecutor.safeRmSync(previousDir, { recursive: true, force: true, operation: 'UpdateChecker:retire-leftover-previous' }));
+    } catch (err) {
+      console.warn(`[UpdateChecker] Could not retire leftover previous install: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private promoteCandidate(candidateDir: string): void {
+    const shadowDir = path.join(this.stateDir, 'shadow-install');
+    const previousDir = path.join(this.stateDir, 'shadow-install.previous');
+    if (fs.existsSync(previousDir)) throw new Error('Previous install backup still exists; refusing to overwrite it');
+    if (fs.existsSync(shadowDir)) fs.renameSync(shadowDir, previousDir);
+    try {
+      fs.renameSync(candidateDir, shadowDir);
+    } catch (promotionError) {
+      if (fs.existsSync(previousDir)) fs.renameSync(previousDir, shadowDir);
+      throw promotionError;
+    }
+  }
+
+  /** The installed boot wrapper must know how to restore the backup before we create a rename gap. */
+  private async ensurePromotionRecovery(): Promise<void> {
+    const jsPath = path.join(this.stateDir, 'instar-boot.cjs');
+    const shPath = path.join(this.stateDir, 'instar-boot.sh');
+    if (!fs.existsSync(jsPath) && !fs.existsSync(shPath)) return;
+    const marker = 'Restored previous install after interrupted update';
+    const jsReady = !fs.existsSync(jsPath) || fs.readFileSync(jsPath, 'utf-8').includes(marker);
+    const shReady = !fs.existsSync(shPath) || fs.readFileSync(shPath, 'utf-8').includes(marker);
+    if (jsReady && shReady) return;
+    const projectDir = this.migratorConfig?.projectDir ?? path.dirname(this.stateDir);
+    if (path.resolve(projectDir, '.instar') !== path.resolve(this.stateDir)) {
+      throw new Error('Cannot prepare boot-wrapper recovery for this state directory');
+    }
+    const { installBootWrapper,installAutoStart } = await import('../commands/setup.js');
+    const {enrolledRecoveryBootstrapMode}=await import('../recovery/RecoveryBootstrapBindings.js');
+    const enrolled=enrolledRecoveryBootstrapMode(projectDir);
+    if(enrolled){if(!installAutoStart(enrolled.agentId,projectDir,enrolled.hasTelegram,{noStart:true}))throw new Error('Owned recovery bootstrap update refused');}
+    else installBootWrapper(projectDir);
+    if (!fs.readFileSync(jsPath, 'utf-8').includes(marker) || !fs.readFileSync(shPath, 'utf-8').includes(marker)) {
+      throw new Error('Boot wrapper did not acquire interrupted-update recovery');
+    }
   }
 
   /**
@@ -413,42 +525,47 @@ export class UpdateChecker {
       };
     }
 
-    // Install rollback version to shadow directory
+    // Rollback is also an activation: never mutate the currently runnable
+    // installation until the older version passes the same native probe.
     const shadowDir = path.join(this.stateDir, 'shadow-install');
-    fs.mkdirSync(shadowDir, { recursive: true });
-
-    const shadowPkgPath = path.join(shadowDir, 'package.json');
-    if (!fs.existsSync(shadowPkgPath)) {
-      fs.writeFileSync(shadowPkgPath, JSON.stringify({ name: 'instar-shadow', private: true }, null, 2));
-    }
-
+    const candidateDir = path.join(this.stateDir, `shadow-install.pending-${randomUUID()}`);
+    const previousDir = path.join(this.stateDir, 'shadow-install.previous');
+    let restoredVersion = 'unknown';
     try {
+      if (!fs.existsSync(shadowDir) && fs.existsSync(previousDir)) fs.renameSync(previousDir, shadowDir);
+      else this.retireLeftoverPrevious();
+      fs.mkdirSync(candidateDir, { recursive: true });
+      fs.writeFileSync(path.join(candidateDir, 'package.json'), JSON.stringify({ name: 'instar-shadow', private: true }, null, 2));
       await this.execAsync('npm', [
         'install', `instar@${rollbackInfo.previousVersion}`,
         '--ignore-scripts',
-        '--prefix', shadowDir,
+        '--prefix', candidateDir,
       ], 120000);
+      await this.execAsync('npm', ['rebuild', 'better-sqlite3', '--prefix', candidateDir], 60000);
+      if (os.platform() === 'darwin') {
+        await this.stripCandidateXattrs(candidateDir);
+      }
+      restoredVersion = await this.validateCandidate(candidateDir, rollbackInfo.previousVersion);
+      await this.ensurePromotionRecovery();
+      this.promoteCandidate(candidateDir);
+      if (fs.existsSync(previousDir)) {
+        try {
+          SafeFsExecutor.safeRmSync(previousDir, { recursive: true, force: true, operation: 'UpdateChecker.rollback:retire-previous' });
+        } catch (err) {
+          console.warn(`[UpdateChecker] Could not retire previous install after rollback: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
     } catch (err) {
       return {
         success: false,
         previousVersion: currentVersion,
         restoredVersion: currentVersion,
-        message: `Rollback failed: ${err instanceof Error ? err.message : String(err)}`,
+        message: `Rollback failed; kept the current install: ${err instanceof Error ? err.message : String(err)}`,
       };
-    }
-
-    // Verify the rollback from shadow install
-    let restoredVersion: string;
-    try {
-      const localPkgPath = path.join(shadowDir, 'node_modules', 'instar', 'package.json');
-      if (fs.existsSync(localPkgPath)) {
-        const pkg = JSON.parse(fs.readFileSync(localPkgPath, 'utf-8'));
-        restoredVersion = pkg.version || 'unknown';
-      } else {
-        restoredVersion = 'unknown';
+    } finally {
+      if (fs.existsSync(candidateDir) && fs.existsSync(shadowDir)) {
+        SafeFsExecutor.safeRmSync(candidateDir, { recursive: true, force: true, operation: 'UpdateChecker.rollback:cleanup-candidate' });
       }
-    } catch {
-      restoredVersion = 'unknown';
     }
 
     const success = restoredVersion === rollbackInfo.previousVersion;
@@ -620,13 +737,35 @@ export class UpdateChecker {
   }
 
   /**
+   * Strip macOS extended attributes from a candidate install WITHOUT holding the server's
+   * event loop. A recursive xattr walks the whole candidate tree: under load it blocked the
+   * server for 39.8s in one update, long enough to fail health checks and lapse the lease.
+   * Output is discarded rather than buffered: xattr can print one error per file for a
+   * kernel-protected attribute, which would overflow execFile's buffer and kill it midway.
+   * Every failure stays non-fatal, because the attribute may be absent or kernel-protected.
+   */
+  private async stripCandidateXattrs(candidateDir: string): Promise<void> {
+    for (const attr of ['com.apple.quarantine', 'com.apple.provenance']) {
+      await new Promise<void>((resolve) => {
+        const child = spawn('xattr', ['-rd', attr, candidateDir], { stdio: 'ignore', timeout: XATTR_STRIP_TIMEOUT_MS });
+        child.once('error', () => resolve()); // @silent-fallback-ok: non-fatal by design, see above
+        child.once('close', (_code, signal) => {
+          if (signal) console.warn(`[UpdateChecker] xattr cleanup for ${attr} stopped early (${signal}); continuing to candidate validation`);
+          resolve();
+        });
+      });
+    }
+  }
+
+  /**
    * Run a command asynchronously, returning trimmed stdout.
    */
-  private execAsync(cmd: string, args: string[], timeoutMs: number): Promise<string> {
+  private execAsync(cmd: string, args: string[], timeoutMs: number, maxBuffer = 1024 * 1024): Promise<string> {
     return new Promise((resolve, reject) => {
       const child = execFile(cmd, args, {
         encoding: 'utf-8',
         timeout: timeoutMs,
+        maxBuffer,
       }, (err, stdout, stderr) => {
         if (err) {
           // Attach stderr for richer diagnostics in error handlers
@@ -678,7 +817,11 @@ export class UpdateChecker {
     const dir = path.dirname(this.rollbackFile);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(this.rollbackFile, JSON.stringify({
-      previousVersion,
+      // Development cuts are never on npm. Both another development cut and
+      // the first official update must retain a registry-installable rollback
+      // target rather than recording an unpublished prerelease.
+      previousVersion: previousVersion.replace(/-dev\.\d+\.[a-f0-9]{12}$/, ''),
+      ...(previousVersion.includes('-dev.') ? { previousDevelopmentVersion: previousVersion } : {}),
       updatedVersion,
       updatedAt: new Date().toISOString(),
     }, null, 2));

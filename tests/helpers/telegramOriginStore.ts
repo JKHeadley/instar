@@ -8,24 +8,28 @@ import type { OriginAdmission } from '../../src/messaging/telegram-origin/StoreT
 
 export const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
 export const temporaryState = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'instar-origin-store-'));
+// Confined feedback verification mounts node_modules read-only. Keep generated
+// workers in the writable, ignored test cache under the repo: native imports
+// (such as better-sqlite3) still need to resolve from this repo's node_modules.
+const workerOutput = (name: string): string => path.resolve('.vitest/telegram-origin-tests', randomUUID(), name);
 export async function compileOriginWorker(): Promise<URL> {
-  const output = path.resolve('node_modules/.cache/telegram-origin-tests', randomUUID(), 'OriginStore.worker.mjs');
+  const output = workerOutput('OriginStore.worker.mjs');
   await build({ entryPoints: [path.resolve('src/messaging/telegram-origin/OriginStore.worker.ts')], outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'silent' });
   return pathToFileURL(output);
 }
 /** The real worker behind a test-only fault-injection wrapper (see stallableOriginWorker.ts). */
 export async function compileStallableOriginWorker(): Promise<URL> {
-  const output = path.resolve('node_modules/.cache/telegram-origin-tests', randomUUID(), 'StallableOriginStore.worker.mjs');
+  const output = workerOutput('StallableOriginStore.worker.mjs');
   await build({ entryPoints: [path.resolve('tests/helpers/stallableOriginWorker.ts')], outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'silent' });
   return pathToFileURL(output);
 }
 export async function compileOriginConfigWorker(): Promise<URL> {
-  const output = path.resolve('node_modules/.cache/telegram-origin-tests', randomUUID(), 'OriginConfigReader.worker.mjs');
+  const output = workerOutput('OriginConfigReader.worker.mjs');
   await build({ entryPoints: [path.resolve('src/messaging/telegram-origin/OriginConfigReader.worker.ts')], outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'silent' });
   return pathToFileURL(output);
 }
 export async function compileOriginDetectorCanaryWorker(): Promise<URL> {
-  const output = path.resolve('node_modules/.cache/telegram-origin-tests', randomUUID(), 'OriginDetectorCanary.worker.mjs');
+  const output = workerOutput('OriginDetectorCanary.worker.mjs');
   await build({ entryPoints: [path.resolve('src/messaging/telegram-origin/OriginDetectorCanary.worker.ts')], outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external', logLevel: 'silent' });
   return pathToFileURL(output);
 }

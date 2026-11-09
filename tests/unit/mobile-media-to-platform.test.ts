@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../../src/messaging/NotificationSelectivityGate.js';
 /**
  * Files sent from the Instar app into a Telegram topic or a Slack conversation
  * (docs/specs/mobile-native-chat-media.md §4.9): the mirror plan (which files upload, which become
@@ -105,6 +106,31 @@ describe('send-body checks', () => {
 });
 
 describe('mirror functions', () => {
+  it.each(['receipt', 'exception'] as const)('preserves partial mirror evidence and stops after a quiet %s', async kind => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quiet-mirror-'));
+    try {
+      const blob = path.join(dir, 'blob'); fs.writeFileSync(blob, Buffer.from([1]));
+      const receipt = { recorded: true as const, delivered: false as const, quietId: 'quiet-fallback' };
+      const media = vi.fn(async () => ({ messageIds: [10] }));
+      const text = vi.fn(async () => { if (kind === 'exception') throw new QuietRecordedError(receipt); return receipt; });
+      const result = await mirrorMediaToTelegram({ sendMediaToTopic: media, sendToTopic: text }, 7, 'Justin',
+        [att(), att({ index: 1, size: 51_000_000 }), att({ index: 2, size: 52_000_000 })], 'caption', () => blob);
+      expect(result.delivery).toEqual({ outcome: 'recorded', deliveredParts: 1, receipt });
+      expect(media).toHaveBeenCalledTimes(1); expect(text).toHaveBeenCalledTimes(1);
+    } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'quiet mirror fixture' }); }
+  });
+  it('stops before fallback text when the media part is recorded', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'quiet-mirror-'));
+    try {
+      const blob = path.join(dir, 'blob'); fs.writeFileSync(blob, Buffer.from([1]));
+      const receipt = { recorded: true as const, delivered: false as const, quietId: 'quiet-photo' };
+      const text = vi.fn();
+      const result = await mirrorMediaToTelegram({ sendMediaToTopic: async () => receipt, sendToTopic: text }, 7, 'Justin',
+        [att(), att({ index: 1, size: 51_000_000 })], 'caption', () => blob);
+      expect(result.delivery).toEqual({ outcome: 'recorded', deliveredParts: 0, receipt }); expect(text).not.toHaveBeenCalled();
+    } finally { SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'quiet mirror fixture' }); }
+  });
+
   it('Telegram: uploads the fitting files in one call, then the text lines; never touches a missing adapter method silently', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mmirror-'));
     try {

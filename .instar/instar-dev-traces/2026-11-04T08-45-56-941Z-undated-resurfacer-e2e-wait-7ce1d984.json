@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "undated-resurfacer-e2e-wait",
+  "sessionId": "fbad3c4d-66be-4847-be50-4e9084534054",
+  "timestamp": "2026-11-04T08:45:56.941Z",
+  "artifactPath": "upgrades/side-effects/undated-resurfacer-e2e-wait.md",
+  "artifactSha256": "8f0115e791b699b12fa943f33002670261c14f4ee217a83d9d5132fd61f9fb68",
+  "coveredFiles": [
+    "tests/e2e/undated-action-resurfacer-lifecycle.test.ts",
+    "upgrades/next/undated-resurfacer-e2e-wait.md",
+    "upgrades/side-effects/undated-resurfacer-e2e-wait.eli16.md",
+    "upgrades/side-effects/undated-resurfacer-e2e-wait.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "test-only bounded wait",
+  "eli16Path": "upgrades/side-effects/undated-resurfacer-e2e-wait.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/undated-resurfacer-e2e-wait.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "test-only, bounded wait"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-07T03:42:42.695Z",
+  "slug": "executor-git-nonblocking",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 42,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/feedback-factory/execute/executorPorts.ts"
+    ],
+    "addedLines": 36,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one git command per spawn inside the existing bounded attempt path; no retry, and the kill only ends that same child after its timeout; not a self-triggered loop"
+  },
+  "verdict": "pass"
+}

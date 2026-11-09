@@ -24,6 +24,8 @@ import { PlacementExecutor } from '../../src/core/PlacementExecutor.js';
 import { SessionOwnershipRegistry, InMemorySessionOwnershipStore } from '../../src/core/SessionOwnershipRegistry.js';
 import { TopicPlacementPinStore } from '../../src/core/TopicPlacementPinStore.js';
 import { OwnershipReconciler } from '../../src/core/OwnershipReconciler.js';
+import { SessionDrainRunner } from '../../src/core/SessionDrainRunner.js';
+import { RebalanceProofRunner, setActiveRebalanceProof } from '../../src/core/rebalanceProof.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { MachineIdentity } from '../../src/core/types.js';
 import type { MachineLoadReport } from '../../src/core/machineLoadReport.js';
@@ -53,12 +55,18 @@ describe('overload shed — alive after production-shaped init', () => {
   let registry: MachinePoolRegistry;
   let admission: WorkAdmission;
   const dryRun = { value: DEFAULT_OVERLOAD_SHED.dryRun };
+  const stage = { value: 'rebalance' };
+  const sessionIdle = { value: true };
+  const closed: string[] = [];
+  let drainDone: Promise<void> = Promise.resolve();
 
   const beat = () => {
     const self = admission.advert();
     registry.recordHeartbeat({ machineId: 'm_self', selfReportedLastSeen: new Date().toISOString(), activeSessionCount: 10, maxSessions: 10,
       loadReport: loadReport({ verdict: 'saturated', ...(self ? { acceptingWork: self.acceptingWork, admissionEnforced: self.enforced } : {}) }) });
-    registry.recordHeartbeat({ machineId: 'm_peer', selfReportedLastSeen: new Date().toISOString(), activeSessionCount: 1, maxSessions: 10, loadReport: loadReport({}) });
+    // Exactly what PeerPresencePuller records: the load report, not the session fields.
+    // Feeding those by hand is what hid the peers' missing capacity for months.
+    registry.recordHeartbeat({ machineId: 'm_peer', selfReportedLastSeen: new Date().toISOString(), loadReport: loadReport({ sessionsActive: 1, sessionsMax: 10 }) });
   };
 
   beforeEach(async () => {
@@ -99,6 +107,9 @@ describe('overload shed — alive after production-shaped init', () => {
       ownedTopics: () => ownReg.all().filter((r) => r.status === 'active' && r.ownerMachineId === 'm_self').map((r) => ({ sessionKey: r.sessionKey, pinned: !!pins.get(r.sessionKey) })),
       ownerOf: (k) => ownReg.read(k)?.ownerMachineId,
       placement: new PlacementExecutor(),
+      poolStage: () => stage.value,
+      proofFresh: () => true,
+      quietTopics: () => new Set(['601']),
       statePath: path.join(dir, 'state', 'overload-shed.json'),
       auditPath: path.join(dir, 'logs', 'overload-shed.jsonl'),
       now: () => now,
@@ -116,6 +127,27 @@ describe('overload shed — alive after production-shaped init', () => {
       debounceMs: 0,
       overloadMoves: () => planner.overloadMoves(),
       driveUnpinnedTransfers: () => true,
+      // Production shape: the real owner-side drain closes the session and lands the claim.
+      drainMove: (mv, epoch) => {
+        drainDone = drainRunner.run({ sessionKey: mv.sessionKey, target: mv.target, senderObservedEpoch: epoch, onNotQuiet: 'abort' })
+          .then((o) => planner.noteMoveOutcome(mv.sessionKey, { status: o.status, claimLanded: o.claimLanded }));
+      },
+    });
+    let n = 0;
+    const drainRunner = new SessionDrainRunner({
+      selfMachineId: 'm_self',
+      readOwnership: (k) => ownReg.read(k),
+      cas: (action, c) => ownReg.cas(action, c),
+      suspendAutonomousRun: () => ({ suspended: false }),
+      sessionQuiet: () => true,
+      sessionIdleNow: async () => sessionIdle.value,
+      emergencyStopActive: () => false,
+      terminateSession: async (k) => { closed.push(k); return { terminated: true }; },
+      markInterrupted: () => {},
+      notifyInterrupted: () => {},
+      now: () => now,
+      sleep: async () => {},
+      nonce: () => `drain-${++n}`,
     });
 
     const coordinator: any = {
@@ -142,19 +174,72 @@ describe('overload shed — alive after production-shaped init', () => {
     expect(ownReg.read('601')?.status).toBe('active');
   });
 
-  it('live: the planner proposes, the reconciler moves the conversation (transferring → peer)', async () => {
+  const reachLiveMove = async () => {
+    planner.tick();
+    now += 4 * 60_000;
+    beat();
+    planner.tick();
+  };
+
+  it('live: planner → reconciler → drain closes the session here and the peer owns the conversation', async () => {
     dryRun.value = false;
+    closed.length = 0;
     try {
-      planner.tick();
-      now += 4 * 60_000;
-      beat();
-      planner.tick();
+      await reachLiveMove();
       const st = await request(server.getApp()).get('/overload-shed').set(auth);
       expect(st.body.liveMove).toMatchObject({ sessionKey: '601', target: 'm_peer' });
-      const rep = reconciler.tick();
-      expect(rep.overloadTransfers).toBe(1);
-      expect(ownReg.read('601')).toMatchObject({ status: 'transferring', transferTo: 'm_peer' });
-      expect(fs.readFileSync(path.join(dir, 'logs', 'overload-shed.jsonl'), 'utf-8')).toContain('"event":"proposed"');
+      expect(reconciler.tick().overloadTransfers).toBe(1);
+      await drainDone;
+      expect(closed).toEqual(['601']);
+      expect(ownReg.read('601')).toMatchObject({ status: 'active', ownerMachineId: 'm_peer' });
+      const log = fs.readFileSync(path.join(dir, 'logs', 'overload-shed.jsonl'), 'utf-8');
+      expect(log).toContain('"event":"proposed"');
+      expect(log).toContain('"event":"move-outcome"');
+      expect((await request(server.getApp()).get('/overload-shed').set(auth)).body.liveMove).toBeNull();
     } finally { dryRun.value = DEFAULT_OVERLOAD_SHED.dryRun; }
+  });
+
+  it('live: a session that is not idle stays running here and the conversation does not move', async () => {
+    dryRun.value = false;
+    sessionIdle.value = false;
+    closed.length = 0;
+    try {
+      await reachLiveMove();
+      reconciler.tick();
+      await drainDone;
+      expect(closed).toEqual([]);
+      expect(ownReg.read('601')).toMatchObject({ status: 'active', ownerMachineId: 'm_self' });
+    } finally { dryRun.value = DEFAULT_OVERLOAD_SHED.dryRun; sessionIdle.value = true; }
+  });
+
+  it('below stage rebalance nothing moves even with dry-run off', async () => {
+    dryRun.value = false;
+    stage.value = 'live-transfer';
+    try {
+      await reachLiveMove();
+      expect(reconciler.tick().overloadTransfers ?? 0).toBe(0);
+      expect(ownReg.read('601')?.status).toBe('active');
+    } finally { dryRun.value = DEFAULT_OVERLOAD_SHED.dryRun; stage.value = 'rebalance'; }
+  });
+
+  it('the rebalance-proof route is alive and refuses a topic it was not given', async () => {
+    const runner = new RebalanceProofRunner({
+      selfMachineId: () => 'm_self', isProofTopic: () => false, stageAllowsProof: () => true, stage: () => 'live-transfer',
+      readRecord: () => null, hasLocalSession: () => false, ensureIdleSession: async () => true,
+      move: () => ({ refused: 'x' }), sendProbe: async () => 'forwarded', readHistory: async () => ({ rows: [], failed: [] }),
+      record: () => {}, writeEvidence: () => 'e', newNonce: () => 'n',
+    });
+    setActiveRebalanceProof(runner);
+    try {
+      const r = await request(server.getApp()).post('/session-pool/rebalance-proof').set(auth).send({ topic: 601, to: 'm_peer' });
+      expect(r.status).toBe(409);
+      expect(r.body.refused).toBe('not-a-proof-topic');
+      const bad = await request(server.getApp()).post('/session-pool/rebalance-proof').set(auth).send({ topic: 'x' });
+      expect(bad.status).toBe(400);
+      const none = await request(server.getApp()).post('/session-pool/rebalance-proof').send({ topic: 601, to: 'm_peer' });
+      expect(none.status).toBe(401);
+    } finally { setActiveRebalanceProof(null); }
+    const off = await request(server.getApp()).post('/session-pool/rebalance-proof').set(auth).send({ topic: 601, to: 'm_peer' });
+    expect(off.status).toBe(503);
   });
 });

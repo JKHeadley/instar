@@ -1,0 +1,32 @@
+{
+  "version": 3,
+  "slug": "post-gate-projection-refusal",
+  "sessionId": "264cd3e9-ffbc-4c98-8522-0565248dd437",
+  "timestamp": "2026-11-06T11:09:19.616Z",
+  "artifactPath": "upgrades/side-effects/post-gate-projection-refusal.md",
+  "artifactSha256": "7c958bcce5fd33ccdd0310dd657ec94feb6188c5730d19a0d5de3ad8e2e89f46",
+  "coveredFiles": [
+    "dashboard/console/schedule-model.js",
+    "src/core/types.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/console-schedule.test.ts",
+    "tests/unit/job-cost-runner/JobScheduler-post-gate-definition.test.ts",
+    "upgrades/eli16/post-gate-projection-refusal.md",
+    "upgrades/next/post-gate-projection-refusal.md",
+    "upgrades/side-effects/post-gate-projection-refusal.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix in one scheduler check; a revert fully undoes it, no state migration; 14 targeted tests",
+  "eli16Path": "upgrades/eli16/post-gate-projection-refusal.md",
+  "sideEffectsPath": "upgrades/side-effects/post-gate-projection-refusal.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

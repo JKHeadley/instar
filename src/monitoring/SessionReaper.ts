@@ -17,6 +17,7 @@
  */
 
 import { EventEmitter } from 'node:events';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { Session } from '../core/types.js';
@@ -25,6 +26,7 @@ import { CONFIRMED_MOVE_ASSERTION_TTL_MS, validateConfirmedMoveAssertion } from 
 import { getActivitySignal } from './frameworkActivitySignals.js';
 import { probeTranscript, transcriptDelta, type TranscriptProbe } from './transcriptProber.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
+import { TopicRef, topicRef } from '../messaging/shared/topicRef.js';
 
 export type PressureTier = 'normal' | 'moderate' | 'critical';
 export type Verdict = 'keep' | 'reap-eligible';
@@ -1180,11 +1182,11 @@ export class SessionReaper extends EventEmitter {
         id: `standdown-contested:${topicId}:${contested}`,
         conditionKey: `standdown:contested:${topicId}`,
         priority: 'high',
-        title: `Two machines are serving topic ${topicId} and this one is doing real work`,
+        title: `Two machines are serving ${topicRef(topicId)} and this one is doing real work`,
         summary: contested === 'autonomous-run'
           ? 'A duplicate copy on this machine is running an autonomous job — your call.'
           : 'A duplicate copy on this machine holds live work — your call.',
-        description: `The conversation for topic ${topicId} is being served on ${otherOwner}, but this machine also has a live session for it that is genuinely working (${contested}). Nothing has been stopped: stopping it is your decision, not mine. Either let this work finish and it will retire itself, or move/stop it deliberately.`,
+        description: `The conversation for ${topicRef(topicId)} is being served on ${otherOwner}, but this machine also has a live session for it that is genuinely working (${contested}). Nothing has been stopped: stopping it is your decision, not mine. Either let this work finish and it will retire itself, or move/stop it deliberately.`,
       });
       return;
     }
@@ -1375,9 +1377,9 @@ export class SessionReaper extends EventEmitter {
           this.#deps.raiseStandDownAttention?.({
             id: `standdown-expired:${entry.topicId}:${entry.sessionName}`,
             priority: 'high',
-            title: `A duplicate session for topic ${entry.topicId} never went quiet`,
+            title: `A duplicate session for ${topicRef(entry.topicId)} never went quiet`,
             summary: 'It has been asked to stand down for the full window and is now frozen, awaiting your call.',
-            description: `Topic ${entry.topicId} is being served on ${entry.ownerMachineId}. The duplicate copy on this machine (${entry.sessionName}) was asked to stand down but never finished what it was holding. It is now frozen — it cannot start work and cannot send — and nothing has been destroyed. Tell me to release it and it resumes, or close it from the dashboard.`,
+            description: `${TopicRef(entry.topicId)} is being served on ${entry.ownerMachineId}. The duplicate copy on this machine (${entry.sessionName}) was asked to stand down but never finished what it was holding. It is now frozen — it cannot start work and cannot send — and nothing has been destroyed. Tell me to release it and it resumes, or close it from the dashboard.`,
           });
         }
         continue;
@@ -1470,9 +1472,9 @@ export class SessionReaper extends EventEmitter {
           this.#deps.raiseStandDownAttention?.({
             id: `standdown-churn:${entry.topicId}`,
             priority: 'medium',
-            title: `Topic ${entry.topicId} keeps producing duplicate sessions`,
+            title: `${TopicRef(entry.topicId)} keeps producing duplicate sessions`,
             summary: `${churn} duplicate copies have been retired on this machine in the last day — each one cleanly, but something keeps creating them.`,
-            description: `A duplicate session for topic ${entry.topicId} has been stood down and retired ${churn} times in 24 hours. Each retirement worked correctly and nothing was lost, so this is not a failure of the retirement — it is a signal that whatever creates the duplicate has not been diagnosed. Worth looking at the creation cause rather than the cleanup.`,
+            description: `A duplicate session for ${topicRef(entry.topicId)} has been stood down and retired ${churn} times in 24 hours. Each retirement worked correctly and nothing was lost, so this is not a failure of the retirement — it is a signal that whatever creates the duplicate has not been diagnosed. Worth looking at the creation cause rather than the cleanup.`,
           });
         }
       }
@@ -1542,9 +1544,9 @@ export class SessionReaper extends EventEmitter {
               id: `standdown-mutual-muzzle:${entry.topicId}`,
               conditionKey: `standdown:mutual-muzzle:${entry.topicId}`,
               priority: 'high',
-              title: `Both machines went quiet on topic ${entry.topicId}`,
+              title: `Both machines went quiet on ${topicRef(entry.topicId)}`,
               summary: 'Each thought the other was serving it. I have resumed answering here so you are not left without a reply.',
-              description: `For topic ${entry.topicId}, this machine and ${entry.ownerMachineId} each recorded the OTHER as the owner, so both copies went quiet — which would have left you with no answer at all. I have resumed on this machine. The underlying disagreement about who owns that conversation is worth a look.`,
+              description: `For ${topicRef(entry.topicId)}, this machine and ${entry.ownerMachineId} each recorded the OTHER as the owner, so both copies went quiet — which would have left you with no answer at all. I have resumed on this machine. The underlying disagreement about who owns that conversation is worth a look.`,
             });
           } else {
             this.audit('standdown-released', { id: entry.sessionName, name: entry.sessionName, tmuxSession: entry.sessionName } as Session, {
@@ -1564,9 +1566,9 @@ export class SessionReaper extends EventEmitter {
         id: `standdown-latched:${latch.topicId}`,
         conditionKey: `standdown:latched:${latch.topicId}`,
         priority: 'high',
-        title: `Topic ${latch.topicId} keeps looking like a duplicate`,
+        title: `${TopicRef(latch.topicId)} keeps looking like a duplicate`,
         summary: `I've stopped re-asking that copy to stand down after ${latch.blockedAttempts} attempts — something keeps re-creating it.`,
-        description: `A session for topic ${latch.topicId} on this machine has repeatedly been judged a duplicate, but each stand-down was released or expired, so I stopped re-issuing it (that brake is deliberate — otherwise it would loop). The duplicate is likely still there. Worth looking at why the copy keeps being created.`,
+        description: `A session for ${topicRef(latch.topicId)} on this machine has repeatedly been judged a duplicate, but each stand-down was released or expired, so I stopped re-issuing it (that brake is deliberate — otherwise it would loop). The duplicate is likely still there. Worth looking at why the copy keeps being created.`,
       });
     }
 
@@ -1760,9 +1762,9 @@ export class SessionReaper extends EventEmitter {
         const topicId = this.#deps.topicBinding(session.tmuxSession);
         this.#deps.raiseAttention?.({
           id: `closeout-breaker:${session.id}`,
-          title: `Topic ${topicId ?? '?'} moved to ${otherOwner}, but the old session won't close`,
+          title: `${TopicRef(topicId ?? '?')} moved to ${otherOwner}, but the old session won't close`,
           summary: `Post-transfer closeout gave up after ${v} vetoed attempts (held by: ${res.skipped ?? 'keep-guard'}).`,
-          description: `The conversation for topic ${topicId ?? '?'} now lives on ${otherOwner}, but the leftover session on this machine (${session.tmuxSession}) refused to close ${v} times in a row — a KEEP-guard reports it is still working (${res.skipped ?? 'keep-guard'}). Closeout retries have stopped (P19 breaker); the session will close via the normal idle path when it finishes, or you can close it from the dashboard.`,
+          description: `The conversation for ${topicRef(topicId ?? '?')} now lives on ${otherOwner}, but the leftover session on this machine (${session.tmuxSession}) refused to close ${v} times in a row — a KEEP-guard reports it is still working (${res.skipped ?? 'keep-guard'}). Closeout retries have stopped (P19 breaker); the session will close via the normal idle path when it finishes, or you can close it from the dashboard.`,
         });
       }
     }
@@ -2006,8 +2008,16 @@ export class SessionReaper extends EventEmitter {
       // feature is live; it is bounded + fail-open internally.
       const workEvidence: string[] = [];
       if (this.#deps.dirtyCheck && session.cwd) {
-        try { if (this.#deps.dirtyCheck(session.cwd)) workEvidence.push('uncommitted-worktree-work'); }
-        catch { /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
+        try {
+          const dirty = this.#deps.dirtyCheck(session.cwd);
+          if (dirty) workEvidence.push('uncommitted-worktree-work');
+          featureEvidence.record('monitoring.yieldSafety', {
+            kind: dirty ? 'fired' : 'held',
+            reason: dirty ? 'dirty-worktree-resume-eligible' : 'worktree-clean-at-reap',
+            context: { sessionName: session.tmuxSession, relaxedActiveProcess },
+          });
+        }
+        catch { featureEvidence.record('monitoring.yieldSafety', { kind: 'error', reason: 'dirty-check-threw', context: { sessionName: session.tmuxSession } }); /* @silent-fallback-ok: SPEC-MANDATED fail-open — evidence collection NEVER endangers the kill path; a dirty-check failure just omits the signal (the kill proceeds with the evidence gathered so far). */ }
       }
       // A session reaped while its own tool shell still runs (reachable only via
       // a relax at critical pressure) was mid-work: tag it so it is eligible for
@@ -2106,6 +2116,13 @@ export class SessionReaper extends EventEmitter {
       reapsLastHour: this.cfg.maxReapsPerHour - this.hourlyBudgetRemaining(),
       sessions,
     };
+  }
+
+  /** The ids the reaper is watching, with no per-session evaluation. snapshot() runs sync child
+   *  processes for every session, so a read that only needs the ids (the GET /sessions
+   *  discrepancy probe) must use this: that probe held the event loop on 2026-11-07. */
+  trackedSessionIds(): string[] {
+    return this.#deps.listRunningSessions().map(s => s.id);
   }
 
   /** Sync in-memory runtime read for the GuardRegistry (GET /guards).

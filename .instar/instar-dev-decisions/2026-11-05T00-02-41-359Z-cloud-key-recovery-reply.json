@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-05T00:02:41.359Z",
+  "slug": "cloud-key-recovery-reply",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SlackReplyRelayInstaller.ts matches relay / delivery path"
+  ],
+  "belowFloor": true,
+  "files": 6,
+  "loc": 417,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ClaudeKeyHealth.ts",
+      "src/core/SlackReplyRelayInstaller.ts",
+      "src/core/claudeKeyRecovery.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/templates/scripts/slack-reply.sh"
+    ],
+    "addedLines": 398,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The refresh brake is unchanged (controller claude-key-session-refresh). The new resend request is at most one per restarted conversation per episode: the item leaves the waiting list when answered or after one request at the 15-minute mark, and a new outage clears the list. Operator direct messages ride the existing notice retry capped at NOTICE_MAX_ATTEMPTS."
+    }
+  },
+  "verdict": "pass"
+}

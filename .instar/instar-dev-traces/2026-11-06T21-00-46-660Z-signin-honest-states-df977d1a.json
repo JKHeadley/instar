@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "signin-honest-states",
+  "sessionId": "31f8d38c-6396-4900-9bac-bea7294fdb04",
+  "timestamp": "2026-11-06T21:00:46.660Z",
+  "artifactPath": "upgrades/side-effects/signin-honest-states.md",
+  "artifactSha256": "110c605d1e7c1f2c2e0f7d32a52415dbcaae888c9a13fb27edc9bf5b70174d48",
+  "coveredFiles": [
+    "dashboard/console/accounts-model.js",
+    "dashboard/console/accounts.js",
+    "dashboard/console/needs-model.js",
+    "docs/specs/console-features/capacity.md",
+    "src/server/mobileCapacityRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/mobile-native-capacity-screens.test.ts",
+    "tests/unit/console-accounts.test.ts",
+    "tests/unit/mobile-native-capacity-screens.test.ts",
+    "upgrades/next/signin-honest-states.md",
+    "upgrades/side-effects/signin-honest-states.eli16.md",
+    "upgrades/side-effects/signin-honest-states.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Display-only classification on the accounts surfaces; a revert fully undoes it and no repair authority changes.",
+  "eli16Path": "upgrades/side-effects/signin-honest-states.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/signin-honest-states.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

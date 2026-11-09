@@ -6,6 +6,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import crypto from 'node:crypto';
+import { JSDOM } from 'jsdom';
 import { SecretDrop, canonicalSubmitMessage, buildSignedSubmission } from '../../src/server/SecretDrop.js';
 
 describe('SecretDrop', () => {
@@ -262,6 +263,54 @@ describe('SecretDrop', () => {
       const html = drop.renderForm(request);
       expect(html).not.toContain('<script>alert("xss")</script>');
       expect(html).toContain('&lt;script&gt;');
+    });
+  });
+
+  describe('renderForm — show/hide toggle (CMT-1250)', () => {
+    function render(fields?: Array<{ name: string; label: string; masked?: boolean }>) {
+      const { token } = drop.create({ label: 'Login', ...(fields ? { fields } : {}) });
+      const html = drop.renderForm(drop.getPending(token)!);
+      const dom = new JSDOM(html, { runScripts: 'dangerously' });
+      return dom;
+    }
+
+    it('gives every masked field an eye button that shows and hides what was typed', () => {
+      const dom = render([{ name: 'user', label: 'Username', masked: false }, { name: 'pass', label: 'Password' }]);
+      const doc = dom.window.document;
+      const pass = doc.getElementById('field-pass') as HTMLInputElement;
+      const btn = doc.querySelector('.reveal-btn[data-reveal-for="field-pass"]') as HTMLButtonElement;
+      expect(pass.type).toBe('password');
+      expect(btn.getAttribute('type')).toBe('button'); // never submits the form
+      expect(btn.getAttribute('aria-pressed')).toBe('false');
+      expect(btn.getAttribute('aria-label')).toBe('Show what you typed');
+      btn.click();
+      expect(pass.type).toBe('text');
+      expect(btn.getAttribute('aria-pressed')).toBe('true');
+      expect(btn.getAttribute('aria-label')).toBe('Hide what you typed');
+      btn.click();
+      expect(pass.type).toBe('password');
+      // an unmasked field needs no toggle
+      expect(doc.querySelector('.reveal-btn[data-reveal-for="field-user"]')).toBeNull();
+      dom.window.close();
+    });
+
+    it('re-masks revealed fields when the form is sent', () => {
+      const dom = render();
+      const doc = dom.window.document;
+      (dom.window as unknown as { fetch: unknown }).fetch = () => new Promise(() => {});
+      const btn = doc.querySelector('.reveal-btn') as HTMLButtonElement;
+      const input = doc.getElementById(btn.getAttribute('data-reveal-for')!) as HTMLInputElement;
+      btn.click();
+      expect(input.type).toBe('text');
+      doc.getElementById('secret-form')!.dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+      expect(input.type).toBe('password');
+      dom.window.close();
+    });
+
+    it('escapes the field name inside the toggle attributes', () => {
+      const dom = render([{ name: 'a"><img src=x onerror=alert(1)>', label: 'Odd' }]);
+      expect(dom.window.document.querySelector('img')).toBeNull();
+      dom.window.close();
     });
   });
 

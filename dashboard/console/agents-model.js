@@ -48,15 +48,20 @@ export function localTime(iso, now = Date.now()) {
 const RELAY_WORDS = {
   connected: { word: 'Connected to the agent network', tone: 'ok' },
   standby: { word: 'Standing by: another of my machines holds the network connection', tone: 'ok' },
+  // warning-path: askLink
   disconnected: { word: 'Not connected to the agent network — retrying on my own', tone: 'attn' },
+  // warning-path: askLink
   'never-connected': { word: 'Not connected to the agent network yet — still coming up, or the first connect failed', tone: 'attn' },
+  // warning-path: askLink
   displaced: { word: 'Another connection using my identity took the network (usually my other machine); I try again after a 15-minute pause', tone: 'bad' },
+  // warning-path: askLink
   'not-provisioned': { word: 'No agent-network identity on this machine yet', tone: 'attn' },
   'not-configured': { word: 'The agent network is off on this agent', tone: 'off' },
 };
 const IDENTITY_WORDS = {
   agree: { word: 'My machines agree on who I am on the network', tone: 'ok' },
   'partial-agree': { word: 'The machines I could observe agree on my identity; some were not observed', tone: 'ok' },
+  // warning-path: askLink
   disagree: { word: 'My machines disagree about my network identity — messages sent to the other address are lost', tone: 'bad' },
   'cannot-tell': { word: 'Not enough observation to compare my machines’ identities', tone: 'unknown' },
 };
@@ -69,6 +74,7 @@ export function relayModel(res, now = Date.now()) {
   const r = d.relay && typeof d.relay === 'object' ? d.relay : {};
   const state = typeof r.state === 'string' ? r.state : 'cant-tell';
   let w = RELAY_WORDS[state] || (state === 'cant-tell' ? { word: 'Can’t tell whether I’m connected: the health answer carried no relay state', tone: 'unknown' } : { word: `Relay state: ${state}`, tone: 'unknown' });
+  // warning-path: askLink
   if (state === 'disconnected' && r.recoverable === false) w = { word: 'Not connected to the agent network, and not retrying', tone: 'bad' };
   const idc = d.identityCoherence && typeof d.identityCoherence === 'object' ? d.identityCoherence : null;
   const identity = idc && IDENTITY_WORDS[idc.state] ? { state: idc.state, ...IDENTITY_WORDS[idc.state] } : idc && idc.state === 'not-run' ? { state: 'not-run', word: 'Identity check not run yet', tone: 'unknown' } : null;
@@ -209,11 +215,14 @@ export function peerWords(p, now = Date.now()) {
 // ── Conversations (GET /threadline/conversations?scope=mesh + observability) ─
 const SYMMETRY_WORDS = {
   verified: { word: 'In sync with the other side', tone: 'ok', actionable: false },
+  // warning-path: askLink
   diverged: { word: 'Out of sync with the other side (advisory — nothing is blocked)', tone: 'attn', actionable: true },
+  // warning-path: askLink
   'diverged-unreconcilable': { word: 'Out of sync with the other side and cannot be reconciled (advisory — nothing is blocked)', tone: 'attn', actionable: true },
   'version-skew': { word: 'The two sides run different versions, so sync can’t be compared yet', tone: 'unknown', actionable: false },
   'unverified-peer-legacy': { word: 'The other side runs an older version that cannot confirm sync', tone: 'unknown', actionable: false },
   'unverified-backfill': { word: 'Not compared yet: this history was back-filled', tone: 'unknown', actionable: false },
+  // warning-path: askLink
   'local-integrity-fault': { word: 'My own copy of this history is damaged', tone: 'bad', actionable: false },
   unknown: { word: 'Sync with the other side not checked yet', tone: 'unknown', actionable: false },
 };
@@ -294,6 +303,7 @@ export function buildAgents({ pairing, peersRes, conversations, threadsRes }, no
     const waitingOnOther = a.pairing && a.pairing.state === 'invite-accepted';
     return {
       key: `agent:${a.fp}`, fp: a.fp, shortFp: shortFp(a.fp), name, main: name,
+      // warning-path: row
       sub: `${stateWord} · ${a.names.length ? reach : 'Name not recorded'}`, end: health && health.lastHeard ? health.lastHeard : '', tone: waitingOnOther && tone === 'ok' ? 'attn' : tone,
       pairingState: a.pairing ? a.pairing.state : null, pairingWord: stateWord, paired: isPaired(a.pairing && a.pairing.state), historyOnly,
       health, healthRow: a.health, pairingRow: a.pairing, conversations: a.conversations, peersState,
@@ -315,7 +325,7 @@ export function waitingCards(pairing, now = Date.now()) {
   for (const n of pairing.restartNotices) cards.push({ kind: 'restart', id: n.id, title: 'An invite was cleared by a restart', body: `An invite from ${claimed(n.claimedAgent, n.claimedOwner)} was waiting for your approval when I restarted, and it was cleared (its secret lived only in memory). Paste it again, or forward it to my Telegram, before it expires at ${localTime(n.exp, now)}.`, actions: ['dismiss'] });
   for (const a of pairing.alarms) {
     const secondName = verifiedDisplayName(a.secondAccept && a.secondAccept.agent);
-    cards.push({ kind: 'alarm', iid: a.iid, title: 'Warning: your invite got out', body: `Two agents used the same invite, so I paused the first one: it cannot receive anything secret. The second ${secondName ? `calls itself ${secondName}` : 'has no verified name'}. Make a new invite and send it privately.`, actions: [] });
+    cards.push({ kind: 'alarm', iid: a.iid, title: 'Warning: your invite got out', body: `Two agents used the same invite, so I paused the first one: it cannot receive anything secret. The second ${secondName ? `calls itself ${secondName}` : 'has no verified name'}. Make a new invite and send it privately.`, actions: ['new-invite'] });
   }
   for (const p of pairing.pendingAccepts) cards.push({ kind: 'accept', iid: p.iid, name: verifiedDisplayName(p.claimedAgent) || 'An unnamed agent', title: `Pair with ${claimed(p.claimedAgent, p.claimedOwner)}?`, body: `Only approve if you know who sent you this invite. Check code (optional, to read to them): ${p.checkCode || '—'}. It expires at ${localTime(p.exp, now)}.`, actions: ['approve', 'decline'] });
   for (const i of pairing.finishPrompts) cards.push({ kind: 'finish', iid: i.iid, name: verifiedDisplayName(i.acceptor && i.acceptor.agent) || 'An unnamed agent', title: `${verifiedDisplayName(i.acceptor && i.acceptor.agent) || 'An unnamed agent'} accepted your invite.`, body: `${claimed(i.acceptor && i.acceptor.agent, i.acceptor && i.acceptor.owner).replace(/^the/, 'The')} accepted it. Finish only if that is who you sent it to.`, actions: ['finish', 'not-them'] });
@@ -341,7 +351,7 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
     return {
       mode: 'off', certain: relayOff, relay, pairing, agents, waiting, conversations, facts: [], topicNames,
       headline: relayOff ? 'The agent network is off on this agent.' : 'The agent network looks off on this agent.',
-      sub: `${relayOff ? '' : `${relay.word}. `}Pairing is turned off too. To turn it on, ask me to “connect to the agent network”, or tap Turn on pairing below; that restarts my server, and this page reconnects by itself.`,
+      sub: `${relayOff ? '' : `${relay.word}. `}Pairing is turned off too. To turn it on, ask me to “connect to the agent network”, or tap Turn on pairing; that restarts my server, and this page reconnects by itself.`,
       tone: 'muted', notes: [],
     };
   }
@@ -378,14 +388,17 @@ export function buildAgentsPage({ health, pairingRes, invitesRes, peersRes, conv
   const subParts = [];
   if (waiting.length && !relay.connected && relay.state !== 'cant-tell' && !relayOff) subParts.push(`${relay.word}.`);
   if (pairing.state === 'elsewhere') subParts.push(pairing.holder ? `Pairing runs on ${pairing.holder.name}; open the console there to make or approve invites.` : 'Pairing runs on another of my machines.');
-  if (pairing.state === 'off' && agents.length) subParts.push(paired.length ? 'Existing agents are listed below.' : agents.some(a => a.historyOnly) ? 'Past conversations are saved below.' : 'No agents are paired here.');
+  if (pairing.state === 'off' && agents.length) subParts.push(paired.length ? 'Existing agents are still listed.' : agents.some(a => a.historyOnly) ? 'Past conversations are still saved.' : 'No agents are paired here.');
   if (pairing.state === 'cant-tell') subParts.push(pairing.reason);
   if (!agents.length && pairing.state === 'ok' && !waiting.length) subParts.push('Connect another agent to start.');
   if (relay.identity && relay.identity.tone === 'bad') subParts.push(relay.identity.word + '.');
   const facts = [
     { n: paired.length, label: 'paired' },
+    // warning-path: pageHead
     { n: waiting.length, label: 'waiting on you', tone: waiting.length ? 'attn' : null },
+    // warning-path: pageHead
     { n: dark.length, label: 'not answering', tone: dark.length ? 'bad' : null },
+    // warning-path: pageHead
     relay.connected ? null : { n: relay.state === 'cant-tell' ? 'can’t tell' : relayOff ? 'off' : 'down', label: 'my connection', tone: relay.state === 'cant-tell' ? 'unknown' : relayOff ? null : 'attn' },
   ].filter(Boolean);
   const notes = [];

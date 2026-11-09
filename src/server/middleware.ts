@@ -2,6 +2,10 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { isStorageFailure, storageMachineName, operatorError } from '../core/storageMachineName.js';
+import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 import { THREADLINE_MCP_DEADLINES } from '../core/threadlineMcpSpawn.js';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
@@ -198,6 +202,14 @@ export function authMiddleware(
    * principal set) or 'refused' (already answered).
    */
   deviceAuth?: (req: Request, res: Response) => 'none' | 'ok' | 'refused',
+  /**
+   * Memory privacy (docs/specs/memory-privacy.md §5): looks up a session token. A
+   * session token never counts as the agent's token; it reaches only the routes in
+   * memorySessionGuard. When absent, session tokens are refused like any bad token.
+   */
+  memorySessionLookup?: (token: string) => SessionTokenRecord | null,
+  /** Told when a scoped session's reply went out. A record only, after the response. */
+  memorySessionReplied?: (session: SessionTokenRecord) => void,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     // Threadline MCP over local HTTP — ONE exact-path rule, FIRST: before the
@@ -244,6 +256,28 @@ export function authMiddleware(
 
     // Dashboard unlock (PIN → token exchange) is unauthenticated by design
     if (req.path === '/dashboard/unlock' && req.method === 'POST') {
+      next();
+      return;
+    }
+
+    // Console ticket redeem (docs/specs/mobile-console-device-signin.md §3.3): the single-use
+    // ticket in the body IS the auth, checked in the handler. Exact method + path only.
+    if (req.path === '/dashboard/console-ticket' && req.method === 'POST') {
+      next();
+      return;
+    }
+
+    // A recommended service's confirm page (docs/specs/recommended-services.md, Yes): a phone holds
+    // no token. Reading shows only public catalog text, and a yes needs the single-use token and
+    // the operator's PIN, both checked in the handler. Exact path shape and methods only.
+    if ((req.method === 'GET' || req.method === 'POST') && /^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/confirm$/.test(req.path)) {
+      next();
+      return;
+    }
+
+    // The same page takes the email proof's code (docs/specs/backup-email-sending.md): the PIN is the auth, checked
+    // in the handler with the unlock route's limits, plus the code's own five-attempt cap. Exact path and method.
+    if (req.method === 'POST' && req.path === '/recommended-services/email/code') {
       next();
       return;
     }
@@ -361,6 +395,13 @@ export function authMiddleware(
       return;
     }
 
+    // Memory privacy owner recovery: the one-time token in the URL is the auth, and it
+    // can only point this agent at a Claude binary the server already measured.
+    if (/^\/memory-privacy\/fix\/[A-Za-z0-9_-]{43}$/.test(req.path)) {
+      next();
+      return;
+    }
+
     // Dynamic-MCP operator-approval TAP pages — opened by the operator's BROWSER,
     // which carries no Bearer token (the operator has the dashboard PIN, not the
     // agent token). Same posture as Secret Drop: the opaque single-use requestId in
@@ -386,6 +427,29 @@ export function authMiddleware(
     const header = req.headers.authorization;
     if (!header || !header.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' });
+      return;
+    }
+
+    if (header.startsWith('Bearer mps_')) {
+      const session = memorySessionLookup?.(header.slice(7)) ?? null;
+      if (!session) {
+        res.status(401).json({ error: 'Invalid session token' });
+        return;
+      }
+      if (!memorySessionAllows(req.method, req.path, session)) {
+        res.status(403).json({ error: 'not-available-to-this-session' });
+        return;
+      }
+      res.locals.memorySession = session;
+      const replyChannel = memoryReplyChannel(req.method, req.path);
+      if (replyChannel) {
+        res.once('finish', () => {
+          if (res.statusCode < 200 || res.statusCode >= 300) return;
+          featureEvidence.record('memoryPrivacy', { kind: 'fired', reason: 'reply delivered', context: { channel: replyChannel, audience: session.audience.kind } });
+          try { memorySessionReplied?.(session); } catch { /* @silent-fallback-ok — a lost note reads as no reply, which shows on the ladder */ }
+        });
+      }
+      next();
       return;
     }
 
@@ -566,6 +630,15 @@ export const PARITY_PASS_TIMEOUT_MS = 360_000;
 export const POOL_TRANSFER_TIMEOUT_MS = 75_000;
 
 /**
+ * The phone's session controls (docs/specs/mobile-native-session-controls.md) wait on a dashboard route
+ * called over loopback, so each budget has to outlast that route's own: a move reads the machines (up to
+ * 12 s) and then the transfer (75 s), and the rest get past the default 30 s a door switch, a close or a
+ * new session can take.
+ */
+export const MOBILE_SESSION_MOVE_TIMEOUT_MS = POOL_TRANSFER_TIMEOUT_MS + 15_000;
+export const MOBILE_SESSION_ACTION_TIMEOUT_MS = 45_000;
+
+/**
  * `POST /corrections/analyze` awaits correction meaning grouping (one model
  * call per uncached candidate pair, bounded by `DEFAULT_RUN_BUDGET_MS` = 240 s
  * in JevCorrectionGrouping.ts, plus up to one 60 s referee call already in
@@ -672,6 +745,9 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
   return { scrapeMs, enrollStartRouteMs, relayFetchMs, startCellRouteMs };
 }
 
+/** Past HOLDER_MEDIA_DEADLINE_MS (300 s), so the stream's own limit always ends first. */
+export const MOBILE_MEDIA_TIMEOUT_MS = 330_000;
+
 /**
  * The production per-path request-timeout overrides. Exported as the single
  * source of truth so wiring-integrity tests assert against the SAME map the
@@ -689,6 +765,7 @@ export function resolveFollowMeBudgets(remoteScrapeTimeoutMs?: number): FollowMe
 export function buildRequestTimeoutOverrides(opts?: {
   paritySourceTotalTimeoutMs?: number;
   followMeRemoteScrapeTimeoutMs?: number;
+  defaultTimeoutMs?: number;
 }): Record<string, number> {
   const configuredTotal = opts?.paritySourceTotalTimeoutMs;
   const followMe = resolveFollowMeBudgets(opts?.followMeRemoteScrapeTimeoutMs);
@@ -702,6 +779,11 @@ export function buildRequestTimeoutOverrides(opts?: {
     '/whatsapp/send': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/reply': OUTBOUND_MESSAGING_TIMEOUT_MS,
     '/imessage/validate-send': OUTBOUND_MESSAGING_TIMEOUT_MS,
+    // A file from another machine has its own 300 s limit, and a 408 under the stream would leave
+    // its slot held. Uploads and purge keep the agent's configured default.
+    '/mobile/media': Math.max(MOBILE_MEDIA_TIMEOUT_MS, opts?.defaultTimeoutMs ?? 30_000),
+    '/mobile/media/uploads': opts?.defaultTimeoutMs ?? 30_000,
+    '/mobile/media/purge': opts?.defaultTimeoutMs ?? 30_000,
     '/spec/conformance-check': SPEC_REVIEW_TIMEOUT_MS,
     '/corrections/analyze': CORRECTIONS_ANALYZE_TIMEOUT_MS,
     '/cutover-readiness/parity-pass': parityBudgetMs,
@@ -714,6 +796,11 @@ export function buildRequestTimeoutOverrides(opts?: {
     // WS1.2: the deterministic transfer awaits the owner-side drain (≤ drain
     // bound + the 50s remote-call cap) synchronously — see POOL_TRANSFER_TIMEOUT_MS.
     '/pool/transfer': POOL_TRANSFER_TIMEOUT_MS,
+    '/mobile/sessions/move': MOBILE_SESSION_MOVE_TIMEOUT_MS,
+    '/mobile/sessions/door': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/close': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/new': MOBILE_SESSION_ACTION_TIMEOUT_MS,
+    '/mobile/sessions/default': MOBILE_SESSION_ACTION_TIMEOUT_MS,
     // Account-follow-me cross-machine sign-in chain — see the FollowMeBudgets
     // block above. These four entries are what stop the outermost budget from
     // being the smallest one in the stack.
@@ -803,17 +890,38 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  * Security headers for dashboard paths — prevents clickjacking, MIME-sniffing,
  * and restricts resource loading to trusted sources.
  */
+/**
+ * The policy every /view response carries (dashboard-conversations-browser-device §4.12): an opaque
+ * origin with no script, no forms and no same-origin access, so agent-written markup (`marked` passes
+ * raw HTML through) can never reach the console's stored browser key, BroadcastChannel or tokens.
+ * Popups and downloads keep links and file downloads working.
+ */
+export const VIEW_SANDBOX_CSP = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
+
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
-  if (req.path === '/dashboard' || req.path.startsWith('/dashboard/')) {
+  // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
+  // headers must too (dashboard-console-default-and-pair-page round 2).
+  const p = req.path.toLowerCase();
+  // Every response under /view — the PIN page, the rendered view, the ?sig= tunnel link, a view
+  // relayed from the machine that holds it, and every refusal — is sandboxed by the machine that
+  // answers the browser, whatever the holder sent (§4.12). Set before any route runs.
+  if (p === '/view' || p.startsWith('/view/')) {
+    res.header('Content-Security-Policy', VIEW_SANDBOX_CSP);
+    res.header('X-Content-Type-Options', 'nosniff');
+  }
+  if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
     const host = req.get('host') ?? '';
     const desktopConnect = /^[A-Za-z0-9.:[\]-]+$/.test(host)
       ? `connect-src 'self' ws://${host} wss://${host}` : "connect-src 'self'";
     res.header('Content-Security-Policy',
-      req.path === '/dashboard/desktop.html' || req.path === '/dashboard/desktop.js'
+      p === '/dashboard/desktop.html' || p === '/dashboard/desktop.js'
         ? `default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: 'self'; ${desktopConnect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
-        : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
+        : p.startsWith('/dashboard/console/')
+          // The console shows media it downloaded itself as blob: URLs (§4.11); data: stays blocked.
+          ? "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:"
+          : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
   }
   next();
@@ -862,7 +970,7 @@ export const DASHBOARD_STATIC_OPTIONS = {
 } as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = operatorError(err, res.app?.locals?.stateDir);
   const stack = err instanceof Error ? err.stack : undefined;
   if (responseAlreadyCommitted(res)) {
     console.warn(
@@ -874,7 +982,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   console.error(`[server] Error: ${message}` + (stack ? `\n${stack}` : ''));
   // Never leak internal error details to clients
   res.status(500).json({
-    error: 'Internal server error',
+    error: isStorageFailure(err) ? `Storage error on ${storageMachineName(req.app?.locals?.stateDir)}. Please check available space and storage permissions.` : 'Internal server error',
     timestamp: new Date().toISOString(),
   });
 }

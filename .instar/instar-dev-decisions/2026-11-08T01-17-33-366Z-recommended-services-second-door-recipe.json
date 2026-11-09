@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-08T01:17:33.366Z",
+  "slug": "recommended-services-second-door-recipe",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 171,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/recommended/aiDoors.ts",
+      "src/recommended/catalog.ts",
+      "src/recommended/recipes.ts",
+      "src/server/recommendedServiceRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 167,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered action: the server step runs on the session's call after a yes or on the existing bounded daily refresh, where it changes nothing once the door is listed"
+  },
+  "verdict": "pass"
+}

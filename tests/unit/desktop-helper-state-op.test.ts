@@ -30,6 +30,32 @@ describe.skipIf(!usable)('helper state-op', () => {
     expect(op({ op: 'read' }).state.markers['k.0'].state).toBe('left-unlocked');
   });
 
+  it('stays readable with 200 finished duties: the read trims, the next create prunes (fb-3a84590d-1e8)', () => {
+    const now = Date.now();
+    const markers: Record<string, unknown> = {};
+    for (let i = 0; i < 200; i++) {
+      markers[`f.${i}`] = { state: 'relocked', createdAt: now - (200 - i) * 1000, pad: 'x'.repeat(400) };
+    }
+    markers['owed.0'] = { state: 'owed', createdAt: now - 3 * 86_400_000 };
+    markers['failed.0'] = { state: 'relock-failed', createdAt: now - 3 * 86_400_000 };
+    fs.writeFileSync(path.join(root, 'locked-state.json'), JSON.stringify({ markers }), { mode: 0o600 });
+    const run = spawnSync(helper, ['state-op'], { input: JSON.stringify({ root, op: 'read' }), encoding: 'utf8' });
+    expect(run.status).toBe(0);
+    expect(run.stdout.length).toBeLessThan(64_000);
+    const seen = Object.keys(JSON.parse(run.stdout).state.markers);
+    // Unfinished and unreported duties always survive; of the finished, the newest 30.
+    expect(seen).toContain('owed.0');
+    expect(seen).toContain('failed.0');
+    expect(seen.filter(k => k.startsWith('f.')).sort((a, b) => Number(b.slice(2)) - Number(a.slice(2))))
+      .toEqual(Array.from({ length: 30 }, (_, i) => `f.${199 - i}`));
+    // The read never writes; the next create does the pruning on disk.
+    expect(Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'locked-state.json'), 'utf8')).markers)).toHaveLength(202);
+    op({ op: 'marker-create', key: 'new.0', marker: {} });
+    const onDisk = Object.keys(JSON.parse(fs.readFileSync(path.join(root, 'locked-state.json'), 'utf8')).markers);
+    expect(onDisk.filter(k => k.startsWith('f.'))).toHaveLength(30);
+    expect(onDisk).toEqual(expect.arrayContaining(['owed.0', 'failed.0', 'new.0']));
+  });
+
   it('keeps one marker for one key, and writes the file owner-only', () => {
     expect(op({ op: 'marker-create', key: 'k.0', marker: {} }).created).toBe(true);
     expect(op({ op: 'marker-create', key: 'k.0', marker: {} }).created).toBe(false);
@@ -43,6 +69,34 @@ describe.skipIf(!usable)('helper state-op', () => {
     expect(run.status).toBe(69);
     expect(spawnSync(helper, ['state-op'], { input: JSON.stringify({ root, op: 'read' }) }).status).toBe(69);
     expect(fs.readFileSync(file, 'utf8')).toBe('not json');
+  });
+
+  it('creates a missing store root and its parents, each owner-only (a thin build has no desktop-helper folder)', () => {
+    const deep = path.join(root, 'home', '.instar', 'desktop-helper', 'locked');
+    const run = spawnSync(helper, ['state-op'], { input: JSON.stringify({ root: deep, op: 'set-disabled', disabled: false }), encoding: 'utf8' });
+    expect(run.status).toBe(0);
+    for (const dir of [path.join(root, 'home'), path.join(root, 'home', '.instar'), path.join(root, 'home', '.instar', 'desktop-helper'), deep]) {
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  it('names why it failed on stderr with one fixed word', () => {
+    fs.writeFileSync(path.join(root, 'file'), '');
+    const blocked = spawnSync(helper, ['state-op'], { input: JSON.stringify({ root: path.join(root, 'file', 'locked'), op: 'set-disabled', disabled: false }), encoding: 'utf8' });
+    expect(blocked.status).toBe(69);
+    expect(blocked.stderr).toBe('state-op: store-root-uncreatable\n');
+    const invalid = spawnSync(helper, ['state-op'], { input: '{bad', encoding: 'utf8' });
+    expect(invalid.status).toBe(69);
+    expect(invalid.stderr).toBe('state-op: request-invalid\n');
+    fs.writeFileSync(path.join(root, 'locked-state.json'), 'not json');
+    expect(spawnSync(helper, ['state-op'], { input: JSON.stringify({ root, op: 'read' }), encoding: 'utf8' }).stderr).toBe('state-op: store-unreadable\n');
+  });
+
+  it('reads the secure-input owner from IOResources (never "unreadable" on a Mac with a console)', () => {
+    const run = spawnSync(helper, ['probe'], { encoding: 'utf8', env: { ...process.env, INSTAR_DESKTOP_LOCKED: '1' } });
+    expect(run.status).toBe(0);
+    const owner = JSON.parse(run.stdout.split('\n')[0]).lockInputs?.secureInputOwner;
+    expect(['none', 'loginwindow', 'other']).toContain(owner);
   });
 
   it('holds up under many processes at once', async () => {

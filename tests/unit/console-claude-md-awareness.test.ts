@@ -7,7 +7,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { PostUpdateMigrator } from '../../src/core/PostUpdateMigrator.js';
-import { CONSOLE_MARKER, CONSOLE_BULLET, DASHBOARD_PREVIEW_BULLET, DASHBOARD_PREVIEW_MARKER, generateClaudeMd } from '../../src/scaffold/templates.js';
+import { CONSOLE_MARKER, CONSOLE_MARKER_V1, CONSOLE_BULLET, DASHBOARD_PREVIEW_BULLET, DASHBOARD_PREVIEW_MARKER, generateClaudeMd } from '../../src/scaffold/templates.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
@@ -52,9 +52,28 @@ describe('console CLAUDE.md bullet', () => {
     expect(count(fs.readFileSync(claudeMd, 'utf8'))).toBe(1);
   });
 
-  it('names the console URL and that legacy stays the default', () => {
-    expect(CONSOLE_BULLET).toContain('/dashboard/console/');
-    expect(CONSOLE_BULLET).toContain('stays the default');
+  it('says /dashboard opens the console, where legacy lives, and names the pairing code page', () => {
+    expect(CONSOLE_BULLET).toContain('`/dashboard` (same PIN, same tunnel) opens the console');
+    expect(CONSOLE_BULLET).toContain('/dashboard/legacy');
+    expect(CONSOLE_BULLET).toContain('/dashboard/pair');
+    expect(CONSOLE_BULLET).not.toContain('stays the default');
+    expect(CONSOLE_BULLET).not.toContain(CONSOLE_MARKER_V1);
+  });
+
+  it('an agent with the first bullet (legacy "stays the default") has it replaced in place, once', () => {
+    const v1 = "- **The new console runs beside the dashboard**: `/dashboard/console/` (same PIN, same tunnel) is the new home screen: one sentence on whether anything needs the operator. It is read-only; every tab still opens in the legacy `/dashboard`, which stays the default until the operator calls the console MVP. Proactive: send `{tunnelUrl}/dashboard/console/` and the PIN.";
+    fs.writeFileSync(claudeMd, '# CLAUDE.md\n' + FEATURES + '\n' + v1 + '\n' + DASHBOARD_PREVIEW_BULLET + '\n- **Sharing the dashboard**: y\n');
+    const r1 = run(projectDir);
+    const once = fs.readFileSync(claudeMd, 'utf8');
+    expect(r1.upgraded).toContain('CLAUDE.md: the console is now the dashboard front door (legacy at /dashboard/legacy)');
+    expect(once).not.toContain(CONSOLE_MARKER_V1);
+    expect(once).not.toContain('stays the default');
+    expect(count(once)).toBe(1);
+    expect(once).toContain(FEATURES + '\n' + CONSOLE_BULLET + '\n' + DASHBOARD_PREVIEW_BULLET);
+    expect(once.split(DASHBOARD_PREVIEW_MARKER).length - 1).toBe(1);
+    const r2 = run(projectDir);
+    expect(r2.upgraded.filter((u) => u.includes('console'))).toEqual([]);
+    expect(fs.readFileSync(claudeMd, 'utf8')).toBe(once);
   });
   it('the feature-preview bullet: new agents under the console bullet; existing agents once, idempotent', () => {
     const preview = (t: string) => t.split(DASHBOARD_PREVIEW_MARKER).length - 1;

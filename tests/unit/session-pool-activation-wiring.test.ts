@@ -32,12 +32,12 @@ describe('Session Pool activation wiring (§L4)', () => {
   });
 
   it('the interception FAILS SAFE — any route error falls back to local dispatch', () => {
-    const idx = src.indexOf("_sessionRouter && _sessionPoolStage() !== 'dark'");
+    const idx = src.indexOf("_sessionRouter && (_sessionPoolStage() !== 'dark' || _routingOnly)");
     // Window 6500 (was 5200): the silent-loss-refusal-conservation `rejected`
     // outcome branch (a first-class refusal short-circuit added before the
     // isRemotelyHandled check) sits inside this block and pushed the
     // fail-safe fallback log line further down.
-    const block = src.slice(idx, idx + 6500);
+    const block = src.slice(idx, idx + 7000);
     expect(block).toContain('try {');
     expect(block).toContain('await _sessionRouter.route(');
     expect(block).toContain('falling back to local dispatch');
@@ -57,7 +57,7 @@ describe('Session Pool activation wiring (§L4)', () => {
     // (deliverMessage: now sits ~4200 chars in). Window 5500: the
     // trustworthy-machine-load C5 `overloadAwareRanking` placement seam
     // (one line) moved it to ~5075.
-    const block = src.slice(idx, idx + 5500);
+    const block = src.slice(idx, idx + 6000);
     // The registry dep filters suspect machines from placement candidates
     // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
     // still sourced from the REAL machinePoolRegistry capacities.
@@ -71,7 +71,7 @@ describe('Session Pool activation wiring (§L4)', () => {
 
   it('the owner-suspect breaker is wired into BOTH halves (mark + responsive) and the aliveness check', () => {
     const idx = src.indexOf('new routerMod.SessionRouter({');
-    const block = src.slice(idx, idx + 3000);
+    const block = src.slice(idx, idx + 4000);
     expect(block).toContain('markOwnerSuspect: (m) => ownerSuspectBreaker.markSuspect(m)');
     expect(block).toContain('onOwnerResponsive: (m) => ownerSuspectBreaker.recordSuccess(m)');
     expect(block).toContain('!ownerSuspectBreaker.isSuspect(m)');

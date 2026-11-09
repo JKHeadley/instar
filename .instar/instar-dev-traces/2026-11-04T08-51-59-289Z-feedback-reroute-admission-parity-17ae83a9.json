@@ -1,0 +1,33 @@
+{
+  "version": 3,
+  "slug": "feedback-reroute-admission-parity",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T08:51:59.289Z",
+  "artifactPath": "upgrades/side-effects/feedback-reroute-admission-parity.md",
+  "artifactSha256": "ce56b9b3421ceaf4a39ac7f291e666e2c62f94daac20f1761c57081519f3ee53",
+  "specPath": "docs/specs/confined-spawn-subscription-reroute.md",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "tests/unit/session-manager-confined-reroute.test.ts",
+    "upgrades/next/feedback-reroute-admission-parity.md",
+    "upgrades/side-effects/feedback-reroute-admission-parity.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "The change affects the safety admission boundary for confined feedback sessions, so use the approved spec and independent second pass.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/confined-spawn-subscription-reroute-convergence.md",
+      "iterations": 12,
+      "verified": true
+    }
+  }
+}

@@ -14,7 +14,7 @@ import {
   type AgentWorktreeReaperDeps,
   type WorktreeInfo,
 } from '../../src/monitoring/AgentWorktreeReaper.js';
-import { isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, fetchMergedPrHeadOids, REAPER_RESIDUE_DENYLIST, type ReadGit, type RunGh } from '../../src/monitoring/agentWorktreeGit.js';
+import { buildInboundLinkIndex, isBranchMerged, resolveBaseRef, makeAgentWorktreeReaperDeps, fetchMergedPrHeadOids, REAPER_RESIDUE_DENYLIST, type ReadGit, type RunGh } from '../../src/monitoring/agentWorktreeGit.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -295,8 +295,11 @@ describe('makeAgentWorktreeReaperDeps.isInUse — lock OR live process cwd', () 
     fs.mkdirSync(wtA, { recursive: true });
     return { worktreesDir, wtA };
   }
-  const mkDeps = (worktreesDir: string, cwdRoots: () => Set<string>) =>
-    makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots });
+  const mkDeps = (worktreesDir: string, cwdRoots: () => Set<string>) => {
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots,
+      commandLines: () => [], inboundLinks: async () => new Set<string>() });
+    return deps;
+  };
 
   it('in-use when a live process cwd is inside the worktree', () => {
     const { worktreesDir, wtA } = mkWorktree();
@@ -304,16 +307,124 @@ describe('makeAgentWorktreeReaperDeps.isInUse — lock OR live process cwd', () 
     expect(deps.isInUse(wtA)).toBe(true);
   });
 
-  it('NOT in-use when no lock and no process cwd inside', () => {
+  it('NOT in-use when no lock and no process cwd inside', async () => {
     const { worktreesDir, wtA } = mkWorktree();
     const deps = mkDeps(worktreesDir, () => new Set<string>());
+    await deps.preparePass!();
     expect(deps.isInUse(wtA)).toBe(false);
+  });
+
+  it('in-use until the inbound-link index has been built, and when it failed (disk-steward §4)', async () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const deps = mkDeps(worktreesDir, () => new Set<string>());
+    expect(deps.isInUse(wtA)).toBe(true);
+    const failed = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(),
+      commandLines: () => [], inboundLinks: async () => null });
+    await failed.preparePass!();
+    expect(failed.isInUse(wtA)).toBe(true);
+  });
+
+  it('in-use when another checkout or pipeline folder links into it, including through a chain', async () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const wtB = path.join(worktreesDir, 'b');
+    const wtC = path.join(worktreesDir, 'c');
+    fs.mkdirSync(path.join(wtA, 'node_modules'), { recursive: true });
+    fs.mkdirSync(wtB); fs.mkdirSync(wtC);
+    // b links into a; c links into b's link (a chain): removing b breaks c.
+    fs.symlinkSync('../a/node_modules', path.join(wtB, 'node_modules'));
+    fs.symlinkSync('../b/node_modules', path.join(wtC, 'node_modules'));
+    const lanes = path.join(tmp, '.instar', 'lanes', 'x-artifacts');
+    fs.mkdirSync(lanes, { recursive: true });
+    const wtD = path.join(worktreesDir, 'd');
+    fs.mkdirSync(wtD);
+    fs.symlinkSync(wtD, path.join(lanes, 'head'));
+    const index = await buildInboundLinkIndex(tmp, worktreesDir);
+    expect(index).not.toBeNull();
+    const real = (x: string) => fs.realpathSync(x);
+    expect(index!.linked.has(real(wtA))).toBe(true);
+    expect(index!.linked.has(real(wtB))).toBe(true); // lexical target of c's link
+    expect(index!.linked.has(real(wtD))).toBe(true); // linked from the pipeline lanes
+    expect(index!.linked.has(real(wtC))).toBe(false); // nothing links into c
+    // A folder this account owns but cannot read makes the index unknown.
+    const locked = path.join(lanes, 'locked');
+    fs.mkdirSync(locked); fs.chmodSync(locked, 0o000);
+    try { expect(await buildInboundLinkIndex(tmp, worktreesDir)).toBeNull(); }
+    finally { fs.chmodSync(locked, 0o700); }
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(), commandLines: () => [] });
+    await deps.preparePass!();
+    expect(deps.isInUse(wtB)).toBe(true);
+    expect(deps.isInUse(wtC)).toBe(false);
   });
 
   it('in-use when a .session.lock is present (even with empty cwd set)', () => {
     const { worktreesDir, wtA } = mkWorktree();
     const deps = mkDeps(worktreesDir, () => new Set<string>());
     fs.writeFileSync(path.join(wtA, '.session.lock'), '');
+    expect(deps.isInUse(wtA)).toBe(true);
+  });
+
+  it('in-use when a running process was started from files inside the worktree (disk-steward §4)', () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const real = fs.realpathSync(wtA);
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(),
+      commandLines: () => ['/usr/bin/zsh', `node ${real}/dist/commands/server.js --foreground`] });
+    expect(deps.isInUse(wtA)).toBe(true);
+  });
+
+  it('a relative or ~ spelling of the worktree in a command line also counts', () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    for (const cmd of ['node .worktrees/a/dist/cli.js server start', "bash -c 'cd ~/.instar/agents/echo/.worktrees/a && npm test'"]) {
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(),
+        commandLines: () => [cmd] });
+      expect(deps.isInUse(wtA)).toBe(true);
+    }
+  });
+
+  it('an index walk that started earlier but finished later never replaces a newer one', async () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const real = fs.realpathSync(wtA);
+    let release!: () => void;
+    const slow = new Promise<void>((r) => { release = r; });
+    let call = 0;
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(), commandLines: () => [],
+      inboundLinks: async () => { call++; if (call === 1) { await slow; return new Set<string>(); } return new Set([real]); } });
+    const older = deps.preparePass!();
+    await deps.preparePass!(); // newer walk sees a link into a
+    release(); await older;   // the older walk finishes last, without the link
+    expect(deps.isInUse(wtA)).toBe(true);
+  });
+
+  it('a file:// URL or a PATH-style list naming the worktree also counts', () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const real = fs.realpathSync(wtA);
+    for (const cmd of [`node --import file://${real}/dist/a.js x`, `env NODE_PATH=/a:${real}/node_modules node x`]) {
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(),
+        commandLines: () => [cmd] });
+      expect(deps.isInUse(wtA)).toBe(true);
+    }
+  });
+
+  it('a sibling whose name only shares a prefix does not count', async () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const real = fs.realpathSync(wtA);
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(),
+      commandLines: () => [`node ${real}b/dist/cli.js`], inboundLinks: async () => new Set<string>() });
+    await deps.preparePass!();
+    expect(deps.isInUse(wtA)).toBe(false);
+  });
+
+  it('in-use when the working-folder scan cannot run', async () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => null,
+      commandLines: () => [], inboundLinks: async () => new Set<string>() });
+    await deps.preparePass!();
+    expect(deps.isInUse(wtA)).toBe(true);
+  });
+
+  it('in-use when the process list cannot be read', () => {
+    const { worktreesDir, wtA } = mkWorktree();
+    const deps = makeAgentWorktreeReaperDeps({ instarRepo: tmp, worktreesDir, readGit: () => '', cwdRoots: () => new Set<string>(),
+      commandLines: () => null });
     expect(deps.isInUse(wtA)).toBe(true);
   });
 });
@@ -434,9 +545,239 @@ describe('makeAgentWorktreeReaperDeps — real git against an instar source tree
     expect(deps.isClean(mergedPath)).toBe(false);
   });
 
-  it('AgentWorktreeReaper end-to-end with real deps: reaps merged+clean, keeps dirty + unmerged', () => {
+  describe('regenerable ignored folders (disk-steward §4)', () => {
+    const ignore = (line: string) => fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), `\n${line}\n`);
+    // Commit a tracked file on the merged branch and fast-forward main to it. The
+    // repo is promoted to an instar source tree in beforeEach (guarded), so the
+    // commit runs with the promotion briefly removed, as afterEach does.
+    const withoutPromotion = <T,>(fn: () => T): T => {
+      const cfgPath = path.join(repo, '.git', 'config');
+      const saved = fs.readFileSync(cfgPath, 'utf-8');
+      fs.writeFileSync(cfgPath, saved.replace(/\[remote "origin"\][\s\S]*?(?=\n\[|$)/g, ''));
+      try { return fn(); } finally { fs.writeFileSync(cfgPath, saved); }
+    };
+    const commitOnMerged = (mergedPath: string, file: string, body: string) => withoutPromotion(() => {
+      fs.writeFileSync(path.join(mergedPath, file), body);
+      g(mergedPath, ['add', file]);
+      g(mergedPath, ['commit', '-qm', file]);
+      g(repo, ['merge', '-q', '--ff-only', 'feat-merged']);
+    });
+
+    it('a node_modules symlink does not keep a merged checkout, and removal leaves its target intact', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'awr-shared-nm-'));
+      fs.writeFileSync(path.join(shared, 'keep.txt'), 'shared install');
+      ignore('node_modules');
+      fs.symlinkSync(shared, path.join(mergedPath, 'node_modules'));
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      expect(deps.isClean(mergedPath)).toBe(true);
+      deps.removeWorktree(mergedPath);
+      expect(fs.existsSync(mergedPath)).toBe(false);
+      expect(fs.readFileSync(path.join(shared, 'keep.txt'), 'utf8')).toBe('shared install');
+      SafeFsExecutor.safeRmSync(shared, { recursive: true, force: true, operation: 'tests/unit/agent-worktree-reaper.test.ts:shared' });
+    });
+
+    it('a real node_modules directory, at any depth, keeps the checkout', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      ignore('node_modules/');
+      fs.mkdirSync(path.join(mergedPath, 'pkg'));
+      commitOnMerged(mergedPath, 'pkg/package.json', '{}');
+      fs.mkdirSync(path.join(mergedPath, 'pkg', 'node_modules', 'dep'), { recursive: true });
+      fs.writeFileSync(path.join(mergedPath, 'pkg', 'node_modules', 'dep', 'index.js'), 'maybe patched by hand');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      expect(deps.isClean(mergedPath)).toBe(false);
+      expect(() => deps.removeWorktree(mergedPath)).toThrow(/not gate-records-only/);
+      expect(fs.existsSync(path.join(mergedPath, 'pkg', 'node_modules', 'dep', 'index.js'))).toBe(true);
+    });
+
+    it('a nested node_modules symlink is regenerable', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      ignore('node_modules');
+      fs.mkdirSync(path.join(mergedPath, 'pkg'));
+      commitOnMerged(mergedPath, 'pkg/package.json', '{}');
+      const shared = fs.mkdtempSync(path.join(os.tmpdir(), 'awr-shared-nm2-'));
+      fs.symlinkSync(shared, path.join(mergedPath, 'pkg', 'node_modules'));
+      expect(makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir }).isClean(mergedPath)).toBe(true);
+      SafeFsExecutor.safeRmSync(shared, { recursive: true, force: true, operation: 'tests/unit/agent-worktree-reaper.test.ts:shared2' });
+    });
+
+    it('root dist/ is regenerable only when every file maps back to compiled source', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      ignore('dist/');
+      fs.mkdirSync(path.join(mergedPath, 'dist', 'data'), { recursive: true });
+      for (const f of ['cli.js', 'cli.d.ts', 'cli.js.map', 'cli.d.ts.map']) fs.writeFileSync(path.join(mergedPath, 'dist', f), 'built');
+      fs.writeFileSync(path.join(mergedPath, 'dist', 'data', 'manifest.json'), '{}'); // written by the build script
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      expect(deps.isClean(mergedPath)).toBe(false); // no build config: not corroborated
+      fs.mkdirSync(path.join(mergedPath, 'src'));
+      commitOnMerged(mergedPath, 'src/cli.ts', 'export {}');
+      commitOnMerged(mergedPath, 'tsconfig.json', '{\n  // build\n  "compilerOptions": { "outDir": "./dist/", "rootDir": "src" }\n}\n');
+      expect(deps.isClean(mergedPath)).toBe(true);
+      // A hand-placed file with no source behind it keeps the checkout.
+      // The fixture repo is promoted to an instar source tree (beforeEach), so the
+      // SafeFsExecutor funnel rightly refuses to delete inside it. These two files are
+      // the test's own fixture residue, removed with the promotion briefly lifted, as
+      // commitOnMerged does; the reaper's own removal path is exercised at the end.
+      fs.writeFileSync(path.join(mergedPath, 'dist', 'hotfix.js'), 'hand written');
+      expect(deps.isClean(mergedPath)).toBe(false);
+      withoutPromotion(() => SafeFsExecutor.safeUnlinkSync(path.join(mergedPath, 'dist', 'hotfix.js'), { operation: 'tests/unit/agent-worktree-reaper.test.ts' }));
+      fs.writeFileSync(path.join(mergedPath, 'dist', 'notes.txt'), 'hand written');
+      expect(deps.isClean(mergedPath)).toBe(false);
+      withoutPromotion(() => SafeFsExecutor.safeUnlinkSync(path.join(mergedPath, 'dist', 'notes.txt'), { operation: 'tests/unit/agent-worktree-reaper.test.ts' }));
+      // A compiler output edited by hand after the build falls outside the build window.
+      const later = new Date(Date.now() + 60 * 60_000);
+      fs.utimesSync(path.join(mergedPath, 'dist', 'cli.js'), later, later);
+      expect(deps.isClean(mergedPath)).toBe(false);
+      const now = new Date();
+      fs.utimesSync(path.join(mergedPath, 'dist', 'cli.js'), now, now);
+      deps.removeWorktree(mergedPath);
+      expect(fs.existsSync(mergedPath)).toBe(false);
+    });
+
+    it('a nested dist/ and an unknown ignored folder still keep the checkout', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      fs.mkdirSync(path.join(mergedPath, 'src'));
+      commitOnMerged(mergedPath, 'src/cli.ts', 'export {}');
+      commitOnMerged(mergedPath, 'tsconfig.json', '{"compilerOptions":{"outDir":"dist","rootDir":"src"}}');
+      ignore('dist/');
+      fs.mkdirSync(path.join(mergedPath, 'notes', 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(mergedPath, 'notes', 'dist', 'mine.md'), 'hand written');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
+      expect(deps.isClean(mergedPath)).toBe(false);
+      expect(() => deps.removeWorktree(mergedPath)).toThrow(/not gate-records-only/);
+      expect(fs.readFileSync(path.join(mergedPath, 'notes', 'dist', 'mine.md'), 'utf8')).toBe('hand written');
+    });
+
+    it('a coverage/ folder keeps the checkout (no rule for it)', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      ignore('coverage/');
+      fs.mkdirSync(path.join(mergedPath, 'coverage'));
+      fs.writeFileSync(path.join(mergedPath, 'coverage', 'lcov.info'), 'x');
+      commitOnMerged(mergedPath, 'vitest.config.ts', 'export default {}');
+      expect(makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir }).isClean(mergedPath)).toBe(false);
+    });
+  });
+
+  describe('commit gate records', () => {
+    const decision = '.instar/instar-dev-decisions/2026-10-23T19-33-42-871Z-some-change.json';
+    const trace = '.instar/instar-dev-traces/2026-10-26T07-42-44-062Z-some-change-6648946c.json';
+    const write = (root: string, rel: string, body: string) => {
+      fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+      fs.writeFileSync(path.join(root, rel), body);
+    };
+
+    it('archives an untracked decision record, then reclaims the checkout', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      write(mergedPath, decision, '{"d":1}');
+      const archive = path.join(repo, 'archive');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      expect(deps.isClean(mergedPath)).toBe(true);
+      deps.removeWorktree(mergedPath);
+      expect(fs.existsSync(mergedPath)).toBe(false);
+      expect(fs.readFileSync(path.join(archive, 'merged', decision), 'utf8')).toBe('{"d":1}');
+      expect(fs.readFileSync(path.join(archive, '.gitignore'), 'utf8')).toBe('*\n');
+    });
+
+    it('defaults the archive to the agent home', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      write(mergedPath, decision, '{"d":2}');
+      makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir }).removeWorktree(mergedPath);
+      expect(fs.readFileSync(path.join(repo, '.instar', 'instar-dev-decisions-archive', 'merged', decision), 'utf8')).toBe('{"d":2}');
+    });
+
+    it('archives an ignored trace, which git would otherwise delete silently', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), `\n${trace}\n`);
+      write(mergedPath, trace, 'ignored');
+      // A sibling keeps git listing the file rather than collapsing the folder, as the real tracked folder does.
+      const sibling = trace.replace('6648946c', 'bbbbbbbb');
+      write(mergedPath, sibling, 'untracked');
+      const archive = path.join(repo, 'archive');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      expect(deps.isClean(mergedPath)).toBe(true);
+      deps.removeWorktree(mergedPath);
+      expect(fs.existsSync(mergedPath)).toBe(false);
+      expect(fs.readFileSync(path.join(archive, 'merged', trace), 'utf8')).toBe('ignored');
+      expect(fs.readFileSync(path.join(archive, 'merged', sibling), 'utf8')).toBe('untracked');
+    });
+
+    it('keeps the checkout when git reports a whole record folder rather than named files', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), `\n${trace}\n`);
+      write(mergedPath, trace, 'ignored');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
+      expect(deps.isClean(mergedPath)).toBe(false);
+    });
+
+    it('never overwrites an archived record that holds different bytes', () => {
+      const archive = path.join(repo, 'archive');
+      write(path.join(archive, 'merged'), decision, 'older');
+      const mergedPath = path.join(worktreesDir, 'merged');
+      write(mergedPath, decision, 'newer');
+      makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive }).removeWorktree(mergedPath);
+      const folder = path.dirname(path.join(archive, 'merged', decision));
+      const contents = fs.readdirSync(folder).map((f) => fs.readFileSync(path.join(folder, f), 'utf8')).sort();
+      expect(contents).toEqual(['newer', 'older']);
+    });
+
+    it('keeps the checkout when real work sits beside a record, and changes nothing', () => {
+      const dirtyPath = path.join(worktreesDir, 'dirty');
+      write(dirtyPath, decision, '{"d":3}');
+      const archive = path.join(repo, 'archive');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      expect(deps.isClean(dirtyPath)).toBe(false);
+      expect(() => deps.removeWorktree(dirtyPath)).toThrow(/not gate-records-only/);
+      expect(fs.existsSync(path.join(dirtyPath, decision))).toBe(true);
+      expect(fs.existsSync(archive)).toBe(false);
+    });
+
+    it('keeps the checkout when an ignored non-record file sits beside a record', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      write(mergedPath, decision, '{"d":4}');
+      fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '\ndist/\n');
+      write(mergedPath, 'dist/out.js', 'built');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
+      expect(deps.isClean(mergedPath)).toBe(false);
+      expect(() => deps.removeWorktree(mergedPath)).toThrow(/not gate-records-only/);
+      expect(fs.existsSync(mergedPath)).toBe(true);
+    });
+
+    it('keeps a symlink posing as a record, and leaves it in place', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      fs.mkdirSync(path.dirname(path.join(mergedPath, decision)), { recursive: true });
+      fs.symlinkSync(path.join(repo, 'README.md'), path.join(mergedPath, decision));
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: path.join(repo, 'archive') });
+      expect(() => deps.removeWorktree(mergedPath)).toThrow(/not a regular file/);
+      expect(fs.lstatSync(path.join(mergedPath, decision)).isSymbolicLink()).toBe(true);
+    });
+
+    it('leaves the records alone on a locked checkout', () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      write(mergedPath, decision, '{"d":7}');
+      fs.writeFileSync(path.join(repo, '.git', 'worktrees', 'merged', 'locked'), 'held');
+      const archive = path.join(repo, 'archive');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive });
+      expect(() => deps.removeWorktree(mergedPath)).toThrow(/locked/);
+      expect(fs.existsSync(path.join(mergedPath, decision))).toBe(true);
+      expect(fs.existsSync(archive)).toBe(false);
+    });
+
+    it('a dry run touches neither the records nor the checkout', async () => {
+      const mergedPath = path.join(worktreesDir, 'merged');
+      write(mergedPath, decision, '{"d":6}');
+      const archive = path.join(repo, 'archive');
+      const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir, gateRecordArchiveDir: archive, cwdRoots: () => new Set() });
+      const result = await new AgentWorktreeReaper(deps, { enabled: true, dryRun: true }).reap();
+      expect(result.reaped).toEqual([]);
+      expect(fs.existsSync(path.join(mergedPath, decision))).toBe(true);
+      expect(fs.existsSync(archive)).toBe(false);
+    });
+  });
+
+  it('AgentWorktreeReaper end-to-end with real deps: reaps merged+clean, keeps dirty + unmerged', async () => {
     const deps = makeAgentWorktreeReaperDeps({ instarRepo: repo, worktreesDir });
     const reaper = new AgentWorktreeReaper(deps, { enabled: true, dryRun: true });
+    await reaper.prepare(); // builds the real inbound-link index
     const enumeration = deps.listWorktrees();
     if (!enumeration.ok) throw new Error('enumeration failed: ' + enumeration.error);
     const verdicts = Object.fromEntries(
@@ -483,6 +824,18 @@ describe('makeAgentWorktreeReaperDeps.isClean — residue-aware + FAIL-CLOSED (w
   it('FAIL-CLOSED: a git error → DIRTY (KEEP), never "looks clean → reapable" (the convergence BLOCKER)', () => {
     const throwing: ReadGit = () => { throw new Error('git status failed (lock contention)'); };
     expect(mk(throwing)).toBe(false);
+  });
+  it('CLEAN when the only entries are records the commit gate named itself', () => {
+    expect(mk(withStatus('?? .instar/instar-dev-decisions/2026-10-23T19-33-42-871Z-x.json\n?? .instar/instar-dev-traces/2026-10-26T07-42-44-062Z-x-6648946c.json\n'))).toBe(true);
+  });
+  it('DIRTY (KEEP) on a nested or differently named file in the record folders', () => {
+    expect(mk(withStatus('?? .instar/instar-dev-decisions/notes.json\n'))).toBe(false);
+    expect(mk(withStatus('?? .instar/instar-dev-decisions/sub/2026-10-23T19-33-42-871Z-x.json\n'))).toBe(false);
+    expect(mk(withStatus('?? .instar/instar-dev-decisions/\n'))).toBe(false);
+  });
+  it('DIRTY (KEEP) on a staged record or a locally edited tracked record', () => {
+    expect(mk(withStatus('A  .instar/instar-dev-decisions/2026-10-23T19-33-42-871Z-x.json\n'))).toBe(false);
+    expect(mk(withStatus(' M .instar/instar-dev-traces/2026-10-26T07-42-44-062Z-x-6648946c.json\n'))).toBe(false);
   });
   it('CLEAN on a truly empty worktree (no changes at all)', () => {
     expect(mk(withStatus(''))).toBe(true);

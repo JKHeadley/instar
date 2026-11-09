@@ -1,0 +1,42 @@
+{
+  "version": 3,
+  "slug": "session-pool-default-on",
+  "sessionId": "8e0c1528-9488-488c-a3a8-1ad4d9052387",
+  "timestamp": "2026-11-04T07:58:17.855Z",
+  "artifactPath": "upgrades/side-effects/session-pool-default-on.md",
+  "artifactSha256": "9fb620f00e4960f89f0a4a5b79de981ebf8b71e3e65c603720fb9f9df1b0b4a8",
+  "specPath": "docs/specs/session-pool-default-on.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-04T07-57-30-606Z-session-pool-default-on-dc88ee75.json",
+    "docs/specs/MULTI-MACHINE-SESSION-POOL-SPEC.md",
+    "docs/specs/reports/session-pool-default-on-convergence.md",
+    "docs/specs/session-pool-default-on.eli16.md",
+    "docs/specs/session-pool-default-on.md",
+    "src/commands/machine.ts",
+    "src/commands/server.ts",
+    "src/core/MachinePoolRegistry.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/leaseMediumSelection.ts",
+    "src/core/poolReadiness.ts",
+    "src/core/types.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/pool-readiness-lifecycle.test.ts",
+    "tests/integration/pool-readiness-route.test.ts",
+    "tests/unit/PostUpdateMigrator-poolReadinessLine.test.ts",
+    "tests/unit/poolReadiness.test.ts",
+    "upgrades/next/session-pool-default-on.md",
+    "upgrades/side-effects/session-pool-default-on.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/session-pool-default-on-convergence.md",
+      "iterations": 3,
+      "verified": true
+    }
+  }
+}

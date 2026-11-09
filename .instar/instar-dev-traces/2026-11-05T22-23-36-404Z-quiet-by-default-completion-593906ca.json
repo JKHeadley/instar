@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "quiet-by-default-completion",
+  "sessionId": "32f97cda-1387-4f50-8d19-50a2f487ede4",
+  "timestamp": "2026-11-05T22:23:36.404Z",
+  "artifactPath": "upgrades/side-effects/quiet-by-default-completion.md",
+  "artifactSha256": "140c16870bf4ef08c948eef56ade8e966b34e275ca0990ac6d133654e39f0d51",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-05T22-19-36-598Z-quiet-by-default-completion.json",
+    ".instar/instar-dev-traces/2026-11-05T22-19-15-720Z-quiet-by-default-completion-e79d3ed6.json",
+    "dashboard/console/notifications.js",
+    "docs/eli16/quiet-by-default-completion.eli16.md",
+    "src/messaging/NotificationSelectivityGate.ts",
+    "src/server/notificationRoutes.ts",
+    "tests/e2e/notification-preferences-alive.test.ts",
+    "tests/unit/console-notifications.test.ts",
+    "tests/unit/notification-selectivity-routes.test.ts",
+    "upgrades/side-effects/quiet-by-default-completion.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small UI and existing-route composition fixes: omit ineffective floor controls and use the existing sole preference writer through the production read-only config handle. No new authority or emitter. Floor and storage reviewers concurred.",
+  "eli16Path": "docs/eli16/quiet-by-default-completion.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/quiet-by-default-completion.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "causalAutopsy": {
+    "origin": "new-code",
+    "notes": "Align controls with fixed floor policy and preserve category preference writes through AgentServer read-only route config using the already authorized sole writer. Added get-only regression and CI-owned real registration lifecycle proof."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This follow-up changes UI rendering and user-driven preference admission only. It creates no timer, retry or self-triggered work. Existing notification budgets are unchanged."
+  }
+}

@@ -50,6 +50,7 @@
 import type { SessionOwnershipRecord } from './SessionOwnership.js';
 import type { MergedClaimAnnotation } from './TopicClaimAnnotationStore.js';
 import type { AttentionConditionIdentity, AttentionConditionObservation } from './AttentionConditionStore.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 /** Config subtree: multiMachine.sessionPool.staleOwnerRelease (§5). */
 export interface StaleOwnerReleaseConfig {
@@ -374,7 +375,9 @@ export class StaleOwnerReleaseEngine {
 
     // ── Candidate owners: peers that own at least one live topic record.
     const records = this.d.listOwnershipRecords().filter(
-      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self,
+      // app-conversations-in-the-pool §2.2: never automatic for an app conversation. Its only takeover is
+      // the operator's "bring it back here".
+      (r) => r.status !== 'released' && r.ownerMachineId && r.ownerMachineId !== self && !r.sessionKey.startsWith('app:'),
     );
     const topicsByOwner = new Map<string, SessionOwnershipRecord[]>();
     for (const r of records) {
@@ -815,7 +818,7 @@ export class StaleOwnerReleaseEngine {
     try {
       this.d.raiseAttention({
         id: key,
-        title: `Stale-owner release gave up${topic ? ` on topic ${topic}` : ''} (${owner})`,
+        title: `Stale-owner release gave up${topic ? ` on ${topicRef(topic)}` : ''} (${owner})`,
         body: `${detail}. No further automatic attempts this episode — manual demote or investigation needed.`,
         priority: 'high',
         sourceContext: `stale-owner-release:${owner}`,

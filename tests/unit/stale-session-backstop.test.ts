@@ -88,7 +88,7 @@ describe('StaleSessionBackstop (§P5)', () => {
     expect(h.raised[0].lane).toBe('agent-health');
     expect(h.raised[0].priority).toBe('NORMAL');
     expect(h.raised[0].healthKey).toBe('stale-s1');
-    expect(h.raised[0].summary).toMatch(/Reply "check /);
+    expect(h.raised[0].summary).toContain('I checked its liveness');
   });
 
   it('names the topic in the heads-up (never a bare topic-<n>) when a friendly name resolves', async () => {
@@ -103,7 +103,7 @@ describe('StaleSessionBackstop (§P5)', () => {
     expect(h.raised).toHaveLength(1);
     expect(h.raised[0].title).toContain('EXO 3.0');
     expect(h.raised[0].title).not.toMatch(/topic-\d+/);
-    expect(h.raised[0].summary).toContain('check EXO 3.0');
+    expect(h.raised[0].summary).toContain('recovery loop');
   });
 
   it('NEVER escalates an operator-protected session as stale (no crying wolf)', async () => {

@@ -15,6 +15,7 @@
  * pairing through here. The boundary is cooperative (spec §6.1 "Honest boundary").
  */
 
+import { topicRef } from '../messaging/shared/topicRef.js';
 import crypto from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { findInviteToken, decodeInvite } from './PairingInvite.js';
@@ -255,7 +256,7 @@ export class PairingInviteTelegram {
       : 'Approving in Telegram is off on this agent until its listener protection is fully on.';
   }
 
-  private operatorTap(fromUserId: unknown, chatId: unknown, verified: boolean): string | null {
+  private operatorTap(fromUserId: unknown, chatId: unknown, verified: boolean, requireChat = false): string | null {
     // The cause (version, protection setup) only for the owner: a forwarded-invite refusal is posted
     // into the topic, and in a forum group other members would see it (Echo's review, 2026-10-21).
     if (!this.deps.enforcing()) return this.offLine(Number(fromUserId) === this.deps.ownerUserId());
@@ -265,6 +266,8 @@ export class PairingInviteTelegram {
     if (Number(fromUserId) !== owner) return NOT_OWNER_REFUSAL;
     const chat = this.deps.chatId();
     if (chat !== undefined && chatId !== undefined && String(chatId) !== String(chat)) return 'Wrong chat.';
+    // ACT-115: a button tap must name its chat. The forward route has no chat id, and its ingress is verified.
+    if (requireChat && chat !== undefined && chatId === undefined) return 'Wrong chat.';
     return null;
   }
 
@@ -305,7 +308,7 @@ export class PairingInviteTelegram {
   /** A button tap. Returns false when the data is not ours (the caller handles it). */
   async onCallback(c: InviteCallback): Promise<boolean> {
     if (typeof c.data !== 'string' || !c.data.startsWith(CALLBACK_PREFIX)) return false;
-    const refusal = this.operatorTap(c.fromUserId, c.chatId, c.verified);
+    const refusal = this.operatorTap(c.fromUserId, c.chatId, c.verified, true);
     if (refusal) {
       // Not consumed: the real owner can still tap the same button.
       await this.deps.answer(c.callbackQueryId, `${refusal} ${DASHBOARD_HINT}`);
@@ -357,7 +360,7 @@ export class PairingInviteTelegram {
       await this.deps.send(topic, text, buttons);
       return true;
     } catch (err) {
-      this.reportUndelivered(what, `sending to topic ${topic} failed: ${err instanceof Error ? err.message : String(err)}`);
+      this.reportUndelivered(what, `sending to ${topicRef(topic)} failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }

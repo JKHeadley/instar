@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-08T00:19:00.244Z",
+  "slug": "spawn-saved-framework-default",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 1
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Headless spawning omitted frameworkDefaultModels lookup that interactive spawning already performed; launcher balanced fallback masked saved configuration."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

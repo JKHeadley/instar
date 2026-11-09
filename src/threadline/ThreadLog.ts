@@ -32,7 +32,7 @@
  * Machine-local BY DESIGN under the single-holder model; the per-entry `author`
  * field is the Phase-3 cross-machine-merge seam (recorded, not yet trusted).
  *
- * canonical-migration-producer: threadline-inbound-canonical-store@1
+ * canonical-migration-producer: threadline-inbound-canonical-store@3
  */
 
 import fs from 'node:fs';

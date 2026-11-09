@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "dashboard-conversations-browser-device",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T16:05:29.129Z",
+  "artifactPath": "upgrades/side-effects/dashboard-conversations-browser-device.md",
+  "artifactSha256": "f76b4cf4ef7055abd1342f2384f131242e60e018b4ac22ee8e8127ec79d42858",
+  "specPath": "docs/specs/dashboard-conversations-browser-device.md",
+  "coveredFiles": [
+    "dashboard/console/chats.js",
+    "dashboard/console/console.css",
+    "src/server/AgentServer.ts",
+    "src/server/mobileBrowserDevices.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/unit/console-chats-page.test.ts",
+    "upgrades/side-effects/dashboard-conversations-browser-device.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on the Tier-2 dashboard conversations change: Local Verify ratchet fix and live-rehearsal page fixes.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "browser-activation-effect-retry: control-loop edge = an activation effect fails -> nextAt moves out; steady-state bound = one attempt in flight per record, nextEffectAttemptAt 30 s doubling to a 1 h ceiling (<= 728 attempts per record over 30 days), records bounded by maxBrowsers and maxSetupsPerHour; settling brake = the 1 h ceiling, one report after 24 attempts, one local fallback notice (fallbackRaisedAt), and the in-memory work flag that stops all reads when nothing is pending. Registered in src/testing/selfActionRegistry.ts."
+    }
+  }
+}

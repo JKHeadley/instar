@@ -343,6 +343,15 @@ program
 // ── Setup (explicit alias) ────────────────────────────────────────
 
 program
+  .command('set-claude-key')
+  .description('Put a new Claude sign-in key in place. Reads it from stdin or a hidden prompt.')
+  .option('-d, --dir <path>', 'Agent directory')
+  .action(async (opts) => {
+    const { setClaudeKey } = await import('./commands/setClaudeKey.js');
+    await setClaudeKey(opts);
+  });
+
+program
   .command('setup')
   .description('Interactive setup wizard (same as running `instar` with no args)')
   .option('--non-interactive', 'Run setup without LLM wizard (requires all flags)')
@@ -545,6 +554,35 @@ addCmd
   .description('Add Claude API quota tracking')
   .option('--state-file <path>', 'Path to quota state file (default: .instar/state/quota.json)')
   .action((opts) => addQuota(opts));
+
+// ── Mobile: owner introducers (docs/specs/mobile-pairing-introducer.md) ──
+
+const mobileCmd = program
+  .command('mobile')
+  .description('Phone pairing settings for the Instar app');
+const introducerCmd = mobileCmd
+  .command('introducer')
+  .description('Agents whose owner phones may add this agent with Face ID');
+introducerCmd.command('show')
+  .description("Print this agent's own introducer entry, to add to an agent it creates")
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .option('--json', 'Print the entry as JSON')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.showIntroducer(opts); });
+introducerCmd.command('add')
+  .description("Trust an introducer's owner phones on this agent (restart to apply)")
+  .requiredOption('--name <name>', 'The introducing agent\'s name')
+  .requiredOption('--key <publicKey>', 'Its introducer key (from `instar mobile introducer show` on it)')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.addIntroducer(opts); });
+introducerCmd.command('remove')
+  .description('Stop trusting an introducer (restart to apply)')
+  .requiredOption('--key <publicKey>', 'The introducer key to remove')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.removeIntroducer(opts); });
+introducerCmd.command('list')
+  .description('List the introducers this agent trusts')
+  .option('--dir <path>', 'Agent directory (default: detected)')
+  .action(async (opts) => { const m = await import('./commands/mobileIntroducer.js'); m.listIntroducers(opts); });
 
 // ── Remove ──────────────────────────────────────────────────────
 

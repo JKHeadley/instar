@@ -732,3 +732,14 @@ describe('windowRunRecoveryResultFromRefresh (production recover wiring)', () =>
     expect(result).toMatchObject({ succeeded: true, replacementExecutorId: 'echo-topic-2', resumedTaskRef: 'task-3' });
   });
 });
+
+
+it('keeps a quiet liveness failure terminal across restart without a delivered flag', async () => {
+  const h = harness(); await h.authority.freeze('window-ceiling-expired', 'failed'); let sends = 0;
+  const make = () => new WindowRunLivenessAuthority(h.store, { now: () => new Date(BASE).toISOString(), sample: () => { throw new Error('no sample'); },
+    notifyFailure: async () => { sends++; return { delivered: false, recorded: true, quietId: 'liveness-q' }; } }, { enabled: true, dryRun: false });
+  const previous = h.store.load()!; delete previous.notificationDeliveredAt; h.store.save(previous);
+  await make().tick(); await make().tick(); const state = h.store.load()!;
+  expect(state.notificationQuietId).toBe('liveness-q'); expect(state.notificationRecordedAt).toBeDefined();
+  expect(state.notificationDeliveredAt).toBeUndefined(); expect(sends).toBe(1);
+});

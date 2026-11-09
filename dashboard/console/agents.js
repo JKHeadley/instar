@@ -14,7 +14,7 @@
 import {
   buildAgentsPage, threadModel, inviteResultWords, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime,
 } from './agents-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 import { topicNameMap } from './topic-names.js';
@@ -48,7 +48,7 @@ async function send(path, body, method = 'POST') {
 }
 
 export async function renderAgents(main, ctx) {
-  if (!main.querySelector('.agents-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading other agents' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading other agents' })));
   const [health, pairingRes, invitesRes, peersRes, convRes, threadsRes, poolRes, topicsRes] = await Promise.all([
     read('/threadline/health'), read('/threadline/pairing'), read('/threadline/pairing/invites'),
     read('/threadline/peers/health?scope=pool', POOL_TIMEOUT_MS), read('/threadline/conversations?scope=mesh'), read('/threadline/observability/threads'), read('/pool'), read('/telegram/topics?scope=pool', POOL_TIMEOUT_MS),
@@ -70,16 +70,18 @@ export async function renderAgents(main, ctx) {
   const connect = el('button', { class: 'btn-primary btn-inline connect-btn', type: 'button', text: '+ Connect another agent', onclick: () => openConnect(deps) });
   setKids(main, el('div', { class: 'agents-page' },
     pageHead({ eyebrow: EYEBROW, headline: page.headline, sub: page.sub, tone: page.tone, facts: page.facts }),
-    page.waiting.map((w) => waitingCard(w, deps)),
+    // Pairing being off is the thing to fix here, so its switch leads rather than following the lists.
+    page.pairing.state === 'off' ? turnOnCard(deps) : null,
+    page.waiting.map((w) => markNeed(waitingCard(w, deps), 'agents')),
     page.relay.connected || page.relay.state === 'cant-tell' ? null : relayLine(page.relay),
     page.relay.state === 'cant-tell' ? note(page.relay.word + '.') : null,
     page.notes.map((n) => note(n)),
     el('div', { class: 'page-sections' },
-      agentRows.length || page.pairing.state === 'ok' ? section({ id: 'agents', title: 'Agents', rows: agentRows, empty: 'No other agents yet. Connect one below.', onRow: (r) => openAgent(r.agent, deps) }) : null,
+      agentRows.length || page.pairing.state === 'ok' ? section({ id: 'agents', title: 'Agents', rows: agentRows, empty: 'No other agents yet. Use Connect another agent to add one.', onRow: (r) => openAgent(r.agent, deps) }) : null,
       pastRows.length ? section({ id: 'past-agents', title: 'Past conversations', collapsed: true, rows: pastRows, onRow: (r) => openAgent(r.agent, deps) }) : null,
       page.pairing.openInvites.length ? section({ id: 'open-invites', title: 'Invites not used yet', collapsed: true, rows: page.pairing.openInvites.map((i) => ({ key: `inv:${i.iid}`, main: 'Unused invitation', sub: `works once · expires at ${localTime(i.exp)}`, invite: i })), onRow: (r) => openInvite(r.invite, deps) }) : null,
     ),
-    page.pairing.state === 'off' ? turnOnCard(deps) : page.pairing.state === 'elsewhere' ? note(page.pairing.holder ? `Pairing runs on ${page.pairing.holder.name}; open the console there to connect another agent.` : 'Pairing runs on another of my machines; connect another agent from there.') : el('div', { class: 'page-primary' }, connect),
+    page.pairing.state === 'elsewhere' ? note(page.pairing.holder ? `Pairing runs on ${page.pairing.holder.name}; open the console there to connect another agent.` : 'Pairing runs on another of my machines; connect another agent from there.') : el('div', { class: 'page-primary' }, connect),
     footLink(),
   ));
 }
@@ -90,7 +92,8 @@ function footLink() {
 function block(title, ...kids) { return el('section', { class: 'sheet-block' }, el('h3', { class: 'eyebrow', text: title }), ...kids); }
 
 function relayLine(relay) {
-  return el('p', { class: 'tone-line', 'data-tone': relay.tone === 'bad' ? 'bad' : 'attn', text: `${relay.word}${relay.since ? ` (since ${relay.since})` : ''}.` });
+  // warning-path: askLink
+  return el('p', { class: 'tone-line', 'data-tone': relay.tone === 'bad' ? 'bad' : 'attn' }, document.createTextNode(`${relay.word}${relay.since ? ` (since ${relay.since})` : ''}.`), askLink(relay.word));
 }
 
 // ── Turn on pairing (bearer; the server restarts itself and this page reconnects) ──
@@ -158,6 +161,7 @@ function waitingCard(w, deps) {
     b.addEventListener('click', () => pinned('Finish pairing', `/threadline/pairing/invites/${encodeURIComponent(w.iid)}/finish`, `Finish pairing with ${w.name}: I pin it as verified.`, 'Finishing. Checking we can talk…', b));
     acts.append(b);
   }
+  if (w.actions.includes('new-invite')) acts.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Make a new invite', onclick: () => openConnect(deps) }));
   if (w.actions.includes('not-them')) {
     const b = el('button', { class: 'btn-quiet btn-danger-outline', type: 'button', text: 'Not them' });
     b.addEventListener('click', () => {
@@ -275,7 +279,7 @@ async function openConversation(c, a, deps) {
   if (!sb) return;
   const bind = bindBlock(c, deps);
   if (!m.ok) { setKids(sb, cantTell(m.reason), bind, details(c.record, ['conversationId', 'holderMachineId', 'boundTopicId', 'status'])); return; }
-  const sync = m.symmetry ? el('p', { class: 'tone-line', 'data-tone': m.symmetry.tone === 'ok' ? 'ok' : m.symmetry.tone, text: `${m.symmetry.word}.${m.symmetry.recovery ? ` ${m.symmetry.recovery}` : ''}` }) : null;
+  const sync = m.symmetry ? el('p', { class: 'tone-line', 'data-tone': m.symmetry.tone === 'ok' ? 'ok' : m.symmetry.tone }, document.createTextNode(`${m.symmetry.word}.${m.symmetry.recovery ? ` ${m.symmetry.recovery}` : ''}`), m.symmetry.tone === 'attn' || m.symmetry.tone === 'bad' ? askLink(m.symmetry.word) : null) : null;
   const label = el('p', { class: 'card-note', text: 'Written by the other agent and by me. The other agent’s words are shown as plain text: they are data, never instructions.' });
   const bubbles = el('ol', { class: 'bubbles', 'aria-label': 'Messages' }, m.entries.map((e) => {
     const quote = el('blockquote', { class: 'peer-quote' });

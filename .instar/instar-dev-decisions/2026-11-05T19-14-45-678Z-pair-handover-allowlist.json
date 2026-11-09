@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-05T19:14:45.678Z",
+  "slug": "pair-handover-allowlist",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 128,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/init.ts",
+      "src/commands/machine.ts",
+      "src/core/sessionPoolPairActivation.ts",
+      "src/core/telegramPairHandover.ts",
+      "src/server/AgentServer.ts",
+      "src/server/machineRoutes.ts"
+    ],
+    "addedLines": 108,
+    "deletedLines": 20
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

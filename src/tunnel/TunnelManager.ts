@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/tunnel/TunnelManager.ts');
 /**
  * TunnelManager — single owner of the tunnel lifecycle.
  *
@@ -262,6 +264,9 @@ export class TunnelManager extends EventEmitter {
     // Route lifecycle transitions through the notifier.
     this.lifecycle.on('transition', (e: TransitionEvent) => {
       if (this.notifier) void this.notifier.onTransition(e);
+      // Consumers that depend on the tier (the locked-screen password box)
+      // re-read it here instead of polling.
+      this.emit('lifecycle', e);
     });
 
     // Restore persisted snapshot (rotation-pending flag + consent cooldown).
@@ -452,7 +457,7 @@ export class TunnelManager extends EventEmitter {
       sendGroup: async (text: string) => {
         const topicId = adapter.getDashboardTopicId() ?? adapter.getLifelineTopicId();
         if (typeof topicId !== 'number') return; // no group destination
-        await adapter.sendToTopic(topicId, text);
+        await withNotificationEnvelope(stampNotification(), async () => (adapter)!.sendToTopic(topicId, text));
       },
       sendOwnerDM: async (text: string) => {
         await adapter.sendToOwnerDM(text);

@@ -188,3 +188,146 @@ export function nextIdleThrottleAction(
   if (decision === 'waiting') return { action: 'wait', nextState: next };
   return { action: 'fall-through', nextState: undefined }; // 'no-throttle'
 }
+
+// ── Usage wall (the account's own plan quota) ───────────────────────────────
+//
+// A server throttle (above) clears by itself in seconds; a usage wall does not
+// clear until the account's window resets — hours or days. They need different
+// remedies: the throttle is retried in place, the wall is solved by moving the
+// session to another subscription account that still has room. So the wall is
+// its own signal, never folded into the throttle decision.
+
+/**
+ * Strong usage-wall phrasing: the banner Claude Code prints when the account
+ * itself is out of quota. Deliberately narrower than USAGE_LIMIT_PATTERNS (which
+ * only has to VETO a throttle reading): a bare "resets 8am" can appear in
+ * ordinary output, so it never counts as a wall on its own here.
+ *
+ * Taken from real panes: "You've hit your weekly limit · resets Nov 6",
+ * "Usage limit reached · limit resets 8am" (Claude Code 2.1.300, 2026-11-04
+ * incident, feedback fb-d2862f4d-b52), "Session limit reached ∙ resets 10:30pm"
+ * (2026-06-05 incident), "/extra-usage to finish what you're working on".
+ *
+ * ANCHORED to the banner's shape: the phrase must OPEN the line (after
+ * indentation, an optional result/bullet glyph and an optional "API Error:"),
+ * so a session that merely prints or quotes the words mid-line (grep output,
+ * a spec, a test) does not read as walled. Not a proof — a file whose first
+ * line is the banner text, cat'ed as the last thing on screen, still matches;
+ * the rescue therefore corroborates every wall against the account's own
+ * quota reading before acting (UsageWallRescue).
+ */
+const BANNER_LEAD = String.raw`^\s*(?:[⎿●⏺✗⚠]\s*)?(?:api error:\s*)?`;
+export const USAGE_WALL_PATTERNS: RegExp[] = [
+  new RegExp(BANNER_LEAD + String.raw`you've hit your (?:session |weekly |opus |sonnet |usage )?limit`, 'i'),
+  new RegExp(BANNER_LEAD + String.raw`usage limit reached\b`, 'i'),
+  new RegExp(BANNER_LEAD + String.raw`(?:session|weekly|opus|sonnet) limit reached\b`, 'i'),
+  new RegExp(BANNER_LEAD + String.raw`/extra-usage to finish`, 'i'),
+];
+
+/**
+ * Terminal furniture that Claude Code draws BELOW its last real output: the
+ * auto-continue notice, the input box, the permission-mode status line, the
+ * shortcuts hint, box rules, an empty prompt. None of it is the session doing
+ * work, so none of it may count as "the session moved on past the banner".
+ *
+ * Counting these as real output is exactly the fb-d2862f4d-b52 defect: after
+ * "Usage limit reached · limit resets 8am" the pane shows "Continuing
+ * automatically at 8am · esc to cancel · /usage-credits to continue now" and the
+ * "⏵⏵ bypass permissions on (shift+tab to cycle)" line — two lines, which the
+ * old recovery heuristic read as two lines of fresh work.
+ */
+export const PANE_CHROME_PATTERNS: RegExp[] = [
+  // Each pattern is ANCHORED to a whole chrome row (matched against the trimmed
+  // line), so ordinary prose that merely mentions these words ("I reviewed how
+  // to upgrade your plan") stays session output.
+  // "Continuing automatically at 8am · esc to cancel · /usage-credits to continue now"
+  /^continuing automatically at [^·•∙]+?(?:\s*[·•∙]\s*(?:esc to cancel|\/usage-credits to continue now|\/extra-usage to continue now))*\s*$/i,
+  // a bare slash-command hint row, nothing else on it
+  /^\/(?:extra-usage|usage-credits|upgrade)\s*$/i,
+  // the limit menu
+  /^(?:[❯>]\s*)?\d+\.\s+(?:stop and wait for limit to reset|switch to extra usage|upgrade your plan)\s*$/i,
+  // the permission-mode status row, optionally with its trailing hints
+  /^(?:⏵⏵\s*)?(?:bypass permissions|accept edits|plan mode) on(?:\s*\(shift\+tab to cycle\))?(?:\s*[·•∙]\s*(?:esc to interrupt|ctrl\+t to (?:hide|show) tasks|\? for shortcuts))*\s*$/i,
+  /^\?\s+for shortcuts\s*$/i,
+  /^context left until auto-compact:?\s*\d+%\s*$/i,
+  /^[\s│|╭╮╰╯─━═┃┌┐└┘_-]*$/,                                           // box rules, borders, blank-ish rows
+  /^[\s│|]*(?:❯|>)\s*[│|]?\s*$/,                                       // the empty input prompt (boxed or bare)
+  /^[\s│|]*⎿\s*$/,                                                      // empty tool-result connector
+];
+
+/** True when a pane line is Claude Code's own chrome, not session output. */
+export function isPaneChromeLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return true;
+  return PANE_CHROME_PATTERNS.some((p) => p.test(trimmed));
+}
+
+/**
+ * True iff a usage-wall banner is the CURRENT state of the pane: the last
+ * banner line in the inspected window is followed only by chrome, never by
+ * any session output. A session that walled earlier and has since resumed is
+ * not walled. Recovery uses this pane signal with its existing settle window.
+ */
+export function detectUsageWall(
+  snapshot: string | null | undefined,
+  captureLines: number = RATE_LIMIT_SETTLED_CAPTURE_LINES,
+): boolean {
+  if (!snapshot) return false;
+  const lines = snapshot.split('\n').slice(-captureLines);
+  let idx = -1;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (USAGE_WALL_PATTERNS.some((p) => p.test(lines[i]))) { idx = i; break; }
+  }
+  if (idx < 0) return false;
+  const rawAfter = lines.slice(idx + 1);
+  // A retry spinner after the banner means the framework is still moving.
+  // Checked on RAW lines, before chrome is dropped ("Retrying in 10s · esc to
+  // cancel" must veto, not be filtered away as chrome).
+  if (rawAfter.some((l) => RETRY_SPINNER_PATTERN.test(stripSeparators(l)))) return false;
+  return rawAfter.filter((l) => !isPaneChromeLine(l)).length === 0;
+}
+
+/** Current usage-banner signal for courtesy notices. Claude also renders real
+ * provider errors with a tool-result connector, so that connector alone cannot
+ * establish ownership. Only finished-turn chrome may follow the banner; the
+ * consumer must corroborate ownership with the exact serving-session transcript. */
+export function currentUsageLimitBanner(snapshot: string | null | undefined): string | null {
+  if (!snapshot) return null;
+  const lines = snapshot.split('\n').slice(-RATE_LIMIT_SETTLED_CAPTURE_LINES);
+  const banner = /^\s*(?:[●⏺✗⚠⎿]\s*)?(?:api error:\s*)?(?:(?:you['’]?ve|you have) (?:hit|reached) your (?:(?:session|weekly|opus|sonnet|usage|5-hour) )?limit\b|(?:session|weekly|opus|sonnet|usage|5-hour) limit\s*(?:(?:has been )?reached\b|[·•∙,]\s*resets\b)|\/extra-usage to finish\b)/i;
+  const finished = /^[✻✽✶✳✢]\s+\S+ for \d[^\n]*$/;
+  let found: string | null = null;
+  for (const line of lines) {
+    if (banner.test(line)) {
+      // Extra-usage is a companion hint, not a replacement for the banner's
+      // reset time. Preserve both when the framework prints both rows.
+      found = found ? `${found}\n${line}` : line;
+      continue;
+    }
+    if (found && !isPaneChromeLine(line) && !finished.test(line.trim())) found = null;
+  }
+  return found;
+}
+
+/**
+ * Settle decision for a usage wall, same discipline as evaluateThrottleSettle:
+ * the banner must be the current pane state AND the pane must stay
+ * byte-identical for `settleMs` before the wall is reported, so a single
+ * glance at a pane that is about to move on never fires.
+ */
+export function evaluateUsageWallSettle(
+  snapshot: string | null | undefined,
+  prev: ThrottleSettleState | undefined,
+  now: number,
+  opts?: { settleMs?: number; captureLines?: number },
+): { decision: ThrottleSettleDecision; next: ThrottleSettleState | undefined } {
+  const captureLines = opts?.captureLines ?? RATE_LIMIT_SETTLED_CAPTURE_LINES;
+  const settleMs = opts?.settleMs ?? RATE_LIMIT_DEFAULT_SETTLE_MS;
+  if (!detectUsageWall(snapshot, captureLines)) {
+    return { decision: 'no-throttle', next: undefined };
+  }
+  const sig = throttleSignature(snapshot as string, captureLines);
+  if (!prev || prev.sig !== sig) return { decision: 'waiting', next: { sig, since: now } };
+  if (now - prev.since >= settleMs) return { decision: 'settled', next: prev };
+  return { decision: 'waiting', next: prev };
+}

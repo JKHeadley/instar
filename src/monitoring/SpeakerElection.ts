@@ -27,6 +27,8 @@
  * always "speak" with zero behavior delta (spec invariant 6).
  */
 
+import { featureEvidence } from './FeatureEvidenceLog.js';
+
 export interface SpeakerElectionDeps {
   /** Dark flag: multiMachine.seamlessness.ws3OneVoice (read live per decision). */
   enabled: () => boolean;
@@ -108,6 +110,10 @@ export class SpeakerElection {
   decide(topicId: number, stampedOwner?: string | null): SpeakerVerdict {
     const v = this.decideInner(topicId, stampedOwner ?? null);
     try { this.deps.onVerdict?.(topicId, v); } catch { /* observability never gates */ }
+    if (!v.speak && !v.defer && v.reason !== 'dwell-hold') {
+      // decide() runs per emission: one row per topic and reason per hour.
+      featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws3OneVoice', `withheld|${topicId}|${v.reason}`, 60 * 60_000, { kind: 'fired', reason: `send withheld: ${v.reason}`, context: { topicId, verdict: v.reason, poolSize: this.deps.poolMachineIds().length } });
+    }
     return v;
   }
 
@@ -141,6 +147,8 @@ export class SpeakerElection {
       if (!ownerLive(liveOwner)) {
         // Dark owner. Record the observation regardless of mode.
         this.deps.onOwnerLivenessObservation?.({ topicId, owner: liveOwner, self, rule: 1, onlinePool: pool });
+        // The elected speaker is offline, so this turn may go unanswered unless enforce falls through.
+        featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws3OneVoice', `dark-owner|${topicId}|${liveOwner}`, 60 * 60_000, { kind: 'error', reason: 'placement owner is offline: nobody may answer this turn', context: { topicId, owner: liveOwner, rule: 1, enforce: this.deps.ownerLivenessEnforce?.() ?? false, onlinePool: pool.length } });
         // ENFORCE → fall THROUGH to rules 3+4 (do not return). OBSERVE (default)
         // → verdict UNCHANGED (dark owner still wins), only measured.
         if (!(this.deps.ownerLivenessEnforce?.() ?? false)) {
@@ -159,6 +167,7 @@ export class SpeakerElection {
     if (stampedOwner) {
       if (!ownerLive(stampedOwner)) {
         this.deps.onOwnerLivenessObservation?.({ topicId, owner: stampedOwner, self, rule: 2, onlinePool: pool });
+        featureEvidence.recordAtMostEvery('multiMachine.seamlessness.ws3OneVoice', `dark-owner|${topicId}|${stampedOwner}`, 60 * 60_000, { kind: 'error', reason: 'stamped owner is offline: nobody may answer this turn', context: { topicId, owner: stampedOwner, rule: 2, enforce: this.deps.ownerLivenessEnforce?.() ?? false, onlinePool: pool.length } });
         if (!(this.deps.ownerLivenessEnforce?.() ?? false)) {
           this.unstableSince.delete(topicId);
           return this.hold(topicId, now, { speak: false, defer: false, reason: 'owner-stamp-other' });

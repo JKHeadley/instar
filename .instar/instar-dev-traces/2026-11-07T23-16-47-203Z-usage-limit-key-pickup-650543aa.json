@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "usage-limit-key-pickup",
+  "sessionId": "36583859-381c-4e27-85c7-6b88829e66ec",
+  "timestamp": "2026-11-07T23:16:47.203Z",
+  "artifactPath": "upgrades/side-effects/usage-limit-key-pickup.md",
+  "artifactSha256": "8ba608e4e4bbd5c047bbc8985abf670ea03cbba0e14ecb9163070f5db3d048a0",
+  "coveredFiles": [
+    "docs/specs/usage-limit-key-pickup.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ClaudeKeyHealth.ts",
+    "src/core/Config.ts",
+    "src/core/UsageLimitWatch.ts",
+    "tests/unit/usage-limit-key-pickup.test.ts",
+    "upgrades/next/usage-limit-key-pickup.md",
+    "upgrades/side-effects/usage-limit-key-pickup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix: an existing key sync now runs on its own timer and before the usage check; no new authority, no state format change, a revert undoes it fully.",
+  "eli16Path": "docs/specs/usage-limit-key-pickup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/usage-limit-key-pickup.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

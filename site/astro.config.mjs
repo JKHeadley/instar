@@ -79,10 +79,12 @@ export default defineConfig({
           items: [
             { label: 'Job Scheduler', slug: 'features/scheduler' },
             { label: 'Telegram Integration', slug: 'features/telegram' },
+            { label: 'Tunnels', slug: 'features/tunnel' },
             { label: 'WhatsApp Integration', slug: 'features/whatsapp' },
             { label: 'Slack Integration', slug: 'features/slack' },
             { label: 'Lifeline', slug: 'features/lifeline' },
             { label: 'Conversational Memory', slug: 'features/memory' },
+            { label: 'Memory Privacy', slug: 'features/memory-privacy' },
             { label: 'Evolution System', slug: 'features/evolution' },
             { label: 'Relationships', slug: 'features/relationships' },
             { label: 'Safety Gates', slug: 'features/safety-gates' },
@@ -95,6 +97,7 @@ export default defineConfig({
             { label: 'Self-Healing', slug: 'features/self-healing' },
             { label: 'AutoUpdater', slug: 'features/autoupdater' },
             { label: 'Observability', slug: 'features/observability' },
+            { label: 'Disk Steward', slug: 'features/disk-steward' },
             { label: 'Resource Ledger (CPU + Memory)', slug: 'features/resource-ledger' },
             { label: 'Cross-Framework Portability', slug: 'features/portability' },
             { label: 'Paste Handling', slug: 'features/paste-handling' },
@@ -130,6 +133,7 @@ export default defineConfig({
           items: [
             { label: 'Agent Communication', slug: 'guides/agent-communication' },
             { label: 'Security Model', slug: 'guides/security' },
+            { label: 'Contributor Checks', slug: 'guides/contributor-checks' },
             { label: 'vs OpenClaw', slug: 'guides/vs-openclaw' },
           ],
         },

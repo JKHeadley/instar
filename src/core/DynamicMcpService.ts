@@ -18,6 +18,36 @@ import { McpLoadedSetStore } from './McpLoadedSetStore.js';
 import { McpApprovalNonceStore } from './McpApprovalNonceStore.js';
 import { PendingMcpApprovalStore, type PendingMcpApprovalView, type McpChangeKind } from './PendingMcpApprovalStore.js';
 import { assertMcpDoesNotExposeManagedTelegram, readManagedTelegramUserDataDirs, resolveBaselineServers, type DynamicMcpConfig, type McpJson } from './dynamicMcpConfig.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+
+/**
+ * Ladder evidence from the manager's audit line: fired for an applied change,
+ * error for one that was attempted and did not complete. A no-op or a pending
+ * approval writes nothing, because neither is an attempted change and counting
+ * them would thin out the error rate.
+ */
+function recordDynamicMcpEvidence(entry: Record<string, unknown>): void {
+  const context = {
+    topicId: typeof entry.topicId === 'number' ? entry.topicId : null,
+    op: String(entry.op ?? ''),
+    server: String(entry.server ?? ''),
+  };
+  const outcome = entry.outcome;
+  if (outcome === 'applied') {
+    featureEvidence.record('sessions.dynamicMcp', {
+      kind: 'fired',
+      reason: `${context.op} applied`,
+      context: { ...context, reapedPids: typeof entry.reapedPids === 'number' ? entry.reapedPids : 0 },
+    });
+  } else if (outcome === 'restart-failed' || outcome === 'aborted' || outcome === 'managed-profile-private') {
+    const detail = String(entry.code ?? entry.reason ?? outcome);
+    featureEvidence.record('sessions.dynamicMcp', {
+      kind: 'error',
+      reason: `${context.op} did not complete: ${outcome} (${detail})`,
+      context: { ...context, outcome: String(outcome), detail },
+    });
+  }
+}
 
 export interface DynamicMcpServicePrimitives {
   /** `<projectDir>` (for `.mcp.json`) and where `.instar/state/mcp-loaded` lives. */
@@ -66,14 +96,17 @@ export class DynamicMcpService {
       reapPids: (pids) => p.reapPids(pids),
       isMidToolUse: (t) => p.isMidToolUse(t),
       restartSession: (t) => p.restart(t),
-      audit: p.audit,
+      audit: (entry) => {
+        recordDynamicMcpEvidence(entry);
+        p.audit?.(entry);
+      },
       assertServerLoadAllowed: server => {
         const managed = readManagedTelegramUserDataDirs(p.projectDir);
         if (!managed.length) return;
         const full = JSON.parse(fs.readFileSync(path.join(p.projectDir, '.mcp.json'), 'utf8')) as McpJson;
         const definition = full.mcpServers?.[server];
         if (!definition) throw new Error('managed-telegram-mcp-config-unreadable');
-        assertMcpDoesNotExposeManagedTelegram(definition, managed);
+        assertMcpDoesNotExposeManagedTelegram(definition, managed, p.projectDir);
       },
     };
     this.manager = new DynamicMcpManager(deps);

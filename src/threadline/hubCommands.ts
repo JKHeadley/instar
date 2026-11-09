@@ -1,3 +1,5 @@
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/threadline/hubCommands.ts');
 /**
  * Threadline hub commands — "open this" / "tie this to <topic>" (CMT-529). Both
  * the `POST /threadline/hub/bind` route AND the structural intercept in
@@ -21,6 +23,7 @@ import type { CollaborationSurfacer } from './CollaborationSurfacer.js';
 import type { ConversationStore } from './ConversationStore.js';
 import type { CommitmentTracker } from '../monitoring/CommitmentTracker.js';
 import { generateConversationBrief, type BriefDeps } from './openConversationBrief.js';
+import { topicNameFor as verifiedTopicName, topicRef } from '../messaging/shared/topicRef.js';
 
 export type HubCommand =
   | { action: 'open' }
@@ -119,7 +122,7 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
     if (args.action === 'tie') {
       if (typeof args.targetTopicId === 'number') {
         topicId = args.targetTopicId;
-        topicName = typeof args.targetTopicName === 'string' ? args.targetTopicName : `topic ${topicId}`;
+        topicName = typeof args.targetTopicName === 'string' ? args.targetTopicName : (verifiedTopicName(topicId) ?? topicRef(topicId));
       } else if (typeof args.targetTopicName === 'string' && args.targetTopicName) {
         const t = await telegram.findOrCreateForumTopic(args.targetTopicName, undefined, { origin: 'user' });
         topicId = t.topicId; topicName = t.name;
@@ -161,7 +164,7 @@ export async function bindHubConversation(deps: HubBindDeps, args: HubBindArgs):
       catch (e) { console.warn(`[hub/bind] commitment topicId update failed: ${e instanceof Error ? e.message : e}`); }
     }
     collaborationSurfacer.markBound(threadId);
-    await telegram.sendToTopic(topicId, firstMessage).catch(() => { });
+    await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, firstMessage)).catch(() => { });
     await collaborationSurfacer.noteInHub(`Opened "${topicName}" (conversation ${threadId.slice(0, 8)}).`);
     return { ok: true, action: args.action, threadId, topicId, topicName };
   } catch (err) {

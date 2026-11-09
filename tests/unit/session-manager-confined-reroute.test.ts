@@ -200,6 +200,26 @@ describe('confined spawn on the subscription (rerouted interactive) lane', () =>
     expect(makeManager(tmpDir, { mode: 'off' }).manager.confinedRerouteCapacity()).toBe('not-rerouted');
   });
 
+  it('keeps the final reroute slot for a scheduler job when direct conversations fill the lane', async () => {
+    const { manager } = makeManager(tmpDir, { maxRerouted: 2 });
+    await manager.spawnSession({ name: 'conversation-a', prompt: 'p' });
+    // The feedback executor uses this early check before claiming an item. Its
+    // canary carries feedback-executor provenance, not scheduler provenance.
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+    await expect(manager.spawnSession({ name: 'feedback-canary', prompt: 'p', cwd: ws,
+      omitAuthEnv: true, framework: 'claude-code', confinement: confined(),
+      triggeredBy: 'feedback-executor' }))
+      .rejects.toBeInstanceOf(RerouteRefusedError);
+    await expect(manager.spawnSession({ name: 'conversation-b', prompt: 'p' }))
+      .rejects.toBeInstanceOf(RerouteRefusedError);
+    // /sessions/spawn forwards jobSlug but never grants scheduler provenance.
+    await expect(manager.spawnSession({ name: 'direct-spawn', prompt: 'p', jobSlug: 'claimed-job' }))
+      .rejects.toBeInstanceOf(RerouteRefusedError);
+    await expect(manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' }))
+      .resolves.toMatchObject({ jobSlug: 'health-check' });
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+  });
+
   it('a confined workspace path containing whitespace is refused by name at spawn (never left to fail as dialog-unknown)', async () => {
     const { manager, startups } = makeManager(tmpDir);
     const spaced = path.join(tmpDir, '.worktrees', 'feedback with space-a1');

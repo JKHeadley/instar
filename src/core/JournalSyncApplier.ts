@@ -53,6 +53,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { APP_PLACEMENT_KEY } from './CoherenceJournal.js';
 import {
   type ThreadlineConversationAction,
   type GuardLatchAction,
@@ -73,6 +74,7 @@ import {
   type EnvelopeValidationCounters,
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 
 // ---- tunables (§3.4) -------------------------------------------------------
 
@@ -237,6 +239,22 @@ function realFs(): JournalFs {
   };
 }
 
+/** Replicated kinds whose peer records are this applier's evidence for a switched-off sync feature. */
+const STATE_SYNC_FEATURE_BY_KIND: Readonly<Record<string, string>> = {
+  'relationship-record': 'multiMachine.stateSync.relationships',
+  'user-record': 'multiMachine.stateSync.userRegistry',
+  'topic-operator-record': 'multiMachine.stateSync.topicOperator',
+  'threadline-pairing-record': 'multiMachine.stateSync.threadlinePairing',
+  'class-review-record': 'multiMachine.stateSync.classReview',
+  'evolution-action-record': 'multiMachine.stateSync.evolutionActions',
+  'knowledge-record': 'multiMachine.stateSync.knowledge',
+  'learning-record': 'multiMachine.stateSync.learnings',
+  'pref-record': 'multiMachine.stateSync.preferences',
+  'topic-pin-record': 'multiMachine.seamlessness.ws13PinReplicate',
+};
+/** A peer retries a refused batch every sync, so one row per stream and verdict per hour. */
+const STATE_SYNC_REFUSAL_EVIDENCE_WINDOW_MS = 60 * 60 * 1000;
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -390,6 +408,7 @@ export class JournalSyncApplier {
         } catch (e) {
           // A single bad stream slice must never poison the rest of the batch.
           this.log('apply-stream', `[journal-sync] applyStream failed for ${stream?.kind}: ${(e as Error)?.message}`);
+          featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', `apply-stream:${senderMachineId}`, 3_600_000, { kind: 'error', reason: 'apply-stream-failed', context: { senderMachineId, journalKind: String(stream?.kind ?? 'unknown') } });
         }
       }
 
@@ -403,8 +422,18 @@ export class JournalSyncApplier {
           result.statuses[`${senderMachineId}.${kind}`] = meta.resetFlapping ? 'reset-flapping' : ks.status;
         }
       }
+      // A peer syncs every few seconds: one row per peer and verdict per ten minutes, carrying how many it stands for.
+      const refused = result.forgedEntries + result.invalidEntries + result.quarantined;
+      if (result.applied > 0 || refused > 0) {
+        featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', `apply:${senderMachineId}:${refused > 0 ? 'refused' : 'ok'}`, 600_000, {
+          kind: refused > 0 ? 'error' : 'fired',
+          reason: refused > 0 ? 'batch-entries-refused' : 'batch-applied',
+          context: { senderMachineId, applied: result.applied, duplicates: result.duplicates, forged: result.forgedEntries, invalid: result.invalidEntries, quarantined: result.quarantined, gaps: result.gapsRecorded },
+        });
+      }
     } catch (e) {
       this.log('apply', `[journal-sync] apply failed (swallowed): ${(e as Error)?.message}`);
+      featureEvidence.recordAtMostEvery('multiMachine.coherenceJournal', `apply:${senderMachineId}:failed`, 3_600_000, { kind: 'error', reason: 'apply-failed', context: { senderMachineId } });
     }
     return result;
   }
@@ -465,6 +494,7 @@ export class JournalSyncApplier {
       if (verdict === 'forged') {
         this.degradation.forgedEntries++;
         result.forgedEntries++;
+        this.recordStateSyncRefusal(senderMachineId, kind, 'forged');
         // Rule 1: a forged entry is rejected + counted. It is NOT a torn write
         // (it's a trust violation), so it does NOT mark the stream suspect; we
         // simply do not append it and stop the batch (cannot trust ordering past it).
@@ -479,6 +509,7 @@ export class JournalSyncApplier {
       if (verdict === 'invalid') {
         this.degradation.invalidEntries++;
         result.invalidEntries++;
+        this.recordStateSyncRefusal(senderMachineId, kind, 'invalid');
         // Rule 2: ANY failure marks suspect + STOPS the batch at the last valid.
         this.markSuspect(ks);
         this.degradation.suspectMarks++;
@@ -540,6 +571,11 @@ export class JournalSyncApplier {
     if (typeof entry.machine !== 'string' || entry.machine !== senderMachineId) {
       return 'forged';
     }
+
+    // Failure evidence namespaces are origin-qualified. Bind the inner origin
+    // as well as the transport entry, so a peer cannot impersonate another
+    // case's sole writer. Other historical kinds keep their existing contract.
+    if (kind === 'failure-callout-chunk' && entry.data?.origin !== senderMachineId) return 'forged';
 
     // Size cap (parseable ≤ cap). The line we'd write is the serialized entry.
     let line: string;
@@ -624,7 +660,10 @@ export class JournalSyncApplier {
       if (raw.transferTo !== undefined && typeof raw.transferTo !== 'string') return false;
       if (raw.timestamp !== undefined && (typeof raw.timestamp !== 'number' || !Number.isFinite(raw.timestamp))) return false;
       if (raw.drainInFlight !== undefined && typeof raw.drainInFlight !== 'boolean') return false;
-      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight'];
+      // app-conversations-in-the-pool §2.7: an app row carries its key and, for "bring it back here", the marker.
+      if (raw.sessionKey !== undefined && (typeof raw.sessionKey !== 'string' || !APP_PLACEMENT_KEY.test(raw.sessionKey))) return false;
+      if (raw.takeover !== undefined && raw.takeover !== true) return false;
+      const known = ['owner', 'epoch', 'reason', 'prevOwner', 'status', 'transferTo', 'timestamp', 'drainInFlight', 'sessionKey', 'takeover'];
       return keys.every((k) => known.includes(k));
     }
     if (kind === 'session-lifecycle') {
@@ -834,6 +873,7 @@ export class JournalSyncApplier {
     } catch (e) {
       this.degradation.appendErrors++;
       this.log('append', `[journal-sync] replica append/fsync failed for ${kind}: ${(e as Error)?.message}`);
+      this.recordStateSyncRefusal(senderMachineId, kind, 'append-failed');
       if (!bytesWritten) {
         committed = 0; // nothing landed — caller advances nothing.
       } else {
@@ -855,9 +895,27 @@ export class JournalSyncApplier {
     if (committed > 0) {
       this.degradation.applied += committed;
       result.applied += committed;
+      // Pairing evidence is the inheritance decision (pairingReplicationWiring), not the copy.
+      if (STATE_SYNC_FEATURE_BY_KIND[kind] && kind !== 'threadline-pairing-record') {
+        featureEvidence.record(STATE_SYNC_FEATURE_BY_KIND[kind], {
+          kind: 'fired',
+          reason: 'peer-records-applied',
+          context: { journalKind: kind, senderMachineId, applied: committed },
+        });
+      }
       this.notifyReplicatedRecordsCommitted(senderMachineId, kind, lines.slice(0, committed));
     }
     return committed;
+  }
+
+  private recordStateSyncRefusal(senderMachineId: string, kind: JournalKind, verdict: 'forged' | 'invalid' | 'append-failed'): void {
+    const feature = STATE_SYNC_FEATURE_BY_KIND[kind];
+    if (!feature) return;
+    featureEvidence.recordAtMostEvery(feature, `${senderMachineId}|${verdict}`, STATE_SYNC_REFUSAL_EVIDENCE_WINDOW_MS, {
+      kind: 'error',
+      reason: `peer-record-${verdict}`,
+      context: { journalKind: kind, senderMachineId, verdict },
+    });
   }
 
   private notifyReplicatedRecordsCommitted(senderMachineId: string, kind: JournalKind, lines: string[]): void {

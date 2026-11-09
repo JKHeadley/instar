@@ -1,0 +1,51 @@
+{
+  "version": 3,
+  "slug": "mobile-pairing-introducer",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-06T19:52:02.070Z",
+  "artifactPath": "upgrades/side-effects/mobile-pairing-introducer.md",
+  "artifactSha256": "c41ad2cedc396927fc89a2320ec313c1b15b54bcfd25a0cbbafe8b8a1d71983b",
+  "specPath": "docs/specs/mobile-pairing-introducer.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-06T19-51-23-559Z-mobile-pairing-introducer-0970da65.json",
+    "docs/specs/mobile-pairing-approve.md",
+    "docs/specs/mobile-pairing-introducer.eli16.md",
+    "docs/specs/mobile-pairing-introducer.md",
+    "docs/specs/reports/mobile-pairing-introducer-convergence.md",
+    "src/cli.ts",
+    "src/commands/machine.ts",
+    "src/commands/mobileIntroducer.ts",
+    "src/core/MobileDeviceKeys.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/AgentServer.ts",
+    "src/server/machineRoutes.ts",
+    "src/server/mobilePairingIntroducer.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/mobile-pairing-approve-alive.test.ts",
+    "tests/e2e/mobile-pairing-introducer-alive.test.ts",
+    "tests/integration/mobile-dashboard-pairing.test.ts",
+    "tests/integration/mobile-pairing-approve.test.ts",
+    "tests/integration/mobile-pairing-introducer.test.ts",
+    "tests/unit/mobile-pairing-introducer.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/next/mobile-pairing-introducer.md",
+    "upgrades/side-effects/mobile-pairing-introducer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New cross-agent trust statement that activates owner phones (identity/auth); published routes and CLI",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "convergence": {
+      "reportPath": "docs/specs/reports/mobile-pairing-introducer-convergence.md",
+      "iterations": 5,
+      "verified": true
+    }
+  }
+}

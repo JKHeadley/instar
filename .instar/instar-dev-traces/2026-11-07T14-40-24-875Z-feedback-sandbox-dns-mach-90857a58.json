@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "feedback-sandbox-dns-mach",
+  "sessionId": "318ed537-3e62-40ad-adf9-360871c3e705",
+  "timestamp": "2026-11-07T14:40:24.875Z",
+  "artifactPath": "upgrades/side-effects/feedback-sandbox-dns-mach.md",
+  "artifactSha256": "88043af4e8984e953901beb3657ded54e91c28678eaaf85fcf80295a281f713b",
+  "specPath": "docs/specs/feedback-triage-and-execution.md",
+  "coveredFiles": [
+    "src/feedback-factory/execute/executePolicy.ts",
+    "tests/e2e/feedback-execute-lifecycle.test.ts",
+    "tests/integration/feedback-execute-dns-sandbox.test.ts",
+    "tests/unit/feedback-factory/execute-units.test.ts",
+    "upgrades/next/feedback-sandbox-dns-mach.md",
+    "upgrades/side-effects/feedback-sandbox-dns-mach.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Changes a sandbox permission for feedback workers, so full chain; one exact local service, no network.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

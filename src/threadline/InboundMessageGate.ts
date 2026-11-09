@@ -7,6 +7,8 @@
  * Part of PROP-relay-auto-connect.
  */
 
+import { AUTO_ACK_TYPE } from './autoAck.js';
+import { parseKindedAck } from './requiredAck.js';
 import { CREDENTIAL_SHARE_OP, type AgentTrustManager, type AgentTrustLevel } from './AgentTrustManager.js';
 import type { ThreadlineRouter } from './ThreadlineRouter.js';
 import type { ReceivedMessage } from './client/ThreadlineClient.js';
@@ -413,6 +415,17 @@ export class InboundMessageGate {
       this.metrics.probesHandled++;
       // Probes are handled inline — return pass with probe flag
       return { action: 'pass', message, trustLevel: trust, reason: 'probe' };
+    }
+
+    // 3a. A kinded ack is a receipt, not an operation (a2a-required-acknowledgment D1).
+    // It passes before the trust-operation and rate-budget steps, uncounted:
+    // otherwise every ENCRYPTED kinded ack dies here as `insufficient_trust`, and
+    // counting them would squeeze out real messages. Its own per-peer limiter sits
+    // in the ack stage, which both plaintext and encrypted acks reach. It starts
+    // nothing, and a kinded ack changes state only for a row sent to this fingerprint.
+    if (opType === AUTO_ACK_TYPE && parseKindedAck(message.content)) {
+      this.metrics.passed++;
+      return { action: 'pass', message, trustLevel: trust };
     }
 
     // 4. Message permission check

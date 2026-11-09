@@ -59,8 +59,11 @@ describe('mesh URL advertisement wiring', () => {
   it('the joiner records the URL it connected through as the awake peer URL', () => {
     const idx = join.indexOf('Paired with:');
     expect(idx).toBeGreaterThan(0);
-    // The updateMachineUrl call sits in the same registration block as the pairing.
-    const block = join.slice(Math.max(0, idx - 400), idx + 100);
+    // The updateMachineUrl call sits in the same registration block as the pairing: from the
+    // identity check that opens the block to the "Paired with:" line that closes it.
+    const blockStart = join.lastIndexOf('if (result.machineIdentity)', idx);
+    expect(blockStart).toBeGreaterThan(0);
+    const block = join.slice(blockStart, idx + 100);
     expect(block).toContain('updateMachineUrl(result.machineIdentity.machineId, repoUrl');
   });
 });

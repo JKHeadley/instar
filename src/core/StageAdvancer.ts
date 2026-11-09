@@ -20,6 +20,40 @@ export function stageIndex(stage: SessionPoolStage): number {
   return STAGES.indexOf(stage);
 }
 
+/** How long a rebalance proof stays valid. Each one moves a real conversation, so it is
+ *  deliberately not tied to a build; the feature's live measures cover the gap. */
+export const REBALANCE_PROOF_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+export interface RebalanceProofState {
+  fresh: boolean;
+  detail: string;
+}
+
+/**
+ * Is this machine's rebalance proof current? Reads the proof's OWN store, never the
+ * failover rows: the failover check says nothing about rebalancing, and 770 failover
+ * greens once sat at stage 3 proving nothing (session-pool-rebalancing-finish).
+ * The LATEST row decides, so a later red beats any earlier green.
+ */
+export function rebalanceProofState(
+  store: SessionPoolE2EResultStore,
+  nowMs: number,
+  maxAgeMs: number = REBALANCE_PROOF_MAX_AGE_MS,
+): RebalanceProofState {
+  const latest = store.getLatestForStage(3);
+  if (!latest) return { fresh: false, detail: 'no-result' };
+  if (!store.verify(latest)) return { fresh: false, detail: 'bad-signature' };
+  if (latest.result !== 'green') return { fresh: false, detail: 'red' };
+  if (nowMs - Date.parse(latest.ranAt) > maxAgeMs) return { fresh: false, detail: 'expired' };
+  return { fresh: true, detail: 'fresh' };
+}
+
+/** The stage a failover run may be credited to. It proves failover, so it never earns
+ *  stage 3 however the pool is configured: only the rebalance proof does. */
+export function failoverProvenStage(stage: SessionPoolStage): number {
+  return Math.min(stageIndex(stage), stageIndex('live-transfer'));
+}
+
 export type AdvanceResult =
   | { ok: true; stage: SessionPoolStage }
   | { ok: false; reason: 'e2e-gate-not-passed' | 'already-at-or-past' | 'invalid-stage'; detail?: string };
@@ -32,6 +66,10 @@ export interface StageAdvancerDeps {
   readStage: () => SessionPoolStage;
   /** The ONLY stage-config write path. Config.ts must reject writes that don't come through here. */
   writeStageConfig: (stage: SessionPoolStage) => void;
+  /** This machine's rebalance proof state. Absent ⇒ stage `rebalance` is unreachable. */
+  rebalanceProof?: () => RebalanceProofState;
+  /** A pool started at pairing: `shadow` needs this to stay fresh. Absent ⇒ no such rule. */
+  shadowProof?: () => RebalanceProofState;
   audit?: (event: string, detail: Record<string, unknown>) => void;
 }
 
@@ -79,13 +117,34 @@ export class StageAdvancer {
       this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail, commitSha: sha });
       return { ok: false, reason: 'e2e-gate-not-passed', detail };
     }
+    // At stage rebalance the failover check records as stage 2, so its reds are what a
+    // flapping build produces: they count here, or stage 3 could re-promote on every green.
+    const countsAsTargetRed = (stage: number) => stage === targetIdx || (targetStage === 'rebalance' && stage === targetIdx - 1);
     const targetReds = this.d.resultStore
       .all()
-      .filter((r) => r.stage === targetIdx && r.result === 'red' && r.commitSha === sha && this.d.resultStore.verify(r)).length;
+      .filter((r) => countsAsTargetRed(r.stage) && r.result === 'red' && r.commitSha === sha && this.d.resultStore.verify(r)).length;
     if (targetReds >= MAX_TARGET_REDS_PER_COMMIT) {
       const detail = `target-stage-red-limit:${targetReds}`;
       this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail, commitSha: sha });
       return { ok: false, reason: 'e2e-gate-not-passed', detail };
+    }
+    if (targetStage === 'rebalance') {
+      const proof = this.d.rebalanceProof?.() ?? { fresh: false, detail: 'not-wired' };
+      if (!proof.fresh) {
+        const detail = `rebalance-proof:${proof.detail}`;
+        this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail, commitSha: sha });
+        return { ok: false, reason: 'e2e-gate-not-passed', detail };
+      }
+    }
+    // Checked on the way in as well as in reconcile: the driver advances straight after
+    // reconciling, so an expired pair would otherwise return in the same tick.
+    if (targetStage === 'shadow' && this.d.shadowProof) {
+      const proof = this.d.shadowProof();
+      if (!proof.fresh) {
+        const detail = `shadow-proof:${proof.detail}`;
+        this.d.audit?.('stage-advance-refused', { targetStage, priorStage: STAGES[priorStageIdx], reason: 'e2e-gate-not-passed', detail });
+        return { ok: false, reason: 'e2e-gate-not-passed', detail };
+      }
     }
     this.d.writeStageConfig(targetStage);
     this.d.audit?.('stage-advanced', { from: current, to: targetStage, commitSha: sha, evidenceRef: prior.evidenceRef });
@@ -106,6 +165,27 @@ export class StageAdvancer {
     const current = this.d.readStage();
     const idx = stageIndex(current);
     if (idx <= 0) return current; // 'dark' is the floor — nothing to revert to
+    // Stage rebalance has two independent checks, so CMT-1117's supersede rule below does
+    // not apply: a newer failover green must never erase a red rebalance proof.
+    if (current === 'rebalance') {
+      const proof = this.d.rebalanceProof?.() ?? { fresh: false, detail: 'not-wired' };
+      const failover = this.d.resultStore.getLatestForStage(idx - 1);
+      const failoverRed = !!failover && failover.result === 'red' && failover.commitSha === this.d.currentCommitSha() && this.d.resultStore.verify(failover);
+      if (proof.fresh && !failoverRed) return current;
+      const reverted = STAGES[idx - 1];
+      this.d.writeStageConfig(reverted);
+      this.d.audit?.('stage-reverted', { from: current, to: reverted, reason: failoverRed ? 'e2e-red' : `rebalance-proof:${proof.detail}` });
+      return reverted;
+    }
+    if (current === 'shadow' && this.d.shadowProof) {
+      const proof = this.d.shadowProof();
+      if (!proof.fresh) {
+        const reverted = STAGES[idx - 1];
+        this.d.writeStageConfig(reverted);
+        this.d.audit?.('stage-reverted', { from: current, to: reverted, reason: `shadow-proof:${proof.detail}` });
+        return reverted;
+      }
+    }
     const latest = this.d.resultStore.getLatestForStage(idx);
     // Only revert on a red for the CURRENT commit — a stale red from a prior commit
     // is not a regression of the running build and must not trigger a revert.

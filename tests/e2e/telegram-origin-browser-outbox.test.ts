@@ -1,3 +1,4 @@
+import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope } from '../../src/messaging/NotificationSelectivityGate.js';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { fixtureOriginContentDedup } from '../helpers/originContentDedup.js';
 import { generateKeyPairSync } from 'node:crypto';
@@ -48,6 +49,18 @@ async function boot() {
   return { runtime, executor, input, invoke, unown: () => { owned = false; }, drift: () => { supported = false; } };
 }
 describe('browser origin production outbox lifecycle', () => {
+  it('records browser automation terminally while preserving an actual reply', async () => {
+    const h = await boot();
+    const gate = new NotificationSelectivityGate(h.runtime.options.storage.stateDir, 'studio', () => ({ enabled: true, dryRun: false }));
+    h.runtime.service.notificationGate = gate;
+    await expect(h.runtime.service.runAsAutomation('telegram-server', () => h.executor.send(h.input))).rejects.toBeInstanceOf(QuietRecordedError);
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(gate.store.counters().total).toBe(1);
+    expect(await h.runtime.store.recoverableAdmissions()).toEqual([]);
+    await h.runtime.service.runAsAutomation('telegram-server', () => notificationContext.run(verifiedReplyEnvelope('fixture-reply'), () => h.executor.send(h.input)));
+    expect(h.invoke).toHaveBeenCalledOnce();
+  });
+
   it('commits an in-flight browser receipt to the same healthy worker during recovery', async () => {
     const h = await boot(), originalStore = h.runtime.store;
     let entered!: () => void, release!: () => void;
@@ -145,7 +158,7 @@ describe('browser origin production outbox lifecycle', () => {
     h.runtime.browsers.set('operator-profile', { executor: h.executor, resolvePeer });
     const app = express(); app.use(express.json());
     app.use((req, res, next) => { if (req.get('Authorization') !== 'Bearer agent-test') { res.sendStatus(401); return; } next(); });
-    app.use(createRoutes({ config: { stateDir: h.runtime.options.storage.stateDir, port: 0, projectName: 'echo' },
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { stateDir: h.runtime.options.storage.stateDir, port: 0, projectName: 'echo' },
       telegramOrigin: h.runtime, sessionManager: {}, } as never));
     const payload = { text: h.input.text, destination: h.input.destination };
     const send = (body = payload, credential = token) => request(app).post('/telegram/browser/operator-profile/send')

@@ -179,7 +179,8 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     const seen: unknown[] = [];
     const ok = checkCommandRBAC(cmd, 'OPERATOR', rbac({ authorizeMandateDeliver: (a) => { seen.push(a); return true; } }));
     expect(ok).toEqual({ ok: true, reason: 'ok' });
-    expect(seen[0]).toEqual({ sender: 'OPERATOR' });
+    // The command is threaded too, so the gate can recognise the configure-only shape (one-tap-unattended-repair §4).
+    expect(seen[0]).toEqual({ sender: 'OPERATOR', command: cmd });
   });
 
   it('state-snapshot is read/observe class — any registered peer → ok (no router/owner role)', () => {
@@ -188,6 +189,11 @@ describe('MeshRpc — per-command RBAC (§L0)', () => {
     // read-replication verbs (journal-sync/preferences-sync). (multi-machine-
     // replicated-store-foundation §6.1/§6.3.)
     const cmd: MeshCommand = { type: 'state-snapshot', request: { store: 'pref' } };
+    expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
+  });
+
+  it('ownership-nudge is registered-peer class; an unknown sender never reaches RBAC, verifyEnvelope refuses it', () => {
+    const cmd: MeshCommand = { type: 'ownership-nudge', sessionKey: '1', epoch: 2, landedAt: 3 };
     expect(checkCommandRBAC(cmd, 'ANY_PEER', rbac()).ok).toBe(true);
   });
 });

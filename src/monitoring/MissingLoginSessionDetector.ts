@@ -35,6 +35,8 @@
  */
 
 /** An account whose LOCAL login has gone missing (re-login required to recover). */
+import { featureEvidence } from './FeatureEvidenceLog.js';
+
 export interface MissingLoginAccount {
   accountId: string;
   /** The login "slot" (config home) the account serves from — how a session is matched to it. */
@@ -156,6 +158,8 @@ export class MissingLoginSessionDetector {
   private errors = 0;
   private lastTickAtMs = 0;
   private lastStranded: StrandedSession[] = [];
+  /** Rides a 30s tick, so evidence is written only when the outcome changes. */
+  private lastEvidenceKey: string | null = null;
 
   constructor(
     private readonly deps: MissingLoginSessionDetectorDeps,
@@ -181,6 +185,20 @@ export class MissingLoginSessionDetector {
       const stranded = computeStranded(missing, sessions);
       this.lastStranded = stranded;
 
+      const strandedSessions = stranded.reduce((n, s) => n + s.sessionNames.length, 0);
+      const dryRun = this.deps.dryRun();
+      const evidenceKey = stranded.length > 0
+        ? `gap:${stranded.length}:${strandedSessions}:${dryRun}`
+        : missing.length > 0 ? `no-session:${missing.length}` : 'no-gap';
+      if (evidenceKey !== this.lastEvidenceKey) {
+        this.lastEvidenceKey = evidenceKey;
+        featureEvidence.record('monitoring.missingLoginSession', {
+          kind: stranded.length > 0 ? 'fired' : 'held',
+          reason: stranded.length > 0 ? (dryRun ? 'would-raise' : 'raised') : missing.length > 0 ? 'missing-login-no-live-session' : 'no-missing-login',
+          context: { missingAccounts: missing.length, liveSessions: sessions.length, strandedAccounts: stranded.length, strandedSessions, dryRun },
+        });
+      }
+
       if (stranded.length === 0) {
         this.audit('no-gap', {
           missingLoginAccounts: missing.length,
@@ -201,6 +219,12 @@ export class MissingLoginSessionDetector {
       return { ran: true, gapDetected: true, stranded, raised: true };
     } catch (err) {
       this.errors += 1;
+      this.lastEvidenceKey = 'tick-error';
+      featureEvidence.recordAtMostEvery('monitoring.missingLoginSession', 'tick-error', 3_600_000, {
+        kind: 'error',
+        reason: 'check-failed',
+        context: { errorName: err instanceof Error ? err.name : 'unknown', errors: this.errors },
+      });
       this.audit('tick-error', { error: err instanceof Error ? err.message : String(err) });
       return { ran: true, gapDetected: false, stranded: [], raised: false };
     }

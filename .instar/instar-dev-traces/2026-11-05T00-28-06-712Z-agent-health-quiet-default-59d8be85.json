@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "agent-health-quiet-default",
+  "sessionId": "c246e283-38c2-4ed4-808d-f5bbdce2da8e",
+  "timestamp": "2026-11-05T00:28:06.712Z",
+  "artifactPath": "upgrades/side-effects/agent-health-quiet-default.md",
+  "artifactSha256": "3b3a6d261ec25af1a635fb42973dd31aaacb34ba984ed1f5fec9504cd61df881",
+  "coveredFiles": [
+    "docs/eli16/agent-health-quiet-default.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "tests/integration/agent-health-lane.test.ts",
+    "tests/integration/notification-flood-burst-invariant.test.ts",
+    "tests/unit/attention-single-topic-routing.test.ts",
+    "upgrades/side-effects/agent-health-quiet-default.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A reversible, narrow routing correction and test alignment; a revert restores the previous Telegram behavior without migration.",
+  "eli16Path": "docs/eli16/agent-health-quiet-default.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/agent-health-quiet-default.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

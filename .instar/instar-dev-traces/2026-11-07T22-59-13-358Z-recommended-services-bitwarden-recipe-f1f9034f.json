@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "recommended-services-bitwarden-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-07T22:59:13.358Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-bitwarden-recipe.md",
+  "artifactSha256": "44160fbb81477441d9ec1370ef53e8422fb4de5c137b83be442b80619507d34a",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-bitwarden-recipe.eli16.md",
+    "src/recommended/bitwardenVault.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/integration/recommended-services-bitwarden.test.ts",
+    "tests/unit/recommended-services-bitwarden-recipe.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/side-effects/recommended-services-bitwarden-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Same credential-handling change as the parent commit; the live proof found a fresh agent's secrets live in config, so the copy now covers them.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

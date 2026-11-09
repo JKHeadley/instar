@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../NotificationSelectivityGate.js';
 import { validOriginAdmission } from './OriginAdmissionSeal.js';
 import { canonicalOrigin, wireDigest } from './CanonicalOrigin.js';
 import { verifyOriginAttestation } from './OriginAttestation.js';
@@ -6,7 +7,7 @@ import type { TelegramOriginRuntime } from './TelegramOriginRuntime.js';
 import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import type { StoredOriginInput, OriginListQuery } from './StoreTypes.js';
 import { TelegramOriginHoldError } from './types.js';
-import { unrecordedAcceptanceCovers } from './OriginOperationOutcome.js';
+import { classifyOperationOutcome, unrecordedAcceptanceCovers } from './OriginOperationOutcome.js';
 import type { TelegramOriginRecord } from './types.js';
 import { telegramFetch } from '../telegram-egress.js';
 import { verify as verifySignature } from 'node:crypto';
@@ -65,9 +66,11 @@ export async function handleOriginMesh(options: {
         return { ok: false, reason: 'origin-receipt-unavailable' };
       }
       const fallback = !originAuditDeliveryConfirmed(audit) && unrecordedAcceptanceCovers(runtime, audit);
+      const verdict = classifyOperationOutcome(command.operationId, audit, runtime.unrecordedReceipts?.forOperation(command.operationId) ?? []);
       return { ok: true, operationId: command.operationId, originId: record.originId, envelopeDigest: audit.record.envelopeDigest,
         executionOwnerMachineId: runtime.options.identity.originMachineId, state: fallback ? 'accepted' : audit.operation?.state ?? 'not-admitted',
-        originReceiptConfirmed: fallback || originAuditDeliveryConfirmed(audit) };
+        originReceiptConfirmed: (fallback || originAuditDeliveryConfirmed(audit)) && verdict.outcome === 'delivered',
+        messageIds: verdict.messageIds };
     } catch { return { ok: false, reason: 'origin-receipt-unavailable' }; }
   }
   if (command.action === 'capabilities') return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,
@@ -135,15 +138,18 @@ export async function handleOriginMesh(options: {
   }
   try {
     await runtime.store.putVerifiedEvidence({ record: stored, verification });
-    await runtime.service.admit(operation);
-    const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
-    const response = await telegramFetch(`https://api.telegram.org/bot${runtime.options.bot.token}/${request.method}`,
-      { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
-        networkTimeoutMs: 10_000 }, undefined, operation);
+    const response = await runtime.service.runFirstSend(record.operationId, async () => {
+      await runtime.service.admit(operation);
+      const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
+      return telegramFetch(`https://api.telegram.org/bot${runtime.options.bot.token}/${request.method}`,
+        { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
+          networkTimeoutMs: 10_000 }, undefined, operation);
+    });
     const body = await response.json() as { result?: { message_id?: number } };
     return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
       deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
   } catch (error) {
+    if (error instanceof QuietRecordedError) return { ok: true, originId: record.originId, ...error.receipt, deliveryMachineId: runtime.options.identity.originMachineId };
     if (error instanceof OriginSendPolicyRefusal) return { ok: false, reason: error.reason, outcome: 'held',
       operationId: record.operationId, policyRefusal: error.decision };
     // Telegram accepted it; only the receipt write failed. Answering a refusal

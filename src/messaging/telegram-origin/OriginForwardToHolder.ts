@@ -1,3 +1,4 @@
+import { QuietRecordedError } from '../NotificationSelectivityGate.js';
 /* @self-action-controller: telegram-origin-forward-ladder */
 // a2a-single-agent-identity §4 (ACT-058) — a reply from a machine that does not
 // hold the serving lease is FORWARDED to the lease holder; a forward that fails
@@ -15,6 +16,24 @@ import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import type { OriginSendPolicyDecision } from './OriginSendPolicy.js';
 export type OriginSendPolicyRefusalDecision = Extract<OriginSendPolicyDecision, { ok: false }>;
 import type { HeldOperationRow } from './StoreTypes.js';
+import { topicRef } from '../shared/topicRef.js';
+import type { OriginAuditRecord } from './StoreTypes.js';
+import { classifyOperationOutcome } from './OriginOperationOutcome.js';
+
+/** Only a durable Telegram receipt may turn a recovered hold into a topic
+ * history row. Follow a lease-transfer supersession to the delivered copy. */
+export async function confirmedRecoveredForward(row: HeldOperationRow, getOperation: (id: string) => Promise<OriginAuditRecord | null>): Promise<{ topicId: number; text: string; messageId: number } | null> {
+  const detail = row.holdDetail as { text?: unknown } | null;
+  const topicId = Number(row.destination.topicId);
+  if (typeof detail?.text !== 'string' || !Number.isSafeInteger(topicId) || topicId < 1) return null;
+  const original = await getOperation(row.operationId);
+  const supersededBy = (original?.operation?.holdDetail as { supersededBy?: unknown } | null)?.supersededBy;
+  const deliveredId = typeof supersededBy === 'string' && supersededBy !== row.operationId ? supersededBy : row.operationId;
+  const audit = deliveredId === row.operationId ? original : await getOperation(deliveredId);
+  const verdict = classifyOperationOutcome(deliveredId, audit, []);
+  if (verdict.outcome !== 'delivered' || verdict.messageIds.length !== 1) return null;
+  return { topicId, text: detail.text, messageId: Number(verdict.messageIds[0]) };
+}
 
 export const HOLD_REASON_LEASE_NOT_HELD = 'lease-not-held';
 /** Execution owner recorded on a hold taken while NO holder could be named.
@@ -170,6 +189,10 @@ export async function submitOriginToHolder(input: {
   catch { return { ok: false, reason: 'origin-relay-acceptance-unknown', outcome: 'outcome-unknown', retryable: false }; }
   const response = result.result as { ok?: boolean; messageId?: number; originId?: string; originReceiptConfirmed?: boolean; reason?: string;
     outcome?: string; retryable?: boolean; deliveryMachineId?: string; operationId?: string; policyRefusal?: OriginSendPolicyDecision } | undefined;
+  if (result.ok && response?.ok && response.originId === input.operation.record.originId &&
+    (response as unknown as { recorded?: boolean }).recorded === true && typeof (response as unknown as { quietId?: string }).quietId === 'string') {
+    throw new QuietRecordedError({ delivered: false, recorded: true, quietId: (response as unknown as { quietId: string }).quietId });
+  }
   const policyRefusal = response?.policyRefusal;
   if (policyRefusal && policyRefusal.ok === false) {
     return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'held', retryable: false, policyRefusal };
@@ -213,6 +236,10 @@ export interface HeldForwardDetail {
   topicId: number;
   chatId: string;
   text: string;
+  /** Preserve the original author and draft time when a holder change creates
+   * a replacement operation outside the original session context. */
+  authoredProducerKind?: string;
+  authoredPreparedAt?: number;
   silent?: boolean;
   formatMode?: string;
   kindMetadata?: Record<string, unknown>;
@@ -223,6 +250,12 @@ export interface HeldForwardDetail {
   ladder: ForwardLadderState;
   /** Set on an operation prepared to REPLACE one whose holder changed (§4.2 supersede). */
   supersedes?: string;
+}
+
+/** History must retain the original author after a holder replacement. */
+export function recoveredForwardProvenance(detail: { authoredProducerKind?: unknown } | null, producerKind?: string | null): 'agent' | 'automation' {
+  const kind = detail?.authoredProducerKind ?? producerKind;
+  return kind === 'session' || kind === 'imported-legacy' ? 'agent' : 'automation';
 }
 
 export interface ForwardInput { topicId: number; chatId: string; text: string; silent?: boolean; formatMode?: string; kindMetadata?: Record<string, unknown> }
@@ -280,7 +313,8 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
   if (!operation) operation = await deps.prepare(lastHolder ?? UNRESOLVED_LEASE_HOLDER, input);
   const now = deps.now();
   const detail: HeldForwardDetail = { kind: 'forward-to-holder', lastAttempt, machineId: lastHolder, topicId: input.topicId, chatId: input.chatId,
-    text: input.text, ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
+    text: input.text, authoredProducerKind: operation.record.producerKind, authoredPreparedAt: operation.admission.preparedAt,
+    ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
     ...(input.kindMetadata === undefined ? {} : { kindMetadata: input.kindMetadata }), reason: lastReason, at: now, noticeDelivered: false,
     ladder: nextLadderState(undefined, now, delays) };
   const recorded = await deps.hold(operation, detail);
@@ -316,7 +350,7 @@ export interface ForwardRecoveryDeps {
   /** Resolve a local held row (the holder delivered or confirmed it). */
   resolve: (operationId: string, deliveryMachineId: string, receiptJson: string) => Promise<boolean>;
   /** Re-record the hold with an updated detail (same reason). */
-  rehold: (operationId: string, detail: HeldForwardDetail) => Promise<void>;
+  rehold: (operationId: string, detail: HeldForwardDetail) => Promise<boolean>;
   /** ATOMICALLY admit + hold the NEW operation and mark the old one superseded
    * (terminal, linked by id) in ONE store transaction. False = the old row is no
    * longer plainly held (a child left `queued` or an entry is claimed — it may
@@ -355,7 +389,10 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   if (detail?.lastAttempt === 'outcome-unknown' && detail.machineId) {
     const answer = await deps.receipt(detail.machineId, operationId);
     if (answer.state === 'accepted') {
-      await deps.resolve(operationId, detail.machineId, answer.receiptJson);
+      if (!await deps.resolve(operationId, detail.machineId, answer.receiptJson)) {
+        await retain({ lastAttempt: 'outcome-unknown', machineId: detail.machineId });
+        audit({ outcome: 'retained-receipt-store-refused', machineId: detail.machineId }); return 'retained';
+      }
       audit({ outcome: 'resolved-by-receipt', machineId: detail.machineId });
       return 'resolved';
     }
@@ -369,8 +406,11 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (answer.state === 'unreachable' || answer.state === 'owned-by-holder') {
       await retain({}); audit({ outcome: answer.state === 'unreachable' ? 'retained-outcome-unknown' : 'retained-owned-by-holder', machineId: detail.machineId }); return 'retained';
     }
-    // Definitely not accepted there: safe to forward again.
+    // Definitely not accepted there. Clear the uncertainty and let the next
+    // recovery tick review current conversation before another dispatch.
+    await retain({ lastAttempt: 'refused' });
     audit({ outcome: 'outcome-unknown-cleared', machineId: detail.machineId });
+    return 'retained';
   }
   const route = classifyLeaseRoute(deps.lease);
   if (route.kind === 'settling') { await retain({ reason: `lease-settling-${route.reason}` }); audit({ outcome: 'retained-settling', reason: route.reason }); return 'retained'; }
@@ -384,17 +424,28 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     if (!detail) { audit({ outcome: 'retained-no-detail' }); return 'retained'; }
     // Mark BEFORE sending: the marker, not the send, is what makes a second
     // local send structurally impossible.
-    await deps.rehold(operationId, { ...detail, lastAttempt: 'local-sent', machineId: deps.lease.selfMachineId, at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) });
+    if (!await deps.rehold(operationId, { ...detail, lastAttempt: 'local-sent', machineId: deps.lease.selfMachineId, at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) })) {
+      audit({ outcome: 'retained-marker-store-refused' }); return 'retained';
+    }
     const sent = await deps.sendLocal(detail);
     const resolved = await deps.resolve(operationId, deps.lease.selfMachineId, JSON.stringify({ messageId: sent.messageId, deliveryMachineId: deps.lease.selfMachineId, supersededLocally: true }));
     audit({ outcome: resolved ? 'sent-locally' : 'sent-locally-resolve-refused', messageId: sent.messageId });
-    return 'sent';
+    return resolved ? 'sent' : 'retained';
   }
   const holder = route.holder;
   if (operation.record.executionOwnerMachineId === holder) {
+    if (!detail) return 'retained';
+    // Mark custody uncertainty BEFORE the RPC. If the standby store refuses
+    // the receipt afterward, the next tick asks this holder; it never submits
+    // the same potentially delivered message again.
+    if (!await deps.rehold(operationId, { ...detail, machineId: holder, lastAttempt: 'outcome-unknown', at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) })) {
+      audit({ outcome: 'retained-marker-store-refused', holder }); return 'retained';
+    }
     const result = await deps.submit(holder, operation);
     if (result.ok) {
-      await deps.resolve(operationId, result.deliveryMachineId, result.receiptJson);
+      if (!await deps.resolve(operationId, result.deliveryMachineId, result.receiptJson)) {
+        audit({ outcome: 'retained-store-refused', holder, messageId: result.messageId }); return 'retained';
+      }
       audit({ outcome: 'sent', holder, messageId: result.messageId });
       return 'sent';
     }
@@ -417,9 +468,14 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   const superseded = await deps.supersede(operationId, next, nextDetail);
   audit({ outcome: superseded ? 'superseded' : 'supersede-refused', holder, previousOwner: operation.record.executionOwnerMachineId, supersededBy: next.record.operationId });
   if (!superseded) return 'retained';
+  if (!await deps.rehold(next.record.operationId, { ...nextDetail, lastAttempt: 'outcome-unknown', at: deps.now() })) {
+    audit({ outcome: 'retained-superseding-marker-store-refused', holder, operationId: next.record.operationId }); return 'retained';
+  }
   const result = await deps.submit(holder, next);
   if (result.ok) {
-    await deps.resolve(next.record.operationId, result.deliveryMachineId, result.receiptJson);
+    if (!await deps.resolve(next.record.operationId, result.deliveryMachineId, result.receiptJson)) {
+      audit({ outcome: 'retained-superseding-store-refused', holder, operationId: next.record.operationId }); return 'retained';
+    }
     audit({ outcome: 'sent-superseding', holder, operationId: next.record.operationId, messageId: result.messageId });
     return 'sent';
   }
@@ -481,7 +537,7 @@ export function heldExpiryItem(row: HeldOperationRow): { id: string; conditionKe
     conditionKey: `telegram-origin-held:${topic}:expired`,
     category: 'telegram-origin',
     priority: 'HIGH',
-    title: `Held reply to topic ${row.destination.topicId ?? '?'} expired`,
+    title: `Held reply to ${topicRef(row.destination.topicId ?? '?')} expired`,
     summary: expiredForwardWording(row),
     sourceContext: 'telegram-origin-forward-to-holder',
   };
@@ -493,6 +549,6 @@ export function expiredForwardWording(row: HeldOperationRow): string {
   const topic = row.destination.topicId ?? 'the topic';
   const hours = Math.max(1, Math.round((row.deadlineAt - row.preparedAt) / 3_600_000));
   return detail?.lastAttempt === 'outcome-unknown' || detail?.lastAttempt === 'local-sent'
-    ? `My reply to topic ${topic} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
-    : `I could not deliver my reply to topic ${topic} within ${hours} h.`;
+    ? `My reply to ${topicRef(topic)} may or may not have been delivered; the sending machine did not confirm within ${hours} h.`
+    : `I could not deliver my reply to ${topicRef(topic)} within ${hours} h.`;
 }

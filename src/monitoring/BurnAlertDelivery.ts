@@ -1,3 +1,6 @@
+import { isQuietReceipt } from '../messaging/NotificationSelectivityGate.js';
+import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
+const stampNotification = notificationStamper('src/monitoring/BurnAlertDelivery.ts');
 /**
  * Terminal delivery controller for token-burn alerts.
  *
@@ -85,7 +88,7 @@ export class BurnAlertDelivery {
     }
 
     try {
-      await this.deps.sendToTopic(topicId, text);
+      await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId, text));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (!isTerminalBurnAlertTopicError(error)) {
@@ -150,8 +153,10 @@ export class BurnAlertDelivery {
     const pending = this.terminal?.pendingNotice;
     if (!pending) return;
     const original = pending.description ?? pending.summary;
+    let recorded = false;
     try {
-      await this.deps.sendToTopic(topicId, original);
+      const receipt = await withNotificationEnvelope(stampNotification(), async () => (this.deps)!.sendToTopic(topicId, original));
+      recorded = isQuietReceipt(receipt);
     } catch (error) {
       this.log(`[burn-detection] retained alert could not yet move to newly configured topic ${topicId}: ${error instanceof Error ? error.message : String(error)}`);
       return;
@@ -159,6 +164,7 @@ export class BurnAlertDelivery {
     if (!this.terminal || this.terminal.pendingNotice?.id !== pending.id) return;
     delete this.terminal.pendingNotice;
     this.saveState(this.terminal);
+    this.log(`[burn-detection] retained alert ${recorded ? 'quiet-recorded' : 'delivered'} for topic ${topicId}`);
   }
 
   private async routeAlertToAttention(topicId: number, text: string): Promise<void> {

@@ -60,6 +60,25 @@ Instar agent under deterministic safety floors; human approval is reserved for e
 and break-glass cases. Every accepted work item has a stable key, so retries, crashes, and
 concurrent ticks converge on one Initiative link.
 
+## Triage and executor API
+
+Use these authenticated routes to inspect the path from a ready work item to a reviewed fix. Reads show the current canonical owner's state. Mutation routes also require their own intent, owner and approval checks; a successful read never grants permission to change a decision.
+
+| Route | Purpose |
+|---|---|
+| `GET /feedback-factory/readiness-authorities/proposal` | Preview a bounded readiness authority and any approval blockers. |
+| `GET /feedback-factory/triage/queue` | See ranked work items, priorities and execution states. |
+| `GET /feedback-factory/triage/summary` | See disposition counts, authority health and recent triage results. |
+| `GET /feedback-factory/triage/authority/proposal` | Preview the triage model authority and its blockers. |
+| `POST /feedback-factory/triage/authority` | Create, replace, revoke or restore the approved triage authority. |
+| `POST /feedback-factory/triage/plan` | Prepare a reviewable plan for live ignores, approver acceptance or publication of a held secret-shaped change. |
+| `POST /feedback-factory/triage/commit` | Apply one PIN-approved plan after its nonce and intent checks pass. |
+| `GET /feedback-factory/execute/status` | See executor availability, admission, attempts and recent tick results. |
+| `POST /feedback-factory/execute/stop` | Stop one Initiative's attempts and disarm any armed PR. |
+| `POST /feedback-factory/execute/revoke-acceptance` | Withdraw the recorded approver-dependence acceptance. |
+| `POST /feedback-factory/execute/release` | Return a parked Initiative to triage. |
+| `POST /feedback-factory/execute/canary-retry` | End the canary wait; the sandbox check must still pass on the next attempt. |
+
 ## Which component owns each stage
 
 These components have distinct responsibilities when tracing a report from intake to a

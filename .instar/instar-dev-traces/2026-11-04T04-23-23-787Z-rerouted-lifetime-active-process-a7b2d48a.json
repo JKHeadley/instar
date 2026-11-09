@@ -1,0 +1,36 @@
+{
+  "version": 3,
+  "slug": "rerouted-lifetime-active-process",
+  "sessionId": "fd0699ed-7bf6-4340-bbdf-e97225114a49",
+  "timestamp": "2026-11-04T04:23:23.787Z",
+  "artifactPath": "upgrades/side-effects/rerouted-lifetime-active-process.md",
+  "artifactSha256": "bf580f19712d30b004540e5e8840a75291f3ec6d282423c55750fc8c210982be",
+  "specPath": "docs/specs/june15-headless-spawn-reroute.md",
+  "coveredFiles": [
+    "src/core/SessionManager.ts",
+    "tests/e2e/june15-headless-spawn-reroute.test.ts",
+    "tests/unit/headless-spawn-reroute.test.ts",
+    "upgrades/next/rerouted-lifetime-active-process.md",
+    "upgrades/side-effects/rerouted-lifetime-active-process.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Hard-lifetime termination authority for rerouted sessions changes a safety decision; the existing approved spec requires the timeout and an independent review concurred.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "rerouted_lifetime_review",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}

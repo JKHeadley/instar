@@ -1,3 +1,4 @@
+import { renderNotifications } from './notifications.js';
 // Instar console — shell, auth, routing, Home rendering.
 // Spec: docs/specs/console-makeover.md. Home is read-only; the Promises page
 // can close or resume a promise through its existing bearer-protected routes.
@@ -8,10 +9,12 @@
 import {
   failure, buildNeeds, buildDoing, buildPromised, buildRunning, buildAllowed, headline, ago, combineNeeds, machineNames,
 } from './home-model.js';
-import { GROUPS, legacyHref, icon, tabHref } from './nav-model.js';
+import { GROUPS, legacyHref, icon, tabHref, LEGACY_DASHBOARD, isPhoneMode, pagePath } from './nav-model.js';
 import { fillPartial } from './home-model.js';
+import { NEED_SOURCES, surfacedNeeds } from './needs-model.js';
 import { renderPromises, topicLink } from './promises.js';
 import { renderMachines } from './machines.js';
+import { renderHealth } from './health.js';
 import { renderAccounts } from './accounts.js';
 import { renderMessages } from './messages.js';
 import { renderAllowed } from './allowed.js';
@@ -20,6 +23,7 @@ import { renderCosts } from './costs.js';
 import { renderSchedule } from './schedule.js';
 import { renderDevelopment, groupExtras } from './development.js';
 import { renderAgents } from './agents.js';
+import { renderReach } from './reach.js';
 import { renderMandates } from './mandates.js';
 import { renderSecrets } from './secrets.js';
 import { renderLearned } from './learned.js';
@@ -30,7 +34,10 @@ import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
 import { paceCard } from './pace.js';
-import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE } from './ui.js';
+import { takeTicket, signInAtBoot } from './ticket-model.js';
+import { createLifecycle, splitHash } from './page-lifecycle.js';
+import { renderChats } from './chats.js';
+import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, setKids } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
 const THEME_KEY = 'instar_console_theme';
@@ -51,6 +58,12 @@ let homeChatId = null;
 // The agent-wide Attention topic, where every attention item is posted.
 let attentionTopicId = null;
 let homeRun = null;
+// One visit per page render (page-lifecycle.js): disposers, query-only changes, self-refreshing pages.
+const lifecycle = createLifecycle({ report: (e) => { try { console.warn('console: a page clean-up failed', e); } catch { /* no console */ } } });
+// Phone mode (?phone=1, or phone=1 in the hash's query): the Instar app shows one
+// page in its own frame, so the console draws no top bar, nav or Legacy link.
+// Sticky for this page load: once on, every hash change stays in phone mode.
+let phone = false;
 
 // ── tiny DOM helpers ──────────────────────────────────────────────────────
 function el(tag, attrs = {}, ...kids) {
@@ -91,11 +104,12 @@ function toggleTheme() {
 // told "can't tell". Cross-machine reads in particular can be slow for a moment.
 const MIN_TIMEOUT_MS = 20000;
 const RETRY_DELAY_MS = 0; // retry at once: a timeout already waited MIN_TIMEOUT_MS
-async function getOnce(path, timeoutMs) {
+async function getOnce(path, timeoutMs, soft403 = false) {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), timeoutMs);
   try {
     const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` }, signal: ctl.signal, cache: 'no-store' });
+    if (r.status === 403 && soft403) return failure('the server answered 403');
     if (r.status === 401 || r.status === 403) { signOut(); return failure('not signed in'); }
     if (r.status === 503) return failure('switched off on this agent');
     if (!r.ok) return { ...failure(`the server answered ${r.status}`), retryable: r.status >= 500 };
@@ -147,6 +161,7 @@ function signOut() {
   try { localStorage.removeItem(TOKEN_KEY); } catch { /* storage blocked */ }
   token = '';
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  lifecycle.dispose();
   renderUnlock();
 }
 
@@ -205,20 +220,47 @@ function navItems(active) {
   const items = [{ id: 'home', label: 'Home', icon: 'home' }, ...GROUPS];
   const nav = el('nav', { class: 'nav', 'aria-label': 'Console sections' });
   for (const g of items) {
-    const a = el('a', { href: `#/${g.id}`, icon: g.icon, 'aria-current': g.id === active ? 'page' : null });
+    const onChats = g.id === 'work' && /^#\/work\/chats(\?|$)/.test(location.hash);
+    const a = el('a', { href: `#/${g.id}`, icon: g.icon, 'aria-current': g.id === active && !onChats ? 'page' : null });
     a.append(el('span', { text: g.label }));
     nav.append(a);
+    if (g.id === 'home') nav.append(conversationsNavItem());
   }
   nav.append(el('div', { class: 'nav-group-label', text: 'Elsewhere' }));
-  const legacy = el('a', { href: '/dashboard', icon: 'external' });
+  const legacy = el('a', { href: LEGACY_DASHBOARD, icon: 'external' });
   legacy.append(el('span', { text: 'Legacy dashboard' }));
   legacy.classList.add('nav-sub-legacy');
   nav.append(legacy);
   return nav;
 }
 
+/**
+ * Conversations at the top level of the sidebar, right under Home (Justin, 2026-11-08: "It should
+ * show directly in the sidebar menu on the top level"). It stays a Work tile too. Shown only while
+ * the same probe as that tile answers 200, so an agent with the switch off shows nothing new.
+ */
+function conversationsNavItem() {
+  const t = GROUPS.flatMap((g) => g.tabs).find((x) => x.id === 'chats');
+  const a = el('a', { href: tabHref('chats'), icon: t?.icon || 'chat', hidden: true, class: 'nav-conversations',
+    'aria-current': /^#\/work\/chats(\?|$)/.test(location.hash) ? 'page' : null });
+  a.append(el('span', { text: t?.label || 'Conversations' }));
+  if (t?.probe) {
+    fetch(t.probe, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+      .then((r) => { a.hidden = !r.ok; })
+      .catch(() => { /* @silent-fallback-ok: an unreachable probe leaves the entry hidden, as the Work tile does */ });
+  }
+  return a;
+}
+
 function renderShell(active) {
-  const legacyChip = el('a', { class: 'chip chip-legacy', href: '/dashboard', text: 'Legacy' });
+  if (phone) {
+    // Only the page: the app's own frame holds the title bar and navigation.
+    const main = el('main', { class: 'main', id: 'main' });
+    document.body.replaceChildren(el('div', { class: 'app app-phone' }, previewBanner(), main));
+    applyTheme(document.documentElement.getAttribute('data-theme') || readTheme());
+    return main;
+  }
+  const legacyChip = el('a', { class: 'chip chip-legacy', href: LEGACY_DASHBOARD, text: 'Legacy' });
   const brand = el('a', { class: 'brand', href: '#/home' },
     el('img', { src: '/dashboard/logo.png', alt: '' }),
     el('span', { text: 'instar' }),
@@ -468,7 +510,8 @@ function loadHome() {
   const { models, raw, results } = run;
   const paint = (id) => {
     // "What needs you" is the one answer: queue items plus promises waiting on the operator.
-    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised) : raw[id];
+    const model = id === 'needs' ? combineNeeds(raw.needs, raw.promised, surfacedNeeds(run.sources)) : raw[id];
+    if (!model) return; // nothing read yet for this card
     const shown = paintCard(CARDS.find((c) => c.id === id), model) || model;
     models[id] = shown;
     // The action queue must use the same last-known promise reading as its
@@ -527,6 +570,24 @@ function loadHome() {
     };
     attempt();
   };
+  // What needs the operator on other pages (needs-model.js): one in-flight read per source, no
+  // retry timer of its own (the next tick is the retry), and a 403 here never signs anyone out.
+  run.tick = (run.tick || 0) + 1;
+  for (const source of NEED_SOURCES) {
+    if (run.sourceBusy[source.id]) continue;
+    if (source.when && !source.when(run.sources)) continue;
+    if (source.everyTicks && run.sourceAt[source.id] && run.tick - run.sourceAt[source.id] < source.everyTicks) continue;
+    run.sourceAt[source.id] = run.tick;
+    run.sourceBusy[source.id] = true;
+    const keys = Object.keys(source.reads);
+    Promise.all(keys.map((k) => getOnce(source.reads[k], Math.max(TIMEOUT_MS, MIN_TIMEOUT_MS), true))).then((reads) => {
+      run.sourceBusy[source.id] = false;
+      if (!run.active || run.document !== document) return;
+      run.sources[source.id] = { ...(run.sources[source.id] || {}), results: Object.fromEntries(keys.map((k, i) => [k, reads[i]])) };
+      paint('needs');
+      paintHeadline(models);
+    });
+  }
   // Every source has one in-flight request and its own bounded retry timer.
   // A slow source cannot block another card or start overlapping refreshes.
   read('pool', '/pool', POOL_TIMEOUT_MS);
@@ -541,8 +602,9 @@ function loadHome() {
   read('mandate', '/mandate', TIMEOUT_MS);
 }
 
-function renderHome(main) {
-  homeRun = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {} };
+function renderHome(main, ctx) {
+  const run = { active: true, document, models: Object.fromEntries(CARDS.map((c) => [c.id, { state: 'loading' }])), raw: {}, results: {}, pending: {}, failures: {}, sources: {}, sourceBusy: {}, sourceAt: {} };
+  homeRun = run;
   main.replaceChildren(
     el('section', { class: 'hero' },
       el('div', { class: 'eyebrow', id: 'heroTime', text: 'Checking in' }),
@@ -562,7 +624,16 @@ function renderHome(main) {
   );
   loadHome();
   if (refreshTimer) clearInterval(refreshTimer);
-  refreshTimer = setInterval(() => { if (document.visibilityState === 'visible' && location.hash.startsWith('#/home')) loadHome(); }, REFRESH_MS);
+  const timer = setInterval(() => { if (document.visibilityState === 'visible' && location.hash.startsWith('#/home')) loadHome(); }, REFRESH_MS);
+  refreshTimer = timer;
+  // Home's teardown is its own disposer, closing over this run: its retry timers and its refresh timer.
+  if (ctx) ctx.onDispose(() => {
+    run.active = false;
+    for (const p of Object.values(run.pending)) if (p && p !== true) clearTimeout(p);
+    clearInterval(timer);
+    if (refreshTimer === timer) refreshTimer = null;
+    if (homeRun === run) homeRun = null;
+  });
 }
 
 // ── Group pages (static directories) ──────────────────────────────────────
@@ -571,6 +642,18 @@ function tile(t, withIcon = true) {
   if (withIcon) a.append(el('span', { class: 't-icon', icon: t.icon || 'arrow' }));
   a.append(el('span', {}, el('span', { class: 't-name', text: t.label }), el('span', { class: 't-desc', text: t.desc })));
   return a;
+}
+
+/**
+ * A tile shown only when its probe answers 200 (e.g. Conversations, while its switch is on).
+ * A plain fetch: a refusal here must never sign the operator out.
+ */
+function probedTile(t) {
+  const host = el('div', { class: 'tiles tiles-inline', hidden: true }, tile(t));
+  fetch(t.probe, { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+    .then((r) => { host.hidden = !r.ok; })
+    .catch(() => { /* @silent-fallback-ok: an unreachable probe leaves the tile hidden */ });
+  return host;
 }
 
 function renderGroup(main, g) {
@@ -590,7 +673,7 @@ function renderGroup(main, g) {
       el('div', { class: 'eyebrow', text: g.label }),
       el('h1', { text: g.question }),
     ),
-    el('div', { class: 'tiles' }, [...g.tabs.map((t) => tile(t)), ...tileHosts]),
+    el('div', { class: 'tiles' }, [...g.tabs.map((t) => (t.probe ? probedTile(t) : tile(t))), ...tileHosts]),
     ...extras.filter((n) => !tileHosts.includes(n)),
     ...(g.id === 'work' ? [paceCard(get)] : []), // the Pace card: shown only when /queue-pace answers
   ];
@@ -600,14 +683,14 @@ function renderGroup(main, g) {
       el('div', { class: 'tiles tiles-hood' }, g.hood.map((t) => tile({ ...t, icon: 'wrench' }))),
     );
   }
-  parts.push(footNote());
+  if (!phone) parts.push(footNote());
   main.replaceChildren(...parts);
 }
 
 function footNote() {
   return el('p', { class: 'foot-note' },
     document.createTextNode('The older dashboard is still available: '),
-    el('a', { href: '/dashboard', text: 'open the legacy dashboard' }),
+    el('a', { href: LEGACY_DASHBOARD, text: 'open the legacy dashboard' }),
     document.createTextNode('.'),
   );
 }
@@ -623,11 +706,15 @@ const NATIVE = {
   'work/maturation': renderMaturation,
   'work/ideas': renderIdeas,
   'work/sessions': renderSessions,
+  'work/chats': renderChats,
   'capacity/machines': renderMachines,
+  'capacity/health': renderHealth,
   'capacity/accounts': renderAccounts,
   'capacity/costs': renderCosts,
   'people/messages': renderMessages,
+  'people/notifications': renderNotifications,
   'people/agents': renderAgents,
+  'people/reach': renderReach,
   'people/mandates': renderMandates,
   'people/secrets': renderSecrets,
   'settings/allowed': renderAllowed,
@@ -636,26 +723,63 @@ const NATIVE = {
   'settings/files': renderFiles,
 };
 
+// Pages that exist only in phone mode: the Work page's Pace card, on its own.
+const PHONE_ONLY = {
+  'work/pace': (main, { get: read }) => {
+    const old = main.querySelector('.pace-card');
+    const note = main.querySelector('.pace-missing') || el('p', { class: 'card-line pace-missing', hidden: true, text: 'Pace is not available on this agent right now.' });
+    // A refresh keeps the card on screen and swaps in the new one once it has loaded.
+    const card = paceCard(read, {
+      onMissing: () => { if (!old) note.hidden = false; },
+      onShown: () => { note.hidden = true; if (old && old.isConnected) old.replaceWith(card); },
+    });
+    if (!old) setKids(main, el('section', { class: 'group-head' }, el('h1', { text: 'Pace' })), card, note);
+  },
+};
+
 function route() {
+  if (!phone && isPhoneMode('', location.hash)) phone = true;
+  const { path: hashPath, query } = splitHash(location.hash);
+  const path = pagePath(hashPath, phone);
+  // Only the query changed on a page that handles that itself: no rebuild, no sheet close, no scroll.
+  if (lifecycle.tryQuery(path, query)) return;
+  // The previous visit's disposers run before anything new is drawn.
+  lifecycle.dispose();
   if (homeRun) { homeRun.active = false; for (const p of Object.values(homeRun.pending)) if (p && p !== true) clearTimeout(p); homeRun = null; }
   closeSheet();
-  const path = (location.hash.replace(/^#\/?/, '') || 'home').split('?')[0];
+  newArrival();
+  document.documentElement.toggleAttribute('data-phone', phone);
+  const pages = phone ? { ...NATIVE, ...PHONE_ONLY } : NATIVE;
   const id = path.split('/')[0];
   const group = GROUPS.find((g) => g.id === id);
   const active = group ? group.id : 'home';
   const main = renderShell(active);
   if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
-  if (NATIVE[path]) {
-    NATIVE[path](main, { get, post, getCommitments });
-    // Pages refresh in place every 30 s while visible, never over an open sheet.
-    refreshTimer = setInterval(() => {
-      if (document.visibilityState === 'visible' && !sheetIsOpen() && (location.hash.replace(/^#\/?/, '').split('?')[0]) === path) NATIVE[path](main, { get, post, getCommitments });
-    }, REFRESH_MS);
-  } else if (group) renderGroup(main, group); else renderHome(main);
+  const ctx = lifecycle.begin(path, query);
+  const pageCtx = (c) => ({ get, post, getCommitments, onDispose: c.onDispose, onQuery: c.onQuery, selfRefreshing: c.selfRefreshing, isCurrent: c.isCurrent });
+  if (pages[path]) {
+    pages[path](main, pageCtx(ctx));
+    // Pages refresh in place every 30 s while visible, never over an open sheet or an
+    // interaction in progress, and one at a time: a slow read cannot paint over a newer one.
+    // A self-refreshing page (it registered ctx.selfRefreshing()) is never re-run by this cycle.
+    if (!lifecycle.isSelfRefreshing()) {
+      let refreshing = false;
+      const timer = setInterval(() => {
+        if (refreshing || lifecycle.isSelfRefreshing() || document.visibilityState !== 'visible' || sheetIsOpen() || refreshHeld(main) || splitHash(location.hash).path !== hashPath) return;
+        refreshing = true;
+        // Each re-run is a new visit: the previous run's disposers are called first.
+        const next = lifecycle.begin(path, splitHash(location.hash).query);
+        Promise.resolve().then(() => pages[path](main, pageCtx(next))).catch(() => { /* @silent-fallback-ok: a failed refresh keeps the page on screen; the next tick tries again */ }).finally(() => { refreshing = false; });
+      }, REFRESH_MS);
+      // Cleared by the next route() (and signOut), never by a re-run's own visit change.
+      refreshTimer = timer;
+    }
+  } else if (group) renderGroup(main, group); else renderHome(main, ctx);
   window.scrollTo(0, 0);
 }
 
 async function start() {
+  phone = phone || isPhoneMode(location.search, location.hash);
   if (!location.hash) history.replaceState(null, '', '#/home');
   window.removeEventListener('hashchange', route);
   window.addEventListener('hashchange', route);
@@ -691,5 +815,14 @@ function previewBanner() {
   applyTheme(readTheme());
   await loadPreviewInfo();
   try { token = localStorage.getItem(TOKEN_KEY) || ''; } catch { token = ''; }
-  if (await validToken(token)) start(); else renderUnlock();
+  // An owner's paired phone opens signed in without the PIN (mobile-console-device-signin §3.5).
+  let ticket = '';
+  try { ticket = takeTicket(sessionStorage); } catch { ticket = ''; }
+  const signIn = await signInAtBoot({ storedToken: token, validToken, ticket, fetchFn: (p, o) => fetch(p, o) });
+  if (signIn.via === 'ticket') {
+    // Stored exactly as the PIN unlock stores it.
+    try { localStorage.setItem(TOKEN_KEY, signIn.token); } catch { /* storage blocked */ }
+  }
+  token = signIn.token;
+  if (signIn.via === 'pin') renderUnlock(); else start();
 })();

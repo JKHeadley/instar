@@ -83,7 +83,7 @@ describe('Scheduler queue edge cases', () => {
       path.join(process.cwd(), 'src/scheduler/JobScheduler.ts'),
       'utf-8'
     );
-    expect(source).toContain('this.queue.some(q => q.slug === slug)');
+    expect(source).toContain('this.queue.find(q => q.slug === slug)');
   });
 
   it('queue sorts by priority (critical first)', () => {

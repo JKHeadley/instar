@@ -66,6 +66,12 @@ export interface GuardManifestEntry {
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
+    key: 'scheduler.jobCoverage', kind: 'code-default', defaultEnabled: true,
+    expectedTickMs: 300_000, process: 'server', expectRuntime: false,
+    component: 'JobCoverageMonitor',
+    description: 'Signed peer job-catalog observation and lease-handoff coverage alert on multi-machine agents.',
+  },
+  {
     key: 'multiMachine.identityReannounce.identityDivergenceMonitor',
     kind: 'config',
     configPath: 'multiMachine.identityReannounce.enabled',
@@ -1278,6 +1284,7 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'pipeErrorGuard', reason: 'Stateless stream helpers that attach error listeners so a closed pipe cannot become an uncaught exception. Always on, with no enable flag, no state to report, and no block or allow decision over agent behavior.' },
   { component: 'WedgeMonitor', reason: 'Machine self-maintenance Part E wedge sampler, dry-run. It has no enable flag of its own: it is constructed inside the same machineMaintenance.enabled gate as DrainRehearsal, whose GUARD_MANIFEST row already reports that posture, and it can act on nothing (no rung exists). Its live state is GET /machine-maintenance -> wedge.' },
   { component: 'ThrowawayAgentGuard', reason: 'Pure classification module + init/teardown helpers called inline by installAutoStart, the scheduler admission gate and the server/lifeline startup decision (test-agent-leak-guard). Always-on safety floor with no enabled flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },
   { component: 'OriginToolGuard', reason: 'Generates an always-on harness hook, not a boot-constructed server monitor. Actual installed hook enrollment is reported by the Telegram origin activation matrix.' },
@@ -1318,6 +1325,8 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'SpawnRequestManager', reason: 'Cross-session spawn coordination; session mechanics, not a guard.' },
   { component: 'SessionManager', reason: 'Core session lifecycle engine; the thing guards act ON, not a guard.' },
   { component: 'StateManager', reason: 'Core state persistence; storage layer.' },
+  { component: 'SigninProfileGuard', reason: 'Always-on profile ownership invariant and generated native hook; stateless boundary validation, no boot lifecycle or posture switch.' },
+  { component: 'BrowserMcpProfileGuard', reason: 'Stateless mandatory MCP startup preflight over registry ownership; not an independently scheduled runtime monitor or switch.' },
   { component: 'SourceTreeGuard', reason: 'Hard invariant on destructive ops against the source tree — always-on by design with NO off switch, so posture (on/off) is meaningless for it.' },
   { component: 'SafeGitExecutor', reason: 'Single-funnel for destructive git ops; hard invariant, no off switch, posture meaningless.' },
   { component: 'SafeFsExecutor', reason: 'Single-funnel for destructive fs ops; hard invariant, no off switch, posture meaningless.' },
@@ -1353,6 +1362,7 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'PlannedRestartVerifyGuard', reason: 'Shared file/PID precondition helper consulted by existing supervisor and foreground restart authorities; no independent boot lifecycle or switch.' },
   { component: 'RevertDetector', reason: 'Read-only git revert scan feeding the FailureLedger; failure-learning ingestion plumbing, fail-open, no operator switch.' },
   { component: 'SelfViolationDetector', reason: 'Observe-only detector arm of the correctionLearning.selfViolationSignal sub-guard, which IS declared in the manifest under component CorrectionLearningLoop.' },
+  { component: 'SkillLearningSentinel', reason: 'Skill-learning sentinel (docs/specs/skill-learning-sentinel.md): observes recurring operator requests and, in shadow, writes proposals under .instar/skill-learning/proposals; it never blocks, delays or rewrites a message and takes no protective action over agent behavior. Its kill switch (monitoring.skillLearning.enabled) and live state are reported by GET /skills/learned, not the /guards inventory.' },
   { component: 'SessionActivitySentinel', reason: 'Mid-session activity digests + completion synthesis; session observability/digest feature, takes no protective action.' },
   { component: 'SessionServerGuard', reason: 'Pure decision helper validating session-server actions; stateless validation logic, no boot lifecycle or enabled switch.' },
   { component: 'SessionSummarySentinel', reason: 'Real-time session summaries for intelligent message routing (session: "best"); routing-quality plumbing, not a protective guard.' },

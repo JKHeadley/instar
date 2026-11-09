@@ -1,3 +1,4 @@
+import { topicRef } from '../messaging/shared/topicRef.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -187,7 +188,7 @@ function requireStoredMessage(
     issues.push({
       code,
       path: issuePath,
-      message: `message ${messageId} is absent from topic ${topicId} in the telegram store`,
+      message: `message ${messageId} is absent from ${topicRef(topicId)} in the telegram store`,
     });
   }
 }
@@ -239,7 +240,7 @@ function validateFullHistoryReceipt(
   const topicId = topicOf(receiptRef) ?? BETWEEN_WINDOW_OBSERVER_TOPIC_ID;
   const messageId = messageIdOf(receiptRef);
   if (topicId !== BETWEEN_WINDOW_OBSERVER_TOPIC_ID) {
-    issues.push({ code: 'RECEIPT_NOT_IN_STORE', path: `${base}.topicId`, message: `observer receipt must be posted in topic ${BETWEEN_WINDOW_OBSERVER_TOPIC_ID}` });
+    issues.push({ code: 'RECEIPT_NOT_IN_STORE', path: `${base}.topicId`, message: `observer receipt must be posted in ${topicRef(BETWEEN_WINDOW_OBSERVER_TOPIC_ID)}` });
   }
   if (!messageId) {
     issues.push({ code: 'RECEIPT_FIELD_MISSING', path: `${base}.messageId`, message: 'receipt store message id is required' });

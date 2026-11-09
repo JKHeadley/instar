@@ -46,6 +46,8 @@ export interface LeasePeer {
 }
 
 export interface HttpLeaseTransportDeps {
+  /** The peer itself signed this answer on this address: a stranger on a look-alike network cannot. */
+  onSignedConfirmation?: (peerMachineId: string, kind: MeshEndpoint['kind'], url: string) => void;
   selfMachineId: string;
   signingKeyPem: string;
   /** Resolve the current set of reachable peers (excludes self). */
@@ -288,6 +290,9 @@ export class HttpLeaseTransport implements LeaseTransport {
         const data = httpOk ? ((await (res as Response).json().catch(() => null)) as MeshAckResponse | null) : null;
         const outcome = this.interpretResponse(peer, path, reqNonce, sentEpoch, data, httpOk);
         this.d.resolver!.recordResult(peer.machineId, ep.kind, outcome.confirmed, this.now() - started, ep.url);
+        if (outcome.confirmed && peer.meshAckCapable && peer.publicKeyPem) {
+          this.d.onSignedConfirmation?.(peer.machineId, ep.kind, ep.url);
+        }
         if (outcome.confirmed) this.logSuccess(`${path} ${peer.machineId}/${ep.kind}`);
         else this.logFailure(`${path} ${peer.machineId}/${ep.kind}`, 'unconfirmed');
         return outcome;

@@ -9,7 +9,8 @@
  *        conversation's canonical key held by THIS machine (§4.9: app → Telegram / Slack sends)
  *   PUT  /mobile/media/uploads/:uploadId/chunks/:i  one signed chunk (application/octet-stream)
  *   GET  /mobile/media/uploads/:uploadId            resume  {received, state, expiresAt}
- *   GET  /mobile/media/:sha256?ref=<conversationRef> download (Range honored, never executable);
+ *   GET  /mobile/media/:sha256?ref=<conversationRef>[&machine=<holder>] download (Range honored locally,
+ *        never executable); a Slack file on another machine streams whole for the owner's phone;
  *        ref is app:<uuid>, telegram:<topicId>, or a Slack conversation's canonical key
  *        slack:<team>:<channel>[:<thread>] held by THIS machine (§4.9 platform media)
  *   POST /mobile/media/purge                        permanently remove files {conversationKeys, requestId}
@@ -18,7 +19,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Router, type Request, type Response } from 'express';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
-import { deviceMayUse } from './mobilePairingRoutes.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
+import { deviceMayUse, devicePersonOf } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
 import { CHUNK_BYTES, CONTROL_CHARS, MEDIA_KINDS, isInlineSafe, isSha256Hex, safeFileName, type AppAttachment, type MediaKind } from '../core/appMediaTypes.js';
@@ -26,6 +28,7 @@ import { canonicalConversationKey, isAppConversationKey, parseAppCanonicalKey } 
 import type { UploadRow } from '../core/AppMediaStore.js';
 import { PLATFORM_CONVERSATION_KEY_RE } from '../core/AppConversationStore.js';
 import { slackMediaKeys } from '../core/appPlatformMedia.js';
+import { HOLDER_MEDIA_HEADER, type HolderMedia, HOLDER_MEDIA_HOP_SOCKET_MS } from './mobileMediaHolderProxy.js';
 
 export interface MobileMediaRouteDeps {
   pairing: MobilePairingService;
@@ -43,6 +46,14 @@ export interface MobileMediaRouteDeps {
    */
   telegramTopicExists?: (topicId: number) => boolean;
   now?: () => number;
+  /** This machine's id: what a Slack row's `machine` names when the file is here. */
+  machineId?: () => string;
+  /** Streams a file from the machine holding the conversation. Absent: 409 wrong-machine. */
+  holderMedia?: HolderMedia;
+  /** The owner-phone check taken from this request's own signature. Null for anyone else. */
+  ownerAdmission?: (req: Request) => { isCurrent(): boolean } | null;
+  /** Whether this request carries the agent's own bearer token: what a holder hop must present. */
+  bearerOk?: (req: Request) => boolean;
 }
 
 type Principal = { kind: 'device'; deviceId: string } | { kind: 'token' };
@@ -109,7 +120,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     // conversation can never be sent into another.
     if (!uploadTargetKnown(conversationRef)) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
     // People and roles §3.4: an MSP phone uploads only into conversations it may use.
-    if (!deviceMayUse(deps.pairing, req, conversationRef)) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
+    if (!deviceMayUse(deps.pairing, req, conversationRef, 'upload')) { res.status(404).json({ error: 'unknown-conversation', detail: 'That conversation does not exist or cannot take files yet.' }); return; }
     const started = media.startUpload({ deviceId, conversationRef, size, sha256, declaredKind: declaredKind as MediaKind, declaredType, filename });
     if ('status' in started) { res.status(started.status).json({ error: started.error, detail: started.detail }); return; }
     const body = uploadView(started);
@@ -126,7 +137,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
 
   const ownedUpload = (req: Request, res: Response, deviceId: string): UploadRow | null => {
     const u = svc!.media!.getUpload(String(req.params.uploadId).toLowerCase());
-    if (!u || u.deviceId !== deviceId) { res.status(404).json({ error: 'upload-unknown', detail: 'This machine does not know that upload. Start again.' }); return null; }
+    if (!u || u.deviceId !== deviceId) { res.status(404).json({ error: 'upload-unknown', detail: 'The agent does not know that upload. Start again.' }); return null; }
     return u;
   };
 
@@ -144,8 +155,12 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       try { await media.finalizeUpload(u.uploadId); } catch (err) {
         // Recovery repeats it: the chunks are removed only after `complete`.
         svc!.deps.reportDegradation?.('AppMedia.finalize', err instanceof Error ? err.message : String(err));
+        featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'upload could not be finalized', context: { uploadId: u.uploadId, deviceId, declaredKind: u.declaredKind, size: u.size } });
       }
-      if (media.wasHashMismatch(u.uploadId)) { res.status(409).json({ error: 'hash-mismatch', detail: 'The file did not arrive intact. Start the upload again.' }); return; }
+      if (media.wasHashMismatch(u.uploadId)) {
+        featureEvidence.record('mobilePairing.native.media', { kind: 'error', reason: 'corrupt upload: hash mismatch', context: { uploadId: u.uploadId, deviceId, declaredKind: u.declaredKind, size: u.size } });
+        res.status(409).json({ error: 'hash-mismatch', detail: 'The file did not arrive intact. Start the upload again.' }); return;
+      }
     }
     res.json({ ok: true, state: media.getUpload(u.uploadId)?.state ?? u.state });
   });
@@ -162,11 +177,39 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
 
   // ── Download ──
   router.get('/mobile/media/:sha256', async (req: Request, res: Response) => {
-    const deviceId = gate(req, res); if (!deviceId) return;
+    // A hop from another machine, for the owner's phone there: the agent's own bearer, naming this
+    // machine and a Slack conversation it holds. It is checked below like any download, and it
+    // never goes on to a third machine, because a hop is not a device.
+    const self = deps.machineId?.();
+    const hop = principalOf(req).kind === 'token' && req.query.holderHop === '1' && deps.bearerOk?.(req) === true
+      && self !== undefined && req.query.machine === self && typeof req.query.ref === 'string' && req.query.ref.startsWith('slack:');
+    if (hop) {
+      res.setHeader('Cache-Control', 'no-store');
+      if (!deps.pairing.enabled() || !svc?.media || !deps.mediaEnabled) { res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' }); return; }
+      if (req.headers.range !== undefined) { res.status(416).json({ error: 'range-unsupported' }); return; }
+    } else if (!gate(req, res)) return;
     const media = svc!.media!;
     const sha = String(req.params.sha256);
     const ref = typeof req.query.ref === 'string' ? req.query.ref : '';
     const notFound = () => res.status(404).json({ error: 'not-found' });
+    // A Slack file another machine holds: only the owner's phone, whole file, through the trusted
+    // holder. The ref is that machine's to check, so nothing about it is looked up here.
+    const named = req.query.machine;
+    if (named !== undefined && !hop && (typeof named !== 'string' || !named)) { res.status(400).json({ error: 'bad-machine' }); return; }
+    if (!hop && typeof named === 'string' && named !== self) {
+      if (!isSha256Hex(sha) || !/^slack:/.test(ref) || ref.length > 128) { notFound(); return; }
+      const owner = deps.ownerAdmission?.(req) ?? null;
+      if (!owner) { res.status(403).json({ error: 'owner-only', detail: 'Only the agent\'s owner can open this file from the app.' }); return; }
+      if (req.headers.range !== undefined) { res.setHeader('Accept-Ranges', 'none'); res.status(416).json({ error: 'range-unsupported', detail: 'A file on another machine downloads whole.' }); return; }
+      if (!deps.holderMedia) { res.status(409).json({ error: 'wrong-machine', servedBy: self ?? null, detail: 'This file belongs to another machine.' }); return; }
+      try {
+        await deps.holderMedia({ sha256: sha, ref, machine: named, isCurrent: () => owner.isCurrent() }, res);
+      } catch { // @silent-fallback-ok — nothing above catches an async rejection; the phone is told to retry
+        if (res.headersSent) res.destroy();
+        else res.status(502).json({ error: 'holder-failed', detail: 'The machine that holds this file could not answer. Try again.' });
+      }
+      return;
+    }
     // The conversation is a live native app conversation (`app:<uuid>`), a Telegram topic
     // (`telegram:<topicId>`, §4.9), or a Slack conversation by its canonical key — only one this
     // machine's registry minted itself, since a Slack conversation is served by the machine that
@@ -186,16 +229,18 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       if (att) { refKey = k; break; }
     }
     if (!att) { notFound(); return; }
+    // A file belongs to its message: one held from this reader stays held.
+    if (!deps.pairing.mayReadMessageId(devicePersonOf(req), refKey, att.messageId)) { notFound(); return; }
     const blob = media.locateBlob(sha);
     // A good copy held now wins over a quarantined older copy of the same hash.
-    if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on this machine and has been set aside.' }); return; }
+    if (!blob && media.isQuarantined(sha)) { res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged where it was stored and has been set aside.' }); return; }
     if (!blob) {
       // §4.8/§4.12: start (or hurry) the copy from another machine and tell the app to poll.
       // 202 only when a copy can actually start: a mesh, a machine with disk room, an online peer
       // that could hold it, and not given up on. Otherwise an honest 404 with the reason.
       const rep = svc!.replicator;
       const can = rep.canFetch(sha);
-      if (!can.ok) { res.status(404).json({ error: 'media-unavailable', detail: `This file is not on this machine: ${can.reason}.` }); return; }
+      if (!can.ok) { res.status(404).json({ error: 'media-unavailable', detail: `This file can't be reached right now: ${can.reason}.` }); return; }
       rep.want(sha);
       res.status(202).json({ state: 'fetching', retryAfterMs: 2000 });
       return;
@@ -218,7 +263,21 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
-    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Accept-Ranges', hop ? 'none' : 'bytes');
+    if (hop) {
+      res.setHeader(HOLDER_MEDIA_HEADER, '1');
+      // Runs after the server's own finish handler. A queued pipelined response has taken the socket
+      // by then, and its timeout is not this hop's to change: only a socket no response owns (null,
+      // Node's own marker, and no public equivalent) is idle. A different value leaves the timeout
+      // alone, which at worst is the old 5 s keep-alive.
+      // Only when the server itself keeps idle sockets (keepAliveTimeout > 0): with 0 or an unreadable
+      // value Node never resets an idle socket's timeout, so 330 s would outlive this hop. Fails closed.
+      res.once('finish', () => {
+        const sock = req.socket as unknown as { _httpMessage?: unknown; server?: { keepAliveTimeout?: unknown } };
+        const keepAlive = sock.server?.keepAliveTimeout;
+        if (sock._httpMessage === null && typeof keepAlive === 'number' && keepAlive > 0) req.socket.setTimeout(HOLDER_MEDIA_HOP_SOCKET_MS);
+      });
+    }
     let start = 0;
     let end = size - 1;
     const range = req.headers.range;
@@ -231,6 +290,8 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       res.status(206).setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
     }
     res.setHeader('Content-Length', String(end - start + 1));
+    // The phone may have gone during the awaits above, and 'close' will not fire again.
+    if (res.destroyed) { await handle.close(); return; }
     const stream = handle.createReadStream({ start, end, autoClose: true });
     stream.on('error', () => { res.destroy(); });
     res.on('close', () => { stream.destroy(); });
@@ -248,7 +309,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     const keys = b.conversationKeys;
     if (!Array.isArray(keys) || keys.length < 1 || keys.length > 100 || !keys.every((k) => typeof k === 'string' && k.length <= 256)) { res.status(400).json({ error: 'bad-conversation-keys' }); return; }
     // People and roles §3.4: any key this phone may not use refuses the whole batch.
-    if ((keys as string[]).some((k) => !deviceMayUse(deps.pairing, req, k))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
+    if ((keys as string[]).some((k) => !deviceMayUse(deps.pairing, req, k, 'purge'))) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     const hash = hashOf('purge', ...(keys as string[]));
     const prior = requests.lookup(deviceId, requestId, hash);
     if (prior.kind === 'done') { res.status(prior.status).json(prior.body); return; }
@@ -270,7 +331,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
     // The exact set is recorded in the reservation first, so a crash midway resumes it (§4.7).
     let r: ReturnType<typeof requests.reserve>;
     try { r = requests.reserve(deviceId, requestId, hash, 0, { op: 'purge', conversationKey: '', sets: JSON.stringify(sets) }); } catch {
-      res.status(503).json({ error: 'purge-unavailable', detail: 'The request could not be recorded, so nothing was removed. Try again.' });
+      res.status(503).json({ error: 'purge-unavailable', detail: `The request could not be recorded on ${s.media!.machineWords()}, so nothing was removed. Try again.` });
       return;
     }
     if (r.kind !== 'reserved') { res.status(429).json({ error: 'too-many-requests' }); return; }

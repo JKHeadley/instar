@@ -7,7 +7,7 @@
 import {
   buildPlansPage, roundsTrack, projectActions, resultWords, refusalWords, driftSentence, linkChips, stepList, blockerStory, reasonWord, statusWord, PROJECT_DETAIL_CAP, OPEN_STATUSES,
 } from './plans-model.js';
-import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell } from './ui.js';
+import { el, setKids, pageHead, section, sheet, closeSheet, sheetIsOpen, story, details, note, cantTell, firstPaint, arrivalScroll, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { topicNameMap } from './topic-names.js';
 import { topicLink } from './promises.js';
@@ -22,7 +22,7 @@ let last = null;                                // the last data read, repainted
 
 export async function renderPlans(main, ctx) {
   const { get, post } = ctx;
-  if (!main.querySelector('.plans-page')) setKids(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading plans' })));
+  firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: EYEBROW }), el('h1', { class: 'page-title skeleton', text: 'Loading plans' })));
   const [initiatives, digest, projects, blockers, floor, pool, topics] = await Promise.all([
     get('/initiatives'), get('/initiatives/digest'), get('/projects'), get('/blockers'), get('/autonomous/throughput-floor'), get('/pool'), get('/telegram/topics?scope=pool'),
   ]);
@@ -48,7 +48,9 @@ function paint() {
   const open = (r) => openRow(r, { post, topicHref, refresh, digestReasons: page.digestReasons });
 
   // Needs you: fresh items as rows; older ones waiting on you are a counted line, never dropped.
+  // warning-path: row
   const needs = section({ id: 'needsYou', title: 'Needs you', tone: 'attn', rows: s.needsYou, empty: 'Nothing is waiting on you.', onRow: open });
+  if (s.needsYou.length) markNeed(needs, 'plans');
   if (n.olderNeedsYou) needs.querySelector('.list-rows').append(el('a', { class: 'link-btn older-line', href: '#/work/plans?s=older', text: `+${n.olderNeedsYou} older, still waiting on you ›` }));
 
   // In the way, above In flight. Off and failed are one dashed line each, not a page.
@@ -56,6 +58,7 @@ function paint() {
   if (w.state !== 'ok') way = el('section', { class: 'list-section', id: 'sec-in-the-way' }, el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: 'In the way' })), note(w.reason));
   else if (w.stuck.length + w.working.length + w.clearedWeek.length + w.clearedOlder.length === 0) way = null;
   else way = el('div', { class: 'way-group', id: 'sec-in-the-way' },
+    // warning-path: row
     section({ id: 'stuck', title: 'In the way', tone: w.stuck.length ? 'bad' : null, rows: [...w.stuck, ...w.working], empty: 'Nothing in the way.', onRow: open }),
     w.clearedWeek.length ? section({ id: 'clearedWeek', title: 'Cleared this week', rows: w.clearedWeek, collapsed: true, onRow: open }) : null,
     w.clearedOlder.length ? section({ id: 'clearedOlder', title: 'Older cleared blockers', rows: w.clearedOlder, collapsed: true, onRow: open }) : null,
@@ -84,6 +87,7 @@ function paint() {
       flight,
       runsSec,
       section({ id: 'idle', title: 'Idle', rows: s.idle, collapsed: true, empty: 'Nothing idle.', onRow: open }),
+      // warning-path: row
       section({ id: 'older', title: 'Older, still open', rows: s.older.map((r) => ({ ...r, tone: r.needs ? 'attn' : 'unknown' })), collapsed: true, empty: 'Nothing untouched for two weeks.', onRow: open }),
       finished,
     ),
@@ -94,10 +98,7 @@ function paint() {
   let want = new URLSearchParams(path[1] || '').get('s');
   if (!want && /^work\/plans\/in-the-way/.test(path[0])) want = 'in-the-way';
   if (want) {
-    const sec = main.querySelector(`#sec-${want}`);
-    const head = sec && sec.querySelector('button.list-head[aria-expanded="false"]');
-    if (head) head.click();
-    if (sec) sec.scrollIntoView({ block: 'start' });
+    arrivalScroll(main.querySelector(`#sec-${want}`), { open: true });
   }
 }
 
@@ -196,7 +197,7 @@ function openProject(r, { post, topicHref, refresh }) {
       actionBox({ label: `OK, continue round ${acts.ack + 1}`, kind: 'primary', run: () => write('ack', 'ack', { forRoundIndex: acts.ack }), done })));
   }
   body.push(block('Rounds', track.length ? rounds : el('p', { class: 'card-line', text: 'No rounds on this plan yet.' })));
-  body.push(el('p', { class: 'drift', 'data-tone': drift.tone, text: drift.text }));
+  body.push(el('p', { class: 'drift', 'data-tone': drift.tone }, document.createTextNode(drift.text), drift.tone === 'attn' || drift.tone === 'bad' ? askLink(drift.text) : null));
   const chips = chipsOf(p, topicHref);
   if (chips) body.push(block('Links', chips));
   if (acts.stop !== null) {

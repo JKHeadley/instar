@@ -1,3 +1,5 @@
+import { storageErrorResponse } from '../core/storageMachineName.js';
+import { QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
 import type { Router, Request, Response } from 'express';
 import type { TelegramOriginRuntime } from '../messaging/telegram-origin/TelegramOriginRuntime.js';
 import { TelegramOriginHoldError } from '../messaging/telegram-origin/types.js';
@@ -93,6 +95,7 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       }));
       res.json(result);
     } catch (error) {
+      if (error instanceof QuietRecordedError) { res.json({ ok: true, ...error.receipt }); return; }
       if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
       else res.status(409).json({ error: 'telegram-browser-held', reason: 'browser-preparation-or-recording-unavailable', retryable: false });
     }
@@ -103,7 +106,14 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
     try {
       const result = await runtime.service.runWithSessionToken(req.get('X-Instar-Origin-Session') ?? '', () => browser.executor.broker.readSnapshot());
       res.json(result);
-    } catch { res.status(409).json({ error: 'telegram-browser-snapshot-unavailable' }); }
+    } catch (error) {
+      // Server-side diagnosis only; the response body stays the fixed hold code.
+      const name = error instanceof Error ? error.constructor.name : typeof error;
+      const message = error instanceof Error ? error.message : String(error);
+      // One string: the server's console wrapper prints an object argument as [object Object].
+      console.warn(`[telegram-origin] browser snapshot unavailable: profile=${req.params.profileId} class=${name} message=${message.slice(0, 200)}`);
+      res.status(409).json({ error: 'telegram-browser-snapshot-unavailable' });
+    }
   });
   router.get('/telegram/origins/status', async (req, res) => {
     if (!operator(req, res)) return;
@@ -175,8 +185,8 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       // @silent-fallback-ok — not silent: answers 503 origin-store-unavailable (or delivered from the fallback record)
       const verdict = classifyOperationOutcome(operationId, null, captured);
       if (verdict.outcome === 'delivered') { res.json({ ...verdict, storeAvailable: false }); return; }
-      res.status(503).json({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
-        detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' });
+      res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
+        detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' }, req.app.locals.stateDir));
       return;
     }
     const verdict = classifyOperationOutcome(operationId, audit, captured);
@@ -227,5 +237,43 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
       else res.status(409).json({ error: 'telegram-origin-held', reason: 'origin-session-unavailable', retryable: false });
     }
+  });
+  // Typed Telegram test groups (docs/specs/telegram-test-groups.md). Same session
+  // credential as send; the TelegramTestGroups instance holds every other gate.
+  const testGroupsFor = async (req: Request, res: Response) => {
+    const runtime = deps.runtime(), browser = runtime?.browsers.get(String(req.params.profileId));
+    if (!runtime || !browser?.testGroups) { res.status(503).json({ error: 'telegram-browser-not-enrolled' }); return null; }
+    try {
+      const producer = await runtime.service.sessionProducer(req.get('X-Instar-Origin-Session') ?? '');
+      return { testGroups: browser.testGroups, producer: { originMachineId: producer.originMachineId, harnessId: producer.harnessId, sessionId: producer.sessionId } };
+    } catch (error) {
+      // @silent-fallback-ok — not silent: an unverified session is refused with an explicit 409, never served.
+      if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
+      else res.status(409).json({ error: 'telegram-origin-held', reason: 'session-unverified', retryable: false });
+      return null;
+    }
+  };
+  router.get('/telegram/browser/:profileId/test-groups', async (req, res) => {
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.list();
+    res.status(result.status).json(result.body);
+  });
+  router.post('/telegram/browser/:profileId/test-groups', async (req, res) => {
+    const body = req.body ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['title', 'bot'].includes(key))) {
+      res.status(400).json({ error: 'invalid-test-group-request' }); return;
+    }
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.create({ title: body.title, bot: body.bot }, found.producer);
+    res.status(result.status).json(result.body);
+  });
+  router.post('/telegram/browser/:profileId/test-groups/:channelId/delete', async (req, res) => {
+    const body = req.body ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) {
+      res.status(400).json({ error: 'invalid-test-group-request' }); return;
+    }
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.delete(String(req.params.channelId), found.producer);
+    res.status(result.status).json(result.body);
   });
 }

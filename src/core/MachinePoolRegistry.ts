@@ -228,6 +228,8 @@ export class MachinePoolRegistry {
        *  carry-forward must never impersonate freshness (git beats refresh
        *  liveness without an advert; the evaluator needs the REAL advert age). */
       coherence?: { advert: NonNullable<MachineCapacity['coherenceAdvert']>; receivedAtMs: number };
+      /** When a beat last actually carried seamlessnessFlags; the same pattern as `coherence.receivedAtMs`. */
+      flagsReceivedAtMs?: number;
       /** Clamp-rejection marker (spec M4): REPLACES the advert for evaluation
        *  purposes while set (the last good advert above is retained for
        *  forensics only); cleared by the next clean advert. */
@@ -238,6 +240,8 @@ export class MachinePoolRegistry {
     }
   >();
   private readonly liveReceivedMonoMs = new Map<string, number>();
+  /** Last direct pull's quota and channel signals, for reports only; placement never reads this. */
+  private readonly directAdverts = new Map<string, { quotaState?: MachineCapacity['quotaState']; servesChannels?: MachineCapacity['servesChannels'] }>();
   /**
    * Evidence slots (trustworthy-machine-load A1), kept APART and never merged:
    * the last direct success (wall receipt time), the recent direct attempts
@@ -271,6 +275,9 @@ export class MachinePoolRegistry {
   recordHeartbeat(obs: HeartbeatObservation & { rttMs?: number }): ClockSkewSideEffect {
     const nowMs = this.now();
     if (!obs.coarseHeartbeat) this.liveReceivedMonoMs.set(obs.machineId, this.monoNow());
+    if (!obs.coarseHeartbeat && obs.loadReport) {
+      this.directAdverts.set(obs.machineId, { quotaState: obs.quotaState, servesChannels: obs.servesChannels });
+    }
     this.recordEvidence(obs, nowMs);
     const prev = this.observed.get(obs.machineId);
     // COARSE beats (the git-synced file MachineHeartbeat) NEVER drive the clock-skew
@@ -345,7 +352,8 @@ export class MachinePoolRegistry {
         obsToStore = { ...obsToStore, selfReportedLastSeen: prev.obs.selfReportedLastSeen };
       }
     }
-    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, obs: obsToStore, skew: next, posture, coherence, coherenceRejected, load });
+    const flagsReceivedAtMs = obs.seamlessnessFlags !== undefined ? nowMs : prev?.flagsReceivedAtMs;
+    this.observed.set(obs.machineId, { routerReceivedAtMs: nowMs, flagsReceivedAtMs, obs: obsToStore, skew: next, posture, coherence, coherenceRejected, load });
     if (sideEffect === 'removed') {
       this.d.onClockQuarantine?.(
         obs.machineId,
@@ -387,6 +395,11 @@ export class MachinePoolRegistry {
 
   private selfId(): string | null | undefined {
     try { return this.d.selfMachineId?.(); } catch { return undefined; /* @silent-fallback-ok — unresolved self id: treat every machine as a peer (display only) */ }
+  }
+
+  /** This process's recent direct attempts to a machine (a copy, oldest first), for callers that weigh failures. */
+  directAttempts(machineId: string): DirectAttempt[] {
+    return [...(this.attempts.get(machineId) ?? [])];
   }
 
   /** Record a failed direct attempt and its shape (A1 `lastDirectFailure`). */
@@ -449,6 +462,18 @@ export class MachinePoolRegistry {
     return this.assemble(known);
   }
 
+  /**
+   * The capacity row with the last direct pull's quota and channel signals restored. Those two
+   * fields are deliberately not carried across a coarse beat for placement (see recordHeartbeat),
+   * but a report must not read a coarse beat as "this peer stopped serving". Read-only.
+   */
+  getCapacityForReport(machineId: string): MachineCapacity | null {
+    const row = this.getCapacity(machineId);
+    if (!row) return null;
+    const advert = this.directAdverts.get(machineId);
+    return advert ? { ...row, quotaState: advert.quotaState, servesChannels: advert.servesChannels } : row;
+  }
+
   /** Assemble the full pool view (§L2) — the data behind GET /pool. */
   getCapacities(): MachineCapacity[] {
     return this.d.listMachines().map((m) => this.assemble(m));
@@ -468,6 +493,9 @@ export class MachinePoolRegistry {
       !!live && nowMs - live.routerReceivedAtMs < this.d.failoverThresholdMs;
     const direct = this.directSuccess.get(known.machineId);
     const saved = direct ? null : this.d.evidenceStore?.get(known.machineId) ?? null;
+    const freshReport = live?.load && isLoadReportFresh(live.load.report, live.load.receivedAtMs, nowMs)
+      ? live.load.report
+      : null;
     const liveness = deriveLiveness({
       isSelf: known.machineId === this.selfId(),
       nowMs,
@@ -486,8 +514,11 @@ export class MachinePoolRegistry {
       routerReceivedAt: live ? new Date(live.routerReceivedAtMs).toISOString() : undefined,
       loadAvg: live?.obs.loadAvg,
       memPressure: live?.obs.memPressure,
-      activeSessionCount: live?.obs.activeSessionCount,
-      maxSessions: live?.obs.maxSessions,
+      // A peer's beat carries the load report, not these fields, so a fresh report
+      // fills them. A stale one fills nothing: an old count must never make a machine
+      // look free (Overload shed needs `maxSessions` to accept a target at all).
+      activeSessionCount: live?.obs.activeSessionCount ?? freshReport?.sessionsActive ?? undefined,
+      maxSessions: live?.obs.maxSessions ?? freshReport?.sessionsMax ?? undefined,
       capabilities: known.capabilities,
       modelsAvailable: known.modelsAvailable,
       agentsResident: known.agentsResident,
@@ -526,6 +557,7 @@ export class MachinePoolRegistry {
       // withdrawal flips a boolean inside a still-present object and DOES
       // propagate.
       seamlessnessFlags: live?.obs.seamlessnessFlags,
+      ...(live?.flagsReceivedAtMs !== undefined ? { seamlessnessFlagsReceivedAt: new Date(live.flagsReceivedAtMs).toISOString() } : {}),
       // Machine-coherence advert (§3.2): rejection REPLACES the advert for
       // evaluation purposes (M4 — rejected ≠ absent; the evaluator classifies
       // `advert-rejected`, a loud named condition). The receipt time is the

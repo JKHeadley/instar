@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "amendment6-owned-custody",
+  "sessionId": "2f41377b-3db2-454e-8a47-453f524c685c",
+  "timestamp": "2026-11-06T10:30:21.561Z",
+  "artifactPath": "upgrades/side-effects/amendment6-owned-custody.md",
+  "artifactSha256": "de01c5d1335655d6fc0de6b8da8c308ae2cd9f29e4a688082e576b5c5dd210f3",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/amendment6-owned-custody-building-2026-11-06.json",
+    "docs/specs/amendment6-owned-custody.eli16.md",
+    "docs/specs/reports/amendment6-owned-custody-review-2026-11-06.md",
+    "docs/standards-registry-area-audits.json",
+    "upgrades/next/amendment6-owned-custody.md",
+    "upgrades/side-effects/amendment6-owned-custody.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Constitution text only, one article; no runtime code; a revert fully undoes it.",
+  "eli16Path": "docs/specs/amendment6-owned-custody.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/amendment6-owned-custody.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

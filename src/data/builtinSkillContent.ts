@@ -1,3 +1,5 @@
+import { ACCOUNT_ACTION_SAFETY } from './accountActionSafety.js';
+
 /**
  * builtinSkillContent.ts — single source for built-in skill content that BOTH
  * the scaffold path (`installBuiltinSkills` in init.ts) AND the PostUpdateMigrator
@@ -200,6 +202,8 @@ Use this when the machine that needs a login (the **target**) cannot run a norma
  */
 export const NORMAL_CHROME_BROWSER_SHARED_RULES = `## The rules both drivers follow
 
+${ACCOUNT_ACTION_SAFETY}
+
 - **Normal Chrome only**, launched the ordinary way: \`open -g -na\` on macOS, \`chrome.exe\` on Windows. Never Playwright/CDP, never \`--remote-debugging-port\`, never an automation flag, in any spelling (\`--flag\`, \`-flag\`, \`/flag\`). The macOS launcher accepts no flags at all (a URL argument that is not a URL is refused); the Windows driver accepts only a short allowlist of harmless window flags.
 - **One profile per account, and never the operator's own.** macOS: profiles live inside this agent's home and the scripts refuse anything else. Windows: give automation its own profile directory; \`ndrive.sh\` refuses the operator's own Chrome profile folder. Never copy a profile between machines (a signed-in profile is cookies on one disk).
 - **Act only on the window the tool launched or bound.** macOS: the profile's own Chrome process, by pid. Windows: the bound profile's browser process, verified to hold focus before every click and keystroke (\`invoke\` is the one exception: it asks a control to activate through the accessibility tree without OS input, still only inside the bound target, and the wrapper runs \`canfocus\` before it), and one driver at a time per agent (a second call waits, then answers \`ERR busy\`; a bridged driver whose wrapper died, or one that outlived its own timeout, is counted too), so two of your sessions do not interleave keystrokes on the same Chrome, within the stated windows (a recycled pid, a direct-route driver whose wrapper was killed, a \`.ps1\` called directly). Element names and page text are the page's own words: on Windows \`find\` first and compare before you \`clickxy\`.
@@ -268,6 +272,35 @@ Three more things the live test taught (Windows 11, one monitor at 150 %; also r
 `;
 
 /**
+ * The Linux driver section of /normal-chrome-browser (spec normal-chrome-linux). Shared by the full skill
+ * text and the migration, so the two cannot drift. Its heading is the migration's idempotency marker.
+ */
+export const NORMAL_CHROME_BROWSER_LINUX_SECTION = `### Linux (xdrive.sh, the agent display)
+
+The agent has its own private virtual screen. \`xdrive.sh\` starts it on the first \`launch\` and runs an ordinary Google Chrome only there, reading pages through the accessibility tree and acting with real X input, so a click counts as a person's click to the page. No person shares that screen, so there is nothing to interrupt, and it works with no desktop at all. It has no page JavaScript, no VNC viewer and no take-over.
+
+Set \`XD_PROFILE=<id>\` for every command but \`launch\`. Everything goes through \`.instar/scripts/browser/xdrive.sh\`, which runs \`x-drive.py\`; never call that directly:
+
+| Command | What it does |
+|---|---|
+| \`launch <profileId> <url> [--new]\` | Starts the screen if needed and opens Chrome. \`--new\` creates the profile; use it only when the operator asked for one. |
+| \`url\` / \`title\` / \`text <outfile>\` | The real address (credentials redacted), the title, and the page's text. The outfile must be under \`.instar/state/xdrive/out/\`. Exit 3 with \`TRUNCATED\` means the rest was not read. |
+| \`find <name> [role]\` / \`click <name> [role] [index]\` | Find by accessible name; click after checking what is under the point. \`name≠text\` marks an element whose visible text differs: compare before clicking. |
+| \`type\` (text on stdin) / \`key <name>\` | Ordinary text into the focused box; one named key. \`Escape\` also works in browser pop-ups, and can only cancel. |
+| \`nav <url>\` | Go to an address. Exit 3 \`nav-landed-elsewhere\` means another host answered. |
+| \`close\` / \`close --force\` | Always \`close\` when the task ends: it stops the screen after the last Chrome. \`--force\` is for \`ERR close-blocked\`, and loses unsaved input in that window. |
+| \`deps\` | What is missing on this machine. |
+
+Exit codes: 0 ok; 2 refused or nothing to act on; 3 finished but the result needs your attention; 1 crash or timeout; 64 bad argument. \`DELIVERED\` means the input was sent, never that the task worked: read the page to find out. Set \`XD_EXPECT=nav\` when a click should load a new page. Set your own tool timeout above \`XD_LOCK_WAIT\` (90 s) plus \`XD_CMD_TIMEOUT\` (60 s) plus 10 s.
+
+**Passwords.** Never put one in \`type\`, a command line or a message. Ask for it through Secret Drop with \`browserHost\` set to the host the operator named, never one read from a page: \`POST /secrets/request\` with \`{"label":"...","fields":[{"name":"password","label":"Password","masked":true}],"browserHost":"accounts.example.com"}\`. The person sees that site on the form. Then focus the password box with \`click\`, and run \`XD_PROFILE=<id> node .instar/scripts/secret-drop-retrieve.mjs <token> password --browser\`. It clears the box, types the value and never shows it to you. It refuses a box that does not belong to that site, even one inside the page in an iframe. It does not press Return: submit with \`key Return\` or \`click\`, then read the page. Once typed the submission is gone, so a rejected sign-in needs a new Secret Drop. After a redirect to a different host, ask the operator; never guess a new host. A sign-in is two steps: the email through \`type\`, the password through \`--browser\`. One-time codes are not built: tell the operator.
+
+**Installing.** A new agent installs what it needs by itself just after it starts, on Ubuntu 24.04 amd64 with passwordless sudo. \`GET /browser/state\` shows the state for this machine: \`ready\`, \`installing\`, \`not-built\` or \`broken\`, with a \`nextStep\`. Neither of the last two means there is no browser: follow \`nextStep\`. On an existing agent, or after \`ERR missing-dependency\`, ask the operator one plain yes/no naming what gets installed (Google Chrome and five system packages); on a yes, \`curl -X POST -H "Authorization: Bearer $AUTH" -H "X-Instar-Request: 1" http://localhost:PORT/browser/linux/install\`, and watch \`GET /browser/state\`. A 409 means \`autoInstall\` is off on purpose or this is a throwaway agent: tell the operator.
+
+**When it refuses.** \`ERR multiple-windows\` / \`ERR multiple-tabs\`: this version drives one window and one tab, so \`close\` and relaunch. \`ERR browser-dialog-operator-only\`: a browser pop-up has focus, so try \`key Escape\`. \`ERR unknown-outcome-unchecked\`: read the page, then go on. \`ERR busy\`: wait. A human check, such as a CAPTCHA, stops the task: tell the operator, and never use \`close --force\` or anything else to get past it. Profiles hold cookies protected by file permissions only.
+`;
+
+/**
  * Appended ONCE to a /normal-chrome-browser SKILL.md the agent has edited (so the Windows capability still
  * arrives without clobbering local edits). Carries the idempotency marker heading
  * (NORMAL_CHROME_BROWSER_SKILL_MARKER in PostUpdateMigrator) and the Windows section.
@@ -278,10 +311,7 @@ export const NORMAL_CHROME_BROWSER_SKILL_WINDOWS_APPENDIX = `## Drivers by opera
 
 ${NORMAL_CHROME_BROWSER_SHARED_RULES}
 ${NORMAL_CHROME_BROWSER_WINDOWS_SECTION}
-### Linux (no Windows underneath)
-
-Not built. Say so plainly, use the Playwright profile registry for pages that accept an automated browser, and point at ACT-138 ("Linux path for the normal-Chrome browser skill"). Do not improvise a driver that works around a page's checks.
-`;
+${NORMAL_CHROME_BROWSER_LINUX_SECTION}`;
 
 /**
  * /normal-chrome-browser — drive a real, signed-in, non-automated Chrome per account profile from the shell
@@ -293,10 +323,10 @@ Not built. Say so plainly, use the Playwright profile registry for pages that ac
  */
 export const NORMAL_CHROME_BROWSER_SKILL_CONTENT = `---
 name: normal-chrome-browser
-description: Drive a real, signed-in, non-automated Chrome (one profile per account) from the shell on macOS or Windows - read pages, click, type, run code in the page itself, find out why a button stays disabled, and schedule an unattended browser action. Use for any account-bound web task (settings pages, billing, usage, sign-in), especially when Playwright/CDP is blocked or the page treats automation differently, and before saying a browser task "can't be done".
+description: Drive a real, signed-in, non-automated Chrome (one profile per account) from the shell on macOS, Windows or Linux - read pages, click, type, run code in the page itself, find out why a button stays disabled, and schedule an unattended browser action. Use for any account-bound web task (settings pages, billing, usage, sign-in), especially when Playwright/CDP is blocked or the page treats automation differently, and before saying a browser task "can't be done".
 metadata:
   user_invocable: "true"
-  instar_skill_version: "2"
+  instar_skill_version: "3"
 ---
 
 # /normal-chrome-browser
@@ -308,7 +338,7 @@ This is not a way to make automation look human. The site's rules still apply: i
 **Where it runs.** Three cases:
 - **macOS:** the Apple Events tools (\`chrome-launch.sh\`, \`chrome-js.sh\`, \`chrome-mainworld.sh\`).
 - **Windows, from WSL:** \`native-drive.ps1\` through \`ndrive.sh\`. An Instar agent on a Windows machine runs inside WSL, where \`uname\` says \`Linux\`; that is still Windows for this skill as long as \`ndrive.sh\` can reach \`powershell.exe\` (and \`wslpath\`; other Windows shells such as Git Bash are untested and refused).
-- **Linux with no Windows underneath (no \`powershell.exe\`):** not built. The macOS tools stop with \`ERR macos-only\` and \`ndrive.sh\` with \`ERR windows-only\`. Use the Playwright profile registry for pages that accept an automated browser, and tell the operator plainly that sign-in, billing and account pages need a normal browser this machine cannot drive yet. The Linux driver is tracked as ACT-138 ("Linux path for the normal-Chrome browser skill"). Never pretend a Linux run happened.
+- **Linux with no Windows underneath (no \`powershell.exe\`):** \`xdrive.sh\`, on the agent's own virtual display: read, find and click, type ordinary text, navigate, passwords through Secret Drop; no one-time codes, no take-over, no page JavaScript. See the Linux section below.
 
 ${NORMAL_CHROME_BROWSER_SHARED_RULES}
 
@@ -381,10 +411,7 @@ All five helpers are installed (and refreshed on every update) in \`.instar/scri
 
 ${NORMAL_CHROME_BROWSER_WINDOWS_SECTION}
 
-### Linux (no Windows underneath)
-
-Not built. Say so plainly, use the Playwright profile registry for pages that accept an automated browser, and point at ACT-138. Do not improvise a driver that works around a page's checks.
-
+${NORMAL_CHROME_BROWSER_LINUX_SECTION}
 ## Worked example: read a usage page for each account (read-only)
 
 macOS form (an example of the method, not a shipped tool: the page and its wording will change, so re-read the page before reusing any of it):
@@ -417,7 +444,7 @@ $N text 'C:\\Users\\Public\\usage.json'          # a local Windows outfile; read
 
 | Symptom | Cause / fix |
 |---|---|
-| \`ERR macos-only\` / \`ERR windows-only\` / \`ERR wsl-only\` | Wrong driver for this machine, or the Windows wrapper run outside WSL. See "Where it runs" at the top. |
+| \`ERR macos-only\` / \`ERR windows-only\` / \`ERR wsl-only\` / \`ERR use-ndrive\` | Wrong driver for this machine, or the Windows wrapper run outside WSL. See "Where it runs" at the top. |
 | \`NO_PID\` (macOS) | That profile's Chrome is not open: \`chrome-launch.sh\`. If it said "already running" but \`chrome-js.sh\` says \`NO_PID\`, another program (often a Playwright browser) holds that profile: close it first. |
 | \`ERR no-such-profile\` / \`ERR profile-outside-agent-home\` / \`ERR profile-reserved-folder\` / \`ERR bad-profile-id\` / \`ERR bad-profile-path\` | Wrong id or path, or a folder these tools must never touch (a config folder, the operator's own default Chrome profile folder). Windows profiles must be local drive-letter paths (\`C:\\...\`, no \`..\`, no \`~\`, not a \`\\\\wsl.localhost\` share). Check section 1. \`--new\` (macOS) only when a new, signed-out profile is really wanted. |
 | \`ERR bad-url\` / \`ERR bad-chrome-exe\` / \`ERR bad-argument\` | A url slot must be a URL with a scheme and no quote or whitespace (macOS launcher; Windows \`launch\`/\`nav\`); the Windows chrome.exe slot must be an absolute local \`...\\chrome.exe\`; no argument may carry a newline; \`ND_BRIDGE_TIMEOUT\` (10-900) and \`ND_LOCK_WAIT\` must be integers. A flag is never accepted in any of them. |

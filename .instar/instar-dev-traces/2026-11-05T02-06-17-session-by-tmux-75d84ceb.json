@@ -1,0 +1,15 @@
+{
+  "version": 2,
+  "slug": "session-by-tmux",
+  "sessionId": "f3f374fe-1740-4fac-8bbf-c32c8b60e738",
+  "timestamp": "2026-11-05T02:06:17.409359Z",
+  "artifactPath": "upgrades/side-effects/session-by-tmux.md",
+  "artifactSha256": "dc2b00bc35183501cb50f9f7fc677008a51890a688c8d5b7e24fb9ee0c2a4505",
+  "specPath": "docs/specs/session-pool-rebalancing-finish.md",
+  "coveredFiles": [
+    "tests/e2e/resume-heartbeat-framework-lifecycle.test.ts"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

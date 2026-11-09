@@ -84,8 +84,11 @@ export class ChannelManager {
   }
 
   /** Get channel info. */
-  async getChannelInfo(channelId: string): Promise<SlackChannel> {
-    const result = await this.api.call('conversations.info', { channel: channelId });
+  async getChannelInfo(channelId: string, opts?: { includeMembers?: boolean }): Promise<SlackChannel> {
+    const result = await this.api.call('conversations.info', {
+      channel: channelId,
+      ...(opts?.includeMembers ? { include_num_members: true } : {}),
+    });
     return result.channel as SlackChannel;
   }
 
@@ -101,6 +104,16 @@ export class ChannelManager {
     const messages = (result.messages as SlackMessage[]) ?? [];
     // Slack returns newest-first; reverse to oldest-first
     return messages.reverse();
+  }
+
+  /** Cold-start history for one thread; channel history omits its replies. */
+  async getThreadHistory(channelId: string, threadTs: string, limit = 50): Promise<SlackMessage[]> {
+    const result = await this.api.call('conversations.replies', {
+      channel: channelId,
+      ts: threadTs,
+      limit: Math.min(limit, 200),
+    });
+    return ((result.messages as SlackMessage[]) ?? []).map(m => ({ ...m, channel: channelId }));
   }
 
   /** Find a channel by name (returns first match or null). */

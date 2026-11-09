@@ -1,0 +1,47 @@
+{
+  "version": 3,
+  "slug": "improvement-measurement-contracts",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T01:34:00.341Z",
+  "artifactPath": "upgrades/side-effects/improvement-measurement-contracts.md",
+  "artifactSha256": "366907d04c202722c1450cfa43ec0789932e9da27fd4df6bfcdbed35003402c3",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-06T01-31-41-862Z-improvement-measurement-contracts-51667738.json",
+    "docs/specs/carriers/improvement-measurement-contracts.json",
+    "docs/specs/improvement-measurement-contracts.eli16.md",
+    "docs/specs/improvement-measurement-contracts.md",
+    "src/core/FeatureRolloutReconciler.ts",
+    "src/core/InitiativeTracker.ts",
+    "src/core/featureRolloutScan.ts",
+    "src/monitoring/BlockerLifecycleLedger.ts",
+    "src/monitoring/BlockerLifecycleService.ts",
+    "src/monitoring/MaturationLadder.ts",
+    "src/monitoring/MaturationLadderService.ts",
+    "src/monitoring/MaturationOutcome.ts",
+    "src/server/routes.ts",
+    "tests/integration/blocker-throughput-pool-routes.test.ts",
+    "tests/integration/maturation-outcome-route.test.ts",
+    "tests/unit/MaturationLadder.test.ts",
+    "tests/unit/MaturationLadderService.test.ts",
+    "tests/unit/MaturationOutcome-ledger.test.ts",
+    "tests/unit/MaturationOutcome.test.ts",
+    "tests/unit/feature-maturation-contract.test.ts",
+    "tests/unit/feature-rollout-reconciler.test.ts",
+    "upgrades/next/improvement-measurement-contracts.md",
+    "upgrades/side-effects/improvement-measurement-contracts.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible optional metadata and bounded indexed read proof; no schema migration or new effect/promotion authority.",
+  "eli16Path": "docs/specs/improvement-measurement-contracts.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/improvement-measurement-contracts.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

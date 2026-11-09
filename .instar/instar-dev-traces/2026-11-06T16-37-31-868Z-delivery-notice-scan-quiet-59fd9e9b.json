@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "slug": "delivery-notice-scan-quiet",
+  "sessionId": "f3fbed0d-bc6e-429f-8ada-90cc1889db4a",
+  "timestamp": "2026-11-06T16:37:31.868Z",
+  "artifactPath": "upgrades/side-effects/delivery-notice-scan-quiet.md",
+  "artifactSha256": "ab4254e5ab3e4030c3852367d4dc6f5ab4881125423e43896671266e24519864",
+  "coveredFiles": [
+    "docs/eli16/delivery-notice-scan-quiet.eli16.md",
+    "site/src/content/docs/features/quiet-notifications.md",
+    "site/src/content/docs/reference/default-jobs.md",
+    "src/commands/server.ts",
+    "src/messaging/TelegramAdapter.ts",
+    "src/messaging/telegram-origin/SessionDeliveryReporter.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/e2e/telegram-origin-runtime-lifecycle.test.ts",
+    "tests/integration/session-delivery-reporting.test.ts",
+    "tests/integration/telegram-origin-mesh.test.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "upgrades/next/delivery-notice-scan-quiet.md",
+    "upgrades/side-effects/delivery-notice-scan-quiet.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Reversible producer-custody bug repair; no conversation or recovery blocking, durable schema change, or protocol change. Record-only reconciliation uses existing local session capability and audited closure.",
+  "eli16Path": "docs/eli16/delivery-notice-scan-quiet.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/delivery-notice-scan-quiet.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "instar-dev",
+        "outcome": "concurred",
+        "verified": false,
+        "iterations": 2
+      }
+    ]
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "relatedPrs": [
+      2819
+    ],
+    "notes": "The durable exception scanner used a shared callback that initiated one topic notice for each historical reply without new conversational authority. PR2819 quiets this producer only in enforcing mode; it does not change the scanner and was absent from the reported running version. The fix removes egress from scan reconciliation while preserving live failure reporting."
+  },
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The only remaining notice send is the existing one-shot live failure callback for an original conversational send. The historical self-triggered scan is changed to a strictly record-only operation with zero notify actions, including repeated scans and restart; no controller, retry, spawn or recovery loop is added. Live reporting also requires the existing local session producer capability, so historical holder submissions remain record-only."
+  }
+}

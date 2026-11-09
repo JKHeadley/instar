@@ -10,8 +10,8 @@
 import {
   buildSessions, sessionsHeadline, sessionsFacts, partialWords, titleLine, closeRequest, closeConfirmWords,
   closeResultWords, doorChoices, modelChoices, doorModelWords, regimeWords, machineChoices, PLATFORMS,
-  platformAllowsDoor, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
-  canSwitchDoor, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
+  platformAllowsDoor, platformAllowsMachine, newRequestId, createBody, createResultWords, defaultWords, profileSourceWords, switchLanded,
+  canSwitchDoor, profileKeyOf, DOOR, attachmentMessage, historyUrl, historyErrorWords, historyText, topicOf, topicHistoryUrl, topicHistoryEntry, TOPIC_HISTORY_PAGE, KEYS, STOP_KEY, frame, nextHistoryBatch, streamErrorWords, composerRows, modelWords, HISTORY_FIRST,
 } from './sessions-model.js';
 import { el, setKids, pageHead, sheet, closeSheet, story, details, note, noteLinked, cantTell, MACHINES_PAGE } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -48,6 +48,8 @@ async function send(method, path, body, extraHeaders = {}) {
 }
 
 const wantKey = () => new URLSearchParams((location.hash.split('?')[1] || '')).get('s');
+/** A question brought from another page (Health's "Ask the agent about this"): it waits in the next message box opened. */
+const wantAsk = () => new URLSearchParams((location.hash.split('?')[1] || '')).get('ask');
 const listHref = '#/work/sessions';
 const openHref = (key) => `#/work/sessions?s=${encodeURIComponent(key)}`;
 
@@ -61,6 +63,7 @@ const st = {
 
 export async function renderSessions(main, ctx) {
   st.main = main; st.ctx = ctx;
+  st.ask = wantAsk() || st.ask || null;
   // A refresh never rebuilds an open session: only the list half repaints.
   if (!main.querySelector('.sessions-page')) {
     leaveView();
@@ -113,7 +116,10 @@ function paintList(box, m, openKey) {
   const focused = box.contains(document.activeElement) ? document.activeElement.getAttribute('data-focus-key') : null;
   const h = sessionsHeadline(m);
   const parts = [pageHead({ eyebrow: 'Work · Sessions', headline: h.text, tone: h.tone, facts: sessionsFacts(m) })];
-  parts.push(el('div', { class: 'page-primary sess-new' }, el('button', { class: 'btn-primary btn-inline', type: 'button', text: '+ New session', 'data-new': '1', onclick: () => newSessionSheet() })));
+  parts.push(el('div', { class: 'page-primary sess-new' },
+    el('button', { class: 'btn-primary btn-inline', type: 'button', text: '+ New session', 'data-new': '1', onclick: () => newSessionSheet() }),
+    el('button', { class: 'btn-quiet btn-inline', type: 'button', text: 'Session settings', 'data-settings': '1', onclick: () => settingsSheet() })));
+  if (st.ask) parts.push(note('Your question is ready. Open a session and it will be waiting in the message box.'));
   if (!st.wsUp) parts.push(el('p', { class: 'stale-banner', role: 'status', text: 'Live updates paused, reconnecting.' }));
   if (m.ok && st.lastFailReason) {
     parts.push(cantTell(`Couldn’t refresh the list: ${st.lastFailReason}.`), note(`Showing the list from ${Math.max(1, Math.round((Date.now() - st.lastGoodAt) / 60000))} min ago.`));
@@ -241,6 +247,7 @@ function openView(box, row) {
   const resume = el('button', { class: 'btn-primary btn-inline sess-resume', type: 'button', text: '▼ Back to live', hidden: true });
   const more = el('button', { class: 'btn-quiet sess-more', type: 'button', 'aria-label': 'More', text: '⋯', 'data-more': '1' });
   const input = el('textarea', { class: 'reason-input sess-input', rows: '1', placeholder: 'Message…', 'aria-label': 'Message to the session' });
+  if (st.ask) { input.value = st.ask; input.rows = composerRows(st.ask); st.ask = null; }
   const sendBtn = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send', 'data-send': '1' });
   const keysBtn = el('button', { class: 'btn-quiet', type: 'button', text: 'Keys', 'aria-expanded': 'false', 'data-keys': '1' });
   // Attach: a screenshot or file, picked, pasted or dropped. Saved on this machine, so a
@@ -528,10 +535,10 @@ function moreSheet(view) {
     { label: 'Machine', text: s.machineNickname || 'This machine' },
     { label: 'Model', text: modelWords(s.model) || 'not recorded' },
     { label: 'Kind', text: s.type === 'job' ? 'a scheduled job' : 'a conversation' },
-    { label: 'Chat', text: s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)' },
+    { label: 'Chat', text: String(s.conversationRef || '').startsWith('app:') ? 'an Instar app conversation' : s.platform === 'telegram' ? 'a Telegram topic' : s.platform === 'slack' ? 'Slack' : s.platform === 'whatsapp' ? 'WhatsApp' : 'none (terminal only)' },
   ])];
   const actions = el('div', { class: 'sheet-actions sess-actions' });
-  if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Switch door and model', 'data-door': '1', onclick: () => doorSheet(view) }));
+  if (canSwitchDoor(s)) actions.append(el('button', { class: 'btn-primary btn-inline', type: 'button', text: `Switch ${DOOR.word} and model`, 'data-door': '1', onclick: () => doorSheet(view) }));
   blocks.push(actions, closeBlock(view));
   const t = s.telemetry || {};
   blocks.push(details({
@@ -583,14 +590,14 @@ const WRITE = { 'X-Instar-Request': '1' };
 
 async function doorSheet(view) {
   const s = view.s;
-  const now = el('p', { class: 'card-line', text: 'Reading this topic’s door…' });
-  const door = el('select', { class: 'reason-input', 'aria-label': 'Door' });
+  const now = el('p', { class: 'card-line', text: `Reading this conversation’s ${DOOR.word}…` });
+  const door = el('select', { class: 'reason-input', 'aria-label': DOOR.Word });
   const model = el('select', { class: 'reason-input', 'aria-label': 'Model' });
   const regime = el('p', { class: 'card-note', hidden: true });
   const status = el('p', { class: 'action-status', role: 'status' });
   const go = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Switch', 'data-switch': '1', disabled: true });
-  sheet({ title: 'Door and model' }, now, field('Door', door), field('Model', model), regime, go, status);
-  const [opt, prof] = await Promise.all([st.ctx.get('/topic-profile/options'), st.ctx.get(`/topic-profile/${encodeURIComponent(String(s.platformId))}`)]);
+  sheet({ title: `${DOOR.Word} and model` }, now, field(DOOR.Word, door), field('Model', model), regime, go, status);
+  const [opt, prof] = await Promise.all([st.ctx.get('/topic-profile/options'), st.ctx.get(`/topic-profile/${encodeURIComponent(profileKeyOf(s))}`)]);
   if (!opt.ok || !prof.ok) { now.textContent = `Can’t tell what it is on now: ${(!opt.ok ? opt : prof).reason}.`; return; }
   const options = opt.data; const p = prof.data;
   now.textContent = `Now: ${doorModelWords(options, p.resolved.framework, p.resolved.model)} (${profileSourceWords(p)}).`;
@@ -602,11 +609,11 @@ async function doorSheet(view) {
   go.addEventListener('click', async () => {
     go.disabled = true; status.textContent = 'Working…';
     const pick = { framework: door.value, model: model.value || null };
-    const x = await send('POST', `/topic-profile/${encodeURIComponent(String(s.platformId))}`, pick, WRITE);
+    const x = await send('POST', `/topic-profile/${encodeURIComponent(profileKeyOf(s))}`, pick, WRITE);
     const d = x.data || {};
     status.textContent = d.message || d.error || (x.ok ? 'Done.' : 'Refused.');
     go.disabled = false;
-    if (x.ok && !d.noop) watchSwitch({ topicId: String(s.platformId), model: pick.model, since: Date.now(), tmuxSession: s.tmuxSession, status });
+    if (x.ok && !d.noop) watchSwitch({ topicId: profileKeyOf(s), model: pick.model, since: Date.now(), tmuxSession: s.tmuxSession, status });
   });
 }
 
@@ -631,11 +638,56 @@ async function watchSwitch(job) {
   paint();
 }
 
+// ── Session settings: the defaults new sessions start on ─────────────────
+/**
+ * The default door and model for new topics, in `box`. Used by the Session settings sheet and
+ * inside New session. `base` is this machine's options; `onSaved` gets the fresh options.
+ */
+function defaultsForm(box, base, onSaved = () => {}) {
+  const dDoor = el('select', { class: 'reason-input', 'aria-label': `Default ${DOOR.word}` });
+  const dModel = el('select', { class: 'reason-input', 'aria-label': 'Default model' });
+  const dStatus = el('p', { class: 'action-status', role: 'status' });
+  const def = base.newTopicDefault || {};
+  fillSelect(dDoor, doorChoices(base), def.framework || '');
+  fillModels(dModel, base, dDoor.value, def.framework ? def.model : null);
+  dDoor.addEventListener('change', () => fillModels(dModel, base, dDoor.value, null));
+  const regime = regimeWords(base);
+  const save = async (body) => {
+    dStatus.textContent = 'Working…';
+    const x = await send('POST', '/topic-profile/new-topic-default', body, WRITE);
+    if (!x.ok) { dStatus.textContent = (x.data && x.data.error) || `Not saved: the server answered ${x.status || 'nothing'}.`; return; }
+    const fresh = await st.ctx.get('/topic-profile/options');
+    const after = fresh.ok ? fresh.data : base;
+    if (fresh.ok) onSaved(after);
+    dStatus.textContent = body.clear ? 'Cleared. Topics created here start on the agent defaults.' : `Saved: ${doorModelWords(after, body.framework, body.model)}.`;
+  };
+  setKids(box,
+    // The two pickers show what is in force; one plain line says where it applies.
+    el('p', { class: 'card-note', text: `For new sessions started from the dashboard or the app on ${(st.model && st.model.selfName) || 'this machine'}.` }),
+    field(`Default ${DOOR.word}`, dDoor), field('Default model', dModel),
+    regime ? el('p', { class: 'card-note', text: regime }) : null,
+    el('div', { class: 'confirm-row' },
+      el('button', { class: 'btn-quiet', type: 'button', text: 'Clear', 'data-default-clear': '1', onclick: () => save({ clear: true }) }),
+      el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Save default', 'data-default-save': '1', onclick: () => { if (dDoor.value) save({ framework: dDoor.value, model: dModel.value || null }); } })),
+    dStatus);
+}
+
+async function settingsSheet() {
+  const box = el('div', { class: 'sess-settings' }, el('p', { class: 'card-line', text: 'Reading the defaults…' }));
+  sheet({ title: 'Session settings' }, box);
+  const opt = await st.ctx.get('/topic-profile/options');
+  if (!opt.ok) {
+    setKids(box, cantTell(`Can’t read the defaults: ${opt.reason}.`), el('button', { class: 'btn-quiet', type: 'button', text: 'Try again', onclick: () => { closeSheet(); settingsSheet(); } }));
+    return;
+  }
+  defaultsForm(box, opt.data);
+}
+
 // ── New session ───────────────────────────────────────────────────────────
 async function newSessionSheet() {
   const name = el('input', { class: 'reason-input', type: 'text', maxlength: '120', placeholder: 'Bug: login loop', 'aria-label': 'Name' });
   const platform = el('select', { class: 'reason-input', 'aria-label': 'Where to talk to it' }, PLATFORMS.map((p) => el('option', { value: p.value, text: p.label })));
-  const door = el('select', { class: 'reason-input', 'aria-label': 'Door' });
+  const door = el('select', { class: 'reason-input', 'aria-label': DOOR.Word });
   const model = el('select', { class: 'reason-input', 'aria-label': 'Model' });
   const machine = el('select', { class: 'reason-input', 'aria-label': 'Machine' });
   const doorHint = el('span', { class: 'card-note' });
@@ -651,8 +703,8 @@ async function newSessionSheet() {
   const sync = () => {
     const allow = platformAllowsDoor(platform.value) && options;
     door.disabled = !allow; model.disabled = !allow || !door.value;
-    doorHint.textContent = !allow && options ? 'Door and model apply to Telegram topics only.' : 'You can change this again after the topic’s first message.';
-    machineField.hidden = !(machines && platformAllowsDoor(platform.value));
+    doorHint.textContent = !allow && options ? `${DOOR.Word} and model apply to a Telegram topic or an Instar app conversation.` : 'You can change this again later, from the session.';
+    machineField.hidden = !(machines && platformAllowsMachine(platform.value));
     if (machineField.hidden && machine.value) { machine.value = ''; onMachine(); }
     defLine.textContent = defaultWords(options);
   };
@@ -668,7 +720,7 @@ async function newSessionSheet() {
     status.textContent = '';
     if (v && machines && v !== machines.selfMachineId) {
       const r = await st.ctx.get(`/topic-profile/options?machine=${encodeURIComponent(v)}`);
-      if (r.ok) options = r.data; else status.textContent = `Couldn’t read that machine’s doors and models: ${r.reason}.`;
+      if (r.ok) options = r.data; else status.textContent = `Couldn’t read that machine’s ${DOOR.words} and models: ${r.reason}.`;
     } else options = localOptions;
     if (machine.value === v) fillDoors();
   };
@@ -678,50 +730,36 @@ async function newSessionSheet() {
 
   const changeDefault = el('button', { class: 'link-btn', type: 'button', text: 'Change the default', 'data-default': '1' });
   changeDefault.addEventListener('click', () => {
-    const dDoor = el('select', { class: 'reason-input', 'aria-label': 'Default door' });
-    const dModel = el('select', { class: 'reason-input', 'aria-label': 'Default model' });
-    const dStatus = el('p', { class: 'action-status', role: 'status' });
-    const base = localOptions || {};
-    const def = base.newTopicDefault || {};
-    fillSelect(dDoor, doorChoices(base), def.framework || '');
-    fillModels(dModel, base, dDoor.value, def.framework ? def.model : null);
-    dDoor.addEventListener('change', () => fillModels(dModel, base, dDoor.value, null));
-    const save = async (body) => {
-      dStatus.textContent = 'Working…';
-      const x = await send('POST', '/topic-profile/new-topic-default', body, WRITE);
-      if (!x.ok) { dStatus.textContent = (x.data && x.data.error) || `Not saved: the server answered ${x.status || 'nothing'}.`; return; }
-      const fresh = await st.ctx.get('/topic-profile/options');
-      if (fresh.ok) { localOptions = fresh.data; if (!machine.value || (machines && machine.value === machines.selfMachineId)) options = localOptions; fillDoors(); }
-      dStatus.textContent = body.clear ? 'Cleared. Topics created here start on the agent defaults.' : `Saved: ${doorModelWords(localOptions || base, body.framework, body.model)}.`;
-    };
-    setKids(defBox,
-      note(`Applies to new topics created from the dashboard on ${(st.model && st.model.selfName) || 'this machine'}. Topics started in Telegram, and your other machines, keep their own.`),
-      field('Door', dDoor), field('Model', dModel),
-      el('div', { class: 'confirm-row' },
-        el('button', { class: 'btn-quiet', type: 'button', text: 'Clear', 'data-default-clear': '1', onclick: () => save({ clear: true }) }),
-        el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Save default', 'data-default-save': '1', onclick: () => { if (dDoor.value) save({ framework: dDoor.value, model: dModel.value || null }); } })),
-      dStatus);
+    defaultsForm(defBox, localOptions || {}, (fresh) => {
+      localOptions = fresh;
+      if (!machine.value || (machines && machine.value === machines.selfMachineId)) options = localOptions;
+      fillDoors();
+    });
   });
 
+  // One id per intended create: a retry after a timeout reuses it, so it never makes a second conversation.
+  let requestId = newRequestId();
   go.addEventListener('click', async () => {
-    const req = createBody({ name: name.value, platform: platform.value, framework: door.disabled ? '' : door.value, model: model.disabled ? '' : model.value, machine: machineField.hidden ? '' : machine.value }, options);
+    const req = createBody({ name: name.value, platform: platform.value, framework: door.disabled ? '' : door.value, model: model.disabled ? '' : model.value, machine: machineField.hidden ? '' : machine.value, requestId }, options);
     if (!req.ok) { status.textContent = req.problems.join(' '); name.focus(); return; }
     go.disabled = true; status.textContent = 'Starting…';
     const x = await send('POST', '/sessions/create', req.body, WRITE);
+    // A definite answer ends this create; a timeout or a server fault keeps the id for the retry.
+    if (x.status >= 200 && x.status < 500) requestId = newRequestId();
     const w = createResultWords(x.status, x.data, req.body.name);
     status.textContent = w.text;
     go.disabled = false;
     if (w.ok) { setTimeout(() => { closeSheet(); renderSessions(st.main, st.ctx); }, w.warn ? 2500 : 1200); }
   });
 
-  sheet({ title: 'New session' }, field('Name', name), field('Where to talk to it', platform), field('Door', door, doorHint), field('Model', model), regime, machineField,
+  sheet({ title: 'New session' }, field('Name', name), field('Where to talk to it', platform), field(DOOR.Word, door, doorHint), field('Model', model), regime, machineField,
     el('div', { class: 'sess-default-row' }, defLine, changeDefault), defBox, go, status);
   setTimeout(() => name.focus(), 50);
   const [optRes, poolRes] = await Promise.all([st.ctx.get('/topic-profile/options'), st.ctx.get('/pool')]);
   localOptions = optRes.ok ? optRes.data : null; options = localOptions;
-  if (!optRes.ok) doorHint.textContent = `Can’t list doors: ${optRes.reason}. The session starts on the agent default.`;
+  if (!optRes.ok) doorHint.textContent = `Can’t list ${DOOR.words}: ${optRes.reason}. The session starts on the agent default.`;
   machines = machineChoices(poolRes);
   if (machines) fillSelect(machine, machines.choices, '');
   fillDoors();
-  if (!optRes.ok) doorHint.textContent = `Can’t list doors: ${optRes.reason}. The session starts on the agent default.`;
+  if (!optRes.ok) doorHint.textContent = `Can’t list ${DOOR.words}: ${optRes.reason}. The session starts on the agent default.`;
 }

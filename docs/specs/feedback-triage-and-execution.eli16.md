@@ -34,3 +34,5 @@ Instar has a rule that anything it accepts must reach a deliberate end. Feedback
 ## November 2026 timeout amendment
 
 For a fix that changes a central source file, the worker's related-test check can touch much of Instar. That one check may now run for up to 45 minutes; other individual test and gate commands still have a 20-minute limit. A command that reaches its limit records a failure promptly, even if a child process keeps an output pipe open. This avoids a worker sitting indefinitely in verification. The full attempt still has a six-hour lease, and a timed-out check cannot publish a fix.
+
+Amendment, 2026-11-07: a fix's last check runs the existing tests related to its changed files, with a 45-minute limit. If that run times out with no failure printed, it now counts as "don't know", not as a failed attempt, and the pull request says so. The CI tests still have to pass before it can merge. This changed because a fix that had passed its own checks was thrown away by a slow run on a busy machine.

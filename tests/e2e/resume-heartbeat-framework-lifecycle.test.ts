@@ -121,7 +121,7 @@ describe('resume lookups follow the session framework — production lifecycle',
     const src = fs.readFileSync(path.join(ROOT, 'src', 'commands', 'server.ts'), 'utf8');
     expect(src).toContain("import { runResumeHeartbeatTick } from '../core/ResumeHeartbeat.js';");
     expect(src).toContain('runResumeHeartbeatTick({');
-    expect(src).toMatch(/frameworkResolver: \(sessionName\) => state\.listSessions\(\)\.find\(\(s\) => s\.tmuxSession === sessionName\)\?\.framework/);
+    expect(src).toMatch(/frameworkResolver: \(sessionName\) => state\.findSessionByTmux\(sessionName\)\?\.framework/);
     expect(src).toContain('new TopicResumeMap(config.stateDir, config.sessions.projectDir, config.sessions.tmuxPath)');
   });
 

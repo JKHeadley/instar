@@ -4,18 +4,17 @@
  * It never waits for a person inside a tool call (spec 4.3). With no terminal, a missing answer
  * or a step that needs the person records why and returns, and `--resume` continues.
  */
+import { isStorageError, nameStorageError } from '../../core/storageMachineName.js';
 import type {
   NarrativeState,
   WizardActionKind,
   WizardAnswers,
   WizardState,
 } from '../setup-wizard/state-machine.js';
+import type { StepResult } from '../../install/doorSteps.js';
 import type { InstallProgress, InstallStatus } from './progress.js';
 
-export type StepResult =
-  | { kind: 'done'; updates?: Partial<WizardAnswers>; note?: string }
-  | { kind: 'awaiting-person'; instruction: string; loginPid?: number; loginStamp?: string }
-  | { kind: 'failed'; message: string; nextStep: string };
+export type { StepResult };
 
 export type StepHandler = (answers: WizardAnswers, progress: InstallProgress) => Promise<StepResult>;
 
@@ -108,9 +107,10 @@ export async function runInstallFlow(options: RunInstallFlowOptions): Promise<In
     try {
       result = await handler(progress.answers, progress);
     } catch (err) {
+      const failure = err instanceof Error ? err.message : String(err);
       result = {
         kind: 'failed',
-        message: `"${state.action.description}" stopped on an error: ${err instanceof Error ? err.message : String(err)}`,
+        message: `"${state.action.description}" stopped on an error: ${isStorageError(failure) ? nameStorageError(failure) : failure}`,
         nextStep: 'Fix what it names if you can, then run instar install --resume.',
       };
     }

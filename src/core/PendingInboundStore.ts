@@ -50,6 +50,8 @@ export interface SenderEnvelope {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** A team phone's person, so the machine that delivers can judge them itself (team-roles-and-access §3.6). */
+  personKey?: string;
 }
 
 export interface PendingInboundRow {
@@ -700,6 +702,13 @@ export class PendingInboundStore {
       .prepare(`INSERT OR IGNORE INTO receipts (session_key, message_id, class, created_at) VALUES (?, ?, 'remote', ?)`)
       .run(sessionKey, messageId, nowIso);
     return res.changes === 1;
+  }
+
+  /** Read-only: has this remote message already been received here? */
+  hasRemoteReceipt(sessionKey: string, messageId: string): boolean {
+    return !!this.#db
+      .prepare(`SELECT 1 FROM receipts WHERE session_key = ? AND message_id = ? AND class = 'remote'`)
+      .get(sessionKey, messageId);
   }
 
   /** Flip the `injected` marker after the local inject completes (§3.4 remote

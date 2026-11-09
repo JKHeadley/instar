@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-06T16:46:31.166Z",
+  "slug": "epipe-crash-false-gone",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 11,
+  "loc": 114,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/LinuxDesktopHost.ts",
+      "src/core/PlainChromeReloginBrowser.ts",
+      "src/core/pipeErrorGuard.ts",
+      "src/core/uncaughtExceptionPolicy.ts",
+      "src/lifeline/ServerSupervisor.ts",
+      "src/messaging/telegram-origin/OriginCodexModelCanary.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/providers/adapters/openai-codex/observability/codexLiveRateLimitReader.ts",
+      "src/providers/adapters/pi-cli/transport/rpcClient.ts"
+    ],
+    "addedLines": 110,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "isServerSessionAlive has always caught every has-session error as false. Fix A (missing session overrides grace) made that a direct restart order on a 10-second tick. A host refusing spawns is a likely but unproven trigger."
+  },
+  "classClosure": null,
+  "verdict": "pass"
+}

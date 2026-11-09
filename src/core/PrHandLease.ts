@@ -27,10 +27,12 @@
  */
 
 import fs from 'node:fs';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import path from 'node:path';
 import os from 'node:os';
 import { SafeGitExecutor } from './SafeGitExecutor.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export type LeaseIntent = 'build' | 'rework' | 'merge';
 export type LeaseTombstoneStatus = 'released' | 'merged' | 'abandoned';
@@ -327,7 +329,7 @@ export class PrHandLease {
         priorMachineId: cur.holderMachineId,
       });
       if (forcedRelease || cur.holderMachineId !== this.d.machineId) {
-        this.attention('pr-lease-forced-release', `Branch ${key} lease force-released from topic ${observed.holderTopicId} (machine ${cur.holderMachineId}).`);
+        this.attention('pr-lease-forced-release', `Branch ${key} lease force-released from ${topicRef(observed.holderTopicId)} (machine ${cur.holderMachineId}).`);
       }
       return rec;
     });
@@ -484,6 +486,7 @@ export class PrHandLease {
     const n = (this.failOpenCounts.get(where) ?? 0) + 1;
     this.failOpenCounts.set(where, n);
     this.audit({ event: 'fail-open', where, count: n });
+    featureEvidence.record('monitoring.prHandLease', { kind: 'error', reason: `lease-state-fail-open:${where}`, context: { where, count: n } });
     if (n >= 3) {
       this.attention('pr-lease-failopen', `pr-hand-leases.json repeatedly unreadable (${n}x at ${where}) — lease protection degraded; check the state file.`);
     }

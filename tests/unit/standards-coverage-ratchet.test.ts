@@ -1272,7 +1272,11 @@ describe('standards-coverage ratchet script', () => {
     // one enforced Building article (refusal at init + boot detector + /guards
     // row + doctor + migrator). Re-derived from the live registry.
     expect(report.measurement.status, `measurement errors: ${JSON.stringify(report.measurement.errors)}`).toBe('proven');
-    expect(report.total).toBe(93);
+    // 2026-11-04: 93 -> 94. Operator mandate (Justin, 2026-11-03): *One Constitution, Two Books Aligned*.
+    // 2026-11-04: 94 -> 95. Operator mandate (Justin, 2026-11-03): *The Person Decides; the Agent Does the Rest*, the counterpart of 2.0 Rule 120.
+    // 2026-11-05: 95 -> 96. Operator approval [source: telegram 136110/139199 2026-11-05]: *Attributed Statements Trace to Their Source*, the counterpart of 2.0 Rule 121.
+    // 2026-11-05: 96 -> 97. Operator approval [source: telegram 136110/139311 2026-11-05]: *No Feature May Require a Purchased Service*, the counterpart of 2.0 Rule 122.
+    expect(report.total).toBe(97);
     expect(report.enforcedRatio).toBe(0);
     expect(Object.keys(report.areas).sort()).toEqual([
       'Building', 'Interaction', 'Shipping', 'The Fractal', 'The Root', 'The Substrate',

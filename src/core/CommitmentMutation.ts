@@ -95,7 +95,11 @@ export async function applyOwnerMutation(
       if (TERMINAL.has(existing.status)) {
         return { verdict: 'invalid-transition', status: existing.status, ...(stale ? { staleObservation: true } : {}) };
       }
-      const r = tracker.deliver(payload.id, typeof payload.args?.deliveryMessageId === 'string' ? payload.args.deliveryMessageId : undefined);
+      const r = tracker.deliver(
+        payload.id,
+        typeof payload.args?.deliveryMessageId === 'string' ? payload.args.deliveryMessageId : undefined,
+        typeof payload.args?.evidence === 'string' ? payload.args.evidence : undefined,
+      );
       return r
         ? { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) }
         : { verdict: 'invalid-transition', status: existing.status };
@@ -132,6 +136,15 @@ export async function applyOwnerMutation(
         const parsed = parseAutoExpiryHold(payload.args.autoExpiryHold, new Date().toISOString());
         if (parsed === 'invalid') return { verdict: 'invalid-transition', status: existing.status };
         patch.autoExpiryHold = parsed.hold;
+      }
+      // promise-review-and-priority §2.1: priority travels to its owner.
+      if (payload.args && 'priority' in payload.args) {
+        const pr = payload.args.priority;
+        if (pr !== 'high' && pr !== 'normal' && pr !== 'low') return { verdict: 'invalid-transition', status: existing.status };
+        const why = typeof payload.args.priorityReason === 'string' ? payload.args.priorityReason : undefined;
+        const r = tracker.setPriority(payload.id, pr, why, 'agent');
+        if (!r) return { verdict: 'invalid-transition', status: existing.status };
+        if (!Object.keys(patch).length) return { verdict: 'applied', status: r.status, ...(stale ? { staleObservation: true } : {}) };
       }
       if (!Object.keys(patch).length) return { verdict: 'idempotent-noop', status: existing.status };
       const r = await tracker.mutate(payload.id, (c) => ({ ...c, ...patch } as Commitment));

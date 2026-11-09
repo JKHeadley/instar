@@ -16,13 +16,19 @@
  * Part of Phase 1-6 of the multi-machine spec.
  */
 
+import { TEAM_ENFORCEMENT_VERSION } from '../core/TeamAccessSync.js';
 import fs from 'node:fs';
 import { installAgentIdentityFromPairing } from '../core/AgentIdentityHandover.js';
+import os from 'node:os';
 import path from 'node:path';
 import pc from 'picocolors';
 import { loadConfig } from '../core/Config.js';
+import { applyJoinerPairActivation, decideInviterPairActivation, requestPairActivationRestart, type InviterPairResponse } from '../core/sessionPoolPairActivation.js';
+import { LastingLinkLedger, lastingEndpoints, mergeEndpoints } from '../core/lastingLink.js';
 import { redactUrl, redactUrlsInText } from '../core/redactUrl.js';
 import { resolveJoinDir } from '../utils/joinDir.js';
+import { gitLeaseHasNoRemote, selectLeaseMedium } from '../core/leaseMediumSelection.js';
+import { isInstarSourceTree } from '../core/SourceTreeGuard.js';
 import { MachineIdentityManager, isRegistryEntryActive } from '../core/MachineIdentity.js';
 import { HeartbeatManager } from '../core/HeartbeatManager.js';
 import { SecretStore } from '../core/SecretStore.js';
@@ -30,7 +36,7 @@ import { GitSyncManager } from '../core/GitSync.js';
 import { SelfKnowledgeTree } from '../knowledge/SelfKnowledgeTree.js';
 import { CoverageAuditor } from '../knowledge/CoverageAuditor.js';
 import { SafeGitExecutor } from '../core/SafeGitExecutor.js';
-import type { MachineRole } from '../core/types.js';
+import type { MachineRole, MeshEndpoint } from '../core/types.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 
 export async function establishPairingRecoveryRoot(
@@ -118,16 +124,16 @@ async function prepareFreshRevokedPairingIdentity(
 }
 
 /**
- * Claim the fenced lease for THIS machine and propagate it to the substrate.
+ * Claim the fenced lease for THIS machine in the local registry.
  *
  * `instar wakeup` (force path and the no-awake-machine path) used to only flip
  * the LOCAL registry role — but the lease, not the role, is the authority, and
  * the server's reconcileRoleToLease() OVERRIDES role back to match the lease on
  * startup. So a role-only flip was silently undone and never reached the peer
  * (verified live on a real two-machine mesh, 2026-05-28). Here we build a real
- * signed +1-epoch acquisition (the same record GitLeaseStore writes), persist it
- * into the registry with the holder's freshness fields, and best-effort push so
- * the peer sees the takeover immediately (the server's next sync re-pushes too).
+ * signed +1-epoch acquisition (the same record GitLeaseStore writes) and persist it
+ * into the local registry with the holder's freshness fields. The server shares
+ * it with the peer when it runs; this function makes no git commit or push.
  */
 export async function claimLeaseForSelf(
   mgr: MachineIdentityManager,
@@ -164,20 +170,14 @@ export async function claimLeaseForSelf(
   }
   mgr.saveRegistry(registry);
 
-  // Best-effort immediate propagation (gpgsign disabled so a stale signing
-  // config can't block the commit — see GitSync.configureCommitSigning).
-  try {
-    if (!fs.existsSync(path.join(config.projectDir, '.git'))) return;
-    const opts = { cwd: config.projectDir, encoding: 'utf-8' as const, stdio: 'pipe' as const, operation: 'src/commands/machine.ts:claimLeaseForSelf' };
-    SafeGitExecutor.run(['add', path.join(config.stateDir, 'machines', 'registry.json')], opts);
-    SafeGitExecutor.run(['-c', 'commit.gpgsign=false', 'commit', '-m', `chore(mesh): force-wakeup lease epoch ${candidate.epoch} → ${machineId.slice(0, 8)}`], opts);
-    let hasUpstream = false;
-    try { SafeGitExecutor.run(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], opts); hasUpstream = true; } catch { /* none yet */ }
-    const branch = SafeGitExecutor.run(['rev-parse', '--abbrev-ref', 'HEAD'], opts).trim() || 'main';
-    SafeGitExecutor.run(hasUpstream ? ['push'] : ['push', '-u', 'origin', branch], opts);
-  } catch {
-    // @silent-fallback-ok — the server's next sync will push the claimed lease.
-  }
+  // The claim is saved locally only. Sharing it is the server's job: when this
+  // machine's server runs, its own lease and sync paths carry the higher epoch
+  // to the peer (git compare-and-swap, or the network lease transport), with
+  // their pull-first conflict handling. The hand-rolled commit + push that used
+  // to sit here never ran (SafeGitExecutor.run misrouted its pre-verb `-c`), and
+  // a CLI commit on a standby's stale base would conflict at the next sync, so
+  // it was removed rather than switched on (EVO-029,
+  // docs/specs/safe-git-read-surface-hardening.md).
 }
 
 // ── instar machines ──────────────────────────────────────────────
@@ -331,6 +331,99 @@ export async function whoami(options: WhoamiOptions): Promise<void> {
   console.log();
 }
 
+/**
+ * Exported for tests. Whether this agent's server keeps the lease in git, by the
+ * same facts its boot choice reads: git backup on, a `.git`, a home that is not
+ * an instar source tree (GitSyncManager refuses one), and a registry that is not
+ * git-ignored. Only then does the server share a lease claimed in registry.json.
+ */
+export function leaseKeptInGit(projectDir: string, gitBackupEnabled: boolean, registryAbsPath: string, mediumCheckEnabled?: boolean): boolean {
+  if (!gitBackupEnabled || !fs.existsSync(path.join(projectDir, '.git'))) return false;
+  if (isInstarSourceTree(projectDir)) return false;
+  return selectLeaseMedium({ projectDir, registryAbsPath, hasGitSyncManager: true, mediumCheckEnabled }).medium !== 'local';
+}
+
+/**
+ * Exported for tests. True when this machine's server only observes the lease and
+ * never acquires or renews it, by the same rule as
+ * MultiMachineCoordinator.resolvedLeaseRole: an explicit
+ * `leaseSelfHeal.leaseRole`, else `telegramPolling === false`.
+ */
+export function leaseObserveOnly(multiMachine: unknown): boolean {
+  const mm = (multiMachine ?? {}) as { telegramPolling?: unknown; leaseSelfHeal?: { leaseRole?: unknown } };
+  const explicit = mm.leaseSelfHeal?.leaseRole;
+  if (explicit === 'active' || explicit === 'observe-only' || explicit === 'deferential') return explicit === 'observe-only';
+  return mm.telegramPolling === false;
+}
+
+/** What happens to a forced claim next, as far as configuration can tell. */
+export type ForceClaimOutlook = 'git' | 'not-git' | 'observe-only' | 'unknown';
+
+/** The plain line `instar wakeup --force` prints after claiming the lease. Exported for tests. */
+export function forceClaimLine(outlook: ForceClaimOutlook): string {
+  switch (outlook) {
+    case 'git':
+      return 'Lease claimed on this machine. It is expected to be shared through git when the server here next starts and syncs; until then the other machine has not been told.';
+    case 'observe-only':
+      return 'Lease claimed in this machine\'s registry, but this machine is set to only observe the lease, so its server will not hold or renew this claim and the other machine is not told. While the other machine is reachable, run `instar wakeup` without --force to hand over.';
+    case 'unknown':
+      return 'Lease claimed in this machine\'s registry. Could not tell whether this agent keeps its lease in git, so the other machine may not be told. While the other machine is reachable, run `instar wakeup` without --force to hand over.';
+    default:
+      return 'Lease claimed in this machine\'s registry only. This agent does not keep its lease in git, so the other machine is not told and the server here will not take over from this claim. While the other machine is reachable, run `instar wakeup` without --force to hand over.';
+  }
+}
+
+/** Exported for tests. True only where the lease would use git and has nowhere to push. */
+export function noRemoteTakeoverApplies(projectDir: string, gitBackupEnabled: boolean, registryAbsPath: string, mediumCheckEnabled?: boolean): boolean {
+  if (!gitBackupEnabled || !fs.existsSync(path.join(projectDir, '.git'))) return false;
+  if (selectLeaseMedium({ projectDir, registryAbsPath, hasGitSyncManager: true, mediumCheckEnabled }).medium === 'local') return false;
+  return gitLeaseHasNoRemote(projectDir) === true;
+}
+
+function pairingWouldActivate(config: ReturnType<typeof loadConfig>): boolean {
+  const mgr = new MachineIdentityManager(config.stateDir);
+  const selfId = mgr.hasIdentity() ? mgr.loadIdentity().machineId : '';
+  return decideInviterPairActivation({
+    stateDir: config.stateDir,
+    otherMachineIds: Object.keys(mgr.loadRegistry().machines ?? {}).filter((id) => id !== selfId),
+    joinerMachineId: '',
+  })?.activate === true;
+}
+
+/**
+ * Exported for tests. Read from disk, not the loaded config: pairing writes the switch after
+ * this process loaded its config, and the note must not call a working takeover broken.
+ */
+export function takeoverSwitchOnDisk(stateDir: string): boolean {
+  try {
+    const heal = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8'))?.multiMachine?.leaseSelfHeal;
+    return heal?.soloCaptainHold?.enabled === true && !heal?.preferredAwakeMachineId;
+  } catch {
+    return false; // @silent-fallback-ok: an unreadable config keeps the older, more cautious note
+  }
+}
+
+async function ownLastingEndpoints(config: ReturnType<typeof loadConfig>): Promise<MeshEndpoint[]> {
+  try {
+    const { computeOwnLastingEndpoints } = await import('../core/MeshUrlAdvertiser.js');
+    return await computeOwnLastingEndpoints(config);
+  } catch (err) {
+    console.warn('[pair] could not work out this machine\'s addresses:', err);
+    return []; // @silent-fallback-ok: reported to the owner by the no-lasting-connection note.
+  }
+}
+
+function printNoRemoteTakeoverNote(config: ReturnType<typeof loadConfig>): void {
+  if (takeoverSwitchOnDisk(config.stateDir)) return;
+  // A first pairing writes the switch, so this note would be false for the pair it is about to make.
+  if (pairingWouldActivate(config)) return;
+  const registryPath = path.join(config.stateDir, 'machines', 'registry.json');
+  if (!noRemoteTakeoverApplies(config.projectDir, config.gitBackup?.enabled !== false, registryPath, config.multiMachine?.leaseFlapFix?.mediumCheck)) return;
+  console.log(pc.yellow('  Note: automatic takeover does not work yet on a pair with no git remote.'));
+  console.log(pc.dim('  If the other machine dies, this one will not step in. Adding a git remote avoids this.'));
+  console.log();
+}
+
 // ── instar pair ──────────────────────────────────────────────────
 
 interface PairOptions {
@@ -406,6 +499,7 @@ export async function startPairing(options: PairOptions): Promise<void> {
   }
 
   console.log();
+  printNoRemoteTakeoverNote(config);
   console.log(pc.dim('  This code expires in 10 minutes.'));
   console.log(pc.dim('  After entering the code, verify the visual symbols match on both screens.'));
   console.log();
@@ -575,6 +669,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
       // heartbeat URL field instead).
       const { resolveAdvertisedMeshUrl } = await import('../core/MeshUrlAdvertiser.js');
       const advertisedUrl = resolveAdvertisedMeshUrl(config.tunnel);
+      const ownLasting = await ownLastingEndpoints(config);
       const sendPairingRequest = () => fetch(`${repoUrl}/api/pair`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -582,7 +677,9 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
             pairingCode: options.code,
             machineIdentity: identity,
             ephemeralPublicKey: identity.encryptionPublicKey,
+            teamEnforcement: TEAM_ENFORCEMENT_VERSION,
             ...(advertisedUrl ? { advertisedUrl } : {}),
+            ...(ownLasting.length > 0 ? { endpoints: ownLasting } : {}),
           }),
           signal: AbortSignal.timeout(10_000),
         });
@@ -614,15 +711,31 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
       const result = await resp.json() as {
         machineIdentity?: any;
+        endpoints?: unknown;
         agentIdentityEnvelope?: any;
         identityRecoveryBearerToken?: string;
         status?: string;
-      };
+      } & InviterPairResponse;
 
       // The ordinary authToken is intentionally machine-local. Recovery routes
       // use a distinct agent-wide bearer conveyed only inside this
       // code-authenticated pairing response, so peers with different local API
       // tokens can still perform the recovery protocol.
+      // The agent's owner introducers travel with its identity (mobile-pairing-introducer §6).
+      if (Array.isArray((result as { ownerIntroducers?: unknown }).ownerIntroducers)) {
+        try {
+          const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
+          joinedConfig.mobilePairing ??= {};
+          if (!Array.isArray(joinedConfig.mobilePairing.ownerIntroducers)) {
+            joinedConfig.mobilePairing.ownerIntroducers = (result as { ownerIntroducers: Array<{ name: string; publicKey: string }> }).ownerIntroducers
+              .filter((e) => e && typeof e.name === 'string' && typeof e.publicKey === 'string').slice(0, 8);
+            fs.writeFileSync(configFilePath, `${JSON.stringify(joinedConfig, null, 2)}\n`, { mode: 0o600 });
+            config = loadConfig(projectDir);
+          }
+        } catch (err) {
+          console.log(pc.yellow(`  Could not copy the owner introducers: ${err instanceof Error ? err.message : String(err)}. Phones can still pair with the code.`));
+        }
+      }
       if (/^[a-f0-9]{64}$/i.test(result.identityRecoveryBearerToken ?? '')) {
         const joinedConfig = JSON.parse(fs.readFileSync(configFilePath, 'utf8')) as Record<string, any>;
         joinedConfig.multiMachine ??= {};
@@ -676,6 +789,57 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         );
       }
 
+      // ── Turn sharing on, on this side (docs/specs/session-pool-activation-at-pairing.md) ──
+      // Before the server first starts, so the boot finds the keys and the bot token.
+      try {
+        const joined = applyJoinerPairActivation({
+          configPath: configFilePath,
+          stateDir: config.stateDir,
+          response: result,
+          inviterMachineId: result.machineIdentity?.machineId,
+          binding: { pairingSessionId: String(options.code), joinerMachineId: identity.machineId },
+          encryptionPrivateKeyPem: (() => {
+            try {
+              return mgr.loadEncryptionKey();
+            } catch {
+              // @silent-fallback-ok: reported below as `no-key`, and the pair stays dark.
+              return null;
+            }
+          })(),
+          now: new Date(),
+        });
+        if (joined.activated) {
+          config = loadConfig(projectDir);
+          if (joined.telegram === 'written') {
+            try {
+              const { installTelegramRelayForJoinedMachine } = await import('./init.js');
+              installTelegramRelayForJoinedMachine(config.projectDir, config.stateDir, config.port);
+            } catch (err) {
+              console.log(pc.red(`  Sessions on this machine cannot answer on Telegram until its next update: the reply script did not install (${err instanceof Error ? err.message : String(err)}).`));
+            }
+          }
+          if (joined.peopleFilled) {
+            // A server already running here keeps its old list, and starting the unit does nothing to it.
+            console.log(pc.green('  This machine now answers only the people the first machine answers.'));
+            try {
+              requestPairActivationRestart(config.stateDir, new Date());
+            } catch (err) {
+              console.log(pc.yellow(`  Its running server keeps the old list until it next restarts (${err instanceof Error ? err.message : String(err)}).`));
+            }
+          }
+          if (joined.peopleUnchecked) {
+            console.log(pc.yellow('  This machine could not check who it should answer on Telegram. Pair it again to retry.'));
+          }
+          console.log(pc.green('  Sharing is on: new conversations can start on either machine once the pair looks healthy.'));
+          if (!['written', 'not-offered', 'kept-existing'].includes(joined.telegram)) {
+            console.log(pc.red(`  The Telegram token did not arrive (${joined.telegram}). This machine cannot answer on Telegram.`) +
+              '\n  Sharing stays off until you pair this machine again.');
+          }
+        }
+      } catch (err) {
+        console.log(pc.red(`  Sharing was not turned on here: ${err instanceof Error ? err.message : String(err)}`));
+      }
+
       if (result.machineIdentity) {
         // Store the remote machine's identity
         mgr.storeRemoteIdentity(result.machineIdentity);
@@ -684,9 +848,23 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
         // URL, so this (standby) machine can route mesh RPCs back to it without
         // waiting for a registry sync. Cross-machine routing reads lastKnownUrl;
         // the joiner is the one place that authoritatively knows this URL.
+        // A quick-tunnel address dies when that machine restarts, which the pairing itself
+        // can cause, so keep what else it sent. `lastKnownUrl` stays the tunnel: it is read as one.
+        const peerLasting = lastingEndpoints(result.endpoints);
         try {
           mgr.updateMachineUrl(result.machineIdentity.machineId, repoUrl.replace(/\/+$/, ''));
+          if (peerLasting.length > 0) {
+            mgr.updateMachineEndpoints(
+              result.machineIdentity.machineId,
+              mergeEndpoints(mgr.getMachineEndpoints(result.machineIdentity.machineId), peerLasting),
+            );
+          }
         } catch { /* best-effort — entry was just registered above */ }
+        new LastingLinkLedger(config.stateDir).forget(result.machineIdentity.machineId);
+        if (takeoverSwitchOnDisk(config.stateDir) && (peerLasting.length === 0 || ownLasting.length === 0)) {
+          console.log(pc.yellow('  These machines have no lasting connection, so conversations stay on the first one and this one will not take over if it dies.'));
+          console.log(pc.yellow('  To fix it, put both on the same network or on Tailscale, then pair them again.'));
+        }
         console.log(pc.green(`  Paired with: ${result.machineIdentity.name}`));
       }
     } catch (err) {
@@ -733,6 +911,7 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
 
   console.log();
   console.log(pc.green(pc.bold(`  Joined ${config.projectName} mesh as standby.`)));
+  printNoRemoteTakeoverNote(config);
   console.log();
   console.log(`  Next steps:`);
   if (autoStarted) {
@@ -922,9 +1101,9 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
 
   if (options.force) {
     // Force-promote without contacting the current awake machine. Claim the
-    // LEASE (not just the role) at a higher epoch and push it — otherwise the
-    // server's reconcileRoleToLease() reverts our role on startup and the peer
-    // never learns of the takeover.
+    // LEASE (not just the role) at a higher epoch — otherwise the server's
+    // reconcileRoleToLease() reverts our role on startup. The claim is saved
+    // locally; only a git-kept lease is then shared by the server (EVO-029).
     console.log(pc.yellow(`Force-wakeup: bypassing contact with ${awake.entry.name}.`));
     mgr.updateRole(awake.machineId, 'standby');
     mgr.updateRole(identity.machineId, 'awake');
@@ -938,7 +1117,20 @@ export async function wakeup(options: WakeupOptions): Promise<void> {
     heartbeat.writeHeartbeat();
 
     console.log(pc.green(`${config.projectName} is now awake on ${identity.name} (forced).`));
-    console.log(pc.dim('Lease claimed + pushed; the old awake machine steps down when it sees the higher epoch.'));
+    const registryPath = path.join(config.stateDir, 'machines', 'registry.json');
+    let outlook: ForceClaimOutlook = 'unknown';
+    try {
+      if (leaseObserveOnly(config.multiMachine)) {
+        outlook = 'observe-only';
+      } else {
+        outlook = leaseKeptInGit(config.projectDir, config.gitBackup?.enabled !== false, registryPath, config.multiMachine?.leaseFlapFix?.mediumCheck)
+          ? 'git'
+          : 'not-git';
+      }
+    } catch {
+      // @silent-fallback-ok: unknown is printed as unknown (forceClaimLine('unknown')), never as a definite answer.
+    }
+    console.log(pc.dim(forceClaimLine(outlook)));
     return;
   }
 

@@ -38,6 +38,7 @@ import type { StreamTicketStore } from './StreamTicketStore.js';
 import { PeerStreamProxy, type UpstreamTransport, type UpstreamHandlers } from './PeerStreamProxy.js';
 import type { SessionPlatformInfo } from './sessionPlatform.js';
 import { sessionDisplayName } from './sessionPlatform.js';
+import { createSessionPresentationResolver, type SessionPresentationSources } from './sessionPresentation.js';
 import { isVerifiedChannelName } from '../messaging/shared/channelIdentity.js';
 import type { DesktopStreamManager } from './DesktopStreamManager.js';
 import type { DesktopMeshBroker } from './DesktopMeshBroker.js';
@@ -84,6 +85,7 @@ export class WebSocketManager {
   private state: StateManager;
   private authToken?: string;
   private registryPath?: string;
+  private sessionPresentationSources?: () => SessionPresentationSources;
   private hookEventReceiver?: HookEventReceiver;
   /** Pool Dashboard Streaming (serving side): consumes one-time tickets on the
    *  /pool-stream upgrade. Absent → /pool-stream is refused (feature dark). */
@@ -105,6 +107,7 @@ export class WebSocketManager {
     state: StateManager;
     authToken?: string;
     instarDir?: string;
+    sessionPresentationSources?: () => SessionPresentationSources;
     hookEventReceiver?: HookEventReceiver;
     streamTicketStore?: StreamTicketStore;
     desktopStreamManager?: DesktopStreamManager;
@@ -121,6 +124,7 @@ export class WebSocketManager {
   }) {
     this.sessionManager = options.sessionManager;
     this.state = options.state;
+    this.sessionPresentationSources = options.sessionPresentationSources;
     this.authToken = options.authToken;
     this.hookEventReceiver = options.hookEventReceiver;
     this.streamTicketStore = options.streamTicketStore;
@@ -620,7 +624,8 @@ export class WebSocketManager {
 
   private buildSessionList() {
     const running = this.sessionManager.listRunningSessions();
-    const displayNames = this.getTopicDisplayNames();
+    const presentSession = this.sessionPresentationSources ? createSessionPresentationResolver(this.sessionPresentationSources()) : null;
+    const displayNames = presentSession ? new Map<string, { topicId: number; name: string }>() : this.getTopicDisplayNames();
     return running.map(s => {
       const base: Record<string, unknown> = {
         id: s.id,
@@ -633,22 +638,26 @@ export class WebSocketManager {
         type: s.jobSlug ? 'job' : 'interactive',
       };
 
-      if (this.resolveSessionPlatform) {
-        try {
-          Object.assign(base, this.resolveSessionPlatform(s.tmuxSession));
-        } catch {
-          // Adapter lookup failed — leave platform unset (dashboard shows headless)
+      if (presentSession) {
+        Object.assign(base, presentSession(s));
+      } else {
+        if (this.resolveSessionPlatform) {
+          try {
+            Object.assign(base, this.resolveSessionPlatform(s.tmuxSession));
+          } catch {
+            // Adapter lookup failed — leave platform unset (dashboard shows headless)
+          }
         }
+        if ((!base.platform || base.platform === 'headless') && Number.isSafeInteger(s.telegramTopicId) && s.telegramTopicId! > 0) {
+          base.platform = 'telegram';
+          base.platformId = s.telegramTopicId;
+        }
+        const registeredTitle = displayNames.get(s.tmuxSession);
+        if (base.platform === 'telegram' && !base.platformName && registeredTitle?.topicId === Number(base.platformId)) {
+          base.platformName = registeredTitle.name;
+        }
+        base.name = sessionDisplayName(base.name, base as unknown as SessionPlatformInfo);
       }
-      if ((!base.platform || base.platform === 'headless') && Number.isSafeInteger(s.telegramTopicId)) {
-        base.platform = 'telegram';
-        base.platformId = s.telegramTopicId;
-      }
-      const registeredTitle = displayNames.get(s.tmuxSession);
-      if (base.platform === 'telegram' && !base.platformName && registeredTitle?.topicId === Number(base.platformId)) {
-        base.platformName = registeredTitle.name;
-      }
-      base.name = sessionDisplayName(base.name, base as unknown as SessionPlatformInfo);
 
       // Enrich with hook event telemetry when available
       if (this.hookEventReceiver) {

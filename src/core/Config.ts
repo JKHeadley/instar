@@ -701,6 +701,33 @@ export function resolveAnthropicLaunchFields(
 }
 
 /**
+ * The launch key as it stands in config.json right now, for a process whose loaded config may be
+ * stale. Null when none is set. Undefined when the file can't be read or parsed: a writer may be
+ * mid-write, so the caller keeps what it last had.
+ */
+export function readConfiguredAnthropicKey(stateDir: string): string | null | undefined {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { sessions?: Record<string, unknown> };
+    // A value that is not a string (a secret-store placeholder such as { secret: true }) is only filled in
+    // at boot, so disk cannot say what the key is: keep the one in use. The key watch reads this every
+    // minute, so reading it as "no key" would wipe a working key.
+    const sessions = raw.sessions as { credentials?: { anthropic?: { value?: unknown } }; anthropicApiKey?: unknown } | undefined;
+    const credentialValue = sessions?.credentials?.anthropic?.value;
+    if ((credentialValue !== undefined && typeof credentialValue !== 'string')
+      || (sessions?.anthropicApiKey !== undefined && sessions.anthropicApiKey !== null && typeof sessions.anthropicApiKey !== 'string')) return undefined;
+    return resolveAnthropicLaunchFields(raw.sessions).anthropicApiKey || null;
+  } catch { return undefined; } // @silent-fallback-ok: an unreadable file keeps the last key, by contract above
+}
+
+/** The off switch as it stands in config.json now. An unreadable file reads as on, the default. */
+export function readClaudeChildAuthEnabled(stateDir: string): boolean {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { sessions?: { claudeChildAuth?: { enabled?: unknown } } };
+    return raw.sessions?.claudeChildAuth?.enabled !== false;
+  } catch { return true; } // @silent-fallback-ok: a writer may be mid-write; the default stands for this one read
+}
+
+/**
  * Look up a provider's credential. Returns null when none is configured.
  *
  * Use this in any code path that previously read `config.anthropicApiKey`
@@ -1128,6 +1155,8 @@ export function loadConfig(projectDir?: string): InstarConfig {
     // from the same precedence getProviderCredential() uses: explicit credentials.anthropic
     // first, the legacy fields as the fallback.
     ...resolveAnthropicLaunchFields(fileConfig.sessions as Record<string, unknown> | undefined),
+    ...(fileConfig.sessions?.claudeChildAuth ? { claudeChildAuth: fileConfig.sessions.claudeChildAuth as { enabled?: boolean } } : {}),
+    ...(fileConfig.sessions?.claudeKeyHealth ? { claudeKeyHealth: fileConfig.sessions.claudeKeyHealth as { enabled?: boolean } } : {}),
     ...(fileConfig.sessions?.resumeFollowsAccount &&
     typeof fileConfig.sessions.resumeFollowsAccount === 'object'
       ? { resumeFollowsAccount: fileConfig.sessions.resumeFollowsAccount as { enabled?: boolean } }

@@ -74,14 +74,27 @@ function shippingRow(group, pr, sub, end, tone, record, repo, stage) {
 }
 
 /** The watcher's own health line (slow vs stuck vs silently failed are separate states). */
+/** A stop only the agent's own records hold: it releases this itself, so nothing is asked of the operator yet. */
+export function agentOwnedStop(w) {
+  const stops = w && w.gate && Array.isArray(w.gate.rollbackStops) ? w.gate.rollbackStops : [];
+  return stops.length > 0 && stops.every((s) => s && s.class === 'agent');
+}
+
 export function watcherLine(w, now = Date.now()) {
   if (!w) return { text: 'Merge watcher: no reading.', tone: 'unknown' };
+  // warning-path: askLink
   if (w.invariantOk === false) return { text: 'Merge watcher: its safety invariant failed; it will not arm anything until that clears.', tone: 'bad' };
+  // warning-path: askLink
   if (w.breaker && w.breaker.open) return { text: 'Merge watcher paused itself after repeated failures.', tone: 'bad' };
   const gate = w.gate || {};
-  if (Array.isArray(gate.rollback) && gate.rollback.length) return { text: 'Auto-merging is stopped (you or the agent rolled it back). Turn it back on below.', tone: 'attn', stopped: true };
+  const stops = Array.isArray(gate.rollbackStops) ? gate.rollbackStops : [];
+  // warning-path: askLink
+  if (stops.length && stops.every((s) => s && s.class === 'agent')) return { text: 'Auto-merging is stopped by the agent for its own reason. It releases this itself when its condition is met; you can also turn it back on here.', tone: 'attn', stopped: true };
+  // warning-path: askLink
+  if (Array.isArray(gate.rollback) && gate.rollback.length) return { text: 'Auto-merging is stopped (you or the agent rolled it back).', tone: 'attn', stopped: true };
   if (!w.lastTickAt) return { text: 'Merge watcher has not checked yet.', tone: 'unknown' };
   const age = now - w.lastTickAt;
+  // warning-path: askLink
   if (age > 2 * WATCHER_CADENCE_MS) return { text: `Merge watcher last checked ${ago(w.lastTickAt, now)}, usually every ${Math.round(WATCHER_CADENCE_MS / 60000)} min.`, tone: 'attn' };
   return { text: `Merge watcher checked ${ago(w.lastTickAt, now)}.`, tone: 'ok' };
 }
@@ -92,9 +105,11 @@ export function releaseLine(res, now = Date.now()) {
   if (st === 'off') return { text: 'Release watchdog: off on this agent.', tone: 'off' };
   if (st === 'failed') return { text: `Release watchdog: can’t tell (${reasonOf(res)}).`, tone: 'unknown' };
   const d = res.data || {};
+  // warning-path: askLink
   if (d.disabled) return { text: 'Release watchdog: switched off.', tone: 'attn' };
   const when = d.lastTickAt ? ` · last checked ${ago(d.lastTickAt, now)}` : ' · not checked yet';
   const n = Number(d.openEpisodes) || 0;
+  // warning-path: askLink
   if (n > 0) return { text: `Release watchdog: ${plural(n, 'unresolved episode')}${when}.`, tone: 'attn', attentionId: d.openAttentionId || null, sha: d.oldestOpenSha || null };
   return { text: `Release watchdog: nothing unresolved${when}.`, tone: 'ok' };
 }
@@ -184,8 +199,11 @@ export function buildShipping({ watcher, verify, release } = {}, now = Date.now(
   }
   const armedPrs = w && Array.isArray(w.armed) ? w.armed.map((a) => a.pr) : [];
   return {
+    // warning-path: pageHead
     state: 'ok', headline, tone: wl && wl.stopped && tone !== 'bad' ? 'attn' : tone, tiles, rows, moving, watcher: wl, release: releaseLine(release, now),
+    // warning-path: pageHead
     partial: !w || !v, armedPrs, stopped: Boolean(wl && wl.stopped), rollbackLatches: (w && w.gate && Array.isArray(w.gate.rollback)) ? w.gate.rollback : [],
+    // warning-path: pageHead
     line: !w ? 'Shipping: can’t tell' : `Shipping: ${wl && wl.stopped ? 'auto-merge stopped, ' : ''}${moving === 0 ? 'nothing on the way' : `${moving} on the way`}${needs ? `, ${needs} need${needs === 1 ? 's' : ''} you` : ''}${stuck ? `, ${needs ? '' : ''}${stuck} stuck` : ''}`,
     repoKnown: Boolean(repo),
   };
@@ -409,9 +427,11 @@ export function progressLine(drain, readiness, now = Date.now()) {
   if (ds === 'off') return { tone: 'off', text: 'The feedback drain is off on this agent.', n: 'off' };
   const d = drain.data || {};
   const r = sourceState(readiness) === 'ok' ? readiness.data : null;
+  // warning-path: askLink
   if (r && r.status === 'proposal-only') return { tone: 'attn', text: `Sorting is paused: ${r.pausedBecause || 'a safety brake fired.'} Only your approval restarts it.`, n: 'paused' };
   const p = d.readinessProgress;
   if (!p) return { tone: 'unknown', text: 'No sorting model is approved yet, so there is no progress to measure.', n: 'not set up' };
+  // warning-path: askLink
   if ((p.consecutiveFailedTicks || 0) >= STALL_TICKS) return { tone: 'attn', text: `Sorting hasn’t produced a usable answer since ${p.stalledSince ? at(p.stalledSince) : 'a while'} (${plural(p.consecutiveFailedTicks, 'run')} in a row; a provider problem — nothing is paused).`, n: `no answer for ${plural(p.consecutiveFailedTicks, 'run')}` };
   if (p.lastSuccessAt) return { tone: 'ok', text: `Last sorted ${ago(p.lastSuccessAt, now)}${p.consecutiveFailedTicks ? `; ${plural(p.consecutiveFailedTicks, 'run')} since produced no usable answer` : ''}.`, n: ago(p.lastSuccessAt, now) };
   return { tone: 'unknown', text: 'No sorting run has produced an answer yet.', n: 'none yet' };
@@ -448,6 +468,7 @@ export function buildFeedback(res = {}, now = Date.now()) {
   const waiting = counts ? (counts.untriaged || 0) + (counts.queued || 0) : null;
 
   const tiles = [
+    // warning-path: row
     { key: 'needs', label: 'Needs you', n: failed.some((k) => todoFeeds.includes(k)) && !todos.length ? 'Can’t tell' : todos.length, tone: todos.length ? 'attn' : failed.length ? 'unknown' : null },
     { key: 'fixing', label: 'Being fixed', n: exec ? (Number(exec.live) || 0) + (Number(exec.openPrs) || 0) : states.execute === 'off' ? 'off' : 'Can’t tell', tone: exec ? null : states.execute === 'off' ? 'off' : 'unknown', reason: exec ? `${plural(Number(exec.live) || 0, 'attempt')} running, ${plural(Number(exec.openPrs) || 0, 'fix', 'fixes')} waiting for review` : states.execute === 'off' ? 'the fix worker is off on this agent' : reasonOf(res.execute) },
     { key: 'sorting', label: 'Waiting to sort', n: waiting === null ? (states.triageSummary === 'off' ? 'off' : 'Can’t tell') : waiting, tone: waiting === null ? (states.triageSummary === 'off' ? 'off' : 'unknown') : null, reason: waiting === null ? (states.triageSummary === 'off' ? 'triage is off on this agent' : reasonOf(res.triageSummary)) : null },
@@ -462,7 +483,7 @@ export function buildFeedback(res = {}, now = Date.now()) {
     state = 'cant-tell';
     const k = failed.find((x) => todoFeeds.includes(x));
     headline = `I can’t tell whether feedback needs you: ${names[k]} didn’t answer (${reasonOf(res[k])}).`; tone = 'muted';
-    if (todos.length) sub = `${plural(todos.length, 'thing')} that ${todos.length === 1 ? 'does' : 'do'} need you ${todos.length === 1 ? 'is' : 'are'} listed below from the reads that answered.`;
+    if (todos.length) sub = `${plural(todos.length, 'thing')} that ${todos.length === 1 ? 'does' : 'do'} need you ${todos.length === 1 ? 'is' : 'are'} shown, from the reads that answered.`;
   } else if (todos.length) {
     headline = todos[0].sentence; tone = 'attn';
     const more = todos.length - 1;
@@ -572,13 +593,17 @@ export function developmentHeadline({ shipping, feedback, pace } = {}) {
   const needs = shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'needs') : [];
   if (feedback && feedback.todos && feedback.todos.length) {
     const n = feedback.todos.length + needs.length + (stopped ? 1 : 0);
+    // warning-path: pageHead
     return { text: n === 1 ? 'One thing needs you.' : `${n} things need you.`, tone: 'attn', sub: stopped ? 'Automatic merging is stopped.' : feedback.todos[0].sentence };
   }
   // Stopped is never "Nothing here needs you": it comes before every calmer reading below.
+  // warning-path: pageHead
   if (stopped) return { text: needs.length ? `${needs.length + 1} things need you.` : 'Automatic merging is stopped.', tone: 'attn', sub: needs.length ? 'Automatic merging is stopped.' : shipping.line };
+  // warning-path: pageHead
   if (needs.length) return { text: needs.length === 1 ? 'One pull request needs your approval on GitHub.' : `${needs.length} pull requests need your approval on GitHub.`, tone: 'attn', sub: shipping.line };
   if (feedback && feedback.state === 'cant-tell') return { text: 'Can’t tell whether anything needs you.', tone: 'muted', sub: feedback.headline };
   const stuck = shipping && shipping.rows ? shipping.rows.filter((r) => r.group === 'stuck').length : 0;
+  // warning-path: pageHead
   if (stuck) return { text: `${plural(stuck, 'pull request')} ${stuck === 1 ? 'is' : 'are'} stuck.`, tone: 'bad', sub: shipping.headline };
   const lines = [shipping && shipping.line, feedback && feedback.line, pace && pace.line].filter(Boolean);
   const allOff = (!shipping || shipping.state === 'off') && (!feedback || feedback.state === 'off');

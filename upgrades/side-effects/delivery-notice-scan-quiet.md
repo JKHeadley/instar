@@ -1,0 +1,77 @@
+# Side-Effects Review — Keep historical delivery reconciliation quiet
+
+**Slug:** delivery-notice-scan-quiet
+**Date:** 2026-11-06
+**Author:** Echo
+**Second-pass reviewer:** delivery_notice_review (independent Codex agent)
+
+## Summary of the change
+Tier 1, small reversible fix for fb-f348f8e4-15f. Runtime tags delivery evidence as live or scan, with a live notice requiring both existing first-send custody and a live local session producer context. The server delegates its existing reporting callback to SessionDeliveryReporter; scans use explicit record-only TelegramAdapter Attention admission, and never initiate a notice send. Accepted originals close records accurately. Tests characterize PR2819 first, reproduce 151 attempted notices across 48 topics, and verify the corrected behavior through durable adapter persistence and runtime wiring. No new activity heuristic, public route, or durable schema. Size and final validation totals are recorded in the PR; one independent review round, initial gate attempts recorded in the build summary.
+
+## Decision-point inventory
+- Runtime delivery reporting: producer source custody added at both live onHold and historical scan callsites.
+- Attention admission: explicit record-only operation persists before returning, ahead of every hub/topic route and selectivity rollout choice.
+- Reporter: historical observations update records; only live observations initiate the existing notice path. Accepted original receipts close their condition without treating quiet receipts as delivered explanations.
+- Existing selectivity, tone policy, transport identity/dedup, recovery scheduling, and serving-lease authority pass through unchanged.
+
+## 1. Over-block
+The scan no longer sends late-recovery explanations into active topics either. This is intentional: a historical record is not authority to start a new conversational turn. Timely live failures retain their existing notice path; original replies and recovery are untouched. Credential-holder reporting also stays record-only even on a first forwarded submit: a verified remote operation is not a live local conversational producer capability. The source receives its existing typed delivery result. No conversational reply is rejected. Records remain in Attention.
+
+## 2. Under-block
+Original local session delivery failures can still produce their existing notices under disabled/observing selectivity. This preserves the live failure path rather than changing fleet rollout. They are distinct from the historical scan responsible for this incident. The scan cannot invoke hub or topic transport even if category push is enabled, because record-only admission returns first.
+
+## 3. Level-of-abstraction fit
+Producer custody belongs at the runtime boundary. One reporter owns reconciliation semantics; adapter admission owns durable state and the no-network return. The scan keeps its bounded pagination, cadence, and all delivery evidence. No filter is inserted into reply transport.
+
+## 4. Signal vs authority compliance
+Complies with docs/signal-vs-authority.md. Source is explicit structural producer provenance, not a content, timestamp, or topic-liveness judgment. The operation declares record-only intent. Existing notification and tone authorities retain message judgment. No new brittle blocker or competing activity authority is added.
+
+## 5. Interactions
+The source is mandatory in the callback type and set at both producers. Original sends inside a local session remain live. Recovery retries and holder-side mesh submissions remain record-only, even though their stored record says session. Source eligibility is captured synchronously before the callback. Attention admission retains the shared condition identity, acknowledgment and reopen logic. Recovered replies retain their existing acceptance logging; the scanner now closes even late accepted records with a truthful receipt resolution. There is no fabricated delivery id and no new network retry. Reconciliation may race with a new observation as before; no original send state is mutated by this reporter.
+
+## 6. External surfaces
+Quiet topics and the Attention hub receive no historical scan notices. Attention records remain readable and refresh with the latest delivery state. Live notices retain the origin automation pipeline and stable logical send id. No config or protocol migration, no new operator action.
+
+## 7. Multi-machine posture
+Machine-local BY DESIGN: holder-side mesh processing lacks the originating session capability and cannot emit a notice, including a re-forwarded old reply. No protocol change or new wire metadata is needed. each origin outbox retains its local sealed delivery custody and reconciles its matching durable Attention record. Existing pool reads expose the records; no new state is introduced or stranded. The scan's record-only behavior runs on every machine independent of serving lease and rollout state, so multiple scanners cannot emit multiple voices. Live origin sends still use existing serving-lease and logical identity controls.
+
+## 8. Rollback cost
+Revert the code to restore previous reporting behavior. Already retired historical notice operations stay terminal; no automatic requeue or state repair is appropriate. Original replies and uncertain delivery evidence are retained. There is no schema change.
+
+## Validation
+Before the fix, the extracted production callback attempted all 151 topic notices in the burst test; the late-accepted test also caught the inaccurate delivered-explanation resolution. Corrected tests cover burst, restart, failed-state refresh, accepted closure, live send identity and live HTTP failure persistence. PR2819 characterization ran before source edits and passed all three rollout settings. Final focused test results and full merge-floor evidence are recorded in the PR.
+
+## Second-pass review
+**Reviewer:** delivery_notice_review
+
+Concur with the review. Independently inspected the final runtime source tagging, server wiring, reporter, adapter admission and condition closure, and the unit, integration and runtime lifecycle regressions. Scan provenance is assigned at the producer and cannot be overridden by stored row fields. Record-only admission returns before every hub/topic route, independent of selectivity settings; acceptance reconciliation uses the existing local audited close operation, including when automatic sweeps are disabled. The corrected closure preserves sticky/security refusal and cannot invoke legacy status-message or forum-topic transport. Live failures retain the existing origin automation identity and notice path; original reply delivery, recovery and scan pagination are unchanged. The initial concern about silent status updates initiating legacy transport was corrected and covered with both lifecycle settings. No unresolved correctness or signal-versus-authority concern identified in the reviewed source.
+
+The completion pass also reviewed `onHold` calls reached through local recovery and holder-side mesh execution. A first-send marker alone does not prove a live conversation: authenticated holder submissions use that marker too. The final eligibility check requires both existing first-send custody and an active local session producer scope. Local recovery and holder submissions therefore use record-only reporting without adding age guesses, activity thresholds or protocol metadata. The added admission-failure runtime regression and authenticated holder integration regression cover these paths. Concur with the corrected producer-custody policy; holder-generated notices without a local conversational capability are intentionally quiet, while the originating session's direct first-send notice remains eligible.
+
+**Receipt-callback re-review — delivery_notice_review:** Concur with the final `onRecoveredMessage` wiring and `recordRecoveredSessionDelivery` helper. The callback retains confirmed original-message history logging, then uses receipt-backed local condition reconciliation for both on-time and late recovery. It has no status-message fallback, age-dependent closure gap, or forum-topic action. The helper preserves the existing sticky/security and operator-closed-state protections through the shared close operation. Reviewed the actual-adapter regressions covering both sides of the former five-minute boundary with automatic lifecycle disabled and legacy reverse routing present. This completes the same receipt-reconciliation class without changing original reply delivery or recovery scheduling; no unresolved concern identified.
+
+**Queued-notice retirement re-review — delivery_notice_review:** Concur with the final bounded recovery change. The retirement branch runs after the existing first-send exclusion and before every transport/forward branch. It matches both the trusted `server-automation` producer kind and exact `reply-delivery-notice` producer id, so an original session with the same id remains recoverable. It uses the existing suppressed-state transition without fabricating a quiet receipt or relaxing claim, partial, accepted or uncertain-state fences; memory custody is forgotten only after confirmed durable suppression. A refused or failed retirement never falls through to dispatch. Reviewed the durable before/after-restart, pending-first-admission and stale-uncertain-snapshot regressions. Retiring these obsolete queued notices completes the reported flood path; original replies and delivery evidence are preserved. Already retired notices intentionally remain terminal after a code revert. No unresolved concern identified in the reviewed change.
+
+**Eligibility and version-skew re-review — delivery_notice_review:** Concur. The final live classification reuses the existing job-session authority, captures the local producer once, and defaults to record-only if classification throws; notice eligibility cannot replace the original delivery outcome. The reporter independently requires explicit `source === 'live'`, so missing or unknown source from a legacy callback cannot initiate hub or topic work. Reviewed the disabled/observing job, unavailable-classifier and source-less callback regressions. These close the same producer-capability contract without introducing activity heuristics or a new messaging authority. No unresolved concern identified.
+
+**Shared-recovery final re-review — delivery_notice_review:** Concur with the final shared helper in both the ordinary recovery candidate loop and `allowQueuedRecovery`, which also covers the quick forward ladder. Non-notice producers return immediately, so original reply review is unchanged. Exact notice automation is withheld even when retirement fails. Foreign-owner notice operations are never suppressed or forwarded: retaining them intact removes the stale-snapshot race in which local queued children could conceal a remote dispatch. Only locally owned notices use the existing atomic store fences for retirement. Reviewed the refused, uncertain and local-sent ladder cases, each preserving held state and detail with zero forwarding. The identified remote-evidence race is resolved without a new protocol or backend transition; no unresolved concern remains in the reviewed source.
+
+## Class-Closure Declaration
+
+**Defect class:** unbounded-self-action. **Closure:** n/a.
+The remaining notice send is the existing one-shot live failure callback for an original conversational send. The historical self-triggered scan now performs strictly record-only reconciliation with zero notify actions, including repeated scans and restart. No controller, retry, spawn, or recovery loop is added. First-send custody alone is insufficient: holder submit wraps recovery in that same scope, so the existing local session producer capability is also required. The burst/restart regression and real runtime lifecycle test cover this distinction.
+
+## Proportion and verified evidence
+Four runtime files; targeted results: 92 unit tests passed (one existing skip), 30 integration tests passed, and 39 runtime lifecycle tests passed. The unit origin/runtime group was rerun after the custody correction (79 passed, one existing skip); the other 13 adapter lifecycle tests remain unchanged. All 52 lint checks pass. One independent design/final review, with one acceptance-path correction. The first two commit attempts stopped on missing class-closure metadata and its human-readable mirror; source tests stayed green. Full native/CI merge evidence will be checked before merging.
+
+## Recovery-path completion
+A further adversarial trace found that onHold can be called from an old reply's retry as well as its first send. Before correction, a real-runtime admission failure produced sources [live, live] and a second notice; a signed cross-machine holder submit also misclassified an old session record as live. The runtime now requires existing first-send custody plus a current local session producer capability. Neither history timestamps nor guessed topic activity confer authority. Both regression cases failed before the correction and pass with it; all holder reporting stays durable and record-only, including first forwarded attempts.
+
+## Merge-blocking documentation correction
+The required Docs Coverage check was red because the already-shipped promise-review job had no reference entry (job coverage 83% versus the 85% floor). Added an accurate entry sourced from its shipped template, plus user-facing documentation for the delivery-scan behavior. Coverage now passes at 85% without threshold or runtime job changes. The PR description also carries the required ELI16 heading and concrete UX declaration; both local body checks pass.
+
+## Receipt-callback completion evidence
+The alternate onRecoveredMessage callback duplicated the legacy silent-status fallback. It now delegates to recordRecoveredSessionDelivery, which logs the accepted original and uses the same audited local reconciliation for every delay. A controlled restoration of the old callback made both added tests fail: the 120-second case sent Status Done to a legacy topic, and the 360-second case left the record open. Corrected actual-adapter integration coverage passes all 12 cases, including these two, for 29 integration cases across the reporting and signed-mesh files. This is the same delivery condition; original send/retry state is untouched.
+
+## Queued-notice and capability completion
+An upgrade must also stop notices already queued by the old scanner. Both the normal drain and quick forward ladder now share exact producer-kind/id withholding. Existing store fences govern local retirement; pending first sends are untouched. All foreign-owner notice operations stay intact without another dispatch, structurally preserving remote uncertainty even when a snapshot races the holder. This cannot retire an actual session reply with the same producer id. The finite historical notice backlog gains no new retry controller. Jobs reuse the canonical session classifier, classification failures retain the original outcome, and callbacks missing explicit live authority remain record-only. Regressions cover restart, original-reply recovery, admission races, stale uncertain snapshots, all three forward markers, and source-less callbacks. The forward ladder may continue to inspect withheld foreign-owner notices until its existing deadline; the regular drain continues recovering genuine replies.

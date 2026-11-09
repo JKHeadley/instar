@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "session-pool-keep-and-recall",
+  "sessionId": "f3f374fe-1740-4fac-8bbf-c32c8b60e738",
+  "timestamp": "2026-11-04T21:23:01.692Z",
+  "artifactPath": "upgrades/side-effects/session-pool-keep-and-recall.md",
+  "artifactSha256": "13e3fd51bd20dad4221e7d070a5e1a966ada6c52a910a41385d3f6738fe84d7c",
+  "specPath": "docs/specs/session-pool-keep-and-recall.md",
+  "coveredFiles": [
+    "docs/specs/reports/session-pool-keep-and-recall-convergence.md",
+    "docs/specs/session-pool-keep-and-recall.eli16.md",
+    "docs/specs/session-pool-keep-and-recall.md",
+    "src/commands/server.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/SessionRouter.ts",
+    "src/core/topicHistoryPull.ts",
+    "tests/e2e/session-pool-step2-claim-history-wiring.test.ts",
+    "tests/integration/topic-history-pull-roundtrip.test.ts",
+    "tests/unit/SessionRouter.test.ts",
+    "tests/unit/topicHistoryPull.test.ts",
+    "upgrades/next/session-pool-keep-and-recall.md",
+    "upgrades/side-effects/session-pool-keep-and-recall.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": false
+}

@@ -27,7 +27,7 @@ import { LLM_BENCH_COVERAGE } from '../../src/data/llmBenchCoverage.js';
 const PENDING_BASELINE = [
   // Wave-3 only — the wave-2 set graduated to covered/exempt on 2026-07-02
   // (INSTAR-Bench v2 wave-2 authoring: 19 task batteries + 5 argued exemptions).
-  'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
+  'AttributionJudge', 'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
   'PreCompactionFlush', 'RelationshipManager',
   'SelfKnowledgeTree', 'GoalPriorityExtractor',
@@ -45,6 +45,9 @@ const PENDING_BASELINE = [
   // job-cost-reduction §5.6.5 (2026-10-26): the daily script-job review; graded by its must-flag canary until a bench task lands.
   'ScriptJobSupervisor',
   'JobTriageBackupCheck', // outage-only sampled classifier pending a dedicated bench task
+  // skill-learning-sentinel slice 1 (2026-11-06): shadow-only arbiter/drafter + cross-family reviewer; graded by the
+  // rung-1 operator sample (agree/disagree taps on proposals) until a bench task lands.
+  'skillLearning.drafter', 'skillLearning.reviewer',
 ].sort();
 
 const EXEMPT_BASELINE = [

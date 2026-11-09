@@ -19,8 +19,10 @@ describe('Launchd crash loop prevention — UpdateChecker', () => {
   const updateCheckerPath = path.resolve(__dirname, '../../src/core/UpdateChecker.ts');
   const source = fs.readFileSync(updateCheckerPath, 'utf-8');
 
-  it('imports execFileSync for synchronous operations', () => {
-    expect(source).toContain('execFileSync');
+  it('never holds the event loop: no synchronous subprocess call anywhere in the update path', () => {
+    // A synchronous recursive xattr blocked the server for 39.8s during a real update.
+    expect(source).not.toMatch(/execFileSync|execSync|spawnSync/);
+    expect(source).toContain('stripCandidateXattrs');
   });
 
   it('imports os module for platform detection', () => {
@@ -40,8 +42,9 @@ describe('Launchd crash loop prevention — UpdateChecker', () => {
   });
 
   it('performs pre-restart access validation on the new CLI', () => {
-    // Should spawn a node process to verify the CLI is readable
-    expect(source).toContain('Pre-restart validation');
+    // Candidate validation must run the new CLI before it can be promoted.
+    expect(source).toContain('this.validateCandidate(candidateDir, targetVersion)');
+    expect(source).toContain("[newCliPath, '--version']");
     expect(source).toContain('readFileSync');
     expect(source).toContain('newCliPath');
   });
@@ -50,14 +53,12 @@ describe('Launchd crash loop prevention — UpdateChecker', () => {
     expect(source).toContain("path.join(shadowDir, 'node_modules', 'instar', 'dist', 'cli.js')");
   });
 
-  it('access validation failure is a warning, not a hard block', () => {
-    // Should log a warning but not throw/abort the update
-    const validationSection = source.substring(
-      source.indexOf('Pre-restart validation'),
-      source.indexOf('Pre-restart validation') + 600
-    );
-    expect(validationSection).toContain('WARNING');
-    expect(validationSection).toContain('catch');
+  it('access validation failure prevents promotion', () => {
+    const validateIndex = source.indexOf('this.validateCandidate(candidateDir, targetVersion)');
+    const promoteIndex = source.indexOf('this.promoteCandidate(candidateDir)');
+    expect(validateIndex).toBeGreaterThan(0);
+    expect(promoteIndex).toBeGreaterThan(validateIndex);
+    expect(source.slice(validateIndex, promoteIndex)).toContain('catch (err)');
   });
 
   it('xattr stripping happens after npm install and rebuild', () => {
@@ -68,7 +69,7 @@ describe('Launchd crash loop prevention — UpdateChecker', () => {
 
   it('access validation happens after xattr stripping', () => {
     const xattrIndex = source.indexOf('xattr cleanup');
-    const validationIndex = source.indexOf('Pre-restart validation');
+    const validationIndex = source.indexOf('this.validateCandidate(candidateDir, targetVersion)');
     expect(validationIndex).toBeGreaterThan(xattrIndex);
   });
 });

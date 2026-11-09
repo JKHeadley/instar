@@ -43,9 +43,9 @@ export function movedMachinesMidStepNotice(targetMachineName: string | null | un
     + `The conversation carries on there. If that step matters, ask me to check it.`;
 }
 
-/** A message arrived for a conversation whose session had stopped; a new one is starting. */
+/** A message arrived with no live session, so a new one is starting. Says nothing has stopped: the conversation carries on. */
 export const SESSION_RESTARTING_NOTICE =
-  `🔄 My session for this conversation had stopped, so I'm starting a new one. Your message is saved and I'll answer it once I'm back.`;
+  `🔄 Starting a new session for this conversation. Your message is saved and I'll answer it once I'm back.`;
 
 /** The replacement session is up and no message was waiting (e.g. a stuck session was
  *  replaced). With a message waiting nothing is sent: the reply is the confirmation. */
@@ -55,6 +55,29 @@ export const SESSION_BACK_NOTICE = `I've restarted my session for this conversat
 export const PROFILE_REAPPLY_NOTICE =
   `The model settings you chose for this conversation didn't take effect when I last restarted. `
   + `I'm applying them now, which means a brief restart once I'm idle.`;
+
+/** Scheduler notices never include an exception or command line: both may hold secrets. */
+export function jobFailureNotice(name: string, failures: number, error: string): string {
+  const cause = /session killed/i.test(error) ? 'the session stopped before finishing'
+    : /drain status unreadable/i.test(error) ? "I couldn't confirm that its previous run had ended"
+    : /max sessions|session slots/i.test(error) ? 'all available session slots were in use'
+    : /timeout|timed out/i.test(error) ? 'the run took longer than allowed'
+    : /spawn|start|launch/i.test(error) ? 'it could not start'
+    : /auth|login/i.test(error) ? 'the account needs to be signed in again'
+    : 'it could not start or finish';
+  return `${name} has failed ${failures} times in a row because ${cause}. `
+    + `I will keep trying on its schedule. Please ask me to investigate if this continues.`;
+}
+
+export function jobCapacityNotice(names: string[], ageMs: number): string {
+  const time = ageMs >= 60 * 60_000
+    ? `${Math.floor(ageMs / (60 * 60_000))} hour${Math.floor(ageMs / (60 * 60_000)) === 1 ? '' : 's'}`
+    : `${Math.floor(ageMs / 60_000)} minutes`;
+  const jobs = names.slice(0, 4).join(', ') + (names.length > 4 ? `, and ${names.length - 4} more jobs` : '');
+  return `${jobs} ${names.length === 1 ? 'is' : 'are'} waiting for room to run; the first wait began ${time} ago. `
+    + `I'm checking for room every 15 seconds and will start the most urgent job first. `
+    + `I cannot safely close active conversations. Please close one you no longer need if you want these jobs to run sooner.`;
+}
 
 /**
  * Exact texts of server lifecycle notices that are NOT agent replies.
@@ -68,9 +91,11 @@ export const LIFECYCLE_NOTICE_EXACT: ReadonlySet<string> = new Set([
 ]);
 export const LIFECYCLE_NOTICE_PREFIXES: readonly string[] = [
   '🔄 Session restarting', // legacy wording, still in history
-  '🔄 My session for this conversation had stopped', // SESSION_RESTARTING_NOTICE
+  '🔄 My session for this conversation had stopped', // legacy wording, still in history
+  '🔄 Starting a new session', // SESSION_RESTARTING_NOTICE
   'I moved this conversation to ',
   'This conversation moved machines mid-task', // legacy wording
+  'Session starting up', // spawn acknowledgement; the person's turn is still open
 ];
 
 /** Every catalogued notice rendered with realistic inputs — the test surface. */
@@ -81,4 +106,8 @@ export const USER_NOTICE_CATALOG: ReadonlyArray<{ id: string; render: () => stri
   { id: 'session-restarting', render: () => SESSION_RESTARTING_NOTICE },
   { id: 'session-back', render: () => SESSION_BACK_NOTICE },
   { id: 'profile-reapply', render: () => PROFILE_REAPPLY_NOTICE },
+  { id: 'job-failure:killed', render: () => jobFailureNotice('Health Check', 2, 'Session killed (expired)') },
+  { id: 'job-failure:drain', render: () => jobFailureNotice('Health Check', 2, 'drain status unreadable') },
+  { id: 'job-failure:unknown', render: () => jobFailureNotice('Health Check', 3, 'command with secret') },
+  { id: 'job-capacity', render: () => jobCapacityNotice(['Health Check', 'Topic issue tracker'], 12 * 60_000) },
 ];

@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "slack-names",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T19:11:54.294Z",
+  "artifactPath": "upgrades/side-effects/slack-names.md",
+  "artifactSha256": "1c1b73a1a63438558f57e824ebe81a9d460402d7e4ac82bdb87acce57dc87244",
+  "coveredFiles": [
+    "tests/contract/slack-api-contract.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Contract test uses the production encoding and checks name lookups live.",
+  "eli16Path": "docs/specs/slack-names.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-names.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

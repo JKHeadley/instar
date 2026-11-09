@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "session-swap-any-conversation",
+  "sessionId": "c222e4df-a8dd-4afe-a5b9-83451c6c1aa7",
+  "timestamp": "2026-11-07T00:18:15.996Z",
+  "artifactPath": "upgrades/side-effects/session-swap-any-conversation.md",
+  "artifactSha256": "f28d0f911bfe2256929565b4dc5974ad41a1d4f08840d4c5a6c6bc1643e9f886",
+  "specPath": "docs/specs/session-swap-any-conversation.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/appInboundDispatch.ts",
+    "src/core/conversationPorts.ts",
+    "tests/unit/app-dispatch-engine.test.ts",
+    "tests/unit/conversation-ports.test.ts",
+    "upgrades/side-effects/session-swap-any-conversation.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up on the same Tier 2 change: app spawns carry the thinking-mode and effort pins.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
