@@ -44,7 +44,7 @@ import {
 } from './ReplicatedRecordEnvelope.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 
-export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-read-marker' | 'email-outbox-record';
+export type JournalKind = 'topic-placement' | 'session-lifecycle' | 'autonomous-run' | 'threadline-conversation' | 'guard-latch' | 'ssh-direction-proof' | 'pref-record' | 'relationship-record' | 'learning-record' | 'knowledge-record' | 'evolution-action-record' | 'user-record' | 'topic-operator-record' | 'threadline-pairing-record' | 'subscription-account-meta' | 'topic-pin-record' | 'topic-claim-annotation' | 'working-set-artifact' | 'class-review-record' | 'failure-callout-chunk' | 'app-conversation-event' | 'mobile-device-key-ledger-row' | 'ecosystem-idea-event' | 'recommended-service-record' | 'conversation-read-marker' | 'email-outbox-record' | 'chief-of-staff-record';
 
 /**
  * What happened to one `emit` call. Every branch of the private `emit` already
@@ -62,7 +62,7 @@ export type JournalEmitOutcome =
   | 'not-replicated-kind'
   | 'error';
 
-export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'failure-callout-chunk', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record', 'conversation-read-marker', 'email-outbox-record'];
+export const JOURNAL_KINDS: JournalKind[] = ['topic-placement', 'session-lifecycle', 'autonomous-run', 'threadline-conversation', 'guard-latch', 'ssh-direction-proof', 'pref-record', 'relationship-record', 'learning-record', 'knowledge-record', 'evolution-action-record', 'user-record', 'topic-operator-record', 'threadline-pairing-record', 'subscription-account-meta', 'topic-pin-record', 'topic-claim-annotation', 'working-set-artifact', 'class-review-record', 'failure-callout-chunk', 'app-conversation-event', 'mobile-device-key-ledger-row', 'ecosystem-idea-event', 'recommended-service-record', 'conversation-read-marker', 'email-outbox-record', 'chief-of-staff-record'];
 // 'subscription-account-meta' added for WS5.2 Account Follow-Me §6.1a (registry follow-me =
 // METADATA ONLY): a redacted, credential-free projection of a SubscriptionAccount (id, nickname,
 // email, provider, framework, status, quota) replicates so a peer KNOWS an account's depth/quota
@@ -337,6 +337,13 @@ export const DEFAULT_RETENTION: Record<JournalKind, KindRetention> = {
   // (topicText), so never rotateKeep 0. Three 16 MB archives plus the live file hold about five days at the
   // Resend cap; the holder's hourly checkpoint re-emits every live row, so no live row is ever only in a rotated file.
   'email-outbox-record': { maxFileBytes: 16 * 1024 * 1024, rotateKeep: 3 },
+  // Chief of Staff (docs/specs/chief-of-staff-topic.md §1.2): tree/binding/lifecycle/
+  // check-event/intent/outcome/renewal records — immutable event records whose derived
+  // views (brakes, lease, open/closed) are folded from the WHOLE stream, so retention is
+  // NEVER-DELETE (rotateKeep 0, the topic-placement posture); a dropped archive would
+  // erase a binding or the breaker window. Volume is tiny (≈1 check-event/project/day).
+  // Per-key compaction is tracked as CMT-1415 (trigger: live file > 4 MiB).
+  'chief-of-staff-record': { maxFileBytes: 8 * 1024 * 1024, rotateKeep: 0 },
   'ecosystem-idea-event': { maxFileBytes: 4 * 1024 * 1024, rotateKeep: 8 },
   // A person's yes and no: never pruned, so compaction can't drop a refusal.
   'recommended-service-record': { maxFileBytes: 2 * 1024 * 1024, rotateKeep: 0 },
@@ -584,7 +591,7 @@ export class CoherenceJournal {
   private state: WriterState = 'closed';
   private incarnation = '';
   /** Next seq to assign at enqueue, per kind (in-memory counter seeded at open). */
-  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1 };
+  private nextSeq: Record<JournalKind, number> = { 'topic-placement': 1, 'session-lifecycle': 1, 'autonomous-run': 1, 'threadline-conversation': 1, 'guard-latch': 1, 'ssh-direction-proof': 1, 'pref-record': 1, 'relationship-record': 1, 'learning-record': 1, 'knowledge-record': 1, 'evolution-action-record': 1, 'user-record': 1, 'topic-operator-record': 1, 'threadline-pairing-record': 1, 'subscription-account-meta': 1, 'topic-pin-record': 1, 'topic-claim-annotation': 1, 'working-set-artifact': 1, 'class-review-record': 1, 'failure-callout-chunk': 1, 'app-conversation-event': 1, 'mobile-device-key-ledger-row': 1, 'ecosystem-idea-event': 1, 'recommended-service-record': 1, 'conversation-read-marker': 1, 'email-outbox-record': 1, 'chief-of-staff-record': 1 };
   /** Durable highWaterSeq per kind (advanced after data fdatasync). */
   private highWaterSeq: Record<JournalKind, number> = {
     'topic-placement': 0,
@@ -613,6 +620,7 @@ export class CoherenceJournal {
     'recommended-service-record': 0,
     'conversation-read-marker': 0,
     'email-outbox-record': 0,
+    'chief-of-staff-record': 0,
   };
   /** In-memory enqueue order; drained by the flusher in seq order per kind. */
   private queue: QueuedEntry[] = [];
@@ -644,6 +652,7 @@ export class CoherenceJournal {
     'recommended-service-record': new Set(),
     'conversation-read-marker': new Set(),
     'email-outbox-record': new Set(),
+    'chief-of-staff-record': new Set(),
   };
   private rateBuckets: Record<JournalKind, RateBucket>;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -705,6 +714,7 @@ export class CoherenceJournal {
       'recommended-service-record': config.retention?.['recommended-service-record'] ?? DEFAULT_RETENTION['recommended-service-record'],
       'conversation-read-marker': config.retention?.['conversation-read-marker'] ?? DEFAULT_RETENTION['conversation-read-marker'],
       'email-outbox-record': config.retention?.['email-outbox-record'] ?? DEFAULT_RETENTION['email-outbox-record'],
+      'chief-of-staff-record': config.retention?.['chief-of-staff-record'] ?? DEFAULT_RETENTION['chief-of-staff-record'],
     };
     this.rateCapCfg = config.rateCap ?? DEFAULT_RATE_CAP;
     this.artifactRoots = (config.artifactRoots ?? [path.join(this.stateDir, 'autonomous'), this.stateDir]).map((r) => {
@@ -750,6 +760,7 @@ export class CoherenceJournal {
       'recommended-service-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'conversation-read-marker': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
       'email-outbox-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
+      'chief-of-staff-record': { tokens: this.rateCapCfg.capacity, lastRefillMs: initMs },
     };
   }
 
@@ -969,6 +980,52 @@ export class CoherenceJournal {
       this.log('emit-record', `[coherence-journal] emitReplicatedRecord failed (swallowed): ${(e as Error)?.message}`);
       return 'error';
     }
+  }
+
+  /**
+   * `emitReplicatedRecord` plus the assigned seq, for a caller that must WAIT for
+   * durability before taking a side effect (docs/specs/chief-of-staff-topic.md §2.4
+   * step 3: an `executing` record must be on disk before a spawn). `seq` is present
+   * only when the outcome is `accepted`. Never throws into the caller.
+   */
+  emitReplicatedRecordWithSeq(kind: JournalKind, data: Record<string, unknown>): { outcome: JournalEmitOutcome; seq?: number } {
+    const before = this.nextSeq[kind];
+    const outcome = this.emitReplicatedRecord(kind, data);
+    // `emit` assigns `seq = nextSeq[kind]` and bumps the counter ONLY on 'accepted',
+    // so the accepted record's seq is exactly the counter value before the call.
+    return outcome === 'accepted' ? { outcome, seq: before } : { outcome };
+  }
+
+  /**
+   * Resolve once `seq` for `kind` is DURABLE (meta.highWaterSeq advanced after
+   * fdatasync — the same value `getOwnAdvert()` advertises), or reject: on timeout,
+   * on a flush error observed while waiting, or when the journal is not active.
+   * `accepted` from emit means "enqueued", never "on disk"; this is the one call
+   * that closes that gap. Triggers one `flush()` up front, then polls every
+   * `pollMs` (default 25 ms). Pure wait: it never re-emits and never mutates state.
+   */
+  awaitDurableSeq(kind: JournalKind, seq: number, timeoutMs = 5_000, pollMs = 25): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      if (!Number.isFinite(seq) || seq <= 0) { reject(new Error(`awaitDurableSeq: invalid seq ${String(seq)}`)); return; }
+      if (this.state !== 'active') { reject(new Error(`awaitDurableSeq: journal not active (${this.state})`)); return; }
+      const errorsBefore = this.degradation.flushErrors;
+      const deadline = Date.now() + Math.max(0, timeoutMs);
+      const check = (): boolean => {
+        if (this.highWaterSeq[kind] >= seq) { resolve(); return true; }
+        if (this.degradation.flushErrors > errorsBefore) { reject(new Error(`awaitDurableSeq: flush error while waiting for ${kind}#${seq}`)); return true; }
+        if (this.state !== 'active') { reject(new Error(`awaitDurableSeq: journal left active state while waiting for ${kind}#${seq}`)); return true; }
+        if (Date.now() >= deadline) { reject(new Error(`awaitDurableSeq: timeout waiting for ${kind}#${seq} (highWater=${this.highWaterSeq[kind]})`)); return true; }
+        return false;
+      };
+      this.flush();
+      if (check()) return;
+      const timer = setInterval(() => {
+        if (!(this.highWaterSeq[kind] >= seq)) this.flush();
+        if (check()) clearInterval(timer);
+      }, Math.max(1, pollMs));
+      // Never keep the process alive for a wait nobody else needs.
+      (timer as unknown as { unref?: () => void }).unref?.();
+    });
   }
 
   /** Derive the restart-proof op-key for a replicated record: `recordKey:hlcKey`.
