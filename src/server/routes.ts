@@ -757,6 +757,7 @@ import { detectLocalhostLink } from '../core/localhost-link.js';
 import { RelayRefusedError } from '../core/TelegramRelay.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
+import { registerEmailRoutes } from './emailRoutes.js';
 import { detectJargon } from '../core/JargonDetector.js';
 import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
@@ -1690,6 +1691,14 @@ export interface RouteContext {
   ecosystemIdeas?: () => import('../ecosystem/buildEcosystemIdeas.js').EcosystemRouteContext | { unavailable: 'no-source' } | null;
   /** docs/specs/recommended-services.md. Null when this machine has no identity; the routes answer 503. */
   recommendedServicesLedger?: import('../recommended/RecommendedServicesLedger.js').RecommendedServicesLedger | null;
+  /** docs/specs/backup-email-sending.md: the email sender. Absent until built; the email routes answer 503. */
+  emailService?: import('../email/EmailService.js').EmailService | null;
+  /** Asks the recommended-services routes for a recipe's re-check now (a refused email credential). */
+  recommendedServicesRecheck?: (service: string) => void;
+  /** A one-off email's fallback copy to the session's own topic (set by the routes, which own the notification stamp). */
+  emailTopicSend?: (topicId: number, text: string) => Promise<unknown>;
+  /** A standby's one-off travels to the holder (email-send-forward). */
+  emailForwardToHolder?: (input: { id: string; subject: string; text: string; fallbackTopicId: number }) => Promise<{ ok: true; id: string } | { ok: false; reason: string }>;
   /** Who can reach the agent (team-roles-and-access §3.10). */
   reachablePeople?: import('../users/ReachablePeople.js').ReachablePeople | null;
   /** Only tests set this, because no real service has a proven setup yet. */
@@ -16540,7 +16549,20 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     ctx.config.enabledFrameworks = typed;
     if (ctx.config.sessions) ctx.config.sessions.enabledFrameworks = typed;
   };
-  registerRecommendedServiceRoutes(router, {
+  // docs/specs/backup-email-sending.md: the recipe reaches the sender lazily (it is built after the routes).
+  const emailSurface: import('../recommended/recipes.js').EmailRecipeSurface = {
+    verifyCredential: async () => ctx.emailService ? ctx.emailService.verifyCredential() : { result: 'unknown', detail: 'The email sender is not running on this machine yet.' },
+    proven: () => ctx.emailService?.proven() ?? { proven: false, detail: 'The email sender is not running on this machine yet.' },
+    prove: async () => ctx.emailService ? ctx.emailService.prove() : { result: 'unknown', detail: 'The email sender is not running on this machine yet.' },
+    drain: async () => (ctx.emailService ? ctx.emailService.drain() : 0),
+    forget: () => { ctx.emailService?.forget(); },
+    recipient: () => ctx.emailService?.recipient() ?? null,
+  };
+  const recommendedHandle = registerRecommendedServiceRoutes(router, {
+    email: emailSurface,
+    emailRecipientHash: (recipient) => ctx.emailService?.recipientHashOf(recipient) ?? null,
+    emailTimezone: () => ctx.config.email?.timezone || (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })(), // @silent-fallback-ok — UTC is one email day for every holder
+    onEmailRecipientChanged: () => { ctx.emailService?.forget(); },
     ledger: () => ctx.recommendedServicesLedger ?? null,
     stateDir: ctx.config.stateDir,
     catalog: ctx.recommendedServicesCatalog ?? catalogWithProving(
@@ -16767,6 +16789,33 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // A record, not a beacon: the setup check notices a stalled session, and routine recovery stays quiet.
       return ctx.commitmentTracker.record({ type: 'one-time-action', source: 'agent', userRequest: `Set up ${name}, after the owner said yes`, agentResponse: `I own setup of ${service} until it passes verification or the owner says no. The person only approves decisions or supplies credentials.` }).id;
     },
+  });
+  ctx.recommendedServicesRecheck = (service) => recommendedHandle.requestRecheck(service);
+  // docs/specs/backup-email-sending.md: a one-off whose email did not go reaches the session's own topic.
+  ctx.emailTopicSend = async (topicId, text) => {
+    if (!ctx.telegram) throw new Error('no Telegram');
+    return withNotificationEnvelope(stampNotification(), async () => ctx.telegram!.sendToTopic(topicId, text));
+  };
+  registerEmailRoutes(router, {
+    service: () => ctx.emailService ?? null,
+    originTopics: (rawToken) => {
+      if (!rawToken || !ctx.conversationBindAuth) return null;
+      const payload = ctx.conversationBindAuth.verify(rawToken);
+      return payload ? payload.bootstrapConversationIds : null;
+    },
+    // A one-off has one text, so anything but the owner's own conversation counts as other readers.
+    topicHasOtherReaders: (topicId) => ['place', 'person', 'none'].includes(ctx.sessionManager.memoryAudienceKind?.({ telegramTopicId: topicId }) ?? 'none'),
+    hasGrant: () => { const l = ctx.recommendedServicesLedger; return !!l && l.activeGrant('email', l.machineId()) !== null; },
+    checkConfirmPin: (req, res) => {
+      if (ctx.pinEntryRefusedHere?.(req)) { res.status(403).json({ error: 'insecure-connection' }); return false; }
+      if (ctx.pinAttemptStore?.blocked(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS)) { res.status(429).json({ error: 'Too many PIN attempts. Try again later.' }); return false; }
+      const ok = checkMandatePin(req, res);
+      const { pin } = (req.body ?? {}) as { pin?: unknown };
+      if (!ok && res.statusCode === 403 && typeof pin === 'string' && pin) ctx.pinAttemptStore?.recordFailure(GLOBAL_PIN_KEY, GLOBAL_PIN_MAX_ATTEMPTS);
+      return ok;
+    },
+    holdsLease: () => { try { return ctx.coordinator?.enabled ? ctx.coordinator.holdsLease() : true; } catch { return false; } }, // @silent-fallback-ok — an unreadable lease reads as not held: forward, never send twice
+    forwardToHolder: (input) => (ctx.emailForwardToHolder ? ctx.emailForwardToHolder(input) : Promise.resolve({ ok: false as const, reason: 'holder-unreachable' })),
   });
   registerEcosystemIdeaRoutes(router, { ecosystem: () => ctx.ecosystemIdeas?.() ?? null, checkPin: (req, res) => checkMandatePin(req, res) });
 

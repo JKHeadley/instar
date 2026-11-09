@@ -114,6 +114,7 @@ import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
 import { InMemoryImportTarget, runImport, type ImportRunResult } from '../feedback-factory/migration/importRunner.js';
 import { SecretStore } from '../core/SecretStore.js';
+import crypto from 'node:crypto';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
 import type { SessionManager, SessionTerminateAuthority } from '../core/SessionManager.js';
@@ -6340,6 +6341,7 @@ export class AgentServer {
     }
     routeCtx.recommendedServicesLedger = options.recommendedServicesLedger ?? null;
     routeCtx.reachablePeople = options.reachablePeople ?? null;
+    this.startEmail(options, routeCtx);
     this.startReachNotices(options);
     this.startEcosystemIdeas(options, routeCtx);
     this.desktopSetupTarget = new DesktopSetupTarget({
@@ -9210,6 +9212,142 @@ export class AgentServer {
 
   /** Build the queue-pace ledger + tuner over the owners this machine actually runs. */
   /** docs/specs/ecosystem-idea-pipeline.md: dev-gated server service; reviews run on the lease holder only. */
+  /** docs/specs/backup-email-sending.md: the email sender. Null until built; its routes answer 503 then. */
+  emailService: import('../email/EmailService.js').EmailService | null = null;
+  emailOutbox: import('../email/EmailOutbox.js').EmailOutbox | null = null;
+  /** Set by the server once the mesh is up: a standby's one-off or fired report travels to the holder. */
+  emailForwardToHolder: ((input: { id: string; kind: 'report' | 'one-off'; subject: string; text: string; topicText: string; fallbackTopicId: number | null; jobSlug?: string }) => Promise<{ ok: true; id: string } | { ok: false; reason: string }>) | null = null;
+
+  /** The mesh sender for a standby's email (email-send-forward). */
+  setEmailForwarder(fn: NonNullable<AgentServer['emailForwardToHolder']>): void {
+    this.emailForwardToHolder = fn;
+    if (this.emailRouteCtx) this.emailRouteCtx.emailForwardToHolder = (input) => fn({ ...input, kind: 'one-off', topicText: input.text });
+  }
+  private emailRouteCtx: import('./routes.js').RouteContext | null = null;
+
+  /**
+   * Builds the email sender. Inert until the owner's yes and the recipe's proof: with no grant every report goes to
+   * Telegram exactly as before, and jobs without `deliver` never touch it.
+   */
+  private startEmail(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): void {
+    const config = options.config;
+    if (!config.stateDir) return;
+    this.emailRouteCtx = routeCtx;
+    if (this.emailForwardToHolder) this.setEmailForwarder(this.emailForwardToHolder);
+    void (async () => {
+      const { buildEmailService, emailRowIdForExecution } = await import('../email/wireEmail.js');
+      const { detectOutboundCredential } = await import('../messaging/outbound-credential-guard.js');
+      const { loadMachineSigner } = await import('../core/AppRecordSignatures.js');
+      const { EMAIL_OUTBOX_STORE_KEY } = await import('../email/EmailOutbox.js');
+      const { buildEmailOutboxRecordData } = await import('../email/EmailOutboxReplicatedStore.js');
+      const { fallbackLine } = await import('../email/emailCore.js');
+      const signer = loadMachineSigner(config.stateDir);
+      // The recipient hash is keyed with this machine's identity key (a deterministic signature over a fixed label).
+      const recipientKey = signer ? crypto.createHash('sha256').update(signer.sign('instar-email-recipient-hash-key-v1').sig).digest() : crypto.createHash('sha256').update(`email-recipient:${config.authToken ?? config.projectName}`).digest();
+      const machineId = signer?.machineId() ?? this.meshSelfId ?? config.projectName;
+      const coordinator = options.coordinator;
+      const holdsLease = (): boolean => { try { return coordinator?.enabled ? coordinator.holdsLease() : true; } catch { return false; } }; // @silent-fallback-ok — an unreadable lease reads as not held
+      const readSecret = (name: string): string | null => {
+        try { const v = new SecretStore({ stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey }).get(name); return typeof v === 'string' && v ? v : null; } catch { return null; } // @silent-fallback-ok — an unreadable vault reads as not set up; every report falls back
+      };
+      const acked = (r: unknown): { ok: boolean; messageId?: string | number } => {
+        const m = r as { messageId?: unknown; quietId?: unknown } | null;
+        if (m && (typeof m.messageId === 'number' || typeof m.messageId === 'string')) return { ok: true, messageId: m.messageId as number | string };
+        if (m && typeof m.quietId === 'string') return { ok: true, messageId: `quiet:${m.quietId}` };
+        return { ok: false };
+      };
+      const emitter = options.replicatedRecordEmitter;
+      const built = buildEmailService({
+        stateDir: config.stateDir,
+        agentName: config.projectName ?? 'Your agent',
+        machineId,
+        recipientKey,
+        ledger: () => routeCtx.recommendedServicesLedger ?? null,
+        readSecret,
+        holdsLease,
+        detectCredential: (text) => detectOutboundCredential(text).detected,
+        config: () => (options.liveConfig?.get?.<typeof config.email>('email', config.email) ?? config.email),
+        jobs: () => options.scheduler?.getJobs?.() ?? [],
+        deliverJobReport: options.scheduler ? (job, text) => options.scheduler!.deliverJobReport(job, text) : undefined,
+        // The send itself lives in routes.ts (a reviewed notification seam with its own stamper).
+        deliverToSessionTopic: async (topicId, text) => {
+          const send = routeCtx.emailTopicSend;
+          if (!send) return { ok: false };
+          try { return acked(await send(topicId, text)); } catch { return { ok: false }; } // @silent-fallback-ok — the row stays falling-back and retries
+        },
+        relayEnqueue: (deliveryId, topicId, text) => {
+          if (!this.deliveryStore || !this.deliverySentinel) throw new Error('relay queue unavailable');
+          return this.deliveryStore.enqueue({ delivery_id: deliveryId, topic_id: topicId, text_hash: crypto.createHash('sha256').update(text).digest('hex'), text });
+        },
+        emit: emitter ? (rec) => emitter.emit(EMAIL_OUTBOX_STORE_KEY, rec.recordKey, buildEmailOutboxRecordData(rec)).outcome === 'emitted' : undefined,
+        onCredentialRefused: () => routeCtx.recommendedServicesRecheck?.('email'),
+        report: (what, detail) => DegradationReporter.getInstance().report({ feature: what, primary: 'Send a report to the owner by email', fallback: 'The report goes to its conversation instead.', reason: detail, impact: 'An email may not have gone out; the conversation copy covers it.' }),
+      });
+      this.emailService = built.service;
+      this.emailOutbox = built.outbox;
+      routeCtx.emailService = built.service;
+      const service = built.service;
+      // Reports: the holder writes the row; a standby forwards to the holder, and if the holder can't be reached
+      // the report goes to the job's topic with the not-set-up-here line. Nothing is dropped.
+      if (options.scheduler) {
+        options.scheduler.emailReports = {
+          submitReport: ({ executionId, job, subject, ownerText, topicText, reconcile }) => {
+            const id = emailRowIdForExecution(executionId);
+            if (holdsLease()) {
+              const out = service.submit({ id, kind: 'report', subject, ownerText, topicText, fallbackTopicId: job.topicId ?? null, jobSlug: job.slug, forceFallback: reconcile });
+              return out.ok ? out.id : null;
+            }
+            const forward = this.emailForwardToHolder;
+            void (async () => {
+              const fwd = forward ? await forward({ id, kind: 'report', subject, text: ownerText, topicText, fallbackTopicId: job.topicId ?? null, jobSlug: job.slug }).catch(() => ({ ok: false as const, reason: 'holder-unreachable' })) : { ok: false as const, reason: 'holder-unreachable' };
+              if (fwd.ok) return;
+              // The holder can't be reached: the copy goes to the job's topic from here, and if Telegram refuses
+              // (a standby's send waits for the lease), it waits in this machine's relay queue. Never dropped.
+              const text = `${topicText}\n\n${fallbackLine('not-set-up-here')}`;
+              const sent = await options.scheduler!.deliverJobReport(job, text);
+              if (!sent.ok && job.topicId && this.deliveryStore) {
+                this.deliveryStore.enqueue({ delivery_id: id, topic_id: job.topicId, text_hash: crypto.createHash('sha256').update(text).digest('hex'), text });
+              }
+            })().catch(() => { /* @silent-fallback-ok — reported by the scheduler's own send path */ });
+            return id;
+          },
+        };
+      }
+      // Resume events for rows waiting on Telegram: its reconnect, and the relay sentinel delivering a queued copy.
+      this.telegramAdapter?.onReconnect?.(() => service.resume());
+      const sentinel = this.deliverySentinel as unknown as { on?: (e: string, l: (p: { delivery_id: string }) => void) => void } | null;
+      const hookSentinel = (): void => {
+        const s = this.deliverySentinel as unknown as { on?: (e: string, l: (p: { delivery_id: string }) => void) => void } | null;
+        s?.on?.('sentinel:recovered', ({ delivery_id }) => { service.relayDelivered(delivery_id); service.resume(); });
+        // A queued copy the sentinel gave up on never reached the person: the row goes back to falling-back.
+        s?.on?.('sentinel:escalated', ({ delivery_id }) => service.relayFailed(delivery_id));
+        s?.on?.('sentinel:tone-gated', ({ delivery_id }) => service.relayFailed(delivery_id));
+        (s as unknown as { on?: (e: string, l: (p: { topicIds: number[] }) => void) => void } | null)?.on?.('sentinel:stale-retired', ({ topicIds }) => service.relayRetiredForTopics(topicIds));
+      };
+      if (sentinel) hookSentinel(); else setTimeout(hookSentinel, 30_000).unref?.();
+      // Boot: recover live rows and reconcile unmarked runs, then the hourly sweep (checkpoint, tombstones, reconcile).
+      // The reconciliation floor is when email delivery was first wired on this machine, kept on disk, so a run that
+      // finished just before a restart is still found.
+      const wiredAt = service.wiredSince();
+      setTimeout(() => {
+        try {
+          service.recover();
+          if (holdsLease()) options.scheduler?.reconcileEmailReports(wiredAt);
+        } catch (err) { DegradationReporter.getInstance().report({ feature: 'Email.recover', primary: 'Recover email rows at boot', fallback: 'The hourly sweep tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'A report may wait an hour.' }); }
+      }, 5_000).unref?.();
+      setInterval(() => {
+        try {
+          service.hourly();
+          if (holdsLease()) options.scheduler?.reconcileEmailReports(wiredAt);
+        } catch (err) {
+          DegradationReporter.getInstance().report({ feature: 'Email.hourly', primary: 'Checkpoint the email outbox', fallback: 'The next hour tries again.', reason: err instanceof Error ? err.message : String(err), impact: 'A live email row may not reach another machine until then.' });
+        }
+      }, 60 * 60_000).unref?.();
+    })().catch((err) => {
+      DegradationReporter.getInstance().report({ feature: 'Email', primary: 'Build the email sender', fallback: 'Every report goes to its conversation; the email routes answer 503.', reason: err instanceof Error ? err.message : String(err), impact: 'Email cannot be used on this machine.' });
+    });
+  }
+
   private startEcosystemIdeas(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): void {
     const config = options.config;
     if (!config.stateDir || !resolveDevAgentGate(config.ecosystemIdeas?.enabled, config)) return;

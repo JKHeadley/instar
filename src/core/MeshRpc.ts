@@ -336,6 +336,20 @@ export type MeshCommand =
       method: string;
       probeOnly?: boolean;
       assertion?: unknown;
+    }
+  | {
+      // docs/specs/backup-email-sending.md (Who sends): a standby forwards an email to the lease holder, the one
+      // voice. Carries a session's one-off or a standby-fired report; `id` is the caller's idempotency id, so a
+      // re-issue after a mesh timeout answers the existing row. The holder runs its own guard, outbox, budget and
+      // queue, and re-checks the fallback topic's readers itself. Mutating: the handler is the gate.
+      type: 'email-send-forward';
+      id: string;
+      kind: 'report' | 'one-off';
+      subject: string;
+      text: string;
+      topicText: string;
+      fallbackTopicId: number | null;
+      jobSlug?: string;
     };
 
 export interface MeshEnvelope {
@@ -523,6 +537,10 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     }
     case 'commitment-mutate':
     case 'telegram-origin':
+    // email-send-forward (backup-email-sending, Who sends): the same posture. verifyEnvelope proves the sending
+    // machine; the holder's handler re-runs the credential guard, the readers check on the carried topic, the
+    // budget and the owner-only transport, and answers an existing row for a repeated id.
+    case 'email-send-forward':
       // MUTATING verb, deliberately its OWN case (COMMITMENTS-COHERENCE-SPEC
       // §3.4/§5): any registered peer may issue it under the same-operator
       // posture — meaning RBAC adds NO authorization beyond verifyEnvelope,

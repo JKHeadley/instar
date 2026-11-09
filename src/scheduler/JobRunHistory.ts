@@ -110,6 +110,12 @@ export interface JobRun {
   /** When the row exceeded the 2 KB cap, non-essential fields are
    *  truncated and this flag is set. */
   truncated?: boolean;
+  /**
+   * docs/specs/backup-email-sending.md: the email outbox row for this run's report, written in the same completion
+   * bookkeeping. `quiet` means the run had nothing to report (Quiet by Default). It outlives the row's tombstone, so
+   * a marked run is never reconciled again; an unmarked completed run of an emailing job is.
+   */
+  emailOutboxId?: string;
 }
 
 export interface JobRunStats {
@@ -288,6 +294,7 @@ export class JobRunHistory {
     result: 'success' | 'failure' | 'timeout' | 'skipped';
     error?: string;
     outputSummary?: string;
+    emailOutboxId?: string;
   }): void {
     // Find the pending entry to get start time
     const pending = this.findRun(opts.runId);
@@ -313,8 +320,19 @@ export class JobRunHistory {
       result: opts.result,
       error: opts.error,
       outputSummary: opts.outputSummary,
+      ...(opts.emailOutboxId ? { emailOutboxId: opts.emailOutboxId } : {}),
     };
     this.appendLine(completed);
+  }
+
+  /**
+   * Marks a completed run with its email outbox row (docs/specs/backup-email-sending.md): the reconciliation sweep's
+   * write for a run whose completion bookkeeping did not get to it. Appends a new version of the row.
+   */
+  recordEmailOutboxId(runId: string, emailOutboxId: string): void {
+    const run = this.findRun(runId);
+    if (!run || run.emailOutboxId) return;
+    this.appendLine({ ...run, emailOutboxId });
   }
 
   /**

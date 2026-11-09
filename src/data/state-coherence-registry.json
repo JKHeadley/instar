@@ -2394,6 +2394,75 @@
       }
     },
     {
+      "category": "email-outbox",
+      "description": "Every email to the owner in flight (docs/specs/backup-email-sending.md, A durable outbox): one row per report or one-off with hashes, a destination-safe topic copy and its state, plus one budget record per email day. Only the lease holder writes; rows replicate through the email-outbox-record kind so a successor finishes any live row. A delivery queue, not a memory store: every report is also held by its destination.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "state/email-outbox/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "bounded",
+        "maxBytes": 67108864,
+        "note": "outbox.jsonl rotates at 16 MB keeping three archives (64 MB at most); terminal rows get a tombstone after 24 hours and live rows are re-emitted hourly, so no live row is only in a rotated file."
+      }
+    },
+    {
+      "category": "email-outbox-text",
+      "description": "The owner's full report text for each email still in flight, held only on the machine sending it and deleted the moment its row is terminal. Never replicated and outside state backups.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/email-outbox-text/"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 200,
+        "note": "One file per live row (at most 200 live rows, 16 KB each), deleted at terminal."
+      }
+    },
+    {
+      "category": "email-opt-in",
+      "description": "The email opt-in code (keyed hash, expiry, attempt count), the recipient the owner confirmed, the count of proof mails to an unconfirmed address, and proof results by credential version. Local by design: the code is minted and checked on the machine that took the yes.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/email-opt-in.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file; days older than a week and all but the newest eight proof versions pruned on write."
+      }
+    },
+    {
+      "category": "email-service",
+      "description": "The email sender's own flags on this machine: the credential breaker, a provider refusal of the recipient, and when each fallback line was last said.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/email-service.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "fixed-cardinality",
+        "maxRecords": 1,
+        "note": "One replace-in-place file."
+      }
+    },
+    {
       "category": "ecosystem-ideas",
       "description": "The ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md): an append-only event ledger that replicates as the ecosystemIdeas store, a per-machine framework admission record and notice dedupe. Source mirrors and index.db in the same directory are a rebuildable cache.",
       "scope": "must-be-coherent",

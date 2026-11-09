@@ -599,6 +599,12 @@ export interface JobDefinition {
    *  When undefined, defaults to 'on-alert' — jobs are quiet unless they have
    *  something that needs the user's attention. */
   telegramNotify?: boolean | 'on-alert';
+  /**
+   * Where a report this job would send goes (docs/specs/backup-email-sending.md). Absent means Telegram only, as
+   * before. `['email']` emails the report that would have gone to Telegram; `['telegram', 'email']` does both.
+   * Never overrides a quiet job. Refused on script jobs (their runner has no report text).
+   */
+  deliver?: Array<'telegram' | 'email'>;
   /** Grounding configuration — what context this job needs at session start */
   grounding?: JobGrounding;
   /** LLM supervision tier — see docs/LLM-SUPERVISED-EXECUTION.md */
@@ -4955,6 +4961,21 @@ export interface InstarConfig {
     provingRecipes?: string[];
     /** The first list of recommended services, sent once per service after a delivered first result. Off by default. */
     offers?: { enabled?: boolean };
+  };
+  /**
+   * Sending email to the owner (docs/specs/backup-email-sending.md). Email only works after the owner's yes and the
+   * recipe's proof, so this block is optional. `enabled: false` drains the outbox to the topics and stops sending.
+   */
+  email?: {
+    enabled?: boolean;
+    /** How long a Resend send is watched for delivery before it falls back (default 30, at most 60). */
+    statusWindowMinutes?: number;
+    /** Transport timeout (default 15, 5 to 60). */
+    transportTimeoutSeconds?: number;
+    /** How often the plain fallback line is repeated per cause (default once a day, never more than hourly). */
+    fallbackLineEvery?: 'hour' | 'day';
+    /** The agent's email day timezone; defaults to the one recorded on the owner's yes. */
+    timezone?: string;
   };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */

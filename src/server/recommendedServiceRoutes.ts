@@ -15,7 +15,8 @@ import { newListId, offerCandidates, renderOfferList } from '../recommended/offe
 import { OfferTapStore } from '../recommended/offerTaps.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable, offerTextHash, type CatalogRow } from '../recommended/catalog.js';
 import { ConfirmTokenStore } from '../recommended/confirmTokens.js';
-import { recipeFor, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
+import { recipeFor, type EmailRecipeSurface, type RecipeDeps, type StopDeps, type VerifyResult } from '../recommended/recipes.js';
+import { EMAIL_RECIPIENT_SECRET, normalizeRecipient, readEmailCredential, EMAIL_SECRET } from '../email/emailCore.js';
 import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
 import type { GitHubBackupSurface } from '../recommended/githubBackup.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
@@ -102,6 +103,13 @@ export interface RecommendedServiceRouteDeps {
   linkBase?: () => string | null;
   /** Lets the adapter hand offer-button taps to these routes. */
   registerOfferTapHandler?: (handler: OfferTapHandler) => void;
+  /** The email sender, for the email recipe (docs/specs/backup-email-sending.md). Absent: its check answers unknown. */
+  email?: EmailRecipeSurface;
+  /** Email: the keyed hash of a recipient (HMAC with this machine's identity key) and the zone the yes records. */
+  emailRecipientHash?: (recipient: string) => string | null;
+  emailTimezone?: () => string;
+  /** Email: a new recipient starts the opt-in over (its code and confirmation belong to the old address). */
+  onEmailRecipientChanged?: () => void;
 }
 
 /** A tap on an offer button. `fromIsOwner` is the adapter's owner-principal check; a yes needs it, a no does not. */
@@ -115,7 +123,13 @@ function setupView(state: ServiceSetupState | undefined): { verified: ServiceSet
   return { verified: state?.verified ?? null, alreadyHeld: !!state?.alreadyHeld, stalled: !!state?.exhausted, held: !!state?.held, stopped: state?.stopped ?? null, switchingOff: !!state?.stopRequestedAt && !state?.stopped };
 }
 
-export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): void {
+/** What the routes hand back to the server: a way to ask for a recipe's re-check now. */
+export interface RecommendedServiceRoutesHandle {
+  requestRecheck: (service: string) => void;
+}
+
+export function registerRecommendedServiceRoutes(router: Router, deps: RecommendedServiceRouteDeps): RecommendedServiceRoutesHandle {
+  const handle: RecommendedServiceRoutesHandle = { requestRecheck: () => {} };
   const catalog = deps.catalog ?? RECOMMENDED_SERVICE_CATALOG;
   const tokens = new ConfirmTokenStore({ stateDir: deps.stateDir, now: deps.now });
   const taps = new OfferTapStore({ stateDir: deps.stateDir, now: deps.now });
@@ -142,10 +156,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
   const stopping = new Set<string>();
   /** With a service named, setting up that service is the question: Telegram's own setup needs no Telegram yet. */
   const reach = (service?: string): boolean => deps.canReachOwner?.(service) ?? true;
-  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, machineId: deps.ledger()?.machineId(), aiDoors: deps.aiDoors, telegramSetup: deps.telegramSetup, cloudflare: deps.cloudflare, cloudflareWork: cloudflareWork });
+  const recipeDeps = (): RecipeDeps => ({ readSecret: deps.readSecret, fetch: deps.fetch, tailscaleStatus: deps.tailscaleStatus, bitwarden: deps.bitwarden, github: deps.github, agentName: deps.agentName, machineId: deps.ledger()?.machineId(), aiDoors: deps.aiDoors, telegramSetup: deps.telegramSetup, cloudflare: deps.cloudflare, cloudflareWork: cloudflareWork, email: deps.email });
   /** How often a copy kept elsewhere is brought up to date by the regular check, and how long a failed refresh waits before another try. */
   const SYNC_EVERY_MS = 24 * 60 * 60_000;
   const SYNC_RETRY_MS = 6 * 60 * 60_000;
+  /** A key recipe's regular re-check (docs/specs/backup-email-sending.md: only copy recipes re-checked before). */
+  const RECHECK_EVERY_MS = 24 * 60 * 60_000;
   /** After this many failed refreshes in a row the check is re-run: its fail restarts setup, which asks the person for what changed. */
   const SYNC_FAILURES_BEFORE_RECHECK = 3;
   const nowIso = (): string => new Date(deps.now?.() ?? Date.now()).toISOString();
@@ -353,10 +369,10 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
    * service. Saves the choice, then the records of it (a failure there is reported, never refused), then starts
    * setup. False only when the choice itself could not be saved.
    */
-  const applyYes = (ledger: RecommendedServicesLedger, row: CatalogRow, input: { origin: import('../recommended/RecommendedServicesLedger.js').ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string }): boolean => {
+  const applyYes = (ledger: RecommendedServicesLedger, row: CatalogRow, input: { origin: import('../recommended/RecommendedServicesLedger.js').ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string; recipientHash?: string; timezone?: string }): boolean => {
     let yes;
     try {
-      yes = ledger.recordYes({ service: row.id, origin: input.origin, offerTextHash: input.offerTextHash, grantMachine: input.grantMachine, principal: input.principal });
+      yes = ledger.recordYes({ service: row.id, origin: input.origin, offerTextHash: input.offerTextHash, grantMachine: input.grantMachine, principal: input.principal, ...(input.recipientHash ? { recipientHash: input.recipientHash, timezone: input.timezone } : {}) });
     } catch {
       return false;
     }
@@ -560,6 +576,37 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
           }
         }
       }
+      // A key recipe that passed is checked again once a day (or at once when a sender saw its credential refused).
+      // An outage changes nothing; a fail reopens setup the same way a failed copy does, and the person is told once.
+      if (state?.verified?.result === 'pass' && copyRecipe?.secretName && !copyRecipe.sync) {
+        // First sight of a passing key recipe (every working service right after this update): start its clock
+        // rather than checking every service at once.
+        if (!state.lastRecheckAt) {
+          updateSetupState(deps.stateDir, row.id, { lastRecheckAt: nowIso() });
+          continue;
+        }
+        const lastCheck = Date.parse(state.lastRecheckAt) || 0;
+        if (nowMs - lastCheck >= RECHECK_EVERY_MS) {
+          updateSetupState(deps.stateDir, row.id, { lastRecheckAt: nowIso() });
+          try {
+            const recheck = await copyRecipe.verify(recipeDeps());
+            recordVerify(row.id, recheck, false);
+            if (recheck.result === 'fail') {
+              updateSetupState(deps.stateDir, row.id, { attempts: undefined, lastAttemptAt: undefined, dormant: undefined, exhausted: undefined });
+              try {
+                const commitmentId = deps.openCommitment(row.name, row.id);
+                if (commitmentId) updateSetupState(deps.stateDir, row.id, { commitmentId });
+              } catch (err) {
+                report(`Open the repair commitment for ${row.id}`, err, 'The repair runs, but its promise is not tracked.');
+              }
+              deps.tellOwner(`${row.name} stopped working on this machine: ${recheck.detail} I'll come back to you for what I need to fix it.`);
+            }
+          } catch {
+            report(`Re-check ${row.name}`, new Error('the check could not run'), 'The next check tries again.');
+          }
+          continue;
+        }
+      }
       if (state?.verified?.result === 'pass' || state?.exhausted || state?.dormant || state?.held) continue;
       if (state?.sessionName && deps.isSetupRunning(state.sessionName)) continue;
       // Setup talks to the person. While this machine can't, a restart waits and costs no attempt.
@@ -576,6 +623,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
   };
   deps.onReady?.(reconcileAndOffer);
+  // A sender that saw its credential refused asks for the re-check now (Self-Heal Before Notify), not tomorrow.
+  handle.requestRecheck = (service: string) => {
+    // The epoch, so the next tick checks now (an absent stamp only starts the clock).
+    updateSetupState(deps.stateDir, service, { lastRecheckAt: new Date(0).toISOString() });
+    void reconcile().catch((err) => report(`Re-check ${service} after a refused credential`, err, 'The next regular check tries again.'));
+  };
 
   const ledgerOr503 = (res: Response): RecommendedServicesLedger | null => {
     const ledger = deps.ledger();
@@ -703,7 +756,14 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     const workingHere = state?.verified?.result === 'pass' && !state.stopped;
     // A recipe that keeps a copy elsewhere says on the page which secrets it would copy: names only, never values.
     const copies = recipeFor(row)?.listsCopies ? (deps.readSecretNames?.() ?? []) : undefined;
-    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(row.id), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...minted });
+    // Email asks the owner to type the one address it will ever send to, and later takes the proof email's code here.
+    const emailFields = row.id === 'email' ? {
+      asksRecipient: true,
+      // Shape A's recipient is the Resend account's own address: a different one means a new setup.
+      recipientFixed: readEmailCredential(deps.readSecret(EMAIL_SECRET))?.shape === 'A' && !!deps.readSecret(EMAIL_RECIPIENT_SECRET),
+      awaitingCode: !!deps.email && deps.readSecret(EMAIL_RECIPIENT_SECRET) !== null && !deps.email.proven().proven && readEmailCredential(deps.readSecret(EMAIL_SECRET))?.shape !== 'B' && !!deps.readSecret(EMAIL_SECRET),
+    } : {};
+    res.json({ service: row.id, name, benefit, dataLeaves, cost, account, backup, canSetUp: reach(row.id), workingHere, switchOffHere: workingHere && setupDidIt(recipeFor(row)?.secretName ?? null, state), ...(copies ? { copies } : {}), ...emailFields, ...minted });
   });
 
   router.post('/recommended-services/:id/confirm', (req, res) => {
@@ -718,7 +778,20 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.status(403).json({ error: 'X-Instar-Request: 1 required' });
       return;
     }
-    const { token, answer, reason = 'none', shutdown = false } = (req.body ?? {}) as { token?: unknown; answer?: unknown; reason?: unknown; shutdown?: unknown };
+    const { token, answer, reason = 'none', shutdown = false, recipient: rawRecipient } = (req.body ?? {}) as { token?: unknown; answer?: unknown; reason?: unknown; shutdown?: unknown; recipient?: unknown };
+    // Email's yes carries the one address mail will ever go to, typed by the owner here (never by a session).
+    const recipient = row.id === 'email' && answer === 'yes' ? normalizeRecipient(rawRecipient) : null;
+    if (row.id === 'email' && answer === 'yes' && !recipient) {
+      res.status(400).json({ error: 'invalid-recipient' });
+      return;
+    }
+    if (recipient && readEmailCredential(deps.readSecret(EMAIL_SECRET))?.shape === 'A') {
+      const current = deps.readSecret(EMAIL_RECIPIENT_SECRET);
+      if (current && current !== recipient) {
+        res.status(409).json({ error: 'recipient-is-the-account' });
+        return;
+      }
+    }
     if (typeof token !== 'string' || !token || token.length > 128) {
       res.status(400).json({ error: 'token-refused' });
       return;
@@ -787,8 +860,25 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     }
     // A second tab or an old link must not write a second yes, approval and commitment. A yes to new
     // text, or from a new owner, is a fresh consent and gets its own row.
+    let recipientHash: string | undefined;
+    if (recipient) {
+      const hash = deps.emailRecipientHash?.(recipient) ?? null;
+      if (!hash) {
+        res.status(503).json({ error: 'recommended-services-unavailable' });
+        return;
+      }
+      recipientHash = hash;
+      try {
+        const before = deps.readSecret(EMAIL_RECIPIENT_SECRET);
+        deps.writeSecret(EMAIL_RECIPIENT_SECRET, recipient);
+        if (before !== recipient) deps.onEmailRecipientChanged?.();
+      } catch {
+        res.status(503).json(storageErrorResponse({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' }, deps.stateDir));
+        return;
+      }
+    }
     const already = ledger.activeGrant(row.id, binding.targetMachine);
-    if (already && already.offerTextHash === binding.offerTextHash && already.principal === binding.owner) {
+    if (already && already.offerTextHash === binding.offerTextHash && already.principal === binding.owner && already.recipientHash === recipientHash) {
       // The only thing a repeat yes changes: it lifts a hold, because the person has now asked again.
       if (readSetupStates(deps.stateDir)[row.id]?.held) {
         liftHold(row.id);
@@ -798,7 +888,7 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       res.json(ledger.effective(row.id));
       return;
     }
-    if (!applyYes(ledger, row, { origin: binding.origin, offerTextHash: binding.offerTextHash, grantMachine: binding.targetMachine, principal: binding.owner })) {
+    if (!applyYes(ledger, row, { origin: binding.origin, offerTextHash: binding.offerTextHash, grantMachine: binding.targetMachine, principal: binding.owner, ...(recipientHash ? { recipientHash, timezone: deps.emailTimezone?.() ?? 'UTC' } : {}) })) {
       res.status(503).json(storageErrorResponse({ error: 'recommended-services-unavailable', detail: 'That choice could not be saved. Nothing changed.' }, deps.stateDir));
       return;
     }
@@ -839,6 +929,39 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     } catch (err) {
       report(`Verify ${row.id}`, err, 'The check could not run.');
       res.status(503).json({ error: 'verify-failed' });
+    }
+  });
+
+  /**
+   * The session's way to run a recipe's proof by action (email's proof mail). Its answer is the session's to read;
+   * only verify records a pass.
+   */
+  router.post('/recommended-services/:id/prove', async (req, res) => {
+    const ledger = ledgerOr503(res);
+    if (!ledger) return;
+    const row = catalog.find((r) => r.id === req.params.id);
+    const recipe = row ? recipeFor(row) : null;
+    if (!row || !recipe) {
+      res.status(404).json({ error: 'no-recipe' });
+      return;
+    }
+    if (req.headers['x-instar-request'] !== '1') {
+      res.status(403).json({ error: 'X-Instar-Request: 1 required' });
+      return;
+    }
+    if (!recipe.prove) {
+      res.status(409).json({ error: 'no-proof-for-this-service' });
+      return;
+    }
+    if (!ledger.activeGrant(row.id, ledger.machineId())) {
+      res.status(409).json({ error: 'not-granted-here' });
+      return;
+    }
+    try {
+      res.json(await recipe.prove(recipeDeps()));
+    } catch (err) {
+      report(`Prove ${row.id}`, err, 'The proof could not run.');
+      res.status(503).json({ error: 'prove-failed' });
     }
   });
 
@@ -961,6 +1084,12 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         return;
       }
     }
+    // A structured key (email) is checked and split by its recipe; a refusal stores nothing.
+    const prepared = recipe.prepareKey?.(value, recipeDeps());
+    if (prepared && 'error' in prepared) {
+      res.status(400).json({ error: prepared.error });
+      return;
+    }
     try {
       // Live features may read a key that was already here, so a setup session never replaces one. It
       // may correct its own, until that key has passed.
@@ -969,7 +1098,8 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
         res.status(409).json({ error: 'already-held' });
         return;
       }
-      deps.writeSecret(secretName, value);
+      if (prepared) for (const [name, v] of prepared.writes) deps.writeSecret(name, v);
+      else deps.writeSecret(secretName, value);
       updateSetupState(deps.stateDir, row.id, { keyStoredBySetup: true });
     } catch (err) {
       report(`Store the key for ${row.id}`, err, 'The key was not saved.');
@@ -978,4 +1108,5 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
     }
     res.json({ stored: true });
   });
+  return handle;
 }

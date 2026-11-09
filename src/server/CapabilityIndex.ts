@@ -291,6 +291,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'email',
+    prefixes: ['/email'],
+    description: 'Sending email to the owner (docs/specs/backup-email-sending.md) — send only, to the owner only: the owner types the one address on the Services confirm page (`/dashboard/service-yes?service=email`, PIN) and confirms it with the proof email\'s code; no route takes a recipient. A job with `deliver: ["email"]` in jobs.json emails the report it would have sent to its topic (never a quiet one); a session sends a one-off with POST /email/send-to-owner {subject, text} (X-Instar-Request: 1 and its X-Instar-Bind-Token; refused from a conversation with other readers). Refused, unsure or not set up → the report goes to its topic with one plain line, so a copy may come twice. GET /email/outbox lists rows (hashes only); GET /recommended-services/email/status shows the state, shape, masked address and today\'s budget. When to use: the person asks to get something by email → set up email if it isn\'t, then POST /email/send-to-owner. It is HTTP, outside the MCP external-operation gate: the fixed recipient and the credential-exposure guard are its controls. 503 until the sender is built.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /email/send-to-owner', 'GET /email/outbox', 'GET /recommended-services/email/status', 'POST /recommended-services/email/code', 'POST /recommended-services/:id/prove'],
+    }),
+  },
+  {
     key: 'ecosystemIdeas',
     prefixes: ['/ecosystem-ideas'],
     description: 'Ecosystem idea pipeline (docs/specs/ecosystem-idea-pipeline.md) — a weekly review of similar projects: each idea checked against our source and goals, ranked into bands. Advice only. 503 when dark or with no source roots.',

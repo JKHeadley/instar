@@ -715,6 +715,8 @@ let _fixDeps: FixCommandDeps | null = null;
 // server's store at message-time — the server is constructed long after
 // routing is wired, and the store must be the server's OWN instance.
 let _agentServerRef: import('../server/AgentServer.js').AgentServer | null = null;
+// docs/specs/backup-email-sending.md: set once the mesh client exists; handed to the AgentServer when it is built.
+let _emailForwardToHolder: ((input: { id: string; kind: 'report' | 'one-off'; subject: string; text: string; topicText: string; fallbackTopicId: number | null; jobSlug?: string }) => Promise<{ ok: true; id: string } | { ok: false; reason: string }>) | null = null;
 
 // F7: late-bound ref to wireTelegramRouting's spawning-topics registry so the
 // TopicReachabilityVerifier (constructed in the outer scope) can probe whether a topic
@@ -5689,6 +5691,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // docs/specs/recommended-services.md: a person's choices follow them across machines.
     const { RECOMMENDED_SERVICES_KIND_REGISTRATION } = await import('../recommended/RecommendedServicesReplicatedStore.js');
     replicatedKindRegistry.register(RECOMMENDED_SERVICES_KIND_REGISTRATION);
+    // docs/specs/backup-email-sending.md: the email outbox, so a successor finishes any live row after a handoff.
+    const { EMAIL_OUTBOX_KIND_REGISTRATION } = await import('../email/EmailOutboxReplicatedStore.js');
+    replicatedKindRegistry.register(EMAIL_OUTBOX_KIND_REGISTRATION);
     // mobile-native-conversations §4.8 — the `mobileDeviceKeyLedger` kind (inert registration; on
     // whenever native app conversations are on, so a signed record can be checked on any machine).
     const { DEVICE_KEY_LEDGER_KIND_REGISTRATION } = await import('../core/MobileDeviceKeyLedgerReplicatedStore.js');
@@ -5919,6 +5924,11 @@ export async function startServer(options: StartOptions): Promise<void> {
               if (r === 'bad-signature' || r === 'unverifiable') console.warn(`  [recommended-services] a replicated row was not accepted (${r})`);
             }
           }
+          // The email outbox: newest version of a key wins in the outbox's own fold; never re-emitted.
+          if (kind === 'email-outbox-record') {
+            const outbox = _agentServerRef?.emailOutbox;
+            if (outbox) for (const e of entries) outbox.ingestReplicated((e.data as { rec?: unknown }).rec);
+          }
           // Read markers (mobile-unread-messages §3.3): the forward-only merge in the store's own ingest; never an emit.
           if (kind === 'conversation-read-marker') _readMarkerStore?.ingestReplicatedAll(entries.map((e) => e.data));
           // Device-key ledger rows: each lands only when it verifies under the pinned key of the machine it names.
@@ -6050,6 +6060,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       // (docs/specs/recommended-services.md). Without the journal there is no applier, so it isn't advertised.
       const _recommendedServicesOn = !!coherenceJournal && _stateSyncStoresBase?.recommendedServices?.enabled !== false;
       if (_recommendedServicesOn) s = { ...s, recommendedServices: { enabled: true } };
+      // The email outbox rides the same condition: a live row must reach a successor (backup-email-sending).
+      if (_recommendedServicesOn && _stateSyncStoresBase?.emailOutbox?.enabled !== false) s = { ...s, emailOutbox: { enabled: true } };
       if (_appNativeOn) s = { ...s, appConversations: { enabled: true }, mobileDeviceKeyLedger: { enabled: true }, ...(_appUnreadOn ? { readMarkers: { enabled: true } } : {}) };
       if (resolveDevAgentGate(config.ecosystemIdeas?.enabled, config)) s = { ...s, ecosystemIdeas: { enabled: true } };
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
@@ -28447,6 +28459,25 @@ export async function startServer(options: StartOptions): Promise<void> {
             // for absent, 500-topic cap). Stateless read over the in-memory
             // store; answers 'disabled' until the store is constructed. Joins
             // the read/observe RBAC class beside working-set-pull (MeshRpc.ts).
+            // docs/specs/backup-email-sending.md (Who sends): the holder side of a standby's forwarded email. The
+            // envelope proved the sending machine; this handler is the gate: only the holder answers, it re-checks
+            // the carried topic's readers itself, and the email service runs its own guard, outbox and budget. A
+            // repeated id answers the existing row.
+            'email-send-forward': async (cmd) => {
+              const c = cmd as import('../core/MeshRpc.js').MeshCommand & { type: 'email-send-forward' };
+              const svc = _agentServerRef?.emailService ?? null;
+              if (!svc) return { ok: false, reason: 'email-unavailable' };
+              if (typeof c.id !== 'string' || !/^[a-z0-9-]{8,80}$/.test(c.id) || (c.kind !== 'report' && c.kind !== 'one-off')
+                || typeof c.subject !== 'string' || typeof c.text !== 'string' || typeof c.topicText !== 'string'
+                || (c.fallbackTopicId !== null && !Number.isSafeInteger(c.fallbackTopicId))) return { ok: false, reason: 'invalid' };
+              if (c.kind === 'one-off') {
+                if (c.fallbackTopicId === null) return { ok: false, reason: 'no-origin-session' };
+                const kind = sessionManager.memoryAudienceKind?.({ telegramTopicId: c.fallbackTopicId }) ?? 'none';
+                if (kind === 'place' || kind === 'person' || kind === 'none') return { ok: false, reason: 'topic-not-owner-only' };
+              }
+              const out = svc.submit({ id: c.id, kind: c.kind, subject: c.subject, ownerText: c.text, topicText: c.topicText, fallbackTopicId: c.fallbackTopicId, ...(c.jobSlug ? { jobSlug: c.jobSlug } : {}) });
+              return out.ok ? { ok: true, id: out.id } : { ok: false, reason: out.reason === 'forward-required' ? 'not-holder' : out.reason };
+            },
             'telegram-origin': async (cmd, sender) => {
               if (!telegramOriginBoot) return { ok: false, reason: 'origin-runtime-unavailable' };
               const { handleOriginMesh } = await import('../messaging/telegram-origin/OriginMesh.js');
@@ -28790,6 +28821,24 @@ export async function startServer(options: StartOptions): Promise<void> {
             // legacy reachability when it degraded before resolver assignment.
             return resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl);
           };
+          // docs/specs/backup-email-sending.md: a standby's email travels to the lease holder by the signed
+          // email-send-forward command. Unreachable holder: the caller says so (one-off) or carries the report to
+          // the job's topic itself (scheduled report).
+          _emailForwardToHolder = async (input) => {
+            let holder: string | null = null;
+            try { holder = coordinator.getSyncStatus().leaseHolder ?? null; } catch { holder = null; } // @silent-fallback-ok — no readable holder: unreachable
+            if (!holder || holder === meshSelfId) return { ok: false, reason: 'holder-unreachable' };
+            const url = peerUrl(holder);
+            if (!url) return { ok: false, reason: 'holder-unreachable' };
+            try {
+              const reply = await meshClient.send({ machineId: holder, url }, { type: 'email-send-forward', ...input }, 0, { timeoutMs: 15_000 }) as { ok?: unknown; id?: unknown; reason?: unknown } | null;
+              if (reply && reply.ok === true && typeof reply.id === 'string') return { ok: true, id: reply.id };
+              return { ok: false, reason: typeof reply?.reason === 'string' ? reply.reason : 'holder-refused' };
+            } catch {
+              return { ok: false, reason: 'holder-unreachable' }; // @silent-fallback-ok — the caller falls back or tells the person
+            }
+          };
+          _agentServerRef?.setEmailForwarder(_emailForwardToHolder);
           _meshSelfId = meshSelfId;
           // App media copying (mobile-native-chat-media §4.12): the replicator rides this same
           // signed transport. Peers are this agent's registered machines; online comes from the
@@ -33496,6 +33545,23 @@ export async function startServer(options: StartOptions): Promise<void> {
     // wired before the server existed; from here on inbound binds use the
     // server's own store instance.
     _agentServerRef = server;
+    if (_emailForwardToHolder) server.setEmailForwarder(_emailForwardToHolder);
+    // The email outbox catches up from peers' streams once the sender exists (it is built a moment after the server).
+    if (replicatedPeerStreamReader && cjOwnMachineId) {
+      const reader = replicatedPeerStreamReader;
+      const ownId = cjOwnMachineId;
+      const catchUp = (tries: number): void => {
+        const outbox = _agentServerRef?.emailOutbox;
+        if (!outbox) { if (tries < 30) setTimeout(() => catchUp(tries + 1), 1000).unref?.(); return; }
+        try {
+          const EMAIL_OUTBOX_STORE_KEY = 'emailOutbox';
+          for (const rk of reader.listRecordKeys(EMAIL_OUTBOX_STORE_KEY)) {
+            for (const r of reader.loadOriginRecords(EMAIL_OUTBOX_STORE_KEY, rk)) if (r.origin !== ownId) outbox.ingestReplicated((r.data as { rec?: unknown }).rec);
+          }
+        } catch (err) { console.warn(`  [email] outbox catch-up from peers failed: ${err instanceof Error ? err.message : String(err)}`); } // @silent-fallback-ok — reported; live replication still lands new records
+      };
+      catchUp(0);
+    }
     // Skill Learning Sentinel (skill-learning-sentinel §3.10): bound here, away from the constructor
     // argument list every PR extends; the routes read it through a getter and listen() is later.
     server.setSkillLearningSentinel(skillLearningSentinel);
