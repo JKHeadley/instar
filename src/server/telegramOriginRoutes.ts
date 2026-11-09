@@ -238,4 +238,42 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       else res.status(409).json({ error: 'telegram-origin-held', reason: 'origin-session-unavailable', retryable: false });
     }
   });
+  // Typed Telegram test groups (docs/specs/telegram-test-groups.md). Same session
+  // credential as send; the TelegramTestGroups instance holds every other gate.
+  const testGroupsFor = async (req: Request, res: Response) => {
+    const runtime = deps.runtime(), browser = runtime?.browsers.get(String(req.params.profileId));
+    if (!runtime || !browser?.testGroups) { res.status(503).json({ error: 'telegram-browser-not-enrolled' }); return null; }
+    try {
+      const producer = await runtime.service.sessionProducer(req.get('X-Instar-Origin-Session') ?? '');
+      return { testGroups: browser.testGroups, producer: { originMachineId: producer.originMachineId, harnessId: producer.harnessId, sessionId: producer.sessionId } };
+    } catch (error) {
+      // @silent-fallback-ok — not silent: an unverified session is refused with an explicit 409, never served.
+      if (error instanceof TelegramOriginHoldError) sendOriginHoldResponse(res, error);
+      else res.status(409).json({ error: 'telegram-origin-held', reason: 'session-unverified', retryable: false });
+      return null;
+    }
+  };
+  router.get('/telegram/browser/:profileId/test-groups', async (req, res) => {
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.list();
+    res.status(result.status).json(result.body);
+  });
+  router.post('/telegram/browser/:profileId/test-groups', async (req, res) => {
+    const body = req.body ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['title', 'bot'].includes(key))) {
+      res.status(400).json({ error: 'invalid-test-group-request' }); return;
+    }
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.create({ title: body.title, bot: body.bot }, found.producer);
+    res.status(result.status).json(result.body);
+  });
+  router.post('/telegram/browser/:profileId/test-groups/:channelId/delete', async (req, res) => {
+    const body = req.body ?? {};
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).length) {
+      res.status(400).json({ error: 'invalid-test-group-request' }); return;
+    }
+    const found = await testGroupsFor(req, res); if (!found) return;
+    const result = await found.testGroups.delete(String(req.params.channelId), found.producer);
+    res.status(result.status).json(result.body);
+  });
 }

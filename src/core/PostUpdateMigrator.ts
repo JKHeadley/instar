@@ -58,7 +58,7 @@ import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -9621,6 +9621,19 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    if (!content.includes('Telegram test groups:')) {
+      content += '\n' + telegramOriginTestGroupsAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram test-group broker routes awareness');
+    }
+
+    const refreshedTestGroupRoutes = refreshOriginTestGroupsAwareness(content);
+    if (refreshedTestGroupRoutes !== content) {
+      content = refreshedTestGroupRoutes;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the browser broker sentence names the test-group routes');
+    }
+
     const refreshedBrowserAttention = refreshOriginBrowserAttentionAwareness(content);
     if (refreshedBrowserAttention !== content) {
       content = refreshedBrowserAttention;
@@ -16574,6 +16587,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {
@@ -16593,6 +16607,12 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       const refreshedInboxShadow = refreshFeedbackInboxTokenAwareness(appended);
       if (refreshedInboxShadow !== appended) {
         appended = refreshedInboxShadow;
+        mirrored++;
+      }
+
+      const refreshedTestGroupShadow = refreshOriginTestGroupsAwareness(appended);
+      if (refreshedTestGroupShadow !== appended) {
+        appended = refreshedTestGroupShadow;
         mirrored++;
       }
 

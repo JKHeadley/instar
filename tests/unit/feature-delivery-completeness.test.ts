@@ -303,6 +303,7 @@ describe('Feature Delivery Completeness', () => {
       ['Dashboard edit rejection:', 'telegramDashboardEditAwareness'],
       ['Telegram Web K updates:', 'telegramOriginBrowserDriftAwareness'], // telegram-message-origin Web K drift: the browser-route hold on an unreviewed build (failedBuilds, one attention item per failed build) + the reviewed re-enrollment path (`instar telegram-origin enroll-browser`); composed into telegramOriginAwareness() for new agents, own content-sniff + shadow addendum for existing ones.
       ['Held reply outcome:', 'telegramOriginHeldOutcomeAwareness'], // held-reply outcome lookup (Echo Bugs 10000000967): a 409 telegram-origin-held is never a plain failure; the lookup route + the relay script's DELIVERED / HELD / NOT SENT wording; composed into telegramOriginAwareness() for new agents, own content-sniff + shadow addendum for existing ones.
+      ['Telegram test groups:', 'telegramOriginTestGroupsAwareness'], // telegram-test-groups: the typed create/list/delete broker routes for live-proof forum groups; composed into telegramOriginAwareness() for new agents, own content-sniff + shadow addendum for existing ones.
     ];
     for (const [phrase, builder] of featureAddenda) {
       it(`origin addendum "${phrase}" reaches new and existing framework instructions`, () => {

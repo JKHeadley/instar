@@ -136,6 +136,27 @@
       }
     },
     {
+      "category": "telegram-test-groups",
+      "description": "Audit log of typed Telegram test-group operations (create/list/delete intents, outcomes, flood and damage holds) plus the dedicated marker key. Authority lives on the account (issuer-keyed marker in each group title, verified by a live read), so nothing here needs replicating; the log only bounds the daily create count and carries holds for the one enrolled profile.",
+      "scope": "machine-local",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "none",
+      "paths": [
+        "state/telegram-test-groups.jsonl",
+        "state/telegram-test-groups.1.jsonl",
+        "state/telegram-test-groups.key"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "A",
+        "access": "streamed",
+        "maxBytes": 2097152,
+        "keepSegments": 1,
+        "note": "Rotates at 2 MB into one kept segment; the 24 h create count reads both. The key file is 65 bytes and never rotated. A damaged log is moved aside once (telegram-test-groups.damaged-<ts>.jsonl) with a 24 h create hold."
+      }
+    },
+    {
       "category": "undated-action-resurfacer-ledger",
       "description": "Pool-agreed stable-owner event ledger for undated high/critical action cooldown, delivery claims, outcome observation, and terminal disposition. It is keyed to one machine's local action-id namespace and may act only when every registered pool member's latest authenticated advert agrees on that owner and the same owner holds the serving lease; missing or divergent adverts and handoffs away pause instead of starting a fresh ledger.",
       "scope": "machine-local",
