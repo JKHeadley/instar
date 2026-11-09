@@ -220,9 +220,11 @@ export class GraphCustodyProfileAuthority {
  }
  /** Constrain already cryptographically verified Source repair to the exact
   * owner-admitted historical cut. This method never validates/mints a receipt. */
- assertMemberLossRepairAllowed(record:{packet:GraphOperationPacket;certificate?:GraphCommitCertificate|null;cancellationCertificate?:GraphCancellationCertificate|null;adoption?:GraphAdoptionCertificate|null;cancellation?:GraphWitnessCancellation|null}):void{
+ assertMemberLossRepairAllowed(record:{packet:GraphOperationPacket;certificate?:GraphCommitCertificate|null;cancellationCertificate?:GraphCancellationCertificate|null;adoption?:GraphAdoptionCertificate|null;cancellation?:GraphWitnessCancellation|null},
+  /** A lineage the caller verified once for a whole synchronous pass; omitted means verify now. */
+  lineage:Pick<ReturnType<GraphCustodyProfileAuthority['verifiedNegativeRoleLineage']>,'memberLossActivations'>=this.verifiedNegativeRoleLineage()):void{
   if(record.packet.agentId!==this.agentId)throw new Error('graph-member-loss-repair-agent-mismatch');
-  for(const row of this.verifiedNegativeRoleLineage().memberLossActivations){const activation=row.certificate,loss=activation.memberLoss!;if(record.packet.membershipEpoch>activation.previousMembership.epoch)continue;
+  for(const row of lineage.memberLossActivations){const activation=row.certificate,loss=activation.memberLoss!;if(record.packet.membershipEpoch>activation.previousMembership.epoch)continue;
    const known=loss.consent.payload.operations.find(operation=>operation.eventId===record.packet.eventId);if(!known||known.operationHash!==canonicalHash(record.packet))throw new Error('graph-member-loss-repair-outside-cut');
    if(record.certificate){if(known.outcome!=='committed'||canonicalHash(record.certificate)!==known.terminalHash)throw new Error('graph-member-loss-unadmitted-positive');continue;}
    if(known.outcome==='committed')throw new Error('graph-member-loss-known-commit-missing');

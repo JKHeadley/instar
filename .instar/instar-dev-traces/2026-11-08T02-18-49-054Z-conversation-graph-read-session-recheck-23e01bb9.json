@@ -12,5 +12,10 @@
   ],
   "phase": "complete",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes how often existing checks run; no new trigger or loop"
+  }
 }

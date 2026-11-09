@@ -14,11 +14,15 @@ export function createConversationGraphChangeRouter(deps:{changes:ConversationGr
    const owner=deps.resolveViewer(req,surface);if(!owner)return void res.status(403).json({code:'hierarchy-owner-only'});
    try{
     const result=await handler(req);
+    // E2E-PAIRING: EXEMPT — only the post-408 reply path changed; the normal path is unchanged and exercised by tests/e2e/conversation-graph-surface-alive.test.ts, the post-408 path by tests/unit/conversation-graph-change-route-late-reply.test.ts.
+    // The request timeout may already have answered 408 while the change was
+    // being saved. The change itself still stands; only the reply is dropped.
+    if(res.headersSent)return;
     const current=deps.resolveViewer(req,surface);
     if(!current||current.principalKey!==owner.principalKey||current.grantVersion!==owner.grantVersion)return void res.status(403).json({code:'hierarchy-owner-only'});
     if(result.privateMayServe&&!result.privateMayServe())return void res.status(503).json({code:'conversation-graph-not-current'});
     res.status(result.status).json(result.body);
-   }catch{res.status(503).json({code:'conversation-graph-unavailable'});}
+   }catch(error){if(res.headersSent){console.warn(`conversation-graph ${req.method} ${req.path} failed after the request timeout answered: ${error instanceof Error?error.message:String(error)}`);return;}res.status(503).json({code:'conversation-graph-unavailable'});}
   };
   router.post(`${prefix}/changes`,run(req=>exactFields(req.body,['requestId','change'])
    ?deps.changes.submit(req,surface,req.body.requestId,req.body.change):{status:400,body:{code:'invalid-change-request'}}));

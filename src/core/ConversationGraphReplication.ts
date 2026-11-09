@@ -1560,8 +1560,14 @@ export class ConversationGraphReplication {
     const sorted = [...candidates.values()].sort((a, b) => a.packet.sourceSequence - b.packet.sourceSequence || a.packet.eventId.localeCompare(b.packet.eventId));
     const accepted: ConversationGraphReplicationRecord[] = [];
     let previous: GraphOperationPacket | null = null;
+    // Verify the removal history once for this pass, not once per row: the loop
+    // below never awaits, so every row is judged against the same verified state.
+    // A lineage that fails to verify quarantines every row, exactly as the
+    // per-row call did.
+    let lossLineage: ReturnType<GraphCustodyProfileAuthority['verifiedNegativeRoleLineage']> | null | undefined;
+    try { lossLineage = this.historicalImportAuthority?.verifiedNegativeRoleLineage() ?? null; } catch { lossLineage = undefined; } // @silent-fallback-ok: an unverifiable lineage blocks every row below
     for (const record of sorted) {
-      try{this.historicalImportAuthority?.assertMemberLossRepairAllowed(record);}catch{/* @silent-fallback-ok: actual loss-cut refusal is observable as a quarantined, partial canonical inventory; it never selects an alternate positive. */blocked.add(record.packet.eventId);partial=true;continue;}
+      try{if(lossLineage===undefined)throw new Error('graph-member-loss-lineage-unverified');if(lossLineage)this.historicalImportAuthority!.assertMemberLossRepairAllowed(record,lossLineage);}catch{/* @silent-fallback-ok: actual loss-cut refusal is observable as a quarantined, partial canonical inventory; it never selects an alternate positive. */blocked.add(record.packet.eventId);partial=true;continue;}
       if ((previous === null && (record.packet.sourceSequence !== 1 || record.packet.predecessorHash !== null))
         || (previous !== null && (record.packet.sourceSequence !== previous.sourceSequence + 1
           || record.packet.predecessorHash !== previous.coreHash))) { partial = true; missing.add(record.packet.eventId); continue; }
