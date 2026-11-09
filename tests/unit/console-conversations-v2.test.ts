@@ -15,6 +15,12 @@ describe('explicit provisional owned-custody v2 model',()=>{
   expect(independentlySaved({...item,state:'committed'})).toBe(false);expect(independentlySaved({state:'committed'})).toBe(false);
   expect(writeStatusWords({...item,state:'saved-pending',custody:{kind:'copied-on-owned-machine',machine:{name:'Studio'}}})).toContain('Saved independently on Studio');
  });
+ it('names the machine in charge when it has not joined, instead of waiting silently',()=>{
+  const blocked={...item,waitingMachines:[{machineId:'m5',name:'M5'}],blockedBy:{reason:'writer-not-joined',machine:{machineId:'mini',name:'Mac Mini'}}};
+  const words=writeStatusWords(blocked);expect(words).toContain('Recorded here on Sleeping laptop');expect(words).toContain('Mac Mini is in charge of your machines right now and has not joined Conversations');expect(words).toContain('(M5)');expect(words).toContain('Not yet saved independently');
+  expect(writeStatusWords({...blocked,blockedBy:{reason:'other',machine:{name:'Mac Mini'}}})).not.toContain('Mac Mini');
+  expect(writeStatusWords({...blocked,state:'committed'})).toBe('Change committed.');
+ });
  it('accepts typed local previews only while details are available and validates cancellation keys',()=>{
   const parsed=pendingModel({items:[item],total:65,nextOffset:64});expect(parsed.ok).toBe(true);expect(parsed.items[0].localIntent.change.title).toBe('PRIVATE-NAME');expect(parsed.nextOffset).toBe(64);
   expect(pendingModel({items:[{...item,details:'quarantined'}],total:1,nextOffset:null}).items[0].localIntent).toBeNull();
