@@ -13,7 +13,7 @@ import request from 'supertest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import type { MachineKeyLookup, MachineSigner } from '../../src/core/AppRecordSignatures.js';
 import { RecommendedServicesLedger } from '../../src/recommended/RecommendedServicesLedger.js';
-import { markNewAgent, recordDeliveredFirstResult } from '../../src/recommended/offerPrerequisites.js';
+import { isMigrationComplete, markNewAgent, recordDeliveredFirstResult } from '../../src/recommended/offerPrerequisites.js';
 import { OFFER_RESEND_AFTER_MS, registerRecommendedServiceRoutes, type OfferTapHandler, type RecommendedServiceRouteDeps } from '../../src/server/recommendedServiceRoutes.js';
 import { RECOMMENDED_SERVICE_CATALOG, isServiceAvailable } from '../../src/recommended/catalog.js';
 import { readSetupStates } from '../../src/recommended/setupState.js';
@@ -158,6 +158,26 @@ describe('recommended services: the first list', () => {
     expect(ledger.offerRows()).toEqual([]);
     owner = '42';
     await tick!();
+    expect(sent).toHaveLength(1);
+  });
+
+  it('an existing agent stays out of the first list until the existing-agents switch is on; then its owner is admitted once, for good', async () => {
+    let existing = false;
+    build({ existingAgentsEnabled: () => existing });
+    // An agent created before the offer shipped: no new-agent mark, but it has delivered results.
+    recordDeliveredFirstResult(dir, 'telegram', 41);
+    await tick!();
+    expect(sent).toEqual([]);
+    expect(isMigrationComplete(dir, '42')).toBe(false);
+    existing = true;
+    await tick!();
+    expect(isMigrationComplete(dir, '42')).toBe(true);
+    expect(sent).toHaveLength(1);
+    // Turning the switch off again un-offers nothing: the mark is per owner and permanent, and the list went out once.
+    existing = false;
+    clock += 8 * 24 * 3600 * 1000;
+    await tick!();
+    expect(isMigrationComplete(dir, '42')).toBe(true);
     expect(sent).toHaveLength(1);
   });
 

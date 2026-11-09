@@ -16626,6 +16626,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the owner's conversation; its message id is the delivery proof. The link is the address the person can
     // open the confirm page at: the tunnel when there is one, else this machine on the home network.
     offersEnabled: () => !!ctx.config.recommendedServices?.offers?.enabled,
+    existingAgentsEnabled: () => !!ctx.config.recommendedServices?.offers?.existingAgents,
     sendOfferList: async (text, buttons) => {
       const topicId = ctx.telegram?.getLifelineTopicId?.();
       if (!ctx.telegram || topicId === undefined) return null;

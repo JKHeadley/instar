@@ -21,7 +21,7 @@ import type { BitwardenSurface } from '../recommended/bitwardenVault.js';
 import type { GitHubBackupSurface } from '../recommended/githubBackup.js';
 import { readSetupStates, updateSetupState, type ServiceSetupState } from '../recommended/setupState.js';
 import { decideSetupRestart } from '../recommended/setupRestart.js';
-import { isMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
+import { isMigrationComplete, markMigrationComplete, readDeliveredFirstResult } from '../recommended/offerPrerequisites.js';
 import { RECOMMENDED_SERVICE_IDS } from '../recommended/serviceIds.js';
 
 export interface RecommendedServiceRouteDeps {
@@ -97,6 +97,8 @@ export interface RecommendedServiceRouteDeps {
   now?: () => number;
   /** The kill switch for the first list (`recommendedServices.offers.enabled`). Off means no offer is ever sent. */
   offersEnabled?: () => boolean;
+  /** Rollout step 5: when true, an existing agent's owner is admitted to the first list (migration marked complete at the offer tick). */
+  existingAgentsEnabled?: () => boolean;
   /** Sends one list with its buttons to the owner's conversation and returns the platform's message id, or null when it did not go. */
   sendOfferList?: (text: string, buttons: Array<{ text: string; data: string }>) => Promise<string | number | null>;
   /** The address the person can open the confirm page at (tunnel or home network), or null when there is none. */
@@ -617,8 +619,16 @@ export function registerRecommendedServiceRoutes(router: Router, deps: Recommend
       else if (decision === 'give-up' && await deps.notifyStuck(row.id, row.name)) updateSetupState(deps.stateDir, row.id, { exhausted: true });
     }
   };
+  // Rollout step 5 (recommended-services.md): an existing agent's owner joins the first list only when the operator
+  // turns this on; the mark is per owner and permanent, so turning the switch off again never un-offers anything.
+  const admitExistingOwner = (): void => {
+    const owner = deps.owner();
+    if (!deps.existingAgentsEnabled?.() || owner === null || isMigrationComplete(deps.stateDir, owner)) return;
+    try { markMigrationComplete(deps.stateDir, owner, () => new Date(deps.now?.() ?? Date.now())); } catch (err) { report('Admit this owner to the first offer list', err, 'The first list waits for the next tick.'); }
+  };
   const reconcileAndOffer = async (): Promise<void> => {
     await reconcile();
+    admitExistingOwner();
     const ledger = deps.ledger();
     if (ledger) await maybeOfferList(ledger, deps.now?.() ?? Date.now());
   };
