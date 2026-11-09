@@ -25346,6 +25346,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({
       enabled: true,
       droppedOrigins: dropped?.list() ?? [],
+      // 'damaged' means the excluded-machines file could not be fully trusted:
+      // droppedOrigins above is only what could be recovered, and adding or
+      // removing exclusions is refused until the file is repaired.
+      droppedOriginsHealth: dropped?.health() ?? null,
       conflictLossCounter: store?.lossCounter ?? 0,
     });
   });
