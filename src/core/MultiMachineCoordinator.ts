@@ -342,6 +342,16 @@ export class MultiMachineCoordinator extends EventEmitter {
   /** This machine's identity (null if not initialized). */
   get identity(): MachineIdentity | null { return this._identity; }
 
+  private leaseHold: (() => boolean) | null = null;
+
+  /** A condition that keeps this machine from taking the lease. It never gives one up. */
+  setLeaseHold(hold: () => boolean): void { this.leaseHold = hold; }
+
+  /** When a peer's lease was last seen, on this machine's clock, or null. */
+  leaseObservedAt(machineId: string): number | null {
+    return this.leaseCoordinator?.peerLeaseObservations().get(machineId)?.observedAtMs ?? null;
+  }
+
   /** Whether this machine is the awake (primary) machine. */
   get isAwake(): boolean { return this._role === 'awake'; }
 
@@ -702,6 +712,17 @@ export class MultiMachineCoordinator extends EventEmitter {
     return this.enrollLeaseRenewalDependency('telegram-origin-writer');
   }
 
+  /** A peer's signed pull is about to read our lease. Same limits as the renew timer. */
+  noteLeasePeerPull(): void {
+    if (this.leaseRenewStopped || !this.leaseCoordinator || this.isLeaseObserveOnly || !this.resilientRenewEnabled()) return;
+    try {
+      this.leaseCoordinator.confirmHoldOnPeerPull();
+    } catch (err) {
+      // @silent-fallback-ok: a read-only pull must still be answered; the renew timer retries.
+      console.warn(`[MultiMachine] could not extend the lease on a peer pull: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   /** Any conversation surface that admits work only while this machine holds the
    * lease (the Telegram origin writer, native app conversations) enrolls the same
    * holder-only renewal carrier. Without it a non-development agent's lease lapses
@@ -1043,7 +1064,14 @@ export class MultiMachineCoordinator extends EventEmitter {
    */
   private resilientRenewEnabled(): boolean {
     const explicit = this.config.multiMachine?.leaseSelfHeal?.resilientRenew?.enabled;
-    return explicit ?? (this.originLeaseRenewalOwners.size > 0 || resolveDevAgentGate(undefined, this.config));
+    // A store holding only this machine's copy has no other way to keep a held lease alive between
+    // heartbeats. Without the timer the peer's pull takes the lease in every gap, and each swap is a
+    // role change that restarts a machine, whatever conversation surfaces the agent has.
+    return explicit ?? (
+      this.originLeaseRenewalOwners.size > 0
+      || !!this.leaseCoordinator?.hasNoSharedMedium()
+      || resolveDevAgentGate(undefined, this.config)
+    );
   }
 
   /** B3 — the renew cadence, clamped so it is always comfortably under the TTL. */
@@ -1484,7 +1512,8 @@ export class MultiMachineCoordinator extends EventEmitter {
         // machine creates no contention to leapfrog, so no agreement-gossip needed).
         this.reconcileRoleToLease('lease-tick-defer-preferred');
       } else {
-        await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
+        // A machine that cannot honour team access must not start serving (team-roles-and-access, "Step 2b").
+        if (!this.leaseHold?.()) await this.withTickTimeout('acquireIfEligible', () => this.leaseCoordinator!.acquireIfEligible());
         this.reconcileRoleToLease('lease-tick');
       }
     } catch {
@@ -1699,7 +1728,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const weHold = this.leaseCoordinator.holdsLease();
     const peer = this.leaseCoordinator.observedPeerLease();
     const ourEpoch = this.leaseCoordinator.currentEpoch();
-    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch && this.leaseCoordinator.observedPeerLeaseLive());
     if (contested && !this.leasePullContested) {
       this.leasePullContested = true;
       console.warn(
@@ -1744,7 +1773,7 @@ export class MultiMachineCoordinator extends EventEmitter {
     const ourEpoch = this.leaseCoordinator.currentEpoch();
     // A genuine same-epoch contested tie: we still hold AND a peer claims a
     // different-holder lease at our epoch (or higher-but-equal after a leapfrog).
-    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch);
+    const contested = !!(weHold && peer && peer.holder && peer.holder !== self && peer.epoch >= ourEpoch && this.leaseCoordinator.observedPeerLeaseLive());
     if (!contested) {
       // Falling edge — the tie resolved (we adopted the winner, or it cleared).
       // Drop the episode so a future contested tie starts a fresh latch.

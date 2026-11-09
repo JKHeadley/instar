@@ -8,7 +8,7 @@
 // - The page is served with a strict Content-Security-Policy (no inline script, nothing
 //   third-party); keep it that way: no inline handlers, no style attributes, no external URLs.
 
-import { deviceFromHash, shownApprovals, prettyCode, copyText, waitingLine, waitingHeadline, approveHint } from './pair-model.js';
+import { deviceFromHash, shownApprovals, prettyCode, copyText, waitingLine, waitingHeadline, approveHint, browserWords } from './pair-model.js';
 
 const POLL_MS = 10_000;
 const MAX_FAILURES = 5;
@@ -237,7 +237,13 @@ export function mountPairPage(doc, {
     const myGen = gen;
     try {
       const d = await request('/mobile/devices');
-      renderPaired(d.ok && d.data && Array.isArray(d.data.devices) ? d.data.devices : null);
+      const list = d.ok && d.data && Array.isArray(d.data.devices) ? d.data.devices : null;
+      // Browser rows say when browsers are switched off on this agent (§4.9).
+      let browserOff = false;
+      if (list && list.some((x) => x && x.client === 'browser')) {
+        try { const s = await request('/mobile/browser-devices/status'); browserOff = s.status === 503; } catch { browserOff = false; }
+      }
+      renderPaired(list, { browserOff });
     } catch (e) { if (!gone(e)) renderPaired(null); }
     finally { if (gen === myGen) pairedBusy = false; }
   }
@@ -317,7 +323,7 @@ export function mountPairPage(doc, {
     }
   }
 
-  function renderPaired(devices) {
+  function renderPaired(devices, opts = {}) {
     ensureLayout();
     pairedBox.replaceChildren();
     make('h2', { text: 'Paired phones' }, pairedBox);
@@ -326,13 +332,16 @@ export function mountPairPage(doc, {
     if (!shown.length) { make('p', { text: 'No phones are paired with this machine.' }, pairedBox); return; }
     for (const d of shown) {
       const row = make('div', { cls: 'pair-row' }, pairedBox);
-      make('span', { text: `${d.deviceName || 'Unnamed phone'} · ${STATUS_WORDS[d.status] || d.status}` }, row);
+      const isBrowser = d.client === 'browser';
+      const extra = browserWords(d, opts);
+      make('span', { text: `${d.deviceName || (isBrowser ? 'Unnamed browser' : 'Unnamed phone')} · ${STATUS_WORDS[d.status] || d.status}${extra ? ` · ${extra}` : ''}` }, row);
       if (d.status !== 'active') continue;
-      const remove = make('button', { cls: 'pair-link-button', text: 'Remove this phone', type: 'button' }, row);
+      const what = isBrowser ? 'browser' : 'phone';
+      const remove = make('button', { cls: 'pair-link-button', text: `Remove this ${what}`, type: 'button' }, row);
       remove.addEventListener('click', () => {
-        if (!confirmFn('Remove this phone? It will stop reaching this agent at once.')) return;
+        if (!confirmFn(`Remove this ${what}? It will stop reaching this agent at once.`)) return;
         remove.disabled = true;
-        void act(`/mobile/devices/${encodeURIComponent(d.id)}/revoke`, 'Removed.', 'Could not remove that phone. Try again.', () => { void refreshPaired(); });
+        void act(`/mobile/devices/${encodeURIComponent(d.id)}/revoke`, 'Removed.', `Could not remove that ${what}. Try again.`, () => { void refreshPaired(); });
       });
     }
   }

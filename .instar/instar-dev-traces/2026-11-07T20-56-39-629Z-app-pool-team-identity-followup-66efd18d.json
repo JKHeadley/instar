@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "app-pool-team-identity-followup",
+  "sessionId": "492c49ae-b203-4810-b08b-f6f1c286526a",
+  "timestamp": "2026-11-07T20:56:39.629Z",
+  "artifactPath": "upgrades/side-effects/app-pool-team-identity-followup.md",
+  "artifactSha256": "3a734d10f492c31b4fe6f656866c2a7f2e11c4c11a37642f66e3e1e7cd97f21b",
+  "coveredFiles": [
+    "docs/specs/app-pool-team-identity-followup.eli16.md",
+    "src/commands/server.ts",
+    "src/core/DeliverMessageHandler.ts",
+    "src/core/appConversationPool.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/e2e/app-conversations-pool-alive.test.ts",
+    "tests/integration/app-conversations-pool.test.ts",
+    "tests/integration/team-access-guards.test.ts",
+    "tests/unit/app-conversations-pool-consumers.test.ts",
+    "tests/unit/app-conversations-pool.test.ts",
+    "tests/unit/app-pool-team-identity.test.ts",
+    "tests/unit/mobile-app-people-roles.test.ts",
+    "upgrades/next/app-pool-team-identity-followup.md",
+    "upgrades/side-effects/app-pool-team-identity-followup.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows the owner side of a dev-only, flag-gated feature; unreachable today; a revert fully undoes it",
+  "eli16Path": "docs/specs/app-pool-team-identity-followup.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/app-pool-team-identity-followup.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

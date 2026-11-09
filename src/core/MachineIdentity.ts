@@ -930,6 +930,10 @@ const GITIGNORE_ENTRIES = [
   '# Hook telemetry (per-session, machine-local — never commit)',
   '.instar/hook-events/',
   '.instar/subagent-tracking/',
+  '# Skill-learning derived cache + legacy flat skill telemetry (machine-local — never commit)',
+  '.instar/state/skill-learning.db*',
+  '.instar/skill-telemetry.jsonl*',
+  '.instar/skill-telemetry/unknown.jsonl',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

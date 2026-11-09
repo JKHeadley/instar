@@ -15,6 +15,7 @@
  * code holds the credentials and never runs git or any tool in the session's workspace after
  * creating it: it reads the change set as bytes and publishes from its own clone.
  */
+import { storageMachineName } from '../../core/storageMachineName.js';
 import { groupTestFilesByConfig } from '../../localVerify/inventory.js';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -30,7 +31,7 @@ import { governor } from '../../monitoring/selfaction/governor.js';
 import type { DerivedTarget } from '../../monitoring/selfaction/types.js';
 import { FeedbackExecuteStore, OPEN_PR_STATES, type ExecutionRow, type ExecutionState } from './FeedbackExecuteStore.js';
 import {
-  GITHUB_OUTAGE_NOTICE_MS, CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
+  ATTEMPT_RESTART_HOLD_MS, GITHUB_OUTAGE_NOTICE_MS, CANARY_CLEAR_COOLDOWN_MS, CANARY_PROBE_DETAIL_BUDGET, CANARY_RETRY_LADDER_MS, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, commandFailureTail, DAY_MS, HOUR_MS, DEPS_RETRY_LADDER_MS, EVIDENCE_FILE, EXECUTE_TICK_MIN_INTERVAL_MS, EXECUTION_LEASE_MS, HOLD_LABEL, PREVIOUS_REVIEW_FILE,
   MERGE_ARMED_DEADLINE_MS, MERGE_RETRY_DELAY_MS, SANDBOX_RUNTIME_VERSION, VERIFY_QUIET_MS, WORKSPACE_DISK_CAP_BYTES,
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
@@ -42,6 +43,7 @@ import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApp
 import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
 import { RerouteRefusedError } from '../../core/rerouteRefusedError.js';
+import type { RestartHold } from '../../core/UpdateGate.js';
 import { PROBE_TAIL_CHARS, canaryStamp, evaluateSessionCanary, findSessionTranscript, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, verdictOf, type CanaryProbeResult } from './confinementCanary.js';
 import { treeBytes, type ConfinedRunner } from './ConfinedRunner.js';
 import type { DepsCachePort } from './depsCache.js';
@@ -124,6 +126,13 @@ export interface FeedbackExecutorServiceOptions {
   /** The independent review gate's reviewers; absent → no PR is admitted without the owner's approval. */
   review?: IndependentReviewPort;
   admission: ExecutorAdmission;
+  /**
+   * True while Local Verify holds queued work for a restart (its verifier changed on disk, so no
+   * verify can start until the server restarts). The attempt hold yields to it: deferring that
+   * restart for up to two hours idles the test slot with work waiting (fb-7459b8b6-a7f, 2026-11-07:
+   * 16.7 minutes idle with 11 queued). Absent → the hold never yields.
+   */
+  localVerifyNeedsRestart?: () => boolean;
   identityFacts: () => Omit<AgentIdentityFacts, 'agentGithubLogin' | 'agentGithubAccounts'>;
   /** Ranked `work` items (the triage queue order). */
   rankedWork: () => Array<{ initiativeId: string; clusterId: string }>;
@@ -187,6 +196,11 @@ export const REVIEW_FAILED_CLOSE_REPORT_AFTER = 3;
 const PR_BODY_FOOTER = '🤖 Generated with [Claude Code](https://claude.com/claude-code)';
 
 /** Which preparation step a (scrubbed) failure message points at; an id-shaped value the audit keeps. */
+/** The start of a failure message (what ran) and its end (why it failed), bounded for the status record. */
+export function boundedFailureDetail(text: string): string {
+  return text.length <= 500 ? text : `${text.slice(0, 80)} … ${text.slice(-420)}`;
+}
+
 export function prepareFailureStep(detail: string | null): string {
   if (!detail) return 'unknown';
   if (/base-sha|feedback-execute fetch base|\bfetch\b/.test(detail)) return 'fetch-base';
@@ -201,6 +215,9 @@ export function prepareFailureStep(detail: string | null): string {
 function attemptTmpDirFor(agentHome: string, row: Pick<ExecutionRow, 'initiativeId' | 'attempt'>): string {
   return shortAttemptTmpDir(row.initiativeId, row.attempt, shortTmpRealRoot(), path.resolve(agentHome));
 }
+
+/** Vitest's marks for a failed test in the output a killed run leaves behind. */
+const RELATED_FAILURE_OUTPUT = /(^|\s)(FAIL|×)\s|\b\d+ failed\b/m;
 
 export class FeedbackExecutorService {
   private readonly now: () => number;
@@ -344,6 +361,48 @@ export class FeedbackExecutorService {
 
   // ── tick admission ───────────────────────────────────────────────────────────
 
+  /**
+   * Setup and verification run inside this process, so a restart loses them; a running session
+   * survives one and is adopted. Each hold ends by itself, and the updater's ceiling bounds the total.
+   */
+  restartHolds(): RestartHold[] {
+    if (!this.running) return [];
+    let rows = this.opts.store.inStates('claimed', 'verifying');
+    if (rows.length === 0) return [];
+    if (this.restartHoldYields()) {
+      // The restart this hold would defer is the one Local Verify's queue is waiting for, so the
+      // hold is withdrawn and that is recorded once per attempt. A restart then interrupts the
+      // attempt: the next tick ends a `claimed` row as stopped/interrupted (re-claimable, never a
+      // failure) and re-verifies a `verifying` row once when its trees survived. Nothing is reported
+      // as a success. The publish window keeps its hold: a restart there parks the item
+      // `publish-outcome-unknown` with an operator escalation, and the window is seconds long.
+      const publishing = (row: ExecutionRow) => row.state === 'verifying' && row.reason === 'publishing';
+      for (const row of rows) {
+        if (publishing(row) || this.holdYieldAudited.has(row.attemptId)) continue;
+        this.holdYieldAudited.add(row.attemptId);
+        this.opts.audit.append('execute:restart-hold-withdrawn', { attemptId: row.attemptId, state: row.state, for: 'local-verify:verifier-hold' });
+      }
+      rows = rows.filter(publishing);
+    }
+    return rows.map((row) => ({
+      name: `feedback-attempt:${row.attemptId}`,
+      until: row.updatedAt + ATTEMPT_RESTART_HOLD_MS,
+      reason: 'a feedback fix attempt is in setup or verification and a restart would lose it',
+    }));
+  }
+
+  /** Attempts whose withdrawn hold was recorded (in memory; the restart it stood aside for ends the process). */
+  private readonly holdYieldAudited = new Set<string>();
+
+  /**
+   * Whether the attempt hold stands aside for a restart Local Verify's queued work needs. An
+   * unreadable answer keeps the hold (the previous behavior), so a fault here can only make a
+   * restart later, never lose an attempt.
+   */
+  restartHoldYields(): boolean {
+    try { return this.opts.localVerifyNeedsRestart?.() === true; } catch { return false; } // @silent-fallback-ok: an unreadable Local Verify state keeps the hold
+  }
+
   acceptTick(): { status: 202 | 409 | 429 | 503; body: Record<string, unknown> } {
     if (!this.opts.isCanonicalOwner()) return { status: 409, body: { error: 'not-canonical-owner', owner: this.opts.ownerMachineId() } };
     if (this.running) return { status: 409, body: { error: 'tick-in-flight' } };
@@ -423,10 +482,7 @@ export class FeedbackExecutorService {
         acted.add(row.attemptId);
         continue;
       }
-      const reviewDir = this.attemptPaths(row).reviewDir;
-      const adoptable = row.sessionMachine === this.opts.selfMachineId &&
-        ((row.state === 'running' && Boolean(row.workspace && fs.existsSync(row.workspace))) ||
-          (row.state === 'verifying' && Boolean(((row.workspace && fs.existsSync(row.workspace)) || fs.existsSync(reviewDir)) && row.publishClone && fs.existsSync(row.publishClone))));
+      const adoptable = this.adoptableOnThisMachine(row);
       if (row.ownerEpoch < epoch && !adoptable) {
         await this.stopSession(row);
         this.endAttempt(row, epoch, 'stopped', 'stale-epoch');
@@ -694,7 +750,7 @@ export class FeedbackExecutorService {
       const paths = this.confinementPaths(p.workspace, p.publishClone, p.tmpDir, deps.dir);
 
       // Confinement canary, both application paths, before every attempt.
-      const canary = await this.runCanary(row, paths, deps.hash, cfg);
+      const canary = await this.runCanary(row, paths, deps.gateKey ?? deps.hash, cfg);
       epoch = this.carryPreparationEpoch(row, epoch);
       if (!canary.ok) { await this.profileUnenforceable(epoch, canary.probes); this.endAttempt(row, epoch, 'stopped', 'profile-unenforceable'); return false; }
 
@@ -731,11 +787,13 @@ export class FeedbackExecutorService {
         : error instanceof RerouteRefusedError ? 'reroute-capacity'
         : error instanceof Error && /^(confinement|omit-auth-env|profile-unenforceable)/.test(error.message) ? 'profile-unenforceable' : 'prepare-failed';
       // The message says which step failed (clone, deps, symlink, …); without it every failure read "Error".
-      const message = error instanceof Error ? scrubForStore(error.message, { maxBytes: 2048 }) : null;
-      const detail = message ? (message.error ? '[detail withheld: scrub failed]' : message.text.slice(0, 300)) : null;
+      // A git command's flags fill the start of its message and the error comes last, so keep both ends.
+      const signal = error instanceof Error ? (error as { signal?: unknown }).signal : null;
+      const message = error instanceof Error ? scrubForStore(`${error.message}${typeof signal === 'string' ? ` [killed by ${signal}]` : ''}`, { maxBytes: 8192 }) : null;
+      const detail = message ? (message.error ? '[detail withheld: scrub failed]' : boundedFailureDetail(message.text)) : null;
       // The audit keeps only id-shaped values (a sentence becomes "[text:N]"), so it carries the step;
       // the scrubbed message itself is kept in executor state and shown as status.lastPrepareFailure.
-      const step = prepareFailureStep(detail);
+      const step = prepareFailureStep(message && !message.error ? message.text : detail);
       this.opts.audit.append('execute:prepare-failed', { attemptId: row.attemptId, reason, error: error instanceof Error ? error.name : 'unknown', step });
       // Under a stale epoch every write below is refused; the new owner ends the row.
       if (reason === 'stale-epoch') return false;
@@ -940,6 +998,21 @@ export class FeedbackExecutorService {
     }
   }
 
+  /**
+   * Whether this machine can carry an attempt to the current epoch. Verification moves the worker's
+   * tree to the review directory, and a re-verify waits in `running` with its tree still there, so
+   * that state must count too or a finished fix is discarded.
+   */
+  private adoptableOnThisMachine(row: ExecutionRow): boolean {
+    if (row.sessionMachine !== this.opts.selfMachineId) return false;
+    const workspace = Boolean(row.workspace && fs.existsSync(row.workspace));
+    const reviewTree = fs.existsSync(this.attemptPaths(row).reviewDir);
+    const publishClone = Boolean(row.publishClone && fs.existsSync(row.publishClone));
+    if (row.state === 'verifying') return (workspace || reviewTree) && publishClone;
+    if (row.state !== 'running') return false;
+    return workspace || (row.reason === 'reverify-after-restart' && reviewTree && publishClone);
+  }
+
   private async reconcileLive(rowIn: ExecutionRow, epoch: number, slug: string, approver: string): Promise<void> {
     let row = rowIn;
     if (row.state === 'verifying' && row.reason === 'publishing') {
@@ -949,11 +1022,7 @@ export class FeedbackExecutorService {
     if (row.ownerEpoch < epoch) {
       // Same machine re-acquired the lease with the session still alive (or already finished with its
       // workspace intact): adopt it under the current epoch instead of killing a healthy build.
-      const sameMachine = row.sessionMachine === this.opts.selfMachineId;
-      const reviewDir = this.attemptPaths(row).reviewDir;
-      if (sameMachine && (row.state === 'running' || row.state === 'verifying') &&
-        ((row.workspace && fs.existsSync(row.workspace)) || (row.state === 'verifying' && fs.existsSync(reviewDir))) &&
-        (row.state !== 'verifying' || (row.publishClone && fs.existsSync(row.publishClone)))) {
+      if (this.adoptableOnThisMachine(row)) {
         row = this.opts.store.adopt(epoch, row.attemptId);
         this.opts.audit.append('execute:adopted', { attemptId: row.attemptId, epoch });
       } else {
@@ -986,9 +1055,9 @@ export class FeedbackExecutorService {
       return;
     }
     if (alive) {
-      if (row.workspace && row.tmpDir && treeBytes(row.workspace, WORKSPACE_DISK_CAP_BYTES) + treeBytes(row.tmpDir, WORKSPACE_DISK_CAP_BYTES) > WORKSPACE_DISK_CAP_BYTES) {
+      if (row.workspace && row.tmpDir && await treeBytes(row.workspace, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(row.tmpDir, WORKSPACE_DISK_CAP_BYTES) > WORKSPACE_DISK_CAP_BYTES) {
         await this.stopSession(row);
-        this.endAttempt(row, epoch, 'failed', 'limit:workspace-disk');
+        this.endAttempt(row, epoch, 'failed', `limit:workspace-disk on ${storageMachineName(this.opts.paths.stateDir)}`);
         await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       }
       return;
@@ -1105,7 +1174,7 @@ export class FeedbackExecutorService {
     }
     if (result.outcome === 'gave-up') { this.endAttempt(row, epoch, 'failed', 'gave-up'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
     let changeSet: ChangeSet;
-    try { changeSet = buildChangeSet(workspace, row.publishClone!); } catch (error) {
+    try { changeSet = await buildChangeSet(workspace, row.publishClone!); } catch (error) {
       const reason = error instanceof ChangeSetError ? error.reason : 'changeset-unreadable';
       this.endAttempt(row, epoch, 'failed', reason);
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
@@ -1147,7 +1216,7 @@ export class FeedbackExecutorService {
       await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed');
       return;
     }
-    await this.gateAndPublish(row, epoch, changeSet, result, 'fix', slug, approver);
+    await this.gateAndPublish(row, epoch, changeSet, result, 'fix', slug, approver, verification.relatedInconclusive === true);
   }
 
   /**
@@ -1170,7 +1239,8 @@ export class FeedbackExecutorService {
   }
 
   /** (a) fails at base with an assertion (or a missing new source), (b) passes at the workspace, (c) lint + related tests pass. All confined. */
-  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true } | { ok: false; reason: string; detail?: string }> {
+  async verifyFix(row: ExecutionRow, changeSet: ChangeSet, result: SessionResult): Promise<{ ok: true; relatedInconclusive?: boolean } | { ok: false; reason: string; detail?: string }> {
+    let relatedInconclusive = false;
     const cfg = this.opts.config();
     const p = this.attemptPaths(row);
     const depsHash = this.metaJson<{ hash: string }>(`exec:attempt-deps:${row.attemptId}`)?.hash;
@@ -1182,7 +1252,7 @@ export class FeedbackExecutorService {
     const testCmd = groupTestFilesByConfig(result.testFiles)
       .map((g) => `./node_modules/.bin/vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
       .join(' && ');
-    const diskOk = (clone: string) => treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
+    const diskOk = async (clone: string) => await treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;
     // Each run gets its own clone AND its own temp directory, and its sandbox may write only those:
     // a process left behind by one run (attempt test code) can never reach a tree a later check reads.
     const run = async (cwd: string, label: string, command: string, timeoutMs = CONFINED_COMMAND_TIMEOUT_MS) => {
@@ -1232,7 +1302,7 @@ export class FeedbackExecutorService {
       if (limit(head)) return limited('head', head);
       if (head.exitCode !== 0) return failed('head-check:test-fails-at-head', head);
       if (vitestPassedTestCount(`${head.stdout}\n${head.stderr}`) === 0) return failed('head-check:test-not-run-at-head', head);
-      if (!diskOk(p.headClone)) return { ok: false, reason: 'limit:workspace-disk' };
+      if (!(await diskOk(p.headClone))) return { ok: false, reason: `limit:workspace-disk on ${storageMachineName(this.opts.paths.stateDir)}` };
       // (c) a THIRD fresh clone for the gates: the head run executed attempt test code, which could
       // have rewritten its clone to make lint or the related tests pass. The lint gate first (it
       // runs only the base tooling), then the unit tests related to the changed sources.
@@ -1244,25 +1314,36 @@ export class FeedbackExecutorService {
       if (sources.length > 0) {
         // './' prefix: a changed file can never be read as a command-line option.
         const related = await run(p.gateClone, 'related', `./node_modules/.bin/vitest related --run --no-cache ${sources.map((s) => shq(`./${s}`)).join(' ')}`, CONFINED_RELATED_TIMEOUT_MS);
-        if (limit(related)) return limited('related-tests', related);
-        if (related.exitCode !== 0) return failed('gate:related-tests', related);
+        // Core files pull much of the suite into this run, and a busy machine can run out of time before
+        // it finishes. That says nothing against a fix that passed its own checks, and the CI test jobs
+        // must still pass on this head before merge. A failure already printed still stops the fix.
+        if (related.timedOut && !RELATED_FAILURE_OUTPUT.test(`${related.stdout}\n${related.stderr}`)) {
+          relatedInconclusive = true;
+          this.opts.audit.append('execute:related-tests-inconclusive', { attemptId: row.attemptId });
+        } else if (related.timedOut) {
+          return failed('gate:related-tests', related);
+        } else if (limit(related)) {
+          return limited('related-tests', related);
+        } else if (related.exitCode !== 0) {
+          return failed('gate:related-tests', related);
+        }
       }
     } finally {
       for (const dir of [p.baseClone, p.headClone, p.gateClone]) {
         try { removeAttemptTree(dir, this.trashRoot(), 'feedback-execute check clone cleanup'); } catch { /* @silent-fallback-ok: retried by the attempt cleanup */ }
       }
     }
-    return { ok: true };
+    return { ok: true, relatedInconclusive };
   }
 
-  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult): { title: string; body: string; message: string } {
+  private prText(row: ExecutionRow, kind: 'fix' | 'spec', result: SessionResult, relatedInconclusive = false): { title: string; body: string; message: string } {
     const triage = this.opts.triageStore.get(row.initiativeId);
     // The triage schema already bounds the summary (400 printable chars); it is PR text, not model input.
     const summary = String(triage?.summary ?? 'a reported problem').replace(/\s+/g, ' ');
     const brief = triage?.brief;
     const title = `${kind === 'fix' ? 'fix' : 'docs(spec)'}(feedback): ${summary.slice(0, 60)}`.slice(0, 120);
     const eli16 = kind === 'fix'
-      ? `People using Instar reported a problem: ${summary} The feedback executor reproduced it with a test that failed before this change and passes after it, inside a sandbox with no network and no credentials. It also ran the repository's lint check and the tests related to the changed files. This pull request merges only after the repository owner approves this exact version.`
+      ? `People using Instar reported a problem: ${summary} The feedback executor reproduced it with a test that failed before this change and passes after it, inside a sandbox with no network and no credentials. ${relatedInconclusive ? 'It also ran the repository\'s lint check. The tests related to the changed files ran out of time without a failure, so they are not a pass; CI has to pass before this merges.' : 'It also ran the repository\'s lint check and the tests related to the changed files.'} This pull request merges only after the repository owner approves this exact version.`
       : `People using Instar reported a problem that needs a design before anyone changes code: ${summary} This pull request adds only a first draft of that design. Once the repository owner approves it, a normal trusted session reviews and improves the draft before any build work starts.`;
     const body = [
       `## ELI16 — ${kind === 'fix' ? 'a fix for reported feedback' : 'a design draft for reported feedback'}`,
@@ -1290,8 +1371,8 @@ export class FeedbackExecutorService {
     return { title, body, message };
   }
 
-  private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string): Promise<void> {
-    const text = this.prText(row, kind, result);
+  private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string, relatedInconclusive = false): Promise<void> {
+    const text = this.prText(row, kind, result, relatedInconclusive);
     const secrets = secretGate(changeSet, { notes: result.notes, prTitle: text.title, prBody: text.body });
     if (secrets.length > 0) {
       const ref = this.saveHeldChangeSet(row, changeSet, result, kind);

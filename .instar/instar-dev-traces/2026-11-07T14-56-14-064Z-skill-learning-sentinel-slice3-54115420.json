@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "skill-learning-sentinel-slice3",
+  "sessionId": "f1d7515b-8a10-4206-94b6-7c0f689d2d22",
+  "timestamp": "2026-11-07T14:56:14.064Z",
+  "artifactPath": "upgrades/side-effects/skill-learning-sentinel-slice3.md",
+  "artifactSha256": "c449c0b087c6a559daad87954af4b907811a56fc6e93b204530fb1197299614a",
+  "specPath": "docs/specs/skill-learning-sentinel.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/server/AgentServer.ts",
+    "src/server/routes.ts",
+    "tests/unit/skill-learning-wire.test.ts",
+    "upgrades/side-effects/skill-learning-sentinel-slice3.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "wiring placement only on the slice-3 branch of an approved Tier-2 spec: the sentinel bind moves from the AgentServer constructor line to the existing setter on its own line, and one import relocates; no behaviour change",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

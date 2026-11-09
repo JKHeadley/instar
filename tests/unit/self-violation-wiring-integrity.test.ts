@@ -58,11 +58,11 @@ function build(opts: { enabled?: boolean; selfViolationSignal?: boolean }): Buil
   const delivered: Array<{ topicId: number; text: string }> = [];
   const monitoring = opts.enabled
     ? { correctionLearning: { enabled: true, selfViolationSignal: opts.selfViolationSignal ?? false } }
-    : {};
+    : { correctionLearning: { enabled: false }, failureCallouts: { enabled: false } };
   const config: InstarConfig = {
     projectName: 'sv-wire', agentName: 'Wiring', projectDir: dir,
     stateDir: path.join(dir, '.instar'), port: 0, authToken: AUTH,
-    ...(opts.enabled ? { monitoring } : {}),
+    monitoring,
   } as InstarConfig;
   // The reply route calls clearInjectionTracker on a successful (non-proxy) send;
   // the shared mock doesn't define it, so augment the stub here.

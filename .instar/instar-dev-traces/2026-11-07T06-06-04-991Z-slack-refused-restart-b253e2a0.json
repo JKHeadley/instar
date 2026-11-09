@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "slack-refused-restart",
+  "sessionId": "13cfc1fc-ee49-4f68-9e20-39915cf0b8ed",
+  "timestamp": "2026-11-07T06:06:04.991Z",
+  "artifactPath": "upgrades/side-effects/slack-refused-restart.md",
+  "artifactSha256": "8db902e5ae67889f21778aa2140e0f41b3157adfba8b83f2a2462510548ca42a",
+  "coveredFiles": [
+    "src/core/SlackRefusedHold.ts",
+    "src/core/SlackReplyRelayInstaller.ts",
+    "upgrades/eli16-slack-refused-restart.md",
+    "upgrades/side-effects/slack-refused-restart.md",
+    "upgrades/slack-refused-restart.eli16.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Note rename and two fallback markers; no behaviour change",
+  "eli16Path": "upgrades/slack-refused-restart.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/slack-refused-restart.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "unchanged: slack-refused-hold-retry stays registered with its 6-try schedule"
+    }
+  }
+}

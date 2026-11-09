@@ -28,6 +28,8 @@
  * OBSERVES reactive swaps (dwell clock-start, hop alerts, failed-row streaks).
  */
 
+import path from 'node:path';
+import { storageMachineName } from './storageMachineName.js';
 import type { SubscriptionAccount } from './SubscriptionPool.js';
 import { bindingUtilization, scoreAccount } from './QuotaAwareScheduler.js';
 import { isLocallyExecutable } from './SubscriptionPool.js';
@@ -1361,7 +1363,7 @@ export class SwapAntiThrashEngine {
     this.raiseAttention(
       'swap-antithrash-ledger-lost',
       'Swap ledger unwritable — proactive optimization paused',
-      'The swap-decision ledger cannot be written (disk error?). Every anti-thrash brake depends on it, so proactive account swapping is PAUSED until writes recover (level-triggered — no restart needed). Reactive rescue is unaffected.',
+      `The swap-decision ledger on ${storageMachineName(path.dirname(path.dirname(this.ledger.path)))} cannot be written (disk error?). Every anti-thrash brake depends on it, so proactive account swapping is PAUSED until writes recover (level-triggered — no restart needed). Reactive rescue is unaffected.`,
     );
   }
 }

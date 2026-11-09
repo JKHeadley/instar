@@ -120,6 +120,13 @@ export interface TopicProfileWriteSurfaceDeps {
   regime: () => ProfileWriteRegime;
   /** The topic's bound operator (§10.1) — null when none bound. */
   boundOperator: (topicKey: string) => { platform: string; uid: string } | null;
+  /**
+   * session-swap-any-conversation §3.4: may a TOKEN write (the dashboard, or the owner's phone
+   * through its Face ID route) change this app or Slack conversation? Telegram keys never reach it
+   * (their bound operator decides, as before). Absent ⇒ app and Slack token writes need a bound
+   * operator, which they never have: today's refusal.
+   */
+  tokenMayWrite?: (topicKey: string) => { ok: true } | { ok: false; reply: string };
   /** Active `/local-model` binding (§5.2 — refuses cloud model pins). */
   localModelBinding: (topicKey: string) => { provider: string } | null;
   /**
@@ -718,6 +725,14 @@ export class TopicProfileWriteSurface {
   ): ProfileWriteResult | null {
     const bound = this.deps.boundOperator(topicKey);
     if (principal.kind === 'token') {
+      // session-swap-any-conversation §3.4: app and Slack conversations never get a bound operator;
+      // a token write there is the owner's dashboard or phone, decided by the conversation's own record.
+      if (!bound && !/^\d+$/.test(topicKey) && this.deps.tokenMayWrite) {
+        const may = this.deps.tokenMayWrite(topicKey);
+        if (may.ok) return null;
+        this.deps.audit({ type: 'write', outcome: 'refused', reason: 'no-bound-operator', topic: topicKey, principal: 'api-token', origin });
+        return { ok: false, reply: may.reply, refusal: { reason: 'no-bound-operator' } };
+      }
       // §10.1: token-trust still refuses writes to topics with no bound operator.
       if (!bound) {
         this.deps.audit({ type: 'write', outcome: 'refused', reason: 'no-bound-operator', topic: topicKey, principal: 'api-token', origin });

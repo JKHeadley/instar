@@ -388,7 +388,8 @@ describe('device authenticator with multi-route on (spec 4.2)', () => {
     const r = res();
     expect(auth(req(dev, id, TS, '100.101.102.103'), r as never)).toBe('refused');
     expect(r.code).toBe(401);
-    expect(r.body).toEqual({ error: 'device-unauthorized' });
+    // Every 401 names the answering machine (dashboard-conversations-browser-device §4.6).
+    expect(r.body).toEqual({ error: 'device-unauthorized', machineId: null });
     svc.stop();
   });
 

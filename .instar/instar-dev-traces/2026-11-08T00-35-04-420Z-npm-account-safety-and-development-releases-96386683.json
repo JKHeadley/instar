@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "npm-account-safety-and-development-releases",
+  "sessionId": "c6017e21-464b-4195-98c1-cba1d8838f8c",
+  "timestamp": "2026-11-08T00:35:04.420Z",
+  "artifactPath": "upgrades/side-effects/npm-account-safety-and-development-releases.md",
+  "artifactSha256": "92e93e8ce1d656c693d6c008c6dc2078af40aa47b33b8683a491e76f9d18bddd",
+  "specPath": "docs/specs/npm-account-safety-and-development-releases.md",
+  "coveredFiles": [
+    "src/core/UpdateChecker.ts",
+    "tests/integration/development-artifact-update.test.ts",
+    "upgrades/side-effects/npm-account-safety-and-development-releases.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Completes the same reviewed development artifact installation pipeline by bounding large CLI migration JSON without fallback.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-requested installation; finite migration output buffer and existing 30s timeout, no new controller"
+  }
+}

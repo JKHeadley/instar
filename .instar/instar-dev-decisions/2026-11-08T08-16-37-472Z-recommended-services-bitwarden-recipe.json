@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-08T08:16:37.472Z",
+  "slug": "recommended-services-bitwarden-recipe",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 3,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/server/routes.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "A guarded folder-name read at route registration; no loop, no repeating behaviour"
+  },
+  "verdict": "pass"
+}

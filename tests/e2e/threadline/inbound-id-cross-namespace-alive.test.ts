@@ -35,6 +35,10 @@ import { generateAgentToken, deleteAgentToken } from '../../../src/messaging/Age
 import { createTempProject, createMockSessionManager } from '../../helpers/setup.js';
 import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
+import { useHermeticHome } from '../../setup/hermetic-home.js';
+
+// Agent-token fixtures belong to the test, never the operator's registry.
+useHermeticHome();
 
 const waitFor = async (cond: () => boolean, ms = 10_000): Promise<void> => {
   const start = Date.now();

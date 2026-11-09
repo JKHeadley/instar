@@ -27,13 +27,15 @@ import {
   deviceKeyHashOf, ledgerRowPayload, ledgerViewKey, readJsonlLines, verifyMachineSignature,
   type LedgerKey, type LedgerView, type MachineKeyLookup, type MachineSigner,
 } from './AppRecordSignatures.js';
-import type { DeviceRecord, DeviceRegistry } from './MobileDeviceKeys.js';
+import { deviceKeyOf, type DeviceRecord, type DeviceRegistry } from './MobileDeviceKeys.js';
 
 export const DEVICE_KEY_LEDGER_FILE = 'mobile-device-key-ledger.jsonl';
 
 export interface ActivationRow {
   type: 'activation'; keyHash: string; publicKey: string; deviceId: string; host: string;
   approvedVia: string; activatedAt: string; machineId: string; signerKeyHash: string; sig: string;
+  /** `'browser'` for a browser key (dashboard-conversations-browser-device §4.3), inside the signed payload; absent for a phone. */
+  client?: 'browser';
 }
 export interface RevocationRow {
   type: 'revocation'; keyHash: string; deviceId: string; revokedAt: string; machineId: string; signerKeyHash: string; sig: string;
@@ -60,7 +62,9 @@ export function validateLedgerRow(raw: unknown): LedgerRow | null {
     const activatedAt = str(r.activatedAt, 64);
     if (!publicKey || !host || !approvedVia || !isoOk(activatedAt)) return null;
     try { if (deviceKeyHashOf(publicKey) !== keyHash) return null; } catch { return null; } // @silent-fallback-ok — an undecodable key is an invalid row
-    return { type: 'activation', keyHash, publicKey, deviceId, host, approvedVia, activatedAt, machineId, signerKeyHash, sig };
+    // `client` is either absent (a phone, byte-identical to older rows) or exactly 'browser'.
+    if (r.client !== undefined && r.client !== 'browser') return null;
+    return { type: 'activation', keyHash, publicKey, deviceId, host, approvedVia, activatedAt, machineId, signerKeyHash, sig, ...(r.client === 'browser' ? { client: 'browser' as const } : {}) };
   }
   if (r.type === 'revocation') {
     const revokedAt = str(r.revokedAt, 64);
@@ -92,7 +96,7 @@ export function mergeLedgerRows(rows: ReadonlyArray<LedgerRow>): Map<string, Led
     if (r.type === 'activation') {
       const cur = view.get(k);
       if (!cur || r.activatedAt < cur.activatedAt) {
-        view.set(k, { keyHash: r.keyHash, publicKey: r.publicKey, deviceId: r.deviceId, host: r.host, approvedVia: r.approvedVia, activatedAt: r.activatedAt, revokedAt: null });
+        view.set(k, { keyHash: r.keyHash, publicKey: r.publicKey, deviceId: r.deviceId, host: r.host, approvedVia: r.approvedVia, activatedAt: r.activatedAt, revokedAt: null, ...(r.client === 'browser' ? { client: 'browser' as const } : {}) });
       }
     } else {
       const cur = revocations.get(k);
@@ -221,18 +225,49 @@ export class MobileDeviceKeyLedger {
     return row;
   }
 
-  /** The activation row for a device about to become active (written BEFORE the registry). */
-  recordActivation(device: Pick<DeviceRecord, 'id' | 'publicKey' | 'host'>, approvedVia: string, activatedAt: string): LedgerRow | null {
-    if (!device.publicKey || !device.host) return null;
-    const keyHash = deviceKeyHashOf(device.publicKey);
+  /**
+   * The activation row for a device about to become active (written BEFORE the registry). A
+   * browser's row carries `client: 'browser'` inside the signed payload, read from the record
+   * itself, so reconciliation's backfill carries it too; a phone's row is unchanged.
+   */
+  recordActivation(device: Pick<DeviceRecord, 'id' | 'publicKey' | 'browserPublicKey' | 'client' | 'host'>, approvedVia: string, activatedAt: string): LedgerRow | null {
+    const key = deviceKeyOf(device);
+    if (!key || !device.host) return null;
+    const keyHash = deviceKeyHashOf(key);
     if (this.hasType('activation', keyHash, device.id)) return null;
-    return this.appendLocal(this.signRow({ type: 'activation', keyHash, publicKey: device.publicKey, deviceId: device.id, host: device.host, approvedVia, activatedAt } as Omit<ActivationRow, 'machineId' | 'signerKeyHash' | 'sig'>));
+    return this.appendLocal(this.signRow({ type: 'activation', keyHash, publicKey: key, deviceId: device.id, host: device.host, approvedVia, activatedAt, ...(device.client === 'browser' ? { client: 'browser' } : {}) } as Omit<ActivationRow, 'machineId' | 'signerKeyHash' | 'sig'>));
+  }
+
+  /** Whether this device's key has an activation row (any machine). */
+  hasActivation(device: Pick<DeviceRecord, 'id' | 'publicKey' | 'browserPublicKey' | 'client'>): boolean {
+    const key = deviceKeyOf(device);
+    return !!key && this.hasType('activation', deviceKeyHashOf(key), device.id);
+  }
+
+  /** The earliest activation row for a device id (any machine), or null. */
+  activationFor(deviceId: string): ActivationRow | null {
+    let best: ActivationRow | null = null;
+    for (const r of this.rows()) if (r.type === 'activation' && r.deviceId === deviceId && (!best || r.activatedAt < best.activatedAt)) best = r;
+    return best;
+  }
+
+  /** Whether any revocation row names this key hash (any device id). */
+  keyRevoked(keyHash: string): boolean {
+    return this.rows().some((r) => r.type === 'revocation' && r.keyHash === keyHash);
+  }
+
+  /** Key hashes with a revocation row (for counting browsers, §4.6 precedence). */
+  revokedKeyHashes(): Set<string> {
+    const out = new Set<string>();
+    for (const r of this.rows()) if (r.type === 'revocation') out.add(r.keyHash);
+    return out;
   }
 
   /** The revocation row (written BEFORE the registry). */
-  recordRevocation(device: Pick<DeviceRecord, 'id' | 'publicKey'>, revokedAt: string): LedgerRow | null {
-    if (!device.publicKey) return null;
-    const keyHash = deviceKeyHashOf(device.publicKey);
+  recordRevocation(device: Pick<DeviceRecord, 'id' | 'publicKey' | 'browserPublicKey' | 'client'>, revokedAt: string): LedgerRow | null {
+    const key = deviceKeyOf(device);
+    if (!key) return null;
+    const keyHash = deviceKeyHashOf(key);
     if (this.hasType('revocation', keyHash, device.id)) return null;
     return this.appendLocal(this.signRow({ type: 'revocation', keyHash, deviceId: device.id, revokedAt } as Omit<RevocationRow, 'machineId' | 'signerKeyHash' | 'sig'>));
   }
@@ -261,8 +296,9 @@ export class MobileDeviceKeyLedger {
     const out = { backfilledActivations: 0, backfilledRevocations: 0, completedRevocations: 0 };
     const devices = registry.list();
     for (const d of devices) {
-      if (!d.publicKey || !d.host || (d.status !== 'active' && d.status !== 'revoked')) continue;
-      const keyHash = deviceKeyHashOf(d.publicKey);
+      const key = deviceKeyOf(d);
+      if (!key || !d.host || (d.status !== 'active' && d.status !== 'revoked')) continue;
+      const keyHash = deviceKeyHashOf(key);
       if (!this.hasType('activation', keyHash, d.id)) {
         // A device revoked before it was ever approved has no activation to record.
         if (d.status === 'active' || d.approvedAt) {
@@ -284,8 +320,9 @@ export class MobileDeviceKeyLedger {
       if (!revoked.has(k) || r.revokedAt < revoked.get(k)!) revoked.set(k, r.revokedAt);
     }
     for (const d of devices) {
-      if (!d.publicKey || d.status === 'revoked') continue;
-      const at = revoked.get(ledgerViewKey(deviceKeyHashOf(d.publicKey), d.id));
+      const key = deviceKeyOf(d);
+      if (!key || d.status === 'revoked') continue;
+      const at = revoked.get(ledgerViewKey(deviceKeyHashOf(key), d.id));
       if (!at) continue;
       if (registry.revoke(d.id, at)) out.completedRevocations++;
     }

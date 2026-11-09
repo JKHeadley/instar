@@ -11,7 +11,7 @@ import express from 'express';
 import request from 'supertest';
 import { authMiddleware } from '../../src/server/middleware.js';
 import { MobilePairingService, deviceAuthenticator, DEVICE_ALLOWLIST, type MobilePairingDeps } from '../../src/server/mobilePairingRoutes.js';
-import { createMobileSessionRouter, NO_SESSION_REASON, type SessionConversationRef } from '../../src/server/mobileSessionRoutes.js';
+import { createMobileSessionRouter, findRemoteSession, NO_SESSION_REASON, type SessionConversationRef } from '../../src/server/mobileSessionRoutes.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -25,7 +25,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/mobile-open-session.test.ts' });
 });
 
-function setup(opts: { namedTunnel?: string } = {}) {
+function setup(opts: { namedTunnel?: string; remote?: unknown } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mopen-int-'));
   dirs.push(dir);
   // The agent's user registry: Justin is a person an MSP phone can belong to.
@@ -60,6 +60,8 @@ function setup(opts: { namedTunnel?: string } = {}) {
     ownerMachineFor: (r) => (r.ref === 'telegram:9' ? 'm_peer' : null),
     selfMachineId: () => 'm_self',
     nicknameOf: (id) => (id === 'm_self' ? 'Studio' : id === 'm_peer' ? 'Mac Mini' : null),
+    // The pool listing this machine reads (the real parser runs over it).
+    remoteSession: async (r, owner) => findRemoteSession(opts.remote ?? { sessions: [], pool: { failed: [{ machineId: 'm_peer', error: 'timeout' }] } }, r, owner),
   }));
   const pair = (person?: { userId: string; role: 'msp' }) => {
     const dev = makeDevice();
@@ -109,11 +111,20 @@ describe('GET /mobile/conversations/session', () => {
     expect(stale.body.dashboardUrl).toBeUndefined();
   });
 
-  it('another machine: active:false naming that machine', async () => {
+  it('another machine, not answering: said plainly with a retry, never "open the dashboard"', async () => {
     const c = setup();
     const r = await signedGet(c, q('telegram:9'));
-    expect(r.body).toMatchObject({ active: false, ownerMachine: { machineId: 'm_peer', nickname: 'Mac Mini' } });
+    expect(r.body).toMatchObject({ active: false, retry: true, ownerMachine: { machineId: 'm_peer', nickname: 'Mac Mini' } });
     expect(r.body.reason).toContain('Mac Mini');
+    expect(r.body.reason).not.toMatch(/dashboard/i);
+  });
+
+  it('another machine running it: answered as a remote session the phone opens natively', async () => {
+    const c = setup({ remote: { sessions: [{ tmuxSession: 'echo-topic-9', machineId: 'm_peer', remote: true, status: 'running', conversationRef: 'telegram:9', startedAt: '2026-11-07T05:00:00.000Z' }], pool: { failed: [] } } });
+    const r = await signedGet(c, q('telegram:9'));
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ active: true, remote: true, sessionName: 'echo-topic-9', machineId: 'm_peer', machineNickname: 'Mac Mini' });
+    expect(r.body.dashboardUrl).toBeUndefined();
   });
 
   it('wrong refs: malformed → 400, unknown → 404', async () => {

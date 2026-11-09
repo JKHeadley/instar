@@ -141,9 +141,9 @@ describe('CompletionEvaluator — PROMPT_VERSION canary (milestone floor cannot 
     expect(p).toContain('milestoneRationalizationDetected: true');
   });
 
-  it('PROMPT_VERSION is bumped to v3 (scope-accretion context block)', () => {
+  it('PROMPT_VERSION is bumped to v4 (wider topic goal context)', () => {
     const e = new CompletionEvaluator({ intelligence: stubProvider('MET\nok') });
-    expect(e.promptVersion).toBe('completion-eval-v3');
+    expect(e.promptVersion).toBe('completion-eval-v4');
     expect(e.stopRationalePromptVersion).toBe('stop-rationale-v2');
   });
 

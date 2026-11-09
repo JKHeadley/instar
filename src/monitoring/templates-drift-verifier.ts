@@ -38,6 +38,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DegradationReporter } from './DegradationReporter.js';
 import { PRIOR_SHIPPED_APP_RELAY_SHA256, PRIOR_SHIPPED_APP_MEDIA_PATH_SHA256 } from '../core/AppReplyRelayInstaller.js';
+import { PRIOR_SHIPPED_THREADLINE_REPLY_SHA256 } from '../core/ThreadlineReplyRelayInstaller.js';
 import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
 
 /**
@@ -99,6 +100,11 @@ const KNOWN_TEMPLATES: readonly TemplateSpec[] = [
     deployedBasename: 'app-media-path',
     sourceRelPath: 'scripts/app-media-path',
     priorShas: PRIOR_SHIPPED_APP_MEDIA_PATH_SHA256,
+  },
+  {
+    deployedBasename: 'threadline-reply.sh',
+    sourceRelPath: 'scripts/threadline-reply.sh',
+    priorShas: PRIOR_SHIPPED_THREADLINE_REPLY_SHA256,
   },
   {
     deployedBasename: 'whatsapp-reply.sh',

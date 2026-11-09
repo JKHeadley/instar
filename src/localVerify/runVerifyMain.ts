@@ -12,7 +12,7 @@
 
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { runVerify, verifyPaths, type VerifyRunInput, type VerifyRunResult } from './orchestrator.js';
+import { runVerify, verifyPaths, type RunDegradation, type VerifyRunInput, type VerifyRunResult } from './orchestrator.js';
 import { realSeams } from './orchestratorSeams.js';
 import { computeVerifierVersion, installedVerifierDir } from './verifierVersion.js';
 
@@ -28,7 +28,7 @@ export function parseMainArgs(argv: readonly string[]): { input: string; result:
   return { input, result, attemptToken };
 }
 
-function writeResult(file: string, result: VerifyRunResult | { kind: 'crash'; detail: string }): void {
+function writeResult(file: string, result: VerifyRunResult | { kind: 'crash'; detail: string; degradations?: RunDegradation[] }): void {
   const tmp = `${file}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(result), { mode: 0o600 });
   fs.renameSync(tmp, file);
@@ -51,6 +51,8 @@ export async function main(argv: readonly string[], ownDir?: string): Promise<nu
   const log = (event: Record<string, unknown>) => {
     process.stderr.write(JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n');
   };
+  // Degradations the run noticed ride the result (a crash result too) to the server, whose reporter records them.
+  const degradations: RunDegradation[] = [];
   try {
     const input = JSON.parse(fs.readFileSync(args.input, 'utf-8')) as VerifyRunInput;
     // The code on disk must be the code the server labels records with: an npm-replaced
@@ -61,13 +63,13 @@ export async function main(argv: readonly string[], ownDir?: string): Promise<nu
       writeResult(args.result, { kind: 'crash', detail: v.detail });
       return 1;
     }
-    const result = await runVerify(input, realSeams(log, verifyPaths(input.agentHome, input.headSha).verifyRoot));
-    writeResult(args.result, result);
+    const result = await runVerify(input, realSeams(log, verifyPaths(input.agentHome, input.headSha).verifyRoot, { onDegrade: (e) => { degradations.push(e); } }));
+    writeResult(args.result, degradations.length > 0 ? { ...result, degradations } : result);
     return 0;
   } catch (e) {
     const detail = e instanceof Error ? e.message : String(e);
     log({ event: 'crash', detail });
-    try { writeResult(args.result, { kind: 'crash', detail: detail.slice(0, 500) }); } catch { /* @silent-fallback-ok: the service treats a missing result as a crash */ }
+    try { writeResult(args.result, { kind: 'crash', detail: detail.slice(0, 500), ...(degradations.length > 0 ? { degradations } : {}) }); } catch { /* @silent-fallback-ok: the service treats a missing result as a crash */ }
     return 1;
   }
 }

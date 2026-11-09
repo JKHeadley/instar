@@ -23,14 +23,14 @@ describe('Slack session relay prompt census', () => {
 
   it('checks canonical relay readiness before initial and recovery spawn', () => {
     const server = fs.readFileSync('src/commands/server.ts', 'utf8');
-    expect(server.match(/localSlackRelayReadiness\(config\.stateDir\)/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(server.match(/repairedSlackRelayReadiness\(config\)/g)?.length).toBeGreaterThanOrEqual(2);
     expect(server).toContain('slack-relay-not-ready');
   });
 
   it('keeps existing-session injection ahead of readiness and isolates Slack DMs', () => {
     const server = fs.readFileSync('src/commands/server.ts', 'utf8');
     const inject = server.indexOf('const existingSession = slackAdapter!.getSessionForChannel(routingKey)');
-    const readiness = server.indexOf('const relayReadiness = localSlackRelayReadiness(config.stateDir)', inject);
+    const readiness = server.indexOf('const relayReadiness = repairedSlackRelayReadiness(config)', inject);
     expect(inject).toBeGreaterThan(-1);
     expect(readiness).toBeGreaterThan(inject);
     expect(server).not.toContain("(isDM && !isThreadSession) ? 'lifeline'");

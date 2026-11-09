@@ -28,10 +28,11 @@ print("delete document.body.dataset." + k + "; var s=document.createElement(\"sc
 ')" || { echo "ERR wrap-failed" >&2; exit 1; }
 SHA="$(CODE="$2" /usr/bin/python3 -I -c 'import hashlib, os; print(hashlib.sha256(os.environ["CODE"].encode()).hexdigest())')"
 BYTES="$(CODE="$2" /usr/bin/python3 -I -c 'import os; print(len(os.environ["CODE"].encode()))')"
-OUT="$(NC_CALLER_SCRIPT=chrome-mainworld.sh NC_CALLER_CODE_SHA256="$SHA" NC_CALLER_CODE_BYTES="$BYTES" "$S/chrome-js.sh" "$1" "$WRAPPED" "$3")"; RC=$?
+OUT="$(NC_CALLER_SCRIPT=chrome-mainworld.sh NC_CALLER_CODE_SHA256="$SHA" NC_CALLER_CODE_BYTES="$BYTES" "$S/chrome-js.sh" "$1" "$WRAPPED" "$3" "${@:4}")"; RC=$?
 # The tag sits in the injected script, so page code could observe it; but the result is read in the
 # same task the script ran in, so a page that blocked the script cannot report success in its place.
 case "$OUT" in
+  '{"kind":"account-action-review"'*) printf '%s\n' "$OUT"; exit 0 ;;
   "${MWTAG}ok:"*) printf '%s\n' "${OUT#"${MWTAG}ok:"}"; exit 0 ;;
   "${MWTAG}err:"*) echo "ERR page-js-error: ${OUT#"${MWTAG}err:"}"; exit 1 ;;
   "${MWTAG}did-not-run") echo "ERR main-world-script-did-not-run (the page blocks inline scripts with a Content-Security-Policy, or the code has a syntax error)"; exit 1 ;;

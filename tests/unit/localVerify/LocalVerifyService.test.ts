@@ -67,6 +67,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const starved: Array<{ pr: number }> = [];
   const records: LocalVerifyRecord[] = [];
   const signals: Array<{ key: string; detail: Record<string, unknown> }> = [];
+  const degradations: Array<Record<string, unknown>> = [];
   const priorities: boolean[] = [];
   let holders: number[] = [];
   /** What the verifier files on disk compute right now; null (the default) = unknown, never holds. */
@@ -98,6 +99,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     setSuitePriority: (active) => { priorities.push(active); },
     onStarved: (i) => { starved.push(i); },
     onRecord: (r) => { records.push(r); },
+    onDegradation: (e) => { degradations.push(e as unknown as Record<string, unknown>); },
     signal: (key, detail) => { signals.push({ key, detail }); },
     installedVerifierVersion: () => diskVersion,
     now: () => t,
@@ -120,7 +122,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     await flush();
   };
   return {
-    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, priorities, intentPath,
+    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, degradations, priorities, intentPath,
     setHolders: (h: number[]) => { holders = h; },
     setDiskVersion: (v: string | null) => { diskVersion = v; },
     advance: (ms: number) => { t += ms; },
@@ -135,6 +137,25 @@ const preflightRed = () => record({ outcome: 'failure', lanes: [], preflight: {
   selectedFiles: ['tests/unit/a.test.ts'], selectedCases: 1, repeatedFailedFile: 'tests/unit/a.test.ts',
   headSha: sha('a'), baseSha: sha('b'),
 } });
+
+describe('degradations carried by the run child', () => {
+  it('hands each degradation in the result to the seam, and the record still lands', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    expect(h.spawned).toHaveLength(1);
+    const d = { feature: 'LocalVerify.keptList', primary: 'kept-failed.json names kept runs', fallback: 'left untouched', reason: 'not a JSON array', impact: 'nothing swept' };
+    await h.finish(0, { ...ok(record({ outcome: 'success' })), degradations: [d] });
+    expect(h.degradations).toEqual([d]);
+    expect(h.records).toHaveLength(1);
+  });
+
+  it('a result without degradations calls the seam for none', async () => {
+    const h = setup({ views: { 1: view() } });
+    await h.svc.request(1, { explicit: false });
+    await h.finish(0, ok(record({ outcome: 'success' })));
+    expect(h.degradations).toEqual([]);
+  });
+});
 
 describe('automatic full-suite replay after enforced preflight red', () => {
   it('bypasses preflight on a fresh-tree retry after a preflight cleanup error', async () => {
@@ -252,6 +273,125 @@ describe('automatic full-suite replay after enforced preflight red', () => {
     expect(restarted.spawned).toHaveLength(0);
     expect(fs.readFileSync(restarted.svc.auditPath, 'utf8')).toContain('"reason":"replay-managed"');
     restarted.svc.shutdown();
+  });
+  describe('rebuildIndex reads open PRs in one call', () => {
+    const seed = (h: ReturnType<typeof setup>, prs: number[]) => {
+      fs.mkdirSync(path.dirname(h.svc.journalPath), { recursive: true });
+      fs.writeFileSync(h.svc.journalPath, prs.map((pr, n) => JSON.stringify({ v: 1, writtenAt: new Date(Date.parse('2026-10-21T12:00:00Z') + n).toISOString(), record: record({ pr }) })).join('\n') + '\n');
+    };
+    const seamsOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { seams: LocalVerifyServiceSeams }).seams;
+    const countIsPrOpen = (h: ReturnType<typeof setup>) => {
+      const counter = { calls: 0 };
+      const original = seamsOf(h).isPrOpen;
+      seamsOf(h).isPrOpen = async (pr) => { counter.calls += 1; return original(pr); };
+      return counter;
+    };
+
+    it('makes no per-PR call when the list is available, and treats a PR missing from it as not open', async () => {
+      const h = setup();
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set([1, 3]); };
+      const res = await h.svc.rebuildIndex();
+      expect(lists).toBe(1);
+      expect(perPr.calls).toBe(0);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
+
+    it('makes no GitHub call at all for an empty journal', async () => {
+      const h = setup();
+      let lists = 0;
+      seamsOf(h).listOpenPrs = async () => { lists += 1; return new Set<number>(); };
+      await h.svc.rebuildIndex();
+      expect(lists).toBe(0);
+      h.svc.shutdown();
+    });
+
+    it('gives the same answer as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      expect(await viaList.svc.rebuildIndex()).toEqual(await viaPerPr.svc.rebuildIndex());
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    const closedSeenOf = (h: ReturnType<typeof setup>) => (h.svc as unknown as { readClosedSeen(): Record<number, number> }).readClosedSeen();
+    const journalPrs = (h: ReturnType<typeof setup>) => fs.readFileSync(h.svc.journalPath, 'utf-8').trim().split('\n').filter(Boolean).map((l) => (JSON.parse(l) as { record: { pr: number } }).record.pr).sort();
+
+    it('starts the retention clock for a PR missing from the list, and writes the same state as the per-PR path', async () => {
+      const viaList = setup();
+      seed(viaList, [1, 2, 3]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1, 3]);
+      const viaPerPr = setup({ open: { 2: false } });
+      seed(viaPerPr, [1, 2, 3]);
+      await viaList.svc.rebuildIndex();
+      await viaPerPr.svc.rebuildIndex();
+      expect(Object.keys(closedSeenOf(viaList))).toEqual(['2']);
+      expect(closedSeenOf(viaList)).toEqual(closedSeenOf(viaPerPr));
+      expect(journalPrs(viaList)).toEqual(journalPrs(viaPerPr));
+      const key = (h: ReturnType<typeof setup>, pr: number) => h.svc.getRecord(pr, record({ pr }).headSha, 'main') !== null;
+      for (const h of [viaList, viaPerPr]) expect([1, 2, 3].map((pr) => key(h, pr))).toEqual([true, false, true]);
+      viaList.svc.shutdown();
+      viaPerPr.svc.shutdown();
+    });
+
+    it('clears the clock when a later list shows the PR open again', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeDefined();
+      seamsOf(h).listOpenPrs = async () => new Set([1, 2]);
+      await h.svc.rebuildIndex();
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('drops a listed-missing PR from the journal only after the retention window', async () => {
+      const h = setup();
+      seed(h, [1, 2]);
+      seamsOf(h).listOpenPrs = async () => new Set([1]);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1, 2]);
+      h.advance(LOCAL_VERIFY_LIMITS.retentionAfterCloseMs + 1);
+      await h.svc.rebuildIndex();
+      expect(journalPrs(h)).toEqual([1]);
+      expect(closedSeenOf(h)[2]).toBeUndefined();
+      h.svc.shutdown();
+    });
+
+    it('a PR GitHub cannot resolve: unknown and kept on the per-PR path, closed on the list path', async () => {
+      const perPr = setup({ open: { 2: null } });
+      seed(perPr, [1, 2]);
+      await perPr.svc.rebuildIndex();
+      expect(closedSeenOf(perPr)[2]).toBeUndefined();
+      const viaList = setup();
+      seed(viaList, [1, 2]);
+      seamsOf(viaList).listOpenPrs = async () => new Set([1]);
+      await viaList.svc.rebuildIndex();
+      expect(closedSeenOf(viaList)[2]).toBeDefined();
+      perPr.svc.shutdown();
+      viaList.svc.shutdown();
+    });
+
+    it.each([
+      ['returns null', async () => null],
+      ['throws', async () => { throw new Error('gh down'); }],
+    ])('falls back to one read per PR when the list %s', async (_label, listOpenPrs) => {
+      const h = setup({ open: { 2: false } });
+      seed(h, [1, 2, 3]);
+      const perPr = countIsPrOpen(h);
+      seamsOf(h).listOpenPrs = listOpenPrs as LocalVerifyServiceSeams['listOpenPrs'];
+      const res = await h.svc.rebuildIndex();
+      expect(perPr.calls).toBe(3);
+      expect(res).toMatchObject({ loaded: 2, skippedClosed: 1 });
+      h.svc.shutdown();
+    });
   });
   it('keeps the journal cap when pending replay proofs fill every slot', async () => {
     const h = setup();
@@ -1930,6 +2070,25 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s.signals).toHaveLength(1);
     expect(audit(s.stateDir).filter((l) => l.event === 'verifier-hold-overdue')).toHaveLength(1);
     expect(s.spawned).toHaveLength(1); // still held: only a restart (or the files matching again) resumes
+  });
+
+  it('restartNeededForQueuedWork: false with no hold, false while held with nothing queued, true while held with work waiting', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(1);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false); // a run in flight, no hold
+    await s.finish(0, mismatch());
+    expect(s.svc.snapshot().verifierHold).not.toBeNull();
+    expect(s.svc.snapshot().queue.map((e) => e.pr)).toEqual([1]); // the refused entry waits for the restart
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // The same hold with an empty queue needs no restart on anyone's behalf.
+    (s.svc as unknown as { queue: unknown[] }).queue.length = 0;
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
+    await s.svc.request(2);
+    expect(s.svc.restartNeededForQueuedWork()).toBe(true);
+    // A stopped service answers false whatever it held.
+    s.svc.shutdown();
+    expect(s.svc.restartNeededForQueuedWork()).toBe(false);
   });
 
   it('an ordinary crash is still an error record with one automatic re-run (the mismatch path changed nothing else)', async () => {

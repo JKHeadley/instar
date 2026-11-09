@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-07T20:56:55.339Z",
+  "slug": "app-pool-team-identity-followup",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 160,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/DeliverMessageHandler.ts",
+      "src/core/appConversationPool.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 106,
+    "deletedLines": 54
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "app-pool-enforcer runs the real enforcer under an always-older machine and an always-refusing owner; this commit adds no self-action"
+    }
+  },
+  "verdict": "pass"
+}

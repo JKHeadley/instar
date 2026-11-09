@@ -97,6 +97,7 @@ export default defineConfig({
             { label: 'Self-Healing', slug: 'features/self-healing' },
             { label: 'AutoUpdater', slug: 'features/autoupdater' },
             { label: 'Observability', slug: 'features/observability' },
+            { label: 'Disk Steward', slug: 'features/disk-steward' },
             { label: 'Resource Ledger (CPU + Memory)', slug: 'features/resource-ledger' },
             { label: 'Cross-Framework Portability', slug: 'features/portability' },
             { label: 'Paste Handling', slug: 'features/paste-handling' },
@@ -132,6 +133,7 @@ export default defineConfig({
           items: [
             { label: 'Agent Communication', slug: 'guides/agent-communication' },
             { label: 'Security Model', slug: 'guides/security' },
+            { label: 'Contributor Checks', slug: 'guides/contributor-checks' },
             { label: 'vs OpenClaw', slug: 'guides/vs-openclaw' },
           ],
         },

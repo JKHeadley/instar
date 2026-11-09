@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
+import { readFileSync } from 'node:fs';
 import { buildAccountsPage, tightest, cellState, resetWords } from '../../dashboard/console/accounts-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
@@ -227,5 +228,12 @@ describe('accounts page in a DOM', () => {
     expect(doc.querySelector('#sec-notices .need-title')!.textContent).toBe('All 2 Claude accounts are used up.');
     expect(doc.querySelector('#sec-notices .row-sub')!.textContent).toMatch(/^Room returns: /);
     expect(doc.querySelector('#sec-notices .hero-ask a')).not.toBeNull();
+  });
+});
+
+describe('needs-you card styling', () => {
+  it('shows the whole reason: a row in a need card never cuts its explanation off', () => {
+    const css = readFileSync(new URL('../../dashboard/console/console.css', import.meta.url), 'utf8');
+    expect(css).toMatch(/\.need-card \.row-sub \{ white-space: normal; \}/);
   });
 });

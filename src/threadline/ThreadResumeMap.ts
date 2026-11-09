@@ -46,6 +46,22 @@ export interface ThreadResumeEntry {
   spawnMode?: 'interactive' | 'pipe';
   originTopicId?: number;
   originSessionName?: string;
+  /** Memory privacy: the authenticated peer this thread is with (write-once). */
+  peerFingerprint?: string;
+  /** Memory privacy: when `peerFingerprint` was claimed. */
+  ownerClaimedAt?: string;
+  /** Memory privacy: the audience key the transcript was written under. */
+  audienceKey?: string;
+  /** Memory privacy: the owner was adopted from a pre-version record; it carries the id only. */
+  ownerAdopted?: boolean;
+}
+
+/** The outcome of claiming a thread for an authenticated sender (memory-privacy-agent-places §2). */
+export interface ThreadOwnerClaim {
+  /** The thread's owner after the claim, or null when the thread is unowned and cannot be claimed. */
+  owner: string | null;
+  /** True when this call wrote the owner (a new thread, or a legacy entry adopted). */
+  claimed: boolean;
 }
 
 export interface ThreadResumeSessionMatch {
@@ -81,6 +97,10 @@ function conversationToEntry(c: Conversation): ThreadResumeEntry {
     spawnMode: c.spawnMode,
     originTopicId: c.boundTopicId,
     originSessionName: c.originSessionName,
+    ...(c.peerFingerprint ? { peerFingerprint: c.peerFingerprint } : {}),
+    ...(c.ownerClaimedAt ? { ownerClaimedAt: c.ownerClaimedAt } : {}),
+    ...(c.audienceKey ? { audienceKey: c.audienceKey } : {}),
+    ...(c.ownerAdopted ? { ownerAdopted: true } : {}),
   };
 }
 
@@ -119,6 +139,12 @@ export function applyEntryToConversation(entry: ThreadResumeEntry, draft: Conver
     draft.boundTopicId = entry.originTopicId;
   }
   if (entry.originSessionName !== undefined) draft.originSessionName = entry.originSessionName;
+  // Memory privacy: the owner is write-once, so a later save can never re-own a thread.
+  if (entry.peerFingerprint && !draft.peerFingerprint) {
+    draft.peerFingerprint = entry.peerFingerprint;
+    draft.ownerClaimedAt = entry.ownerClaimedAt ?? new Date().toISOString();
+  }
+  if (entry.audienceKey !== undefined) draft.audienceKey = entry.audienceKey;
   if (entry.createdAt && draft.version === 0) draft.createdAt = entry.createdAt;
   draft.lastActivityAt = entry.lastAccessedAt || new Date().toISOString();
   // turnCount / lastInboundHash / lastOutboundHash: intentionally untouched.
@@ -224,6 +250,79 @@ export class ThreadResumeMap {
   /** Save or update a thread resume mapping (MERGES — preserves gate turn state). */
   save(threadId: string, entry: ThreadResumeEntry): void {
     this.store.mutateSync(threadId, draft => applyEntryToConversation({ ...entry, savedAt: new Date().toISOString() }, draft));
+  }
+
+  /**
+   * Claim a thread for an authenticated sender, or read who owns it, in one
+   * atomic step (memory-privacy-agent-places §2). Reads ConversationStore
+   * directly, never `get()`, which returns null when a transcript file is missing.
+   *
+   * - Owned: returns the owner, writes nothing.
+   * - A legacy record (no owner) whose `remoteAgent` is exactly the sender's
+   *   fingerprint is adopted. Any other legacy record stays unowned.
+   * - No record: claimed for the sender, unless the thread already has stored
+   *   messages (`hasStoredMessages`), which leaves it unowned.
+   *
+   * The caller moves the message to a fresh thread id whenever the returned
+   * owner is not the sender.
+   */
+  claimOwner(threadId: string, senderFp: string, opts: { hasStoredMessages: boolean }): ThreadOwnerClaim {
+    if (!senderFp) return { owner: null, claimed: false };
+    const existing = this.store.get(threadId);
+    if (existing?.peerFingerprint) return { owner: existing.peerFingerprint, claimed: false };
+    // A record this version wrote without an owner (a send addressed by a name) is never adopted.
+    if (existing?.ownerless) return { owner: null, claimed: false };
+    // A bare record with nothing in it (no transcript, no bound session or topic, and no stored
+    // message but this one) is the inbound recorder's own write for this very message: claiming
+    // it carries nothing over, so the authenticated sender takes it.
+    const bare = (c: { sessionUuid?: string; boundSessionName?: string; boundTopicId?: number; originSessionName?: string }) =>
+      !c.sessionUuid && !c.boundSessionName && c.boundTopicId === undefined && !c.originSessionName;
+    const freshBare = !!existing && bare(existing) && !opts.hasStoredMessages;
+    if (existing && !freshBare && existing.remoteAgent !== senderFp) return { owner: null, claimed: false };
+    if (!existing && opts.hasStoredMessages) return { owner: null, claimed: false };
+    let claimed = false;
+    const committed = this.store.mutateSync(threadId, (draft) => {
+      if (draft.peerFingerprint) return draft; // lost a race: someone else claimed it
+      if (draft.ownerless) return draft;
+      const draftFreshBare = draft.version > 0 && bare(draft) && !opts.hasStoredMessages;
+      if (draft.version > 0 && !draftFreshBare && draft.remoteAgent !== senderFp) return draft;
+      // Adopting a legacy record carries the thread id only: no resume, no topic reach.
+      if (draft.version > 0 && !draftFreshBare) {
+        draft.ownerAdopted = true;
+        draft.sessionUuid = undefined;
+      }
+      draft.peerFingerprint = senderFp;
+      draft.ownerClaimedAt = new Date().toISOString();
+      if (!draft.remoteAgent) draft.remoteAgent = senderFp;
+      if (!draft.participants.peers.includes(senderFp)) draft.participants.peers.push(senderFp);
+      claimed = true;
+      return draft;
+    });
+    const owner = committed?.peerFingerprint ?? null;
+    return { owner, claimed: claimed && owner === senderFp };
+  }
+
+  /** The raw record's owner and claim time. Reads the store directly. */
+  ownership(threadId: string): { owner: string | null; claimedAt: string | null } {
+    const c = this.store.get(threadId);
+    return { owner: c?.peerFingerprint ?? null, claimedAt: c?.ownerClaimedAt ?? null };
+  }
+
+  /** Forget a thread's transcript id and audience, so it can only ever start fresh. */
+  clearTranscript(threadId: string): void {
+    if (!this.store.get(threadId)) return;
+    this.store.mutateSync(threadId, draft => { draft.sessionUuid = undefined; draft.audienceKey = undefined; return draft; });
+  }
+
+  /**
+   * Mark a thread this version created without an owner (a send addressed by a name, not a
+   * fingerprint), so the legacy adoption rule never applies to it. No-op when owned.
+   */
+  markOwnerless(threadId: string): void {
+    this.store.mutateSync(threadId, draft => {
+      if (!draft.peerFingerprint) draft.ownerless = true;
+      return draft;
+    });
   }
 
   /** Remove a thread entry (cross-process safe via ConversationStore). */

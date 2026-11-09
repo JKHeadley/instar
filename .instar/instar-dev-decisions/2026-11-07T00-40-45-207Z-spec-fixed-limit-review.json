@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-07T00:40:45.207Z",
+  "slug": "spec-fixed-limit-review",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 42,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "skills/spec-converge/SKILL.md",
+      "skills/spec-converge/scripts/write-convergence-tag.mjs",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/reviewers/standards-conformance.ts"
+    ],
+    "addedLines": 38,
+    "deletedLines": 4
+  },
+  "causalAutopsy": {
+    "origin": "latent",
+    "notes": "Classification presence substituted for evidence; six spec rounds accepted arbitrary growth caps as invariants. The separate spec correction is PR 2871. Feedback fb-10cc0a80-caf."
+  },
+  "classClosure": {
+    "defectClass": "claim-vs-evidence",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/write-convergence-tag-decision-points.test.ts",
+      "howCaught": "The original invariant growth-cap row now refuses convergence without a basis and evidence declaration; mandatory reviewer contracts require independent contest of the substance and exact boundary."
+    }
+  },
+  "verdict": "pass"
+}

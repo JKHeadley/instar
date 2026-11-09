@@ -12,6 +12,8 @@ import type { ChannelDefinition, ChannelProbeResult } from './channelRegistry.js
 
 /** What the registry needs from the running server. Injected so the definitions stay testable. */
 export interface ChannelProbeContext {
+  /** Source-verified independent recovery routes, never socket construction. */
+  serverDownRecovery?: () => { ready: boolean; reason: string };
   /** Whole-agent relay answer; local client state alone is not agent reachability. */
   agentRelayStatus?: () => Promise<import('../threadline/agentRelayStatus.js').AgentRelayStatus>;
   /** Live relay state, or null when the threadline layer was never constructed. */
@@ -101,9 +103,21 @@ export function buildChannelDefinitions(ctx: ChannelProbeContext): ChannelDefini
         }
         // Constructed is not the same as reaching a peer, and the registry must not overstate it.
         return {
-          state: 'working', direction: 'bidirectional',
-          detail: 'runtime constructed and listening; NOTE this confirms initialisation, not a completed round-trip to a peer',
+          state: 'unknown', direction: 'none',
+          detail: 'runtime constructed; no source-verified server-down recovery proof is implied',
         };
+      },
+    },
+    {
+      id: 'server-down-recovery',
+      audience: 'peer',
+      purpose: 'Diagnose and repair a paired machine while its main server is stopped.',
+      whenPreferred: 'A paired machine cannot run its normal server or is in a restart loop.',
+      cost: 'Requires owner enrollment and two fresh independent source-verified recovery routes; host failures remain common dependencies.',
+      probe: async (): Promise<ChannelProbeResult> => {
+        const state = ctx.serverDownRecovery?.();
+        if (!state) return { state: 'unknown', direction: 'none', detail: 'recovery has not been observed on this source machine' };
+        return { state: state.ready ? 'working' : 'unknown', direction: state.ready ? 'bidirectional' : 'none', detail: state.reason };
       },
     },
     {

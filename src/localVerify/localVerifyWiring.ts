@@ -17,6 +17,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { installedSafeMergePath } from '../core/installedSafeMerge.js';
 import { createAuthenticatedGitHubCliRuntimeResolver } from '../core/githubRuntime.js';
 import { PROTECTED_PATH_PREFIXES } from '../monitoring/greenPrAutomergeWiring.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { LocalVerifyService, appendLocalVerifyAudit, type LocalVerifyServiceSeams, type UpdatePendingState } from './LocalVerifyService.js';
 import type { PeerClient, PeerResult, PeerRunAnswer, PeerStatus } from './peer.js';
 import { computeVerifierVersion } from './verifierVersion.js';
@@ -163,6 +164,9 @@ export function buildLocalVerifyService(opts: LocalVerifyWiringOpts): LocalVerif
         reason: i.reason ?? 'waited', interruptions: i.interruptions ?? 0,
       })),
       onRecord: (r) => opts.hooks?.onRecord?.(r),
+      // A degradation the run child noticed rides its result here; this server's reporter is the
+      // one /health reads, so the record is made here, never by the child.
+      onDegradation: (e) => DegradationReporter.getInstance().report(e),
       onMainHealthChange: (snap, prev) => opts.hooks?.onMainHealthChange?.(snap, prev),
       signal: (k, d) => opts.hooks?.signal?.(k, d),
       clearSignal: (k, r) => opts.hooks?.clearSignal?.(k, r),
@@ -247,7 +251,7 @@ export interface LocalVerifyAutoUpdaterView {
     /** This process is installing an update or has installed bytes awaiting its restart. */
     updateActivationPendingSince?: string | null;
     /** The applied-but-not-restarted state: the restart is waiting (holds, sessions, window). */
-    restartDeferral?: { active?: boolean; firstDeferredAt?: string | null } | null;
+    restartDeferral?: { active?: boolean; firstDeferredAt?: string | null; currentBlockers?: string[] } | null;
   };
   /** What would hold a restart right now (sessions, then `hold:<name>` entries). */
   getRestartBlockers?(): string[];
@@ -292,6 +296,7 @@ export function updatePendingFromAutoUpdater(
     // blocker is present: that blocker can disappear before the restart request.
     // Once deferred, the marker clears and the original blocker exception applies.
     otherBlockers: activationPending ? false : blockers === null || blockers.some((b) => !b.startsWith('hold:local-verify')),
+    ...(restartWaiting && deferral?.currentBlockers?.some((b) => b.startsWith('local-verify:peer-')) ? { restartHeldForPeer: true } : {}),
   };
 }
 
@@ -494,9 +499,12 @@ export function wireLocalVerifyPeers(
     agentId: string;
     lease: { holdsLease(): boolean; leaseEpoch(): number | null; holderMachineId(): string | null } | null;
     fetchImpl?: typeof fetch;
+    /** Resource-aware placement §4: a peer's fit for a full verify; absent ⇒ no filter. */
+    peerFit?: (machineId: string) => import('./LocalVerifyService.js').PeerFit;
   },
 ): void {
   svc.setPeerWiring({
+    ...(o.peerFit ? { peerFit: o.peerFit } : {}),
     peerRoleEnabled: () => o.liveConfig.get<boolean>('monitoring.localVerify.peer.enabled', false) === true,
     peers: () => o.liveConfig.get<unknown>('monitoring.localVerify.peers', []),
     client: makePeerClient(o.authToken, o.agentId, o.fetchImpl),

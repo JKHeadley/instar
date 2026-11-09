@@ -5,6 +5,7 @@
 // tests/e2e/mobile-slack-holder-proxy-alive.test.ts in its owning branch.
 import type { Request } from 'express';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
+import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { isOwnerProfile } from '../core/MobilePeople.js';
 import { deviceAdmissionIdentity, deviceAdmittedAt, devicePersonOf, isMobileNativeEnabled,
   type MobileDeviceAdmissionIdentity, type MobilePairingService } from './mobilePairingRoutes.js';
@@ -21,7 +22,7 @@ export interface MobileOwnerDeviceAdmission {
 export type OwnerSnapshotRefusal =
   | 'malformed-snapshot' | 'not-owner-role' | 'pairing-off' | 'native-off' | 'key-ledger-missing'
   | 'device-missing' | 'device-inactive' | 'key-changed' | 'key-revoked'
-  | 'person-changed' | 'person-not-owner' | 'profile-not-owner' | 'unreadable';
+  | 'person-changed' | 'person-not-owner' | 'profile-not-owner' | 'browser-off' | 'unreadable';
 
 /**
  * The one current-owner policy. Both the live helper and the queued-snapshot validator call it,
@@ -36,8 +37,11 @@ function ownerAdmissionRefusal(pairing: MobilePairingService, deviceId: string,
     if (!pairing.keyLedger) return 'key-ledger-missing';
     const device = pairing.devices.get(deviceId);
     if (!device) return 'device-missing';
-    if (device.status !== 'active' || !device.publicKey) return 'device-inactive';
-    if (deviceKeyHashOf(device.publicKey) !== admitted.keyHash) return 'key-changed';
+    // A browser is admitted only while the browser switch is on (dashboard-conversations-browser-device §4.1).
+    if (isBrowserDevice(device) && !pairing.browserOn()) return 'browser-off';
+    const key = deviceKeyOf(device);
+    if (device.status !== 'active' || !key) return 'device-inactive';
+    if (deviceKeyHashOf(key) !== admitted.keyHash) return 'key-changed';
     if (pairing.keyLedger.isRevoked(admitted.keyHash, deviceId)) return 'key-revoked';
     if ((device.userId ?? null) !== admitted.userId || (device.role ?? 'owner') !== admitted.role) return 'person-changed';
     const current = pairing.personOfDevice(device);

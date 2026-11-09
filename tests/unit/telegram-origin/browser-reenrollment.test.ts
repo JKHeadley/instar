@@ -11,6 +11,7 @@ import type { BrowserCanary, TelegramBrowserDriver } from '../../../src/messagin
 import { temporaryState } from '../../helpers/telegramOriginStore.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
+const b686 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.3-686')!;
 const b684 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-684')!;
 const b679 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-679')!;
 const b676 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-676')!;
@@ -44,6 +45,10 @@ describe('reviewed Web K build list', () => {
     for (const build of REVIEWED_WEB_K_BUILDS) expect(validWebKBuildEnrollment(build)).toBe(true);
     expect(matchReviewedWebKBuild({ criticalAssets: [...b684.criticalAssets], assetDigests: b684.assetDigests })?.buildId)
       .toBe('web-k-2.2-684');
+    // Web K 2.3 (686): the exact public bytes the authenticated canary observed on 2026-11-08.
+    expect(matchReviewedWebKBuild({ criticalAssets: ['index-C47pEAow.js', 'app-Bzzv1JNw.js', 'apiManagerProxy-DnfIRNVs.js'], assetDigests: b686.assetDigests })?.buildId)
+      .toBe('web-k-2.3-686');
+    expect(nextSupportedBuilds(b686, [b684]).map(b => b.buildId)).toEqual(['web-k-2.3-686', 'web-k-2.2-684']);
     expect(nextSupportedBuilds(b679, [b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
     expect(nextSupportedBuilds(b679, [b679, b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
     expect(nextSupportedBuilds(b679, []).map(b => b.buildId)).toEqual(['web-k-2.2-679']);

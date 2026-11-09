@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "dashboard-chats-phone-layout",
+  "sessionId": "93fd8379-dcfe-4355-87e8-d925cb6d47bd",
+  "timestamp": "2026-11-08T17:49:03.578Z",
+  "artifactPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "artifactSha256": "ac9ae8a36e51b0222af27ea9029a93069cb18f473046328c9d09709224d1abc8",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/specs/dashboard-chats-phone-layout.eli16.md",
+    "src/server/mobileBrowserDevices.ts",
+    "tests/e2e/dashboard-conversations-browser-alive.test.ts",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/mobile-browser-devices.test.ts",
+    "upgrades/side-effects/dashboard-chats-phone-layout.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Client send-answer reading and one status field; a revert fully undoes them.",
+  "eli16Path": "docs/specs/dashboard-chats-phone-layout.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/dashboard-chats-phone-layout.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

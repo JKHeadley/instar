@@ -64,6 +64,8 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
     for (const doc of ['CLAUDE.md', 'AGENTS.md']) {
       const md = readAwareness(projectDir, doc);
       expect(count(md, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
+      expect(md, doc).toContain('### Account actions: read before acting');
+      expect(md, doc).toContain('Recovery and backup codes are break-glass credentials');
       expect(md, doc).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V1);
     }
 
@@ -114,6 +116,8 @@ describe('PostUpdateMigrator.migrate() — normal-Chrome browser (macOS + Window
       for (const doc of ['CLAUDE.md', 'AGENTS.md']) {
         const md = readAwareness(projectDir, doc);
         expect(count(md, NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING), doc).toBe(1);
+      expect(md, doc).toContain('### Account actions: read before acting');
+      expect(md, doc).toContain('Recovery and backup codes are break-glass credentials');
         expect(md, doc).not.toContain(NORMAL_CHROME_BROWSER_CLAUDEMD_HEADING_V2);
       }
       const settled = [fs.readFileSync(skillPath(), 'utf-8'), readAwareness(projectDir, 'CLAUDE.md')];

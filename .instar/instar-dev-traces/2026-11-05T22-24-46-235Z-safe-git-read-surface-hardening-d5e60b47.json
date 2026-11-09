@@ -1,0 +1,39 @@
+{
+  "version": 3,
+  "slug": "safe-git-read-surface-hardening",
+  "sessionId": "f9ffb778-0377-4410-b57c-b9cd432c9f6c",
+  "timestamp": "2026-11-05T22:24:46.235Z",
+  "artifactPath": "upgrades/side-effects/safe-git-read-surface-hardening.md",
+  "artifactSha256": "b732429929dbc20ce85fc5e900a372929814c5b2492cdb117ecdc36457acc75a",
+  "specPath": "docs/specs/safe-git-read-surface-hardening.md",
+  "coveredFiles": [
+    "docs/specs/reports/safe-git-read-surface-hardening-convergence.md",
+    "docs/specs/safe-git-read-surface-hardening.eli16.md",
+    "docs/specs/safe-git-read-surface-hardening.md",
+    "scripts/lint-no-direct-destructive.js",
+    "scripts/run-migration.js",
+    "src/commands/machine.ts",
+    "src/core/GitStateManager.ts",
+    "src/core/SafeGitExecutor.ts",
+    "tests/unit/SafeGitExecutor-read-surface-hardening.test.ts",
+    "tests/unit/SafeGitExecutor-verb-classifier.test.ts",
+    "tests/unit/SafeGitExecutor.test.ts",
+    "tests/unit/lint-no-direct-destructive.test.ts",
+    "tests/unit/machine-claim-lease-local-only.test.ts",
+    "tests/unit/wakeup-force-lease-claim.test.ts",
+    "upgrades/next/safe-git-read-surface-hardening.md",
+    "upgrades/side-effects/safe-git-read-surface-hardening.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Security-sensitive change to the git safety funnel's authority (new refusal class, admit grammars, source-tree opt-out narrowing)",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "convergence": {
+      "reportPath": "docs/specs/reports/safe-git-read-surface-hardening-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

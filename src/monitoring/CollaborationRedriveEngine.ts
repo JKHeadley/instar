@@ -36,6 +36,7 @@ import type { ThreadlineClient } from '../threadline/client/ThreadlineClient.js'
 import type { CollaborationSurfacer } from '../threadline/CollaborationSurfacer.js';
 import { mergeDefaults } from '../core/mergeDefaults.js';
 import { isEncryptToPinnedSendError } from '../threadline/encryptToPinned.js';
+import { featureEvidence } from './FeatureEvidenceLog.js';
 
 // ── Public types ──────────────────────────────────────────────
 
@@ -102,6 +103,23 @@ export interface TickResult {
 
 const TERMINAL_STATUSES = new Set(['delivered', 'expired', 'withdrawn']);
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const EVIDENCE_ID = 'monitoring.collaborationRedrive';
+
+/**
+ * A stopped nudge is a standing condition that repeats on every sweep, and the
+ * ladder's send-error rate divides by all of this feature's rows. One row per
+ * reason per day keeps the condition visible (the row carries how many it stood
+ * for) without letting repeats hide a real send-error rate.
+ */
+function recordHeld(reason: string, context: Record<string, string | number | boolean | null>): void {
+  featureEvidence.recordAtMostEvery(EVIDENCE_ID, `held:${reason}`, DAY_MS, { kind: 'held', reason, context });
+}
+
+/** A refused send is retried on later sweeps; one row per commitment per hour. */
+function recordRetriedError(key: string, reason: string, context: Record<string, string | number | boolean | null>): void {
+  featureEvidence.recordAtMostEvery(EVIDENCE_ID, `error:${key}`, HOUR_MS, { kind: 'error', reason, context });
+}
 
 export class CollaborationRedriveEngine {
   private readonly cfg: CollaborationRedriveConfig;
@@ -175,7 +193,11 @@ export class CollaborationRedriveEngine {
       return;
     }
     this.sweepTimer = setInterval(() => {
-      void this.tick().catch((err) => this.log.warn(`tick error: ${err instanceof Error ? err.message : String(err)}`));
+      void this.tick().catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        this.log.warn(`tick error: ${message}`);
+        recordRetriedError('tick', `sweep failed: ${message}`, {});
+      });
     }, this.cfg.sweepIntervalMs);
     if (typeof this.sweepTimer.unref === 'function') this.sweepTimer.unref();
     this.log.log(`engine armed (sweep ${this.cfg.sweepIntervalMs}ms, silenceThreshold ${this.cfg.silenceThresholdMs}ms, maxRedrives ${this.cfg.maxRedrives})`);
@@ -207,6 +229,7 @@ export class CollaborationRedriveEngine {
 
     if (dailyCount >= this.cfg.maxRedriveSendsPerDay) {
       this.log.log(`engine-wide daily fuse tripped (${dailyCount}/${this.cfg.maxRedriveSendsPerDay}); skipping tick`);
+      recordHeld('engine-wide daily cap', { dailyCount, cap: this.cfg.maxRedriveSendsPerDay });
       return result;
     }
 
@@ -233,10 +256,12 @@ export class CollaborationRedriveEngine {
       const peerCount = perPeerCount.get(peer) ?? 0;
       if (peerCount >= this.cfg.perPeerDailyCap) {
         result.skipped[c.id] = `per-peer-cap (${peerCount}/${this.cfg.perPeerDailyCap})`;
+        recordHeld('per-peer daily cap', { commitmentId: c.id, peer, peerCount, cap: this.cfg.perPeerDailyCap });
         continue;
       }
       if (dailyCount + perTickSent >= this.cfg.maxRedriveSendsPerDay) {
         result.skipped[c.id] = 'engine-wide-cap';
+        recordHeld('engine-wide daily cap', { commitmentId: c.id, dailyCount, cap: this.cfg.maxRedriveSendsPerDay });
         continue;
       }
 
@@ -268,6 +293,7 @@ export class CollaborationRedriveEngine {
         // `unreachableEscalationCooldownMs` (default 24h), persisted to
         // disk so it survives restart.
         result.skipped[c.id] = 'unresolved-name';
+        recordHeld('peer name did not resolve', { commitmentId: c.id, peer });
         if (this.shouldEscalateUnreachable(peer, nowMs) && this.deps.raiseAttention) {
           try {
             await this.deps.raiseAttention({
@@ -290,6 +316,7 @@ export class CollaborationRedriveEngine {
       const lastNudge = (c as Commitment & { lastRedriveText?: string }).lastRedriveText;
       if (lastNudge && jaccard3gram(lastNudge, nudgeText) >= this.cfg.dedupeJaccard) {
         result.skipped[c.id] = 'novelty-guard-near-dup';
+        recordHeld('nudge nearly repeats the last one', { commitmentId: c.id, peer });
         await this.escalateCapHit(c, 'novelty-guard near-duplicate nudges');
         continue;
       }
@@ -310,14 +337,20 @@ export class CollaborationRedriveEngine {
       } catch (err) {
         this.log.warn(`mutate failed for ${c.id} (no send attempted): ${err instanceof Error ? err.message : String(err)}`);
         result.skipped[c.id] = 'mutate-failed';
+        recordRetriedError(`mutate:${c.id}`, 'could not record the nudge, so none was sent', { commitmentId: c.id, peer });
         continue;
       }
 
+      const sendContext = { commitmentId: c.id, peer, attempt: currentCount, maxRedrives: this.cfg.maxRedrives };
       try {
         if (this.deps.relayClient) {
           this.deps.relayClient.sendPlaintext(fingerprint, nudgeText, c.relatedThreadId);
+          // The relay accepts asynchronously, so this row means handed over, not
+          // received. A review grades the nudge against this row's event id.
+          featureEvidence.record(EVIDENCE_ID, { kind: 'fired', reason: 'nudge handed to the relay', context: sendContext });
         } else {
           this.log.warn(`no relayClient injected; nudge for ${c.id} not transmitted`);
+          featureEvidence.record(EVIDENCE_ID, { kind: 'error', reason: 'nudge not sent: no relay client', context: sendContext });
         }
       } catch (err) {
         if (isEncryptToPinnedSendError(err)) {
@@ -337,9 +370,11 @@ export class CollaborationRedriveEngine {
             this.log.warn(`could not undo the redrive count for ${c.id}: ${undoErr instanceof Error ? undoErr.message : String(undoErr)}`);
           }
           result.skipped[c.id] = 'encrypted-send-refused';
+          recordRetriedError(`encrypted:${c.id}`, 'nudge not sent: encrypted send to a pinned peer was refused', sendContext);
           continue;
         }
         this.log.warn(`relay send failed for ${c.id} (count already incremented per spec): ${err instanceof Error ? err.message : String(err)}`);
+        featureEvidence.record(EVIDENCE_ID, { kind: 'error', reason: `relay send failed: ${err instanceof Error ? err.message : String(err)}`, context: sendContext });
       }
 
       if (this.deps.surfacer) {

@@ -40,10 +40,16 @@ export type BrowserOutcome =
   | { state: 'outcome-unknown'; reason: string };
 /** Trusted driver, held only by the server's broker; never registered as an MCP tool. */
 export interface TelegramBrowserDriver {
-  canary(): Promise<BrowserCanary>;
+  /** `deadlineMs` bounds the probe's RPC stop time and asset loop (test-group operations). */
+  canary(deadlineMs?: number): Promise<BrowserCanary>;
   readSnapshot(): Promise<{ text: string; accountId: string }>;
   resolvePeer?: (destination: BrowserDestination) => Promise<{ [key: string]: BrowserJson }>;
   invoke(child: Readonly<PreparedBrowserChild>): Promise<unknown>;
+  /** Test-group page scripts (docs/specs/telegram-test-groups.md). Each returns only a typed
+   * object; parsers in TelegramTestGroups.ts accept exact keys and refuse anything else. */
+  listTestGroups?(input: { deadline: number; channelId?: string }): Promise<unknown>;
+  createTestGroup?(input: { title: string; bot: { username: string; userId: string }; deadline: number }): Promise<unknown>;
+  deleteTestGroup?(input: { channelId: string; title: string; deadline: number }): Promise<unknown>;
   /** Must terminate the owning process/connection, including internal retry loops. */
   close(): Promise<void>;
 }

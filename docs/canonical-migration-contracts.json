@@ -3,7 +3,7 @@
   "contracts": [
     {
       "id": "threadline-inbound-canonical-store",
-      "revision": 1,
+      "revision": 3,
       "producers": [
         "src/threadline/ThreadLog.ts",
         "src/threadline/recordThreadMessage.ts"

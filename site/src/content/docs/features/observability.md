@@ -210,6 +210,8 @@ The `HumanAsDetectorLog` signal above ("what the user still had to catch") is al
 
 Components: `AgentWorktreeReaper`, `OrphanedWorkSentinel`, `WorktreeEnumerationFailureStore`, `GuardRegistry`, `GuardPostureStore`.
 
+Disk space has its own watcher: `DiskSteward` samples every machine's free space and forecast, and `DiskStewardPoster` writes the plain-words post that names the machine. See [Disk Steward](/features/disk-steward/).
+
 The worktree reaper and orphan sentinel expose enumeration health separately from their candidate counts. A successful scan that finds nothing is healthy; a failed scan returns null counts plus a bounded error instead of manufacturing zeroes. `WorktreeEnumerationFailureStore` preserves the latest failure for each guard across restarts, while `GuardRegistry` and `GuardPostureStore` surface the current `on-blind` posture through `/guards` without erasing the last successful pass time.
 
 ## Idle-error recovery (session-stall detection)

@@ -3093,7 +3093,7 @@ export class TelegramLifeline {
       const { ensureStableNodeSymlink } = await import('../commands/setup.js');
       ensureStableNodeSymlink(this.projectConfig.projectDir);
     } catch (err) {
-      console.warn(`[Lifeline] Node symlink update failed (non-critical): ${err}`);
+      console.warn(`[Lifeline] Approved node binding could not be preserved; recovery may be degraded: ${err}`);
     }
 
     // Also make sure the boot wrapper exists. launchd will refuse to spawn

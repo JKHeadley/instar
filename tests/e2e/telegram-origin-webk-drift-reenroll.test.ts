@@ -1,6 +1,9 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import express from 'express';
+import request from 'supertest';
+import { createRoutes } from '../../src/server/routes.js';
 import { bootTelegramOrigin } from '../../src/messaging/telegram-origin/TelegramOriginBoot.js';
 import { PlaywrightProfileRegistry } from '../../src/core/PlaywrightProfileRegistry.js';
 import { enrollOriginBrowser, enrollReviewedOriginBrowser } from '../../src/messaging/telegram-origin/OriginBrowserEnrollment.js';
@@ -110,6 +113,22 @@ describe('Telegram Web K drift through the production boot', () => {
     expect(state).toMatchObject({ profileId: 'operator-telegram', failedBuilds: [expect.stringMatching(/^unrecognized:[0-9a-f]{64}$/)], attentionPending: false });
     await expect(browser!.resolvePeer({ kind: 'channel', id: '123' })).rejects.toThrow('browser-recovery-cooldown');
     expect(f.attention).toHaveBeenCalledOnce();
+  });
+
+  it('the production snapshot route holds with a fixed body and logs the cause server-side', { timeout: 60_000 }, async () => {
+    const f = await fixture();
+    const app = express(); app.use(express.json());
+    app.use(createRoutes({ state: { getSession: () => undefined }, config: { authToken: 'fixture-auth', stateDir: f.stateDir, port: 0, projectName: 'echo',
+      messaging: [{ type: 'telegram', enabled: true, config: { token: '123:drift-fixture', chatId: '-100123', lifelineTopicId: 7848 } }] },
+      telegramOrigin: f.boot.runtime, sessionManager: { clearInjectionTracker: () => undefined } } as never));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      // No valid origin session: the route must not reach the browser, and must not say why.
+      const response = await request(app).get('/telegram/browser/operator-telegram/snapshot').set('X-Instar-Origin-Session', 'not-a-session');
+      expect(response.status).toBe(409);
+      expect(response.body).toEqual({ error: 'telegram-browser-snapshot-unavailable' });
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/^\[telegram-origin\] browser snapshot unavailable: profile=operator-telegram class=\w+ message=\S/));
+    } finally { warn.mockRestore(); }
   });
 
   it('the reviewed entrypoint re-enrolls a new build and the running server uses it without a restart', { timeout: 60_000 }, async () => {

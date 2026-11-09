@@ -117,9 +117,15 @@ export function readIdentityFacts(stateDir: string, readVault: () => string[] | 
 export const UPDATE_PENDING_BRAKE_MAX_MS = 6 * 60 * 60_000;
 
 export function executorUpdatePending(
-  status: { config?: { autoApply?: boolean }; pendingUpdate?: string | null; pendingUpdateDetectedAt?: string | null } | null | undefined,
+  status: {
+    config?: { autoApply?: boolean }; pendingUpdate?: string | null; pendingUpdateDetectedAt?: string | null;
+    restartDeferral?: { active?: boolean } | null; updateActivationPendingSince?: string | null;
+  } | null | undefined,
   now: number = Date.now(),
 ): boolean {
+  // The updater clears pendingUpdate once applied, so a restart that is waiting shows up only here.
+  if (status?.restartDeferral?.active === true) return true;
+  if (status?.updateActivationPendingSince && Number.isFinite(Date.parse(status.updateActivationPendingSince))) return true;
   if (status?.config?.autoApply !== true || status.pendingUpdate == null) return false;
   const detected = status.pendingUpdateDetectedAt ? Date.parse(status.pendingUpdateDetectedAt) : NaN;
   if (!Number.isFinite(detected)) return true;
@@ -164,6 +170,8 @@ export function buildFeedbackExecutor(input: {
   enabled: () => boolean;
   quotaShedding: () => boolean;
   updatePending: () => boolean;
+  /** Local Verify holds queued work for a restart (see FeedbackExecutorServiceOptions.localVerifyNeedsRestart). */
+  localVerifyNeedsRestart?: () => boolean;
   raiseAttention: (item: AttentionInput) => Promise<void>;
   tunnelUrl: () => string | null;
   /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
@@ -260,6 +268,7 @@ export function buildFeedbackExecutor(input: {
     deps,
     sessions,
     admission,
+    ...(input.localVerifyNeedsRestart ? { localVerifyNeedsRestart: input.localVerifyNeedsRestart } : {}),
     identityFacts: input.overrides?.identityFacts ?? (() => readIdentityFacts(config.stateDir)),
     rankedWork: () => input.triage.service.queue().map((item) => ({ initiativeId: String(item.initiativeId), clusterId: String(item.clusterId) })),
     enabled: input.enabled,

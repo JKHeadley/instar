@@ -1,3 +1,4 @@
+import { storageMachineName } from '../core/storageMachineName.js';
 import fs from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import path from 'node:path';
@@ -21,6 +22,16 @@ export class QuietRecordedError extends Error {
 }
 export const notificationContext = new AsyncLocalStorage<OutboundEnvelope>();
 const replyCapabilities = new WeakSet<object>();
+/**
+ * The disk steward's floor notice (spec docs/specs/disk-steward.md §3.5): at the
+ * media disk floor the agent stops working, so it takes the significant path.
+ * Only src/monitoring/DiskStewardPoster.ts may mint it (enforced by the funnel
+ * lint). The source context names machine, episode and repeat stage, so
+ * machines never dedupe each other and each repeat is its own episode.
+ */
+export function diskFloorEnvelope(machineId: string, episodeStart: number, stage: number): OutboundEnvelope {
+  return { origin: 'automated', category: 'attention-item', significantClass: 'agent-cannot-operate', sourceContext: `disk-steward:${machineId}:${episodeStart}:${stage}` };
+}
 /** Only trusted route/wiring modules import this factory (enforced by the funnel lint). */
 export function verifiedReplyEnvelope(sourceContext: string): OutboundEnvelope {
   const envelope: OutboundEnvelope = { origin: 'verified-reply', category: 'command-response', sourceContext };
@@ -316,7 +327,7 @@ export class NotificationSelectivityGate {
           const persistent = this.failureEpisodes.length === 3;
           const failurePermit = `${this.machineId}:failure:${this.now()}:${Math.random()}`;
           this.permits.set(failurePermit, this.now() + 120000);
-          try { await this.onStoreFailure?.(`My notification records cannot be saved. ${this.activeLost} automated notices could not be recorded.${persistent ? ' This is persistent.' : ''} Please check available disk space in the dashboard.`, {
+          try { await this.onStoreFailure?.(`My notification records on ${storageMachineName(this.root)} cannot be saved. ${this.activeLost} automated notices could not be recorded.${persistent ? ' This is persistent.' : ''} Please check available disk space in the dashboard.`, {
             origin: 'automated', category: 'attention-item', sourceContext: 'selectivity-store-failure', significantClass: 'data-loss', localPermit: failurePermit,
           }); } catch (noticeError) { console.error('[selectivity] store-failure escalation unavailable:', noticeError); }
         }

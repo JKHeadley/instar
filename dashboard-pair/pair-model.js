@@ -71,3 +71,14 @@ export function approveHint(fingerprint) {
     ? `Phone key: ${fingerprint}. Approve only if you are pairing this phone right now and the key matches the one the app shows.`
     : 'Approve only if you are pairing this phone right now.';
 }
+
+/**
+ * A browser device's extra words (dashboard-conversations-browser-device.md §4.9): the "Browser" tag,
+ * when it was last used on this machine, or that browsers are switched off on this agent. Null for a phone.
+ */
+export function browserWords(d, { browserOff = false } = {}) {
+  if (!d || d.client !== 'browser') return null;
+  if (browserOff) return 'Browser · Switched off on this agent';
+  const t = Date.parse(d.lastSeenAt || '');
+  return Number.isFinite(t) ? `Browser · last used on this machine ${new Date(t).toLocaleString()}` : 'Browser · not used yet';
+}
