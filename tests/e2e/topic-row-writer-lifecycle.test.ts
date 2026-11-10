@@ -44,7 +44,7 @@ const slack = (ts, text) => writeSlackLogRow(writer,
   { messageId: ts, channelId: 'D0OPS', text, fromUser: true, timestamp: new Date(Number(ts.split('.')[0]) * 1000).toISOString(), sessionName: null, platformUserId: 'U0OP' },
   { topicIdFor: () => ${SLACK_TOPIC}, resolveUserId: (id) => id === 'U0OP' ? 'u-operator' : null });
 const app = (eventId, at, role, text) => writeAppConversationRow(writer,
-  { eventId, kind: 'message', conversationKey: 'c-1', at, role, text },
+  { eventId, kind: 'message', conversationKey: '0a1b2c3d-4e5f-4061-8273-94a5b6c7d8e9', at, role, text },
   { aliasFor: () => ${APP_TOPIC}, ownerUserId: () => 'u-operator' });
 const results = [
   slack('1762800000.000100', 'slack one'),
@@ -124,7 +124,28 @@ describe('TopicRowWriter across real processes and a restart', () => {
     // App conversations: an append observer on the real store.
     const app = src.indexOf('appSvc.store.addAppendListener((ev) => {');
     expect(app).toBeGreaterThan(built);
-    expect(src.slice(app, app + 600)).toContain('writeAppConversationRow(topicRowWriter, ev, {');
+    expect(src.slice(app, app + 600)).toContain('writeAppConversationRow(topicRowWriter, ev, appRowDeps);');
+
+    // A bounded reconcile from the store runs at boot and when the switch turns on.
+    const appBlock = src.slice(app - 2500, app + 1500);
+    expect(appBlock).toContain("reconcileAppRows('boot')");
+    expect(appBlock).toContain("if (c?.path !== 'contextBudget.enabled') return;");
+    expect(appBlock).toContain('reconcileAppConversationRows(topicRowWriter, appSvc.store, appRowDeps)');
+
+    // TopicMemory opens without Telegram when the context-budget switch is on at boot.
+    expect(src).toContain("if (telegram || liveConfig.get<boolean>('contextBudget.enabled', false) === true) {\n      topicMemory = new TopicMemory(config.stateDir);");
+    expect(src).toContain('if (telegram) telegram.onMessageLogged = (entry) => {\n          if (entry.topicId != null && tm) {');
+
+    // The agent-reply route logs its row with notify:false and notifies once itself (no double-handling).
+    const routes = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf-8');
+    const reply = routes.indexOf('ctx.slack.logMessage?.({ messageId: String(ts), channelId');
+    expect(reply).toBeGreaterThan(0);
+    expect(routes.slice(reply, reply + 300)).toContain('{ notify: false }');
+    expect(routes.slice(reply, reply + 900)).toContain('ctx.slack.onMessageLogged({');
+
+    // A standalone Slack file share logs a deterministic id (never Date.now()).
+    const slack = fs.readFileSync(path.join(ROOT, 'src/messaging/slack/SlackAdapter.ts'), 'utf-8');
+    expect(slack).toContain('messageId: fileShareLogId(fileInfo, channelId, event, fileId),');
 
     // The fold precondition reads the writer (§14: fold-skipped no-row-source).
     const fold = src.indexOf("await import('../monitoring/foldCoordinatorBoot.js')");

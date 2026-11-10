@@ -20,7 +20,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
-import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow } from '../../src/memory/topicRowWriter.js';
+import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows } from '../../src/memory/topicRowWriter.js';
 import { SlackAdapter } from '../../src/messaging/slack/SlackAdapter.js';
 import { UserManager } from '../../src/users/UserManager.js';
 import { SlackPrincipalResolver } from '../../src/permissions/SlackPrincipalResolver.js';
@@ -92,6 +92,42 @@ describe('row writer × real channels × real TopicMemory', () => {
     expect(writer.hasRowSource(topicId)).toBe(true);
   });
 
+  it('Slack: a standalone file share and an operator message sent from the Instar app each land as a row', async () => {
+    const resolver = new SlackPrincipalResolver(new UserManager(dir, [{
+      id: 'u-justin', name: 'Justin', channels: [{ type: 'slack', identifier: OPERATOR_SLACK }],
+      permissions: ['admin'], preferences: {}, slackUserId: OPERATOR_SLACK,
+    } as never]));
+    const adapter = new SlackAdapter({
+      botToken: 'xoxb-test', appToken: 'xapp-test', authorizedUserIds: [OPERATOR_SLACK], workspaceMode: 'dedicated',
+    } as never, dir);
+    adapter.onMessage(async () => {});
+    adapter.onMessageLogged = (entry) => {
+      writeSlackLogRow(writer, entry, { topicIdFor: (ch) => candidateIdForRoutingKey(ch), resolveUserId: (id) => resolver.resolve(id).userId });
+    };
+    // Slack's API is stubbed at the client: files.info names the share's real message ts.
+    const internals = adapter as never as {
+      apiClient: { call: (method: string, args: Record<string, unknown>) => Promise<Record<string, unknown>> };
+      fileHandler: { downloadDir: string; downloadFile: (url: string, dest: string) => Promise<string> };
+      _handleFileShared: (e: Record<string, unknown>) => Promise<void>;
+    };
+    internals.apiClient = { call: async (method) => method === 'files.info'
+      ? { file: { url_private: 'https://files.example/F1', mimetype: 'text/plain', name: 'notes.txt', shares: { private: { [CHANNEL]: [{ ts: '1762800020.000500' }] } } } }
+      : {} };
+    internals.fileHandler.downloadFile = async (_url, dest) => { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.writeFileSync(dest, 'notes'); return dest; };
+    await internals._handleFileShared.call(adapter, { user_id: OPERATOR_SLACK, channel_id: CHANNEL, file_id: 'F1', event_ts: '1762800020.000600' });
+    // The app path (mobileSlackRoutes.logAppMessage) logs `app-<messageId>`: a deterministic fallback key.
+    adapter.logMessage({ messageId: 'app-m-77', channelId: CHANNEL, text: 'typed in the app', fromUser: true, senderName: 'Justin', platformUserId: OPERATOR_SLACK, eventId: 'ev-77', deviceId: 'd-1' });
+
+    const rows = tm.getRecentMessages(candidateIdForRoutingKey(CHANNEL), 10);
+    expect(rows.map((r) => [r.channelMessageId, r.userId ?? null])).toEqual([
+      ['1762800020.000500', 'u-justin'],
+      ['app-m-77', 'u-justin'],
+    ]);
+    expect(rows[0].messageId).toBe(1_762_800_020_000_500);
+    expect(rows[1].messageId).toBeGreaterThanOrEqual(2 ** 52);
+    expect(refusals).toEqual([]);
+  });
+
   it('app conversations: local and replicated messages land as rows under the alias, gated by the switch', () => {
     const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm1', isRecordingEnabled: () => true } as never);
     registry.load();
@@ -123,6 +159,16 @@ describe('row writer × real channels × real TopicMemory', () => {
     expect(writer.hasRowSource(alias)).toBe(false);
     appOn = true;
     expect(writer.hasRowSource(alias)).toBe(true);
+    // The message stored while the switch was off is replayed by the reconcile from the store.
+    const r = reconcileAppConversationRows(writer, store, { aliasFor: (k) => registry.appAliasFor(k), ownerUserId: () => 'u-owner' });
+    expect(r).toMatchObject({ inserted: 1, duplicate: 3, refused: 0 });
+    expect(tm.getRecentMessages(alias, 10).map((x) => x.text)).toContain('switch is off');
+  });
+
+  it('hasRowSource is false while TopicMemory is closed (no TopicMemory, no row source)', () => {
+    expect(writer.hasRowSource(141133)).toBe(true);
+    tm.close();
+    expect(writer.hasRowSource(141133)).toBe(false);
   });
 
   it('the fold refuses no-row-source for a channel without a writer on, and passes that check otherwise', () => {

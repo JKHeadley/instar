@@ -169,6 +169,8 @@ export class TopicMemory {
   private _needsRebuild = false;
   /** Stats from the most recent importFromJsonl() / rebuild() call */
   private _lastImportStats: { imported: number; malformed: number; missingFields: number } | null = null;
+  /** insertKeyedMessage's statements, prepared once per open handle. */
+  private keyedStmts: { db: Database; byKey: import('better-sqlite3').Statement; byChannel: import('better-sqlite3').Statement; adopt: import('better-sqlite3').Statement } | null = null;
 
   constructor(stateDir: string) {
     this.stateDir = stateDir;
@@ -508,17 +510,24 @@ export class TopicMemory {
     if (!Number.isSafeInteger(msg.messageId)) {
       throw new Error(`insertKeyedMessage requires a safe-integer messageId (got ${String(msg.messageId)})`);
     }
+    // Prepared once per open database (a corruption rebuild opens a new handle).
+    if (!this.keyedStmts || this.keyedStmts.db !== db) {
+      this.keyedStmts = {
+        db,
+        byKey: db.prepare('SELECT id, channel_message_id AS cmid FROM messages WHERE topic_id = ? AND message_id = ?'),
+        byChannel: db.prepare('SELECT id, message_id AS mid FROM messages WHERE topic_id = ? AND channel_message_id = ?'),
+        adopt: db.prepare('UPDATE messages SET channel_message_id = ?, origin = COALESCE(origin, ?) WHERE id = ?'),
+      };
+    }
+    const st = this.keyedStmts;
     return db.transaction((): KeyedInsertResult => {
-      const byKey = db.prepare('SELECT id, channel_message_id AS cmid FROM messages WHERE topic_id = ? AND message_id = ?')
-        .get(msg.topicId, msg.messageId) as { id: number; cmid: string | null } | undefined;
-      const byChannel = db.prepare('SELECT id, message_id AS mid FROM messages WHERE topic_id = ? AND channel_message_id = ?')
-        .get(msg.topicId, msg.channelMessageId) as { id: number; mid: number } | undefined;
+      const byKey = st.byKey.get(msg.topicId, msg.messageId) as { id: number; cmid: string | null } | undefined;
+      const byChannel = st.byChannel.get(msg.topicId, msg.channelMessageId) as { id: number; mid: number } | undefined;
       if (byKey) {
         if (byKey.cmid === msg.channelMessageId) return { outcome: 'duplicate' };
         if (byKey.cmid !== null) return { outcome: 'collision', existingChannelMessageId: byKey.cmid };
         if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };
-        db.prepare('UPDATE messages SET channel_message_id = ?, origin = COALESCE(origin, ?) WHERE id = ?')
-          .run(msg.channelMessageId, msg.origin ?? null, byKey.id);
+        st.adopt.run(msg.channelMessageId, msg.origin ?? null, byKey.id);
         return { outcome: 'adopted' };
       }
       if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };

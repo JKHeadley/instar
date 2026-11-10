@@ -18,7 +18,10 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { TopicMemory } from '../../src/memory/TopicMemory.js';
 import {
   TopicRowWriter, deriveRowKey, appEventHlc, rowChannelForTopicId, writeAppConversationRow,
+  reconcileAppConversationRows, SLACK_FALLBACK_BASE, type AppConversationSource,
 } from '../../src/memory/topicRowWriter.js';
+import { REVIEW_CANARY_FIXTURES } from '../../src/monitoring/ReviewCanaryBattery.js';
+import { SlackAdapter, fileShareLogId } from '../../src/messaging/slack/SlackAdapter.js';
 import { LiveConfig } from '../../src/config/LiveConfig.js';
 import { TelegramBridgeConfig } from '../../src/threadline/TelegramBridgeConfig.js';
 import { TelegramBridge, type TelegramSink } from '../../src/threadline/TelegramBridge.js';
@@ -27,6 +30,8 @@ import { AppConversationStore } from '../../src/core/AppConversationStore.js';
 const OP = 'tests/unit/topic-row-writer.test.ts';
 const SLACK_TOPIC = -12345;
 const APP_TOPIC = -(2 ** 33) - 77;
+const APP_KEY = '0a1b2c3d-4e5f-4061-8273-94a5b6c7d8e9';
+const APP_KEY_2 = '1b2c3d4e-5f60-4172-8384-a5b6c7d8e9f0';
 
 describe('deriveRowKey (the §14 key rule)', () => {
   it('Telegram: the native id, kept verbatim as the channel id', () => {
@@ -40,9 +45,32 @@ describe('deriveRowKey (the §14 key rule)', () => {
     // A float parse of this ts drifts by one microsecond; the rule must not.
     expect(deriveRowKey({ channel: 'slack', ts: '1762800000.000003' })).toEqual({ messageId: 1_762_800_000_000_003, channelMessageId: '1762800000.000003' });
     expect(deriveRowKey({ channel: 'slack', ts: '1700000000.5' })).toEqual({ messageId: 1_700_000_000_500_000, channelMessageId: '1700000000.5' });
-    for (const bad of ['', '1700000000', 'abc.def', '1700000000.1234567', '999999999999.999999']) {
+    for (const bad of ['', '999999999999.999999']) {
       expect(deriveRowKey({ channel: 'slack', ts: bad }), bad).toHaveProperty('error');
     }
+  });
+
+  it('Slack ids that are not a ts get a deterministic fallback key above every ts key, the raw id kept', () => {
+    for (const id of ['file-F0123ABC', 'app-7f3e9a', '1700000000', '1700000000.1234567']) {
+      const a = deriveRowKey({ channel: 'slack', ts: id }) as { messageId: number; channelMessageId: string };
+      expect(a).toEqual(deriveRowKey({ channel: 'slack', ts: id }));
+      expect(a.channelMessageId).toBe(id);
+      expect(a.messageId).toBeGreaterThanOrEqual(SLACK_FALLBACK_BASE);
+      expect(Number.isSafeInteger(a.messageId)).toBe(true);
+    }
+    const realTsKey = (deriveRowKey({ channel: 'slack', ts: '4102444800.999999' }) as { messageId: number }).messageId; // 2100-01-01
+    expect(realTsKey).toBeLessThan(SLACK_FALLBACK_BASE);
+    expect((deriveRowKey({ channel: 'slack', ts: 'app-a' }) as { messageId: number }).messageId)
+      .not.toBe((deriveRowKey({ channel: 'slack', ts: 'app-b' }) as { messageId: number }).messageId);
+  });
+
+  it('a standalone file share logs under the real share ts, then event_ts, then the file id (never the clock)', () => {
+    const shares = { shares: { private: { D0OPS: [{ ts: '1762800000.000777' }] } } };
+    expect(fileShareLogId(shares, 'D0OPS', { event_ts: '1762800001.000001' }, 'F01')).toBe('1762800000.000777');
+    expect(fileShareLogId({ shares: { public: { C0PUB: [{ ts: '1762800000.000888' }] } } }, 'C0PUB', {}, 'F01')).toBe('1762800000.000888');
+    expect(fileShareLogId({}, 'D0OPS', { event_ts: '1762800001.000001' }, 'F01')).toBe('1762800001.000001');
+    expect(fileShareLogId(shares, 'D0OTHER', {}, 'F01')).toBe('file-F01');
+    expect(fileShareLogId(undefined, 'D0OPS', { event_ts: 'garbage' }, 'F01')).toBe('file-F01');
   });
 
   it('app: physicalMs × 1000 + (logical mod 1000), under 2^53, event id kept', () => {
@@ -72,6 +100,8 @@ describe('deriveRowKey (the §14 key rule)', () => {
     expect(rowChannelForTopicId(APP_TOPIC)).toBe('app');
     expect(rowChannelForTopicId(-(2 ** 32))).toBeNull();
     expect(rowChannelForTopicId(0)).toBeNull();
+    // The review-canary battery's fixture conversations are never a Slack row source.
+    for (const f of REVIEW_CANARY_FIXTURES) expect(rowChannelForTopicId(f.topicId), String(f.topicId)).toBeNull();
   });
 });
 
@@ -169,8 +199,17 @@ describe('TopicRowWriter × a real TopicMemory', () => {
     expect(w.hasRowSource(141133)).toBe(true);
   });
 
+  it('hasRowSource is false while TopicMemory is not open', () => {
+    expect(writer.hasRowSource(141133)).toBe(true);
+    tm.close();
+    expect(writer.hasRowSource(141133)).toBe(false);
+    expect(writer.hasRowSource(SLACK_TOPIC)).toBe(false);
+    const none = new TopicRowWriter({ topicMemory: () => undefined, reportRefusal: () => {} });
+    expect(none.hasRowSource(141133)).toBe(false);
+  });
+
   it('a malformed key is a counted refusal, never a guessed row', () => {
-    const r = writer.writeRow({ channel: 'slack', ts: 'not-a-ts' }, body());
+    const r = writer.writeRow({ channel: 'slack', ts: '' }, body());
     expect(r).toMatchObject({ written: false, refused: 'bad-key' });
     expect(writer.stats().slack.refused['bad-key']).toBe(1);
     expect(tm.getMessageCount(SLACK_TOPIC)).toBe(0);
@@ -187,7 +226,7 @@ describe('TopicRowWriter × a real TopicMemory', () => {
   });
 
   it('app conversation rows bind the operator (§6.1): owner phone → owner id, team phone → its person, agent → none', () => {
-    const base = { kind: 'message', conversationKey: 'c-1', at: '2026-11-10T00:00:01.000Z' };
+    const base = { kind: 'message', conversationKey: APP_KEY, at: '2026-11-10T00:00:01.000Z' };
     const d = { aliasFor: () => APP_TOPIC, ownerUserId: () => 'u-owner' };
     writeAppConversationRow(writer, { ...base, eventId: 'e1', role: 'operator', text: 'from owner' }, d);
     writeAppConversationRow(writer, { ...base, eventId: 'e2', role: 'operator', text: 'from team', senderRole: 'team', senderPerson: { machineId: 'm1', userId: 'u-team' } }, d);
@@ -201,9 +240,64 @@ describe('TopicRowWriter × a real TopicMemory', () => {
   });
 
   it('an app event whose conversation has no alias here is a counted refusal', () => {
-    const r = writeAppConversationRow(writer, { eventId: 'e1', kind: 'message', conversationKey: 'c-x', at: '2026-11-10T00:00:01.000Z', role: 'operator', text: 'x' }, { aliasFor: () => null, ownerUserId: () => null });
+    const r = writeAppConversationRow(writer, { eventId: 'e1', kind: 'message', conversationKey: APP_KEY, at: '2026-11-10T00:00:01.000Z', role: 'operator', text: 'x' }, { aliasFor: () => null, ownerUserId: () => null });
     expect(r).toMatchObject({ written: false, refused: 'bad-key' });
     expect(writer.stats().app.refused['bad-key']).toBe(1);
+  });
+
+  it('a platform conversation in the app store (a Slack key) is not this writer\'s: skipped, not refused', () => {
+    const r = writeAppConversationRow(writer, { eventId: 'e1', kind: 'message', conversationKey: 'slack:T1:C1', at: '2026-11-10T00:00:01.000Z', role: 'operator', text: 'x' }, { aliasFor: () => APP_TOPIC, ownerUserId: () => null });
+    expect(r).toEqual({ written: false, skipped: 'not-this-channel' });
+    expect(refusals).toHaveLength(0);
+  });
+
+  describe('reconcile from the app store', () => {
+    const msgs = (n: number, start = 0) => Array.from({ length: n }, (_, i) => ({
+      eventId: `ev-${String(start + i).padStart(4, '0')}`, role: (i % 2 ? 'agent' : 'operator') as 'operator' | 'agent',
+      text: `m${start + i}`, at: new Date(Date.UTC(2026, 10, 10, 0, 0, 0, 0) + (start + i) * 1000).toISOString(),
+    }));
+    /** A source that pages backwards like AppConversationStore.browseMessages. */
+    const source = (byKey: Record<string, ReturnType<typeof msgs>>): AppConversationSource & { pages: number } => {
+      const src = {
+        pages: 0,
+        liveConversationKeys: () => Object.keys(byKey),
+        browseMessages(key: string, before: string | null | undefined, limit = 100) {
+          src.pages++;
+          const all = byKey[key] ?? [];
+          const end = before ? all.findIndex((m) => `${m.at},${m.eventId}` === before) : all.length;
+          const startAt = Math.max(0, end - limit);
+          const page = all.slice(startAt, end);
+          return { messages: page, nextBefore: startAt > 0 && page[0] ? `${page[0].at},${page[0].eventId}` : null };
+        },
+      };
+      return src;
+    };
+    const d = { aliasFor: (k: string) => (k === APP_KEY ? APP_TOPIC : k === APP_KEY_2 ? APP_TOPIC - 1 : null), ownerUserId: () => 'u-owner' };
+
+    it('replays missed rows, is idempotent, and is bounded to the most recent N per conversation', () => {
+      const src = source({ [APP_KEY]: msgs(30), 'slack:T1:C1': msgs(3) });
+      // Ten rows written live; twenty missed while the switch was off.
+      for (const m of msgs(10)) writeAppConversationRow(writer, { ...m, kind: 'message', conversationKey: APP_KEY }, d);
+      const first = reconcileAppConversationRows(writer, src, d, { maxPerConversation: 25 });
+      // The bound reaches m5..m29: m5..m9 were written live, m10..m29 were missed.
+      expect(first).toMatchObject({ conversations: 1, scanned: 25, inserted: 20, duplicate: 5, refused: 0, skipped: null });
+      expect(tm.getMessageCount(APP_TOPIC)).toBe(30);
+      const again = reconcileAppConversationRows(writer, src, d, { maxPerConversation: 25 });
+      expect(again).toMatchObject({ inserted: 0, duplicate: 25 });
+      // The default bound is 500.
+      const big = source({ [APP_KEY_2]: msgs(620) });
+      expect(reconcileAppConversationRows(writer, big, d)).toMatchObject({ scanned: 500, inserted: 500 });
+      expect(tm.getRecentMessages(APP_TOPIC - 1, 1)[0].text).toBe('m619');
+    });
+
+    it('counts a conversation with no alias once, and does nothing while the switch is off', () => {
+      const src = source({ [APP_KEY]: msgs(5), '2c3d4e5f-6071-4283-9495-b6c7d8e9f0a1': msgs(40) });
+      const r = reconcileAppConversationRows(writer, src, d);
+      expect(r).toMatchObject({ conversations: 2, inserted: 5, refused: 1 });
+      expect(refusals.filter((x) => x.refused === 'bad-key')).toHaveLength(1);
+      appOn = false;
+      expect(reconcileAppConversationRows(writer, src, d)).toMatchObject({ skipped: 'channel-off', scanned: 0 });
+    });
   });
 });
 
@@ -323,6 +417,25 @@ describe('AppConversationStore append observers', () => {
       off();
       store.append({ ...ev, eventId: 'op-4', messageId: 'msg-4' });
       expect(seen).toEqual([['op-1', false], ['op-2', true], ['op-3', false]]);
+    } finally {
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: OP });
+    }
+  });
+});
+
+describe('SlackAdapter.logMessage notifies the row seam', () => {
+  it('fires onMessageLogged once for a logged row (the app operator path), and not with notify:false (the reply route)', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-logmessage-'));
+    try {
+      const adapter = new SlackAdapter({ botToken: 'xoxb-test', appToken: 'xapp-test', authorizedUserIds: ['U0OP'], workspaceMode: 'dedicated' } as never, dir);
+      const seen: Array<{ messageId: unknown; fromUser: boolean; eventId?: string }> = [];
+      adapter.onMessageLogged = (e) => { seen.push({ messageId: e.messageId, fromUser: e.fromUser, ...(e.eventId ? { eventId: e.eventId } : {}) }); };
+      adapter.logMessage({ messageId: 'app-m1', channelId: 'D0OPS', text: 'from the app', fromUser: true, platformUserId: 'U0OP', eventId: 'ev-1', deviceId: 'd1' });
+      adapter.logMessage({ messageId: '1762800000.000100', channelId: 'D0OPS', text: 'agent reply', fromUser: false }, { notify: false });
+      expect(seen).toEqual([{ messageId: 'app-m1', fromUser: true, eventId: 'ev-1' }]);
+      // A throwing subscriber never fails the log write.
+      adapter.onMessageLogged = () => { throw new Error('subscriber broke'); };
+      expect(() => adapter.logMessage({ messageId: 'app-m2', channelId: 'D0OPS', text: 'x', fromUser: true })).not.toThrow();
     } finally {
       SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: OP });
     }

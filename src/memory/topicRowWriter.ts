@@ -36,6 +36,7 @@
 import crypto from 'node:crypto';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import type { TopicMemory, TopicMessage, TopicRowOrigin, KeyedInsertResult } from './TopicMemory.js';
+import { isAppConversationKey } from '../core/appConversationText.js';
 
 export type RowChannel = 'telegram' | 'slack' | 'app';
 
@@ -71,6 +72,15 @@ export type RowKey = { messageId: number; channelMessageId: string };
 const SLACK_TS_RE = /^(\d{1,12})\.(\d{1,6})$/;
 
 /**
+ * Base of the fallback key range for a Slack id that is not a `ts` (2^52): above every
+ * `ts × 1e6` key until 2112-09-08, below 2^53 by a 48-bit slot.
+ */
+export const SLACK_FALLBACK_BASE = 2 ** 52;
+function fallbackSlot(id: string): number {
+  return crypto.createHash('sha256').update(`slack-id\u0000${id}`).digest().readUIntBE(0, 6);
+}
+
+/**
  * The key rule (§14). Pure and deterministic: the same identity yields the
  * same key on every machine. Returns an error string for an identity that
  * cannot be keyed (never a guessed key).
@@ -82,8 +92,13 @@ export function deriveRowKey(id: RowIdentity): RowKey | { error: string } {
       return { messageId: id.nativeId, channelMessageId: String(id.nativeId) };
     }
     case 'slack': {
-      const m = typeof id.ts === 'string' ? SLACK_TS_RE.exec(id.ts) : null;
-      if (!m) return { error: `slack ts is not "<seconds>.<micros>": ${String(id.ts)}` };
+      if (typeof id.ts !== 'string' || id.ts.length === 0 || id.ts.length > 256) return { error: `slack message id is empty or oversized: ${String(id.ts).slice(0, 64)}` };
+      const m = SLACK_TS_RE.exec(id.ts);
+      // A Slack row whose id is not a `ts` (a standalone file share Slack gave no message ts
+      // for) gets a deterministic fallback key derived ONLY from that id, so every machine that
+      // sees the same logged id derives the same key. The range sits above every `ts × 1e6`
+      // key until the year 2112, so the two never meet; a clash inside it is a counted refusal.
+      if (!m) return { messageId: SLACK_FALLBACK_BASE + fallbackSlot(id.ts), channelMessageId: id.ts };
       const messageId = Number(m[1]) * 1_000_000 + Number(m[2].padEnd(6, '0'));
       if (!Number.isSafeInteger(messageId)) return { error: `slack ts is out of range: ${id.ts}` };
       return { messageId, channelMessageId: id.ts };
@@ -121,9 +136,16 @@ export function appEventHlc(ev: { eventId: string; at: string }): RowHlc | null 
  * `-(2^33 + h)` walked down (`ConversationRegistry.mintAppAlias`), so they sit
  * at or below -2^33. Anything else has no known channel.
  */
+/** The topic ids reserved for the review-canary battery's fixture conversations. */
+export const REVIEW_CANARY_TOPIC_MAX = -910_000;
+export const REVIEW_CANARY_TOPIC_MIN = -910_999;
+
 export function rowChannelForTopicId(topicId: number): RowChannel | null {
   if (!Number.isSafeInteger(topicId) || topicId === 0) return null;
   if (topicId > 0) return 'telegram';
+  // The review-canary battery's fixture conversations (ReviewCanaryBattery, -910_001…) are
+  // synthetic rows no channel ever writes: never a Slack row source.
+  if (topicId <= REVIEW_CANARY_TOPIC_MAX && topicId >= REVIEW_CANARY_TOPIC_MIN) return null;
   if (topicId >= -(2 ** 31 + 65)) return 'slack';
   if (topicId <= -(2 ** 33)) return 'app';
   return null;
@@ -134,7 +156,7 @@ export type RowRefusal = 'collision' | 'key-mismatch' | 'bad-key' | 'not-ready';
 export type WriteRowResult =
   | { written: true; outcome: 'inserted' | 'adopted' | 'duplicate'; key: RowKey }
   | { written: false; refused: RowRefusal; detail: string; key?: RowKey }
-  | { written: false; skipped: 'channel-off' };
+  | { written: false; skipped: 'channel-off' | 'not-this-channel' };
 
 export interface RowWriterCounts {
   inserted: number;
@@ -181,7 +203,14 @@ export class TopicRowWriter {
    */
   hasRowSource(topicId: number): boolean {
     const channel = rowChannelForTopicId(topicId);
-    return channel !== null && this.channelOn(channel);
+    if (channel === null || !this.channelOn(channel)) return false;
+    // A writer with nowhere to write is no row source: TopicMemory must be open.
+    try {
+      return this.deps.topicMemory()?.isReady() === true;
+    } catch {
+      // @silent-fallback-ok — an unreadable TopicMemory handle reads as no row source (fail closed: the fold refuses no-row-source)
+      return false;
+    }
   }
 
   /** Write one message row under the key rule. */
@@ -285,6 +314,9 @@ export function writeAppConversationRow(
   ev: AppMessageEventLike,
   d: { aliasFor: (conversationKey: string) => number | null; ownerUserId: () => string | null },
 ): WriteRowResult {
+  // A Slack or Telegram conversation opened from the app is stored in the same store under its
+  // platform key; its rows come from that platform's writer, never this one.
+  if (!isAppConversationKey(ev.conversationKey)) return { written: false, skipped: 'not-this-channel' };
   const alias = d.aliasFor(ev.conversationKey);
   const hlc = appEventHlc(ev);
   const fromUser = ev.role === 'operator';
@@ -347,4 +379,81 @@ export function writeSlackLogRow(
     ...(userId ? { userId } : {}),
     ...(entry.forwarded !== undefined ? { forwarded: entry.forwarded } : {}),
   });
+}
+
+/** The part of AppConversationStore the reconcile reads (the source of truth). */
+export interface AppConversationSource {
+  liveConversationKeys(): string[];
+  browseMessages(conversationKey: string, before: string | null | undefined, limit?: number): {
+    messages: Array<{ eventId: string; role: 'operator' | 'agent'; text: string; at: string; senderName?: string; senderRole?: 'owner' | 'msp' | 'team'; senderPerson?: { machineId: string; userId: string } }>;
+    nextBefore: string | null;
+  };
+}
+
+/** How many of a conversation's most recent messages one reconcile pass replays. */
+export const APP_RECONCILE_MAX_PER_CONVERSATION = 500;
+
+export interface AppReconcileResult {
+  conversations: number;
+  scanned: number;
+  inserted: number;
+  adopted: number;
+  duplicate: number;
+  refused: number;
+  skipped: 'channel-off' | null;
+}
+
+/**
+ * Replay app-conversation messages from the store into TopicMemory (§14), so a
+ * row that was refused, missed while the switch was off, or lost to a crash is
+ * not permanent. The keyed insert is idempotent (a row already there is a
+ * `duplicate`), so replaying is safe; it is bounded to the most recent
+ * `maxPerConversation` messages of each live conversation. Never throws: a
+ * conversation that cannot be read is counted as refused and the pass moves on.
+ */
+export function reconcileAppConversationRows(
+  writer: TopicRowWriter,
+  source: AppConversationSource,
+  d: { aliasFor: (conversationKey: string) => number | null; ownerUserId: () => string | null },
+  opts: { maxPerConversation?: number } = {},
+): AppReconcileResult {
+  const out: AppReconcileResult = { conversations: 0, scanned: 0, inserted: 0, adopted: 0, duplicate: 0, refused: 0, skipped: null };
+  if (!writer.channelOn('app')) return { ...out, skipped: 'channel-off' };
+  const max = Math.max(1, Math.floor(opts.maxPerConversation ?? APP_RECONCILE_MAX_PER_CONVERSATION));
+  let keys: string[];
+  try { keys = source.liveConversationKeys(); } catch {
+    // @silent-fallback-ok — an unreadable conversation index ends this pass with nothing replayed; the next pass retries
+    return out;
+  }
+  for (const conversationKey of keys) {
+    if (!isAppConversationKey(conversationKey)) continue; // a platform conversation: its own writer's rows
+    out.conversations++;
+    // No alias here: one counted refusal for the conversation, not one per replayed message.
+    if (d.aliasFor(conversationKey) === null) {
+      writer.refuseUnkeyed('app', `conversation ${conversationKey} has no alias on this machine; its messages were not replayed`);
+      out.refused++;
+      continue;
+    }
+    const collected: ReturnType<AppConversationSource['browseMessages']>['messages'] = [];
+    try {
+      let before: string | null = null;
+      while (collected.length < max) {
+        const page = source.browseMessages(conversationKey, before, Math.min(100, max - collected.length));
+        collected.unshift(...page.messages);
+        if (!page.nextBefore || page.messages.length === 0) break;
+        before = page.nextBefore;
+      }
+    } catch {
+      // @silent-fallback-ok — counted as a refusal below; the rest of the conversations still reconcile
+      out.refused++;
+      continue;
+    }
+    for (const m of collected.slice(-max)) {
+      out.scanned++;
+      const r = writeAppConversationRow(writer, { ...m, kind: 'message', conversationKey }, d);
+      if (r.written) out[r.outcome]++;
+      else if ('refused' in r) out.refused++;
+    }
+  }
+  return out;
 }

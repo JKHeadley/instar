@@ -211,7 +211,7 @@ import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
 import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
 import { TopicMemory } from '../memory/TopicMemory.js';
-import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow } from '../memory/topicRowWriter.js';
+import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows } from '../memory/topicRowWriter.js';
 import { SemanticMemory } from '../memory/SemanticMemory.js';
 import { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js';
 import { QuotaTracker } from '../monitoring/QuotaTracker.js';
@@ -9950,7 +9950,9 @@ export async function startServer(options: StartOptions): Promise<void> {
 
     // Initialize TopicMemory whenever Telegram is configured (any mode).
     // TopicMemory provides session context — needed even when lifeline owns polling.
-    if (telegram) {
+    // Context budget (§14): with contextBudget.enabled on at boot it opens without Telegram
+    // too, so a Slack-only or app-only agent has the rows its folds are built from.
+    if (telegram || liveConfig.get<boolean>('contextBudget.enabled', false) === true) {
       topicMemory = new TopicMemory(config.stateDir);
       try {
         try {
@@ -9997,7 +9999,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Wire dual-write: every message logged to JSONL also goes to SQLite.
         // Includes sender identity for multi-user topic context (Phase 1D — User-Agent Topology Spec).
         const tm = topicMemory;
-        telegram.onMessageLogged = (entry) => {
+        if (telegram) telegram.onMessageLogged = (entry) => {
           if (entry.topicId != null && tm) {
             const body = {
               topicId: entry.topicId,
@@ -10331,14 +10333,39 @@ export async function startServer(options: StartOptions): Promise<void> {
         // Context-budget §14: app conversations get TopicMemory rows through the shared
         // key rule, local and replicated events alike (the key is derived from the
         // event itself, so every machine writes the same row). Behind contextBudget.enabled.
+        // A refused or never-written row is not permanent: a bounded reconcile from the store
+        // (the source of truth) replays at boot and whenever the switch turns on.
+        const appRowDeps = {
+          aliasFor: (key: string) => conversationRegistry.appAliasFor(key),
+          ownerUserId: () => _memoryPrivacyWired.ownerUserId() ?? null,
+        };
+        let appRowsOn = false;
+        const reconcileAppRows = (why: string) => {
+          try {
+            const r = reconcileAppConversationRows(topicRowWriter, appSvc.store, appRowDeps);
+            if (r.skipped === null && (r.inserted > 0 || r.adopted > 0 || r.refused > 0)) {
+              console.log(`  [context-budget] app conversation rows reconciled (${why}): ${r.inserted} added, ${r.adopted} adopted, ${r.refused} refused, ${r.scanned} checked`);
+            }
+          } catch (err) {
+            console.warn(`  [context-budget] app conversation row reconcile failed (${why}): ${err instanceof Error ? err.message : String(err)}`);
+          }
+        };
         appSvc.store.addAppendListener((ev) => {
           if (ev.kind !== 'message' && ev.kind !== 'media-message') return;
-          if (!topicRowWriter.channelOn('app')) return;
-          writeAppConversationRow(topicRowWriter, ev, {
-            aliasFor: (key) => conversationRegistry.appAliasFor(key),
-            ownerUserId: () => _memoryPrivacyWired.ownerUserId() ?? null,
-          });
+          const on = topicRowWriter.channelOn('app');
+          if (on && !appRowsOn) reconcileAppRows('switch on');
+          appRowsOn = on;
+          if (!on) return;
+          writeAppConversationRow(topicRowWriter, ev, appRowDeps);
         });
+        liveConfig.on('change', (c: { path?: string; newValue?: unknown }) => {
+          if (c?.path !== 'contextBudget.enabled') return;
+          const on = topicRowWriter.channelOn('app');
+          if (on && !appRowsOn) reconcileAppRows('switch on');
+          appRowsOn = on;
+        });
+        appRowsOn = topicRowWriter.channelOn('app');
+        if (appRowsOn) reconcileAppRows('boot');
         // Replication (§4.8): emit every local event; land peers' events already on disk.
         if (replicatedRecordEmitter) {
           const emitter = replicatedRecordEmitter;
