@@ -1,19 +1,40 @@
 <!-- bump: patch -->
 
+# Conversations: organize chats into projects and efforts (off by default)
+
 ## What Changed
 
-Adds the Conversations hierarchy implementation: typed references and owner-filtered projection; immutable control capsules with separately erasable encrypted application custody; durable Pending and all-member terminal certificates; priority local privacy restrictions; bounded recovery and authenticated delegation capture. Custody uses the agent's own enrolled machines by default; no outside account or purchase is required. An unavailable custody host can leave an authenticated edit recorded only on this machine, which is not a separately recoverable Saved promise. The dashboard uses the existing console components for navigation and provisional owner actions. Read/change route composition and live feature activation remain gated on the reviewed increment-A proofs. Unknown backup coverage never certifies fleet erasure.
+Conversations lets the owner group their chats (app, Telegram and Slack) into projects and efforts, name them, move them and undo a move. The arrangement is a signed history that the agent's member machines share, so every member shows the same arrangement and a change made on one shows up on the others.
 
-Also: large history transfers between machines finish much faster, the coverage worker runs without a paired phone and stops writing unchanged checkpoints, and three privacy gaps in held recovery rows are closed.
+It is off by default. It turns on only when `multiMachine.conversationGraph.storage.enabled` and `readEnabled` are set; `correctionsEnabled` adds the owner's editing actions. It also needs the coherence journal (with replication) and write admission. `genesisMembers` names which paired machines sign the graph when it is first created; leaving it out means every paired machine. Paired machines outside that list keep working for everything else and show as "not joined" in Conversations.
+
+A member machine that is gone for good can be removed from the dashboard (Machines section) after a warning. Removal can be cancelled until its permanent step starts, and an interrupted removal can be finished later. Chat messages do not add records to the history; only organizing changes do.
+
+`instar join <url> --dir <path>` no longer crashes when the folder does not exist yet.
+
+When Conversations is off, its routes answer 503 `conversation-graph-off` (JSON) instead of a plain not-found page. A conversation that several machines hold (app chats, Telegram topics) is one conversation, not "unavailable". If a paired machine that is not a member is in charge, a waiting change says so. A crash during graph setup with a non-member paired now finishes on the next start.
 
 ## What to Tell Your User
 
-Conversations is still being prepared. It is not enabled by this groundwork, and no phone release is included. A name-removal result distinguishes hiding here, removal from live graph storage, and backup work that has not been verified. Original platform messages and phone downloads are separate copies.
+Nothing changes unless Conversations is switched on. When it is on, you can group your chats into projects and efforts from the dashboard and the app, and the same arrangement shows on every machine that is a member. A machine that isn't a member yet shows as "not joined" there and keeps working normally otherwise.
 
 ## Summary of New Capabilities
 
-Internal typed graph reduction, privacy-filtered pagination, encrypted source custody and repair, owned-machine custody with optional externally configured custody, cancellation and erasure coordination, owner correction composition, and console components. These are implementation capabilities, not evidence that the feature is ready to enable. Owned-machine and separately hosted custody have different failure limits; neither a second signature on the same disk nor a machine name proves an independent recovery copy.
+- Group chats into projects and efforts, rename, move and undo, from the dashboard and the app (owner only).
+- Arrangement shared across member machines as a signed history.
+- Remove a lost member machine from the dashboard, with cancel and finish-later.
+- Choose which paired machines start as members.
 
 ## Evidence
 
-Focused unit, browser-fixture, signed-device, HTTP and two-runtime crash/recovery evidence is recorded in the Conversations implementation checkpoint. Real signed phone requests have exercised create, name, preview, move, undo, name removal, outage-local recording, status and revocation against an actual AgentServer with synthetic owned-machine fixtures. Browser and native simulator checks remain labelled sample/mock evidence, rather than a real paired app/server run. Current full regression, independent final review, the complete owned-machine handover/recovery and erasure proofs, backup-policy evidence and real client/server integration remain required before release acceptance. A separately hosted service is optional; its failure-domain and deployment checks apply only if that mode is chosen. No local test count substitutes for those gates.
+- Real Studio + M5 pair, signed phone client (2026-11-09, release head 988bdd7793): chat history identical from both machines; image and file downloaded through the other machine with matching sha256; a chat held by both machines moved into an effort, moved back, renamed and read through the graph history route on both; switched off, chats and media keep working and every graph route answers 503 `conversation-graph-off`; switched back on, the arrangement is intact; after revoking the phone, 18 of 18 signed requests were refused.
+- Real Studio + M5 pair, 200 efforts, M5 stopped for real (release head 2ef62f2048): removal finished cleanly in about 11 minutes with history intact. For 15 minutes after, the longest server pause was 3.3 s and 11 of 11 changes saved in 9 to 21 s with no timeouts.
+- Earlier real-pair results: 40-change removal after a forced restart finished in 302 s with history intact; real-browser removal at phone size 45 s.
+- Full suites on the M5 at 969c81f2b0: integration 6,883 passed, 0 failed. Unit: 48 desktop-host tests fail on the M5 only, and fail the same way on main there. E2E: see the pull request.
+
+## Known limits
+
+- Joining a machine to an existing graph is not built yet; members are chosen when the graph is created.
+- History reads for a Slack conversation held on another machine use the same peer credential as other pool reads.
+- The end of a removal at about 200 records still pauses the removing machine's server for about 25 s; well inside the 60 s lease.
+- Confirming a removal while the other machine is in fact alive but cut off can still remove it; the warning screen says to remove only a machine that is gone for good.
