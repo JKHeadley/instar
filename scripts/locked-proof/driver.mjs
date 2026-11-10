@@ -31,7 +31,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, launchdServePlist, renderExpected, runCase, selectCases } from './lib.mjs';
+import { BLOCKING, PROOF_USER, TERMINAL, VAULT_KEY, assertProofTarget, calibrationProblem, launchdServePlist, renderExpected, runCase, selectCases } from './lib.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 /** The viewer is ready when it offers a request or has already opened the stream. */
@@ -738,21 +738,23 @@ async function main() {
       await target.openGrant({});
       const t0 = target.now();
       const typed = target.typePassword({ inject: [] });
-      let typistAt = null; let enterAt = null;
+      let typistAt = null; let enterAt = null; let createdAt = null;
       while (target.now() - t0 < 60_000 && enterAt === null) {
         const snap = await target.snapshot();
         if (snap.typistRunning && typistAt === null) typistAt = snap.now;
         const m = Object.values(snap.markers).find(x => typeof x.enterPendingAt === 'number');
-        if (m) enterAt = m.enterPendingAt;
+        if (m) { enterAt = m.enterPendingAt; if (typeof m.createdAt === 'number') createdAt = m.createdAt; }
         await target.sleep(50);
       }
       const result = await typed;
-      if (typistAt === null || enterAt === null) throw new Error(`calibration incomplete: ${JSON.stringify(result)}`);
-      const cal = { reserveMs: typistAt - t0, perCharMs: (enterAt - typistAt) / target.password.length, length: target.password.length, at: new Date().toISOString() };
+      if (typistAt === null || enterAt === null || createdAt === null) throw new Error(`calibration incomplete: ${JSON.stringify(result)}`);
+      const cal = { reserveMs: typistAt - t0, perCharMs: (enterAt - typistAt) / target.password.length, length: target.password.length, createToEnterMs: enterAt - createdAt, at: new Date().toISOString() };
       fs.writeFileSync(path.join(o.out, 'calibration.json'), `${JSON.stringify(cal, null, 2)}\n`);
       process.stdout.write(`calibration: ${JSON.stringify(cal)}\n`);
       return;
     }
+    const problem = calibrationProblem(cases, target.calibration());
+    if (problem) throw new Error(problem);
     const results = path.join(o.out, 'results.jsonl');
     for (const c of cases) {
       const ev = await runCase(c, target, { log: line => process.stdout.write(`${line}\n`) });

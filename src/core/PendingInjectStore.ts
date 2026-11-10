@@ -45,6 +45,20 @@ export interface PendingInjectRecord {
   doNotReplay?: boolean;
   /** Positive authorization for the one pre-rollout bootstrap dispatch. */
   freshPreRolloutBootstrap?: boolean;
+  /**
+   * context-budget-layered-summaries §9.1: the server's post-compaction
+   * fallback, staged here so it survives a restart. Always written with
+   * `doNotReplay`, so the generic boot sweep never re-injects it; the
+   * CompactionSentinel owns its idle-gated delivery and its resume at boot.
+   * Keyed `compactionFallbackKey(tmuxSession)`, never the session's own key,
+   * so it can never overwrite a pending initial-message record.
+   */
+  compactionFallback?: { tmuxSession: string; epoch: string; trigger: string; boundaryAt?: number };
+}
+
+/** The store key of a session's staged compaction fallback. */
+export function compactionFallbackKey(tmuxSession: string): string {
+  return `__compaction_fallback__-${tmuxSession}`;
 }
 
 export class PendingInjectStore {
@@ -75,6 +89,7 @@ export class PendingInjectStore {
         ...(entry.tombstone ? { tombstone: true } : {}),
         ...(entry.doNotReplay ? { doNotReplay: true } : {}),
         ...(entry.freshPreRolloutBootstrap ? { freshPreRolloutBootstrap: true } : {}),
+        ...(entry.compactionFallback ? { compactionFallback: { ...entry.compactionFallback } } : {}),
       };
       fs.writeFileSync(this.fileFor(entry.tmuxSession), JSON.stringify(full, null, 2));
     } catch (err) {

@@ -20,7 +20,7 @@ import crypto from 'node:crypto';
 import {
   foldBindingState, foldProjectCheckState, deriveLeaseExpiry, foldIntentState, latestPerKey,
   buildCheckEvent, buildLastTick, buildLifecycleEvent, buildRenewal,
-  type BindingState, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks } from './ChiefOfStaffStore.js';
+  type BindingState, type ProjectCheckState, type CosVerdict, type UnionEntry, type IntentState, foldLastTicks, foldTreeState, type TreeNode, buildTreePut, foldNoteState, buildNoteSent, trailingUnknownChecks, noteRecordKey, buildBindingPut } from './ChiefOfStaffStore.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import type { ChiefOfStaffActionProtocol, CosProtocolOutcome } from './ChiefOfStaffActionProtocol.js';
 
@@ -248,11 +248,18 @@ export interface ChiefOfStaffLoopDeps {
   protocol: Pick<ChiefOfStaffActionProtocol, 'claim' | 'standDown' | 'settleOpenIntent' | 'operatorLeaseLive'>;
   /** Mirror the initiative status (binding is the authority). */
   mirrorInitiativeStatus: (initiativeId: string, status: 'completed' | 'active') => void;
-  sendNote: (text: string) => Promise<void>;
+  /** The note; `actions` are the one-tap buttons for the Needs-you items (`cos:<action>:<key>` ids), in order. */
+  sendNote: (text: string, actions: Array<{ label: string; id: string }>) => Promise<void>;
   sendImmediate: (text: string) => Promise<void>;
   statusUrl: () => string;
   /** Hours in the agent's timezone (0–23) for the note time. */
   localHour: (nowMs: number) => number;
+  /** Sign a renewal canonical with this machine's key (§4: the receiving machine signs the record). Required for `checkIn`. */
+  sign?: (canonical: string) => string;
+  /** §4: whether an owner principal can resolve at all; false ⇒ the lease can never be renewed and the note says so. */
+  ownerResolvable?: () => boolean;
+  /** §1.1: the CoS conversation's own key; the loop writes its root `tree` record once it exists. */
+  rootConversationKey?: () => string | null;
   /** Grade a judge decision later (decision-quality meter); best-effort. */
   gradeDecision?: (decisionRef: string, grade: 'right' | 'wrong', note: string) => void;
   log?: (line: string) => void;
@@ -294,8 +301,6 @@ export interface LoopHealth {
 export class ChiefOfStaffLoop {
   private dirty = new Set<string>();
   private pendingNote: NoteItem[] = [];
-  private lastNoteAt: number | null = null;
-  private immediateLog: number[] = [];
   private unknownStreak = new Map<string, number>();
   private refuted = new Map<string, number>();
   private health: LoopHealth = { lastTickAt: null, lastTickMachine: null, ticks: 0, lastError: null, lease: { live: false, expiresAt: null, renewedAt: null }, projects: 0, lastNoteAt: null, immediateSentToday: 0 };
@@ -315,7 +320,12 @@ export class ChiefOfStaffLoop {
   /** An external event (run ended, PR changed, commitment overdue) makes a project due on the next tick. */
   markDirty(conversationKey: string): void { this.dirty.add(conversationKey); }
 
-  status(): LoopHealth { return { ...this.health, lease: { ...this.health.lease } }; }
+  /** Loop health with the lease derived NOW from the records (a check-in shows live at once, not after the next tick). */
+  status(): LoopHealth {
+    let lease = { ...this.health.lease };
+    try { const l = this.lease(this.d.now(), this.unionMemo()); lease = { live: l.live, expiresAt: l.expiresAt, renewedAt: l.renewedAt }; } catch { /* @silent-fallback-ok: an unreadable union leaves the last tick's lease in the status; lastError carries the cause on the next tick */ }
+    return { ...this.health, lease };
+  }
 
   /** §2.4 step 2(c) input for the protocol: the derived action gate for one conversation. */
   actionGate(conversationKey: string): { nextActionAllowedAt: string | null; newestCheckAgeMs: number | null } {
@@ -325,6 +335,21 @@ export class ChiefOfStaffLoop {
     const p = boundProjects(union).find((x) => x.conversationKey === conversationKey);
     const st = foldProjectCheckState(union, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p?.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, new Date(this.d.now()), p?.binding);
     return { nextActionAllowedAt: st.nextActionAllowedAt, newestCheckAgeMs: st.lastCheckAt ? this.d.now() - Date.parse(st.lastCheckAt) : null };
+  }
+
+  /** Read-path memo (2 s): the app list and the console poll these; the union fold must not run per request. Carrier for the durable fix: CMT-1415 (store compaction). */
+  private memo: { at: number; union: UnionEntry[] } | null = null;
+  private unionMemo(): UnionEntry[] {
+    const now = this.d.now();
+    if (this.memo && now - this.memo.at < 2_000) return this.memo.union;
+    const union = this.d.journal.loadUnion();
+    this.memo = { at: now, union };
+    return union;
+  }
+
+  /** §1.4: the tree (parent link per conversation) for the app list and the console. Empty when the union is unreadable. */
+  tree(): Map<string, TreeNode> {
+    try { return foldTreeState(this.unionMemo()); } catch { /* @silent-fallback-ok: an unreadable union draws no tree; the loop health shows lastError on its next tick */ return new Map(); }
   }
 
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
@@ -352,16 +377,45 @@ export class ChiefOfStaffLoop {
   }
 
   /** §4: the derived operator lease (shared with the protocol's `operatorLeaseLive`). */
-  lease(now = this.d.now()) {
+  lease(now = this.d.now(), given?: UnionEntry[]) {
     let union: UnionEntry[] = [];
-    try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union derives an EXPIRED lease (paused), the safe side */ return { renewedAt: null, expiresAt: null, live: false, ignored: 0 }; }
+    try { union = given ?? this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union derives an EXPIRED lease (paused), the safe side */ return { renewedAt: null, expiresAt: null, live: false, ignored: 0 }; }
     return deriveLeaseExpiry(union, this.d.verifyRenewal, this.d.config().operatorLeaseHours, new Date(now));
   }
 
   /** §4: record an owner check-in. The CALLER has already verified the principal on the inbound event. */
+  /**
+   * §1.3: the owner binds a conversation as a project (the route has verified the owner principal / PIN — a binding
+   * is written ONLY by an owner tap). Writes the confirmed `binding` record and the `tree` link under the CoS root
+   * (or under `parentConversationKey` for a sub-topic). Validation is the store schema's: an invalid binding is refused,
+   * nothing is written.
+   */
+  bindProject(input: { conversationKey: string; goal: string; doneDefinition: Array<{ id: string; kind: 'deterministic' | 'judgment'; text: string; certify?: 'owner-confirms' | 'agent-may-certify' }>; checkCadenceHours?: number; linked?: { repos?: string[]; branches?: string[]; domains?: string[] }; initiativeId?: string; parentConversationKey?: string | null }): { ok: true; conversationKey: string } | { ok: false; reason: 'invalid-binding' | 'write-refused' } {
+    const cfg = this.d.config();
+    const at = new Date(this.d.now()).toISOString();
+    const binding = { conversationKey: input.conversationKey, goal: String(input.goal ?? '').trim(), doneDefinition: input.doneDefinition, checkCadenceHours: Math.max(cfg.minCadenceHours, Number(input.checkCadenceHours) || cfg.defaultCadenceHours), linked: { repos: input.linked?.repos ?? [], branches: input.linked?.branches ?? [], domains: input.linked?.domains ?? [] }, ...(input.initiativeId ? { initiativeId: input.initiativeId } : {}), confirmedBy: 'owner' as const, confirmedAt: at };
+    this.memo = null;
+    const r = this.d.journal.emit(`binding:${input.conversationKey}`, buildBindingPut(binding));
+    if (r.outcome !== 'emitted' && r.outcome !== 'accepted') return { ok: false, reason: r.outcome.startsWith('dropped') ? 'invalid-binding' : 'write-refused' };
+    const root = this.safe(() => this.d.rootConversationKey?.() ?? null, null);
+    const parent = input.parentConversationKey === undefined ? root : input.parentConversationKey;
+    if (parent !== null) this.d.journal.emit(input.conversationKey, buildTreePut(input.conversationKey, parent, parent === root ? 'project' : 'sub-topic'));
+    this.dirty.add(input.conversationKey); // first check on the next tick
+    return { ok: true, conversationKey: input.conversationKey };
+  }
+
+  /** §4: an owner check-in from the app or the console (the route has already verified the owner principal / PIN). */
+  checkIn(input: { renewedVia: 'app' | 'console'; principal: string; eventRef?: string }): { ok: true; lease: ReturnType<ChiefOfStaffLoop['lease']> } | { ok: false; reason: 'no-signer' | 'write-refused' } {
+    if (!this.d.sign) return { ok: false, reason: 'no-signer' };
+    const sign = this.d.sign;
+    if (!this.recordRenewal({ ...input, sign })) return { ok: false, reason: 'write-refused' };
+    return { ok: true, lease: this.lease() };
+  }
+
   recordRenewal(input: { renewedVia: 'telegram' | 'app' | 'console'; principal: string; eventRef?: string; sign: (canonical: string) => string }): boolean {
     const renewedAt = new Date(this.d.now()).toISOString();
     const canonical = `cos-renewal:${renewedAt}:${input.renewedVia}:${input.principal}:${this.d.machineId}`;
+    this.memo = null; // a renewal must be visible to the next status/lease read at once
     const r = this.d.journal.emit(`renewal:${renewedAt}:${this.d.machineId}`, buildRenewal({ renewedAt, renewedVia: input.renewedVia, principal: input.principal, ...(input.eventRef ? { eventRef: input.eventRef } : {}), machine: this.d.machineId, machineSignature: input.sign(canonical) }));
     return r.outcome === 'emitted' || r.outcome === 'accepted';
   }
@@ -378,8 +432,12 @@ export class ChiefOfStaffLoop {
       this.health.lease = { live: lease.live, expiresAt: lease.expiresAt, renewedAt: lease.renewedAt };
       let union: UnionEntry[];
       try { union = this.d.journal.loadUnion(); } catch (e) { /* @silent-fallback-ok: recorded in loop health (lastError) and the tick is skipped; nothing is inferred from an unreadable union */ this.health.lastError = `union-unreadable: ${(e as Error)?.message}`; return; }
+      this.memo = { at: now, union };
       const projects = boundProjects(union);
       this.health.projects = projects.length;
+      // §1.1: the CoS conversation is the root of the tree; write its node once the conversation exists.
+      const rootKey = this.safe(() => this.d.rootConversationKey?.() ?? null, null);
+      if (rootKey && !foldTreeState(union).has(rootKey)) this.d.journal.emit(rootKey, buildTreePut(rootKey, null, 'chief-of-staff'));
       // §2.1 grace tick, derived from the DURABLE last-tick records (not process memory): when the newest
       // tick was taken by another machine, this is the first tick after a holder change — check, but take no action.
       const graceTick = newestTickMachine(union) !== null && newestTickMachine(union) !== this.d.machineId;
@@ -395,8 +453,14 @@ export class ChiefOfStaffLoop {
         const r = await this.checkProject(p, prev, lease.live && !graceTick, cfg, restartsThisTick, now);
         if (r.restarted) restartsThisTick++;
       }
-      // Note on cadence.
-      await this.maybeSendNote(now, cfg, lease);
+      // Note on cadence — the Needs-you items are DERIVED from the folds (a restart cannot drop them), the
+      // cadence from `note` records; only transient Results / Can't-see lines live in memory until the note.
+      // The note reads a FRESH union/fold: this tick's parks, verdicts and unknown checks must be in it.
+      this.memo = null;
+      const noteUnion = this.unionMemo();
+      const noteStates = new Map<string, ProjectCheckState>();
+      for (const p of projects) noteStates.set(p.conversationKey, foldProjectCheckState(noteUnion, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek, jitter: jitterFor(p.conversationKey) }, new Date(now), p.binding));
+      await this.maybeSendNote(now, cfg, lease, noteUnion, projects, noteStates);
       this.d.journal.emit(`last-tick:${this.d.machineId}`, buildLastTick(this.d.machineId, new Date(now).toISOString()));
       this.health.lastTickAt = new Date(now).toISOString(); this.health.lastTickMachine = this.d.machineId; this.health.ticks++; this.health.lastError = null;
     } catch (e) { /* @silent-fallback-ok: the failure is recorded in loop health + log and the project is re-checked next tick */
@@ -501,7 +565,7 @@ export class ChiefOfStaffLoop {
 
   private bumpUnknown(p: BoundProject, cfg: ChiefOfStaffLoopConfig, why: string): void {
     const n = (this.unknownStreak.get(p.conversationKey) ?? 0) + 1; this.unknownStreak.set(p.conversationKey, n);
-    if (n === cfg.unknownStreakForNote) this.pendingNote.push({ kind: 'cant-see', text: `${label(p)}: ${why}` });
+    void why; // the "can't see" line is DERIVED at note time from the check-events (one line, never a duplicate)
   }
 
   private async settleOpen(union: UnionEntry[]): Promise<void> {
@@ -519,33 +583,79 @@ export class ChiefOfStaffLoop {
     }
   }
 
-  private async maybeSendNote(now: number, cfg: ChiefOfStaffLoopConfig, lease: ReturnType<ChiefOfStaffLoop['lease']>): Promise<void> {
-    const [hh, mm] = cfg.noteTime.split(':').map(Number);
-    const hour = this.d.localHour(now);
-    // Due once the note hour has been reached (not only inside it — a missed tick must not slip a day) and no note went out this cadence.
-    const dueByClock = hour >= hh && (this.lastNoteAt === null || now - this.lastNoteAt >= cfg.noteCadenceHours * 3_600_000 - cfg.tickMinutes * 60_000);
-    void mm;
-    if (!dueByClock) return;
-    const items = this.pendingNote.splice(0, this.pendingNote.length);
-    const expiresIn = lease.expiresAt ? Date.parse(lease.expiresAt) - now : null;
-    const text = composeNote(items, cfg.noteSectionCap, this.d.statusUrl(), expiresIn);
-    this.lastNoteAt = now; this.health.lastNoteAt = new Date(now).toISOString();
-    if (!text) return;
-    try { await this.d.sendNote(text); } catch (e) { /* @silent-fallback-ok: the note items are re-queued for the next cadence and the failure is logged */ this.pendingNote.unshift(...items); this.d.log?.(`[chief-of-staff] note send failed: ${(e as Error)?.message}`); }
+  /** The Needs-you items the folds imply right now (CMT-1416: derived, never remembered). */
+  derivedNeeds(union: UnionEntry[], projects: BoundProject[], states: Map<string, ProjectCheckState>, cfg: ChiefOfStaffLoopConfig, leaseLive: boolean): NoteItem[] {
+    const out: NoteItem[] = [];
+    for (const p of projects) {
+      const st = states.get(p.conversationKey); if (!st) continue;
+      if (st.parked || st.breakerTripped) out.push({ kind: 'needs-you', text: `${label(p)} is parked after ${st.restartsWithoutProgress} restarts without progress${st.breakerTripped ? ' (breaker)' : ''}. Unpark?`, action: { label: 'Unpark', id: `cos:unpark:${p.conversationKey}` } });
+      else if (st.lastVerdict === 'waiting-on-user') {
+        const det = p.doneDefinition.filter((i) => i.kind === 'deterministic');
+        const allPass = det.length === 0 || (st.lastDoneItems !== null && det.every((i) => st.lastDoneItems![i.id] === 'pass'));
+        const canConfirm = allPass && p.doneDefinition.some((i) => i.kind === 'judgment');
+        out.push({ kind: 'needs-you', text: canConfirm ? `${label(p)}: every automatic check passes. Confirm it's done?` : `${label(p)} is waiting on you.`, ...(canConfirm ? { action: { label: 'Confirm done', id: `cos:confirm-done:${p.conversationKey}` } } : {}) });
+      }
+      else if (!leaseLive && (st.lastVerdict === 'stalled' || st.lastVerdict === 'drifting')) out.push({ kind: 'needs-you', text: `${label(p)} is ${st.lastVerdict} but I'm paused; check in here and I'll restart it.` });
+      const unknowns = trailingUnknownChecks(union, p.conversationKey);
+      if (unknowns >= cfg.unknownStreakForNote) out.push({ kind: 'cant-see', text: `${label(p)}: ${unknowns} checks in a row could not see enough evidence.` });
+    }
+    if (this.safe(() => this.d.ownerResolvable?.() ?? true, true) === false) out.unshift({ kind: 'needs-you', text: 'No owner id is configured for this agent, so I can never be checked in and will stay paused until one is set.' });
+    return out;
   }
 
-  /** §3: at most N immediate messages per day; overflow waits for the note. */
+  private async maybeSendNote(now: number, cfg: ChiefOfStaffLoopConfig, lease: ReturnType<ChiefOfStaffLoop['lease']>, union: UnionEntry[], projects: BoundProject[], states: Map<string, ProjectCheckState>): Promise<void> {
+    const [hh, mm] = cfg.noteTime.split(':').map(Number);
+    const hour = this.d.localHour(now);
+    const noteState = foldNoteState(union, new Date(now));
+    const lastNoteAt = noteState.lastNoteAt ? Date.parse(noteState.lastNoteAt) : null;
+    this.health.lastNoteAt = noteState.lastNoteAt;
+    // Due once the note hour has been reached (not only inside it — a missed tick must not slip a day) and no note went out this cadence (from records, so a restart or holder change cannot double or drop it).
+    const dueByClock = hour >= hh && (lastNoteAt === null || now - lastNoteAt >= cfg.noteCadenceHours * 3_600_000 - cfg.tickMinutes * 60_000);
+    void mm;
+    if (!dueByClock) return;
+    const transient = this.pendingNote.splice(0, this.pendingNote.length);
+    const derived = this.derivedNeeds(union, projects, states, cfg, lease.live);
+    // Dedupe by the tap id (then the text), derived first: the transient "Confirm it's done?" and the derived "waiting on you"
+    // collapse on the shared cos:confirm-done id; every other transient line (refuted twice, an immediate that waited,
+    // a project parked THIS tick) survives — nothing is ever dropped as a class.
+    const seen = new Set<string>(); const items: NoteItem[] = [];
+    for (const i of [...derived, ...transient]) { const k = i.action?.id ?? i.text; if (seen.has(k) || seen.has(i.text)) continue; seen.add(k); seen.add(i.text); items.push(i); }
+    const expiresIn = lease.expiresAt ? Date.parse(lease.expiresAt) - now : null;
+    const text = composeNote(items, cfg.noteSectionCap, this.d.statusUrl(), expiresIn);
+    if (!text) { this.recordNote('note', [], now); return; }
+    if (this.lastNoteFallbackAt !== null && now - this.lastNoteFallbackAt < cfg.noteCadenceHours * 3_600_000 - cfg.tickMinutes * 60_000) return; // a note went out but its record was refused: do not resend every tick
+    const actions = items.filter((i) => i.action).map((i) => i.action!).slice(0, 8);
+    let sent = false;
+    try { await this.d.sendNote(text, actions); sent = true; } catch (e) { /* @silent-fallback-ok: the transient items are re-queued for the next cadence (the derived ones recompute) and the failure is logged */ this.pendingNote.unshift(...transient); this.d.log?.(`[chief-of-staff] note send failed: ${(e as Error)?.message}`); }
+    if (sent) this.recordNote('note', items.map((i) => i.text), now);
+  }
+
+  /** Process-local backstop for the one case a sent note's record was refused (rate cap, dark gate): no re-send every tick. */
+  private lastNoteFallbackAt: number | null = null;
+  private recordNote(kind: 'note' | 'immediate', items: string[], now: number): void {
+    this.memo = null;
+    // A random nonce in the key: two sends in the same millisecond (or from two loop instances) are two records, never one.
+    // itemKeys are HASHES of the lines (metadata only — the store never carries note text or an immediate's free text).
+    const itemKeys = items.map((t) => crypto.createHash('sha256').update(t).digest('hex').slice(0, 16));
+    const n = { machine: this.d.machineId, at: new Date(now).toISOString(), kind, nonce: crypto.randomUUID().slice(0, 8) };
+    let outcome = 'error';
+    try { outcome = this.d.journal.emit(noteRecordKey(n), buildNoteSent({ ...n, itemKeys })).outcome; } catch (e) { /* @silent-fallback-ok: a refused note record falls back to the process-local backstop below and is logged */ this.d.log?.(`[chief-of-staff] note record failed: ${(e as Error)?.message}`); }
+    if (kind === 'note') { this.health.lastNoteAt = new Date(now).toISOString(); if (outcome !== 'emitted' && outcome !== 'accepted') { this.lastNoteFallbackAt = now; this.d.log?.(`[chief-of-staff] note record not accepted (${outcome}); holding the cadence in memory until the next accepted record`); } }
+  }
+
+  /** §3: at most N immediate messages per day (counted from `note` records, so the cap holds across restarts and machines); overflow waits for the note. */
   async immediate(text: string): Promise<boolean> {
     const now = this.d.now();
-    this.immediateLog = this.immediateLog.filter((t) => now - t < 24 * 3_600_000);
-    this.health.immediateSentToday = this.immediateLog.length;
-    if (this.immediateLog.length >= this.d.config().immediateMessagesPerDay) { this.pendingNote.push({ kind: 'needs-you', text }); return false; }
-    this.immediateLog.push(now); this.health.immediateSentToday = this.immediateLog.length;
-    try { await this.d.sendImmediate(text); return true; } catch { /* @silent-fallback-ok: a failed immediate send falls back to the note, never dropped */ this.pendingNote.push({ kind: 'needs-you', text }); return false; }
+    let sentToday = 0;
+    try { sentToday = foldNoteState(this.unionMemo(), new Date(now)).immediatesLast24h; } catch { /* @silent-fallback-ok: an unreadable union counts as the cap reached (the message waits for the note), the safe side */ sentToday = Number.POSITIVE_INFINITY; }
+    this.health.immediateSentToday = Number.isFinite(sentToday) ? sentToday : this.health.immediateSentToday;
+    if (sentToday >= this.d.config().immediateMessagesPerDay) { this.pendingNote.push({ kind: 'needs-you', text }); return false; }
+    try { await this.d.sendImmediate(text); this.recordNote('immediate', [text], now); this.health.immediateSentToday = sentToday + 1; return true; } catch { /* @silent-fallback-ok: a failed immediate send falls back to the note, never dropped */ this.pendingNote.push({ kind: 'needs-you', text }); return false; }
   }
 
   /** Owner taps (verified by the caller): unpark / confirm-done. */
   async ownerTap(actionId: string, by: 'owner-tap'): Promise<'ok' | 'ignored'> {
+    this.memo = null; // the tap's writes must be visible to the next read
     const m = /^cos:(unpark|confirm-done):(.+)$/.exec(actionId);
     if (!m || by !== 'owner-tap') return 'ignored';
     const [, kind, conversationKey] = m;
@@ -554,6 +664,21 @@ export class ChiefOfStaffLoop {
     if (!bs?.bindingHlc) return 'ignored';
     const at = new Date(this.d.now()).toISOString();
     if (kind === 'unpark') { this.d.journal.emit(`lifecycle:${conversationKey}:${this.d.now()}`, buildLifecycleEvent(conversationKey, 'unpark', bs.bindingHlc, 'owner-tap', at)); return 'ok'; }
+    // confirm-done (§1.3/§6): the owner confirms the JUDGMENT items; the deterministic items are re-checked
+    // at tap time and must all pass, the lease must be live, and the verified close is recorded as a
+    // `done-verified` check-event (owner-confirmed) before the lifecycle close — never a close on a stale checklist.
+    if (!this.lease(this.d.now(), union).live) return 'ignored';
+    const project = boundProjects(union).find((x) => x.conversationKey === conversationKey);
+    if (!project) return 'ignored';
+    const cfg = this.d.config();
+    const prev = foldProjectCheckState(union, conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, project.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, new Date(this.d.now()), project.binding);
+    let bundle: EvidenceBundle;
+    try { bundle = await this.d.gather(project, prev); } catch { /* @silent-fallback-ok: an unreadable checklist cannot certify a close (P20); the tap is ignored and the note keeps the Confirm-done item */ return 'ignored'; }
+    const deterministic = project.doneDefinition.filter((i) => i.kind === 'deterministic');
+    const failing = deterministic.filter((i) => bundle.doneItems[i.id] !== 'pass');
+    if (failing.length) { this.pendingNote.push({ kind: 'result', text: `${label(project)}: not closed — these checks still fail: ${failing.map((i) => i.text).join('; ')}.` }); return 'ignored'; }
+    const verified = this.recordCheck(project, 'done-verified', 'owner-confirmed', evidenceHash(bundle), bundle.items.filter((i) => !i.unknown).map((i) => i.id).slice(0, 64), false, prev.netDiffHighWater, this.d.now(), bundle.doneItems);
+    if (verified === undefined) return 'ignored'; // the verified close must be on record BEFORE the project closes
     this.d.journal.emit(`lifecycle:${conversationKey}:${this.d.now()}`, buildLifecycleEvent(conversationKey, 'closed', bs.bindingHlc, 'owner-tap', at));
     const initiativeId = bs.binding && typeof bs.binding.initiativeId === 'string' ? bs.binding.initiativeId : null;
     if (initiativeId) this.safe(() => { this.d.mirrorInitiativeStatus(initiativeId, 'completed'); return true; }, false);

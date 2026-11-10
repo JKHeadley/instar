@@ -111,6 +111,7 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -885,6 +886,10 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
 let _meshSelfId: string | null = null;
 /** Chief of Staff §4: set by the loop wiring; the inbound hook calls it for an owner message in the CoS topic. */
 let _cosRenewalHook: ((topicId: number, telegramUserId: number, messageId: string) => void) | null = null;
+/** Chief of Staff §6: the CoS conversation accepts input only from the owner principal. Set with the loop; null ⇒ no CoS topic yet. */
+let _cosOwnerOnlyTopicId: (() => number | null) | null = null;
+/** Per-sender time of the last "only the owner can talk here" line (one per day; §6). */
+const _cosDropNoticeAt = new Map<number, number>();
 /** Resource-aware placement: the pool registry, late-bound for consumers built before it (the scheduler). */
 let _resourcePoolRegistryRef: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | undefined;
 /** G3 lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3). "Do I hold the fenced
@@ -2865,13 +2870,30 @@ export function wireTelegramRouting(
     // lifeline carries `senderUnverified` and no sender id: it is delivered,
     // but nothing here may treat it as coming from a known person.
     const telegramUserId = msg.metadata?.senderUnverified === true ? 0 : ((msg.metadata?.telegramUserId as number) ?? 0);
+    // Chief of Staff §6: the CoS conversation is owner-only. Anything else (a member, a guest, a bot, a
+    // relay, an unverified sender) is dropped here and logged — never routed to a session.
+    if (_cosOwnerOnlyTopicId && _cosOwnerOnlyTopicId() === topicId) {
+      // The owner id is raw config (may be a string): normalise exactly as every other owner-gated button does.
+      const owner = resolveApprovalOwner(telegram.getOwnerUserId(), [], []);
+      if (!owner || telegramUserId !== owner) {
+        console.warn(`[chief-of-staff] dropped a non-owner message in the Chief of Staff topic ${topicId} (sender ${telegramUserId || 'unverified'}, owner ${owner ?? 'unset'})`);
+        // One plain line per sender per day so the drop is never silent toward the person (§6); nothing about the projects.
+        const who = telegramUserId || 0; const nowMs = Date.now(); const last = _cosDropNoticeAt.get(who) ?? 0;
+        if (nowMs - last > 24 * 3_600_000) {
+          _cosDropNoticeAt.set(who, nowMs);
+          const line = !owner ? 'No owner is configured for this agent yet, so nothing said here can be acted on.' : telegramUserId ? 'Only the owner can talk to the Chief of Staff here.' : 'I could not verify who sent this, so it was not read.';
+          void withNotificationEnvelope(stampNotification(), async () => telegram.sendToTopic(topicId, line)).catch(() => { /* @silent-fallback-ok: the drop is already logged; the notice is a courtesy */ });
+        }
+        return;
+      }
+    }
     const resolvedUser = telegramUserId && userManager
       ? userManager.resolveFromTelegramUserId(telegramUserId)
       : null;
     // Chief of Staff §4: an owner message in the CoS conversation renews the operator check-in lease.
     // Principal = the configured owner id on the inbound event (never content, never a relay); the
     // record is signed by this machine so other machines can verify it on read.
-    if (_cosRenewalHook && telegramUserId && telegram.getOwnerUserId() === telegramUserId) {
+    if (_cosRenewalHook && telegramUserId && resolveApprovalOwner(telegram.getOwnerUserId(), [], []) === telegramUserId) {
       try { _cosRenewalHook(topicId, telegramUserId, String(msg.metadata?.messageId ?? '')); } catch { /* @silent-fallback-ok: a failed renewal write leaves the lease as it was (paused is the safe side) */ }
     }
 
@@ -4177,6 +4199,35 @@ function systemTopicsHooks(state: StateManager) {
     recordAgentHealthTopicId: (topicId: number) => state.set(SYSTEM_TOPIC_STATE_KEYS.agentHealth, topicId),
     recordAttentionHubTopicId: (topicId: number) => state.set(SYSTEM_TOPIC_STATE_KEYS.attention, topicId),
   };
+}
+
+/**
+ * Chief of Staff topic (docs/specs/chief-of-staff-topic.md §1.4): dev-gated find-or-create + pin on the
+ * lease holder, adopt on a standby, rename on a changed displayName, unpin on rollback. The behaviour
+ * lives in src/messaging/ChiefOfStaffTopic.ts; this reads the live gate + name.
+ */
+async function ensureChiefOfStaffTopicFor(
+  telegram: TelegramAdapter,
+  state: StateManager,
+  live: { get<T>(key: string, fallback?: T): T | undefined },
+  cfg: InstarConfig,
+): Promise<void> {
+  const { ensureChiefOfStaffTopic } = await import('../messaging/ChiefOfStaffTopic.js');
+  // The greeting goes out STAMPED (like the Attention intro): an unstamped send is held by the
+  // notification gate and could never be pinned.
+  const stamped = {
+    findOrCreateForumTopic: (name: string, color?: number, o?: { origin?: 'user' | 'system' | 'auto'; label?: string; bounded?: boolean }) => telegram.findOrCreateForumTopic(name, color, o),
+    editForumTopic: (id: number, name?: string, color?: number) => telegram.editForumTopic(id, name, color),
+    sendGreeting: (id: number, text: string) => withNotificationEnvelope(stampNotification(), async () => telegram.sendToTopic(id, text)),
+    pinTopicMessage: (id: number, m: number) => telegram.pinTopicMessage(id, m),
+    unpinTopicMessages: (id: number) => telegram.unpinTopicMessages(id),
+  };
+  await ensureChiefOfStaffTopic(stamped, state, {
+    enabled: () => resolveDevAgentGate(live.get<boolean | undefined>('chiefOfStaff.enabled', undefined), cfg),
+    displayName: () => live.get<string | undefined>('chiefOfStaff.displayName', undefined),
+    log: (l) => console.log(l),
+    warn: (l) => console.warn(l),
+  });
 }
 
 async function ensureAgentAttentionTopic(
@@ -9275,6 +9326,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       ensureAgentUpdatesTopic(telegram, state).catch(err => {
         console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
       });
+      ensureChiefOfStaffTopicFor(telegram, state, liveConfig, config).catch(err => {
+        console.error(`[server] Failed to ensure Chief of Staff topic: ${err}`);
+      });
       wireSystemTopicAdoption({
         state,
         leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
@@ -9284,7 +9338,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           return entry ? resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl) : null;
         },
         authToken: config.authToken,
-        ensureOwn: async () => { await ensureAgentAttentionTopic(telegram!, state); await ensureAgentUpdatesTopic(telegram!, state); },
+        ensureOwn: async () => { await ensureAgentAttentionTopic(telegram!, state); await ensureAgentUpdatesTopic(telegram!, state); await ensureChiefOfStaffTopicFor(telegram!, state, liveConfig, config); },
       }).catch(err => console.error(`[server] system topic adoption failed to start: ${err}`));
 
       // Wire Prompt Gate callbacks in send-only mode too — the lifeline forwards
@@ -9571,6 +9625,9 @@ export async function startServer(options: StartOptions): Promise<void> {
       ensureAgentUpdatesTopic(telegram, state).catch(err => {
         console.error(`[server] Failed to ensure Agent Updates topic: ${err}`);
       });
+      ensureChiefOfStaffTopicFor(telegram, state, liveConfig, config).catch(err => {
+        console.error(`[server] Failed to ensure Chief of Staff topic: ${err}`);
+      });
       wireSystemTopicAdoption({
         state,
         leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
@@ -9580,7 +9637,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           return entry ? resolveMeshPeerUrl(meshResolver, machineId, entry.endpoints, entry.lastKnownUrl) : null;
         },
         authToken: config.authToken,
-        ensureOwn: async () => { await ensureAgentAttentionTopic(telegram!, state); await ensureAgentUpdatesTopic(telegram!, state); },
+        ensureOwn: async () => { await ensureAgentAttentionTopic(telegram!, state); await ensureAgentUpdatesTopic(telegram!, state); await ensureChiefOfStaffTopicFor(telegram!, state, liveConfig, config); },
       }).catch(err => console.error(`[server] system topic adoption failed to start: ${err}`));
     }
 
@@ -11927,7 +11984,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     let _cosLoop: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null = null;
     /** The Chief of Staff's own conversation (Telegram topic id) — set by PR 4's ensureChiefOfStaffTopic via the system-topic state key; null until then. */
     const _cosTopicId = (): number | null => {
-      try { const v = (state as unknown as { get<T>(k: string): T | null }).get<number | string>('chief-of-staff-topic'); const n = Number(v); return Number.isFinite(n) && n > 0 ? n : null; } catch { /* @silent-fallback-ok: no state ⇒ no CoS topic yet ⇒ nothing to renew against or send to */ return null; }
+      try { const v = (state as unknown as { get<T>(k: string): T | null }).get<number | string>('chief-of-staff-topic'); const n = Number(v); return Number.isSafeInteger(n) && n > 1 ? n : null; } catch { /* @silent-fallback-ok: no state ⇒ no CoS topic yet ⇒ nothing to renew against or send to */ return null; }
     };
     let _sharedOperatorStopSince: ((topicId: number, sinceIso: string) => boolean) | null = null;
     const _cosStandDownFor = (topicId: number): string | null => {
@@ -15383,52 +15440,62 @@ export async function startServer(options: StartOptions): Promise<void> {
       prepareInjectionText,
     } = await import('../messaging/shared/compactionResumePayload.js');
 
+    /**
+     * The Telegram recovery text for a compacted session (shared by the direct
+     * path below and the §9.1 idle-gated fallback). `declined` = nothing to
+     * recover (session gone, or no unanswered user message); `unsupported` =
+     * not a Telegram-bound session (Slack keeps its own direct path).
+     */
+    const buildTelegramCompactionText = (sessionName: string, triggerLabel: string): { text: string; topicId: number } | 'declined' | 'unsupported' => {
+      if (!sessionManager.isSessionAlive(sessionName)) return 'declined';
+      if (!telegram) return 'unsupported';
+      const topicId = telegram.getTopicForSession(sessionName);
+      if (!topicId) return 'unsupported';
+      // Walk history backward, skipping PresenceProxy standby messages and
+      // server-emitted delivery/lifecycle acks. Those are from-agent but
+      // they are NOT real responses — treating them as "agent answered"
+      // is what let this recovery path silently decline for 15 minutes
+      // while the user's question sat unanswered. See
+      // isSystemOrProxyMessage / findLastRealMessage for the canonical filter.
+      const history = telegram.getTopicHistory(topicId, 20);
+      const lastReal = findLastRealMessage(history);
+      if (!lastReal?.fromUser) return 'declined';
+      console.log(`[CompactionResume] (${triggerLabel}) topic ${topicId} session "${sessionName}" has unanswered message — recovering`);
+      // Prefer topicMemory (summary + recent messages + search hint);
+      // fall back to inline JSONL history when the SQLite store isn't
+      // ready. Matches the session-spawn precedence in this file.
+      let contextBlock = '';
+      if (topicMemory?.isReady()) {
+        try {
+          contextBlock = topicMemory.formatContextForSession(topicId, 20);
+        } catch (err) {
+          console.warn(`[CompactionResume] (${triggerLabel}) topicMemory failed, falling back to inline history:`, err);
+          // @silent-fallback-ok — the inline JSONL history below carries the same recent messages (the session-spawn precedence)
+        }
+      }
+      if (!contextBlock) {
+        const topicName = telegram.getTopicName?.(topicId) ?? undefined;
+        contextBlock = formatInlineHistory(history, { topicName, label: 'TOPIC CONTEXT' });
+      }
+      const payload = buildCompactionResumePayload(contextBlock);
+      const injectText = prepareInjectionText(payload, triggerLabel, topicId);
+      // Topic tag so InputGuard accepts the direct injection.
+      return { text: `[telegram:${topicId}] ${injectText}`, topicId };
+    };
+
     const recoverCompactedSession = async (sessionName: string, triggerLabel: string): Promise<boolean> => {
       if (!sessionManager.isSessionAlive(sessionName)) return false;
 
       // Telegram path
-      if (telegram) {
-        const topicId = telegram.getTopicForSession(sessionName);
-        if (topicId) {
-          // Walk history backward, skipping PresenceProxy standby messages and
-          // server-emitted delivery/lifecycle acks. Those are from-agent but
-          // they are NOT real responses — treating them as "agent answered"
-          // is what let this recovery path silently decline for 15 minutes
-          // while the user's question sat unanswered. See
-          // isSystemOrProxyMessage / findLastRealMessage for the canonical filter.
-          const history = telegram.getTopicHistory(topicId, 20);
-          const lastReal = findLastRealMessage(history);
-          if (lastReal?.fromUser) {
-            console.log(`[CompactionResume] (${triggerLabel}) topic ${topicId} session "${sessionName}" has unanswered message — recovering`);
-
-            // Prefer topicMemory (summary + recent messages + search hint);
-            // fall back to inline JSONL history when the SQLite store isn't
-            // ready. Matches the session-spawn precedence in this file.
-            let contextBlock = '';
-            if (topicMemory?.isReady()) {
-              try {
-                contextBlock = topicMemory.formatContextForSession(topicId, 20);
-              } catch (err) {
-                console.warn(`[CompactionResume] (${triggerLabel}) topicMemory failed, falling back to inline history:`, err);
-              }
-            }
-            if (!contextBlock) {
-              const topicName = telegram.getTopicName?.(topicId) ?? undefined;
-              contextBlock = formatInlineHistory(history, { topicName, label: 'TOPIC CONTEXT' });
-            }
-
-            const payload = buildCompactionResumePayload(contextBlock);
-            const injectText = prepareInjectionText(payload, triggerLabel, topicId);
-            // Direct injection with topic tag so InputGuard accepts it.
-            const tagged = `[telegram:${topicId}] ${injectText}`;
-            const ok = sessionManager.injectMessage(sessionName, tagged);
-            if (ok) {
-              console.log(`[CompactionResume] (${triggerLabel}) direct re-inject OK for topic ${topicId}`);
-              return true;
-            }
-            console.warn(`[CompactionResume] (${triggerLabel}) direct re-inject FAILED for topic ${topicId}`);
-          }
+      const built = buildTelegramCompactionText(sessionName, triggerLabel);
+      if (typeof built === 'object') {
+        // Direct injection — bypass triage (see the note above).
+        const ok = sessionManager.injectMessage(sessionName, built.text);
+        if (ok) {
+          console.log(`[CompactionResume] (${triggerLabel}) direct re-inject OK for topic ${built.topicId}`);
+          return true;
         }
+        console.warn(`[CompactionResume] (${triggerLabel}) direct re-inject FAILED for topic ${built.topicId}`);
       }
 
       // Slack path — handled in the Slack-aware block below (needs slackChannelToSyntheticId).
@@ -15448,6 +15515,9 @@ export async function startServer(options: StartOptions): Promise<void> {
     // calls that used to live here. Dedupes across the three triggers and
     // vetoes zombie cleanup while a recovery is in flight.
     const { CompactionSentinel } = await import('../monitoring/CompactionSentinel.js');
+    const { readSeedMarkerFile } = await import('../monitoring/compactionSeedMarker.js');
+    const { createCompactionFallbackDeps } = await import('../monitoring/compactionFallbackStore.js');
+    const { PendingInjectStore } = await import('../core/PendingInjectStore.js');
     // A session is a legitimate recovery target ONLY while it is in the running
     // set. A finished/failed/killed session drops out of listRunningSessions(),
     // so this is the structural guard that stops both sentinels from "recovering"
@@ -15477,6 +15547,27 @@ export async function startServer(options: StartOptions): Promise<void> {
         // by maxWorkingDefers. See SessionManager.isSessionActivelyWorking.
         isActivelyWorking: (sessionName: string) =>
           sessionManager.isSessionActivelyWorking(sessionName),
+        // One carrier of post-compaction context (context-budget-layered-summaries
+        // §9.1): with the switch on, the sentinel waits for the SessionStart(compact)
+        // hook's seeded marker and stands down when the hook already seeded.
+        isCompactionRecoveryEnabled: () =>
+          liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false,
+        readSeedMarker: (sessionName: string) =>
+          readSeedMarkerFile(
+            config.stateDir,
+            sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId,
+          ),
+        // §9.1: the fallback after a missed seed is staged durably in
+        // PendingInjectStore and released only at an idle, ready prompt.
+        fallback: createCompactionFallbackDeps({
+          store: new PendingInjectStore(path.join(config.stateDir, 'state')),
+          build: async (sessionName, trigger) => {
+            const built = buildTelegramCompactionText(sessionName, trigger);
+            return typeof built === 'object' ? { text: built.text } : built;
+          },
+          isReadyPrompt: (sessionName) => sessionManager.classifyPaneState(sessionName) === 'ready',
+          inject: (sessionName, text) => sessionManager.injectMessage(sessionName, text),
+        }),
       },
       // Defaults are production-sensible; override here only if needed.
       {},
@@ -15576,6 +15667,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     // already owns.
     rateLimitSentinel.setDeferIf(s => compactionSentinel.isRecoveryActive(s));
     compactionSentinel.setDeferIf(s => rateLimitSentinel.isRecoveryActive(s));
+    // §9.1: a post-compaction fallback staged before this restart resumes under
+    // the same idle gate; one that is stale or whose session is gone is reported.
+    {
+      const resumed = compactionSentinel.resumeStagedFallbacks();
+      for (const w of resumed.withdrawn) {
+        DegradationReporter.getInstance().report({
+          feature: 'CompactionSentinel.fallback',
+          primary: 'Deliver the post-compaction briefing staged before a restart at the next idle prompt',
+          fallback: `Staged briefing for "${w.tmuxSession}" withdrawn: ${w.reason}`,
+          reason: 'A server restart interrupted the post-compaction fallback',
+          impact: 'That session may not have received its briefing after a compaction; its next user message carries recent context as usual.',
+        });
+      }
+      if (resumed.resumed.length > 0) console.log(`[Sentinel] resumed ${resumed.resumed.length} staged compaction fallback(s)`);
+    }
 
     // Triggers: watchdog poll + SessionManager idle-error emit. Both deduped by
     // the sentinel.
@@ -29151,7 +29257,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                       body: JSON.stringify({ topicId: String(t), condition: (text ?? 'Chief of Staff restart').slice(0, 500), workDir: config.projectDir, startedAt, endAt, cosNoRespawn: true, idempotencyKey }),
                     });
                     const body = (await res.json().catch(() => /* @silent-fallback-ok: a non-JSON reply is reported as register-failed with the HTTP status on the next line */ ({}))) as { ok?: boolean; runId?: string; existingRunId?: string; error?: string };
-                    if (!res.ok || !body.ok || !body.runId) throw new Error(`register-failed:${body.error ?? body.existingRunId ?? res.status}`);
+                    const registeredRun = cosMod.registeredRunId(res.ok, body);
+                    if (!registeredRun) throw new Error(`register-failed:${body.error ?? body.existingRunId ?? res.status}`);
                     try {
                       await spawnSessionForTopic(sessionManager, telegram, `topic-${t}`, t,
                         `[chief-of-staff automated — not operator words; key ${idempotencyKey}]\n${text ?? ''}`,
@@ -29159,11 +29266,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                     } catch (e) {
                       // §2.4 step 5 compensation: a registered run whose session never started must not sit `open`
                       // (it would stand the Chief of Staff down for maxRunHours and 409 the retry).
-                      try { cosRunStore.markTerminal(String(t), body.runId, 'ended', 'cos-spawn-failed'); } catch { /* @silent-fallback-ok: the aborted intent is recorded by the protocol; a stuck run record is swept by the daily run sweep and surfaced on /chief-of-staff */ }
-                      throw new Error(`spawn-failed:${(e as Error)?.message ?? e} (run ${body.runId} ended)`);
+                      try { cosRunStore.markTerminal(String(t), registeredRun, 'ended', 'cos-spawn-failed'); } catch { /* @silent-fallback-ok: the aborted intent is recorded by the protocol; a stuck run record is swept by the daily run sweep and surfaced on /chief-of-staff */ }
+                      throw new Error(`spawn-failed:${(e as Error)?.message ?? e} (run ${registeredRun} ended)`);
                     }
                     _claimOwnershipForAutonomousSpawn?.(t);
-                    return { runId: body.runId };
+                    return { runId: registeredRun };
                   },
                   inject: async ({ conversationKey, text, idempotencyKey }) => {
                     const t = topicOf(conversationKey);
@@ -29231,12 +29338,19 @@ export async function startServer(options: StartOptions): Promise<void> {
               const judge = sharedLlmQueue && sharedIntelligence
                 ? evMod.buildJudge({ enqueueMetered: (req) => sharedLlmQueue!.enqueueMetered(req), evaluate: (prompt, options) => sharedIntelligence!.evaluate(prompt, { ...(options as Record<string, unknown>), attribution: { component: 'ChiefOfStaffLoop' } } as never), judgeDailyCents: Number(liveConfig.get<number | undefined>('chiefOfStaff.judgeDailyCents', undefined) ?? 15), log: (m) => console.log(pc.dim(`  ${m}`)) })
                 : async () => null;
-              const sendToCos = async (text: string) => {
+              const sendToCos = async (text: string, actions: Array<{ label: string; id: string }> = []) => {
                 const cosTopic = _cosTopicId();
                 const readers = await (telegram?.groupReaderCount?.() ?? Promise.resolve(null));
+                const buttons = actions.map((a) => ({ text: a.label.slice(0, 48), data: a.id.slice(0, 64) }));
                 // §3 one-reader rule, failing CLOSED: an unreadable member count (null) goes to the owner's DM, never the forum topic.
-                if (telegram && (!cosTopic || readers === null || readers > 1)) { const r = await telegram.sendToOwnerDM(text); if (!r) throw new Error('owner-dm-failed'); return; }
+                if (telegram && (!cosTopic || readers === null || readers > 1)) {
+                  const r = buttons.length ? await telegram.sendOwnerDMWithButton(text, buttons) : await telegram.sendToOwnerDM(text);
+                  if (!r) throw new Error('owner-dm-failed');
+                  return;
+                }
                 if (!cosTopic) throw new Error('no-chief-of-staff-topic');
+                // §3: Needs-you items carry their one-tap buttons (Unpark / Confirm done); a plain note goes through the automation reply path.
+                if (buttons.length && telegram) { const id = await telegram.sendOfferList(cosTopic, text, buttons); if (id === null) throw new Error('note-with-buttons-failed'); return; }
                 await sendAutomationReply('chief-of-staff', cosTopic, { text, metadata: { provenance: 'automation' } }, cosAuthor());
               };
               const loop = new loopMod.ChiefOfStaffLoop({
@@ -29248,10 +29362,22 @@ export async function startServer(options: StartOptions): Promise<void> {
                 sendNote: sendToCos, sendImmediate: sendToCos,
                 statusUrl: () => `http://localhost:${config.port}/chief-of-staff`,
                 localHour: (ms) => { try { return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: (config as { timezone?: string }).timezone || undefined }).format(new Date(ms))) % 24; } catch { /* @silent-fallback-ok: an invalid timezone falls back to the machine's local hour */ return new Date(ms).getHours(); } },
+                sign: (c) => idMod.sign(c, localSigningKeyPem),
+                ownerResolvable: () => resolveApprovalOwner(telegram?.getOwnerUserId(), [], []) !== undefined,
+                rootConversationKey: () => { const t = _cosTopicId(); return t ? `telegram:${t}` : null; },
                 log: (m) => console.log(pc.dim(`  ${m}`)),
               });
               loop.start();
               _cosLoop = loop;
+              _cosOwnerOnlyTopicId = _cosTopicId;
+              if (telegram) {
+                // §3 taps: Unpark / Confirm done. The adapter has verified the owner principal; a tap also
+                // counts as a check-in (§4: "a Telegram message or callback tap whose from.id === ownerUserId").
+                telegram.onChiefOfStaffTap = async (tap) => {
+                  loop.recordRenewal({ renewedVia: 'telegram', principal: `telegram:${tap.fromUserId}`, eventRef: `telegram-callback:${tap.callbackQueryId}`, sign: (c) => idMod.sign(c, localSigningKeyPem) });
+                  return loop.ownerTap(tap.data, 'owner-tap');
+                };
+              }
               _cosRenewalHook = (topicId, telegramUserId, messageId) => {
                 if (_cosTopicId() !== topicId) return;
                 loop.recordRenewal({ renewedVia: 'telegram', principal: `telegram:${telegramUserId}`, eventRef: `telegram:${topicId}:${messageId}`, sign: (c) => idMod.sign(c, localSigningKeyPem) });

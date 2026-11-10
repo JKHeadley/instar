@@ -258,3 +258,74 @@ describe('approval wording names the private chat', () => {
     expect(m.approvalWords('owner-phone', null, false)).toBe('Approve it on your iPhone: open the Instar app and confirm with Face ID.');
   });
 });
+
+describe('Chief of Staff: pinned row and tree order (chief-of-staff-topic.md §1.4)', () => {
+  const body = {
+    conversations: [
+      { id: 5, platform: 'telegram', title: 'Unfiled', lastActivity: '2030-01-01T00:00:05Z' },
+      { id: 4, platform: 'telegram', title: 'Sub', lastActivity: '2030-01-01T00:00:04Z', parentConversationKey: 'telegram:3' },
+      { id: 3, platform: 'telegram', title: 'Project', lastActivity: '2030-01-01T00:00:03Z', parentConversationKey: 'telegram:1' },
+      { id: 2, platform: 'telegram', title: 'Orphan', lastActivity: '2030-01-01T00:00:02Z', parentConversationKey: 'telegram:999' },
+      { id: 1, platform: 'telegram', title: '🧭 Chief of Staff', lastActivity: '2030-01-01T00:00:01Z', parentConversationKey: null },
+    ],
+    pinned: { id: 1, platform: 'telegram', title: '🧭 Chief of Staff', lastActivity: '2030-01-01T00:00:01Z', parentConversationKey: null },
+  };
+  it('listPinned reads the pinned row; absent ⇒ null', () => {
+    expect(m.listPinned(body)?.key).toBe('telegram:1');
+    expect(m.listPinned({ conversations: [] })).toBeNull();
+  });
+  it('orderWithTree: pinned first, children under parents depth-first, unknown parents stay top-level in place', () => {
+    const ordered = m.orderWithTree(m.listRows(body), 'telegram:1');
+    expect(ordered.map((r) => [r.key, r.depth])).toEqual([['telegram:1', 0], ['telegram:3', 1], ['telegram:4', 2], ['telegram:5', 0], ['telegram:2', 0]]);
+  });
+  it('a cycle in the records never loops the view and still shows every row', () => {
+    const rows = m.listRows({ conversations: [
+      { id: 7, platform: 'telegram', title: 'A', parentConversationKey: 'telegram:8' },
+      { id: 8, platform: 'telegram', title: 'B', parentConversationKey: 'telegram:7' },
+    ] });
+    const ordered = m.orderWithTree(rows, null);
+    expect(ordered.map((r) => r.key).sort()).toEqual(['telegram:7', 'telegram:8']);
+  });
+  it('without the fields (feature off) nothing changes: no parent, no pin, flat order', () => {
+    const rows = m.listRows({ conversations: [{ id: 1, platform: 'telegram', title: 'x' }, { id: 2, platform: 'telegram', title: 'y' }] });
+    expect(rows.every((r) => r.parent === null)).toBe(true);
+    expect(m.orderWithTree(rows, null).map((r) => [r.key, r.depth])).toEqual([['telegram:1', 0], ['telegram:2', 0]]);
+  });
+});
+
+describe('pinned messages (conversation-pinned-messages)', () => {
+  const pins = [
+    { messageId: 'msg-2', pinnedAt: '2026-11-09T10:01:00.000Z', pinnedBy: { name: 'Justin', role: 'owner' }, preview: 'second', source: 'app' },
+    { messageId: 'msg-1', pinnedAt: '2026-11-09T10:00:00.000Z', pinnedBy: { name: 'Ada', role: 'telegram' }, preview: null, source: 'telegram' },
+    { messageId: 'bad id', preview: 'dropped' },
+  ];
+  it('reads pins from an answer, dropping malformed ones, and null when the answer has none', () => {
+    const got = m.pinsFrom({ pins })!;
+    expect(got.map((p) => p.messageId)).toEqual(['msg-2', 'msg-1']);
+    expect(got[1]).toMatchObject({ who: 'Ada', preview: null, fromTelegram: true });
+    expect(m.pinsFrom({ messages: [] })).toBeNull();
+  });
+  it('the bar shows the pin and "1 of N", and a tap steps to the next, back to the first', () => {
+    const got = m.pinsFrom({ pins })!;
+    expect(m.pinBarText(got, 0)).toEqual({ label: 'Pinned', count: '1 of 2', preview: 'second', messageId: 'msg-2' });
+    expect(m.pinBarText(got, 1)).toMatchObject({ count: '2 of 2', preview: 'Pinned message' });
+    expect(m.pinBarText([got[0]], 0)).toMatchObject({ count: '' });
+    expect(m.pinBarText([], 0)).toBeNull();
+    expect([m.nextPinIndex(0, 2), m.nextPinIndex(1, 2), m.nextPinIndex(0, 0)]).toEqual([1, 0, 0]);
+  });
+  it('only a real message can be pinned; a Telegram row needs its Telegram id', () => {
+    expect(m.pinIdOf('app', { id: 'e1', messageId: 'msg-1' })).toBe('msg-1');
+    expect(m.pinIdOf('app', { id: 'local:1', messageId: 'msg-1' })).toBeNull();
+    expect(m.pinIdOf('telegram', { id: 'e1', messageId: '9001' })).toBe('9001');
+    expect(m.pinIdOf('telegram', { id: 'e1', messageId: null })).toBeNull();
+    expect(m.pinIdOf('slack', { id: 'slack:1', messageId: '1793600000.000100' })).toBe('1793600000.000100');
+  });
+  it('names each pin route and the words an answer leaves', () => {
+    expect(m.pinsPathOf({ kind: 'app', id: UUID })).toBe(`/mobile/chat/app/${UUID}/pins`);
+    expect(m.pinsPathOf({ kind: 'telegram', id: '42' })).toBe('/mobile/chat/42/pins');
+    expect(m.pinsPathOf({ kind: 'slack', id: '-3' })).toBe('/mobile/chat/slack/-3/pins');
+    expect(m.pinOutcomeWords({ ok: true, data: { mirror: 'done' } })).toBe('');
+    expect(m.pinOutcomeWords({ ok: true, data: { mirror: 'failed', mirrorDetail: 'Telegram did not let the agent pin this message. The pin is kept in the app.' } })).toContain('kept in the app');
+    expect(m.pinOutcomeWords({ ok: false, data: { error: 'too-many-pins' } })).toContain('100 pinned messages');
+  });
+});

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "cb-one-recovery-carrier",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T08:40:58.908Z",
+  "artifactPath": "upgrades/side-effects/cb-one-recovery-carrier.md",
+  "artifactSha256": "88e37e5a244668d115c226a455c91655d02b26b6ad7f8479bf61dd1d88bab870",
+  "coveredFiles": [
+    "src/monitoring/CompactionSentinel.ts",
+    "src/monitoring/compactionSeedMarker.ts",
+    "upgrades/side-effects/cb-one-recovery-carrier.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only markers on five existing fail-safe catch blocks so the no-silent-fallbacks lint passes; no behaviour change; a revert undoes it.",
+  "eli16Path": "docs/specs/context-budget-layered-summaries.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cb-one-recovery-carrier.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

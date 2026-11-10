@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-10T00:51:07.099Z",
+  "slug": "chief-of-staff-surfaces",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts"
+    ],
+    "addedLines": 7,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new controller: the same spawn under the same lock discipline, expressed as an option instead of a bound-method switch."
+  },
+  "verdict": "pass"
+}

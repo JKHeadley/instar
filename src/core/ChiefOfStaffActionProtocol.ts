@@ -217,6 +217,16 @@ export interface CosProtocolDeps {
 
 interface IndexEntry { state: CosTransition; runId?: string; injectId?: string }
 
+/** The run id a successful `POST /autonomous/register` reply carries, or null when the reply is not a
+ *  registration. The route answers `{ runId, endAt, clamped, initialStatus, ... }` with NO `ok` field
+ *  (its 409 carries `{ error, existingRunId }`), so the executor must accept on `runId`, never on `ok`
+ *  (live proof 2026-11-09: every restart aborted `register-failed:200` on a successful registration). */
+export function registeredRunId(httpOk: boolean, body: unknown): string | null {
+  if (!httpOk || !body || typeof body !== 'object') return null;
+  const id = (body as { runId?: unknown }).runId;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
 export class ChiefOfStaffActionProtocol {
   private index = new Map<string, IndexEntry>();
   private indexReady = false;
@@ -342,6 +352,17 @@ export class ChiefOfStaffActionProtocol {
    *  them, so an unauthenticated peer cannot populate the replicated store or pre-reject a key. */
   static readonly PRE_AUTH_REASONS: ReadonlySet<CosRejectReason> = new Set<CosRejectReason>(['invalid-command', 'holder-signature-invalid', 'not-current-holder', 'holder-lease-stale']);
 
+  /** Is the holder's lease fresh? The coordinator stamps a renewal watermark only for PEER holders
+   *  (an observer-side timestamp on a nonce that advanced), so for the machine that holds the lease
+   *  itself the proof is its own live lease: `holdsLease()` is false once that lease expired or was
+   *  released. Without this split, every command executing on the holder's own machine (the common
+   *  case, and the ONLY case on a single machine) refused `holder-lease-stale` before writing anything
+   *  (live proof, 2026-11-09: four intents stuck at `claimed`). */
+  private holderFresh(holder: string): boolean {
+    if (holder === this.d.machineId) return this.d.lease.holdsLease();
+    return this.d.lease.freshRenewalWithin(holder, this.d.lease.ttlMs);
+  }
+
   verifyCommand(cmd: CosActionCommand): CosRejectReason | null {
     if (!cmd || cmd.type !== 'cos-action' || !deriveIntentKey(cmd.conversationKey, cmd.leaseEpoch, cmd.sequence)) return 'invalid-command';
     if (typeof cmd.claimedAt !== 'string' || !Number.isFinite(Date.parse(cmd.claimedAt))) return 'invalid-command';
@@ -352,7 +373,7 @@ export class ChiefOfStaffActionProtocol {
     try { holder = this.d.lease.currentHolder(); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ holder = null; }
     if (!holder || holder !== cmd.holderMachineId) return 'not-current-holder';
     let fresh = false;
-    try { fresh = this.d.lease.freshRenewalWithin(holder, this.d.lease.ttlMs); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ fresh = false; }
+    try { fresh = this.holderFresh(holder); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ fresh = false; }
     if (!fresh) return 'holder-lease-stale';
     // Replay window: the command must belong to the CURRENT lease epoch (§2.6) and its signed
     // claim time must be younger than one run ceiling; the dedupe index covers the rest.
@@ -456,9 +477,25 @@ export class ChiefOfStaffActionProtocol {
     let holder: string | null = null;
     try { holder = this.d.lease.currentHolder(); } catch { /* @silent-fallback-ok: an unreadable lease view answers unknown (no write) */ holder = null; }
     if (!holder || holder !== cmd.holderMachineId) return { settled: 'unknown' };
-    if (!this.safeBool(() => this.d.lease.freshRenewalWithin(holder!, this.d.lease.ttlMs), false)) return { settled: 'unknown' };
+    if (!this.safeBool(() => this.holderFresh(holder!), false)) return { settled: 'unknown' };
     const claim = latestPerKey(this.safeUnion()).get(cmd.intentKey);
-    if (!claim || claim.data.recordType !== 'intent' || claim.data.machine !== cmd.holderMachineId || claim.data.conversationKey !== cmd.conversationKey) return { settled: 'unknown' };
+    if (!claim || claim.data.recordType !== 'intent' || claim.data.conversationKey !== cmd.conversationKey) return { settled: 'unknown' };
+    // CMT-1417: after a lease failover the CURRENT holder (verified above, fresh renewal) may settle an intent a
+    // PREVIOUS holder claimed — but only once that claim is older than a lease TTL, so the previous holder cannot
+    // still be acting on it. A peer that is not the current holder never reaches this line.
+    // Step 2(b)/4: only the conversation's OWNER settles, and only the machine that wrote `executing` may
+    // judge whether a receipt exists (another machine's registry cannot see this run).
+    if ((this.safeOwner(cmd.conversationKey) ?? this.d.machineId) !== this.d.machineId) return { settled: 'unknown' };
+    const executing = latestPerKey(this.safeUnion()).get(`${cmd.intentKey}:outcome:executing`);
+    if (executing && executing.data.machine !== this.d.machineId) return { settled: 'unknown' };
+    const priorHolder = claim.data.machine !== cmd.holderMachineId ? String(claim.data.machine) : null;
+    if (priorHolder) {
+      // Minimum age: the larger of a lease TTL and the lagging-fold window (wall clocks differ between machines; the
+      // conversation lock, not this guard, is what protects a run still executing on THIS machine).
+      const claimedAt = typeof claim.data.claimedAt === 'string' ? Date.parse(claim.data.claimedAt) : NaN;
+      if (!Number.isFinite(claimedAt) || this.d.now() - claimedAt <= Math.max(this.d.lease.ttlMs, this.d.laggingFoldMs)) return { settled: 'unknown' };
+    }
+    const why = (base: string) => (priorHolder ? `${base};prior-holder=${priorHolder}`.slice(0, 200) : base);
     return this.d.withConversationLock(cmd.conversationKey, async () => {
       try { this.rebuildIndex(); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ return { settled: 'unknown' as const }; }
       const seen = this.index.get(cmd.intentKey);
@@ -466,12 +503,12 @@ export class ChiefOfStaffActionProtocol {
       let receipt: { runId: string } | null = null;
       try { receipt = this.d.runRegistry.findByIdempotencyKey(cmd.intentKey); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ return { settled: 'unknown' as const }; }
       if (receipt) {
-        await this.writeOutcome(cmd.intentKey, 'started', 'ownership-machine', 'settled-from-registry', { runId: receipt.runId });
+        await this.writeOutcome(cmd.intentKey, 'started', 'ownership-machine', why('settled-from-registry'), { runId: receipt.runId });
         this.index.set(cmd.intentKey, { state: 'started', runId: receipt.runId });
         return { settled: 'started' as const, runId: receipt.runId };
       }
       // No receipt: a bare `executing` (or a claim that never arrived) is tombstoned, never re-run.
-      await this.writeOutcome(cmd.intentKey, 'rejected', 'ownership-machine', 'settled-no-receipt');
+      await this.writeOutcome(cmd.intentKey, 'rejected', 'ownership-machine', why('settled-no-receipt'));
       this.index.set(cmd.intentKey, { state: 'rejected' });
       return { settled: 'rejected' as const };
     });

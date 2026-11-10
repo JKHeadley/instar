@@ -148,6 +148,8 @@ interface TelegramUpdate {
     caption?: string;
     forum_topic_created?: { name?: string };
     forum_topic_edited?: { name?: string };
+    /** A service message: someone pinned this message (conversation-pinned-messages). */
+    pinned_message?: { message_id?: number };
     reply_to_message?: { message_id?: number; forum_topic_created?: { name?: string } };
     photo?: Array<{ file_id: string; file_size?: number; width: number; height: number }>;
     document?: {
@@ -1350,6 +1352,13 @@ export class TelegramLifeline {
       return;
     }
 
+    // A pin made in Telegram is a service message with no text: pass it on, or the server never
+    // learns it (conversation-pinned-messages). The server checks who pinned.
+    if (msg.pinned_message && typeof msg.pinned_message.message_id === 'number' && !msg.text) {
+      await this.forwardPin(msg.message_thread_id ?? 1, msg.pinned_message.message_id, msg.message_id, msg.from.id, msg.from.first_name);
+      return;
+    }
+
     // Handle photo messages
     if (msg.photo && msg.photo.length > 0 && !msg.text) {
       await this.handlePhotoMessage(msg);
@@ -1779,6 +1788,19 @@ export class TelegramLifeline {
         body: JSON.stringify({ topicId, text: '', topicName: name, topicRenamed: renamed, nameOnly: true, lifelineVersion: this.lifelineVersion }),
       });
     } catch { /* @silent-fallback-ok: a later message in the topic carries its name again */ }
+  }
+
+  private async forwardPin(topicId: number, pinnedMessageId: number, serviceMessageId: number, fromUserId: number, byName: string): Promise<void> {
+    if (!this.supervisor.healthy) return; // a pin seen while the server is down is not replayed
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+    this.addIngressSecretHeader(headers);
+    try {
+      await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`, {
+        method: 'POST', headers, signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({ topicId, text: '', pinOnly: true, pinnedMessageId, pinServiceMessageId: serviceMessageId, fromUserId, fromFirstName: byName, lifelineVersion: this.lifelineVersion }),
+      });
+    } catch { /* @silent-fallback-ok: a missed pin can be made again from the app */ }
   }
 
   private addIngressSecretHeader(headers: Record<string, string>): void {

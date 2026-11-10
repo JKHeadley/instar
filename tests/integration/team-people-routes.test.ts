@@ -64,6 +64,16 @@ describe('GET /team/people', () => {
     expect(res.body.pool).toBeUndefined();
   });
 
+  it('carries the team settings summary, one line per setting that is off, for the agent token', async () => {
+    const res = await request(app).get('/team/people').set('Authorization', `Bearer ${token}`);
+    expect(Array.isArray(res.body.teamSwitches)).toBe(true);
+    // Memory privacy is off on this machine, so its line names this machine with the whole-agent action.
+    const privacy = res.body.teamSwitches.find((l: { setting: string }) => l.setting === 'memory-privacy');
+    expect(privacy).toMatchObject({ on: false, action: 'turn-on-everywhere', requested: [] });
+    expect(privacy.offOn).toHaveLength(1);
+    for (const line of res.body.teamSwitches) expect(Object.keys(line).sort()).toEqual(['action', 'offOn', 'on', 'requested', 'setting']);
+  });
+
   it('a pool read with no peers is complete', async () => {
     const res = await request(app).get('/team/people?scope=pool').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);

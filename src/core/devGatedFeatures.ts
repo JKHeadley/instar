@@ -57,6 +57,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Each script calls the same local endpoint its session body called, under the same claim and lock-file trust; an untrusted script records failed and starts nothing. Setting enabled:false or listing a slug in disabledSlugs restores the session path live at the next trigger. No credential or state mutation beyond what the session already did; it removes spend.',
   },
   {
+    name: 'jobToolAllowlistEnforcement',
+    configPath: 'jobs.toolAllowlistEnforcement.enabled',
+    description: 'Job tool limits are applied (EVO-008, docs/specs/job-tool-allowlist-real-enforcement.md): a Claude job with a declared or clamped tool list starts in the confined launch form (no permission bypass; only the listed tools exist); omitted ⇒ live on a development agent, dark on the fleet, where the list is recorded but not applied.',
+    justification: 'It can only REMOVE tools from the development agent\'s own jobs that declare a list (or ask for "*" without authorization); it adds no capability, spend, credential or state change. A user job\'s bare ["Read"] default is never applied, a list naming tools the launch cannot honour is left as today and reported, and a non-Claude launch runs as today except a tamper-clamped instar job, which is refused. Read live at every launch: enabled:false restores today\'s launch at the next spawn.',
+  },
+  {
     name: 'scriptTriageJev',
     configPath: 'jobs.scriptTriage.jev.enabled',
     description: 'Jev triage of script-job results (job-cost-reduction §5.6.2): a scrubbed, clamped summary of a non-bare script run is sent to TypeSafe for routine / needs-session; omitted ⇒ live on a development agent, dark on the fleet (F12).',

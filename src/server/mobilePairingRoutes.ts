@@ -1,5 +1,6 @@
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
+import type { TeamSwitchLine } from '../core/TeamSwitches.js';
 import type { TeamActionKind } from './mobilePermissionsRoutes.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
@@ -626,6 +627,12 @@ export class MobilePairingService {
 
   /** The exchange with peers; absent on an agent with no machine identity. */
   teamPuller: TeamAccessPuller | null = null;
+
+  /**
+   * Set by the team router: the read-only settings summary the owner's phone shows, one line per setting
+   * (team-switches-agent-wide). The agent reads it through GET /team/people; nothing here turns a setting on.
+   */
+  teamSwitchesSummary: (() => TeamSwitchLine[]) | null = null;
 
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
   teamActionRunner: ((kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<{ status: number; body: unknown }>) | null = null;
@@ -2182,6 +2189,13 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/chat\/\d+$/.source],
   ['GET', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/.source],
   ['POST', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/.source],
+  // Pinned messages (conversation-pinned-messages).
+  ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/pins$`).source],
+  ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/pins$`).source],
+  ['GET', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/.source],
+  ['POST', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/.source],
+  ['GET', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/.source],
+  ['POST', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/.source],
   ['POST', /^\/mobile\/media\/uploads$/.source],
   ['PUT', new RegExp(`^/mobile/media/uploads/${APP_CONVERSATION_KEY_PATTERN}/chunks/(0|[1-9][0-9]{0,5})$`).source],
   ['GET', new RegExp(`^/mobile/media/uploads/${APP_CONVERSATION_KEY_PATTERN}$`).source],
@@ -2224,6 +2238,11 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['PUT', new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), 'member'],
   ['GET', new RegExp(`^/mobile/media/uploads/${UUID}$`), 'member'],
   ['POST', /^\/mobile\/media\/purge$/, 'member'],
+  // Pinned messages (conversation-pinned-messages): seeing pins is reading, changing them is using the conversation.
+  ['GET', new RegExp(`^/mobile/chat/app/${UUID}/pins$`), 'guest'],
+  ['POST', new RegExp(`^/mobile/chat/app/${UUID}/pins$`), 'member'],
+  ['GET', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, 'guest'],
+  ['POST', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, 'member'],
 ];
 
 /** The conversation and operation a team phone's request acts on, read from its path. */
@@ -2235,10 +2254,15 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
   // refused here; the handler would parseInt it into a real topic.
   m = /^\/telegram\/topics\/([^/]+)\/messages$/.exec(pathNorm);
   if (m && method === 'GET') return { ref: `telegram:${m[1]}`, op: 'read' };
+  // Pinned messages: seeing pins is a read, pinning or unpinning is a send (conversation-pinned-messages).
+  m = /^\/mobile\/chat\/([1-9][0-9]{0,15})\/pins$/.exec(pathNorm);
+  if (m) return { ref: `telegram:${Number(m[1])}`, op: method === 'POST' ? 'send' : 'read' };
+  m = /^\/mobile\/chat\/slack\/(-?\d+)\/pins$/.exec(pathNorm);
+  if (m) return { ref: `slack:${m[1]}`, op: method === 'POST' ? 'send' : 'read' };
   m = /^\/mobile\/chat\/slack\/(-?\d+)$/.exec(pathNorm);
   if (m && method === 'POST') return { ref: `slack:${m[1]}`, op: 'send' };
-  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/preview/.+)?$`).exec(pathNorm);
-  if (m) return { ref: m[1], op: method === 'POST' && !m[2] ? 'send' : 'read' };
+  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/pins|/preview/.+)?$`).exec(pathNorm);
+  if (m) return { ref: m[1], op: method === 'POST' && (!m[2] || m[2] === '/pins') ? 'send' : 'read' };
   m = new RegExp(`^/mobile/conversations/(${UUID})$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'DELETE' ? 'delete' : 'rename' };
   return null;
@@ -2287,6 +2311,13 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Slack conversations from the app (§4.9): the machine-local negative durable id.
     { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active, conversationRef: true },
+    // Pinned messages (conversation-pinned-messages): list and pin/unpin, their own bucket.
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/pins$`), statuses: active, body: 'none', conversationRef: true },
+    { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}/pins$`), statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'pins' },
+    { method: 'GET', re: /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'POST', re: /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'pins' },
+    { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'pins' },
     // Reply notification preview (chat-media §4.11); the read token opens it too (NOTIFY_TOKEN_PATHS).
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: /^\/mobile\/device\/push$/, statuses: active },
@@ -2294,6 +2325,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/team\/people$/, statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/team\/context$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'GET', re: /^\/mobile\/team\/activity$/, statuses: active, body: 'none', ownerOnly: true },
+    // Chief of Staff §4: the owner's phone checks in (renews the operator lease); owner phones only.
+    { method: 'POST', re: /^\/mobile\/chief-of-staff\/check-in$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
     { method: 'GET', re: /^\/mobile\/team\/requests$/, statuses: active, body: 'none', ownerOnly: true },
     { method: 'POST', re: /^\/mobile\/team\/requests\/[^/]{1,128}\/decline$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'GET', re: /^\/mobile\/team\/invites\/[^/]{1,128}$/, statuses: active, body: 'none', ownerOnly: true },
@@ -2423,6 +2456,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/sessions\/close\/[a-z0-9._:-]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/new$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/sessions\/default$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Start a fresh account sign-in with Face ID instead of the PIN (docs/specs/account-sign-in-face-id.md):
+    // the same Face ID-confirmed path, in its own account-actions bucket (sign-ins are slow and separate from
+    // the permission switches, and adding accounts joins it). Owner phones only; never named for a team phone.
+    // E2E-PAIRING: EXEMPT — rate-bucket name only; the route is covered by the account-sign-in-face-id e2e test
+    { method: 'POST', re: /^\/mobile\/accounts\/sign-in\/start$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
   ];
   const mapped = rules.map((rule) => {
     const named = TEAM_ROUTE_TIERS.find(([method, re]) => method === rule.method && re.source === rule.re.source);

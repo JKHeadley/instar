@@ -1,4 +1,5 @@
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -33,6 +34,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl, createOperatorLinkOriginResolver, originOrNull } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
+import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
@@ -329,7 +331,7 @@ import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, reso
 import { PairingTopicStore } from '../threadline/PairingTopicStore.js';
 import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
-import { sharedLifelineIngressSecretHolder } from '../core/LifelineIngressSecret.js';
+import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
@@ -6924,6 +6926,50 @@ export function createRoutes(ctx: RouteContext): Router {
       impact: 'if this start followed a compaction, the topic briefing and recent messages were not restored',
     });
   };
+
+  // context-budget-layered-summaries §9.1/§9.5: the PostCompact hook forwards
+  // Claude's compact_summary here. Mapped session → topic, scrubbed
+  // (scrubForStore + a live-value pass against the agent's own secrets) and
+  // stored under the topic's layer store. Observability only in Phase 0; a
+  // session with no topic (a job) records nothing.
+  router.post('/hooks/post-compact', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.hook_event_name !== 'PostCompact') {
+      res.status(400).json({ recorded: false, reason: 'not-post-compact' });
+      return;
+    }
+    const instarSessionId = String(req.get('X-Instar-Session-Id') ?? '');
+    const claudeSessionId = typeof body.session_id === 'string' ? body.session_id : '';
+    const session = instarSessionId ? ctx.sessionManager.getSessionById(instarSessionId) : undefined;
+    if (!session) {
+      res.status(200).json({ recorded: false, reason: 'unknown-session' });
+      return;
+    }
+    const tgTopic = ctx.telegram?.getTopicForSession?.(session.tmuxSession) ?? session.telegramTopicId ?? null;
+    const topicKey = tgTopic != null ? String(tgTopic) : session.slackChannelId ? `slack-${session.slackChannelId}` : null;
+    if (!topicKey) {
+      res.status(200).json({ recorded: false, reason: 'no-topic' });
+      return;
+    }
+    // §9.7 live-value pass: the auth token, the PIN, the lifeline ingress
+    // secret and every string in the secret store (shape patterns miss a
+    // `KEY=value` dump of a real value). Each source is best-effort.
+    const liveSecrets: string[] = [ctx.config.authToken, ctx.config.dashboardPin].filter((v): v is string => typeof v === 'string');
+    try { const l = readLifelineIngressSecret(ctx.config.stateDir); if (l) liveSecrets.push(l); } catch { /* @silent-fallback-ok — no lifeline secret on this machine */ }
+    try { collectStringLeaves(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), liveSecrets); } catch { /* @silent-fallback-ok — no readable secret store; shape scrub still runs */ }
+    const result = recordPostCompact(ctx.config.stateDir, {
+      topicKey,
+      instarSessionId,
+      claudeSessionId,
+      trigger: typeof body.trigger === 'string' ? body.trigger : 'unknown',
+      summary: typeof body.compact_summary === 'string' ? body.compact_summary : '',
+      receivedAt: Date.now(),
+    }, liveSecrets);
+    res.status(200).json(result.recorded
+      ? { recorded: true, topicKey, trigger: result.record.trigger, summaryChars: result.record.summaryChars, redactionKinds: result.record.redactionKinds }
+      : { recorded: false, reason: result.reason });
+  });
+
   router.post('/hooks/events', (req, res) => {
     if (!ctx.hookEventReceiver) {
       res.status(503).json({ error: 'HookEventReceiver not initialized' });
@@ -8814,7 +8860,72 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
       return;
     }
-    res.json({ ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary() });
+    const cosTopic = ctx.state.get<number>('chief-of-staff-topic');
+    res.json({
+      ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary(),
+      // §1.4 surfaces: the CoS conversation's key (null until the topic exists) and the owner's display name.
+      conversationKey: typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null,
+      displayName: String(ctx.liveConfig?.get<string | undefined>('chiefOfStaff.displayName', undefined) || 'Chief of Staff'),
+    });
+  });
+  // POST /chief-of-staff/check-in — the owner's dashboard check-in (§4: a dashboard tap in an
+  // owner-authenticated console session renews the lease). PIN-gated like every owner tap; the
+  // record is signed by this machine. Served only where the loop runs (the lease holder).
+  router.post('/chief-of-staff/check-in', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const r = ctx.chiefOfStaffLoop.checkIn({ renewedVia: 'console', principal: 'console:owner', eventRef: `console:${new Date().toISOString()}` });
+    if (!r.ok) { res.status(r.reason === 'no-signer' ? 503 : 409).json({ error: r.reason }); return; }
+    res.json({ ok: true, lease: r.lease });
+  });
+  // POST /chief-of-staff/triage — the one-time first-run triage list (spec: Migration and rollout):
+  // a private view over the active initiative records with keep / review / archive per record and the
+  // reason from the record's own facts. PIN-gated (owner tap); writes nothing but the view. Re-run with
+  // `force: true`; otherwise an existing list is returned.
+  router.post('/chief-of-staff/triage', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    if (!ctx.initiativeTracker || !ctx.viewer) { res.status(503).json({ error: !ctx.initiativeTracker ? 'initiative tracker not available' : 'private viewer not configured' }); return; }
+    const existing = ctx.state.get<string>('chief-of-staff-triage-view');
+    if (existing && (req.body ?? {}).force !== true && ctx.viewer.get(existing)) { res.json({ ok: true, id: existing, localUrl: `/view/${existing}`, existing: true }); return; }
+    const { buildTriage } = await import('../core/ChiefOfStaffTriage.js');
+    // "Active records" in the digest's sense: everything not completed / archived / abandoned — the paused and
+    // awaiting-user ones are exactly what the needs-you floor exists for.
+    const LIVE = new Set(['active', 'awaiting-user', 'paused', 'halted']);
+    const active = (ctx.initiativeTracker.list() as unknown as Array<Record<string, unknown>>).filter((i) => LIVE.has(String(i.status)));
+    const list = buildTriage(active.map((i) => ({ id: String(i.id), title: String(i.title ?? i.id), description: typeof i.description === 'string' ? i.description : undefined, status: String(i.status ?? 'active'), lastTouchedAt: String(i.lastTouchedAt ?? i.updatedAt ?? ''), needsUser: i.needsUser === true, needsUserReason: typeof i.needsUserReason === 'string' ? i.needsUserReason : undefined, blockers: Array.isArray(i.blockers) ? (i.blockers as string[]) : [], links: Array.isArray(i.links) ? (i.links as Array<{ url?: string }>) : [] })), new Date());
+    const view = ctx.viewer.create('Chief of Staff — first-run triage', list.markdown, undefined, { source: { type: 'chief-of-staff', id: 'triage' } });
+    if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
+    res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
+  });
+  // POST /chief-of-staff/projects — the owner binds a conversation as a project (spec §1.3: a binding is
+  // written ONLY by an owner tap; here the dashboard's PIN is that tap). Body: conversationKey, goal,
+  // doneDefinition[{id,kind,text,certify?}], checkCadenceHours?, linked{repos,branches,domains}?, initiativeId?,
+  // parentConversationKey? (default: under the Chief of Staff root). Validation is the store schema's.
+  router.post('/chief-of-staff/projects', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof b.conversationKey !== 'string' || typeof b.goal !== 'string' || !Array.isArray(b.doneDefinition)) { res.status(400).json({ error: 'conversationKey, goal and doneDefinition are required' }); return; }
+    const r = ctx.chiefOfStaffLoop.bindProject({
+      conversationKey: b.conversationKey, goal: b.goal, doneDefinition: b.doneDefinition as never,
+      ...(typeof b.checkCadenceHours === 'number' ? { checkCadenceHours: b.checkCadenceHours } : {}),
+      ...(b.linked && typeof b.linked === 'object' ? { linked: b.linked as never } : {}),
+      ...(typeof b.initiativeId === 'string' ? { initiativeId: b.initiativeId } : {}),
+      ...(b.parentConversationKey === null || typeof b.parentConversationKey === 'string' ? { parentConversationKey: b.parentConversationKey as string | null } : {}),
+    });
+    if (!r.ok) { res.status(r.reason === 'invalid-binding' ? 400 : 409).json({ error: r.reason }); return; }
+    res.status(201).json({ ok: true, conversationKey: r.conversationKey });
+  });
+  // POST /chief-of-staff/projects/:key/tap — the owner's Unpark / Confirm-done from the dashboard (PIN = the tap).
+  router.post('/chief-of-staff/projects/:key/tap', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const action = String((req.body ?? {}).action ?? '');
+    if (action !== 'unpark' && action !== 'confirm-done') { res.status(400).json({ error: 'action must be unpark or confirm-done' }); return; }
+    const key = String(req.params.key ?? '');
+    const r = await ctx.chiefOfStaffLoop.ownerTap(`cos:${action}:${key}`, 'owner-tap');
+    res.status(r === 'ok' ? 200 : 409).json({ ok: r === 'ok', result: r });
   });
   router.get('/chief-of-staff/projects/:key', (req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -12567,7 +12678,11 @@ export function createRoutes(ctx: RouteContext): Router {
       peers: () => ctx.resolvePeerUrls?.() ?? [],
       peerUrlAllowlist: () => (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
     }, req.query.scope === 'pool' ? 'pool' : 'local');
-    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true });
+    // The same one-line-per-setting summary the owner's phone shows, so the agent can answer "is something
+    // off that team access needs?". Read-only: turning a setting on stays the owner's phone tap. null when
+    // this agent has no team router (no app pairing).
+    const switches = ctx.mobilePairingService?.teamSwitchesSummary;
+    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true, teamSwitches: switches ? switches() : null });
   });
 
   // The owner's one-time repair (spec: "Owner recovery"). The token is the auth, the
@@ -21363,10 +21478,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const reader = unread.resolveReader({ person: ctx.mobilePairingService ? devicePersonOf(req) : null, viaDevice: true });
       return reader ? { readUpTo: unread.readUpTo(reader, `telegram:${topicId}`) } : {};
     };
+    // Pinned messages (conversation-pinned-messages): the agent-wide pin list rides on every answer.
+    const pinsField = (): Record<string, unknown> => (ctx.appConversations && isConversationPinsEnabled(ctx.config) ? { pins: pinRowsFor(ctx.appConversations.store, `telegram:${topicId}`) } : {});
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField() });
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -21429,7 +21546,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField() });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -29534,6 +29651,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (forwardedTopicName && !trust && ingressDecision.senderTrusted && Number.isSafeInteger(Number(topicId))) {
       ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true);
     }
+    // A pin made in Telegram, read by the lifeline (conversation-pinned-messages). Only a lifeline-proven
+    // sender; the adapter checks the person who pinned is authorized here.
+    if (topicId && !text && req.body?.pinOnly === true) {
+      const handed = !trust && ingressDecision.senderTrusted
+        ? ctx.telegram?.handleForwardedPin?.({ topicId: Number(topicId), messageId: Number(req.body.pinnedMessageId), serviceMessageId: Number(req.body.pinServiceMessageId), fromUserId: Number(req.body.fromUserId), byName: typeof req.body.fromFirstName === 'string' ? req.body.fromFirstName : '' }) ?? false
+        : false;
+      res.json({ ok: true, pinOnly: true, recorded: handed });
+      return;
+    }
     if (topicId && !text && forwardedTopicName && req.body?.nameOnly === true) {
       res.json({ ok: true, nameOnly: true });
       return;
@@ -30483,6 +30609,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // Chief of Staff taps (docs/specs/chief-of-staff-topic.md §6): like the pairing buttons, a forwarded
+    // `cos:` tap is honoured only with the lifeline proof — a Bearer holder must not be able to forge an owner tap.
+    if (typeof data === 'string' && data.startsWith('cos:') && !callbackDecision.verified) {
+      claimStore.markFailed(callbackQueryId);
+      res.status(403).json({ ok: false, error: 'chief-of-staff tap without lifeline proof' });
+      return;
+    }
     try {
       // Reconstruct a callback query object and process it through TelegramAdapter
       const query = {
@@ -38507,42 +38640,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const state = subscriptionPoolAvailability()?.state;
     return state === 'ready' || state === 'unconfigured';
   };
-  const enforceSubscriptionPoolWriteCapability = (route: string) =>
-    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+  /**
+   * The subscription-pool write barrier for one classified route, as an answer or null (go ahead).
+   * Shared by the route middleware below and the owner phone's Face ID sign-in
+   * (POST /mobile/accounts/sign-in/start runs start-cell's barrier, account-sign-in-face-id).
+   */
+  const subscriptionPoolWriteRefusal = (route: string): { status: number; body: Record<string, unknown> } | null => {
     const capability = SUBSCRIPTION_POOL_WRITE_CAPABILITIES[route];
-    if (!capability) {
-      res.status(500).json({ error: 'Subscription identity mutation route is not classified.' });
-      return;
-    }
-    if (ctx.subscriptionPool && !subscriptionPoolReadable()) {
-      res.status(503).json(subscriptionPoolFailureBody());
-      return;
-    }
+    if (!capability) return { status: 500, body: { error: 'Subscription identity mutation route is not classified.' } };
+    if (ctx.subscriptionPool && !subscriptionPoolReadable()) return { status: 503, body: subscriptionPoolFailureBody() as Record<string, unknown> };
     if (subscriptionPoolAvailability()?.maintenance === 'rollback-cleanup-pending') {
-      res.status(409).json({
+      return { status: 409, body: {
         error: 'subscription-pool-cleanup-pending',
         priorCommitMayHaveSucceeded: true,
         recovery: 're-read-and-restart',
-      });
-      return;
+      } };
     }
     if (
       subscriptionPoolAvailability()?.state === 'unconfigured' &&
       (route === 'PATCH /subscription-pool/:id' || route === 'DELETE /subscription-pool/:id')
     ) {
-      res.status(503).json(subscriptionPoolFailureBody());
-      return;
+      return { status: 503, body: subscriptionPoolFailureBody() as Record<string, unknown> };
     }
-    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) {
-      next();
-      return;
-    }
-    res.status(503).json({
+    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) return null;
+    return { status: 503, body: {
       error: 'Account identity reconciliation is still starting. Try again shortly.',
       code: 'subscription-account-email-reconciliation-running',
       retryable: true,
       emailReconciliation: { state: 'running' },
-    });
+    } };
+  };
+  const enforceSubscriptionPoolWriteCapability = (route: string) =>
+    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+    const refusal = subscriptionPoolWriteRefusal(route);
+    if (refusal) {
+      res.status(refusal.status).json(refusal.body);
+      return;
+    }
+    next();
   };
   const subscriptionEmailGaps = () =>
     (ctx.subscriptionPool && subscriptionPoolReadable() &&
@@ -39994,6 +40129,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     mountMobilePermissionsRoutes(router, {
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
+      // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
+      // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
+      startAccountSignIn: async (accountId, machineId, req) => {
+        const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool/matrix/start-cell');
+        if (refusal) return refusal;
+        return runMatrixStartCell(accountId, machineId, req.app?.locals?.stateDir);
+      },
       teamAction: async (kind, req, deviceId, target) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
         return run ? await run(kind, req, deviceId, target) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
@@ -40955,33 +41097,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // new authority — it just drives the existing chain in one call so the frontend never handles
   // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
   // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
-  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
+  //
+  // The core after the presence check lives in runMatrixStartCell so the owner phone's Face ID route
+  // (POST /mobile/accounts/sign-in/start, docs/specs/account-sign-in-face-id.md) runs exactly the same
+  // chain and answers exactly the same body. Only the presence proof differs; nothing here is duplicated.
+  type MatrixStartCellResult = { status: number; body: Record<string, unknown> };
+  type MatrixStartCellReady =
+    | { ok: false; result: MatrixStartCellResult }
+    | { ok: true; afmCfg: { enabled?: boolean; remoteScrapeTimeoutMs?: number } | undefined; coordination: NonNullable<typeof ctx.coordination>; enrollmentWizard: NonNullable<typeof ctx.enrollmentWizard>; subscriptionPool: NonNullable<typeof ctx.subscriptionPool> };
+  /** start-cell's preconditions (feature on, mandate engine, wizard and pool present), read live. */
+  function matrixStartCellReady(): MatrixStartCellReady {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
-    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
-      res.status(503).json({ error: 'account follow-me not enabled' });
-      return;
-    }
-    if (!ctx.coordination) {
-      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
-      return;
-    }
-    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) {
-      res.status(503).json({ error: 'enrollment wizard or subscription pool not configured' });
-      return;
-    }
-    const b = req.body ?? {};
-    if (typeof b.accountId !== 'string' || !b.accountId.trim() || typeof b.machineId !== 'string' || !b.machineId.trim()) {
-      res.status(400).json({ error: 'accountId and machineId are required' });
-      return;
-    }
-    // THE LOAD-BEARING GATE (FD4): the dashboard PIN proves operator presence. checkMandatePin
-    // is the EXACT mechanism /mandate/issue-for-machine uses; a missing/invalid PIN sends its own
-    // 401/403/429 response — never start an enrollment without it. The agent shares the Bearer, so
-    // Bearer-only would let any agent session start a cross-machine account login with no operator.
-    if (!checkMandatePin(req, res)) return;
-
-    const accountId = b.accountId.trim();
-    const machineId = b.machineId.trim();
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) return { ok: false, result: { status: 503, body: { error: 'account follow-me not enabled' } } };
+    if (!ctx.coordination) return { ok: false, result: { status: 503, body: { error: 'coordination mandate engine unavailable (no stateDir or init failed)' } } };
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) return { ok: false, result: { status: 503, body: { error: 'enrollment wizard or subscription pool not configured' } } };
+    return { ok: true, afmCfg, coordination: ctx.coordination, enrollmentWizard: ctx.enrollmentWizard, subscriptionPool: ctx.subscriptionPool };
+  }
+  /**
+   * start-cell after its presence check: reuse a live pending login for this pair (self), else issue the
+   * per-(account, machine) mandate and drive the existing mandate-gated enroll/start. The CALLER must
+   * have proven operator presence (dashboard PIN, or the owner phone's Face ID signature over
+   * `account-sign-in <accountId>@<machineId>`); this function adds no authority of its own.
+   */
+  async function runMatrixStartCell(accountId: string, machineId: string, stateDir: string | undefined): Promise<MatrixStartCellResult> {
+    const ready = matrixStartCellReady();
+    if (!ready.ok) return ready.result;
+    const afmCfg = ready.afmCfg;
     const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
     const isSelf = machineId === selfMachineId;
     const localFp = resolveAgentFingerprint(ctx);
@@ -40993,18 +41134,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (isSelf) {
       try {
         const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
-        const localAccounts = ctx.subscriptionPool.list().map((a) => ({
+        const localAccounts = ready.subscriptionPool.list().map((a) => ({
           id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
         }));
         const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
         const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
         if (!target.resolved) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=${target.code}`);
-          res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
-            .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
-          return;
+          return { status: target.code === 'subscription-account-not-found' ? 404 : 409, body: { error: target.reason, code: target.code, accountId, repairRequired: true } };
         }
-        const existing = ctx.enrollmentWizard.pending().find(
+        const existing = ready.enrollmentWizard.pending().find(
           (l) => l.id === accountId && l.status === 'pending'
             && Date.parse(l.ttlExpiresAt) > Date.now()
             && (!l.expectedEmail || l.expectedEmail === target.expectedEmail)
@@ -41021,27 +41160,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
           // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
           // never secrets (same fields the pending-logins surface already serves).
-          res.status(201).json({
+          return { status: 201, body: {
             verificationUrl: existing.verificationUrl, loginId: existing.id, machineId, reused: true,
             expectedEmail: existing.expectedEmail ?? null, ttlExpiresAt: existing.ttlExpiresAt,
             notice: existing.notice ?? null, kind: existing.kind,
-          });
-          return;
+          } };
         }
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix start-cell pre-check failed' });
-        return;
+        return { status: 500, body: { error: err instanceof Error ? operatorError(err, stateDir) : 'matrix start-cell pre-check failed' } };
       }
     }
 
     // Issue the per-(account, targetMachine) account-follow-me mandate — EXACTLY the bounds
-    // /mandate/issue-for-machine writes (R1 exact-bounds, re-mint), PIN already verified above.
+    // /mandate/issue-for-machine writes (R1 exact-bounds, re-mint). Operator presence was already
+    // proven by the caller: the dashboard PIN (start-cell) or a Face ID presence signature
+    // (POST /mobile/accounts/sign-in/start, account-sign-in-face-id).
     // The agents pair is this Echo identity's routing fingerprint (issuer === target identity:
     // the agent following its own account onto another machine), as the scan card does.
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     let mandateId: string;
     try {
-      const mandate = ctx.coordination.store.issue({
+      const mandate = ready.coordination.store.issue({
         scope: 'account-follow-me',
         agents: [localFp, localFp],
         authorities: [
@@ -41056,20 +41195,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // that enrolled adriana); the peer's enroll/start re-verifies the issuance signature.
       if (!isSelf) {
         if (!ctx.packageMandateForDelivery || !ctx.deliverMandateToMachine) {
-          res.status(503).json({ error: 'cross-machine mandate delivery unavailable (no mesh identity)' });
-          return;
+          return { status: 503, body: { error: 'cross-machine mandate delivery unavailable (no mesh identity)' } };
         }
         const portable = ctx.packageMandateForDelivery(mandate);
         const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable });
         if (!outcome.ok) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=deliver-failed`);
-          res.status(502).json({ error: 'could not deliver authorization to the target machine — try again in a moment', retryable: true });
-          return;
+          return { status: 502, body: { error: 'could not deliver authorization to the target machine — try again in a moment', retryable: true } };
         }
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix mandate issuance failed' });
-      return;
+      return { status: 500, body: { error: err instanceof Error ? operatorError(err, stateDir) : 'matrix mandate issuance failed' } };
     }
 
     // Drive the EXISTING mandate-gated enroll/start (no reimplementation of email resolution /
@@ -41082,8 +41218,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
       if (!peer) {
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=peer-unreachable`);
-        res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment`, retryable: true });
-        return;
+        return { status: 502, body: { error: `target machine ${machineId} is not reachable right now — try again in a moment`, retryable: true } };
       }
       baseUrl = peer.url;
     }
@@ -41108,26 +41243,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=started`);
         // Flow-detail passthrough (topic 29836 D2/D3) — same fields as the reused-pending
         // branch above, sourced from the freshly-created login the target machine returned.
-        res.status(201).json({
+        return { status: 201, body: {
           verificationUrl: body.login.verificationUrl, loginId: body.login.id ?? accountId, machineId,
           expectedEmail: body.login.expectedEmail ?? null, ttlExpiresAt: body.login.ttlExpiresAt ?? null,
           notice: body.login.notice ?? null, kind: body.login.kind ?? null,
-        });
-        return;
+        } };
       }
       if (r.status === 409) {
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
-        res.status(409).json({ error: body.error || 'cannot resolve approved account email' });
-        return;
+        return { status: 409, body: { error: body.error || 'cannot resolve approved account email' } };
       }
       // Mandate issued but enroll-start failed (drive throw / unreachable / other). Honest
       // retryable 502 — the unused mandate lapses by its TTL; a re-tap reuses or re-mints.
       console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-failed`);
-      res.status(502).json({ error: body.error || 'could not start the sign-in on the target — try again', retryable: true });
+      return { status: 502, body: { error: body.error || 'could not start the sign-in on the target — try again', retryable: true } };
     } catch (err) {
       console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-error`);
-      res.status(502).json({ error: 'could not reach the machine doing the login — try again', retryable: true });
+      return { status: 502, body: { error: 'could not reach the machine doing the login — try again', retryable: true } };
     }
+  }
+
+  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
+    const ready = matrixStartCellReady();
+    if (!ready.ok) {
+      res.status(ready.result.status).json(ready.result.body);
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.accountId !== 'string' || !b.accountId.trim() || typeof b.machineId !== 'string' || !b.machineId.trim()) {
+      res.status(400).json({ error: 'accountId and machineId are required' });
+      return;
+    }
+    // THE LOAD-BEARING GATE (FD4): the dashboard PIN proves operator presence. checkMandatePin
+    // is the EXACT mechanism /mandate/issue-for-machine uses; a missing/invalid PIN sends its own
+    // 401/403/429 response — never start an enrollment without it. The agent shares the Bearer, so
+    // Bearer-only would let any agent session start a cross-machine account login with no operator.
+    if (!checkMandatePin(req, res)) return;
+    const r = await runMatrixStartCell(b.accountId.trim(), b.machineId.trim(), res.app?.locals?.stateDir);
+    res.status(r.status).json(r.body);
   });
 
   // Single-segment path → no collision with /enroll/:id/complete (3 segments).
@@ -47736,4 +47889,11 @@ function pruneUnforkBackups(backupsDir: string, safeSlug: string): void {
   } catch {
     // best-effort
   }
+}
+
+/** Push every string leaf of a nested secrets object (depth-bounded). */
+function collectStringLeaves(v: unknown, out: string[], depth = 0): void {
+  if (depth > 8 || v == null) return;
+  if (typeof v === 'string') { out.push(v); return; }
+  if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) collectStringLeaves(x, out, depth + 1);
 }

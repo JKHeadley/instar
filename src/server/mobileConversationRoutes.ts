@@ -29,6 +29,7 @@ import {DegradationReporter} from '../monitoring/DegradationReporter.js';
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
 import { storageErrorResponse } from '../core/storageMachineName.js';
+import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
@@ -62,6 +63,7 @@ import type { RouteContext } from './routes.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { deviceTextForRow } from '../core/appPlatformMedia.js';
+import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { ConversationUnreadService, type Reader, type UnreadFields } from '../core/ConversationUnreadService.js';
 import { isMessagePosition, isReaderKey, CATCH_UP_PAGE } from '../core/ConversationReadMarkers.js';
 import {
@@ -89,6 +91,8 @@ export interface ConversationListRow {
   unreadCount?: number;
   unreadMore?: true;
   readUpTo?: { atMs: number; id: string } | null;
+  /** Chief of Staff tree (docs/specs/chief-of-staff-topic.md §1.4): the parent conversation key; owner-role callers only. Older apps ignore it. */
+  parentConversationKey?: string | null;
 }
 
 /** The unread fields of a row as the app receives them (§3.5). */
@@ -239,6 +243,13 @@ export interface MobileConversationRouteDeps {
   /** `mobilePairing.native.media.enabled`, resolved at boot. */
   mediaEnabled?: boolean;
   machineId: () => string;
+  /**
+   * Chief of Staff (docs/specs/chief-of-staff-topic.md §1.4): the pinned conversation key and the tree. Absent
+   * where the feature is off. Served only to owner-role callers (a team or MSP phone sees neither field).
+   */
+  chiefOfStaff?: () => { pinnedKey: string | null; parents: Map<string, string | null> } | null;
+  /** Chief of Staff §4: the owner's phone checks in; absent where the feature is off. */
+  chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
   /**
@@ -535,6 +546,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
 
   /** The unread service when it is on, else null. */
   const unreadOn = (): ConversationUnreadService | null => (deps.unread && deps.unread.enabled() ? deps.unread : null);
+  const pinsOn = (): boolean => isConversationPinsEnabled(deps.config);
   /** The reader of a list or history request: the phone's person, or the agent's forwarded `reader=` key (§3.5). */
   const readerOf = (req: Request): Reader | null => {
     const u = unreadOn();
@@ -596,10 +608,21 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       });
     };
     // A peer's preview cannot be judged here, so a team phone lists what this machine holds.
+    // Chief of Staff §1.4: owner-role callers get `parentConversationKey` on every row and, on the first page
+    // (no cursor), a separate `pinned` row; everyone else gets neither. A Bearer read is the operator's own.
+    const cosView = (person === null || person.role === 'owner') ? (deps.chiefOfStaff?.() ?? null) : null;
+    const rowKey = (r: ConversationListRow): string => (r.platform === 'app' ? `app:${String(r.id)}` : `${r.platform}:${String(r.id)}`);
+    const withTree = (rows: ConversationListRow[]): ConversationListRow[] => !cosView ? rows : rows.map((r) => (cosView.parents.has(rowKey(r)) ? { ...r, parentConversationKey: cosView.parents.get(rowKey(r)) ?? null } : r));
+    const pinnedOut = (rows: ConversationListRow[]): Record<string, unknown> => {
+      if (!cosView || !cosView.pinnedKey || cursor !== null) return {};
+      const inPage = rows.find((r) => rowKey(r) === cosView.pinnedKey);
+      const fromLocal = inPage ?? visible(localRowsAfter(null)).map((r) => ({ ...r, machine: self })).find((r) => rowKey(r) === cosView.pinnedKey);
+      return fromLocal ? { pinned: withTree(withFields([fromLocal], false))[0] } : {};
+    };
     if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
-      const rows = withFields(visible(m.rows), false);
-      res.json({ conversations: rows, nextCursor: m.nextCursor, ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
+      const rows = withTree(withFields(visible(m.rows), false));
+      res.json({ conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -635,7 +658,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       const all = mergeConversationPages([{ rows: localRows, more: false }, ...peerPages.map((p) => ({ ...p, more: false }))], 10_000).rows;
       beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
     }
-    res.json({ conversations: rows, nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
+    res.json({ conversations: withTree(rows), ...pinnedOut(rows), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
   });
 
   // ── Read reports (mobile-unread-messages §3.5) ──
@@ -660,6 +683,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // ── Catch-up between my machines (§3.3): Bearer only, never a phone (not on the device allowlist) ──
+  // POST /mobile/chief-of-staff/check-in — the owner's phone renews the operator lease (spec §4: "a message or
+  // tap from an owner-admitted device"). The device allowlist admits owner phones only; the admission is
+  // re-read here so a revoked or downgraded device never renews.
+  router.post('/mobile/chief-of-staff/check-in', (req: Request, res: Response) => {
+    const adm = mobileOwnerDeviceAdmission(deps.pairing, req);
+    if (!adm || !adm.isCurrent()) { res.status(403).json({ error: 'owner-phone-required' }); return; }
+    if (!deps.chiefOfStaffCheckIn) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    const r = deps.chiefOfStaffCheckIn(`device:${adm.deviceId}`);
+    if (!r.ok) { res.status(r.reason === 'no-signer' ? 503 : 409).json({ error: r.reason }); return; }
+    res.json({ ok: true, lease: r.lease });
+  });
   router.get('/mobile/conversations/read-markers', (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc) { off(res); return; }
@@ -1013,7 +1047,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // Unread (§3.5): a device reader's effective position, for the "Unread messages" divider.
     const unreadReader = principalOf(req).kind === 'device' ? readerOf(req) : null;
     const readUpTo = unreadReader && unreadOn() ? { readUpTo: unreadOn()!.readUpTo(unreadReader, `app:${key.toLowerCase()}`) } : {};
-    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo }); return; }
+    // Pinned messages (conversation-pinned-messages) ride on every history answer, so a poll sees new pins.
+    const pins = pinsOn() && live ? { pins: pinRowsFor(svc!.store, key, (id) => deps.pairing.mayReadMessageId(reader, key, id)) } : {};
+    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo, ...pins }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
     // machine cannot check it: `originVerified: "unknown"`, never the peer's verdict. Never
@@ -1047,7 +1083,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const oldest = pageRows[pageRows.length - 1];
     res.json({
       conversationKey: key, messages: pageRows.reverse(),
-      nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed }, ...readUpTo,
+      nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed }, ...readUpTo, ...pins,
     });
   });
 
@@ -1082,10 +1118,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     res.json({
       conversationKey: key,
       events: page.events.filter((e) => {
-        // A message, and anything about one, such as its transcript.
-        const about = (e as { messageId?: unknown }).messageId;
+        // A message, and anything about one, such as its transcript or a pin (conversation-pinned-messages).
+        if (e.kind === 'pin' && !pinsOn()) return false;
+        const about = e.kind === 'pin' ? e.pinnedMessageId : (e as { messageId?: unknown }).messageId;
         // Text about a message that has not reached this machine waits for it.
-        if (typeof about !== 'string' || (e.kind !== 'transcript' && !svc!.store.hasMessage(about))) return true;
+        if (typeof about !== 'string' || (e.kind !== 'transcript' && e.kind !== 'pin' && !svc!.store.hasMessage(about))) return true;
+        // A pin of a message not held in this conversation here cannot be checked, so it waits for the message.
+        if (e.kind === 'pin' && !svc!.store.getMessageEvent(key, about)) return false;
         return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
       }).map((e) => {
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };

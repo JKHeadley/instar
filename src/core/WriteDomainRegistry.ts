@@ -442,6 +442,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // POST /hooks/post-compact (context-budget-layered-summaries §9.1, §14): the
+  // PostCompact hook reports from the session's own machine over loopback; the
+  // scrubbed summary lands under that machine's .instar/state/context-layers/,
+  // which is git-ignored. Observability only in Phase 0; nothing replicates.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/hooks/post-compact',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-topic PostCompact records under .instar/state/context-layers/<topic>/post-compact/, git-ignored; written by the machine hosting the session',
+    },
+  });
+
   // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
   // THIS machine's own identity file, rebuilds THIS process's relay client, appends one row
   // to this machine's key-free audit log. Local effect only; carries no key; installs
@@ -494,6 +511,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
   reg.add({ kind: 'route', method: 'PATCH', pathPrefix: '/evolution/', domain: 'machine-local', story: evolutionStory });
+
+  // POST /chief-of-staff/* — the Chief of Staff owner routes (docs/specs/chief-of-staff-topic.md §4/§5):
+  // check-in, project bind, Unpark/Confirm-done taps, the one-shot triage view. Each writes a record to
+  // THIS machine's own chief-of-staff journal stream (origin = this machine, single writer), which
+  // journal sync replicates to every peer; every reader folds the union. The triage view id is holder
+  // bookkeeping (a standby that answers mints its own view; harmless, see the PR 5 artifact).
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/chief-of-staff/',
+    domain: 'machine-local',
+    story: {
+      logical: 'ws2x-replicated',
+      onSharedGitSyncedPath: false,
+      note: 'per-origin coherence-journal stream (chief-of-staff-record kind), replicated by journal sync and folded from the union on every machine; dev-gated, dark on the fleet',
+    },
+  });
 
   // POST /topic-profile/new-topic-default — the "default for dashboard-created
   // topics" record (docs/specs/dashboard-door-model-controls.md §3.2/§7).

@@ -369,10 +369,11 @@ describe('NEGATIVE CONTROL: the same check catches a page that breaks the floor'
 });
 
 // A page must not bypass the helpers. files.js scrolls the file tree it owns after an
-// operator's click, which is not a refresh path.
+// operator's click, and chats.js jumps to a pinned message when the operator taps the
+// pinned bar (conversation-pinned-messages); neither is a refresh path.
 const RAW = /\bmain\.replaceChildren\(|\.scrollIntoView\(|\bwindow\.scrollTo\(/;
 function rawViolations(src: string) { return src.split('\n').filter((l) => RAW.test(l)); }
-const OWN_SCROLLS: Record<string, number> = { 'ui.js': 3, 'console.js': 3, 'files.js': 1 };
+const OWN_SCROLLS: Record<string, number> = { 'ui.js': 3, 'console.js': 3, 'files.js': 1, 'chats.js': 1 };
 
 describe('static floor: no page bypasses the helpers', () => {
   const files = fs.readdirSync(CONSOLE).filter((f) => f.endsWith('.js') && !f.endsWith('-model.js'));

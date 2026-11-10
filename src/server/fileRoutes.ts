@@ -116,6 +116,12 @@ export const NEVER_SERVED_PREFIXES = [
   // path — it stays only as a legacy-layout regression pin.
   'state/judgment-provenance/',
   '.instar/state/judgment-provenance/',
+  // context-budget-layered-summaries §9.7: per-topic conversation layers and
+  // PostCompact summaries, and the transcript archive. Never served.
+  'state/context-layers/',
+  '.instar/state/context-layers/',
+  'state/context-archive/',
+  '.instar/state/context-archive/',
   // Chrome profiles and the Linux driver's cookie, bindings and page reads (normal-chrome-linux).
   // The trailing slash keeps state/playwright-profiles.json served.
   'state/playwright-profiles/',

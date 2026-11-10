@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-10T08:59:00.314Z",
+  "slug": "cb-idle-gated-fallback",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 59,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/monitoring/CompactionSentinel.ts"
+    ],
+    "addedLines": 48,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

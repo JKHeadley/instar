@@ -43,7 +43,7 @@ import { type AppAttachment, validateAttachments, MAX_PURGE_BATCH, mediaPreview 
 import { validConversationOwner, type ConversationOwner } from './MobilePeople.js';
 import type { AccessStamp } from './TeamAccessMerge.js';
 
-export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript';
+export type AppEventKind = 'created' | 'label' | 'tombstone' | 'message' | 'delivery' | 'media-message' | 'purge' | 'platform-media' | 'transcript' | 'pin';
 export type DeliveryEventState = 'delivered' | 'refused' | 'intercepted' | 'unknown';
 export type ReducedDeliveryState = DeliveryEventState | 'pending';
 
@@ -127,7 +127,47 @@ export interface PlatformMediaEvent extends AppEventBase { kind: 'platform-media
  * `media-message`. `late` marks a transcript that finished after the 60 s dispatch deadline.
  */
 export interface TranscriptEvent extends AppEventBase { kind: 'transcript'; messageId: string; attachmentId: string; text: string; provider: string; late?: true }
-export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent;
+/**
+ * A pin or unpin of one message (docs/specs/conversation-pinned-messages.md). Never a chat message:
+ * the target is `pinnedMessageId` (not `messageId`), so no message reader treats it as one. Per
+ * (conversation, pinnedMessageId) the greatest (at, machineId, eventId) wins, in any arrival order.
+ */
+export interface PinEvent extends AppEventBase {
+  kind: 'pin';
+  pinnedMessageId: string;
+  pinState: 'pinned' | 'unpinned';
+  pinnedBy: { name: string; role: PinnedByRole };
+  /** The pinned message's text as the pinning machine saw it (first 200 characters, paths removed). */
+  preview?: string;
+  source: 'app' | 'telegram';
+}
+export type PinnedByRole = 'owner' | 'msp' | 'team' | 'telegram';
+export type AppEvent = CreatedEvent | LabelEvent | TombstoneEvent | MessageEvent | DeliveryEvent | MediaMessageEvent | PurgeEvent | PlatformMediaEvent | TranscriptEvent | PinEvent;
+
+/** The id of a pinned message: an app message id, a Telegram message id, or a Slack ts. */
+export const PIN_MESSAGE_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+export const PIN_PREVIEW_CHARS = 200;
+/** At most this many messages are pinned in one conversation (a further pin is refused). */
+export const MAX_PINS_PER_CONVERSATION = 100;
+
+/** One pinned message as the reads return it. */
+export interface PinnedMessage {
+  messageId: string;
+  pinnedAt: string;
+  pinnedBy: { name: string; role: PinnedByRole };
+  preview: string | null;
+  source: 'app' | 'telegram';
+  eventId: string;
+  machineId: string;
+}
+
+/** Whether a pin event beats the current winner for its message (the one order every machine uses). */
+export function pinEventWins(next: { at: string; machineId: string; eventId: string }, cur: { at: string; machineId: string; eventId: string } | null | undefined): boolean {
+  if (!cur) return true;
+  if (next.at !== cur.at) return next.at > cur.at;
+  if (next.machineId !== cur.machineId) return next.machineId > cur.machineId;
+  return next.eventId > cur.eventId;
+}
 
 /** A transcript event's id: one per attachment per machine (the index picks one winner, §4.5.1). */
 export function transcriptEventId(attachmentId: string, machineId: string): string {
@@ -212,6 +252,9 @@ const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS media_totals (id INTEGER PRIMARY KEY CHECK (id = 1), liveBytes INTEGER NOT NULL DEFAULT 0)`,
   // Server transcripts (media spec §4.5.1): the one winning transcript event per attachment.
   `CREATE TABLE IF NOT EXISTS transcripts (attachmentId TEXT PRIMARY KEY, canonicalKey TEXT NOT NULL, eventId TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL)`,
+  // Pinned messages (conversation-pinned-messages): the winning pin event per message.
+  `CREATE TABLE IF NOT EXISTS pins (canonicalKey TEXT NOT NULL, pinnedMessageId TEXT NOT NULL, eventId TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, machineId TEXT NOT NULL, PRIMARY KEY (canonicalKey, pinnedMessageId))`,
+  `CREATE INDEX IF NOT EXISTS pins_state ON pins(canonicalKey, state, at)`,
 ];
 
 /**
@@ -313,6 +356,22 @@ export function validateAppEvent(raw: unknown): AppEvent | null {
       if (!messageId || !attachmentId || text === null || !provider) return null;
       if (r.late !== undefined && r.late !== true) return null;
       return { ...base, kind: 'transcript', messageId, attachmentId, text, provider, ...(r.late === true ? { late: true as const } : {}) };
+    }
+    case 'pin': {
+      const pinnedMessageId = typeof r.pinnedMessageId === 'string' && PIN_MESSAGE_ID_RE.test(r.pinnedMessageId) ? r.pinnedMessageId : null;
+      const pinState = r.pinState === 'pinned' || r.pinState === 'unpinned' ? r.pinState : null;
+      const by = r.pinnedBy as Record<string, unknown> | undefined;
+      const name = by && typeof by.name === 'string' && by.name.length > 0 && by.name.length <= 128 ? by.name : null;
+      const role = by && (by.role === 'owner' || by.role === 'msp' || by.role === 'team' || by.role === 'telegram') ? by.role : null;
+      const source = r.source === 'app' || r.source === 'telegram' ? r.source : null;
+      if (!pinnedMessageId || !pinState || !name || !role || !source) return null;
+      // The winner is picked by comparing `at` as text, so only the one exact UTC form is accepted.
+      if (new Date(at).toISOString() !== at) return null;
+      if (r.preview !== undefined && (typeof r.preview !== 'string' || r.preview.length > PIN_PREVIEW_CHARS)) return null;
+      return {
+        ...base, kind: 'pin', pinnedMessageId, pinState, pinnedBy: { name, role }, source,
+        ...(typeof r.preview === 'string' && r.preview ? { preview: r.preview } : {}),
+      };
     }
     case 'purge': {
       const ids = r.attachmentIds;
@@ -457,7 +516,7 @@ export class AppConversationStore {
 
   /** Drop the index and rebuild it from the files (tests and the operator's repair path). */
   rebuildIndex(): void {
-    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts;');
+    this.db.exec('DELETE FROM files; DELETE FROM events; DELETE FROM messages; DELETE FROM deliveries; DELETE FROM conversations; DELETE FROM media_refs; DELETE FROM media_blobs; DELETE FROM media_purged; DELETE FROM media_totals; DELETE FROM transcripts; DELETE FROM pins;');
     this.catchUp();
   }
 
@@ -481,6 +540,7 @@ export class AppConversationStore {
       // The file is shorter than what was indexed (should not happen): re-index it from the start.
       this.dropMediaRefsOf(row.canonicalKey); // re-derived with the events
       this.db.prepare('DELETE FROM transcripts WHERE canonicalKey = ?').run(row.canonicalKey);
+      this.db.prepare('DELETE FROM pins WHERE canonicalKey = ?').run(row.canonicalKey);
       this.db.prepare('DELETE FROM events WHERE canonicalKey = ?').run(row.canonicalKey);
       from = 0;
     }
@@ -669,6 +729,14 @@ export class AppConversationStore {
       case 'purge':
         for (const id of ev.attachmentIds) this.purgeMediaRef(id);
         return;
+      case 'pin': {
+        // Never a chat message: no messages row, no preview, no activity. One winner per message.
+        const cur = this.db.prepare('SELECT eventId, at, machineId FROM pins WHERE canonicalKey = ? AND pinnedMessageId = ?').get(canonicalKey, ev.pinnedMessageId) as { eventId: string; at: string; machineId: string } | undefined;
+        if (pinEventWins(ev, cur)) {
+          this.db.prepare('INSERT OR REPLACE INTO pins (canonicalKey, pinnedMessageId, eventId, state, at, machineId) VALUES (?, ?, ?, ?, ?, ?)').run(canonicalKey, ev.pinnedMessageId, ev.eventId, ev.pinState, ev.at, ev.machineId);
+        }
+        return;
+      }
       case 'platform-media':
         // A reference only (§4.9): never a chat message, so no messages row and no preview.
         this.indexMediaRefs(canonicalKey, ev);
@@ -890,6 +958,37 @@ export class AppConversationStore {
     const page = rows.slice(0, limit).map(toSummary);
     const last = page[page.length - 1];
     return { conversations: page, nextCursor: more && last ? `${last.lastActivity ?? last.createdAt ?? ''}|${last.canonicalKey}` : null };
+  }
+
+  /** The pin state of one message (conversation-pinned-messages): its winning event's state, or null when never pinned. */
+  pinState(conversationKey: string, messageId: string): 'pinned' | 'unpinned' | null {
+    const r = this.db.prepare('SELECT state FROM pins WHERE canonicalKey = ? AND pinnedMessageId = ?').get(canonicalConversationKey(conversationKey), messageId) as { state: string } | undefined;
+    return r ? (r.state === 'pinned' ? 'pinned' : 'unpinned') : null;
+  }
+
+  /** The winning pin event of one message: its state and time, or null when never pinned. */
+  pinRecord(conversationKey: string, messageId: string): { state: 'pinned' | 'unpinned'; at: string } | null {
+    const r = this.db.prepare('SELECT state, at FROM pins WHERE canonicalKey = ? AND pinnedMessageId = ?').get(canonicalConversationKey(conversationKey), messageId) as { state: string; at: string } | undefined;
+    return r ? { state: r.state === 'pinned' ? 'pinned' : 'unpinned', at: r.at } : null;
+  }
+
+  /** How many messages are pinned in a conversation now. */
+  pinCount(conversationKey: string): number {
+    return (this.db.prepare("SELECT COUNT(*) AS c FROM pins WHERE canonicalKey = ? AND state = 'pinned'").get(canonicalConversationKey(conversationKey)) as { c: number }).c;
+  }
+
+  /** The pinned messages of a conversation, newest pin first (at most MAX_PINS_PER_CONVERSATION). */
+  listPins(conversationKey: string, limit = MAX_PINS_PER_CONVERSATION): PinnedMessage[] {
+    const canonicalKey = canonicalConversationKey(conversationKey);
+    const n = Math.max(1, Math.min(MAX_PINS_PER_CONVERSATION, Math.floor(limit)));
+    const rows = this.db.prepare("SELECT eventId FROM pins WHERE canonicalKey = ? AND state = 'pinned' ORDER BY at DESC, machineId DESC, eventId DESC LIMIT ?").all(canonicalKey, n) as Array<{ eventId: string }>;
+    const out: PinnedMessage[] = [];
+    for (const r of rows) {
+      const ev = this.getEvent(conversationKey, r.eventId);
+      if (!ev || ev.kind !== 'pin') continue;
+      out.push({ messageId: ev.pinnedMessageId, pinnedAt: ev.at, pinnedBy: ev.pinnedBy, preview: ev.preview ?? null, source: ev.source, eventId: ev.eventId, machineId: ev.machineId });
+    }
+    return out;
   }
 
   /** Every live conversation key (boot alias re-derivation and lease-acquisition binds). */

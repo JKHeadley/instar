@@ -33,13 +33,13 @@ describe('Chief of Staff loop wiring', () => {
   });
   it('second-pass fixes: one-reader rule fails CLOSED, an orphan run is compensated, a lease-expired CoS run is not revived', () => {
     expect(server).toContain('readers === null || readers > 1');
-    expect(server).toContain("cosRunStore.markTerminal(String(t), body.runId, 'ended', 'cos-spawn-failed')");
+    expect(server).toContain("cosRunStore.markTerminal(String(t), registeredRun, 'ended', 'cos-spawn-failed')");
     expect(server).toContain('cosRunStore.findByRunId(runId)');
     expect(server).toContain("return 'cos-lease-expired'");
   });
   it('an owner message in the CoS topic renews the lease through the module-scope hook', () => {
     expect(server).toContain('let _cosRenewalHook:');
-    expect(server).toContain('if (_cosRenewalHook && telegramUserId && telegram.getOwnerUserId() === telegramUserId)');
+    expect(server).toContain('if (_cosRenewalHook && telegramUserId && resolveApprovalOwner(telegram.getOwnerUserId(), [], []) === telegramUserId)'); // owner id normalised (PR 4 review #3)
     expect(server).toContain("loop.recordRenewal({ renewedVia: 'telegram'");
   });
   it('routes expose the loop and the protocol', () => {

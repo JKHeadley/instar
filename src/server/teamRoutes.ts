@@ -366,6 +366,8 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     const self = deps.selfStanding?.() ?? null;
     return teamSwitchSummary([...(self ? [self] : []), ...(svc.teamPuller?.standings?.() ?? [])], deps.switchRequests?.() ?? []);
   };
+  // The agent reads the same lines through GET /team/people (its Bearer cannot read the phone route). Read-only.
+  svc.teamSwitchesSummary = teamSwitches;
 
   /** A machine last known unable to keep a team's promises blocks anything new, and existing phones keep working (§3.6). */
   const floorOk = (res: Response): boolean => {

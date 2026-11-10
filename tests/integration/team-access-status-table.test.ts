@@ -156,6 +156,8 @@ async function teamOff(e: Env, owner: Phone) {
 /** Patterns the generator cannot read: a lookahead, or a shape it would get wrong. */
 const NAMED: Array<[RegExp, string]> = [
   [/attention/, '/mobile/attention/item-1/choice'],
+  [/chat\\\/slack.*pins/, '/mobile/chat/slack/-5/pins'],
+  [/chat\\\/\[1-9\].*pins/, '/mobile/chat/50/pins'],
   [/chat\\\/slack.*messages/, '/mobile/chat/slack/-5/messages'],
   [/chat\\\/slack/, '/mobile/chat/slack/-5'],
   [/sessions\\\/door/, '/mobile/sessions/door/50'],

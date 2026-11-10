@@ -215,6 +215,7 @@ import { ConversationUnreadService, type TelegramRowLike } from '../core/Convers
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
 import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
@@ -1830,6 +1831,9 @@ export class AgentServer {
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
     this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
+    // PostCompact record route (context-budget-layered-summaries §14 body cap):
+    // the hook reads at most 2 MiB of stdin; the store keeps at most 512 KiB.
+    this.app.use('/hooks/post-compact', express.json({ limit: '2mb' }));
     // Native hook events: admission (loopback, no forwarding headers, bearer,
     // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
     // 4 MB parser — both ahead of the global parser, which runs before
@@ -6992,6 +6996,15 @@ export class AgentServer {
         // `?scope=pool` on the list and browse reads (§4.8): the same peer fan-out other pool reads use.
         pool: routeCtx,
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
+        // Chief of Staff §1.4: the pinned conversation + tree for owner-role callers; absent where the feature is off.
+        chiefOfStaffCheckIn: options.chiefOfStaffLoop ? (principal: string) => options.chiefOfStaffLoop!.checkIn({ renewedVia: 'app', principal }) : undefined,
+        chiefOfStaff: options.chiefOfStaffLoop ? () => {
+          const loop = options.chiefOfStaffLoop!;
+          const t = this.state.get<number>('chief-of-staff-topic');
+          const parents = new Map<string, string | null>();
+          for (const [k, n] of loop.tree()) parents.set(k, n.parentConversationKey);
+          return { pinnedKey: typeof t === 'number' && t > 1 ? `telegram:${t}` : null, parents };
+        } : undefined,
         telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
@@ -7006,6 +7019,30 @@ export class AgentServer {
         },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});};
         const existing=options.conversationGraphReplicationRuntime??options.conversationGraphDefault?.runtime,identity=options.conversationGraphDefault?.identity??options.coordinator?.managers?.identityManager;
         if(existing&&identity)startOwnedGraphInventory(existing,identity);
+      }
+      // Pinned messages (docs/specs/conversation-pinned-messages.md): pins live in the app conversation
+      // store; Telegram pins are also made in Telegram by the machine serving it, Slack pins in Slack.
+      const pinTelegram = options.telegram ? {
+        exists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId),
+        serving: () => this.mobilePairing!.holdsLease(),
+        textOf: (topicId: number, messageId: string) => {
+          const row = options.telegram!.getTopicHistory(topicId, 500).find((m) => String(m.messageId) === messageId);
+          return row && typeof row.text === 'string' ? deviceTextForRow(row.text) : null;
+        },
+        pin: (topicId: number, messageId: number, pinned: boolean) => options.telegram!.setTopicMessagePin(topicId, messageId, pinned),
+      } : null;
+      this.app.use(createMobilePinRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        telegram: pinTelegram ? () => pinTelegram : null,
+        slack: slackBridge ? () => slackBridge : null,
+      }));
+      // A pin someone makes inside Telegram is recorded here (only the polling machine receives it; the event replicates).
+      if (options.telegram && this.appConversations) {
+        const app = this.appConversations;
+        options.telegram.onTopicMessagePinned = (p) => {
+          recordTelegramPin({ config: options.config, service: app, textOf: pinTelegram?.textOf, report: (d) => app.deps.reportDegradation?.('AppConversations.telegramPin', d) }, p);
+        };
       }
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
