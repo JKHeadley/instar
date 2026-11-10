@@ -155,3 +155,6 @@ Nits recorded rather than built:
 ## Class-Closure Declaration (display-only mirror)
 
 Not a defect fix. Class `n/a`, closure `n/a`.
+
+## Addendum: CI follow-up
+- `tests/unit/context-layer-kind.test.ts` (Phase 0's DARK check) now names the layer store as the one sanctioned emitter. That emitter only emits through the stateSync-gated `ReplicatedRecordEmitter`.
