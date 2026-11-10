@@ -81,6 +81,10 @@ const ALLOWED_FRONTMATTER_KEYS: ReadonlySet<string> = new Set([
   'name',
   'description',
   'toolAllowlist',
+  // EVO-008: the author's explicit enrolment — apply this job's toolAllowlist exactly
+  // (even a bare ["Read"]) and refuse the launch rather than run it unapplied. Read
+  // directly by JobScheduler.resolveToolEnforcement.
+  'toolAllowlistEnforce',
   'grounding',
   'notificationMode',
   'viewMetadata',
@@ -1360,6 +1364,22 @@ function validateFrontmatterShape(
     if (fm.notificationMode !== 'always' && fm.notificationMode !== 'on-alert' && fm.notificationMode !== 'never') {
       return mkFmProblem(manifest, '"notificationMode" must be one of "always" | "on-alert" | "never"');
     }
+  }
+
+  // FAILSAFE_SCHEMA hands booleans over as strings; BoolField is the exact coercion.
+  const enforceParsed = fm.toolAllowlistEnforce === undefined ? null : BoolField.safeParse(fm.toolAllowlistEnforce);
+  if (enforceParsed && !enforceParsed.success) {
+    return mkFmProblem(manifest, '"toolAllowlistEnforce" must be true or false if provided');
+  }
+  if (enforceParsed?.success && enforceParsed.data === true && !Array.isArray(fm.toolAllowlist)) {
+    // EVO-008 §2a: enrolment binds a DECLARED list. Without one there is nothing to apply
+    // exactly, and running the job would silently do the opposite of what was asked.
+    return mkFmProblem(manifest, '"toolAllowlistEnforce: true" needs a toolAllowlist array (the exact tools to apply)');
+  }
+  if (enforceParsed?.success && enforceParsed.data === true && fm.runner === 'script') {
+    // A script runner opens no model session, so an enrolled tool list would be accepted
+    // and never applied on its normal path — refuse the ambiguous combination outright.
+    return mkFmProblem(manifest, '"toolAllowlistEnforce: true" cannot be used on a runner: script job (it opens no session to limit)');
   }
 
   if (fm.toolAllowlist !== undefined) {

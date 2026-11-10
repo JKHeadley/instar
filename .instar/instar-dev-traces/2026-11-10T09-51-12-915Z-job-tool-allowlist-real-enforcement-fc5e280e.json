@@ -1,0 +1,61 @@
+{
+  "version": 3,
+  "slug": "job-tool-allowlist-real-enforcement",
+  "sessionId": "bb009edc-834d-40af-a92c-3b81122b1fee",
+  "timestamp": "2026-11-10T09:51:12.915Z",
+  "artifactPath": "upgrades/side-effects/job-tool-allowlist-real-enforcement.md",
+  "artifactSha256": "cf7a5556f19325f8693c4dec107bcb4dbce796cda678007f1e19331b5222f253",
+  "specPath": "docs/specs/job-tool-allowlist-real-enforcement.md",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-10T09-50-56-417Z-job-tool-allowlist-real-enforcement.json",
+    "docs/specs/carriers/job-tool-allowlist-real-enforcement.json",
+    "docs/specs/job-tool-allowlist-real-enforcement.eli16.md",
+    "docs/specs/job-tool-allowlist-real-enforcement.md",
+    "docs/specs/reports/job-tool-allowlist-real-enforcement-convergence.md",
+    "src/commands/jobMigrate.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/feature-ladders.json",
+    "src/scaffold/templates.ts",
+    "src/scheduler/AgentMdJobLoader.ts",
+    "src/scheduler/JobRunHistory.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/integration/job-tool-confinement-live.test.ts",
+    "tests/unit/PostUpdateMigrator-jobToolLimits.test.ts",
+    "tests/unit/commands/jobMigrate.test.ts",
+    "tests/unit/job-templates-tool-confinement-census.test.ts",
+    "tests/unit/scheduler/JobLoader.agentmd.test.ts",
+    "tests/unit/scheduler/JobScheduler.tool-enforcement.test.ts",
+    "tests/unit/session-manager-job-confinement.test.ts",
+    "tests/vitest-setup.ts",
+    "upgrades/next/job-tool-allowlist-real-enforcement.md",
+    "upgrades/side-effects/job-tool-allowlist-real-enforcement.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds real blocking authority over job tools (security-sensitive) and a new frontmatter key older builds withhold; not fully undone by a revert for jobs that opt in.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "spec-converge",
+        "outcome": "converged",
+        "verified": false,
+        "iterations": 6
+      }
+    ],
+    "convergence": {
+      "reportPath": "docs/specs/reports/job-tool-allowlist-real-enforcement-convergence.md",
+      "iterations": 6,
+      "verified": true
+    }
+  }
+}

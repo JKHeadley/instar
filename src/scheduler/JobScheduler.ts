@@ -2902,9 +2902,9 @@ export class JobScheduler {
     }
     const requestedModel = route.routeBasis === 'bench' ? route.model : model;
     const requestedFramework = route.routeBasis === 'bench' ? route.framework : undefined;
-    // Side-channel signals (Dashboard event for clamp; degradation event for
-    // both clamp and the instar-origin-without-allowlist Phase 1c gap).
-    this.emitAllowlistSignals(job, allowlistResolution);
+    // EVO-008: decide whether the tool list is APPLIED. The clamp/not-enforced wording is
+    // emitted only AFTER the launch, from what the launch actually did (spec §7).
+    const toolDecision = JobScheduler.resolveToolEnforcement(job, allowlistResolution, this.toolAllowlistEnforcementGate());
 
     // Write active-job.json BEFORE spawning so the session-start and
     // compaction-recovery hooks can inject job-specific grounding context.
@@ -2933,13 +2933,17 @@ export class JobScheduler {
     }
 
     // Allowlist flag for the spawn:
-    // - array → passed through to --allowedTools
-    // - "*" with unrestricted authority → omit flag (full tools)
-    // - clamped or "legacy" with no allowlist → omit flag (full tools by default)
+    // - array (declared, clamped [Read], default-user [Read]) → passed to --allowedTools,
+    //   which is INERT under --dangerously-skip-permissions unless `confinedTools` (below)
+    //   switches the launch to the confined form (EVO-008)
+    // - "*" with unrestricted authority, legacy, instar-no-allowlist → omit flag (full tools)
     // The spawn always receives at most one allowlist input — never a "*" string.
     const spawnAllowedTools: string[] | undefined = Array.isArray(allowlistResolution.allowlist)
       ? allowlistResolution.allowlist
       : undefined;
+    // EVO-008: when the decision is to confine, the session launches in the confined
+    // permission form (no --dangerously-skip-permissions; dontAsk + --tools <list>), so the
+    // list is REAL. Without it the list above is passed but inert under the bypass flag.
 
     // Compute observability fields once, used in both recordStart and the
     // spawn-error path. Hashing the body/frontmatter is cheap (a few µs for
@@ -2952,7 +2956,10 @@ export class JobScheduler {
     if (gateReceipt && !gateReceipt.consumed) consumeJobGateReceipt(gateReceiptFile, gateReceipt.batchId);
     let gateSpawnAccepted = false;
     this.activeSessionSpawns.add(job.slug);
-    this.sessionManager.spawnSession({
+    const spawnPromise = toolDecision.refuse
+      ? Promise.reject(new Error(`confined-tools-unavailable: this job's tool list names tools that cannot be applied ` +
+        `(${(toolDecision.unsupportedNames ?? []).join(', ')}) and it requires its list, so it was not started`))
+      : this.sessionManager.spawnSession({
       name: sessionName,
       prompt,
       model: requestedModel,
@@ -2966,8 +2973,26 @@ export class JobScheduler {
       // MCP boot cost + the auth-required-remote-MCP headless hang hazard
       // (docs/specs/LOOP-SESSION-NO-MCP-SPEC.md). Absent/'project' → unchanged.
       disableProjectMcp: job.mcpAccess === 'none' ? true : undefined,
-    }).then((session) => {
+      ...(toolDecision.confinedTools ? { confinedTools: toolDecision.confinedTools } : {}),
+      ...(toolDecision.requireConfinement ? { requireToolConfinement: true } : {}),
+    });
+    spawnPromise.then((session) => {
       gateSpawnAccepted = true;
+      const toolOutcome = JobScheduler.toolEnforcementOutcome(toolDecision, session);
+      // Observability only: a throw here must never reach the spawn-failure path below
+      // (the session IS running — a spawn-error row there would orphan it and invite a respawn).
+      try {
+        if (toolOutcome.toolsConfined) {
+          featureEvidence.record('jobs.toolAllowlistEnforcement', {
+            kind: 'fired', reason: toolOutcome.toolEnforcement,
+            context: { slug: job.slug, kind: allowlistResolution.kind, shell: toolOutcome.toolEnforcement === 'confined-with-shell' },
+          });
+        }
+        this.emitAllowlistSignals(job, allowlistResolution, toolDecision, toolOutcome, session?.framework);
+      } catch (err) {
+        // @silent-fallback-ok — logged; the run record below still carries the outcome.
+        console.warn(`[scheduler] tool-limit signals for "${job.slug}" failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
       this.markCapacityJobStarted(job.slug);
       this.recordLedgerSession(session?.id ?? sessionName, job.slug, new Date().toISOString(), 'job');
       // Record in run history with full Phase 1b observability payload
@@ -2990,6 +3015,8 @@ export class JobScheduler {
         toolAllowlist: observability.toolAllowlist,
         unrestrictedTools: observability.unrestrictedTools,
         clampedAllowlist: observability.clampedAllowlist,
+        toolsConfined: toolOutcome.toolsConfined,
+        toolEnforcement: toolOutcome.toolEnforcement,
       });
       this.activeRunIds.set(sessionName, runId);
 
@@ -3032,7 +3059,20 @@ export class JobScheduler {
         trigger: reason,
         error: errorMsg,
         model: requestedModel ?? job.model,
+        toolEnforcement: toolDecision.confinedTools || toolDecision.refuse
+          ? (/confined-tools-unavailable/.test(errorMsg) ? 'confine-refused' : 'confine-failed')
+          : toolDecision.reason,
       });
+      if (toolDecision.requireConfinement && /confined-tools-unavailable/.test(errorMsg)) {
+        this.emitAllowlistSignals(job, allowlistResolution, toolDecision, 'refused');
+      }
+      if (toolDecision.confinedTools || toolDecision.refuse) {
+        featureEvidence.record('jobs.toolAllowlistEnforcement', {
+          kind: 'error',
+          reason: /confined-tools-unavailable/.test(errorMsg) ? 'confine-refused' : 'confined-launch-failed',
+          context: { slug: job.slug, kind: allowlistResolution.kind },
+        });
+      }
 
       // Track failure with error message
       const failures = this.getConsecutiveFailures(job.slug) + 1;
@@ -4432,6 +4472,19 @@ export class JobScheduler {
     const fm = job.frontmatter ?? {};
     const raw = fm.toolAllowlist;
 
+    // EVO-008: tamper is checked FIRST. An origin:instar job whose lock-file trust is a
+    // real tamper state is clamped to [Read] whatever its frontmatter declares — before
+    // this, a declared array took precedence and stepped around the clamp.
+    if (job.origin === 'instar' && JobScheduler.isLockUntrustedTamper(job.lockTrust)) {
+      return {
+        kind: 'lock-untrusted-clamped',
+        allowlist: ['Read'],
+        unrestrictedTools: false,
+        clampedAllowlist: true,
+        lockUntrustedClamp: true,
+      };
+    }
+
     if (Array.isArray(raw)) {
       const list = raw.filter((t): t is string => typeof t === 'string' && t.trim().length > 0);
       return {
@@ -4509,6 +4562,77 @@ export class JobScheduler {
       unrestrictedTools: false,
       clampedAllowlist: false,
     };
+  }
+
+  /**
+   * EVO-008 (docs/specs/job-tool-allowlist-real-enforcement.md §2): decide whether this
+   * spawn's tool list is APPLIED (the confined launch form) or only recorded. Pure.
+   *
+   * `gate` is the resolved `jobs.toolAllowlistEnforcement.enabled` value, or
+   * `'unreadable'` when the config could not be read (fail-open toward running the job as
+   * today, reported distinctly). The returned `reason` is the run record's
+   * `toolEnforcement` when nothing is applied; when `confinedTools` is set the final
+   * reason comes from the launched session (see `toolEnforcementOutcome`).
+   */
+  static resolveToolEnforcement(
+    job: JobDefinition,
+    resolution: AllowlistResolution,
+    gate: ToolAllowlistGate,
+  ): ToolEnforcementDecision {
+    const enforceable = resolution.kind === 'array' || resolution.kind === 'clamped'
+      || resolution.kind === 'lock-untrusted-clamped';
+    if (!enforceable || !Array.isArray(resolution.allowlist)) {
+      if (resolution.kind === 'default-user') return { reason: 'no-declared-allowlist', requireConfinement: false };
+      return { reason: 'not-applicable', requireConfinement: false };
+    }
+    const names = [...new Set(resolution.allowlist.map((t) => t.trim()))];
+    // The author's explicit enrolment (frontmatter toolAllowlistEnforce: true) on a declared
+    // list: apply it exactly and fail closed (§2a). Only an explicit `false` switch turns
+    // it off — the author's opt-in is the consent the fleet default otherwise lacks.
+    const enrolled = resolution.kind === 'array' && JobScheduler.isEnrolled(job);
+    if (!enrolled && resolution.kind === 'array' && job.origin === 'user' && names.length === 1 && names[0] === 'Read') {
+      // Byte-identical to the list jobMigrate wrote into every migrated user job and to
+      // the resolver's own default: never an author's choice, so never applied.
+      return { reason: 'read-only-default', requireConfinement: false };
+    }
+    if (gate.explicitOff) return { reason: 'gate-off', requireConfinement: false };
+    if (!enrolled) {
+      if (gate.on === 'unreadable') return { reason: 'config-unreadable', requireConfinement: false };
+      if (!gate.on) return { reason: 'gate-off', requireConfinement: false };
+    }
+    const unsupported = names.filter((t) => !CLAUDE_CONFINABLE_TOOL_NAMES.has(t));
+    if (names.length === 0 || unsupported.length > 0) {
+      const unsupportedNames = names.length === 0 ? ['(empty)'] : unsupported;
+      // Enrolled: never widen an invalid policy into full tools — refuse the launch.
+      if (enrolled) return { reason: 'unsupported-tool-names', requireConfinement: true, refuse: true, unsupportedNames };
+      return { reason: 'unsupported-tool-names', requireConfinement: false, unsupportedNames };
+    }
+    return {
+      reason: names.includes('Bash') ? 'confined-with-shell' : 'confined',
+      confinedTools: names,
+      requireConfinement: enrolled || resolution.kind === 'lock-untrusted-clamped',
+    };
+  }
+
+  /** Frontmatter `toolAllowlistEnforce: true` (FAILSAFE YAML delivers it as the string "true"). */
+  static isEnrolled(job: JobDefinition): boolean {
+    const v = job.frontmatter?.toolAllowlistEnforce;
+    return v === true || (typeof v === 'string' && v.toLowerCase() === 'true');
+  }
+
+  /**
+   * The run's `toolsConfined` / `toolEnforcement`, read from what the LAUNCH did (the
+   * returned session), never from the request (spec §4, verify at the consumer).
+   */
+  static toolEnforcementOutcome(
+    decision: ToolEnforcementDecision,
+    session: { framework?: string; confinedTools?: string[] } | undefined,
+  ): { toolsConfined: boolean; toolEnforcement: string } {
+    if (!decision.confinedTools) return { toolsConfined: false, toolEnforcement: decision.reason };
+    if (session?.confinedTools && session.confinedTools.length > 0) {
+      return { toolsConfined: true, toolEnforcement: decision.reason };
+    }
+    return { toolsConfined: false, toolEnforcement: `not-applied:${session?.framework ?? 'unknown'}` };
   }
 
   /** Classify a lockTrust value as a real-tamper signal. The transitional
@@ -4589,78 +4713,184 @@ export class JobScheduler {
   }
 
   /**
-   * Emit Phase 1b side-channel signals for an allowlist resolution.
-   * Side effects (Dashboard event + degradation event) are gathered here
-   * so spawnJobSession can call once at spawn time. Pure function on the
-   * scheduler's `state.appendEvent` and the global DegradationReporter.
-   *
-   * The clamped-allowlist warning is a Dashboard-visible event AND a
-   * DegradationReporter event — both surface to the user via different
-   * channels (event stream vs degradation digest).
-   *
-   * The instar-no-allowlist path is a DegradationReporter event only:
-   * Phase 1c's lock-file defaults will close this gap; until then the
-   * temporary "full tools" behavior is documented and observable.
+   * EVO-008 §2: the live value of `jobs.toolAllowlistEnforcement.enabled`, read at every
+   * spawn (mtime-cached). Omitted ⇒ the development-agent gate (live on dev, dark on the
+   * fleet). A missing or unparseable config reads `'unreadable'` (fail-open toward running
+   * the job as today, recorded distinctly from a deliberate `false`).
    */
-  private emitAllowlistSignals(job: JobDefinition, resolution: AllowlistResolution): void {
-    if (resolution.clampedAllowlist) {
-      this.state.appendEvent({
-        type: 'job_allowlist_clamped',
-        summary:
-          `Job "${job.slug}" requested toolAllowlist:"*" without unrestrictedTools:true — ` +
-          `clamped to [Read]. Set unrestrictedTools:true in the manifest to authorize full tools.`,
-        timestamp: new Date().toISOString(),
-        metadata: { slug: job.slug, origin: job.origin },
-      });
+  toolAllowlistEnforcementGate(): ToolAllowlistGate {
+    const cfg = this.readAgentConfig();
+    if (!cfg) return { on: 'unreadable', explicitOff: false };
+    const jobsCfg = (cfg.jobs ?? {}) as { toolAllowlistEnforcement?: { enabled?: unknown } };
+    const raw = jobsCfg.toolAllowlistEnforcement?.enabled;
+    const explicit = typeof raw === 'boolean' ? raw : undefined;
+    return { on: resolveDevAgentGate(explicit, cfg as { developmentAgent?: boolean }), explicitOff: explicit === false };
+  }
+
+  /** EVO-008 §7: last report time per `(slug|kind|reason)`, persisted so a restart never re-files. */
+  private allowlistReports: Map<string, number> | null = null;
+  private static readonly ALLOWLIST_REPORT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+  private allowlistReportsFile(): string {
+    return path.join(this.stateDir, 'state', 'job-tool-allowlist-reports.json');
+  }
+
+  /** True when this key has not been reported inside the window; records the report. */
+  private claimAllowlistReport(key: string): boolean {
+    if (!this.allowlistReports) {
+      this.allowlistReports = new Map();
       try {
-        DegradationReporter.getInstance().report({
-          feature: 'JobScheduler.allowlistResolution',
-          primary: 'Spawn with the requested allowlist (toolAllowlist:"*")',
-          fallback: 'Clamp the spawn to ["Read"]',
-          reason: `Job "${job.slug}" requested toolAllowlist:"*" without manifest.unrestrictedTools:true`,
-          impact: 'Job will run with Read-only tools until the manifest sets unrestrictedTools:true',
-        });
+        const raw = JSON.parse(fs.readFileSync(this.allowlistReportsFile(), 'utf-8')) as Record<string, unknown>;
+        for (const [k, v] of Object.entries(raw)) if (typeof v === 'number' && Number.isFinite(v)) this.allowlistReports.set(k, v);
       } catch {
-        // @silent-fallback-ok — degradation reporting is best-effort
+        // @silent-fallback-ok — no file yet (first report) or unreadable: start empty; the
+        // worst case is one repeated report, and the run record holds every run's truth.
       }
     }
-
-    if (resolution.kind === 'instar-no-allowlist') {
+    const now = Date.now();
+    const last = this.allowlistReports.get(key);
+    if (last !== undefined && now - last < JobScheduler.ALLOWLIST_REPORT_WINDOW_MS) return false;
+    this.allowlistReports.set(key, now);
+    for (const [k, v] of this.allowlistReports) {
+      if (now - v >= JobScheduler.ALLOWLIST_REPORT_WINDOW_MS) this.allowlistReports.delete(k);
+    }
+    if (!this.state.readOnly) {
       try {
-        DegradationReporter.getInstance().report({
-          feature: 'JobScheduler.allowlistResolution',
-          primary: 'Look up a structural per-slug default allowlist (Phase 1c lock-file)',
-          fallback: 'Spawn with full tools (no --allowedTools flag)',
-          reason: `Instar-origin agentmd job "${job.slug}" has no toolAllowlist frontmatter; Phase 1c lock-file defaults are not yet shipped`,
-          impact: 'Job runs with full tools until Phase 1c lock-file defaults land',
-        });
+        fs.mkdirSync(path.dirname(this.allowlistReportsFile()), { recursive: true });
+        fs.writeFileSync(this.allowlistReportsFile(), JSON.stringify(Object.fromEntries(this.allowlistReports)));
       } catch {
-        // @silent-fallback-ok — degradation reporting is best-effort
+        // @silent-fallback-ok — persistence only spares a repeat after restart.
       }
+    }
+    return true;
+  }
+
+  private reportAllowlistDegradation(event: { primary: string; fallback: string; reason: string; impact: string }): void {
+    try {
+      DegradationReporter.getInstance().report({ feature: 'JobScheduler.allowlistResolution', ...event });
+    } catch {
+      // @silent-fallback-ok — degradation reporting is best-effort
+    }
+  }
+
+  /**
+   * EVO-008 §7: the allowlist signals, worded from what the LAUNCH did (never claimed
+   * before it), each `(slug, kind, reason)` reported at most once per 24 hours. `outcome`
+   * is `'refused'` when a tamper-clamped launch was refused before it started.
+   *
+   * - clamped / tamper: event + degradation, whatever the switch (a tampered job on a
+   *   switched-off agent is never silent);
+   * - a declared list not applied for unsupported names or a non-Claude framework: event
+   *   only (a known limit is not a broken path; degradations file upstream bugs);
+   * - `not-applied:claude-code`: a lane bug — event + degradation;
+   * - instar-no-allowlist: unchanged degradation, now once per window.
+   */
+  private emitAllowlistSignals(
+    job: JobDefinition,
+    resolution: AllowlistResolution,
+    decision: ToolEnforcementDecision,
+    outcome: { toolsConfined: boolean; toolEnforcement: string } | 'refused',
+    framework?: string,
+  ): void {
+    const reason = outcome === 'refused' ? 'refused' : outcome.toolEnforcement;
+    const confined = outcome !== 'refused' && outcome.toolsConfined;
+    const notApplied = (): string => reason === 'gate-off'
+      ? 'the tool-limit switch (jobs.toolAllowlistEnforcement) is off'
+      : reason === 'config-unreadable' ? 'the agent config could not be read'
+      : reason === 'unsupported-tool-names' ? `the list names tools the limited launch cannot honour (${(decision.unsupportedNames ?? []).join(', ')})`
+      : reason.startsWith('not-applied:') ? `the job ran on ${reason.slice('not-applied:'.length)}, which has no per-tool limit`
+      : reason;
+    const key = `${job.slug}|${resolution.kind}|${reason}`;
+
+    if (resolution.kind === 'clamped') {
+      if (!this.claimAllowlistReport(key)) return;
+      const summary = confined
+        ? `Job "${job.slug}" asked for all tools without authorization. This run had Read only; other tools were refused. ` +
+          `To give it all tools, ask the job's owner to set unrestrictedTools: true in its manifest.`
+        : `Job "${job.slug}" asked for all tools without authorization. Its tool list is recorded as [Read] but was NOT applied ` +
+          `(${notApplied()}): this run had its framework's normal tools.`;
+      this.state.appendEvent({ type: 'job_allowlist_clamped', summary, timestamp: new Date().toISOString(),
+        metadata: { slug: job.slug, origin: job.origin, toolsConfined: confined, toolEnforcement: reason } });
+      this.reportAllowlistDegradation({
+        primary: 'Spawn with the requested allowlist (toolAllowlist:"*")',
+        fallback: confined ? 'Confine the run to ["Read"]' : 'Record ["Read"] without applying it',
+        reason: `Job "${job.slug}" requested toolAllowlist:"*" without manifest.unrestrictedTools:true`,
+        impact: confined ? 'This job runs with Read only until its owner authorizes all tools'
+          : `The [Read] limit was not applied (${notApplied()}); the job ran with its framework's normal tools`,
+      });
+      return;
     }
 
     if (resolution.kind === 'lock-untrusted-clamped') {
-      // Real-tamper lockTrust state refused trust elevation. Surface to BOTH
-      // event stream (Dashboard) and degradation digest so operator sees it.
-      this.state.appendEvent({
-        type: 'job_lock_untrusted_clamped',
-        summary:
-          `Job "${job.slug}" claims origin:instar but its lock-file trust state is "${job.lockTrust}" — ` +
-          `tool elevation refused, clamped to [Read].`,
-        timestamp: new Date().toISOString(),
-        metadata: { slug: job.slug, lockTrust: job.lockTrust },
+      if (!this.claimAllowlistReport(key)) return;
+      const summary = outcome === 'refused'
+        ? `Job "${job.slug}" claims origin:instar but its lock-file trust is "${job.lockTrust}". It was NOT started: ` +
+          `its Read-only limit cannot be applied on this agent's framework.`
+        : confined
+          ? `Job "${job.slug}" claims origin:instar but its lock-file trust is "${job.lockTrust}". This run had Read only.`
+          : `Job "${job.slug}" claims origin:instar but its lock-file trust is "${job.lockTrust}". Its Read-only limit was ` +
+            `NOT applied (${notApplied()}): this run had its framework's normal tools.`;
+      this.state.appendEvent({ type: 'job_lock_untrusted_clamped', summary, timestamp: new Date().toISOString(),
+        metadata: { slug: job.slug, lockTrust: job.lockTrust, toolsConfined: confined, toolEnforcement: reason } });
+      this.reportAllowlistDegradation({
+        primary: 'Spawn the instar default with its requested tool authorization',
+        fallback: outcome === 'refused' ? 'Refuse the launch' : confined ? 'Confine the run to ["Read"]' : 'Record ["Read"] without applying it',
+        reason: `Instar-origin agentmd job "${job.slug}" has lockTrust="${job.lockTrust}" (real-tamper state)`,
+        impact: outcome === 'refused' ? 'The job does not run until the lock-file mismatch is repaired'
+          : confined ? 'The job runs Read-only until the lock-file mismatch is acknowledged or repaired'
+          : `The Read-only limit was not applied (${notApplied()})`,
       });
-      try {
-        DegradationReporter.getInstance().report({
-          feature: 'JobScheduler.allowlistResolution',
-          primary: 'Spawn the instar default with its requested tool authorization',
-          fallback: 'Clamp the spawn to ["Read"]',
-          reason: `Instar-origin agentmd job "${job.slug}" has lockTrust="${job.lockTrust}" (real-tamper state)`,
-          impact: 'Job runs Read-only until the lock-file mismatch is acknowledged or repaired',
+      return;
+    }
+
+    if (resolution.kind === 'array' && reason === 'refused') {
+      // An enrolled job (toolAllowlistEnforce: true) whose list could not be applied.
+      if (!this.claimAllowlistReport(key)) return;
+      this.state.appendEvent({
+        type: 'job_tool_allowlist_refused',
+        summary: `Job "${job.slug}" requires its tool list [${(resolution.allowlist as string[]).join(', ')}] to be applied, ` +
+          `and it could not be here (${decision.unsupportedNames?.length
+            ? `the list names tools the limited launch cannot honour: ${decision.unsupportedNames.join(', ')}`
+            : "this agent's framework has no per-tool limit"}), so the job was NOT started.`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug: job.slug, unsupported: (decision.unsupportedNames ?? []).join(',') },
+      });
+      return;
+    }
+
+    if (resolution.kind === 'array' && (reason === 'unsupported-tool-names' || reason.startsWith('not-applied:'))) {
+      const laneBug = reason === 'not-applied:claude-code';
+      featureEvidence.record('jobs.toolAllowlistEnforcement', {
+        kind: laneBug ? 'error' : 'held', reason,
+        context: { slug: job.slug, framework: framework ?? null },
+      });
+      if (!this.claimAllowlistReport(key)) return;
+      this.state.appendEvent({
+        type: 'job_tool_allowlist_not_enforced',
+        summary: `Job "${job.slug}" declares the tools [${(resolution.allowlist as string[]).join(', ')}], but the list was NOT applied ` +
+          `(${notApplied()}): this run had its framework's normal tools.`,
+        timestamp: new Date().toISOString(),
+        metadata: { slug: job.slug, framework: framework ?? null, toolEnforcement: reason },
+      });
+      if (laneBug) {
+        this.reportAllowlistDegradation({
+          primary: 'Launch the job with its declared tool list applied',
+          fallback: 'The Claude launch came back without the confined form',
+          reason: `Job "${job.slug}" asked for confinement on claude-code but the launched session does not carry it`,
+          impact: "The job ran with Claude's normal tools; this is a launch-path defect",
         });
-      } catch {
-        // @silent-fallback-ok — degradation reporting is best-effort
       }
+      return;
+    }
+
+    if (resolution.kind === 'instar-no-allowlist') {
+      if (!this.claimAllowlistReport(key)) return;
+      this.reportAllowlistDegradation({
+        primary: 'Look up a structural per-slug default allowlist (Phase 1c lock-file)',
+        fallback: 'Spawn with full tools (no --allowedTools flag)',
+        reason: `Instar-origin agentmd job "${job.slug}" has no toolAllowlist frontmatter; Phase 1c lock-file defaults are not yet shipped`,
+        impact: 'Job runs with full tools until Phase 1c lock-file defaults land',
+      });
     }
   }
 
@@ -4701,6 +4931,44 @@ export interface AllowlistResolution {
    *  `untrusted-no-lockfile` state does NOT trigger this clamp — see
    *  {@link JobScheduler.resolveAllowlist} for the rationale. */
   lockUntrustedClamp?: boolean;
+}
+
+/**
+ * Claude Code's built-in tool names the confined launch form can honour (EVO-008 §2).
+ * Checked case-sensitively: the CLI given an unknown name (e.g. `--tools Bassh`) starts
+ * with NO tools and exits 0, so a typo must never reach it. A name outside this set (a
+ * newer tool, a pattern like `Bash(git:*)`, an `mcp__` tool) is not confined and is
+ * reported — the job runs as it did before. Basis: external constraint (the CLI's names).
+ */
+export const CLAUDE_CONFINABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
+  // Measured 2026-11-10 from the CLI's own start record (`--output-format stream-json`,
+  // the init event's `tools`) under `--tools` on Claude Code 2.1.322. `Agent` is honoured
+  // as `Task`. The same CLI silently DROPS LS, MultiEdit, SlashCommand, BashOutput and
+  // TodoWrite, so they are not here.
+  'Read', 'Write', 'Edit', 'NotebookEdit', 'Glob', 'Grep', 'Bash',
+  'WebFetch', 'WebSearch', 'Skill', 'Task', 'Agent', 'TaskStop',
+]);
+
+/** The resolved `jobs.toolAllowlistEnforcement.enabled` switch (EVO-008 §2). */
+export interface ToolAllowlistGate {
+  /** Resolved value (dev-agent gate when omitted), or `'unreadable'` when config is missing/unparseable. */
+  on: boolean | 'unreadable';
+  /** The switch is EXPLICITLY false — the only thing that also turns off an enrolled job. */
+  explicitOff: boolean;
+}
+
+/** Result of {@link JobScheduler.resolveToolEnforcement}. */
+export interface ToolEnforcementDecision {
+  /** Set only when the launch should apply the confined form with exactly these tools. */
+  confinedTools?: string[];
+  /** Tamper kind or an enrolled job: refuse the launch rather than run on a lane that cannot confine. */
+  requireConfinement: boolean;
+  /** Enrolled job whose list cannot be applied at all: refuse before launching. */
+  refuse?: boolean;
+  reason:
+    | 'confined' | 'confined-with-shell' | 'gate-off' | 'config-unreadable'
+    | 'no-declared-allowlist' | 'read-only-default' | 'unsupported-tool-names' | 'not-applicable';
+  unsupportedNames?: string[];
 }
 
 /** Phase 1b run-record observability payload. */
