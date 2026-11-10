@@ -217,6 +217,16 @@ export interface CosProtocolDeps {
 
 interface IndexEntry { state: CosTransition; runId?: string; injectId?: string }
 
+/** The run id a successful `POST /autonomous/register` reply carries, or null when the reply is not a
+ *  registration. The route answers `{ runId, endAt, clamped, initialStatus, ... }` with NO `ok` field
+ *  (its 409 carries `{ error, existingRunId }`), so the executor must accept on `runId`, never on `ok`
+ *  (live proof 2026-11-09: every restart aborted `register-failed:200` on a successful registration). */
+export function registeredRunId(httpOk: boolean, body: unknown): string | null {
+  if (!httpOk || !body || typeof body !== 'object') return null;
+  const id = (body as { runId?: unknown }).runId;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
 export class ChiefOfStaffActionProtocol {
   private index = new Map<string, IndexEntry>();
   private indexReady = false;

@@ -142,6 +142,17 @@ describe('decideStandDown + arbitrateClaims (pure)', () => {
   });
 });
 
+describe('registeredRunId — the executor accepts the register route\'s REAL success shape', () => {
+  it('accepts { runId, ... } with no ok field; refuses a 409 { error, existingRunId }, an empty body and a non-2xx', async () => {
+    const { registeredRunId } = await import('../../src/core/ChiefOfStaffActionProtocol.js');
+    expect(registeredRunId(true, { runId: 'run-m-1', endAt: 'x', clamped: false, initialStatus: 'active', preparationRequired: false })).toBe('run-m-1');
+    expect(registeredRunId(false, { error: 'a run is already registered and active for this topic', existingRunId: 'run-m-0' })).toBeNull();
+    expect(registeredRunId(true, {})).toBeNull();
+    expect(registeredRunId(true, null)).toBeNull();
+    expect(registeredRunId(false, { runId: 'run-m-1' })).toBeNull();
+  });
+});
+
 describe('ChiefOfStaffActionProtocol — local happy paths', () => {
   it('restart-run: intent → executing (durable) → started, executor called once with the intent key', async () => {
     const w = world(); const A = machine(w, 'm_a');

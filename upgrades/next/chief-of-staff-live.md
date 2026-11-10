@@ -15,7 +15,7 @@ Nothing yet on a normal agent. On a development agent: the Chief of Staff keeps 
 - Failover settle: the current holder settles a previous holder's stale intent (outcome names the prior holder).
 - Verified close: `confirm-done` requires a live lease, re-checks deterministic items, records `done-verified` (owner-confirmed).
 - `POST /mobile/chief-of-staff/check-in` (owner phones); `POST /chief-of-staff/triage` (PIN) → a private triage view; `ChiefOfStaffTriage` (pure).
-- Live-proof fixes: the holder's own machine proves lease freshness with its own live lease (actions no longer stall at `claimed` on the holder); `getChatMemberCount` / `getChatAdministrators` classified at the Telegram egress door (the one-reader rule and memory-privacy reader count can run).
+- Live-proof fixes: the holder's own machine proves lease freshness with its own live lease (actions no longer stall at `claimed` on the holder); the start-run executor accepts the register route's real reply (restarts no longer abort as `register-failed:200`); `getChatMemberCount` / `getChatAdministrators` classified at the Telegram egress door (the one-reader rule and memory-privacy reader count can run).
 - `POST /chief-of-staff/projects` (PIN): the owner binds a conversation as a project (confirmed binding + tree link); `POST /chief-of-staff/projects/:key/tap` (PIN): Unpark / Confirm-done from the dashboard.
 
 ## Evidence
