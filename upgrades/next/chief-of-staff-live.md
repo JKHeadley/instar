@@ -20,6 +20,8 @@ Nothing yet on a normal agent. On a development agent: the Chief of Staff keeps 
 
 ## Evidence
 
+- Live proof: signed artifact `cos-live-20261109-pr5-9c05e395e` (throwaway agent on the spare test bot): 7 PASS / 1 BLOCKED (owner-only drop needs a second group member; unit-covered) / 0 FAIL — lease check-in, stalled restart executed, no double restart, stand-down, moving, claims-done refuted, app pin + tree.
+
 - `tests/unit/ChiefOfStaffLoop.test.ts`: parked project reaches the note from the fold with a fresh instance; note cadence from records across instances; immediate cap from records; unknown streak derived; confirm-done ignored when paused / when a check fails (note names it) / closes and mirrors when all pass.
 - `tests/unit/ChiefOfStaffActionProtocol.test.ts`: the holder's own machine executes and settles with no peer-observed renewal; previous-holder settle — non-holder unknown, fresh claim unknown, older claim settled with the prior holder named.
 - `tests/unit/chief-of-staff-triage.test.ts`: floors, tunables, ordering, counts, escaping, empty tracker.
