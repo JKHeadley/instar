@@ -156,6 +156,8 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   // The retrieval archive and engine checkpoints (§9.7: the archive root is a sibling of
   // the layers root precisely so it can be excluded; checkpoints are unscrubbed).
   'context-archive',
+  // Saved full recovery blocks (context-budget §9.1): per-session, transient.
+  '_recovery',
 ]);
 
 /**
