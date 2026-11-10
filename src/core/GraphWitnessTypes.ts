@@ -200,9 +200,24 @@ export function canonicalHash(value: unknown): string { return crypto.createHash
 export function exactFields(value: unknown, fields: string[]): boolean {
   return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join(',') === [...fields].sort().join(',');
 }
+/** canonicalPublicKey is a pure function of (type, PEM text). The graph re-walks the
+ * same signed lineage on every readiness check, and parsing + re-exporting a PEM was
+ * about a fifth of all CPU there (Linux profile, 2026-11-10), so the verdict is kept.
+ * Bounded; oldest entry evicted first. Only key-sized strings are kept, so untrusted
+ * oversized input cannot pin memory. */
+const CANONICAL_KEY_LIMIT = 1024, CANONICAL_KEY_MAX_CHARS = 512;
+const canonicalKeyVerdicts = new Map<string, boolean>();
 export function canonicalPublicKey(value: string, type: 'ed25519' | 'x25519'): boolean {
-  try { const key = crypto.createPublicKey(value); return key.asymmetricKeyType === type && key.export({ type: 'spki', format: 'pem' }).toString() === value; }
-  catch { /* @silent-fallback-ok: malformed untrusted PEM is a negative canonical-key predicate, never accepted key authority */ return false; }
+  if (typeof value !== 'string') return false;
+  const id = type + '\n' + value, cached = canonicalKeyVerdicts.get(id);
+  if (cached !== undefined) return cached;
+  let verdict: boolean;
+  try { const key = crypto.createPublicKey(value); verdict = key.asymmetricKeyType === type && key.export({ type: 'spki', format: 'pem' }).toString() === value; }
+  catch { /* @silent-fallback-ok: malformed untrusted PEM is a negative canonical-key predicate, never accepted key authority */ verdict = false; }
+  if (value.length > CANONICAL_KEY_MAX_CHARS) return verdict;
+  if (canonicalKeyVerdicts.size >= CANONICAL_KEY_LIMIT) canonicalKeyVerdicts.delete(canonicalKeyVerdicts.keys().next().value!);
+  canonicalKeyVerdicts.set(id, verdict);
+  return verdict;
 }
 export function unsigned<T extends { signature: string }>(record: T): Omit<T, 'signature'> {
   const { signature: _signature, ...payload } = record;
