@@ -1076,6 +1076,20 @@ describe('team settings for the whole agent (team-switches-agent-wide)', () => {
     expect(e.spy.privacy).toBe(0);
   });
 
+  it('one Face ID turns on everything team access needs (team-access), and a team-access signature is not a single-setting one', async () => {
+    // Operator 2026-11-09: "it should be one single thing for the whole agent".
+    const { e, asked } = await rig();
+    const owner = phone(e);
+    const r = await faceIdSwitch(e, owner, 'team-access');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ ok: true, setting: 'team-access', restarting: true, settings: ['app-conversations', 'memory-privacy'] });
+    expect(asked).toEqual(['app-conversations', 'memory-privacy']);
+    // A challenge issued for team-access cannot be spent as memory-privacy: the signed line names the target.
+    const c = await send(e, owner, 'POST', '/mobile/permissions/challenge', { action: 'team-switch-on', target: 'team-access' });
+    const sig = owner.presence.sign(permissionPresenceMessage(owner.id, HOST, c.body.challenge, 'team-switch-on team-access'));
+    expect((await send(e, owner, 'POST', '/mobile/team/switches/turn-on', { setting: 'memory-privacy', challenge: c.body.challenge, presenceSig: sig })).status).not.toBe(200);
+  });
+
   it('nobody but the owner, with Face ID, and only a named setting', async () => {
     const { e, asked } = await rig();
     const owner = phone(e);

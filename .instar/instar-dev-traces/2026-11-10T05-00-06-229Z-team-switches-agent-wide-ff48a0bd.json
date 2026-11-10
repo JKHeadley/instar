@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "team-switches-agent-wide",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T05:00:06.229Z",
+  "artifactPath": "upgrades/side-effects/team-switches-agent-wide.md",
+  "artifactSha256": "4773752340b423ee3a9a1fd47177f8a9991cf77095b58cefc3f684a2f86211dc",
+  "specPath": "docs/specs/team-switches-agent-wide.md",
+  "coveredFiles": [
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/teamRoutes.ts",
+    "tests/integration/team-access-routes.test.ts",
+    "upgrades/next/team-switches-agent-wide.md",
+    "upgrades/side-effects/team-switches-agent-wide.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a combined target to the Tier-2 team-switches route; same fan-out and Face ID check",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
