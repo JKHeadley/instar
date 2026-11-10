@@ -13205,7 +13205,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         DegradationReporter.getInstance().report({
           feature: 'FoldCoordinator.bootSweep',
           primary: 'Every fold carrier is released by its fold record\'s terminal transition',
-          fallback: `Released an orphan ${o.kind} for fold ${o.foldId} (topic ${o.topicKey}) with no record`,
+          fallback: `Released an orphan ${o.kind} for fold ${o.foldId} (${topicRef(o.topicKey)}) with no record`,
           reason: 'A fold carrier outlived its record (crash or restored state)',
           impact: 'None after release; recorded so a recurring orphan is visible.',
         });
@@ -13214,7 +13214,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         DegradationReporter.getInstance().report({
           feature: 'FoldCoordinator.bootSweep',
           primary: 'A fold past the point of no return completes or rolls back in the same process',
-          fallback: `Fold ${q.foldId} on topic ${q.topicKey} is quarantined for the sentinel's rollback`,
+          fallback: `Fold ${q.foldId} on ${topicRef(q.topicKey)} is quarantined for the sentinel's rollback`,
           reason: q.reason ?? 'crashed past the point of no return',
           impact: "That conversation's containment (hold, markers) stays in force until the rollback runs.",
         });

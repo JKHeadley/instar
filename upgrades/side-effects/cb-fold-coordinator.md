@@ -103,3 +103,7 @@ Revert. State written in production today: at most the local fold key file under
 Also fixed while resolving: the repo's no-silent-fallbacks lint counted catch blocks across the whole stack (515 vs a 494 baseline). Each slice now carries its own fix (slice 2 pushed to PR #3020; slices 5, 6 and 7a fix commits), and this change's two listing catches carry `@silent-fallback-ok` reasons; the stack is back at 494.
 
 **Reviewer re-check (same reviewer, after the fixes):** "Concur with the review." Every resolution verified against the code; the tracked items need not block (no fold can begin in production). Four new MINOR notes, all fixed in this commit: (1) the runtime inbound-queue veto's `clearPisRecord` (server.ts) now also skips fold-tagged inject records; (2) `begin` writes the sidecar first and, if either write throws, removes what it wrote and releases the lock (no lockless record); (3) packet deletion is confined to the fold's own topic directory and never touches its `fold-records` (integration test: orphan pointers naming another topic's summary or a fold record delete nothing); (4) the breaker undercount on a re-settle is now stated above.
+
+## Addendum (2026-11-10): topic-name ratchet
+
+The boot sweep's two degradation-report strings named the fold's topic as a bare id; they now render it through `topicRef` (topic id plus its verified name, or "(name unresolved)"), as the topic-name ratchet requires. Text only: no decision, no new path, no behaviour change.
