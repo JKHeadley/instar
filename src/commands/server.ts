@@ -13223,6 +13223,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           }),
         });
         built.coordinator.registerCarrier(foldHoldCarrier(_foldHolds));
+        // §9.3 "Held inbound": a fold's queued messages are its carrier too. The
+        // queue store opens in the inbound boot sweep below, so the getter reads
+        // it lazily; rows of folds settled at this boot are released after it.
+        const { inboundHoldCarrier } = await import('../monitoring/foldInboundHold.js');
+        built.coordinator.registerCarrier(inboundHoldCarrier(() => _sweptInboundStore));
       }
       const swept = built.coordinator.recoverPendingFolds();
       if (swept.aborted.length + swept.quarantined.length + swept.orphans.length > 0) {
@@ -13298,8 +13303,32 @@ export async function startServer(options: StartOptions): Promise<void> {
         raiseAttention: (title, body) => notify('IMMEDIATE', 'inbound-queue', `${title}: ${body}`),
         log: (line) => console.log(pc.dim(`  ${line}`)),
         nowMs: () => Date.now(),
+        // §9.3: the fold boot sweep above already settled every crashed fold
+        // (aborted before the point of no return, quarantined after), so a
+        // fold whose held rows a dark queue expires here is reported by name.
+        onFoldRowsGateExpired: (foldIds) => DegradationReporter.getInstance().report({
+          feature: 'FoldInboundHold.gateExpiry',
+          primary: 'Messages held during a fold are delivered when the fold ends',
+          fallback: `The inbound queue is off at this boot; messages held by fold(s) ${foldIds.join(', ')} were expired and loss-reported`,
+          reason: 'inbound queue dark at boot with fold-held rows',
+          impact: 'Those messages were not delivered; the loss notice names them.',
+        }),
       });
       _sweptInboundStore = sweepRes.store;
+      if (sweepRes.store) {
+        try {
+          const { releaseSettledInboundHolds } = await import('../monitoring/foldInboundHold.js');
+          const { FoldRecordStore, TERMINAL_STATES } = await import('../monitoring/FoldCoordinator.js');
+          const foldRecords = new FoldRecordStore(config.stateDir);
+          const released = releaseSettledInboundHolds(sweepRes.store, (topicKey, foldId) => {
+            const r = foldRecords.get(topicKey, foldId);
+            return r ? !TERMINAL_STATES.has(r.state) : null;
+          }, new Date().toISOString());
+          if (released.length > 0) console.log(pc.dim(`  [fold] released inbound rows held by settled fold(s): ${released.join(', ')}`));
+        } catch (err) {
+          console.error(`[server] releasing fold-held inbound rows failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       if (sweepRes.storePresent) {
         console.log(pc.dim(
           `  [inbound-queue] boot sweep: gateExpired=${sweepRes.gateExpired} recovered=${sweepRes.recoveredToQueued} ` +
