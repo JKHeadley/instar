@@ -1,14 +1,14 @@
 {
   "src/lifeline/TelegramLifeline.ts#sendToTopic": 2,
+  "src/messaging/TelegramAdapter.ts#sendOfferList": 1,
   "src/messaging/TelegramAdapter.ts#sendOwnerConsentPrompt": 1,
   "src/messaging/TelegramAdapter.ts#sendPairingPrompt": 1,
   "src/messaging/TelegramAdapter.ts#sendToTopicDelivered": 4,
   "src/messaging/TelegramAdapter.ts#sendOwnerDMWithButton": 1,
   "src/messaging/TelegramAdapter.ts#sendToOwnerDM": 1,
+  "src/messaging/TelegramAdapter.ts#handleCommand": 1,
   "src/messaging/TelegramAdapter.ts#createAttentionItem": 1,
   "src/messaging/TelegramAdapter.ts#ensureAgentHealthLaneTopic": 1,
   "src/messaging/TelegramAdapter.ts#ensureFloodNoticeTopic": 1,
-  "src/messaging/TelegramAdapter.ts#relayPrompt": 2,
-  "src/messaging/TelegramAdapter.ts#handleCommand": 1,
-  "src/messaging/TelegramAdapter.ts#sendOfferList": 1
+  "src/messaging/TelegramAdapter.ts#relayPrompt": 2
 }

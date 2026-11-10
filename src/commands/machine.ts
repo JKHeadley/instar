@@ -609,7 +609,8 @@ export async function joinMesh(repoUrl: string, options: JoinOptions): Promise<v
   // the port live in config.json.
   const configFilePath = path.join(config.stateDir, 'config.json');
   if (!fs.existsSync(configFilePath)) {
-    // A --dir that does not exist yet (joining by URL, not clone) has no state folder.
+    // A --dir that does not exist yet (joining by URL, not clone) has no state folder
+    // (tests/unit/join-missing-dir.test.ts).
     fs.mkdirSync(config.stateDir, { recursive: true });
     const { randomUUID } = await import('node:crypto');
     const scaffolded = buildJoinedConfig(config, options.port, randomUUID());
