@@ -4,10 +4,12 @@ slug: "instar-document-viewer"
 eli16-overview: instar-document-viewer.eli16.md
 author: echo
 created: 2026-11-10
-status: draft
+status: converged
+approved: true
+approved-by: "justin (telegram topic 141469, message 141587, \"Approved\", 2026-11-10 15:19 PST)"
 parent-principle: "The Person Decides; the Agent Does the Rest (STANDARDS-REGISTRY), applied to documents as the approved text of Rule 123 directs. Rule 123: An Instar Agent Always Serves a Team (approved by Justin 2026-11-10 in topic 141014; being written into both rule books on branch echo/rule-123-team by the session in topic 141014; this build does not wait for that merge because the rule's text is approved and this spec applies it directly)"
 origin: "Justin, 2026-11-10, topics 141014 and 141469"
-lessons-engaged: "P21 An Instar agent is always a multi-machine entity (unified rows by vector pull, §5); No silent degradation (size and rate drops refused out loud, §5.3); P19 No unbounded loops (peer poll, pending re-check, re-anchor and compare jobs, §5.1, §3.5); P7 LLM-supervised execution (Tier 0: these loops are deterministic, bounded and observable in GET /docs/health, no model in the loop); P17 Bounded notification surface (one push per pass through MobilePush, §4.9); P24 Never silently cut decision data (session-start overflow line, §3.7); P20 Verify the state, not its symbol (§7); Signal vs Authority (all access decisions deterministic, §6); cross-boundary deferral (app work owned, briefed and on the completion bar, §4.5)"
+lessons-engaged: "P21 An Instar agent is always a multi-machine entity (unified rows by vector pull, §5); No silent degradation (size and rate drops refused out loud, §5.3); P19 No unbounded loops (peer poll, pending re-check, re-anchor and compare jobs, §5.1, §3.5); P7 LLM-supervised execution (Tier 0: these loops are deterministic, bounded and observable in GET /docs/health, no model in the loop); P17 Bounded notification surface (one push per pass through MobilePush, §4.9); P24 Never silently cut decision data (session-start overflow line, §3.7); P20 Verify the state, not its symbol (§7); Signal vs Authority (all access decisions deterministic, §6); work in other repositories has an owner (app work owned, briefed and on the completion bar, §4.5)"
 review-convergence: "2026-11-10T22:09:13.509Z"
 review-iterations: 6
 review-completed-at: "2026-11-10T22:09:13.509Z"
@@ -33,7 +35,7 @@ Two further requirements from the same day:
 1. **Team-compatible from the start** (Rule 123): a document is private to the person it was made for by default, can be shared with chosen people or the whole team through the same owner-signed access records as the rest of team support, and members and guests see and comment only on what they have been given. It works on every machine, so a machine switch can't lose a comment.
 2. **Conversation-native** (Justin, topic 141469, 13:03 PST): "documents should be at least internally linked to relevant topics in a way that assists a sort of general knowledge graph ability for an Instar agent to traverse related content, and also so that a document has a primary conversation linked to it so it knows where to collaborate with the user on discussions related to that document."
 
-And one process requirement (Justin, 13:14 PST): no needed functionality is deferred, the iPhone app included; every piece has an owner and a plan (§4.5).
+And one process requirement (Justin, 13:14 PST): all needed functionality ships in this work, the iPhone app included; every piece has an owner and a plan (§4.5).
 
 ## 2. What exists (instar main 333660390, read from code)
 
@@ -167,7 +169,7 @@ A comment's `anchor` follows the W3C Web Annotation selectors on the version's *
 2. **Fuzzy**: for `exact` ≥ 20 characters, approximate search within ±2,000 characters of the mapped position, in 32-character Bitap chunks; accept at similarity ≥ 0.75, `anchorState: 'edited'`.
 3. **Otherwise** `anchorState: 'orphaned'`. Never dropped: listed under "Passage changed or removed" with the original quote, and the agent receives it. The author can re-attach it (`comment-reanchor`).
 
-Bitap and a Myers diff are in-repo implementations because the project avoids new dependencies; Google's diff-match-patch is the reference their property tests compare against (as a test-only fixture). Compare (`GET /docs/:id/compare?from=&to=`) diffs in two levels: paragraph hashes first, then a word diff only inside changed paragraph pairs, each pair capped at 2,000 edit operations (above which that pair is shown as replaced). It runs as the same yielding, cached background job as re-anchoring; the page shows "Working out the changes…" until it's ready. Results are cached in a byte-bounded LRU (16 MiB). Because the work is bounded per paragraph pair, a large rewrite costs time in slices, never one long block of the event loop.
+Bitap and a Myers diff are in-repo implementations because the project avoids new dependencies; their property tests compare against brute-force references written in the tests (an LCS reference for the diff, an exhaustive edit-distance search for the fuzzy matcher), so no package is added even for tests. Compare (`GET /docs/:id/compare?from=&to=`) diffs in two levels: paragraph hashes first, then a word diff only inside changed paragraph pairs, each pair capped at 2,000 edit operations (above which that pair is shown as replaced). It runs as the same yielding, cached background job as re-anchoring; the page shows "Working out the changes…" until it's ready. Results are cached in a byte-bounded LRU (16 MiB). Because the work is bounded per paragraph pair, a large rewrite costs time in slices, never one long block of the event loop.
 
 ### 3.6 The document page
 
@@ -469,7 +471,7 @@ Every step lands behind the same dark gate, so a partial landing is inert on the
 - **Share a copy instead of moving.** A document that never moves, with sharing as a copy of a chosen version, would avoid the move-disclosure rules. Rejected because Justin's brief makes a document's conversation the place where it is discussed and where its comments live: a copy splits the comment threads and the history in two, and the owner usually wants the people they share with to see how the document got here. The owner still gets "share a copy" for free: derive a copy (`derivedFrom`) in their own chat, then move the copy.
 - **WebAuthn passkeys for member browsers.** A passkey is the standard origin-bound browser key, but approving it would still be a page served by the machine, so it doesn't close the stated same-user limit, and it needs a platform authenticator on every computer; a phone-approved non-extractable key works in every browser and reuses the phone's existing Face ID approval.
 - **The coherence journal** as transport: rejected for its 80 KiB line cap and drop-on-burst rate cap (§2, §5.1).
-- **diff-match-patch as a runtime dependency**: rejected only to keep runtime dependencies flat; it is the reference implementation the property tests compare against, so the choice can be reversed with no format change.
+- **diff-match-patch as a dependency**: rejected only to keep dependencies flat; the tests compare the in-repo diff and fuzzy matcher against brute-force references instead, and the choice can be reversed with no format change.
 - **A separate hostname for the page**: not built, because the page interprets no document markup; §8 states the condition under which the page moves to its own hostname.
 
 ## 14. Open questions

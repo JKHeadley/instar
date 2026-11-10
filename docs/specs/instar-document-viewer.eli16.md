@@ -17,3 +17,5 @@
 **Safe rollout.** It starts switched on only for development agents, then for everyone once it's proven. Turning it off hides it without deleting anything.
 
 **The iPhone app is part of this work.** Each conversation in the app shows its documents. Tapping one opens it inside the app, with the same commenting as on the web. You get a notification when the agent replies to your comment. As owner, you share a document or move it to another conversation from the app, with Face ID. The app's code lives on the Mac Studio, and the agent session that builds the app there gets a precise brief and is tracked to done. The feature counts as finished only once it works in the app on your phone.
+
+**Where the details are.** The full design sits beside this overview. The iPhone app builder works from its own brief, kept with it as `instar-document-viewer.app-brief.md`.
