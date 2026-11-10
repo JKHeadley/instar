@@ -594,6 +594,14 @@ a.btn-quiet.btn-inline { color: var(--text); }
 .mchip.unknown { border-style: dashed; }
 .signin-steps { display: flex; flex-direction: column; gap: var(--s-3); }
 .signin-link { word-break: break-all; }
+.signin-progress { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--s-3); padding: var(--s-6) 0; }
+.signin-progress-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text); }
+.signin-progress .row-sub { white-space: normal; }
+.signin-spinner { width: 44px; height: 44px; border-radius: 50%; border: 4px solid var(--accent-wash); border-top-color: var(--accent); animation: signin-spin .9s linear infinite; }
+@keyframes signin-spin { to { transform: rotate(360deg); } }
+.signin-mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; font-size: 22px; font-weight: 700; }
+.signin-progress.done .signin-mark { color: var(--ok); background: var(--accent-wash); }
+.signin-progress.failed .signin-mark { color: var(--attn); background: var(--attn-wash); }
 .btn-small { height: 36px; padding: 0 12px; font-size: 13px; }
 .need-card .rows { margin: 0 calc(var(--s-2) * -1); }
 /* A card that needs the operator says why in full, never cut off with an ellipsis. */

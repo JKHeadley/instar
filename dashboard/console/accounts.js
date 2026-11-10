@@ -3,6 +3,7 @@
 // Actions per the PIN adapters (00-patterns.md §4):
 //   start a cell's sign-in    POST /subscription-pool/matrix/start-cell   body PIN, once
 //   submit the sign-in code   POST /subscription-pool/follow-me/submit-code  bearer
+//   follow it to the end      GET  /subscription-pool/follow-me/completion   bearer
 //   cancel a sign-in          POST /subscription-pool/follow-me/cancel     bearer
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
@@ -11,6 +12,7 @@ import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 import { buildAutoRepair, configurePayload, resultWords, confirmation } from './auto-repair-model.js';
+import { submitView, completionView, workingView, COMPLETION_POLL_MS, COMPLETION_GIVE_UP_MS, GIVE_UP_VIEW } from './signin-progress-model.js';
 
 // Tick state survives the page's 30-second re-render (spec one-tap-unattended-repair §6).
 const autoRepairTicks = new Map(); // machineId → boolean, only where the operator changed the default
@@ -23,6 +25,15 @@ async function postJson(path, body, headers = {}) {
     const data = await r.json().catch(() => ({}));
     return { ok: r.ok, status: r.status, data };
   } catch { return { ok: false, status: 0, data: { error: 'The server could not be reached.' } }; }
+}
+
+async function getJson(path) {
+  const token = (() => { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } })();
+  try {
+    const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data };
+  } catch { return { ok: false, status: 0, data: {} }; }
 }
 
 export async function renderAccounts(main, ctx) {
@@ -124,38 +135,81 @@ async function startNeed(n, refresh) {
   signInSteps(n, r.data, refresh);
 }
 
-function signInSteps(n, d, refresh) {
-  const loginId = d.loginId || n.accountId;
+function signInSteps(n, d, refresh, firstError) {
+  const loginId = d.loginId || d.id || n.accountId;
   const code = el('input', { class: 'reason-input', inputmode: 'text', autocomplete: 'one-time-code', placeholder: 'Code from the sign-in page, if it shows one', 'aria-label': 'Sign-in code' });
-  const status = el('p', { class: 'action-status', role: 'status' });
+  const status = el('p', { class: 'action-status', role: 'status', text: firstError || '' });
   const submit = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send the code' });
+  const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel this sign-in' });
+  const expires = d.ttlExpiresAt ? new Date(d.ttlExpiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+  const steps = el('div', { class: 'signin-steps' },
+    el('p', { class: 'confirm-text', text: `1. Open the sign-in page${verifiedDisplayName(d.expectedEmail, n.accountId) ? ` and sign in as ${d.expectedEmail}` : ''}.` }),
+    el('a', { class: 'btn-primary btn-inline signin-link', href: d.verificationUrl, target: '_blank', rel: 'noopener', text: 'Open the sign-in page' }),
+    el('p', { class: 'confirm-text', text: '2. If the page gives you a code, paste it here.' }),
+    code, submit,
+    expires ? el('p', { class: 'action-status', text: `This sign-in link works until ${expires}.` }) : null,
+    d.notice ? note(String(d.notice)) : null,
+    status);
+  const danger = el('div', { class: 'sheet-danger' }, cancel);
+  const panel = sheet({ title: n.title }, steps, danger);
+
+  // Once the code is sent the form goes away: a spinner while it works, then one clear result.
+  const show = (view) => {
+    danger.remove();
+    const title = el('p', { class: 'signin-progress-title', text: view.title });
+    if (view.kind === 'working') {
+      steps.className = 'signin-progress';
+      steps.setAttribute('aria-busy', 'true');
+      setKids(steps, el('span', { class: 'signin-spinner', 'aria-hidden': 'true' }), title, el('p', { class: 'row-sub', text: view.sub }));
+      return;
+    }
+    steps.className = `signin-progress ${view.kind}`;
+    steps.removeAttribute('aria-busy');
+    if (view.kind === 'done') {
+      const done = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Done', onclick: () => { closeSheet(); refresh(); } });
+      setKids(steps, el('span', { class: 'signin-mark', 'aria-hidden': 'true', text: '✓' }), title, done);
+      setTimeout(() => refresh(), 0);
+      return;
+    }
+    const again = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Start the sign-in again', onclick: () => { closeSheet(); startNeed({ ...n, action: 'start' }, refresh); } });
+    setKids(steps, el('span', { class: 'signin-mark', 'aria-hidden': 'true', text: '!' }), title, view.sub ? el('p', { class: 'row-sub', text: view.sub }) : null, again);
+    setTimeout(() => refresh(), 0);
+  };
+  const stillOpen = () => panel.isConnected;
+  const followCompletion = async () => {
+    const giveUpAt = Date.now() + COMPLETION_GIVE_UP_MS;
+    const q = `machineId=${encodeURIComponent(n.machineId || '')}&id=${encodeURIComponent(loginId)}`;
+    while (stillOpen()) {
+      await new Promise((r) => setTimeout(r, COMPLETION_POLL_MS));
+      if (!stillOpen()) return;
+      const view = completionView(await getJson(`/subscription-pool/follow-me/completion?${q}`), n.machine);
+      if (view) { show(view); return; }
+      if (Date.now() > giveUpAt) { show(GIVE_UP_VIEW); return; }
+    }
+  };
+
   submit.addEventListener('click', async () => {
     const value = code.value.trim();
     if (!value) { status.textContent = 'Paste the code first.'; return; }
-    submit.disabled = true; status.textContent = 'Checking…';
-    const r = await postJson('/subscription-pool/follow-me/submit-code', { machineId: n.machineId, id: loginId, code: value });
     code.value = '';
-    if (r.ok && r.data && r.data.outcome === 'validated') { status.textContent = `Signed in on ${n.machine}.`; submit.remove(); setTimeout(() => { closeSheet(); refresh(); }, 1200); }
-    else { status.textContent = (r.data && (r.data.error || r.data.message || r.data.outcome)) || 'That code did not work.'; submit.disabled = false; }
+    show(workingView(n.machine, 'sending'));
+    const view = submitView(await postJson('/subscription-pool/follow-me/submit-code', { machineId: n.machineId, id: loginId, code: value }), n.machine);
+    if (!stillOpen()) return;
+    if (view.kind === 'form') {
+      // The code did not go through: the same form returns, with what to do next.
+      const fresh = view.freshLogin;
+      signInSteps(n, fresh ? { ...d, ...fresh, loginId: fresh.id || loginId } : d, refresh, view.error);
+      return;
+    }
+    show(view);
+    if (view.kind === 'working') followCompletion();
   });
-  const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel this sign-in' });
   cancel.addEventListener('click', async () => {
     cancel.disabled = true;
     const r = await postJson('/subscription-pool/follow-me/cancel', { machineId: n.machineId, id: n.accountId });
     status.textContent = r.ok ? 'Cancelled.' : (r.data && r.data.error) || 'Could not cancel.';
     if (r.ok) setTimeout(() => { closeSheet(); refresh(); }, 800); else cancel.disabled = false;
   });
-  const expires = d.ttlExpiresAt ? new Date(d.ttlExpiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
-  sheet({ title: n.title },
-    el('div', { class: 'signin-steps' },
-      el('p', { class: 'confirm-text', text: `1. Open the sign-in page${verifiedDisplayName(d.expectedEmail, n.accountId) ? ` and sign in as ${d.expectedEmail}` : ''}.` }),
-      el('a', { class: 'btn-primary btn-inline signin-link', href: d.verificationUrl, target: '_blank', rel: 'noopener', text: 'Open the sign-in page' }),
-      el('p', { class: 'confirm-text', text: '2. If the page gives you a code, paste it here.' }),
-      code, submit,
-      expires ? el('p', { class: 'action-status', text: `This sign-in link works until ${expires}.` }) : null,
-      d.notice ? note(String(d.notice)) : null,
-      status),
-    el('div', { class: 'sheet-danger' }, cancel));
 }
 
 async function repairNeed(n, refresh) {
