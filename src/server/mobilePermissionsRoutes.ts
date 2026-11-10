@@ -16,6 +16,8 @@
  *   POST /mobile/sessions/close/:id                 — close a session
  *   POST /mobile/sessions/new                       — start a session
  *   POST /mobile/sessions/default                   — set or clear the default door and model for new topics
+ *   POST /mobile/accounts/sign-in/start             — start a fresh sign-in for one account on one machine (docs/specs/account-sign-in-face-id.md)
+ *   POST /mobile/accounts/add                       — add a Claude or Codex account and start its sign-in here (docs/specs/account-add-face-id.md)
  *
  * The reads: the bearer or an owner phone. The writes: ONLY an active owner phone that signs the
  * request with its device key AND carries a fresh presence-key signature (Face ID / Touch ID /
@@ -44,6 +46,8 @@ import { FLOOR_ACTION_LABELS } from '../core/AuthorizationRequestStore.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
+import { isNewAccountKind, type NewAccountKind } from '../core/newSubscriptionAccountId.js';
 
 export const MOBILE_PERMISSIONS_SCHEMA_VERSION = 1;
 export const PERMISSION_ACTION_VERSION = 'instar-permission-action-v1';
@@ -94,9 +98,15 @@ export type PermissionAction =
   /** "Bring it back here" (app-conversations-in-the-pool §2.2): Face ID, behind the same write gate as Move. */
   | { kind: 'session-bring-back'; target: string; confirmed: boolean }
   | { kind: 'session-close'; target: string; tmux: string; machine: string | null }
-  | { kind: TeamActionKind; target: 'team' }
+  | { kind: Exclude<TeamActionKind, 'team-switch-on'>; target: 'team' }
+  /** One setting turned on for the whole agent (team-switches-agent-wide); the setting is on the signed line. */
+  | { kind: 'team-switch-on'; target: TeamSwitchSetting | 'team-access' }
   | { kind: 'session-new'; target: 'new'; name: string; platform: SessionPlatformChoice; framework: string | null; model: string | null; machine: string | null }
-  | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null };
+  | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null }
+  /** Start a fresh sign-in for one account on one machine (account-sign-in-face-id): the pair is the signed target. */
+  | { kind: 'account-sign-in'; target: string; accountId: string; machineId: string }
+  /** Add a Claude or Codex account (account-add-face-id): the kind is the signed target. */
+  | { kind: 'account-add'; target: NewAccountKind };
 
 export type SessionPlatformChoice = 'auto' | 'telegram' | 'slack' | 'app' | 'headless';
 export type SessionAction = Extract<PermissionAction, { kind: `session-${string}` }>;
@@ -106,6 +116,19 @@ const LINE_WORD = /^[A-Za-z0-9._:[\]-]{1,128}$/;
 const TMUX_NAME = /^[a-zA-Z0-9_-]{1,200}$/;
 const TOPIC_ID = /^[1-9][0-9]{0,15}$/;
 const CONFIRMATION = /^[0-9a-f]{64}$/;
+/** A subscription account id, exactly as the pool stores one (SubscriptionPool ID_RE), bounded. */
+export const ACCOUNT_ID_PATTERN = /^[a-z0-9-]{1,64}$/;
+/** A machine id as the pool names one (`m_<hex>`, or `local` with no mesh): one word, no `@`, bounded. */
+export const SIGN_IN_MACHINE_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+/** The signed target for an account sign-in: `<accountId>@<machineId>`, or null when either part is malformed. */
+export function accountSignInTarget(accountId: unknown, machineId: unknown): string | null {
+  if (typeof accountId !== 'string' || typeof machineId !== 'string') return null;
+  if (!ACCOUNT_ID_PATTERN.test(accountId) || !SIGN_IN_MACHINE_PATTERN.test(machineId)) return null;
+  return `${accountId}@${machineId}`;
+}
+/** The only fields POST /mobile/accounts/add reads; anything else is refused (never a credential). */
+const ACCOUNT_ADD_FIELDS: ReadonlySet<string> = new Set(['provider', 'nickname', 'email', 'challenge', 'presenceSig']);
+export const MAX_ACCOUNT_NICKNAME_CHARS = 60;
 /** An absent optional field: nothing sent, or the empty string the phone's string fields use for it. */
 const absent = (v: unknown): boolean => v === undefined || v === null || v === '';
 
@@ -125,14 +148,17 @@ export function actionLine(a: PermissionAction): string {
     case 'session-bring-back': return `session-bring-back ${a.target} ${a.confirmed ? 'confirmed' : 'ask'}`;
     case 'session-close': return `session-close ${a.target} ${a.tmux} ${a.machine ?? 'here'}`;
     case 'team-off': case 'team-restore': case 'team-memory-privacy': case 'team-origin-gone': return `${a.kind} team`;
+    case 'team-switch-on': return `team-switch-on ${a.target}`;
     case 'session-new': return `session-new new ${reasonHash(a.name)} ${a.platform} ${a.framework ?? 'none'} ${a.model ?? 'none'} ${a.machine ?? 'auto'}`;
     case 'session-default': return `session-default new-topic-default ${a.framework ?? 'none'} ${a.model ?? 'none'}`;
+    case 'account-sign-in': return `account-sign-in ${a.target}`;
+    case 'account-add': return `account-add ${a.target}`;
   }
 }
 
 /** The exact bytes the presence key signs for one action. */
 /** What the owner confirms with Face ID on the team screens. */
-export type TeamActionKind = 'team-off' | 'team-restore' | 'team-memory-privacy' | 'team-origin-gone';
+export type TeamActionKind = 'team-off' | 'team-restore' | 'team-memory-privacy' | 'team-origin-gone' | 'team-switch-on';
 
 export function permissionPresenceMessage(deviceId: string, host: string, challenge: string, line: string): string {
   return `${PERMISSION_ACTION_VERSION}\n${deviceId}\n${host.toLowerCase()}\n${challenge}\n${line}`;
@@ -140,9 +166,20 @@ export function permissionPresenceMessage(deviceId: string, host: string, challe
 
 /** Builds an action from its parts, or names what is wrong with them. */
 export function buildAction(kind: unknown, target: unknown, extra: { value?: unknown; reason?: unknown; proposalHash?: unknown; disclosureHash?: unknown; label?: unknown; note?: unknown; topicId?: unknown; framework?: unknown; model?: unknown; machine?: unknown; to?: unknown; confirmation?: unknown; tmux?: unknown; name?: unknown; platform?: unknown }): { ok: true; action: PermissionAction } | { ok: false; error: string } {
+  // An account sign-in names `<accountId>@<machineId>`, split and re-checked part by part.
+  if (kind === 'account-sign-in') {
+    if (typeof target !== 'string') return { ok: false, error: 'bad-target' };
+    const at = target.indexOf('@');
+    const accountId = at > 0 ? target.slice(0, at) : '';
+    const machineId = at > 0 ? target.slice(at + 1) : '';
+    return accountSignInTarget(accountId, machineId) === target ? { ok: true, action: { kind, target, accountId, machineId } } : { ok: false, error: 'bad-target' };
+  }
   // A session door names a conversation reference, whose Slack form has uppercase ids (checked below).
   if (typeof target !== 'string' || (kind === 'session-door' ? !conversationKeys(target) : !TARGET_PATTERN.test(target))) return { ok: false, error: 'bad-target' };
   if (kind === 'team-off' || kind === 'team-restore' || kind === 'team-memory-privacy' || kind === 'team-origin-gone') return { ok: true, action: { kind, target: 'team' } };
+  if (kind === 'account-add') return isNewAccountKind(target) ? { ok: true, action: { kind, target } } : { ok: false, error: 'bad-target' };
+  // 'team-access': everything team access needs, in one Face ID (one signed line names it, so it cannot be replayed as one setting).
+  if (kind === 'team-switch-on') return isTeamSwitchSetting(target) || target === 'team-access' ? { ok: true, action: { kind, target: target as TeamSwitchSetting | 'team-access' } } : { ok: false, error: 'bad-setting' };
   if (kind === 'approve-request') {
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
@@ -296,7 +333,7 @@ export class ActionChallengeStore {
 
 // ── audit ─────────────────────────────────────────────────────────────────────
 
-export type PermissionAuditEvent = 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
+export type PermissionAuditEvent = 'account-sign-in' | 'account-add' | 'team-changed' | 'challenge' | 'approved' | 'declined' | 'feature-set' | 'secret-requested' | 'secret-cancelled' | 'session-action' | 'refused';
 export interface PermissionAuditRow { at: string; event: PermissionAuditEvent; deviceId: string | null; route?: string; personId?: string | null; action?: string; target?: string; requestKey?: string; value?: string; reason?: string; status?: number }
 
 /** Metadata-only trail of every phone permission write (never a decline text, never a secret). A record, not a gate. */
@@ -596,7 +633,18 @@ export interface MobilePermissionsDeps {
   /** A session control: runs the dashboard's own route and answers in the phone's words (mobileSessionControlsRoutes.ts). */
   sessionAction?: (action: SessionAction, deviceId: string) => Promise<ActionResult>;
   /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
-  teamAction?: (kind: TeamActionKind, req: Request, deviceId: string) => Promise<ActionResult>;
+  teamAction?: (kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<ActionResult>;
+  /**
+   * Start a fresh sign-in for one account on one machine: the console's own
+   * `POST /subscription-pool/matrix/start-cell` core after its PIN check (routes.ts runMatrixStartCell),
+   * answering the same body. Face ID stands in for the PIN (account-sign-in-face-id).
+   */
+  startAccountSignIn?: (accountId: string, machineId: string, req: Request) => Promise<ActionResult>;
+  /**
+   * Add a Claude or Codex account and start its sign-in on this machine (routes.ts runAddAccountSignIn),
+   * answering start-cell's body. The account joins the pool only when the sign-in completes with this email.
+   */
+  addAccount?: (input: { kind: NewAccountKind; nickname: string | null; email: string }) => Promise<ActionResult>;
   now?: () => number;
 }
 
@@ -728,7 +776,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
-    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone');
+    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
     if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
@@ -835,15 +883,16 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   sessionRoute('/mobile/sessions/new', 'session-new', () => 'new');
   sessionRoute('/mobile/sessions/default', 'session-default', () => 'new-topic-default');
 
-  const teamRoute = (routePath: string, kind: TeamActionKind): void => {
+  const teamRoute = (routePath: string, kind: TeamActionKind, targetOf: (req: Request) => unknown = () => 'team'): void => {
     router.post(routePath, async (req: Request, res: Response) => {
       const g = writeGate(req, res, true);
       if (!g) return;
-      const built = buildAction(kind, 'team', {});
-      if (!built.ok || !proven(req, res, g, built.action)) return;
+      const built = buildAction(kind, targetOf(req), {});
+      if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+      if (!proven(req, res, g, built.action)) return;
       let r: ActionResult;
       try {
-        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId) : { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
+        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId, built.action.target) : { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
       } catch (err) {
         // The reason goes to the log. The phone gets words a person can use.
         console.warn(`[team-access] ${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -857,6 +906,59 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   teamRoute('/mobile/team/restore', 'team-restore');
   teamRoute('/mobile/team/origin-gone', 'team-origin-gone');
   teamRoute('/mobile/team/memory-privacy', 'team-memory-privacy');
+  // One tap turns a setting on for every machine of the agent. The setting is the signed target.
+  teamRoute('/mobile/team/switches/turn-on', 'team-switch-on', (req) => rec(req.body).setting ?? rec(req.body).target);
+
+  // Start a fresh sign-in for one account on one machine (docs/specs/account-sign-in-face-id.md). The pair
+  // comes from the body and is the signed target, so a Face ID proof for one account starts no other.
+  router.post('/mobile/accounts/sign-in/start', async (req: Request, res: Response) => {
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const built = buildAction('account-sign-in', accountSignInTarget(b.accountId, b.machineId), {});
+    if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error, detail: 'That account or machine name is not one the agent knows how to read.' }); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'account-sign-in' }>;
+    let r: ActionResult;
+    try {
+      r = deps.startAccountSignIn ? await deps.startAccountSignIn(a.accountId, a.machineId, req) : { status: 503, body: { error: 'account-sign-in-unavailable', detail: 'This agent cannot start a sign-in from the phone yet. Use the dashboard.' } };
+    } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the phone is told the sign-in did not start
+      report('MobilePermissions.write', 'a phone account sign-in runs the console\'s start-cell core', 'the phone says the sign-in did not start', err);
+      r = { status: 500, body: { error: 'account-sign-in-failed', detail: 'The sign-in did not start. Try again in a moment.' } };
+    }
+    finish(res, 'account-sign-in', a, g, r);
+  });
+
+  // Add a Claude or Codex account (docs/specs/account-add-face-id.md). The kind is the signed target; the body
+  // carries only the kind, an optional nickname and the account's email, never a credential.
+  router.post('/mobile/accounts/add', async (req: Request, res: Response) => {
+    const g = writeGate(req, res);
+    if (!g) return;
+    const b = rec(req.body);
+    const refuse400 = (error: string, detail: string): void => {
+      audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: error, status: 400 });
+      res.status(400).json({ error, detail });
+    };
+    const extra = Object.keys(b).find((k) => !ACCOUNT_ADD_FIELDS.has(k));
+    if (extra !== undefined) { refuse400('unexpected-field', 'Only the account kind, a nickname and the account email can be sent here. Passwords and keys are never accepted.'); return; }
+    const built = buildAction('account-add', b.provider, {});
+    if (!built.ok) { refuse400(built.error, 'Choose Claude or Codex.'); return; }
+    const nickname = absent(b.nickname) ? null : b.nickname;
+    if (nickname !== null && (typeof nickname !== 'string' || nickname.trim() !== nickname || nickname.length > MAX_ACCOUNT_NICKNAME_CHARS || CONTROL_CHARS.test(nickname) || holdsToken(nickname))) { refuse400('bad-nickname', 'Use a short plain name for this account.'); return; }
+    if (typeof b.email !== 'string' || b.email.length === 0 || b.email.length > 254 || CONTROL_CHARS.test(b.email) || !/^[^@\s]+@[^@\s]+$/.test(b.email.trim())) { refuse400('bad-email', 'Enter the email of the account you will sign in with.'); return; }
+    if (!proven(req, res, g, built.action)) return;
+    const a = built.action as Extract<PermissionAction, { kind: 'account-add' }>;
+    let r: ActionResult;
+    try {
+      r = deps.addAccount ? await deps.addAccount({ kind: a.target, nickname: nickname as string | null, email: (b.email as string).trim() }) : { status: 503, body: { error: 'account-add-unavailable', detail: 'This agent cannot add accounts from the phone yet. Use the dashboard.' } };
+    } catch (err) {
+      // @silent-fallback-ok — not silent: reported; the phone is told the account was not added
+      report('MobilePermissions.write', 'a phone add-account runs the account sign-in core', 'the phone says the account was not added', err);
+      r = { status: 500, body: { error: 'account-add-failed', detail: 'The account was not added. Try again in a moment.' } };
+    }
+    finish(res, 'account-add', a, g, r);
+  });
 
   router.post('/mobile/permissions/features/:id', async (req: Request, res: Response) => {
     const g = writeGate(req, res);

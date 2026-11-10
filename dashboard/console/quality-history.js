@@ -8,6 +8,8 @@ import { humanName } from './maturation-board-model.js';
 
 export const QUALITY_HREF = '#/work/maturation?s=quality';
 const FIRST = 12;
+const READ_REASONS = { 'missing-contract': 'with no measurement', 'invalid-contract': 'whose measurement needs repair', 'unregistered-target': 'measuring something no longer registered',
+  'ambiguous-target': 'with more than one measurement owner', 'unknown-subject': 'not known to the measurement owner', unavailable: 'that could not be read' };
 const fmt = (n) => (typeof n === 'number' && Number.isFinite(n) ? new Intl.NumberFormat(undefined, { maximumSignificantDigits: 4 }).format(n) : 'unknown');
 const day = (t) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 const goalText = (m) => `goal ${m.direction === 'at-least' ? 'at least' : 'at most'} ${fmt(m.threshold)}`;
@@ -37,8 +39,34 @@ export function statusText(item) {
 export function summarize(data) {
   const items = data.items || [];
   const count = (s) => items.filter((i) => i.status === s).length;
-  return { total: items.length + (data.itemsOmitted || 0), off: count('off-goal'), few: count('too-few-samples'), at: count('at-goal'),
+  return { total: items.length, off: count('off-goal'), few: count('too-few-samples'), at: count('at-goal'), none: count('no-points'),
     verified: items.filter(comparisonVerified).length };
+}
+
+/** The subline: every returned item lands in exactly one named group. */
+export function sublineText(s) {
+  const parts = [
+    s.few ? `${s.few} ${s.few === 1 ? 'has' : 'have'} too few samples to judge` : null,
+    s.at ? `${s.at} ${s.at === 1 ? 'is' : 'are'} at goal` : null,
+    s.none ? `${s.none} ${s.none === 1 ? 'has' : 'have'} no recorded values yet` : null,
+  ].filter(Boolean);
+  return parts.length ? `Worst first. ${parts.join(', ')}.` : 'Worst first.';
+}
+
+/** What this page does not cover, in one line; null when it covers everything this machine has. */
+export function coverage(data) {
+  const notReadable = { ...(data.notReadable || {}) };
+  const noMeasurement = (data.noMeasurement || 0) + (notReadable['missing-contract'] || 0); // older servers read and reported these
+  delete notReadable['missing-contract'];
+  const notRead = Object.values(notReadable).reduce((a, b) => a + b, 0);
+  const pastLimit = (data.subjectsOmitted || 0) + (data.itemsOmitted || 0);
+  const gaps = [
+    noMeasurement ? `${noMeasurement} tracked items with no measurement yet` : null,
+    notRead ? `${notRead} that could not be read` : null,
+    pastLimit ? `${pastLimit} past the read limit` : null,
+    data.sourcesComplete === false ? 'items in inventories that could not be read' : null,
+  ].filter(Boolean);
+  return { noMeasurement, notRead, pastLimit, text: gaps.length ? `This machine only. Not shown: ${gaps.join(', ')}.` : 'This machine only. Every measured item here is shown.', complete: !gaps.length };
 }
 
 function card(item) {
@@ -77,22 +105,22 @@ export function qualityHistoryView(data, { backHref = '#/work/maturation' } = {}
     grid.append(...items.slice(FIRST).map(card)); more.remove();
   } }) : null;
   const unverified = s.total && s.verified < items.length;
-  const notRead = Object.values(data.notReadable || {}).reduce((a, b) => a + b, 0);
+  const cov = coverage(data);
   return el('section', { class: 'qh' },
     el('div', { class: 'qh-top' }, el('div', { class: 'eyebrow', text: 'Quality history' }), back),
     el('h1', { class: 'mb-answer', text: headline }),
-    s.total ? el('p', { class: 'mb-sub', text: `Worst first. ${s.few} have too few samples to judge; ${s.at} are at goal.` }) : null,
+    s.total ? el('p', { class: 'mb-sub', text: sublineText(s) }) : null,
+    el('p', { class: 'qh-coverage' }, el('span', { text: `${cov.text} ` }),
+      cov.complete ? null : askLink(`Quality history leaves items out. ${cov.text} What should we measure or fix first?`, 'Ask what to cover next')),
     unverified ? el('p', { class: 'qh-warn' }, el('span', { text: s.verified ? `Only ${s.verified} of ${items.length} have a recorded starting point, so the other changes are not verified improvements. ` : 'None has a recorded starting point yet, so no change shown here is a verified improvement. ' }),
       askLink('Most measured items have no recorded starting point (baseline). How do we record them?', 'Ask how to record starting points')) : null,
     s.total ? el('p', { class: 'qh-key', 'aria-label': 'How to read the charts' },
-      el('span', { class: 'qh-k-dot', text: 'Dots: recorded values, hollow = not verified' }),
+      el('span', { class: 'qh-k-dot', text: 'Hollow dot: not verified' }),
       el('span', { class: 'qh-k-goal', text: 'Amber dotted line: goal' }),
-      el('span', { class: 'qh-k-base', text: 'Dashed line: starting point' })) : null,
+      el('span', { class: 'qh-k-base', text: 'Dashed: starting point' }),
+      data.truncatedPoints ? el('span', { text: 'Up to 24 points per chart' }) : null) : null,
     grid, more,
     el('details', { class: 'mb-sources' }, el('summary', { text: 'Where this comes from' }),
       el('p', { class: 'mb-fine', text: `Read ${new Date(data.generatedAt).toLocaleString()} on this machine, last ${data.windowDays} days. Each chart shows up to 24 of its recorded points; lines join only points recorded as continuous.` }),
-      notRead ? el('p', { class: 'mb-fine', text: `${notRead} measured items could not be read and are not shown.` }) : null,
-      data.itemsOmitted || data.subjectsOmitted ? el('p', { class: 'mb-fine', text: `${(data.itemsOmitted || 0) + (data.subjectsOmitted || 0)} more items are outside this bounded read.` }) : null,
-      data.sourcesComplete ? null : el('p', { class: 'mb-fine', text: 'Some inventories could not be read, so this list may be incomplete.' }),
-      notRead || !data.sourcesComplete ? askLink('Some measured items could not be read for quality history.') : null));
+      Object.keys(data.notReadable || {}).length ? el('p', { class: 'mb-fine', text: `Not read, by reason: ${Object.entries(data.notReadable).map(([k, n]) => `${n} ${READ_REASONS[k] || 'unreadable'}`).join(', ')}.` }) : null));
 }

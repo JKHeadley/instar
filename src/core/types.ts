@@ -72,6 +72,10 @@ export interface Session {
    *  renders engine-aware (a Codex session must not display as a Claude one).
    *  Populated at spawn from the resolved framework; undefined on legacy records. */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
+  /** EVO-008: the tool list this session was CONFINED to (no bypass flag; dontAsk +
+   *  --tools). Set by SessionManager only after the final launch argv passed the whole
+   *  confinement contract on a Claude lane; unset on every other launch and on old records. */
+  confinedTools?: string[];
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
@@ -3709,6 +3713,24 @@ export interface InstarConfig {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
   };
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
+   *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
+   *  owner-tunable at the agent level; per-project values live on the binding. */
+  chiefOfStaff?: {
+    enabled?: boolean;
+    displayName?: string;
+    tickMinutes?: number;
+    defaultCadenceHours?: number;
+    maxRunHours?: number;
+    operatorLeaseHours?: number;
+    noteCadenceHours?: number;
+    noteTime?: string;
+    maxRestartsWithoutProgress?: number;
+    breakerRestartsPerWeek?: number;
+    immediateMessagesPerDay?: number;
+    judgeDailyCents?: number;
+    excludedAuthors?: string[];
+  };
   /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
   machineMaintenance?: {
     enabled?: boolean;
@@ -4095,6 +4117,11 @@ export interface InstarConfig {
        * `enabled` omitted ⇒ true wherever native conversations are on; `false` turns unread off alone. Read live.
        */
       unread?: { enabled?: boolean };
+      /**
+       * Pinned messages in conversations (docs/specs/conversation-pinned-messages.md). `enabled`
+       * omitted ⇒ true wherever native conversations are on; `false` turns pins off alone. Read live.
+       */
+      pins?: { enabled?: boolean };
     };
     /**
      * Dashboard browsers as signed devices (docs/specs/dashboard-conversations-browser-device.md).
@@ -5072,6 +5099,13 @@ export interface InstarConfig {
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
       /**
+       * Remind the operator ONCE when an approval-mode repair has waited this many hours for its
+       * tap (CMT-1541). Absent ⇒ 4; 0 turns the reminder off. Delivered on the same attention row
+       * as the first notice (Quiet-by-Default applies) and never during `slowRetry.quietHours`.
+       * Signal only: it never approves a repair.
+       */
+      approvalReminderHours?: number;
+      /**
        * Who chooses each sign-in step (spec agent-driven-relogin): `agent` = a model reading the
        * page's floor-filtered controls; `closed` = the fixed page-class table; `agent-session` = one
        * short-lived agent session follows /subscription-signin section 3 like a person (spec
@@ -5247,6 +5281,12 @@ export interface InstarConfig {
       reactiveGraceMs?: number;
       /** Busy re-check cadence inside a grace window (default 10000). */
       recheckMs?: number;
+      /** Busy-deferral escalation (default 95): once a session's busy episode
+       *  has been deferred a full deferralCeilingMs and its account is at or
+       *  over this measured %, the proactive swap executes through the
+       *  reactive-swap class (bounded grace, then mitigations) instead of
+       *  being dropped again. Above 100 disables it. */
+      wallEscalationPct?: number;
     };
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {

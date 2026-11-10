@@ -72,6 +72,8 @@ import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS }
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
+import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
+import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -1559,6 +1561,73 @@ const feedbackTriageActionList: SelfActionController = {
  * episode state is durable (triage_meta), so a restart resumes the ladder
  * instead of restarting it.
  */
+/**
+ * context-budget-quarantine-reconcile — the ContextBudgetSentinel's quarantine
+ * ladder (context-budget-layered-summaries §9.3): one SelfHealGate episode per
+ * quarantined fold, at most 12 attempts and a 45-minute wall clock, then
+ * exhausted (one Attention item) and RETAINED for 24 h so the same fold never
+ * re-opens a ladder. Pressure model: a quarantine that never resolves, ticked
+ * every 5 minutes for a day.
+ */
+const contextBudgetQuarantineReconcile: SelfActionController = {
+  id: 'context-budget-quarantine-reconcile',
+  actionVerb: 'converge-quarantined-fold',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (pool-shared async SelfHealGate ladder per quarantined fold: <=12 attempts / 45 min, exhausted episodes retained 24 h)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetQuarantineReconcile.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WALL_CLOCK_MS = 45 * 60_000; const MAX_ATTEMPTS = 12;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-quarantine') as { attempts: number; startedAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, startedAt: f.clock.nowMs(), exhausted: false };
+      if (st.exhausted) { f.durableState.set('cb-quarantine', st); return; }
+      if (st.attempts >= MAX_ATTEMPTS || f.clock.nowMs() - st.startedAt >= WALL_CLOCK_MS) { f.durableState.set('cb-quarantine', { ...st, exhausted: true }); return; }
+      sink.emit({ verb: 'converge-quarantined-fold', target: 'fold:f1' });
+      f.durableState.set('cb-quarantine', { ...st, attempts: st.attempts + 1 });
+    } };
+  },
+};
+
+/**
+ * context-budget-adapter-suite — the sentinel's adapter verification suite
+ * trigger (context-budget-layered-summaries §9.6): one suite run (a spawned
+ * process, ~7 engine calls) per engine version with no recorded result, the
+ * attempt recorded BEFORE the run, retried at most once per 24 h and given up after 3. Pressure
+ * model: a version whose run always fails, ticked every 5 minutes for 3 days.
+ */
+const contextBudgetAdapterSuite: SelfActionController = {
+  id: 'context-budget-adapter-suite',
+  actionVerb: 'retry-adapter-suite',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (maybeRunAdapterSuite: one run per unrecorded engine version, durable attempt stamp, 24 h retry floor, 3 attempts then give up, one at a time)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 3 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetAdapterSuite.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const RETRY_MS = 24 * 60 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-adapter-suite') as { count: number; lastAt: number } | undefined) ?? { count: 0, lastAt: -Infinity };
+      if (st.count >= 3 || f.clock.nowMs() - st.lastAt < RETRY_MS) return; // gives up after 3 attempts per version
+      f.durableState.set('cb-adapter-suite', { count: st.count + 1, lastAt: f.clock.nowMs() });
+      sink.emit({ verb: 'retry-adapter-suite', target: 'claude-code@failing-version' });
+    } };
+  },
+};
+
 const feedbackTriageSelfHealProbe: SelfActionController = {
   id: 'feedback-triage-self-heal-probe',
   actionVerb: 'retry-authority-probe',
@@ -5131,7 +5200,36 @@ const emailFallbackRetry: SelfActionController = {
   },
 };
 
+
+/** relogin-approval-reminder (CMT-1541): a sign-in repair waits for the operator's tap forever. The
+ * reminder fires ONCE per waiting spell (the spell key is held), then stays quiet however long it waits. */
+const reloginApprovalReminder: SelfActionController = {
+  id: 'relogin-approval-reminder',
+  actionVerb: 'notify',
+  models: 'src/core/SubscriptionReloginApprovalReminder.ts (SubscriptionReloginApprovalReminder.tick — dueApprovalReminders, held by spell key)',
+  modelsPath: 'src/core/SubscriptionReloginApprovalReminder.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart forgets the held spell keys, but the reminder text is fixed for one waiting spell (it names the absolute wait start), so the re-raised observation lands on the same attention row unchanged and is absorbed without a repost.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 4 * 24 * 7,
+  tickMs: 15 * 60_000,
+  makeUnderPressure(f, sink) {
+    const sent = new Set<string>();
+    const waiting = { id: 'ep-1', state: 'suggested', mode: 'approval', updatedAt: new Date(0).toISOString() } as unknown as SubscriptionReloginEpisode;
+    return {
+      tick() {
+        sink.considered += 1;
+        for (const due of dueApprovalReminders([waiting], { nowMs: f.clock.nowMs(), thresholdMs: 4 * 3_600_000, waitingSince: () => 0, sent })) {
+          sink.emit({ verb: 'notify', target: `relogin:${due.episode.id}` });
+          sent.add(due.key);
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  reloginApprovalReminder,
   peerPlaceSessionTick,
   skillLearningHealRevertFirst,
   skillLearningHealIndexRetire,
@@ -5193,6 +5291,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobScriptTriageBackup,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,
+  contextBudgetQuarantineReconcile,
+  contextBudgetAdapterSuite,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,

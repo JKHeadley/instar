@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-loop",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-09T22:22:50.405Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-loop.md",
+  "artifactSha256": "c5fa1e7a8bf82839abbba48d8cdf1615d72b23952a6be37ccfc587d13a3527ab",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "upgrades/next/chief-of-staff-loop.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Release-fragment wording only (amend of the PR 3 commit): the user-facing section must be plain prose; the review paragraph moved to What Changed.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

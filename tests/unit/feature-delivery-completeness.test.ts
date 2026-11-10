@@ -175,6 +175,7 @@ describe('Feature Delivery Completeness', () => {
       'Registry First — people:',
       'Registry First — team access:',
       'Registry First — team requests:',
+      'Registry First — team settings:', // team-switches-agent-wide: one line and one tap per team setting for the whole agent (templates.ts + migrator parity).
       'Decision journal — principle is required:',
       'Decision journal confidence contract:', // ACT-1522: finite [0,1] write contract + legacy-unmeasurable posture; template, existing-agent migrator, and Codex/Gemini shadow parity.
       'Alignment score — N/A means not assessed:',
@@ -432,6 +433,7 @@ describe('Feature Delivery Completeness', () => {
       'The "Threadline" hub topic — notifications',       // CMT-519 migrator-only notification-routing guidance, no template parity
       'Cross-Machine Seamlessness (one agent, many machines)', // operational self-heal/handoff awareness (like Version-Skew); not a user-invokable capability
       'What are we working on?',                           // migrator patch for the initiatives Registry-First row, not a capability section
+      '/context-budget/sentinel',                          // migrator patch for the Context Budget sentinel Registry-First row (template carries the same row), not a capability section
       'Framework-Onboarding Mentor System',               // developer-layer issue-ledger observability; not a Codex/Gemini end-user capability (no shadow-marker parity)
       '**Apprenticeship Program**',                       // developer/overseer-layer capability: the overseer agent (e.g. Echo) drives the apprenticeship/mentorship instance registry + lifecycle gates. Like 'Framework-Onboarding Mentor System' — templated + migrated for the overseer, but not a mentee/end-user capability the Codex/Gemini frameworks invoke, so no shadow-marker parity required. (Was previously untracked — a pre-existing red in this guard, fixed here.)
       'What address reaches me (Threadline routing fingerprint)', // Threadline routing-fingerprint operational knowledge, migrator-only (no template/shadow parity)

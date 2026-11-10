@@ -1145,8 +1145,15 @@ export const CLAUDE_REVIEWER_DEFAULT_MODEL = 'claude-fable-5';
  */
 export const CLAUDE_REVIEWER_FRONTIER_MODELS: readonly string[] = [CLAUDE_REVIEWER_DEFAULT_MODEL];
 
-/** Operator-authorized concrete review pin. It is never a default or fallback. */
-export const CLAUDE_REVIEWER_EXPLICIT_MODELS: readonly string[] = ['claude-opus-5-5'];
+/**
+ * Operator-authorized concrete review pins. Never a default or fallback.
+ * - `claude-opus-5-5`: the operator's 2026-09-24 feedback-routing decision.
+ * - `claude-fable-5-2`: the operator's 2026-11-09 request (topic 141133) that
+ *   Fable 5.2 take part in spec design and review; live-verified the same day
+ *   (`claude --model claude-fable-5-2 -p`, modelUsage `claude-fable-5-2`). It is
+ *   accepted as an explicit pin only; the default reviewer pin is unchanged.
+ */
+export const CLAUDE_REVIEWER_EXPLICIT_MODELS: readonly string[] = ['claude-opus-5-5', 'claude-fable-5-2'];
 
 /** The default Claude config-home path (`$CLAUDE_CONFIG_DIR` or `~/.claude`). */
 function defaultClaudeConfigHome(env: NodeJS.ProcessEnv = process.env): string {

@@ -59,7 +59,7 @@ import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDC
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
-import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
@@ -4456,6 +4456,12 @@ function installHooks(stateDir: string): void {
     { stateDir, port: 4040, sessions: { claudePath: 'claude' } } as any
   );
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
+  // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
+  fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
+  // PostCompact hook (context-budget-layered-summaries §9.1): stores the compaction summary.
+  fs.writeFileSync(path.join(hooksDir, 'post-compact.sh'), migrator.getHookContent('post-compact'), { mode: 0o755 });
+  // PreCompact steering hook (§9.1/§9.5): prints staged keep-instructions into the compaction prompt.
+  fs.writeFileSync(path.join(hooksDir, 'pre-compact-steer.sh'), migrator.getHookContent('pre-compact-steer'), { mode: 0o755 });
 
   // Auto-restart-on-MCP-inaccessible — fired backgrounded by session-start.sh.
   // Dark by default; enabled on development agents. Install on fresh init too so
@@ -4640,6 +4646,7 @@ fi
   // deferred-install gap widening). Dev-gated dark + fail-open on every
   // uncertainty, so on a fresh fleet agent it is one config read per tool call.
   fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'fold-marker-guard.js'), migrator.getHookContent('fold-marker-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'signin-profile-guard.js'), migrator.getHookContent('signin-profile-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'telegram-origin-guard.js'), migrator.getHookContent('telegram-origin-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
@@ -5444,7 +5451,8 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
 
   // SessionStart: identity injection on all lifecycle events
   // Uses the correct Claude Code hook type (not PostToolUse or Notification)
-  // The session-start.sh hook handles event routing internally via CLAUDE_HOOK_MATCHER
+  // The session-start.sh hook routes on the "source" field Claude Code passes in its stdin JSON
+  // (context-budget-layered-summaries §9.1; CLAUDE_HOOK_MATCHER is only a legacy fallback).
   const sessionStartHook = {
     type: 'command',
     command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
@@ -5456,6 +5464,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       { matcher: 'startup', hooks: [sessionStartHook] },
       { matcher: 'resume', hooks: [sessionStartHook] },
       { matcher: 'compact', hooks: [sessionStartHook] },
+      { matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] },
     ];
   } else {
     // Merge: ensure all matchers are covered
@@ -5464,6 +5473,25 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       if (!sessionStart.some(e => e.matcher === matcher)) {
         sessionStart.push({ matcher, hooks: [sessionStartHook] });
       }
+    }
+    if (!sessionStart.some(e => (e.hooks as Array<{ command?: string }> | undefined)?.some(h => h.command?.includes('clear-seed.sh')))) {
+      sessionStart.push({ matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] });
+    }
+  }
+
+  // PostCompact (context-budget-layered-summaries §9.1): store Claude's compaction summary.
+  {
+    const postCompact = (hooks.PostCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    if (!postCompact.some(e => e.hooks?.some(h => h.command?.includes('post-compact.sh')))) {
+      postCompact.push({ matcher: '', hooks: [{ ...POST_COMPACT_SETTINGS_HOOK }] });
+    }
+  }
+
+  // PreCompact steering (§9.1): its own entry, separate from the reporter's.
+  {
+    const preCompact = (hooks.PreCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    if (!preCompact.some(e => e.hooks?.some(h => h.command?.includes('pre-compact-steer.sh')))) {
+      preCompact.push({ matcher: '', hooks: [{ ...PRE_COMPACT_STEER_SETTINGS_HOOK }] });
     }
   }
 

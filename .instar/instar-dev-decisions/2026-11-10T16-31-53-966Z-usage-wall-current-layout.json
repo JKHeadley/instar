@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-10T16:31:53.966Z",
+  "slug": "usage-wall-current-layout",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 10,
+  "loc": 415,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ProactiveSwapMonitor.ts",
+      "src/core/SessionManager.ts",
+      "src/core/SwapAntiThrash.ts",
+      "src/core/SwapLedger.ts",
+      "src/core/types.ts",
+      "src/monitoring/SessionWatchdog.ts",
+      "src/monitoring/rateLimitDetection.ts",
+      "src/monitoring/sessionUsageLimitEvidence.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 373,
+    "deletedLines": 42
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The new path is inside the registered proactive-swap-monitor controller and runs only after the anti-thrash pipeline (all-hot STAY PUT, 45-min dwell, material-target, thrash breaker, reversal) returns execute. Each busy episode escalates at most once (counted at swap attempt); a failed escalation falls to the existing exec-failure backoff and then the ceiling drop + re-intent backoff; a swapped session dwells. Steady state under sustained pressure: at most one escalated swap per session per episode, so the loop settles."
+    }
+  },
+  "verdict": "blocked"
+}

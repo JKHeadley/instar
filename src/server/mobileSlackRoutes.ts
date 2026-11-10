@@ -40,6 +40,7 @@ import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
 import type { ConversationUnreadService, UnreadSlackSource } from '../core/ConversationUnreadService.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
+import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { deviceAdmittedAt, deviceMayUse, devicePersonOf, isMobileChatEnabled, isMobileMediaEnabled } from './mobilePairingRoutes.js';
 import type { AppConversationService } from '../core/AppConversationService.js';
 import { requestIdAgeOk, requestIdTime } from '../core/MobileChatRequests.js';
@@ -122,6 +123,8 @@ export interface MobileSlackBridge {
   isAuthorized(userId: string): boolean;
   /** This machine holds the serving lease (Slack is dispatched on the serving machine). */
   holdsLease(): boolean;
+  /** Pin or unpin one Slack message in Slack itself (conversation-pinned-messages). Absent when the adapter cannot. */
+  pin?(conv: SlackAppConversation, ts: string, pinned: boolean): Promise<void>;
 }
 
 export interface MobileSlackRouteDeps {
@@ -315,6 +318,9 @@ export function createMobileSlackRouter(deps: MobileSlackRouteDeps): Router {
       ...(deviceViewAsked ? { deviceView: true } : {}),
       conversationId: id, title: slackConversationTitle(conv), conversationKey: conv.key, messages: page.reverse(),
       nextBefore: desc.length > limit && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, ...readUpTo,
+      // Pinned messages (conversation-pinned-messages) ride on every history answer.
+      // Slack text is never stored in a pin; the preview comes from the rows read here.
+      ...(isConversationPinsEnabled(deps.config) ? { pins: pinRowsFor(svc.store, conv.key, () => true, (mid) => rows.find((r) => r.ts === mid)?.text ?? stored.find((m) => m.messageId === mid)?.text ?? null) } : {}),
     });
   });
 
@@ -561,6 +567,9 @@ export interface SlackAdapterLike {
   /** A channel's name from the adapter's cache, or null while it is fetched (fb-4db533fa-9d9). */
   cachedChannelName?(channelId: string): string | null;
   cachedChannelKind?(channelId: string): 'channel' | 'dm' | 'group-dm' | null;
+  /** pins.add / pins.remove (conversation-pinned-messages); need the bot's pins:write scope. */
+  pinMessage?(channelId: string, timestamp: string): Promise<void>;
+  unpinMessage?(channelId: string, timestamp: string): Promise<void>;
 }
 
 /** The slice of ConversationRegistry the bridge uses. */
@@ -718,6 +727,12 @@ export function buildMobileSlackBridge(d: MobileSlackBridgeDeps): MobileSlackBri
     async post(conv, text) {
       await d.adapter.sendToChannel(conv.channelId, text, conv.threadTs ? { thread_ts: conv.threadTs } : undefined);
     },
+    ...(typeof d.adapter.pinMessage === 'function' && typeof d.adapter.unpinMessage === 'function' ? {
+      async pin(conv: SlackAppConversation, ts: string, pinned: boolean) {
+        if (pinned) await d.adapter.pinMessage!(conv.channelId, ts);
+        else await d.adapter.unpinMessage!(conv.channelId, ts);
+      },
+    } : {}),
     ...(typeof d.adapter.uploadFile === 'function' ? {
       async uploadFile(conv: SlackAppConversation, filePath: string, opts: { filename: string; initialComment?: string }) {
         await d.adapter.uploadFile!(conv.channelId, filePath, opts.filename, {

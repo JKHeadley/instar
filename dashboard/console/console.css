@@ -597,6 +597,14 @@ a.btn-quiet.btn-inline { color: var(--text); }
 .mchip.unknown { border-style: dashed; }
 .signin-steps { display: flex; flex-direction: column; gap: var(--s-3); }
 .signin-link { word-break: break-all; }
+.signin-progress { display: flex; flex-direction: column; align-items: center; text-align: center; gap: var(--s-3); padding: var(--s-6) 0; }
+.signin-progress-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text); }
+.signin-progress .row-sub { white-space: normal; }
+.signin-spinner { width: 44px; height: 44px; border-radius: 50%; border: 4px solid var(--accent-wash); border-top-color: var(--accent); animation: signin-spin .9s linear infinite; }
+@keyframes signin-spin { to { transform: rotate(360deg); } }
+.signin-mark { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; font-size: 22px; font-weight: 700; }
+.signin-progress.done .signin-mark { color: var(--ok); background: var(--accent-wash); }
+.signin-progress.failed .signin-mark { color: var(--attn); background: var(--attn-wash); }
 .btn-small { height: 36px; padding: 0 12px; font-size: 13px; }
 .need-card .rows { margin: 0 calc(var(--s-2) * -1); }
 /* A card that needs the operator says why in full, never cut off with an ellipsis. */
@@ -1265,6 +1273,11 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-rows { display: flex; flex-direction: column; }
 .chat-row { display: flex; gap: var(--s-3); align-items: center; text-decoration: none; color: inherit; padding: var(--s-3) var(--s-2); border-radius: var(--r-md); }
 .chat-row.open { background: var(--accent-wash); }
+/* Chief of Staff tree (chief-of-staff-topic.md §1.4): the pinned row leads; children indent under their parent. */
+.chat-row.chat-pinned .chat-row-title { font-weight: 600; }
+.chat-row.chat-depth-1 { padding-left: calc(var(--s-2) + var(--s-5)); }
+.chat-row.chat-depth-2 { padding-left: calc(var(--s-2) + var(--s-5) * 2); }
+.chat-row.chat-depth-3 { padding-left: calc(var(--s-2) + var(--s-5) * 3); }
 .chat-row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .chat-row-top { display: flex; gap: var(--s-2); align-items: center; min-width: 0; }
 .chat-row-title { font-weight: 600; color: var(--text-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1298,6 +1311,21 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .chat-audio { width: 100%; }
 .chat-file-load, .chat-download { height: auto; min-height: 36px; padding: 6px 12px; text-align: left; }
 .chat-earlier { align-self: center; }
+/* Pinned messages (conversation-pinned-messages): a one-line bar under the title, like Telegram. */
+.chat-pinbar { display: flex; align-items: stretch; gap: var(--s-2); min-width: 0; }
+.chat-pinbar[hidden] { display: none; }
+.chat-pin-jump { flex: 1; min-width: 0; min-height: 44px; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 1px; padding: 6px 12px; border: 1px solid var(--hairline); border-left: 3px solid var(--accent); border-radius: var(--r-md); background: var(--surface-raised); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.chat-pin-label { font-size: 12px; font-weight: 600; color: var(--accent-strong); }
+.chat-pin-preview { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }
+.chat-pin-all { flex: none; min-height: 44px; }
+.chat-msg-menu { height: 24px; min-width: 32px; padding: 0 8px; border: 0; font-size: 14px; line-height: 1; }
+.chat-pinned-mark { color: var(--accent-strong); font-weight: 600; }
+.chat-flash { outline: 2px solid var(--accent); outline-offset: 2px; transition: outline-color .6s; }
+.chat-pin-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--s-2); }
+.chat-pin-row { display: flex; align-items: center; gap: var(--s-2); min-width: 0; }
+.chat-pin-row-open { flex: 1; min-width: 0; min-height: 44px; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 6px 10px; border: 1px solid var(--hairline); border-radius: var(--r-md); background: var(--surface-raised); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.chat-pin-by { font-size: 12px; color: var(--text-muted); }
+.chat-pin-unpin { flex: none; min-height: 44px; }
 .chat-composer { display: flex; flex-direction: column; gap: var(--s-2); }
 .chat-compose-row { display: flex; gap: var(--s-2); align-items: flex-end; }
 .chat-compose { flex: 1; min-width: 0; min-height: 44px; max-height: 40dvh; resize: vertical; padding: 10px 12px; border-radius: var(--r-md); border: 1px solid var(--hairline-strong); background: var(--surface-solid); color: var(--text); font: inherit; }
@@ -1343,6 +1371,8 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .qh .mb-sub { font-size: 15px; }
 .qh-warn { margin: 8px 0 0; padding: 8px 12px; border: 1px solid var(--attn-line); background: var(--attn-wash); border-radius: var(--r-sm); font-size: 14px; line-height: 1.4; }
 .qh-warn .ask-link { min-height: 28px; line-height: 28px; }
+.qh-coverage { margin: 6px 0 0; font-size: 14px; color: var(--text-muted); line-height: 1.4; }
+.qh-coverage .ask-link { min-height: 28px; line-height: 28px; }
 .qh-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 12px; font-size: 12px; color: var(--text-muted); }
 .qh-k-goal { color: var(--attn); }
 .qh-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--s-3); }
@@ -1359,7 +1389,7 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .qh .mb-sources { margin-top: var(--s-4); }
 .qh-empty { color: var(--text-muted); font-size: 13px; }
 
-@media (max-width: 600px) { .qh .mb-sub { font-size: 14px; } .qh-warn { font-size: 13px; padding: 6px 10px; } .qh-key { margin: 6px 0 8px; } }
+@media (max-width: 600px) { .qh .mb-sub { font-size: 14px; } .qh-coverage { font-size: 13px; } .qh-warn { font-size: 13px; padding: 6px 10px; } .qh-key { margin: 6px 0 8px; } }
 
 /* ── Token usage section (unified usage ledger) ───────────────────────────── */
 .usage-section { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; margin: 8px 0 24px; min-width: 0; }

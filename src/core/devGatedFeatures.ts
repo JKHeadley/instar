@@ -49,12 +49,24 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
     justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
   },
+  {
+    name: 'chiefOfStaff',
+    configPath: 'chiefOfStaff.enabled',
+    description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Every side effect goes through the §2.4 action protocol (signed intent, ownership-machine lock, durable executing record, idempotency key) and the existing quota, spawn-cap and pressure gates; it acts only on owner-confirmed bindings while the operator check-in lease is live, with P19 brakes (park, breaker, backoff). PR 2 wires the protocol only; no loop runs until PR 3.',
+  },
   { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
   {
     name: 'scriptRunners',
     configPath: 'jobs.scriptRunners.enabled',
     description: 'Script runners (job-cost-reduction §5.1): the converted built-in jobs run their shipped Node script instead of opening a model session; omitted ⇒ live on a development agent, every converted job runs its body as a session on the fleet.',
     justification: 'Each script calls the same local endpoint its session body called, under the same claim and lock-file trust; an untrusted script records failed and starts nothing. Setting enabled:false or listing a slug in disabledSlugs restores the session path live at the next trigger. No credential or state mutation beyond what the session already did; it removes spend.',
+  },
+  {
+    name: 'jobToolAllowlistEnforcement',
+    configPath: 'jobs.toolAllowlistEnforcement.enabled',
+    description: 'Job tool limits are applied (EVO-008, docs/specs/job-tool-allowlist-real-enforcement.md): a Claude job with a declared or clamped tool list starts in the confined launch form (no permission bypass; only the listed tools exist); omitted ⇒ live on a development agent, dark on the fleet, where the list is recorded but not applied.',
+    justification: 'It can only REMOVE tools from the development agent\'s own jobs that declare a list (or ask for "*" without authorization); it adds no capability, spend, credential or state change. A user job\'s bare ["Read"] default is never applied, a list naming tools the launch cannot honour is left as today and reported, and a non-Claude launch runs as today except a tamper-clamped instar job, which is refused. Read live at every launch: enabled:false restores today\'s launch at the next spawn.',
   },
   {
     name: 'scriptTriageJev',

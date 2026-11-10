@@ -32,7 +32,7 @@ afterAll(() => {
   for (const d of dirs) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'tests/integration/team-access-routes.test.ts' });
 });
 
-async function setup(overrides: Record<string, unknown> = {}, conversations: string[] = []) {
+async function setup(overrides: Record<string, unknown> = {}, conversations: string[] = [], extraTeam: Partial<TeamRouteDeps> = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'team-int-'));
   dirs.push(dir);
   fs.writeFileSync(path.join(dir, 'users.json'), JSON.stringify([{ id: 'mo', name: 'Mo', channels: [], permissions: ['user'] }]));
@@ -77,6 +77,7 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
     restoreRefs: () => ({ teamRefs: [], allRefs: () => conversations.map((ref) => ({ ref })) }),
     requireMemoryPrivacy: () => { spy.privacy++; return true; },
     agentSessionsWhenOn: () => (gate as { agentSessions?: 'own-place' | 'refused' | 'owner-reach' }).agentSessions ?? 'own-place',
+    ...extraTeam,
   };
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as unknown as { rawBody: Buffer }).rawBody = buf; } }));
@@ -91,7 +92,7 @@ async function setup(overrides: Record<string, unknown> = {}, conversations: str
   const router = express.Router();
   mountMobilePermissionsRoutes(router, {
     pairing: () => svc, config: () => config as never, stateDir: dir, bearerOk: () => false,
-    teamAction: async (kind, req, deviceId) => svc.teamActionRunner!(kind, req, deviceId) as never,
+    teamAction: async (kind, req, deviceId, target) => svc.teamActionRunner!(kind, req, deviceId, target) as never,
   } as unknown as MobilePermissionsDeps);
   app.use(router);
   return { app, svc, gate, spy, dir };
@@ -1015,5 +1016,130 @@ describe('a message that waited', () => {
     e.gate.now = 'ok';
     await send(e, owner, 'POST', '/mobile/team/people/p-1', { events: [{ type: 'person-remove', personKey: 'p-1' }] });
     expect(e.svc.teamMayDeliver('p-1', 'telegram:50')).toBe(false);
+  });
+});
+
+describe('team settings for the whole agent (team-switches-agent-wide)', () => {
+  const faceIdSwitch = async (e: Env, p: Phone, setting: string) => {
+    const c = await send(e, p, 'POST', '/mobile/permissions/challenge', { action: 'team-switch-on', target: setting });
+    expect(c.status).toBe(200);
+    const presenceSig = p.presence.sign(permissionPresenceMessage(p.id, HOST, c.body.challenge, `team-switch-on ${setting}`));
+    return send(e, p, 'POST', '/mobile/team/switches/turn-on', { setting, challenge: c.body.challenge, presenceSig });
+  };
+  const rig = async () => {
+    const asked: string[] = [];
+    const machines = [
+      { machineId: 'studio', self: true, outcome: 'applied', result: 'applied', restarting: true, willRetry: false },
+      { machineId: 'laptop', self: false, outcome: 'unreachable', result: 'unreachable', restarting: false, willRetry: true },
+    ];
+    const e = await setup({}, [], {
+      turnOnEverywhere: async (setting) => { asked.push(setting); return { setting, machines: machines as never }; },
+      selfStanding: () => ({ machineId: 'studio', standing: { enforcement: 1, native: true, privacy: false } }),
+      switchRequests: () => [{ setting: 'memory-privacy', machineId: 'laptop' }],
+    });
+    e.svc.teamPuller = {
+      belowFloor: () => [{ machineId: 'laptop', reason: 'memory-privacy-off' }, { machineId: 'mama', reason: 'native-off' }],
+      standings: () => [
+        { machineId: 'laptop', standing: { enforcement: 1, native: true, privacy: false } },
+        { machineId: 'mama', standing: { enforcement: 1, native: false, privacy: true } },
+      ],
+      waitingOn: () => [], refusing: () => false, behind: () => false, knows: () => true,
+    } as never;
+    return { e, asked, machines };
+  };
+
+  it('the context gives one line per setting, counting this machine, and keeps machinesBelowFloor for older apps', async () => {
+    const { e } = await rig();
+    const owner = phone(e);
+    const ctx = await send(e, owner, 'GET', '/mobile/team/context');
+    expect(ctx.status).toBe(200);
+    expect(ctx.body.teamSwitches).toEqual([
+      { setting: 'app-conversations', on: false, offOn: ['mama'], action: 'turn-on-everywhere', requested: [] },
+      { setting: 'memory-privacy', on: false, offOn: ['studio', 'laptop'], action: 'turn-on-everywhere', requested: ['laptop'] },
+    ]);
+    expect(ctx.body.machinesBelowFloor).toHaveLength(2);
+    expect(ctx.body.waitingOn).toEqual([]);
+  });
+
+  it('the agent reads the same lines the phone shows, and its token cannot read the phone route or turn anything on', async () => {
+    const { e, asked } = await rig();
+    const owner = phone(e);
+    const ctx = await send(e, owner, 'GET', '/mobile/team/context');
+    // GET /team/people serves exactly this summary to the agent token.
+    expect(e.svc.teamSwitchesSummary).toBeTypeOf('function');
+    expect(e.svc.teamSwitchesSummary!()).toEqual(ctx.body.teamSwitches);
+    expect((await request(e.app).get('/mobile/team/context').set('Authorization', 'Bearer tok-1')).status).toBe(403);
+    for (const setting of ['memory-privacy', 'app-conversations', 'team-access']) {
+      const r = await bearer(e, '/mobile/team/switches/turn-on', { setting });
+      expect([401, 403]).toContain(r.status);
+    }
+    expect([401, 403]).toContain((await bearer(e, '/mobile/team/memory-privacy', {})).status);
+    expect(asked).toEqual([]);
+  });
+
+  it('the owner turns a setting on for every machine with Face ID, and the answer lists each machine', async () => {
+    const { e, asked, machines } = await rig();
+    const owner = phone(e);
+    const r = await faceIdSwitch(e, owner, 'memory-privacy');
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ ok: true, setting: 'memory-privacy', restarting: true, machines });
+    expect(asked).toEqual(['memory-privacy']);
+    // The older memory-privacy action now reaches every machine too.
+    const c = await send(e, owner, 'POST', '/mobile/permissions/challenge', { action: 'team-memory-privacy', target: 'team' });
+    const presenceSig = owner.presence.sign(permissionPresenceMessage(owner.id, HOST, c.body.challenge, 'team-memory-privacy team'));
+    expect((await send(e, owner, 'POST', '/mobile/team/memory-privacy', { challenge: c.body.challenge, presenceSig })).status).toBe(200);
+    expect(asked).toEqual(['memory-privacy', 'memory-privacy']);
+    expect(e.spy.privacy).toBe(0);
+  });
+
+  it('one Face ID turns on everything team access needs (team-access), and a team-access signature is not a single-setting one', async () => {
+    // Operator 2026-11-09: "it should be one single thing for the whole agent".
+    const { e, asked } = await rig();
+    const owner = phone(e);
+    const r = await faceIdSwitch(e, owner, 'team-access');
+    expect(r.status).toBe(200);
+    expect(r.body).toMatchObject({ ok: true, setting: 'team-access', restarting: true, settings: ['app-conversations', 'memory-privacy'] });
+    expect(asked).toEqual(['app-conversations', 'memory-privacy']);
+    // A challenge issued for team-access cannot be spent as memory-privacy: the signed line names the target.
+    const c = await send(e, owner, 'POST', '/mobile/permissions/challenge', { action: 'team-switch-on', target: 'team-access' });
+    const sig = owner.presence.sign(permissionPresenceMessage(owner.id, HOST, c.body.challenge, 'team-switch-on team-access'));
+    expect((await send(e, owner, 'POST', '/mobile/team/switches/turn-on', { setting: 'memory-privacy', challenge: c.body.challenge, presenceSig: sig })).status).not.toBe(200);
+  });
+
+  it('nobody but the owner, with Face ID, and only a named setting', async () => {
+    const { e, asked } = await rig();
+    const owner = phone(e);
+    await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    const member = phone(e, { userId: 'p-1', role: 'team' });
+    expect((await send(e, member, 'POST', '/mobile/team/switches/turn-on', { setting: 'memory-privacy' })).status).toBe(403);
+    expect((await bearer(e, '/mobile/team/switches/turn-on', { setting: 'memory-privacy' })).status).toBe(403);
+    expect((await send(e, owner, 'POST', '/mobile/team/switches/turn-on', { setting: 'memory-privacy' })).status).toBe(401);
+    const c = await send(e, owner, 'POST', '/mobile/permissions/challenge', { action: 'team-switch-on', target: 'memoryPrivacy.enabled' });
+    expect(c.status).toBe(400);
+    // A signature for one setting cannot turn on another.
+    const ok = await send(e, owner, 'POST', '/mobile/permissions/challenge', { action: 'team-switch-on', target: 'memory-privacy' });
+    const presenceSig = owner.presence.sign(permissionPresenceMessage(owner.id, HOST, ok.body.challenge, 'team-switch-on memory-privacy'));
+    expect((await send(e, owner, 'POST', '/mobile/team/switches/turn-on', { setting: 'app-conversations', challenge: ok.body.challenge, presenceSig })).status).toBe(401);
+    expect(asked).toEqual([]);
+  });
+
+  it('a failure on this machine is a failure, with every machine listed', async () => {
+    const e = await setup({}, [], { turnOnEverywhere: async (setting) => ({ setting, machines: [{ machineId: 's', self: true, outcome: 'failed', result: 'failed', restarting: false, willRetry: false }] }) });
+    const owner = phone(e);
+    const r = await faceIdSwitch(e, owner, 'app-conversations');
+    expect(r.status).toBe(503);
+    expect(r.body.error).toBe('restart-unavailable');
+    expect(r.body.machines).toHaveLength(1);
+  });
+
+  it('a setting that is off blocks an invite with a whole-agent fix, never a mark-it-gone', async () => {
+    const { e } = await rig();
+    const owner = phone(e);
+    const r = await send(e, owner, 'POST', '/mobile/team/invites', firstInvite());
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe('machine-below-floor');
+    expect(r.body.detail).toContain('whole agent');
+    expect(r.body.detail).not.toContain('gone');
+    expect(r.body.teamSwitches).toHaveLength(2);
   });
 });

@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-10T11:41:44.231Z",
+  "slug": "cb-selfheal-ext",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 236,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/SelfHealGate.ts"
+    ],
+    "addedLines": 225,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

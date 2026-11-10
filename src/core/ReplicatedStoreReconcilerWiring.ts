@@ -65,6 +65,8 @@ export const RECONCILER_ALLOWLIST: Readonly<Record<string, string>> = Object.fre
   mobileDeviceKeyLedger: 'written only by the server device activation/revocation paths and boot reconciliation (MobileDeviceKeyLedger); no CLI path',
   readMarkers: 'written only by the server read routes and the list\'s own-reply inference (ConversationReadMarkerStore); no CLI path',
   emailOutbox: 'written only by the lease holder\'s email sender (EmailOutbox, backup-email-sending); no CLI path, and its own hourly checkpoint re-emits every live row',
+  chiefOfStaff: 'written only by the server Chief of Staff loop and owner-tap routes (ChiefOfStaffStore, docs/specs/chief-of-staff-topic.md); no CLI path; immutable event records',
+  contextLayers: 'written only by the server context-layer store and fold coordinator (contextLayerKind, docs/specs/context-budget-layered-summaries.md §14); no CLI path; per-entry records, HLC-latest per key',
 });
 
 function sourceFp(raw: unknown): string {

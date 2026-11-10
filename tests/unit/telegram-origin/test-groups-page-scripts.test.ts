@@ -20,7 +20,7 @@ import { parseTestGroupCreate, parseTestGroupDelete, parseTestGroupList } from '
 
 const SELF = '123', BOT = { username: 'instar_pr2760_livetest_bot', userId: '900' };
 type Chat = { _: string; id: number; title: string; date: number; access_hash: string; pFlags: Record<string, boolean>; participants: { _: string; user_id: number; admin_rights?: unknown }[] };
-function harness(options: { addRights?: string[]; missingInvitee?: boolean; createShape?: 'none' | 'two'; failInvite?: boolean; slice?: boolean; botFlag?: boolean; createError?: { type: string; code: number }; listThrow?: unknown } = {}) {
+function harness(options: { addRights?: string[]; missingInvitee?: boolean; createShape?: 'none' | 'two'; failInvite?: boolean; slice?: boolean; botFlag?: boolean; createError?: { type: string; code: number }; listThrow?: unknown; unsearchable?: number[] } = {}) {
   const assets = ['app-fixture.js', 'apiManagerProxy-fixture.js', 'index-fixture.js'].sort();
   const bytes = new Map(assets.map(asset => [asset, `public bundle ${asset}`]));
   const assetDigests = Object.fromEntries([...bytes].map(([asset, content]) => [asset, createHash('sha256').update(content).digest('hex')]));
@@ -32,7 +32,15 @@ function harness(options: { addRights?: string[]; missingInvitee?: boolean; crea
     calls.push({ method, params: JSON.parse(JSON.stringify(params)) });
     switch (method) {
       case 'users.getUsers': return [{ _: 'user', id: Number(SELF) }];
-      case 'messages.getAllChats': if (options.listThrow !== undefined) throw options.listThrow; return { _: options.slice ? 'messages.chatsSlice' : 'messages.chats', chats: [...chats.values()].map(c => ({ ...c })) };
+      case 'contacts.search': {
+        if (options.listThrow !== undefined) throw options.listThrow;
+        const hits = [...chats.values()].filter(c => !(options.unsearchable ?? []).includes(c.id) && String(c.title).toLowerCase().includes(String(params.q).toLowerCase()));
+        return { _: 'contacts.found', my_results: options.slice ? Array.from({ length: 100 }, (_, i) => ({ _: 'peerChannel', channel_id: i })) : hits.map(c => ({ _: 'peerChannel', channel_id: c.id })),
+          results: [], chats: hits.map(c => ({ ...c })), users: [] };
+      }
+      case 'messages.getDialogs': return { _: 'messages.dialogsSlice', count: chats.size, dialogs: [], messages: [], users: [],
+        chats: [...chats.values()].map(c => ({ ...c })) };
+      case 'messages.getAllChats': throw Object.assign(new Error('No method messages.getAllChats found'), {});
       case 'contacts.resolveUsername':
         return { peer: { _: 'peerUser', user_id: Number(BOT.userId) },
           users: [{ _: 'user', id: Number(BOT.userId), access_hash: 'bot-hash', pFlags: options.botFlag === false ? {} : { bot: true } }] };
@@ -176,9 +184,22 @@ describe('listTestGroups and deleteTestGroup page scripts', () => {
     h.operator(2, 'Instar test - not mine [itg-abcdeabcde]', { creator: false, megagroup: true, forum: true });
     h.operator(3, 'Instar test - no forum [itg-abcdeabcde]', { creator: true, megagroup: true, forum: false });
     h.operator(4, TITLE);
-    const raw = await h.driver.listTestGroups({ deadline: deadline(), channelId: '1' });
+    const raw = await h.driver.listTestGroups({ deadline: deadline(), channelId: '4' });
     expect(parseTestGroupList(raw)).toEqual({ ok: true, complete: true, groups: [{ channelId: '4', title: TITLE, date: 1_600_000_000 }], requested: { present: true } });
     expect(JSON.stringify(raw)).not.toMatch(/Family|hash/);
+    // An operator chat is present (from the recent chat list) but is never a candidate, so delete answers
+    // not-a-test-group for it and never reaches it.
+    const other = await h.driver.listTestGroups({ deadline: deadline(), channelId: '1' });
+    expect(parseTestGroupList(other)).toMatchObject({ ok: true, groups: [{ channelId: '4' }], requested: { present: true } });
+    expect(h.calls.some(c => c.method === 'messages.getAllChats')).toBe(false);
+    expect(h.calls.filter(c => c.method === 'contacts.search').map(c => c.params)).toContainEqual({ q: 'Instar test', limit: 100 });
+  });
+  it('finds a brand-new group that search misses, through the recent chat list (live 2026-11-09)', async () => {
+    const h = harness({ unsearchable: [4] });
+    h.operator(4, TITLE);
+    const raw = await h.driver.listTestGroups({ deadline: deadline(), channelId: '4' });
+    expect(parseTestGroupList(raw)).toEqual({ ok: true, complete: true, groups: [{ channelId: '4', title: TITLE, date: 1_600_000_000 }], requested: { present: true } });
+    expect(h.calls.map(c => c.method)).toContain('messages.getDialogs');
   });
   it('marks a slice as incomplete', async () => {
     const h = harness({ slice: true });

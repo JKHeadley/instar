@@ -114,12 +114,13 @@ describe('the list', () => {
   it('multi-machine: a machine that did not answer is named; idle machines get one line each', () => {
     const machines = [
       { machineId: 'm-studio', nickname: 'Mac Studio', isSelf: true, sessionCount: 1 },
-      { machineId: 'm-mini', nickname: 'Mac Mini', sessionCount: 0, emptyState: { kind: 'unreachable', text: 'unreachable (last seen 6 min ago)', lastSeen: iso(NOW - 6 * 60_000) } },
+      { machineId: 'm-mini', nickname: 'Mac Mini', sessionCount: 0, emptyState: { kind: 'unreachable', text: 'unreachable (last seen 6 min ago)', lastSeen: iso(NOW - 6 * 60_000) },
+        reach: { liveness: { state: 'unreachable', source: 'direct', evidenceAt: iso(NOW - 6 * 60_000) }, reconnect: { state: 'retrying' } } },
       { machineId: 'm-laptop', nickname: 'Laptop', sessionCount: 0, emptyState: { kind: 'online', text: 'online — no active sessions', lastSeen: null } },
     ];
     const m = buildSessions(poolOf([sess()], { enabled: true, machines, failed: [{ machineId: 'm-mini', error: 'timeout' }] }), { now: NOW });
     if (!m.ok) throw new Error('model failed');
-    expect(m.unanswered).toEqual([{ machineId: 'm-mini', name: 'Mac Mini', words: 'not answering (last seen 6 min ago)' }]);
+    expect(m.unanswered).toEqual([{ machineId: 'm-mini', name: 'Mac Mini', words: 'not answering for 6 min; reconnecting by itself' }]);
     expect(m.idleMachines).toEqual([{ machineId: 'm-laptop', name: 'Laptop', words: 'answering, nothing running', ok: true }]);
     expect(partialWords(m)).toBe('Mac Mini did not answer; its sessions are not shown.');
     expect(sessionsFacts(m).at(-1)).toEqual({ n: '2 of 3', label: 'machines answering', tone: 'attn' });

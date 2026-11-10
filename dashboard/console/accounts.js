@@ -3,6 +3,7 @@
 // Actions per the PIN adapters (00-patterns.md §4):
 //   start a cell's sign-in    POST /subscription-pool/matrix/start-cell   body PIN, once
 //   submit the sign-in code   POST /subscription-pool/follow-me/submit-code  bearer
+//   follow it to the end      GET  /subscription-pool/follow-me/completion   bearer
 //   cancel a sign-in          POST /subscription-pool/follow-me/cancel     bearer
 //   repair / retry / cancel   POST /subscription-relogin/repair-cell       operator session
 
@@ -11,6 +12,7 @@ import { el, setKids, pageHead, askLink, sheet, closeSheet, story, details, note
 import { legacyHref } from './nav-model.js';
 import { verifiedDisplayName } from './display-identity.js';
 import { buildAutoRepair, configurePayload, resultWords, confirmation } from './auto-repair-model.js';
+import { submitView, completionView, workingView, COMPLETION_POLL_MS, COMPLETION_GIVE_UP_MS, GIVE_UP_VIEW } from './signin-progress-model.js';
 
 // Tick state survives the page's 30-second re-render (spec one-tap-unattended-repair §6).
 const autoRepairTicks = new Map(); // machineId → boolean, only where the operator changed the default
@@ -25,6 +27,15 @@ async function postJson(path, body, headers = {}) {
   } catch { return { ok: false, status: 0, data: { error: 'The server could not be reached.' } }; }
 }
 
+async function getJson(path) {
+  const token = (() => { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } })();
+  try {
+    const r = await fetch(path, { headers: { Authorization: `Bearer ${token}` } });
+    const data = await r.json().catch(() => ({}));
+    return { ok: r.ok, status: r.status, data };
+  } catch { return { ok: false, status: 0, data: {} }; }
+}
+
 export async function renderAccounts(main, ctx) {
   const { get } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Capacity · Accounts' }), el('h1', { class: 'page-title skeleton', text: 'Loading accounts' })));
@@ -32,8 +43,8 @@ export async function renderAccounts(main, ctx) {
   const names = machines.ok && Array.isArray(machines.data && machines.data.machines) ? Object.fromEntries(machines.data.machines.map((m) => [m.machineId, m.nickname])) : {};
   const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
   const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
-  const autoRepair = buildAutoRepair(relogin, { names, blockers });
-  const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names });
+  const autoRepair = buildAutoRepair(relogin, { names, blockers, poolMachines: machines });
+  const page = buildAccountsPage(pool, Date.now(), { episodes, blockers, inUse: inUse.ok ? inUse.data : null, names, poolMachines: machines });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Accounts', headline: 'Accounts', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
   const refresh = () => renderAccounts(main, ctx);
 
@@ -124,38 +135,81 @@ async function startNeed(n, refresh) {
   signInSteps(n, r.data, refresh);
 }
 
-function signInSteps(n, d, refresh) {
-  const loginId = d.loginId || n.accountId;
+function signInSteps(n, d, refresh, firstError) {
+  const loginId = d.loginId || d.id || n.accountId;
   const code = el('input', { class: 'reason-input', inputmode: 'text', autocomplete: 'one-time-code', placeholder: 'Code from the sign-in page, if it shows one', 'aria-label': 'Sign-in code' });
-  const status = el('p', { class: 'action-status', role: 'status' });
+  const status = el('p', { class: 'action-status', role: 'status', text: firstError || '' });
   const submit = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Send the code' });
+  const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel this sign-in' });
+  const expires = d.ttlExpiresAt ? new Date(d.ttlExpiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
+  const steps = el('div', { class: 'signin-steps' },
+    el('p', { class: 'confirm-text', text: `1. Open the sign-in page${verifiedDisplayName(d.expectedEmail, n.accountId) ? ` and sign in as ${d.expectedEmail}` : ''}.` }),
+    el('a', { class: 'btn-primary btn-inline signin-link', href: d.verificationUrl, target: '_blank', rel: 'noopener', text: 'Open the sign-in page' }),
+    el('p', { class: 'confirm-text', text: '2. If the page gives you a code, paste it here.' }),
+    code, submit,
+    expires ? el('p', { class: 'action-status', text: `This sign-in link works until ${expires}.` }) : null,
+    d.notice ? note(String(d.notice)) : null,
+    status);
+  const danger = el('div', { class: 'sheet-danger' }, cancel);
+  const panel = sheet({ title: n.title }, steps, danger);
+
+  // Once the code is sent the form goes away: a spinner while it works, then one clear result.
+  const show = (view) => {
+    danger.remove();
+    const title = el('p', { class: 'signin-progress-title', text: view.title });
+    if (view.kind === 'working') {
+      steps.className = 'signin-progress';
+      steps.setAttribute('aria-busy', 'true');
+      setKids(steps, el('span', { class: 'signin-spinner', 'aria-hidden': 'true' }), title, el('p', { class: 'row-sub', text: view.sub }));
+      return;
+    }
+    steps.className = `signin-progress ${view.kind}`;
+    steps.removeAttribute('aria-busy');
+    if (view.kind === 'done') {
+      const done = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Done', onclick: () => { closeSheet(); refresh(); } });
+      setKids(steps, el('span', { class: 'signin-mark', 'aria-hidden': 'true', text: '✓' }), title, done);
+      setTimeout(() => refresh(), 0);
+      return;
+    }
+    const again = el('button', { class: 'btn-primary btn-inline', type: 'button', text: 'Start the sign-in again', onclick: () => { closeSheet(); startNeed({ ...n, action: 'start' }, refresh); } });
+    setKids(steps, el('span', { class: 'signin-mark', 'aria-hidden': 'true', text: '!' }), title, view.sub ? el('p', { class: 'row-sub', text: view.sub }) : null, again);
+    setTimeout(() => refresh(), 0);
+  };
+  const stillOpen = () => panel.isConnected;
+  const followCompletion = async () => {
+    const giveUpAt = Date.now() + COMPLETION_GIVE_UP_MS;
+    const q = `machineId=${encodeURIComponent(n.machineId || '')}&id=${encodeURIComponent(loginId)}`;
+    while (stillOpen()) {
+      await new Promise((r) => setTimeout(r, COMPLETION_POLL_MS));
+      if (!stillOpen()) return;
+      const view = completionView(await getJson(`/subscription-pool/follow-me/completion?${q}`), n.machine);
+      if (view) { show(view); return; }
+      if (Date.now() > giveUpAt) { show(GIVE_UP_VIEW); return; }
+    }
+  };
+
   submit.addEventListener('click', async () => {
     const value = code.value.trim();
     if (!value) { status.textContent = 'Paste the code first.'; return; }
-    submit.disabled = true; status.textContent = 'Checking…';
-    const r = await postJson('/subscription-pool/follow-me/submit-code', { machineId: n.machineId, id: loginId, code: value });
     code.value = '';
-    if (r.ok && r.data && r.data.outcome === 'validated') { status.textContent = `Signed in on ${n.machine}.`; submit.remove(); setTimeout(() => { closeSheet(); refresh(); }, 1200); }
-    else { status.textContent = (r.data && (r.data.error || r.data.message || r.data.outcome)) || 'That code did not work.'; submit.disabled = false; }
+    show(workingView(n.machine, 'sending'));
+    const view = submitView(await postJson('/subscription-pool/follow-me/submit-code', { machineId: n.machineId, id: loginId, code: value }), n.machine);
+    if (!stillOpen()) return;
+    if (view.kind === 'form') {
+      // The code did not go through: the same form returns, with what to do next.
+      const fresh = view.freshLogin;
+      signInSteps(n, fresh ? { ...d, ...fresh, loginId: fresh.id || loginId } : d, refresh, view.error);
+      return;
+    }
+    show(view);
+    if (view.kind === 'working') followCompletion();
   });
-  const cancel = el('button', { class: 'btn-quiet', type: 'button', text: 'Cancel this sign-in' });
   cancel.addEventListener('click', async () => {
     cancel.disabled = true;
     const r = await postJson('/subscription-pool/follow-me/cancel', { machineId: n.machineId, id: n.accountId });
     status.textContent = r.ok ? 'Cancelled.' : (r.data && r.data.error) || 'Could not cancel.';
     if (r.ok) setTimeout(() => { closeSheet(); refresh(); }, 800); else cancel.disabled = false;
   });
-  const expires = d.ttlExpiresAt ? new Date(d.ttlExpiresAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : null;
-  sheet({ title: n.title },
-    el('div', { class: 'signin-steps' },
-      el('p', { class: 'confirm-text', text: `1. Open the sign-in page${verifiedDisplayName(d.expectedEmail, n.accountId) ? ` and sign in as ${d.expectedEmail}` : ''}.` }),
-      el('a', { class: 'btn-primary btn-inline signin-link', href: d.verificationUrl, target: '_blank', rel: 'noopener', text: 'Open the sign-in page' }),
-      el('p', { class: 'confirm-text', text: '2. If the page gives you a code, paste it here.' }),
-      code, submit,
-      expires ? el('p', { class: 'action-status', text: `This sign-in link works until ${expires}.` }) : null,
-      d.notice ? note(String(d.notice)) : null,
-      status),
-    el('div', { class: 'sheet-danger' }, cancel));
 }
 
 async function repairNeed(n, refresh) {
@@ -179,26 +233,29 @@ function autoRepairSection(model, refresh) {
   if (!model.ok || model.rows.length === 0) return null;
   const section = el('section', { class: 'page-sections', id: 'sec-auto-repair' },
     el('h2', { class: 'eyebrow', text: 'Automatic sign-in repair' }),
-    el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. Machines set to "asks you first", watching only, or off are switched on from that machine’s own dashboard.' }));
+    el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. You can switch any of this agent’s machines on or back to asking first from this page, whichever machine is showing it.' }));
   const held = () => { const changed = [...autoRepairTicks.keys()].length > 0; if (changed) section.setAttribute('data-interaction-open', '1'); else section.removeAttribute('data-interaction-open'); };
   const lastResult = (id) => autoRepairResults && autoRepairResults.results.find((r) => r.machineId === id);
   const rows = el('div', { class: 'rows' }, model.rows.map((row) => {
     if (row.unreadable) return el('div', { class: 'row' }, el('span', { class: 'dot unknown' }),
       el('span', { class: 'row-main' }, el('span', { class: 'row-title', text: row.name }), el('span', { class: 'row-sub', text: row.unreadable })));
-    const box = el('input', { type: 'checkbox', 'aria-label': `Include ${row.name}` });
-    box.checked = autoRepairTicked(row);
-    box.disabled = !row.canTurnOn && !row.canSwitchBack;
-    box.addEventListener('change', () => {
-      if (box.checked === row.defaultTick) autoRepairTicks.delete(row.machineId); else autoRepairTicks.set(row.machineId, box.checked);
-      held();
-    });
+    // A row this page cannot change shows no tick box at all: a greyed-out box looks offered here
+    // (operator 2026-11-09). Its reason line says why and where it can be changed.
+    const box = row.canTurnOn || row.canSwitchBack ? el('input', { type: 'checkbox', 'aria-label': `Include ${row.name}` }) : null;
+    if (box) {
+      box.checked = autoRepairTicked(row);
+      box.addEventListener('change', () => {
+        if (box.checked === row.defaultTick) autoRepairTicks.delete(row.machineId); else autoRepairTicks.set(row.machineId, box.checked);
+        held();
+      });
+    }
     const lines = [];
     if (row.finalList) lines.push(`Accounts: ${row.finalList.join(', ')}`);
     if (row.removals.length) lines.push(`Stops: ${row.removals.join(', ')}`);
     if (row.uncovered.length && row.mode === 'unattended') lines.push(`${row.uncovered.length} account${row.uncovered.length === 1 ? '' : 's'} on this machine ${row.uncovered.length === 1 ? 'isn’t' : 'aren’t'} covered yet`);
     if (row.stillAsk.length) lines.push(`${row.stillAsk.length} of ${row.stillAskTotal} will still ask: ${[...new Set(row.stillAsk)].join('; ')}`);
     if (row.waitsLine) lines.push(row.waitsLine);
-    if (row.self && row.mode !== 'unattended' && row.canTurnOn) lines.push('Turning this on: repairs run without asking, including accounts never repaired on this machine.' + (row.minimums[0] || row.minimums[1] ? ` It also removes the wait of ${row.minimums[0]} repairs / ${row.minimums[1]} days.` : ''));
+    if (row.mode !== 'unattended' && row.canTurnOn) lines.push((row.mode === 'off' || row.mode === 'observe' ? 'Turning this on switches repair on here (it is ' + (row.mode === 'off' ? 'off' : 'only watching') + ' now). ' : '') + 'Repairs run without asking, including accounts never repaired on this machine.' + (row.minimums[0] || row.minimums[1] ? ` It also removes the wait of ${row.minimums[0]} repairs / ${row.minimums[1]} days.` : ''));
     if (row.blockedWhy) lines.push(row.blockedWhy);
     const prior = lastResult(row.machineId);
     if (prior) {
@@ -209,7 +266,7 @@ function autoRepairSection(model, refresh) {
     if (row.activationPending) end.append(el('button', { class: 'btn-quiet btn-small', type: 'button', text: 'Finish restarting',
       onclick: () => autoRepairTap('finish-restart', [row], refresh) }));
     return el('div', { class: 'row' },
-      el('label', { class: 'row-check' }, box),
+      box ? el('label', { class: 'row-check' }, box) : el('span', { class: 'row-check', 'aria-hidden': 'true' }),
       el('span', { class: 'row-main' },
         el('span', { class: 'row-title', text: `${row.name}${row.self ? ' (this machine)' : ''}: ${row.stateWords}${row.activationPending ? ' — restarting' : ''}` }),
         ...lines.map((t) => el('span', { class: 'row-sub', text: t }))),

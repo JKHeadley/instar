@@ -1,3 +1,4 @@
+import { createOperatorLinkOriginResolver, originOrNull } from '../../server/dashboardPaths.js';
 import { notificationStamper, withNotificationEnvelope } from '../../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/feedback-factory/triage/buildFeedbackTriage.ts');
 /**
@@ -79,6 +80,8 @@ export function buildFeedbackTriage(input: {
   telegram: { sendToTopic: (topicId: number, text: string, opts?: { provenance?: 'automation' }) => Promise<unknown> } | null;
   raiseAttention: (item: AttentionInput) => Promise<unknown>;
   tunnelUrl: () => string | null;
+  /** True when this agent runs a tunnel (up or not): links then wait for its public URL instead of using localhost. */
+  tunnelConfigured?: () => boolean;
   /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
   paceTicks?: FeedbackTriageServiceOptions['paceTicks'];
   overrides?: Partial<Pick<FeedbackTriageServiceOptions, 'secondOpinion' | 'quotaUsedPercent' | 'listMergedPrs' | 'sendToTopic' | 'raiseAttention' | 'clock'>>;
@@ -177,7 +180,10 @@ export function buildFeedbackTriage(input: {
     raiseAttention: input.overrides?.raiseAttention ?? input.raiseAttention,
     reportDegradation: (event) => DegradationReporter.getInstance().report(event),
     sendToTopic,
-    dashboardLink: () => `${input.tunnelUrl() ?? `http://localhost:${config.port}`}/dashboard?tab=feedback-drain`,
+    dashboardLink: (() => {
+      const resolveOrigin = createOperatorLinkOriginResolver({ port: config.port, tunnelConfigured: input.tunnelConfigured ?? (() => false), tunnelUrl: input.tunnelUrl });
+      return () => { const origin = originOrNull(resolveOrigin()); return origin ? `${origin}/dashboard?tab=feedback-drain` : null; };
+    })(),
     paceTicks: input.paceTicks ?? null,
     clock,
   });

@@ -146,7 +146,7 @@ describe('machineCarePool (CMT-1199)', () => {
     expect(v.byMachine.m_self).toBe('Up 2 days · no practice run yet');
     expect(v.byMachine.m_mini).toBe('Up 9 days · practice run: would have waited a night · holding: A person using the machine now');
     expect(v.selfLine).toBe('Up 2 days · no practice run yet');
-    expect(v.missing).toEqual(['Mama PC: can’t tell, on an older version', 'a machine with no name yet: can’t tell, did not answer']);
+    expect(v.missing).toEqual(['Mama PC: can’t tell, on an older version', 'a machine with no name yet: can’t tell, not answering (for how long is not known); not known whether anything is fixing it']);
   });
 
   it('treats an older server that ignores scope=pool as this machine only', async () => {

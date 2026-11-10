@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-10T04:55:38.395Z",
+  "slug": "cb-clear-seed",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 300,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/init.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/monitoring/ContextCompactionControl.ts",
+      "src/monitoring/clearSeedPointer.ts",
+      "src/monitoring/compactionSeedMarker.ts",
+      "src/templates/hooks/settings-template.json"
+    ],
+    "addedLines": 289,
+    "deletedLines": 11
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

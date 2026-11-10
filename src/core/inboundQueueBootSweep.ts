@@ -48,6 +48,13 @@ export interface BootSweepDeps {
   raiseAttention(title: string, body: string): void;
   log(line: string): void;
   nowMs(): number;
+  /**
+   * context-budget-layered-summaries §9.3 "Held inbound": a queue that is dark
+   * at this boot gate-expires rows a fold was holding. The fold record must
+   * move to `rolled-back` on the same tick, so this is called BEFORE the rows
+   * are expired, once per fold. Absent ⇒ no fold coordinator on this agent.
+   */
+  onFoldRowsGateExpired?(foldIds: string[]): void;
 }
 
 export interface BootSweepResult {
@@ -106,11 +113,20 @@ export function runInboundQueueBootSweep(deps: BootSweepDeps): BootSweepResult {
     // §5.3: one transaction, loss reason names the gate, store closed after.
     const gate = deps.queueWillRun.gateReason;
     const rows = store.listNonTerminal();
+    // Fold-held rows (§9.3): their fold rolls back on this same tick, first,
+    // and the loss notice names the fold.
+    const foldIds = [...new Set(rows.map((r) => r.fold_id).filter((f): f is string => typeof f === 'string' && f.length > 0))];
+    if (foldIds.length > 0) {
+      try { deps.onFoldRowsGateExpired?.(foldIds); } catch (err) {
+        deps.log(`[inbound-queue] fold rollback for gate-expired rows failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     const dropped: LossItem[] = [];
     for (const row of rows) {
       const prior = row.state as 'queued' | 'claimed';
-      if (store.transition(row.enqueue_seq, prior, 'expired', { nowIso, terminalReason: `gate:${gate}` })) {
-        dropped.push(lossItem(row, `gate:${gate}`));
+      const reason = row.fold_id ? `gate:${gate} (held by fold ${row.fold_id})` : `gate:${gate}`;
+      if (store.transition(row.enqueue_seq, prior, 'expired', { nowIso, terminalReason: reason })) {
+        dropped.push(lossItem(row, reason));
       }
     }
     result.gateExpired = dropped.length;

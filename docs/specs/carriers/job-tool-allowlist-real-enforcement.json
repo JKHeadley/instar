@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-10T09:50:02.788Z",
+  "slug": "job-tool-allowlist-real-enforcement",
+  "carriers": {
+    "CMT-1566": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Before turning job tool limits on for the fleet, I will run a census of declared toolAllowlist arrays (other than a user job bare [\"Read\"]) and of \"*\" jobs without unrestrictedTools: true on fleet agents, check each against what the job does, then decide the fleet flip within 28 days of the EVO-008 merge or record the reason and a new date here."
+    }
+  }
+}

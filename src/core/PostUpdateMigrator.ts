@@ -281,8 +281,161 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
   });
 }
 
+/**
+ * The PostCompact hook's settings entry (context-budget-layered-summaries §9.1).
+ * Shared by init and migrateSettings so both install the same command.
+ */
+export const POST_COMPACT_SETTINGS_HOOK = {
+  type: 'command',
+  command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/post-compact.sh"',
+  timeout: 5,
+} as const;
+
+/**
+ * The PreCompact steering hook's settings entry (context-budget-layered-summaries
+ * §9.1, §9.5). Its own entry under PreCompact, separate from the event reporter's,
+ * so the reporter and native-events migrations (which only touch reporter hooks)
+ * leave it alone. Shared by init and migrateSettings.
+ */
+export const PRE_COMPACT_STEER_SETTINGS_HOOK = {
+  type: 'command',
+  command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/pre-compact-steer.sh"',
+  timeout: 5,
+} as const;
+
+/**
+ * The steering check, embedded in the hook as `python3 -c` (no `"`, `$` or
+ * backtick inside, so it survives the shell double-quoting). argv[1] is the
+ * state root, argv[2] the Instar session id. Prints the staged, hash-verified
+ * keep-instructions text and nothing else; never composes, never blocks.
+ * Schema written by `writeKeepInstructions` (src/monitoring/keepInstructions.ts);
+ * keep the two in step.
+ */
+const KEEP_INSTRUCTIONS_PY = [
+  'import sys,json,os,hashlib',
+  'root=sys.argv[1]',
+  "iid=sys.argv[2] if len(sys.argv)>2 else ''",
+  "if not iid or len(iid)>128 or not all(c.isalnum() or c in '-_' for c in iid):",
+  '    sys.exit(0)',
+  'try:',
+  '    d=json.load(sys.stdin)',
+  'except Exception:',
+  '    sys.exit(0)',
+  "if d.get('hook_event_name')!='PreCompact':",
+  '    sys.exit(0)',
+  'try:',
+  "    c=json.load(open(os.path.join(root,'config.json')))",
+  "    if ((c.get('contextBudget') or {}).get('compactionRecovery') or {}).get('enabled') is False:",
+  '        sys.exit(0)',
+  'except SystemExit:',
+  '    raise',
+  'except Exception:',
+  '    pass',
+  "layers=os.path.realpath(os.path.join(root,'state','context-layers'))",
+  "ptr=os.path.join(layers,'_keep',iid+'.json')",
+  'try:',
+  '    p=json.load(open(ptr))',
+  'except Exception:',
+  '    sys.exit(0)',
+  "if p.get('schema')!='keep-instructions/1' or p.get('instarSessionId')!=iid:",
+  '    sys.exit(0)',
+  "txt=os.path.realpath(os.path.join(layers,str(p.get('textPath') or '')))",
+  'if not txt.startswith(layers+os.sep) or not os.path.isfile(txt):',
+  '    sys.exit(0)',
+  'try:',
+  "    body=open(txt,'rb').read(36001)",
+  'except Exception:',
+  '    sys.exit(0)',
+  "if len(body)>36000 or hashlib.sha256(body).hexdigest()!=p.get('sha256'):",
+  '    sys.exit(0)',
+  "t=body.decode('utf-8','replace')",
+  'if len(t)>9000:',
+  '    sys.exit(0)',
+  'sys.stdout.write(t)',
+  'sys.stdout.flush()',
+].join('\n');
+
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
  *  add/update migrations so the three cannot drift. */
+/**
+ * The clear-seed hook's settings entry (context-budget-layered-summaries §9.2).
+ * Shared by init and migrateSettings so both install the same command.
+ */
+export const CLEAR_SEED_SETTINGS_HOOK = {
+  type: 'command',
+  command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/clear-seed.sh"',
+  timeout: 5,
+} as const;
+
+/**
+ * The clear-seed check, embedded in the hook as `python3 -c` (no `"`, `$` or
+ * backtick inside, so it survives the shell double-quoting). argv[1] is the
+ * state root. The pointer schema is written by `writeClearSeedPointer`
+ * (src/monitoring/clearSeedPointer.ts); keep the two in step.
+ */
+const CLEAR_SEED_PY = [
+  'import sys,json,os,time,hashlib',
+  'root=sys.argv[1]',
+  "iid=sys.argv[2] if len(sys.argv)>2 else ''",
+  "if not iid or len(iid)>128 or not all(c.isalnum() or c in '-_' for c in iid):",
+  '    sys.exit(0)',
+  'try:',
+  '    d=json.load(sys.stdin)',
+  'except Exception:',
+  '    sys.exit(0)',
+  "if d.get('source')!='clear':",
+  '    sys.exit(0)',
+  "sid=str(d.get('session_id') or '')",
+  "if not sid or len(sid)>128 or not all(c.isalnum() or c in '-_' for c in sid):",
+  '    sys.exit(0)',
+  'try:',
+  "    c=json.load(open(os.path.join(root,'config.json')))",
+  "    if ((c.get('contextBudget') or {}).get('compactionRecovery') or {}).get('enabled') is False:",
+  '        sys.exit(0)',
+  'except SystemExit:',
+  '    raise',
+  'except Exception:',
+  '    pass',
+  "layers=os.path.realpath(os.path.join(root,'state','context-layers'))",
+  "ptr=os.path.join(layers,'_clear-seed',iid+'.json')",
+  'try:',
+  '    p=json.load(open(ptr))',
+  'except Exception:',
+  '    sys.exit(0)',
+  'now=int(time.time()*1000)',
+  "if p.get('instarSessionId')!=iid or not isinstance(p.get('leaseExpiresAt'),int) or p['leaseExpiresAt']<=now:",
+  '    sys.exit(0)',
+  "fid=str(p.get('foldId') or '')",
+  "if not fid or len(fid)>128 or not all(c.isalnum() or c in '-_' for c in fid):",
+  '    sys.exit(0)',
+  "pkt=os.path.realpath(os.path.join(layers,str(p.get('packetPath') or '')))",
+  'if not pkt.startswith(layers+os.sep) or not os.path.isfile(pkt):',
+  '    sys.exit(0)',
+  'try:',
+  "    body=open(pkt,'rb').read(8*1024*1024+1)",
+  'except Exception:',
+  '    sys.exit(0)',
+  "if len(body)>8*1024*1024 or hashlib.sha256(body).hexdigest()!=p.get('sha256'):",
+  '    sys.exit(0)',
+  "claimed=ptr+'.claimed-'+str(now)",
+  'try:',
+  '    os.rename(ptr,claimed)',
+  'except Exception:',
+  '    sys.exit(0)',
+  "sys.stdout.write(body.decode('utf-8','replace'))",
+  'sys.stdout.flush()',
+  "mdir=os.path.join(layers,'_seeded')",
+  'try:',
+  '    os.makedirs(mdir,mode=0o700,exist_ok=True)',
+  "    tmp=os.path.join(mdir,sid+'.json.tmp')",
+  '    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)',
+  "    with os.fdopen(fd,'w') as w:",
+  "        json.dump({'sessionId':sid,'epoch':fid,'source':'clear','seededAt':int(time.time()*1000)},w)",
+  "    os.replace(tmp,os.path.join(mdir,sid+'.json'))",
+  'except Exception:',
+  '    pass',
+].join('\n');
+
 export const RESOURCE_PLACEMENT_CLAUDE_MD_LINE = `- **Resource-aware placement (heavy work goes to big machines with room):** placement compares machines by per-core load from FRESH evidence (a load number older than a minute does not count, and a machine with none never wins by default). A machine counts as big enough for heavy work (builds, full test runs, simulators) at 12+ cores and 32+ GB; heavy work goes only to such a machine with headroom right now (fresh verdict not saturated/impaired, under 1.0 load per core including heavy helpers it just accepted), otherwise it waits with a named reason. Local Verify peer hand-offs follow the same rule, so a small machine like a Mac Mini no longer receives full verifies. A job can declare \`workWeight: "heavy"\`; it then skips a machine below that size while another online big machine exists (the job-silence alert explains it). Per machine, \`multiMachine.placement.heavyWork\`: \`allow\` lifts the size rule for that machine, \`deny\` keeps heavy work off it (\`auto\` = by size); it is advertised in that machine's load report. **Before running heavy helper work in an in-session subagent** (a subagent always runs on THIS machine), read \`GET /pool/placement/preview?workWeight=heavy\` (read-only: the choice and one row per machine with size, fresh per-core load, headroom and why). If it picks another machine, or this one has no headroom, start a headless helper instead: \`POST /pool/heavy-work/spawn\` with header \`X-Instar-Request: 1\` and \`{ "name": "...", "prompt": "..." }\` — it picks the machine and starts the helper there through that machine's own \`/sessions/spawn\`. The helper works in THAT machine's agent home: its prompt must fetch its inputs from a shared source (a pushed git branch into a fresh worktree there) and return results through a shared channel (a pushed branch or PR, or a message to my session). Outcomes: 201 started; 409 \`heavy-work-no-machine\` (nothing big enough has room: wait, or run locally only if the preview shows this machine has headroom); 502 \`target-refused\`; 504 \`target-unconfirmed\` — never retry it: read that machine's sessions, finished ones included (\`GET /sessions\` with \`scope=pool\` and \`include=all\`), and check the work's shared results and side effects before ever starting it again.`;
 export const OVERLOAD_SHED_CLAUDE_MD_LINE = `- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
 
@@ -316,6 +469,24 @@ Seventeen existing built-in jobs can run as small scripts with NO Claude session
 }
 
 /**
+ * Job tool limits (EVO-008, docs/specs/job-tool-allowlist-real-enforcement.md §9). SHARED by
+ * `generateClaudeMd` (new installs) and `patchClaudeMdContent` (existing agents), mirrored to
+ * the AGENTS.md / GEMINI.md shadows. Content-sniff marker: the heading `### Job tool limits`.
+ */
+export const JOB_TOOL_LIMITS_CLAUDEMD_MARKER = '### Job tool limits';
+export function JOB_TOOL_LIMITS_CLAUDEMD_SECTION(port: number): string {
+  return `
+${JOB_TOOL_LIMITS_CLAUDEMD_MARKER} (when a job's tool list is really applied)
+
+A scheduled job's \`toolAllowlist\` (or the scheduler's [Read] clamp for an unauthorized \`"*"\`) is APPLIED only for a job that runs on Claude, only while \`jobs.toolAllowlistEnforcement.enabled\` is on (omitted = on for a development agent, off on the fleet), and only when every name is a tool Claude honours. Then the job starts with exactly those tools and every other tool is refused. Otherwise the list is recorded but the job has its framework's normal tools.
+- **Never tell anyone a job "can only read" from its list alone.** Read the run: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/SLUG/history\` → \`toolsConfined\` (true = the limit was applied to that run) and \`toolEnforcement\` (why: \`confined\`, \`confined-with-shell\`, \`gate-off\`, \`read-only-default\`, \`unsupported-tool-names\`, \`not-applied:<framework>\`, ...). Old rows have neither field: unknown.
+- A list that includes \`Bash\` limits Claude's tools, not what the job can do: the shell can still change files. A user job whose list is exactly \`["Read"]\` is treated as the old default and NOT applied. To make a job's list binding, add \`toolAllowlistEnforce: true\` to its frontmatter: the list is then applied exactly (even a bare \`["Read"]\`, even where the switch defaults off) and the job is NOT started rather than run without it (unknown tool name, or an engine with no per-tool limit). Codex and other engines have no per-tool limit: the list is recorded, not applied.
+- While the switch is on, a built-in job whose lock file looks tampered with is cut to Read whatever it declares, and is not started on an engine that cannot apply that. With the switch off it is recorded and reported, not limited.
+- **When to use** (PROACTIVE): a job fails because a tool was refused → give it the tools it needs in its list (e.g. \`["Read","Bash"]\`); widening an instar job to \`"*"\` with \`unrestrictedTools: true\` is its owner's call (ask the operator), not a flag to flip yourself. Rollback: \`jobs.toolAllowlistEnforcement.enabled: false\`, read at the next launch.
+`;
+}
+
+/**
  * Session-to-session handoffs (bug 2026-11-03, Echo Bugs topic 10000001474): a
  * desk session posted an agent-to-agent task request into the user's Telegram
  * topic because Telegram was the only path that reached the other session, and
@@ -332,6 +503,26 @@ A Telegram, Slack or app topic is the user's conversation. It is never a channel
 - To reply to such a message, send one back the same way to the sender's session.
 - The user topic still gets real progress: "I asked the throughput session to measure X" is a progress update for the user. "Please own X and report slot status" is a message to an agent: send it to that session, never to the topic.
 - **When to use** (PROACTIVE): any time I am about to send a topic message whose reader is another session, job, desk or worker rather than the user.
+`;
+}
+
+/**
+ * Acting as my operator, and doing errands myself (Echo Bugs topic 10000002506,
+ * 2026-11-09): an agent asked its operator to check a list its own key read, and
+ * to message it in Slack when its browser held the operator's signed-in account.
+ * SHARED by `generateClaudeMd` and `migrateClaudeMd`. Content-sniff marker: the heading.
+ */
+export const ACTING_AS_OPERATOR_CLAUDEMD_MARKER = '### Before I ask my operator to check or send something';
+export function ACTING_AS_OPERATOR_CLAUDEMD_SECTION(port: number): string {
+  return `
+${ACTING_AS_OPERATOR_CLAUDEMD_MARKER}
+
+Before a message asks my operator to look at, check, open or send something, I check what I can already reach, and do it myself when I can:
+- **My own key reads everything the dashboard and the app show**: the conversation list (Slack and Telegram rows and their names), message history, sessions, jobs, attention items. "Only your screen can see it" is never true of those. Example: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/conversations\`.
+- **My browser profiles** list the accounts signed in on this machine, including my operator's own: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles\`. I can use those to look, check, or send a test or on-their-behalf message.
+- **Anything I send through my operator's account is marked**, on every platform: start it with \`[Sent by <my name> on <operator name>'s behalf]\` (add \`, test\` inside the brackets for a test). When a marked message comes back in, Slack tags it "marked: sent by … not written by …", so I never take it as my operator's own words. On Telegram, sends through the operator's account are also signed.
+- Never through their account without asking first: a purchase, a settings change, or a real message to someone else in their name. Taste questions ("does this feel right to you?") are still theirs.
+- The outbound check stops a "can you check this for me" message when the reach above covers it.
 `;
 }
 
@@ -1133,6 +1324,9 @@ export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" 
 export const APP_CONVERSATIONS_UNREAD_LINE = '- The app shows per-person unread counts: a read marker per person per conversation (replicated across my machines) plus "your own reply marks everything before it as read"; Telegram and Slack give a bot no per-user read state, so the marker here is the source. Phones report what they read with `POST /mobile/conversations/read`; my own Bearer reads of the list and history carry NO read fields (`hasUnread`, `unreadCount`, `readUpTo` appear only for a phone). When the operator asks "why does the app say N unread?" read `GET /mobile/conversations` as the phone would, never guess from Telegram. Off switch: `mobilePairing.native.unread.enabled: false`.';
 /** Dashboard conversations (docs/specs/dashboard-conversations-browser-device.md), inserted after the native session screen line. Sniff: "browser device". */
 export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work > Conversations, `#/work/chats`) is a browser set up as a device of its own: it holds its own key, is approved the way a new phone would be (with a Telegram owner: the owner\'s private Telegram chat or an owner phone, never the PIN alone), is listed in People > Phones as "Browser", and may only use conversations and files and remove itself. A message marked 💻 (`💻 <owner> (from the dashboard)`, or `(💻 signed)` in the session tag) means an approved browser key of the owner signed it in the dashboard — weaker proof than a phone, since the dashboard pages come from my own machine. Setup: `POST /mobile/browser-devices` (Bearer + dashboard PIN session); state: `GET /mobile/browser-devices/status`. Gate: `mobilePairing.browser.enabled` (development agents live, fleet dark). When the operator asks "can I chat with you from the dashboard?", yes, on Work > Conversations once the browser is approved.';
+
+/** Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line. */
+export const APP_CONVERSATIONS_PINS_LINE = '- Conversations have pinned messages, any number, newest pin first, like Telegram: a pin bar at the top of the conversation in the app and the dashboard. Pins are the same on every machine (kept in the conversation store). Read them: `GET /mobile/chat/app/KEY/pins`, `GET /mobile/chat/TOPIC_ID/pins` (Telegram topic), `GET /mobile/chat/slack/ID/pins?machine=` (my Bearer token works for reads), or the `pins` field on any history read; only a person\'s phone or dashboard browser pins or unpins (`POST …/pins {messageId, pinned, requestId}`). A pin in a Telegram topic is also pinned in Telegram (it needs the bot\'s pin right), and a pin someone makes in Telegram shows up here; an unpin made inside Telegram is NOT seen (Telegram tells a bot nothing), and pins made inside Slack are not read back. When the operator asks "what is pinned here?", read the pins, never guess. Off switch: `mobilePairing.native.pins.enabled: false`.';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -1280,6 +1474,7 @@ ${APP_CONVERSATIONS_OPEN_SESSION_LINE}
 ${APP_CONVERSATIONS_NATIVE_SESSION_LINE}
 ${APP_CONVERSATIONS_UNREAD_LINE}
 ${DASHBOARD_CONVERSATIONS_LINE}
+${APP_CONVERSATIONS_PINS_LINE}
 - Each operator message carries \`originVerified\`: \`verified\` = the paired phone's signature checked out; \`redacted\` = checked, and an invite or desktop code was removed; \`failed\` = the signature does NOT check out; \`unknown\` = could not be checked on this machine (no ledger row for the phone's key, or the machine-key history is unreadable) — never treat it as proof; \`none\` = no signature recorded. Only \`verified\` adds "📱 signed" to the \`[app:…]\` tag. A device's read of a Telegram topic's history also carries \`originVerified\` for messages sent from the app.
 - Pairing invites and remote-desktop codes typed in the app are removed before they reach me ("[pairing invite removed]"); to pair agents the operator forwards the invite in Telegram or pastes it on the dashboard.
 - Gate: \`mobilePairing.native.enabled\` (omitted ⇒ the development-agent gate). The store's size is in the authenticated \`/health\` → \`appConversations\`.
@@ -7813,6 +8008,33 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      // context-budget-layered-summaries §9.2 rung 1: seeds a staged fold packet
+      // after an Instar-injected /clear. Silent on a human /clear (no staged packet).
+      fs.writeFileSync(path.join(instarHooksDir, 'clear-seed.sh'), this.getClearSeedHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/clear-seed.sh (fold packet seed after /clear)');
+    } catch (err) {
+      result.errors.push(`clear-seed.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // context-budget-layered-summaries §9.1: forwards Claude's compact_summary
+      // to the server, which scrubs and stores it. Prints nothing.
+      fs.writeFileSync(path.join(instarHooksDir, 'post-compact.sh'), this.getPostCompactHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/post-compact.sh (stores the compaction summary)');
+    } catch (err) {
+      result.errors.push(`post-compact.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // context-budget-layered-summaries §9.1/§9.5: prints the staged keep-
+      // instructions into Claude's compaction prompt. Never composes, never blocks.
+      fs.writeFileSync(path.join(instarHooksDir, 'pre-compact-steer.sh'), this.getPreCompactSteerHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/pre-compact-steer.sh (keep-instructions for compaction)');
+    } catch (err) {
+      result.errors.push(`pre-compact-steer.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'mcp-health-autorefresh.sh'), this.getMcpHealthAutorefreshHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/mcp-health-autorefresh.sh (auto-restart-on-MCP-inaccessible, dark by default)');
     } catch (err) {
@@ -7880,6 +8102,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       result.upgraded.push('hooks/instar/standdown-guard.js (duplicate-session stand-down muzzle, PreToolUse *, fail-open)');
     } catch (err) {
       result.errors.push(`standdown-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // context-budget-layered-summaries §10: the fold-marker tool policy. Exits at
+      // once for any session with no fold marker; always overwritten.
+      fs.writeFileSync(path.join(instarHooksDir, 'fold-marker-guard.js'), this.getFoldMarkerGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/fold-marker-guard.js (fold-marker tool policy, PreToolUse *)');
+    } catch (err) {
+      result.errors.push(`fold-marker-guard.js: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     try {
@@ -9277,6 +9508,15 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: new jobs offer the report choice');
     }
+    // context-budget-layered-summaries §9.1: the compaction-recovery hook never
+    // ran on Claude Code before this release, so the old sentence promised a
+    // recovery that did not happen. It now runs; name the block to look for.
+    const oldCompactionSurvival = "The compaction-recovery hook re-injects all of this. If it doesn't fire, read `.instar/AGENT.md` immediately.";
+    if (content.includes(oldCompactionSurvival)) {
+      content = content.split(oldCompactionSurvival).join("The compaction-recovery hook re-injects all of this: after a compaction you see an `=== IDENTITY RECOVERY (post-compaction) ===` block. If that block is missing after a compaction, read `.instar/AGENT.md` and `.instar/MEMORY.md` immediately.");
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected the Compaction Survival recovery sentence');
+    }
     const port = this.config.port;
     const oldThreadlineStatus = 'This capability is **installed and ready** but **not yet enabled**. I will only connect when you say so.';
     if (content.includes(oldThreadlineStatus)) {
@@ -9757,11 +9997,26 @@ setTimeout(() => process.exit(0), 2000);
       result.skipped.push('CLAUDE.md: Scheduled jobs run as scripts section already present');
     }
 
+    // Job tool limits (EVO-008 §9): content-sniffed on the heading.
+    if (!content.includes(JOB_TOOL_LIMITS_CLAUDEMD_MARKER)) {
+      content += JOB_TOOL_LIMITS_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Job tool limits section');
+    } else {
+      result.skipped.push('CLAUDE.md: Job tool limits section already present');
+    }
+
     // Session-to-session handoffs (bug 2026-11-03): content-sniffed on the heading.
     if (!content.includes(SESSION_HANDOFF_CLAUDEMD_MARKER)) {
       content += SESSION_HANDOFF_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Talking to my other sessions section');
+    }
+    // Acting as my operator / doing errands myself (Echo Bugs topic 10000002506): heading-sniffed.
+    if (!content.includes(ACTING_AS_OPERATOR_CLAUDEMD_MARKER)) {
+      content += ACTING_AS_OPERATOR_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Before I ask my operator to check or send something section');
     }
     if (!content.includes(PAIR_SHARING_CLAUDEMD_MARKER)) {
       content += PAIR_SHARING_CLAUDEMD_SECTION(port);
@@ -9853,6 +10108,33 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n- **Registry First — people:** before answering who can reach this agent or what someone can see, read `GET /team/people` (add `?scope=pool` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set `memoryPrivacy.enabled: true` in the config on every machine and restart.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added people Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — team settings:')) {
+      content += '\n- **Registry First — team settings:** a team needs memory privacy and app conversations on every machine. `GET /team/people` → `teamSwitches` (my own token reads it; the owner\'s phone sees the same lines) lists each setting that is off somewhere, with `offOn` (the machines) and one action for the whole agent; the owner turns it on with one Face ID tap in People (`POST /mobile/team/switches/turn-on`), which reaches every machine and restarts each one that changed. A machine is "gone" only when it stopped answering (`waitingOn`), never because a setting is off — never tell the owner to mark a live machine gone.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team settings Registry First awareness');
+    }
+
+    // The team-settings lookup first pointed at GET /mobile/team/context, which answers only the owner's
+    // phone, so the agent's own token got 403 and it could not follow its own rule. Rewrite that one
+    // phrase on the installed team-settings line (bullet or table row) to the token-readable route.
+    {
+      const oldTeamSwitchRead = '`GET /mobile/team/context` → `teamSwitches` lists each setting that is off somewhere';
+      const newTeamSwitchRead = '`GET /team/people` → `teamSwitches` (my own token reads it; the owner\'s phone sees the same lines) lists each setting that is off somewhere';
+      const lines = content.split('\n');
+      let rewrote = false;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('Registry First — team settings:') && lines[i].includes(oldTeamSwitchRead)) {
+          lines[i] = lines[i].replace(oldTeamSwitchRead, newTeamSwitchRead);
+          rewrote = true;
+        }
+      }
+      if (rewrote) {
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: team settings lookup now reads GET /team/people');
+      }
     }
 
     if (!content.includes('Decision journal — principle is required:')) {
@@ -10566,6 +10848,18 @@ setTimeout(() => process.exit(0), 2000);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the dashboard conversations (browser device) line');
+      }
+    }
+
+    // Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line.
+    if (content.includes(DASHBOARD_CONVERSATIONS_LINE) && !content.includes(APP_CONVERSATIONS_PINS_LINE)) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === DASHBOARD_CONVERSATIONS_LINE);
+      if (at >= 0) {
+        lines.splice(at + 1, 0, APP_CONVERSATIONS_PINS_LINE);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the pinned messages line');
       }
     }
 
@@ -11604,7 +11898,7 @@ Rule: I do not state that work landed inside another agent's state unless I have
 - **Pre-limit (proactive) swap** — beyond the reactive swap above, I can move a session OFF an account BEFORE it walls, at a lag-aware measured threshold (default 80% — the polled reading trails real usage, so the swap completes with margin). It does NOT move untagged sessions (no account tag, riding the default login): those are reached before the wall only by the default-slot repoint, and at the wall by the usage-wall rescue — and with 2+ usable accounts new sessions are tagged, so few stay untagged. Opt-in via \`subscriptionPool.proactiveSwap.enabled\` (same authority as auto-swap, earlier trigger). Status: \`GET /subscription-pool/proactive-swap\`; run a pass now: \`POST /subscription-pool/proactive-swap/check\`.
 - **Anti-thrash brakes + in-flight work protection on swaps** — the proactive swap carries brakes so it can never ping-pong sessions between hot accounts: when EVERY account is hot it STAYS PUT (\`all-hot\` refusal), a just-swapped session dwells ~45 min before it can be moved again (restart-safe via \`state/swap-ledger.jsonl\`), and a swap only executes onto a target that is MATERIALLY cooler on a fresh quota reading. A session mid-turn or carrying live subagents is never killed by an optimization — the swap DEFERS until the work lands (a forced/reactive kill carries a mitigation note enumerating interrupted subagents + re-injecting the last unanswered message). Brakes ship dry-run first (\`subscriptionPool.proactiveSwap.antiThrash.dryRun\`); the work gate's \`subscriptionPool.swapContinuity.enabled\` is restart-required. "Why didn't my session swap?" → \`GET /subscription-pool/proactive-swap\` \`brakes\`/\`deferrals\` blocks name the refusal; "why did my refresh get a session-busy error?" → the work gate refused to kill in-flight work — wait, or re-issue with \`force:true\`.
 - **Credential identity drift is self-healing safety state** — quota follows the account proven by the live token, never a stale slot label. \`GET /subscription-pool\` exposes \`identityDrifted\` + credential-free evidence; drifted slots are excluded from capacity and every swap target. Repair is planned/audited through the existing staged credential-swap machinery, with a live identity pre-flight before every swap; uncertainty quarantines. A login absent from this machine becomes an owner re-login commitment with enrollment links (Claude logins are never copied across machines).
-- **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`, or safely abandon a stuck login with \`POST /subscription-pool/enroll/:id/cancel\`.
+- **Enroll a new account from your phone** — \`POST /subscription-pool/enroll\` \`{"id","label","provider","framework","configHome"}\` starts a login and returns a public code/URL (never a token); \`GET /subscription-pool/pending-logins\` is the surface; expired codes are auto-reissued. Mark done with \`POST /subscription-pool/enroll/:id/complete\`, or safely abandon a stuck login with \`POST /subscription-pool/enroll/:id/cancel\`. After a pasted sign-in code, the server finishes the sign-in itself; read \`GET /subscription-pool/follow-me/completion?machineId=M&id=ID\` for \`finishing\` → \`done\` (with the email) or \`failed\` (with a reason) instead of completing it by hand.
 - **Dashboard**: the **Subscriptions tab** shows live quota bars (5h + weekly + reset countdown), status, and the Pending Logins panel — share the dashboard URL + PIN.
 - **When to use** (PROACTIVE): "how much quota is left across my accounts?" / "am I about to hit a limit?" → \`GET /subscription-pool\`; the user wants to add another subscription → drive the enrollment wizard (never ask them to paste a token); a long job is at risk of a quota wall → the continuity guarantee + \`/swap\` keep it alive. Single-account pools are a no-op.
 `;
@@ -11782,11 +12076,36 @@ Rule: I do not state that work landed inside another agent's state unless I have
       !content.includes('One-tap repair setting (Accounts page)')
     ) {
       const oneClickEnd = 'an unreachable peer is shown honestly and suppresses competing actions until truth returns.';
-      const oneTapBullet = "- **One-tap repair setting (Accounts page)** \u2014 the console Accounts page has an **Automatic sign-in repair** section (direct link: the dashboard URL + `#/capacity/accounts?s=auto-repair`). Each machine's row shows its setting in plain words, the exact accounts its list will hold, accounts not covered yet, and which accounts will still ask and why. After one PIN unlock, **Turn on for ticked machines** sets the operator's own machine to repair without asking and refreshes the account list of any other machine already set that way; **Switch ticked machines back to asking first** undoes it; **Finish restarting** re-queues a restart that did not happen. A machine set to \"asks you first\", watching only, or off is never escalated from another machine. It reads `GET /subscription-relogin?scope=pool` (`pool.configs`) and writes through `POST /subscription-relogin/configure-pool` (recent dashboard unlock only) \u2192 a signed, single-use mandate \u2192 `POST /subscription-relogin/configure-with-mandate` on each target. **When to use** (PROACTIVE): the user wants sign-in repair on everywhere, or an account was added and its machine's row says it isn't covered \u2192 send the direct link to the section. Never call the configure routes yourself; they need the operator's unlock.";
+      const oneTapBullet = "- **One-tap repair setting (Accounts page)** \u2014 the console Accounts page has an **Automatic sign-in repair** section (direct link: the dashboard URL + `#/capacity/accounts?s=auto-repair`). Each machine's row shows its setting in plain words, the exact accounts its list will hold, accounts not covered yet, and which accounts will still ask and why. After one PIN unlock, **Turn on for ticked machines** sets every ticked machine (the one showing the dashboard or any other paired machine of the agent) to repair without asking over that machine's own accounts, and on a machine already set that way only refreshes the list and keeps its waits; **Switch ticked machines back to asking first** undoes it; **Finish restarting** re-queues a restart that did not happen. Any machine's dashboard can do this for every paired machine (operator rule 2026-11-10): the operator's recent PIN unlock rides in the signed single-use mandate; the target still refuses an account it does not hold, a stale read, or a mandate without that unlock. It reads `GET /subscription-relogin?scope=pool` (`pool.configs`) and writes through `POST /subscription-relogin/configure-pool` (recent dashboard unlock only) \u2192 a signed, single-use mandate \u2192 `POST /subscription-relogin/configure-with-mandate` on each target. **When to use** (PROACTIVE): the user wants sign-in repair on everywhere, or an account was added and its machine's row says it isn't covered \u2192 send the direct link to the section. Never call the configure routes yourself; they need the operator's unlock.";
       if (content.includes(oneClickEnd)) {
         content = content.replace(oneClickEnd, oneClickEnd + '\n' + oneTapBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added one-tap repair setting awareness');
+      }
+    }
+    // Operator rule 2026-11-10 (any dashboard, any machine): reword the installed one-tap bullet,
+    // which said another machine could never raise a machine's repair setting. Content-sniffed and
+    // idempotent: each old sentence is replaced only while it is still present.
+    {
+      const oldTurnOn = "sets the operator's own machine to repair without asking and refreshes the account list of any other machine already set that way";
+      const newTurnOn = "sets every ticked machine (the one showing the dashboard or any other paired machine of the agent) to repair without asking over that machine's own accounts, and on a machine already set that way only refreshes the list and keeps its waits";
+      const oldNever = 'A machine set to "asks you first", watching only, or off is never escalated from another machine.';
+      const newAny = "Any machine's dashboard can do this for every paired machine (operator rule 2026-11-10): the operator's recent PIN unlock rides in the signed single-use mandate; the target still refuses an account it does not hold, a stale read, or a mandate without that unlock.";
+      if (content.includes(oldTurnOn) || content.includes(oldNever)) {
+        content = content.replace(oldTurnOn, newTurnOn).replace(oldNever, newAny);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: one-tap repair setting now works for every machine from any dashboard');
+      }
+    }
+    // CMT-1541: approval reminder + unreachable-machine notice awareness, content-sniffed.
+    if (content.includes('One-tap repair setting (Accounts page)') && !content.includes('Repair waiting for approval: reminder')) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- **One-tap repair setting (Accounts page)**'));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, ...["- **Repair waiting for approval: reminder** \u2014 a sign-in repair in approval mode that has waited for the operator's tap longer than `subscriptionPool.assistedRelogin.approvalReminderHours` (default 4; 0 turns it off) gets ONE reminder per waiting spell on the same attention row as its first notice, with the direct link (dashboard URL + `#/capacity/accounts?s=needs`). It follows Quiet by Default (attention queue and Notifications feed; pushed only where the operator chose to push that category), never goes out during the repair's night hours (`slowRetry.quietHours`), and never approves anything. **When to use** (PROACTIVE): the user asks why a sign-in is still broken \u2192 check `GET /subscription-relogin?scope=pool` for `suggested` episodes and send the direct link; never tap Repair for them.", "- **Unreachable-machine notices** \u2014 every dashboard \"No answer from <machine>\" line says how long the machine has been out of reach (from its last direct contact in `GET /pool` \u2192 `liveness`, else `ropeAllDownSince`) and whether anything is fixing it (`GET /pool` \u2192 `reconnect`: `retrying`, `retrying-slowly`, `connected`; absent when the recovery probe is off, which reads as \"not known\"). Use the same two facts when telling the user a machine is unreachable."]);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added sign-in approval reminder and unreachable-notice awareness');
       }
     }
     // The old "configure this on any machine" sentence now points at the section.
@@ -15693,6 +16012,16 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
       result.upgraded.push('CLAUDE.md: added "what are we working on" Registry-First row (initiative discoverability)');
     }
 
+    // Context Budget sentinel (context-budget-layered-summaries §7.8/§9.1): route
+    // "does compaction recovery work" to its read surface. Idempotent: inserted
+    // once after the "What are we working on?" row, sniffed on the route.
+    if (!content.includes('/context-budget/sentinel') && content.includes('| What are we working on?')) {
+      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off), plus any quarantined or unreadable context folds. \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
+      content = content.replace(/(\| What are we working on\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
+    }
+
     // Process Health (Dashboard Tab) — Agent Awareness backfill for the
     // Failure-Learning Loop's read surface. Fresh inits get this via
     // generateClaudeMd; existing agents get it here on update. The copy mirrors
@@ -16375,6 +16704,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
       '**Registry First — team requests:',
+      // team-switches-agent-wide: a team setting is turned on for the whole agent, never per machine, on every framework.
+      '**Registry First — team settings:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is
@@ -16605,6 +16936,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // job-cost-reduction §8 item 6: script jobs and triage are server-side, so a
       // Codex/Gemini agent needs the same read surfaces.
       '### Scheduled jobs run as scripts',
+      // EVO-008: tool lists are applied only on Claude, so a Codex/Gemini agent is exactly
+      // the one that must know its job lists are recorded, not applied.
+      '### Job tool limits',
       // disk-steward: the steward, its pool read and the prune route are server-side and
       // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
       // the disk?" and "clear disk on <machine>" from the same section.
@@ -17209,6 +17543,36 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
     } else {
       // Migrate existing session-start paths from flat to instar/ subdirectory
       this.migrateSettingsHookPaths(hooks.SessionStart as unknown[], result);
+    }
+    {
+      // context-budget-layered-summaries §9.2 rung 1: a `clear` matcher running
+      // the clear-seed hook (its own script, so a human /clear stays silent).
+      const sessionStart = hooks.SessionStart as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+      if (!sessionStart.some(e => e.hooks?.some(h => h.command?.includes('clear-seed.sh')))) {
+        sessionStart.push({ matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added SessionStart clear matcher (clear-seed.sh)');
+      }
+    }
+    {
+      // context-budget-layered-summaries §9.1: a PostCompact entry running
+      // post-compact.sh (stores Claude's compact_summary under the layer store).
+      const postCompact = (hooks.PostCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+      if (!postCompact.some(e => e.hooks?.some(h => h.command?.includes('post-compact.sh')))) {
+        postCompact.push({ matcher: '', hooks: [{ ...POST_COMPACT_SETTINGS_HOOK }] });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added PostCompact hook (post-compact.sh)');
+      }
+    }
+    {
+      // context-budget-layered-summaries §9.1: a separate PreCompact entry for the
+      // steering hook (the reporter migrations only touch reporter hooks).
+      const preCompact = (hooks.PreCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+      if (!preCompact.some(e => e.hooks?.some(h => h.command?.includes('pre-compact-steer.sh')))) {
+        preCompact.push({ matcher: '', hooks: [{ ...PRE_COMPACT_STEER_SETTINGS_HOOK }] });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added PreCompact steering hook (pre-compact-steer.sh)');
+      }
     }
 
     // Add UserPromptSubmit hook for Telegram topic context injection
@@ -17820,6 +18184,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         patched = true;
         result.upgraded.push('config.json: added dark feedback triage account selection mode');
       }
+    }
+
+    // Chief of Staff (docs/specs/chief-of-staff-topic.md): the owner-tunable defaults, added only
+    // when missing. `enabled` is deliberately NOT written: omitted follows the dev-agent gate.
+    {
+      const cos = (config.chiefOfStaff && typeof config.chiefOfStaff === 'object') ? config.chiefOfStaff as Record<string, unknown> : {};
+      const defaults: Record<string, unknown> = { displayName: 'Chief of Staff', tickMinutes: 15, defaultCadenceHours: 24, maxRunHours: 4, operatorLeaseHours: 72, noteCadenceHours: 24, noteTime: '08:00', maxRestartsWithoutProgress: 3, breakerRestartsPerWeek: 5, immediateMessagesPerDay: 3, judgeDailyCents: 15 };
+      let added = false;
+      for (const [k, v] of Object.entries(defaults)) { if (cos[k] === undefined) { cos[k] = v; added = true; } }
+      if (added) { config.chiefOfStaff = cos; patched = true; result.upgraded.push('config.json: Chief of Staff defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
     }
 
     // An already-configured verifier gets the explicit dark diagnosis default;
@@ -19226,17 +19600,21 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'post-compact' | 'pre-compact-steer' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'fold-marker-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
+      case 'clear-seed': return this.getClearSeedHook();
+      case 'post-compact': return this.getPostCompactHook();
+      case 'pre-compact-steer': return this.getPreCompactSteerHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
       case 'external-operation-gate': return this.getExternalOperationGateHook();
       case 'deferral-detector': return this.getDeferralDetectorHook();
       case 'self-stop-guard': return this.getSelfStopGuardHook();
       case 'standdown-guard': return this.getStandDownGuardHook();
+      case 'fold-marker-guard': return this.getFoldMarkerGuardHook();
       case 'slopcheck-guard': return this.getSlopcheckGuardHook();
       case 'analysis-paralysis-guard': return this.getAnalysisParalysisGuardHook();
       case 'post-action-reflection': return this.getPostActionReflectionHook();
@@ -19433,6 +19811,135 @@ fi
 `;
   }
 
+  /**
+   * The clear-seed hook (context-budget-layered-summaries §9.2 rung 1). Runs on
+   * SessionStart with source "clear". It prints a fold packet ONLY when the
+   * FoldCoordinator staged one for exactly this Instar session: a pointer at
+   * `<state>/context-layers/_clear-seed/<INSTAR_SESSION_ID>.json` naming a packet under
+   * the context-layers root, whose sha256 matches and whose lock has not
+   * expired. The pointer is claimed by an atomic rename before anything is
+   * printed, so a packet seeds at most once. With no valid pointer (a human
+   * /clear), the switch off, or another engine, it prints nothing and exits 0:
+   * exactly today's behaviour, where no hook ran on clear.
+   *
+   * Keyed on INSTAR_SESSION_ID, not the stdin session_id: measured on Claude
+   * Code 2.1.321, /clear starts a NEW Claude session id and transcript file,
+   * and the hook's stdin carries only the new id, so a pointer keyed on the
+   * pre-clear id would never be found. INSTAR_SESSION_ID is set in the pane's
+   * environment at spawn and survives the clear. The seeded marker is keyed on
+   * the new Claude session id (what the server binds next).
+   */
+  private getClearSeedHook(): string {
+    return `#!/bin/bash
+# Clear-seed hook (context-budget-layered-summaries §9.2 rung 1).
+# Silent unless a staged, verified, single-use fold packet exists for this session.
+INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+CB_STATE_ROOT="\$INSTAR_DIR"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+  CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
+fi
+[ "\${INSTAR_FRAMEWORK:-claude-code}" = "claude-code" ] || exit 0
+HOOK_INPUT=\$(python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.0
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<65536:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,8192)
+        if not chunk: break
+        buf+=chunk
+        try:
+            import json; json.loads(buf.decode('utf-8','replace')); break
+        except Exception:
+            pass
+except Exception:
+    pass
+sys.stdout.write(buf.decode('utf-8','replace'))" 2>/dev/null)
+[ -n "\$INSTAR_SESSION_ID" ] || exit 0
+printf '%s' "\$HOOK_INPUT" | python3 -c "${CLEAR_SEED_PY}" "\$CB_STATE_ROOT" "\$INSTAR_SESSION_ID" 2>/dev/null
+exit 0
+`;
+  }
+
+  /**
+   * The PreCompact steering hook (context-budget-layered-summaries §9.1, §9.5).
+   * Claude Code merges a successful PreCompact hook's stdout into the summary
+   * prompt as newCustomInstructions (2.1.321; cut at 10,000 characters). This
+   * prints the pre-rendered keep-instructions staged for this Instar session,
+   * after a hash check, and nothing otherwise. Always exits 0 (exit 2 would
+   * block the compaction). Silent on another engine, without a session id, or
+   * with the switch off.
+   */
+  private getPreCompactSteerHook(): string {
+    return `#!/bin/bash
+# PreCompact steering hook (context-budget-layered-summaries §9.1/§9.5).
+# Prints staged, verified keep-instructions; never composes, never blocks.
+INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+CB_STATE_ROOT="\$INSTAR_DIR"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+  CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
+fi
+[ "\${INSTAR_FRAMEWORK:-claude-code}" = "claude-code" ] || exit 0
+[ -n "\$INSTAR_SESSION_ID" ] || exit 0
+python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.0
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<65536:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,8192)
+        if not chunk: break
+        buf+=chunk
+except Exception:
+    pass
+sys.stdout.buffer.write(buf)" 2>/dev/null | python3 -c "${KEEP_INSTRUCTIONS_PY}" "\$CB_STATE_ROOT" "\$INSTAR_SESSION_ID" 2>/dev/null
+exit 0
+`;
+  }
+
+  /**
+   * The PostCompact hook (context-budget-layered-summaries §9.1, §9.5). Claude
+   * Code hands it `trigger` and `compact_summary`; it forwards the stdin JSON
+   * to `POST /hooks/post-compact` (bounded read, 3 s curl, never blocks) with
+   * the Instar session id, and prints nothing. The server scrubs and stores the
+   * summary under the topic's layer store. Silent no-op without a token, a
+   * port, an Instar session id, or on another engine.
+   */
+  private getPostCompactHook(): string {
+    return `#!/bin/bash
+# PostCompact hook (context-budget-layered-summaries §9.1): forwards Claude's
+# compact_summary to the agent server, which scrubs and stores it. Prints nothing.
+[ "\${INSTAR_FRAMEWORK:-claude-code}" = "claude-code" ] || exit 0
+[ -n "\$INSTAR_AUTH_TOKEN" ] && [ -n "\$INSTAR_SESSION_ID" ] || exit 0
+INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+PC_CONFIG_FILE="\$INSTAR_DIR/config.json"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -f "\$INSTAR_AGENT_HOME/.instar/config.json" ]; then
+  PC_CONFIG_FILE="\$INSTAR_AGENT_HOME/.instar/config.json"
+fi
+PC_PORT="\${INSTAR_PORT:-}"
+[ -z "\$PC_PORT" ] && PC_PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$PC_CONFIG_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+[ -n "\$PC_PORT" ] || exit 0
+python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.5
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<2097152:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,65536)
+        if not chunk: break
+        buf+=chunk
+except Exception:
+    pass
+sys.stdout.buffer.write(buf)" 2>/dev/null | curl -s -m 3 -X POST "http://localhost:\${PC_PORT}/hooks/post-compact" \\
+  -H "Authorization: Bearer \$INSTAR_AUTH_TOKEN" -H 'Content-Type: application/json' \\
+  -H "X-Instar-Session-Id: \$INSTAR_SESSION_ID" --data-binary @- >/dev/null 2>&1
+exit 0
+`;
+  }
+
   private getSessionStartHook(): string {
     return `#!/bin/bash
 # Session start hook — injects identity context on session lifecycle events.
@@ -19441,7 +19948,75 @@ fi
 # On startup/resume: outputs a compact identity summary
 # On compact: delegates to compaction-recovery.sh for full injection
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
-EVENT="\${CLAUDE_HOOK_MATCHER:-startup}"
+
+# Which lifecycle event fired (context-budget-layered-summaries §9.1).
+# Claude Code passes the event as "source" in this hook's stdin JSON and has
+# never set CLAUDE_HOOK_MATCHER, so the old env-only read always resolved to
+# "startup" and the compaction branch below never ran. Read stdin (bounded to
+# 1 s, never blocks boot), keep CLAUDE_HOOK_MATCHER as a fallback, and resolve
+# a Claude Code start with no readable source to "unknown": it gets the
+# startup orientation AND a degradation record, never a silent "startup".
+# Other engines (INSTAR_FRAMEWORK set and not claude-code) keep today's branch.
+# Switch: contextBudget.compactionRecovery.enabled (default on); off = exactly
+# today's behaviour.
+# Config lives in the agent home; a worktree session's CLAUDE_PROJECT_DIR has none.
+CB_CONFIG_FILE="$INSTAR_DIR/config.json"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -f "\$INSTAR_AGENT_HOME/.instar/config.json" ]; then
+  CB_CONFIG_FILE="\$INSTAR_AGENT_HOME/.instar/config.json"
+fi
+HOOK_INPUT=\$(python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.0
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<65536:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,8192)
+        if not chunk: break
+        buf+=chunk
+        try:
+            import json; json.loads(buf.decode('utf-8','replace')); break
+        except Exception:
+            pass
+except Exception:
+    pass
+sys.stdout.write(buf.decode('utf-8','replace'))" 2>/dev/null)
+CB_RECOVERY_ENABLED=\$(python3 -c "import json,sys
+try:
+    c=json.load(open(sys.argv[1]))
+    v=((c.get('contextBudget') or {}).get('compactionRecovery') or {}).get('enabled')
+    print('false' if v is False else 'true')
+except Exception:
+    print('true')" "\$CB_CONFIG_FILE" 2>/dev/null)
+HOOK_FRAMEWORK="\${INSTAR_FRAMEWORK:-claude-code}"
+SOURCE_UNKNOWN=""
+if [ "\$CB_RECOVERY_ENABLED" = "false" ] || [ "\$HOOK_FRAMEWORK" != "claude-code" ]; then
+  EVENT="\${CLAUDE_HOOK_MATCHER:-startup}"
+else
+  HOOK_SOURCE=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json
+try:
+    v=json.load(sys.stdin).get('source')
+    print(v if v in ('startup','resume','clear','compact','fork') else '')
+except Exception:
+    print('')" 2>/dev/null)
+  if [ -n "\$HOOK_SOURCE" ]; then
+    EVENT="\$HOOK_SOURCE"
+  elif [ -n "\$CLAUDE_HOOK_MATCHER" ]; then
+    EVENT="\$CLAUDE_HOOK_MATCHER"
+  else
+    EVENT="startup"
+    SOURCE_UNKNOWN="1"
+  fi
+fi
+if [ -n "\$SOURCE_UNKNOWN" ] && [ -n "\$INSTAR_AUTH_TOKEN" ]; then
+  SU_PORT="\${INSTAR_PORT:-}"
+  [ -z "\$SU_PORT" ] && SU_PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$CB_CONFIG_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+  if [ -n "\$SU_PORT" ]; then
+    curl -s -m 2 -X POST "http://localhost:\${SU_PORT}/hooks/events" \\
+      -H "Authorization: Bearer \$INSTAR_AUTH_TOKEN" -H 'Content-Type: application/json' \\
+      -d "{\\"event\\":\\"SessionStartSourceUnknown\\",\\"sessionId\\":\\"\${INSTAR_SESSION_ID:-}\\"}" >/dev/null 2>&1 &
+  fi
+fi
 
 # Machine-load assessment awareness (CMT-1703) — placed ABOVE the compact delegate
 # so it is emitted on EVERY event INCLUDING compact (this stdout flushes before the
@@ -19455,7 +20030,47 @@ echo ""
 # On compaction, delegate to the dedicated recovery hook
 if [ "\$EVENT" = "compact" ]; then
   if [ -x "$INSTAR_DIR/hooks/instar/compaction-recovery.sh" ]; then
-    exec bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh"
+    if [ "\$CB_RECOVERY_ENABLED" = "false" ] || [ "\$HOOK_FRAMEWORK" != "claude-code" ]; then
+      exec bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh"
+    fi
+    # One carrier of post-compaction context (context-budget-layered-summaries
+    # §9.1): run the recovery seed, then write the seeded marker for this
+    # compaction epoch so the server's CompactionSentinel stands down instead of
+    # injecting a second copy. The marker is written only when the seed exited 0
+    # and printed something; any failure leaves no marker and the server path runs.
+    # The epoch stays empty here: Claude Code flushes this compaction's
+    # compact-boundary entry only after this hook runs (measured on 2.1.321), so
+    # the newest boundary visible now is the PREVIOUS compaction's. The sentinel
+    # binds the epoch to the boundary that follows its report.
+    CB_SEED_OUT=\$(bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh")
+    CB_SEED_RC=\$?
+    printf '%s\\n' "\$CB_SEED_OUT"
+    if [ "\$CB_SEED_RC" -eq 0 ] && [ -n "\$CB_SEED_OUT" ]; then
+      CB_STATE_ROOT="$INSTAR_DIR"
+      if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+        CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
+      fi
+      printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json,os,time
+root=sys.argv[1]
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+sid=str(d.get('session_id') or '')
+if not sid or not all(c.isalnum() or c in '-_' for c in sid) or len(sid)>128:
+    sys.exit(0)
+dirp=os.path.join(root,'state','context-layers','_seeded')
+try:
+    os.makedirs(dirp,mode=0o700,exist_ok=True)
+    tmp=os.path.join(dirp,sid+'.json.tmp')
+    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    with os.fdopen(fd,'w') as w:
+        json.dump({'sessionId':sid,'epoch':'','source':'compact','seededAt':int(time.time()*1000)},w)
+    os.replace(tmp,os.path.join(dirp,sid+'.json'))
+except Exception:
+    pass" "\$CB_STATE_ROOT" 2>/dev/null
+    fi
+    exit 0
   fi
 fi
 
@@ -22301,6 +22916,163 @@ process.stdin.on('end', async () => {
 
 // Backstop: if stdin never ends, never hang the tool — allow after a bounded wait.
 setTimeout(() => process.exit(0), 8000);
+`;
+  }
+
+  /**
+   * The fold-marker tool policy (context-budget-layered-summaries §10).
+   * Canonical source: this method (a blocking decision lives where the ratchets
+   * can see it — the TypeScript population, like the stand-down guard).
+   * Written with String.raw so its regex backslashes survive; the body has no
+   * backtick and no dollar-brace.
+   */
+  private getFoldMarkerGuardHook(): string {
+    return String.raw`#!/usr/bin/env node
+// Fold-marker tool policy — PreToolUse hook on the '*' matcher.
+// Spec: docs/specs/context-budget-layered-summaries.md §10 ("fold-marker tool policy").
+//
+// A fold's handoff and probe turns are internal. While a fold runs, the owner
+// writes a MARKER FILE for each session it drives, keyed by the Instar session
+// id (never the engine's own id, which rotates at a /clear):
+//   <agent home>/.instar/state/context-layers/_fold-markers/<INSTAR_SESSION_ID>.json
+// This hook decides from that local file alone (no server query):
+//   - no INSTAR_SESSION_ID, or no marker      -> allow, exit at once (every other
+//     session, the lifeline's included, is untouched);
+//   - malformed marker                        -> deny;
+//   - marker past its stamped expiry          -> deny while the fold record for
+//     its foldId is non-terminal (a missing or torn record counts as open);
+//     allow, and record, once the record is terminal;
+//   - live marker                             -> strict command-shape allowlist,
+//     match-fail-closed: NO file-reading tools at all (the engine checkpoint, the
+//     archive and the layer store sit on this disk), and the only allowed call is
+//     a Bash command that is exactly a GET to a localhost lookup route. Everything
+//     else is denied: writes, sub-agents, interpreters, compound commands,
+//     variables in URLs, sends, MCP tools.
+// Every decision under a marker is appended to
+//   _fold-markers/<foldId>.decisions.jsonl
+// (the per-fold refusal and lookup counts).
+// Fail direction: an error WITH a marker present denies; without one it never does.
+//
+// Canonical source: PostUpdateMigrator.getFoldMarkerGuardHook() (String.raw; no
+// backticks and no dollar-brace in this body).
+// Dynamic import('node:...') so it runs under both CJS and ESM hosts.
+
+var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+var TERMINAL = ['committed', 'rolled-back', 'aborted'];
+// Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
+var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
+// literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
+// backslash or quote (the character classes below exclude them).
+var LOOKUP_RE = /^curl(?: -(?:s|sS|fsS|sf))?(?: -H "Authorization: Bearer \$(?:AUTH|INSTAR_AUTH_TOKEN)")? "http:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})(\/[A-Za-z0-9\/_.\-]*)(\?[A-Za-z0-9_.~%=&+\-]*)?"$/;
+
+function isLookupCommand(cmd, port) {
+  if (typeof cmd !== 'string' || cmd.length > 2000 || /[\n\r]/.test(cmd)) return false;
+  var m = LOOKUP_RE.exec(cmd);
+  if (!m) return false;
+  // Only THIS agent's server: its lookups are the mediated, logged ones.
+  if (String(m[1]) !== String(port)) return false;
+  var p = m[2];
+  if (p.indexOf('..') !== -1 || p.indexOf('//') !== -1 || p.indexOf('/./') !== -1) return false;
+  if (m[3] && /%2e|%2f|%5c/i.test(m[3])) return false;
+  for (var i = 0; i < LOOKUP_PREFIXES.length; i++) {
+    var pre = LOOKUP_PREFIXES[i];
+    if (p === pre || p.indexOf(pre + '/') === 0) return true;
+  }
+  return false;
+}
+
+function deny(reason) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'fold-marker: ' + reason,
+    },
+  }));
+  process.exit(0);
+}
+
+if (typeof module !== 'undefined' && module.exports && require.main !== module) {
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+} else {
+  var iid = process.env.INSTAR_SESSION_ID || '';
+  // No Instar session id: outside this hook's reach. Exit before reading stdin.
+  if (!iid || !SAFE_ID.test(iid)) process.exit(0);
+
+  var data = '';
+  process.stdin.on('data', function (c) { data += c; });
+  process.stdin.on('end', async function () {
+    var markerPresent = false;
+    try {
+      var fsMod = await import('node:fs');
+      var pathMod = await import('node:path');
+      // The AGENT HOME, not the project dir: a worktree session's
+      // CLAUDE_PROJECT_DIR is the checkout, which holds no state/.
+      var agentHome = process.env.INSTAR_AGENT_HOME || process.env.CLAUDE_PROJECT_DIR || '.';
+      var layers = pathMod.join(agentHome, '.instar', 'state', 'context-layers');
+      var markersDir = pathMod.join(layers, '_fold-markers');
+      var markerFile = pathMod.join(markersDir, iid + '.json');
+      // Deny only for a marker that provably EXISTS. If its existence cannot be
+      // established (no file, or an unreadable directory), this session is not
+      // provably marked, and an unmarked session is never denied.
+      try { fsMod.lstatSync(markerFile); } catch (e0) { return process.exit(0); }
+      var raw;
+      try {
+        raw = fsMod.readFileSync(markerFile, 'utf-8');
+      } catch (e) {
+        return deny('marker unreadable');
+      }
+      markerPresent = true;
+      var marker;
+      try { marker = JSON.parse(raw); } catch (e2) { return deny('malformed marker'); }
+      if (!marker || marker.schema !== 'fold-marker/1' || marker.instarSessionId !== iid
+        || !SAFE_ID.test(String(marker.foldId)) || !SAFE_ID.test(String(marker.topicKey))
+        || typeof marker.expiresAt !== 'number' || !isFinite(marker.expiresAt)) {
+        return deny('malformed marker');
+      }
+
+      var input = {};
+      try { input = JSON.parse(data || '{}'); } catch (e3) { input = {}; }
+      var tool = typeof input.tool_name === 'string' ? input.tool_name : '';
+      var command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : '';
+
+      var log = function (decision, reason) {
+        try {
+          fsMod.appendFileSync(pathMod.join(markersDir, marker.foldId + '.decisions.jsonl'),
+            JSON.stringify({ at: Date.now(), iid: iid, foldId: marker.foldId, tool: tool, decision: decision, reason: reason }) + '\n',
+            { mode: 384 });
+        } catch (e4) { /* the decision stands; the count is best-effort */ }
+      };
+
+      if (Date.now() >= marker.expiresAt) {
+        var state = null;
+        try {
+          var rec = JSON.parse(fsMod.readFileSync(pathMod.join(layers, marker.topicKey, 'fold-records', marker.foldId + '.json'), 'utf-8'));
+          state = rec && typeof rec.state === 'string' ? rec.state : null;
+        } catch (e5) { state = null; }
+        if (state && TERMINAL.indexOf(state) !== -1) { log('allow', 'stale-marker-terminal-record'); return process.exit(0); }
+        log('deny', 'stale-marker-open-record');
+        return deny('this conversation is mid-fold and its fold is unresolved');
+      }
+
+      // The lookup must reach THIS agent's server. If its port cannot be read,
+      // no lookup is allowed (a guessed port could be another server).
+      var port = null;
+      try {
+        var cfg = JSON.parse(fsMod.readFileSync(pathMod.join(agentHome, '.instar', 'config.json'), 'utf-8'));
+        if (cfg && Number.isInteger(cfg.port)) port = cfg.port;
+      } catch (e6) { port = null; }
+      if (tool === 'Bash' && port !== null && isLookupCommand(command.trim(), port)) { log('allow', 'lookup'); return process.exit(0); }
+      log('deny', tool || 'unknown-tool');
+      return deny((tool || 'this tool') + ' is not allowed during a fold\'s internal turn; only localhost lookup GETs are');
+    } catch (err) {
+      // An error WITH a marker present denies; without one the hook never denies.
+      if (markerPresent) return deny('internal error');
+      return process.exit(0);
+    }
+  });
+}
 `;
   }
 

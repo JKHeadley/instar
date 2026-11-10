@@ -193,6 +193,9 @@ export class BrowserDeviceController {
       featureEvidence.record(BROWSER_FEATURE, { kind: 'error', reason: 'activation refused: no device-key ledger', context: { deviceId } });
       return 'failed';
     }
+    // The PIN approves only the setup request that carried it; an introducer agent never approves a browser.
+    if (via === 'dashboard-pin' && !opts.ownRequest) return 'not-pending';
+    if (via === 'owner-agent') return 'not-pending';
     const before = this.svc.devices.get(deviceId);
     if (!before || !isBrowserDevice(before)) return 'not-pending';
     const effects: BrowserEffectKind[] = [...(before.replaces ? ['revokeReplaced' as const] : []), 'notice'];
@@ -392,14 +395,25 @@ export function browserApprovalText(agent: string, d: DeviceRecord, codeLine: st
   ] : [
     codeLine,
     `Type it into the browser only if you are setting up a browser right now. If you did not start this, tap Decline. Don't send or show this message to anyone, including me.`,
-    `Browser key: ${d.fingerprint ?? 'unknown'}\nBrowser name: ${d.deviceName ?? '(none given)'}`,
+    `Browser key: ${d.fingerprint ?? 'unknown'}\nBrowser name: ${d.deviceName ?? '(none given)'} (the browser chose this name)`,
   ]).join('\n\n');
 }
 
-function setupView(d: DeviceRecord, svc: MobilePairingService, host: string): Record<string, unknown> {
+/**
+ * A paired owner iPhone that can approve this browser with Face ID right now. When there is one it is the
+ * first way shown, ahead of the private Telegram message (operator 2026-11-09: "Why can't the iphone app
+ * be used for this approval flow?"); Telegram stays as the backup route.
+ */
+function phoneApproves(svc: MobilePairingService, d: DeviceRecord): boolean {
+  return isPairingApproveEnabled(svc.deps.config) && svc.approvable(d) && svc.ownerPhoneCanApprove();
+}
+
+function setupView(d: DeviceRecord, svc: MobilePairingService, host: string, telegramBackup?: boolean): Record<string, unknown> {
+  const phone = svc.approvalPath() === 'telegram' && phoneApproves(svc, d);
   return {
     deviceId: d.id, machineId: svc.deps.selfMachineId ?? null, host, status: d.status,
-    approval: svc.approvalPath(), fingerprint: d.fingerprint ?? null,
+    approval: phone ? 'owner-phone' : svc.approvalPath(), fingerprint: d.fingerprint ?? null,
+    ...(phone ? { telegramBackup: telegramBackup ?? true } : {}),
     ...(d.status === 'pending' && d.expiresAt ? { expiresAt: d.expiresAt } : {}),
   };
 }
@@ -433,18 +447,23 @@ export function browserKeyState(svc: MobilePairingService, keyHash: string): Rec
 /** Bearer routes for browser setup (§4.2) and status (§4.6). */
 export function mountBrowserDeviceRoutes(
   router: Router, svc: MobilePairingService,
-  opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean },
+  opts: { verifyOperatorSession?: (token: string | undefined) => boolean; telegramConfigured?: () => boolean; approvalChat?: () => Promise<{ name: string; username: string | null } | null> },
 ): void {
-  router.get('/mobile/browser-devices/status', (req: Request, res: Response) => {
+  router.get('/mobile/browser-devices/status', async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!svc.browserOn()) { res.status(503).json({ error: 'browser-devices-off', detail: 'Conversations in the dashboard are switched off on this agent.' }); return; }
     if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'bearer-required' }); return; }
     const machineId = svc.deps.selfMachineId ?? null;
     const kh = typeof req.query.keyHash === 'string' ? req.query.keyHash.toLowerCase() : null;
     if (kh !== null && !/^[0-9a-f]{64}$/.test(kh)) { res.status(400).json({ error: 'bad-key-hash' }); return; }
+    // Which private chat the approval message arrives in, by the bot's own name, so a missed message is found.
+    const approvalChat = svc.approvalPath() === 'telegram' && opts.approvalChat
+      ? await Promise.race([opts.approvalChat().catch(() => null), new Promise<null>((r) => setTimeout(() => r(null), 1500).unref?.())])
+      : null;
     res.json({
-      enabled: true, machineId, nickname: machineNickname(svc, machineId) ?? svc.deps.config.projectName ?? null,
+      enabled: true, machineId, nickname: machineNickname(svc, machineId) ?? svc.deps.config.projectName ?? null, approvalChat,
       serverTime: Date.now(), approvalPath: svc.approvalPath(), approveEnabled: isPairingApproveEnabled(svc.deps.config),
+      ownerPhoneApproves: isPairingApproveEnabled(svc.deps.config) && svc.ownerPhoneCanApprove(),
       // Sending into Telegram from the app speaks as the Telegram owner and needs the serving lease.
       telegramSend: !!opts.telegramConfigured?.() && svc.holdsLease() && (svc.deps.telegramOwnerPresent ? svc.deps.telegramOwnerPresent() : true),
       limits: { maxFiles: MAX_ATTACHMENTS, maxMessageBytes: MAX_MESSAGE_BYTES, maxFileBytes: MAX_FILE_BYTES, chunkBytes: CHUNK_BYTES },
@@ -464,6 +483,8 @@ export function mountBrowserDeviceRoutes(
     // be approved, so the setup is refused before anything is charged (second-pass review).
     if (!svc.keyLedger) { held(503, 'ledger-unavailable', { detail: 'This machine cannot record new devices right now (it has no device-key record). Try again after it restarts.' }); return; }
     if (svc.devices.pairingPaused()) { held(429, 'pairing-paused', { detail: 'Too many wrong codes were typed recently, so setting up new devices is paused for now.' }); return; }
+    // The Bearer principal, on every path (browser-setup-no-second-pin: it used to sit inside step 5 only).
+    if (principalOf(req).kind !== 'token') { held(403, 'bearer-required'); return; }
     // 2. The bound host, before anything else and without the session.
     const host = boundSetupHost(req, svc);
     if (!host) { held(403, 'not-secure-address', { detail: 'Open the dashboard at this agent\'s secure address (or at localhost on this computer) to set up this browser.' }); return; }
@@ -510,11 +531,33 @@ export function mountBrowserDeviceRoutes(
       held(409, 'duplicate-key');
       return;
     }
-    // 5. The operator session (a fresh PIN unlock), never reused for a second record.
-    const session = req.get('X-Instar-Operator-Session');
-    if (principalOf(req).kind !== 'token' || !session || !opts.verifyOperatorSession?.(session)) {
-      held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN to set up this browser.' });
-      return;
+    // 5. Who vouches for this setup. The approval path is read ONCE here and used through step 9.
+    //    `telegram`: the owner approves on the phone (Face ID) or in Telegram, which is the proof, so no PIN
+    //    is asked and any session header is ignored (docs/specs/browser-setup-no-second-pin.md); one setup
+    //    per enrollment. `dashboard`: the live PIN session IS the approval, so it stays required.
+    const path = svc.approvalPath();
+    let setupKey: string;
+    let sessionVerified = false;
+    if (path === 'telegram') {
+      const pausedUntil = svc.browserSetupsPausedUntil();
+      if (pausedUntil > Date.now()) {
+        held(429, 'browser-setups-paused', { nextAllowedAt: new Date(pausedUntil).toISOString(),
+          detail: 'A browser setup was declined in the last hour, so new browser setups are paused until then.' });
+        return;
+      }
+      if (svc.devices.list().some((d) => isBrowserDevice(d) && d.status === 'pending')) {
+        held(409, 'browser-setup-waiting', { detail: 'Another browser is already waiting for approval. Approve or decline it first.' });
+        return;
+      }
+      setupKey = `enroll:${crypto.createHash('sha256').update(enrollmentId).digest('hex')}`;
+    } else {
+      const session = req.get('X-Instar-Operator-Session');
+      if (!session || !opts.verifyOperatorSession?.(session)) {
+        held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN to set up this browser.' });
+        return;
+      }
+      sessionVerified = true;
+      setupKey = sessionHash(session);
     }
     // 7. `replaces`, checked against the ledger activation row of the old device (any machine).
     let replaces: { deviceId: string; keyHash: string } | null = null;
@@ -534,11 +577,12 @@ export function mountBrowserDeviceRoutes(
     const limits = browserLimits(svc.deps.config);
     let revokedKeys: Set<string> | undefined;
     try { revokedKeys = svc.keyLedger?.revokedKeyHashes(); } catch { revokedKeys = undefined; } // @silent-fallback-ok — counting without the ledger is the stricter count
-    const deviceName = cleanText(body.deviceName)?.slice(0, 60) || 'Browser';
+    // Caller-chosen, untrusted: format characters (bidi overrides, zero-width) are stripped so the name cannot reorder the approval text.
+    const deviceName = cleanText(body.deviceName)?.replace(/\p{Cf}/gu, '').trim().slice(0, 60) || 'Browser';
     let created: ReturnType<typeof svc.devices.createPendingBrowser>;
     try {
       created = svc.devices.createPendingBrowser({
-        browserPublicKey: publicKey, host, deviceName, enrollmentId, replaces, session: sessionHash(session),
+        browserPublicKey: publicKey, host, deviceName, enrollmentId, replaces, session: setupKey,
         maxBrowsers: limits.maxBrowsers, maxSetupsPerHour: limits.maxSetupsPerHour, ledgerRevokedKeyHashes: revokedKeys,
       });
     } catch (err) {
@@ -555,7 +599,8 @@ export function mountBrowserDeviceRoutes(
       } else if (created.reason === 'too-many-setups') {
         held(429, 'too-many-setups', { nextAt: new Date(created.nextAt).toISOString(), nextAllowedAt: new Date(created.nextAt).toISOString(), detail: `Too many browsers were set up in the last hour. The next one can be set up at ${new Date(created.nextAt).toISOString()}.` });
       } else if (created.reason === 'session-used') {
-        held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN again to set up this browser.' });
+        if (path === 'telegram') held(409, 'setup-ended', { detail: 'This setup ended. Start it again.' });
+        else held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN again to set up this browser.' });
       } else if (created.reason === 'duplicate-key') {
         held(409, 'duplicate-key');
       } else {
@@ -565,8 +610,7 @@ export function mountBrowserDeviceRoutes(
     }
     const device = created.device;
     featureEvidence.record(BROWSER_FEATURE, { kind: 'fired', reason: 'setup created', context: { deviceId: device.id, replacing: !!replaces, loopback: isLoopbackHost(host) } });
-    // 9. Approval, by the agent's own approval path.
-    const path = svc.approvalPath();
+    // 9. Approval, by the approval path read at step 5.
     if (path === null || (path === 'telegram' && !svc.holdsLease())) {
       if (svc.devices.removeIfStillSettingUp(device.id)) svc.dropSetupSecrets(device.id);
       held(409, 'approval-unavailable', { detail: path === null
@@ -576,6 +620,11 @@ export function mountBrowserDeviceRoutes(
     }
     if (path === 'dashboard') {
       // No Telegram owner: the live operator session approves in this request (dashboard-pin).
+      if (!sessionVerified) {
+        if (svc.devices.removeIfStillSettingUp(device.id)) svc.dropSetupSecrets(device.id);
+        held(403, 'operator-session-required', { detail: 'Unlock the dashboard with your PIN to set up this browser.' });
+        return;
+      }
       const r = svc.browser.activate(device.id, 'dashboard-pin', { ownRequest: true });
       if (r !== 'activated') {
         // Nothing was approved: the setup goes and its slot comes back (a record with an intent stays for recovery).
@@ -588,7 +637,10 @@ export function mountBrowserDeviceRoutes(
     }
     svc.browser.noteNotifying();
     const sent = await svc.sendBrowserApproval(device);
-    if (!sent) {
+    if (!sent && phoneApproves(svc, device)) {
+      // The Telegram copy did not go out, but the owner's iPhone can approve: keep the setup and say so.
+      featureEvidence.record(BROWSER_FEATURE, { kind: 'fired', reason: 'setup kept: phone approves, Telegram copy not delivered', context: { deviceId: device.id } });
+    } else if (!sent) {
       if (svc.devices.removeIfStillSettingUp(device.id)) svc.dropSetupSecrets(device.id);
       featureEvidence.record(BROWSER_FEATURE, { kind: 'error', reason: 'setup failed: approval message not delivered', context: { deviceId: device.id } });
       res.status(409).json({ error: 'approval-unavailable', detail: 'I could not send you the approval message in Telegram. Open a private chat with the bot and send it any message, then try again.' });
@@ -603,7 +655,7 @@ export function mountBrowserDeviceRoutes(
     }
     const now = svc.devices.get(device.id) ?? device;
     svc.notifyOwnerPhones(now);
-    res.status(201).json({ ...setupView(now, svc, host), codeFormat: 'word' });
+    res.status(201).json({ ...setupView(now, svc, host, !!sent), codeFormat: 'word' });
   });
 }
 

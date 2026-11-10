@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "conversation-pinned-messages",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T08:34:58.505Z",
+  "artifactPath": "upgrades/side-effects/conversation-pinned-messages.md",
+  "artifactSha256": "5fdf298fb3db21fd7408cbd386519409bd7becde95d0d5d958f139e875920c14",
+  "coveredFiles": [
+    "docs/specs/conversation-pinned-messages.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/AgentServer.ts",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/telegram-pins.test.ts",
+    "upgrades/side-effects/conversation-pinned-messages.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Rebase fix only: rename the message-pin adapter method that collided with main's chief-of-staff pinTopicMessage, and restore test braces lost in the rebase; no behavior change",
+  "eli16Path": "docs/specs/conversation-pinned-messages.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-pinned-messages.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

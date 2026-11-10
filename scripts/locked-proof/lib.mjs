@@ -18,12 +18,31 @@ export const PROOF_USER = 'instarproof';
 export const VAULT_KEY = 'locked_proof_user_password';
 export const WATCH_MS = 120_000;
 export const GRANT_CEILING_MS = 600_000;
+/** How far ahead of the expected Enter a before-enter step starts: about three characters. */
+export const BEFORE_ENTER_LEAD_MS = 170;
+/** Poll pace while a before-enter case waits for its duty to appear, so the aim starts early. */
+export const FAST_POLL_MS = 50;
+
+/**
+ * Why a run cannot start these cases with this calibration, or null. Before-enter steps aim from
+ * the duty's creation time, and deadline cases aim their typing at the grant's limit; without a
+ * calibration both silently test something else (15.4 "passed" typing at once, Mac open 600 s).
+ */
+export function calibrationProblem(cases, cal) {
+  const needsEnter = cases.filter(c => (c.inject ?? []).some(x => x.at === 'before-enter') && c.timing !== 'deadline').map(c => c.id);
+  const needsPace = cases.filter(c => c.timing === 'deadline').map(c => c.id);
+  if (!needsEnter.length && !needsPace.length) return null;
+  if (!cal) return `no calibration.json in the --out folder; run "calibrate" first (needed by ${[...needsEnter, ...needsPace].join(', ')})`;
+  if (needsEnter.length && typeof cal.createToEnterMs !== 'number') return `calibration.json predates createToEnterMs; run "calibrate" again (needed by ${needsEnter.join(', ')})`;
+  return null;
+}
 
 /**
  * `at` names when the injection fires:
  *   marker:<state>  the first time a marker is in that state
  *   after-create    a marker exists (any state)
- *   before-enter    all but the last characters posted (from the calibrated pace)
+ *   before-enter    a few characters before Enter: the duty's own createdAt plus the calibrated
+ *                   create-to-Enter time, less BEFORE_ENTER_LEAD_MS (aimed, not polled)
  *   after-enter     enterPendingAt written, plus 50 ms
  *   typing          the typist is running, mid-password
  *   sent            the viewer reported the password sent
@@ -158,12 +177,14 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
     await target.prepare(c);
     for (const step of c.before ?? []) evidence.fired.push({ action: step, at: 'before', t: target.now(), result: (await target.act(step, { case: c })) ?? null });
     const ctx = { sent: false, beforeEnterDue: undefined };
+    const aimsBeforeEnter = c.timing !== 'deadline' && pending.some(s => s.at === 'before-enter');
     const grant = await target.openGrant(c);
     evidence.grantOpenedAt = target.now();
     evidence.grantExpiresAt = grant?.expiresAt ?? null; // the server's own end time for the grant, when the page was told it
     if (c.password) {
-      const pace = target.calibration();
-      if (pace) ctx.beforeEnterDue = target.now() + pace.reserveMs + pace.perCharMs * Math.max(0, pace.length - 2);
+      // Deadline cases aim their typing at the grant's limit instead (driver typePassword); the step
+      // then fires as soon as the case starts waiting, as before.
+      if (c.timing === 'deadline') ctx.beforeEnterDue = target.now();
       void target.typePassword(c).then(
         r => { ctx.sent = r?.sent === true; evidence.secretResult = r ?? null; },
         err => { evidence.secretResult = { error: err instanceof Error ? err.message : String(err) }; });
@@ -171,13 +192,27 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
     let deadline = target.now() + (c.timeoutMs ?? WATCH_MS + GRANT_CEILING_MS / 4);
     let personCued = false;
     while (target.now() < deadline) {
-      const snap = await sample();
+      let snap = await sample();
+      if (aimsBeforeEnter && ctx.beforeEnterDue === undefined) {
+        // Aim from the duty itself: Enter follows its creation by a calibrated, steady time. Aiming
+        // from the grant opening (the old way) landed 15 to 890 ms AFTER Enter (fb-fcb17087-521).
+        const pace = target.calibration();
+        const duty = Object.values(snap.markers ?? {}).find(m => m.state === 'owed' && typeof m.createdAt === 'number' && m.createdAt >= evidence.grantOpenedAt - 1_000);
+        if (duty && typeof pace?.createToEnterMs === 'number') ctx.beforeEnterDue = duty.createdAt + pace.createToEnterMs - BEFORE_ENTER_LEAD_MS;
+      }
+      // Wait for the aim point itself rather than the next poll, which could be 250 ms late.
+      if (aimsBeforeEnter && ctx.beforeEnterDue !== undefined && pending.some(s => s.at === 'before-enter')
+          && snap.now < ctx.beforeEnterDue && ctx.beforeEnterDue - snap.now <= pollMs) {
+        await target.sleep(ctx.beforeEnterDue - snap.now);
+        snap = { ...snap, now: target.now() };
+      }
       for (const step of [...pending]) {
         if (!matchAt(step.at, snap, ctx)) continue;
         if (step.delayMs) await target.sleep(step.delayMs);
         pending.splice(pending.indexOf(step), 1);
+        const startedAt = target.now();
         const result = await target.act(step.action, { case: c, step, grant, snap });
-        evidence.fired.push({ action: step.action, at: step.at, t: target.now(), result: result ?? null });
+        evidence.fired.push({ action: step.action, at: step.at, startedAt, t: target.now(), result: result ?? null });
         log(`[${c.id}] ${step.action} (${step.at})`);
       }
       if (c.person && !personCued && pending.length === 0) {
@@ -192,7 +227,7 @@ export async function runCase(c, target, { pollMs = 250, log = () => {} } = {}) 
       if (personCued && c.person.mustUnlock && snap.lockState === 'unlocked') evidence.person.sawUnlock = true;
       const settled = pending.length === 0 && (!c.person || (evidence.person?.doneAt && (!c.person.mustUnlock || evidence.person.sawUnlock))) && target.settled(snap, c);
       if (settled) break;
-      await target.sleep(pollMs);
+      await target.sleep(aimsBeforeEnter && ctx.beforeEnterDue === undefined ? Math.min(pollMs, FAST_POLL_MS) : pollMs);
     }
     // Kept as evidence like any other step: what a follow-on step found is part of the result.
     for (const step of c.then ?? []) evidence.fired.push({ action: step, at: 'then', t: target.now(), result: (await target.act(step, { case: c })) ?? null });
@@ -246,10 +281,21 @@ export function measured(ev) {
       && Object.values(s.markers).every(m => TERMINAL.includes(m.state)));
     if (closed) out.relockAfterDropMs = closed.t - drop.t;
   }
+  // Which side of Enter each before-enter step landed on (negative = before Enter).
+  const enterAt = [...(ev.samples ?? []), ...(ev.final ? [ev.final] : [])]
+    .flatMap(s => Object.values(s.markers ?? {})).map(m => m.enterPendingAt).find(t => typeof t === 'number');
+  const aimed = ev.fired.find(f => f.at === 'before-enter');
+  if (aimed && typeof enterAt === 'number') {
+    out.enterAt = enterAt;
+    if (aimed.action === 'wait-deadline') { if (typeof ev.grantExpiresAt === 'number') out.limitMinusEnterMs = ev.grantExpiresAt - enterAt; }
+    else out.injectMinusEnterMs = (aimed.startedAt ?? aimed.t) - enterAt;
+  }
   const last = ev.samples[ev.samples.length - 1];
   if (last && typeof last.dirty === 'boolean') out.fieldDirtyAtEnd = last.dirty;
   return out;
 }
+
+const x0 = ev => ev.extra ?? {};
 
 /** Expected versus actual. Returns { pass, reasons[] }; a reason is a failed expectation. */
 export function judge(c, ev) {
@@ -272,6 +318,9 @@ export function judge(c, ev) {
   const refusedWord = ev.secretResult?.refused;
   const typingRefused = !!refusedWord && !['aborted', 'no-result-within-60s'].includes(refusedWord);
   if (landsOnTyping && !c.secretRefused && (!typed || typingRefused)) reasons.push(`the password was never typed${refusedWord ? ` (${refusedWord})` : ''}`);
+  // A before-enter case whose step started after Enter repeats its after-Enter twin: not a pass.
+  if (x0(ev).injectMinusEnterMs >= 0) reasons.push(`before-enter step landed ${x0(ev).injectMinusEnterMs} ms after Enter`);
+  if (x0(ev).limitMinusEnterMs >= 0) reasons.push(`grant limit arrived ${x0(ev).limitMinusEnterMs} ms after Enter`);
   if (c.person && !ev.person?.doneAt) reasons.push(`person step never completed: ${c.person.until ?? 'no result seen'}`);
   if (c.person?.mustUnlock && !ev.person?.sawUnlock) reasons.push('no unlock was seen after the person was asked');
   if (c.final === 'unlocked-accepted-risk' && lock !== 'unlocked') reasons.push(`Mac ended ${lock}, expected unlocked with the risk recorded`);

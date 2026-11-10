@@ -813,6 +813,10 @@ export function buildRequestTimeoutOverrides(opts?: {
     // gate and must not 408 mid-add either.
     '/subscription-pool/follow-me/enroll': followMe.enrollStartRouteMs,
     '/subscription-pool/matrix/start-cell': followMe.startCellRouteMs,
+    // The owner phone's Face ID entry to the same start-cell core (account-sign-in-face-id).
+    '/mobile/accounts/sign-in/start': followMe.startCellRouteMs,
+    // Adding an account drives a local enroll start (account-add-face-id).
+    '/mobile/accounts/add': followMe.enrollStartRouteMs,
     '/subscription-pool/follow-me/submit-code': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
     '/subscription-pool/follow-me/cancel': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
     // Threadline long waits (docs/specs/threadline-mcp-local-http.md "Bounds",

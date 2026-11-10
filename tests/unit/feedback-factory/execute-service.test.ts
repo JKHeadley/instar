@@ -780,6 +780,21 @@ describe('verification and publication', () => {
     expect(h.exec.actionItems().some((i) => /touched build tooling/.test(i.line))).toBe(true);
   });
 
+  it('offers no action items while the dashboard link would not open on a phone (tunnel starting)', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.fixWith({ 'package.json': '{"name":"fixture","scripts":{"postinstall":"evil"}}\n', 'tests/fix.test.ts': 'x' });
+    await h.exec.tick();
+    finishSessions(h);
+    await h.exec.tick();
+    const opts = (h.exec as any).opts;
+    const real = opts.dashboardLink;
+    opts.dashboardLink = () => null;
+    expect(h.exec.actionItems()).toEqual([]);
+    opts.dashboardLink = real;
+    expect(h.exec.actionItems().some((i) => /touched build tooling/.test(i.line))).toBe(true);
+  });
+
   it('holds an automated fix that supplies its own decision record before the publish clone is committed', async () => {
     h = await createExecHarness();
     const id = await h.workItem('c1');

@@ -705,6 +705,8 @@ export class SwapAntiThrashEngine {
     sourceWasUntagged?: boolean;
     dryRun?: boolean;
     sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
+    /** A busy deferral escalated at the wall-imminent threshold. */
+    wallEscalated?: boolean;
   }): void {
     const k = this.getKnobs();
     const row: SwapLedgerRow = {
@@ -723,6 +725,7 @@ export class SwapAntiThrashEngine {
       ...(args.defaultAccountChanged ? { defaultAccountChanged: true } : {}),
       ...(args.sourceWasUntagged ? { sourceWasUntagged: true } : {}),
       ...(args.sourceTrigger ? { sourceTrigger: args.sourceTrigger } : {}),
+      ...(args.wallEscalated ? { wallEscalated: true } : {}),
       ...(args.dryRun ? { dryRun: true } : {}),
     };
 

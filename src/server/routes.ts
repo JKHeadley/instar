@@ -1,4 +1,6 @@
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
+import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -31,8 +33,9 @@ import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack
 import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDisplay, originEvidenceFromProducer, validateDeviceOriginRow, validateMessageOriginEvidence, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging/telegram-origin/types.js';
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
-import { consolePageUrl } from './dashboardPaths.js';
+import { consolePageUrl, createOperatorLinkOriginResolver, originOrNull } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
+import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountUsageRoutes } from './usageRoutes.js';
@@ -236,10 +239,11 @@ import {
   validateSubscriptionReloginOperatorInput,
   writeSubscriptionReloginRestartRequest,
   subscriptionReloginFinishRestartDigest,
+  appendSubscriptionReloginIssueAudit,
 } from '../core/SubscriptionReloginOperatorConfig.js';
 import { evaluateConfigureRequest } from '../core/SubscriptionReloginRemoteConfigure.js';
 import { acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
-import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION } from '../coordination/AccountFollowMeMandateDelivery.js';
+import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
@@ -330,7 +334,7 @@ import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, reso
 import { PairingTopicStore } from '../threadline/PairingTopicStore.js';
 import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
-import { sharedLifelineIngressSecretHolder } from '../core/LifelineIngressSecret.js';
+import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
@@ -366,7 +370,7 @@ import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacemen
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
-import { decorateWithRopeCondition } from './poolRopeCondition.js';
+import { decorateWithRopeCondition, decorateWithReconnect } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runGradePassWithIdleProof } from '../core/JobGradePassIdleVerifier.js';
 import { buildDirectJobSupervisionQuality } from './directJobSupervisionQuality.js';
@@ -755,6 +759,7 @@ import type { CoherenceGate } from '../core/CoherenceGate.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
+import { foldKeyForConversation } from '../monitoring/FoldHoldStore.js';
 import { RelayRefusedError } from '../core/TelegramRelay.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
@@ -764,6 +769,8 @@ import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
 import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
+import { detectOperatorErrand } from '../core/operator-errand.js';
+import { buildAgentReach } from '../core/agent-reach.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
@@ -1279,6 +1286,10 @@ export interface RouteContext {
    *  construction in server.ts. It holds NO authority over ownership: it mirrors
    *  verdicts the reconciler and the ownership records own. */
   standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry | null;
+  /** context-budget-layered-summaries §10: the egress fold hold. Null ⇒ no fold can hold a topic. */
+  foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null;
+  /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel, or null when it is off. */
+  contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -1327,6 +1338,8 @@ export interface RouteContext {
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
   /** Deterministic test seam after plain enrollment completion owns its id. */
   enrollmentCompleteInFlightHook?: (id: string) => void | Promise<void>;
+  /** Test seam: shorten the post-submit completion watch (poll interval, bound, grace). */
+  followMeCompletionWatcherTiming?: { pollMs?: number; timeoutMs?: number; windowClosedGraceMs?: number };
   /** WS5.2 R12 — Account Follow-Me revocation data-plane executor. Constructed in the server with
    *  REAL deps (cooperative local wipe + durable pending store + attention emit). Null when the
    *  server wiring did not construct it (e.g. lightweight test harnesses). The `/mandate/:id/revoke`
@@ -1953,6 +1966,9 @@ export interface RouteContext {
     | null;
   /** AutonomousThroughputFloor status. Null while fleet-dark. */
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
+  chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
   enforcedTerminationStatus?: (() => unknown) | null;
@@ -4304,9 +4320,31 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   }
 
+  /**
+   * The egress fold hold (context-budget-layered-summaries §10): while a fold
+   * runs on a conversation, its handoff and probe turns are internal, so every
+   * session-authored send for that conversation is refused `fold-hold` (409,
+   * terminal: the relay does not queue a refused send; a send that got 000/5xx
+   * while the server was down IS queued — a tracked Phase 2 precondition). Keyed by the channel-neutral fold key, so it holds on
+   * Telegram, Slack, app, WhatsApp and iMessage alike. Independent of the
+   * stand-down muzzle; never dry-run. The store's verdict carries its own
+   * scoped fail direction (§10) and every refusal is audited there.
+   */
+  function foldHoldRefusal(channel: string, conversation: string | number | undefined | null): OutboundEvaluation | null {
+    if (!ctx.foldHolds || conversation === undefined || conversation === null) return null;
+    const key = foldKeyForConversation(channel, conversation);
+    if (!key) return null;
+    const v = ctx.foldHolds.check(key);
+    if (!v.held) return null;
+    return { ok: false, status: 409, reason: 'fold-hold', body: { error: 'fold-hold', foldId: v.foldId, retryable: false } };
+  }
+
   /** Existing local stand-down authority, shared across reply and prepared
    * transports. Unknown ownership still RELEASES exactly as before. */
   function authorizeTelegramSessionSend(topicId: number): OutboundEvaluation {
+    // The fold hold first: it runs BEFORE the relay fork (§10), on the owner.
+    const foldHeld = foldHoldRefusal('telegram', topicId);
+    if (foldHeld) return foldHeld;
     if (ctx.standDownRegistry) {
       try {
         const sdEntry = ctx.standDownRegistry.getByTopic(topicId);
@@ -4444,6 +4482,9 @@ export function createRoutes(ctx: RouteContext): Router {
       toneAdvisoryComplied?: string;
     },
   ): Promise<OutboundEvaluation> {
+    // ── Fold hold (context-budget-layered-summaries §10) — first, on every channel ──
+    const foldHeld = foldHoldRefusal(channel, channel === 'telegram' ? options.topicId : options.attributionConversation);
+    if (foldHeld) return foldHeld;
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
     // A clickable localhost/loopback link must never reach a user — the user
     // is almost never on the machine this server runs on. This is a
@@ -4582,6 +4623,26 @@ export function createRoutes(ctx: RouteContext): Router {
         if (ask.asking) signals.askWhenAuthorized = { asking: true, phrase: ask.phrase };
       } catch {
         // @silent-fallback-ok — detector errors never override the authority; skip the signal.
+      }
+      // Reach-aware B17 (Echo Bugs topic 10000002506): the operator-errand SIGNAL plus
+      // the AGENT REACH context (browser-profile accounts + what the agent's own key
+      // reads). Built only when an errand-shaped ask is present in a reply, so every
+      // other review is unchanged. Fail-OPEN: any error leaves both undefined and the
+      // gate runs exactly as before.
+      let agentReach: import('../core/agent-reach.js').AgentReach | undefined;
+      try {
+        if (kindForSignals === 'reply') {
+          const errand = detectOperatorErrand(text);
+          if (errand.errand) {
+            signals.operatorErrand = { errand: true, phrase: errand.phrase };
+            const registry =
+              ctx.playwrightRegistry?.() ??
+              new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
+            agentReach = buildAgentReach(registry);
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
       }
 
       // ── Standing-authorization CONTEXT for B17 (BIAS-TO-ACTION-SPEC D3/D4/D7/D8) ──
@@ -4868,6 +4929,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // Undefined in observe-only mode (the default) and on every uncertainty,
           // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
           standingAuthorization,
+          agentReach,
           // jev-signal-live: only callers with an acknowledge-and-override path
           // opt in (see the option's doc). Everyone else — and every non-route
           // caller of the gate — keeps the detector-only path.
@@ -6876,6 +6938,71 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(204).end();
   });
 
+  // context-budget-layered-summaries §9.1: the session-start hook could not
+  // read which lifecycle event fired (no `source` in its stdin JSON on a
+  // Claude Code session). The session got the startup orientation; this is
+  // the record that says so, never a silent "startup".
+  // One report per server process per hour: a Claude Code build that drops
+  // `source` would otherwise file one degradation (and, with the remediator
+  // off, one upstream feedback item) per session start across the fleet.
+  // The reason text is constant so any downstream dedupe sees one issue.
+  let sessionStartSourceUnknownLastReportAt = 0;
+  const reportSessionStartSourceUnknown = (): void => {
+    const now = Date.now();
+    if (now - sessionStartSourceUnknownLastReportAt < 60 * 60 * 1000) return;
+    sessionStartSourceUnknownLastReportAt = now;
+    DegradationReporter.getInstance().report({
+      feature: 'compaction-recovery-source',
+      primary: 'session-start hook reads the lifecycle event from Claude Code\'s stdin "source" field',
+      fallback: 'treated the event as a fresh startup (no compaction recovery)',
+      reason: 'session-start hook received no readable source field from Claude Code',
+      impact: 'if this start followed a compaction, the topic briefing and recent messages were not restored',
+    });
+  };
+
+  // context-budget-layered-summaries §9.1/§9.5: the PostCompact hook forwards
+  // Claude's compact_summary here. Mapped session → topic, scrubbed
+  // (scrubForStore + a live-value pass against the agent's own secrets) and
+  // stored under the topic's layer store. Observability only in Phase 0; a
+  // session with no topic (a job) records nothing.
+  router.post('/hooks/post-compact', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.hook_event_name !== 'PostCompact') {
+      res.status(400).json({ recorded: false, reason: 'not-post-compact' });
+      return;
+    }
+    const instarSessionId = String(req.get('X-Instar-Session-Id') ?? '');
+    const claudeSessionId = typeof body.session_id === 'string' ? body.session_id : '';
+    const session = instarSessionId ? ctx.sessionManager.getSessionById(instarSessionId) : undefined;
+    if (!session) {
+      res.status(200).json({ recorded: false, reason: 'unknown-session' });
+      return;
+    }
+    const tgTopic = ctx.telegram?.getTopicForSession?.(session.tmuxSession) ?? session.telegramTopicId ?? null;
+    const topicKey = tgTopic != null ? String(tgTopic) : session.slackChannelId ? `slack-${session.slackChannelId}` : null;
+    if (!topicKey) {
+      res.status(200).json({ recorded: false, reason: 'no-topic' });
+      return;
+    }
+    // §9.7 live-value pass: the auth token, the PIN, the lifeline ingress
+    // secret and every string in the secret store (shape patterns miss a
+    // `KEY=value` dump of a real value). Each source is best-effort.
+    const liveSecrets: string[] = [ctx.config.authToken, ctx.config.dashboardPin].filter((v): v is string => typeof v === 'string');
+    try { const l = readLifelineIngressSecret(ctx.config.stateDir); if (l) liveSecrets.push(l); } catch { /* @silent-fallback-ok — no lifeline secret on this machine */ }
+    try { collectStringLeaves(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), liveSecrets); } catch { /* @silent-fallback-ok — no readable secret store; shape scrub still runs */ }
+    const result = recordPostCompact(ctx.config.stateDir, {
+      topicKey,
+      instarSessionId,
+      claudeSessionId,
+      trigger: typeof body.trigger === 'string' ? body.trigger : 'unknown',
+      summary: typeof body.compact_summary === 'string' ? body.compact_summary : '',
+      receivedAt: Date.now(),
+    }, liveSecrets);
+    res.status(200).json(result.recorded
+      ? { recorded: true, topicKey, trigger: result.record.trigger, summaryChars: result.record.summaryChars, redactionKinds: result.record.redactionKinds }
+      : { recorded: false, reason: result.reason });
+  });
+
   router.post('/hooks/events', (req, res) => {
     if (!ctx.hookEventReceiver) {
       res.status(503).json({ error: 'HookEventReceiver not initialized' });
@@ -6885,6 +7012,8 @@ export function createRoutes(ctx: RouteContext): Router {
     // Stop-gate: capture SessionStart timestamp (PR0a). Idempotent —
     // first SessionStart for a session id wins. Read before storing the
     // event so a malformed payload doesn't break the gate.
+    if (req.body?.event === 'SessionStartSourceUnknown') { reportSessionStartSourceUnknown(); res.status(204).end(); return; }
+
     if (req.body?.event === 'SessionStart') {
       // A scoped session speaks only for itself: its own session id, never one the body
       // names (memory-privacy-agent-places §5; the evaluation fails open without it).
@@ -8157,8 +8286,15 @@ export function createRoutes(ctx: RouteContext): Router {
       const r = await withNotificationEnvelope(envelope, async () => (ctx.telegram)!.sendToTopic(topicId, text));
       return r.recorded ? r : { messageId: requireTelegramDelivery(r).messageId };
     },
-    dashboardLink: (topicId: string) =>
-      `http://localhost:${ctx.config.port}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}`,
+    // The phone must be able to open it: the tunnel's address when up, localhost only with no
+    // tunnel at all; while a configured tunnel is starting the link is left out (reply-to-ratify still works).
+    dashboardLink: (() => {
+      const resolveOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
+      return (topicId: string) => {
+        const origin = originOrNull(resolveOrigin());
+        return origin ? `${origin}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}` : null;
+      };
+    })(),
     recordMetric: (o) => scopeAccretionMetric(o, 'ratification'),
     log: (m) => console.warn(m),
   });
@@ -8304,6 +8440,10 @@ export function createRoutes(ctx: RouteContext): Router {
       baseRoots: deriveBaseRoots(workDir),
       maxDurationMs: ctx.config.autonomousSessions?.maxDurationMs ?? 172_800_000,
       initialStatus,
+      // Chief of Staff (docs/specs/chief-of-staff-topic.md §2.4/§4): a CoS-started run carries its
+      // intent key (recovery finds the receipt by key) and the no-respawn-when-lease-expired marker.
+      ...(body.cosNoRespawn === true ? { cosNoRespawn: true } : {}),
+      ...(typeof body.idempotencyKey === 'string' && body.idempotencyKey ? { idempotencyKey: body.idempotencyKey.slice(0, 300) } : {}),
     });
     if (!result.ok) {
       // One registration per active run (R43): refused + flagged.
@@ -8742,6 +8882,103 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousThroughputFloor.status());
+  });
+
+  // ── Chief of Staff (docs/specs/chief-of-staff-topic.md §5) ──
+  // Loop health first, then the lease, then bound projects. Owner-only: the owner principal is
+  // the bearer holder on this agent (team members reach the agent through conversations, not
+  // the API); the per-project route returns cited evidence, so titles never leave this surface.
+  // context-budget-layered-summaries §7.8/§9.1: the ContextBudgetSentinel's status —
+  // its heartbeat, quarantined and torn folds, and the standing compaction canary's
+  // state per machine/engine/version. Read-only; 503 when the sentinel is off.
+  router.get('/context-budget/sentinel', (_req, res) => {
+    if (!ctx.contextBudgetSentinel) {
+      res.status(503).json({ error: 'context-budget sentinel not enabled on this agent', enableWith: 'contextBudget.sentinel.enabled' });
+      return;
+    }
+    res.json(ctx.contextBudgetSentinel.status());
+  });
+  router.get('/chief-of-staff', (_req, res) => {
+    if (!ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
+      return;
+    }
+    const cosTopic = ctx.state.get<number>('chief-of-staff-topic');
+    res.json({
+      ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary(),
+      // §1.4 surfaces: the CoS conversation's key (null until the topic exists) and the owner's display name.
+      conversationKey: typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null,
+      displayName: String(ctx.liveConfig?.get<string | undefined>('chiefOfStaff.displayName', undefined) || 'Chief of Staff'),
+    });
+  });
+  // POST /chief-of-staff/check-in — the owner's dashboard check-in (§4: a dashboard tap in an
+  // owner-authenticated console session renews the lease). PIN-gated like every owner tap; the
+  // record is signed by this machine. Served only where the loop runs (the lease holder).
+  router.post('/chief-of-staff/check-in', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const r = ctx.chiefOfStaffLoop.checkIn({ renewedVia: 'console', principal: 'console:owner', eventRef: `console:${new Date().toISOString()}` });
+    if (!r.ok) { res.status(r.reason === 'no-signer' ? 503 : 409).json({ error: r.reason }); return; }
+    res.json({ ok: true, lease: r.lease });
+  });
+  // POST /chief-of-staff/triage — the one-time first-run triage list (spec: Migration and rollout):
+  // a private view over the active initiative records with keep / review / archive per record and the
+  // reason from the record's own facts. PIN-gated (owner tap); writes nothing but the view. Re-run with
+  // `force: true`; otherwise an existing list is returned.
+  router.post('/chief-of-staff/triage', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    if (!ctx.initiativeTracker || !ctx.viewer) { res.status(503).json({ error: !ctx.initiativeTracker ? 'initiative tracker not available' : 'private viewer not configured' }); return; }
+    const existing = ctx.state.get<string>('chief-of-staff-triage-view');
+    if (existing && (req.body ?? {}).force !== true && ctx.viewer.get(existing)) { res.json({ ok: true, id: existing, localUrl: `/view/${existing}`, existing: true }); return; }
+    const { buildTriage } = await import('../core/ChiefOfStaffTriage.js');
+    // "Active records" in the digest's sense: everything not completed / archived / abandoned — the paused and
+    // awaiting-user ones are exactly what the needs-you floor exists for.
+    const LIVE = new Set(['active', 'awaiting-user', 'paused', 'halted']);
+    const active = (ctx.initiativeTracker.list() as unknown as Array<Record<string, unknown>>).filter((i) => LIVE.has(String(i.status)));
+    const list = buildTriage(active.map((i) => ({ id: String(i.id), title: String(i.title ?? i.id), description: typeof i.description === 'string' ? i.description : undefined, status: String(i.status ?? 'active'), lastTouchedAt: String(i.lastTouchedAt ?? i.updatedAt ?? ''), needsUser: i.needsUser === true, needsUserReason: typeof i.needsUserReason === 'string' ? i.needsUserReason : undefined, blockers: Array.isArray(i.blockers) ? (i.blockers as string[]) : [], links: Array.isArray(i.links) ? (i.links as Array<{ url?: string }>) : [] })), new Date());
+    const view = ctx.viewer.create('Chief of Staff — first-run triage', list.markdown, undefined, { source: { type: 'chief-of-staff', id: 'triage' } });
+    if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
+    res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
+  });
+  // POST /chief-of-staff/projects — the owner binds a conversation as a project (spec §1.3: a binding is
+  // written ONLY by an owner tap; here the dashboard's PIN is that tap). Body: conversationKey, goal,
+  // doneDefinition[{id,kind,text,certify?}], checkCadenceHours?, linked{repos,branches,domains}?, initiativeId?,
+  // parentConversationKey? (default: under the Chief of Staff root). Validation is the store schema's.
+  router.post('/chief-of-staff/projects', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof b.conversationKey !== 'string' || typeof b.goal !== 'string' || !Array.isArray(b.doneDefinition)) { res.status(400).json({ error: 'conversationKey, goal and doneDefinition are required' }); return; }
+    const r = ctx.chiefOfStaffLoop.bindProject({
+      conversationKey: b.conversationKey, goal: b.goal, doneDefinition: b.doneDefinition as never,
+      ...(typeof b.checkCadenceHours === 'number' ? { checkCadenceHours: b.checkCadenceHours } : {}),
+      ...(b.linked && typeof b.linked === 'object' ? { linked: b.linked as never } : {}),
+      ...(typeof b.initiativeId === 'string' ? { initiativeId: b.initiativeId } : {}),
+      ...(b.parentConversationKey === null || typeof b.parentConversationKey === 'string' ? { parentConversationKey: b.parentConversationKey as string | null } : {}),
+    });
+    if (!r.ok) { res.status(r.reason === 'invalid-binding' ? 400 : 409).json({ error: r.reason }); return; }
+    res.status(201).json({ ok: true, conversationKey: r.conversationKey });
+  });
+  // POST /chief-of-staff/projects/:key/tap — the owner's Unpark / Confirm-done from the dashboard (PIN = the tap).
+  router.post('/chief-of-staff/projects/:key/tap', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const action = String((req.body ?? {}).action ?? '');
+    if (action !== 'unpark' && action !== 'confirm-done') { res.status(400).json({ error: 'action must be unpark or confirm-done' }); return; }
+    const key = String(req.params.key ?? '');
+    const r = await ctx.chiefOfStaffLoop.ownerTap(`cos:${action}:${key}`, 'owner-tap');
+    res.status(r === 'ok' ? 200 : 409).json({ ok: r === 'ok', result: r });
+  });
+  router.get('/chief-of-staff/projects/:key', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
+      return;
+    }
+    const key = String(req.params.key ?? '');
+    const detail = ctx.chiefOfStaffLoop.projectDetail(key);
+    if (!detail) { res.status(404).json({ error: 'no bound project with that conversation key' }); return; }
+    res.json(detail);
   });
 
   // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──
@@ -11771,7 +12008,15 @@ export function createRoutes(ctx: RouteContext): Router {
         isSelf: boolean;
         sessionCount: number;
         emptyState?: { kind: string; text: string; lastSeen: string | null };
+        /** CMT-1541: a peer that did not answer carries its /pool reachability fields. */
+        reach?: Record<string, unknown>;
       }> = [];
+      let poolRowsMemo: Array<Record<string, unknown>> | null = null;
+      const poolRows = (): Array<Record<string, unknown>> => {
+        if (poolRowsMemo) return poolRowsMemo;
+        try { poolRowsMemo = (poolView().machines as Array<Record<string, unknown>>) ?? []; } catch { poolRowsMemo = []; /* @silent-fallback-ok: no reach fields → the page says "not known" */ }
+        return poolRowsMemo;
+      };
       // Registry-wide roster: self + every known machine. listPoolMachines is
       // the /guards?scope=pool accounting boundary (every registered machine,
       // online or not). Absent (single-machine/dark) → roster is just self.
@@ -11807,6 +12052,7 @@ export function createRoutes(ctx: RouteContext): Router {
           );
           entry.emptyState = { kind: state.kind, text: state.text, lastSeen: state.lastSeen };
         }
+        if (!isSelf && peerFetchReason.get(machineId)) entry.reach = reachFieldsOf(poolRows().find((r) => r.machineId === machineId));
         machines.push(entry);
       }
 
@@ -12475,7 +12721,11 @@ export function createRoutes(ctx: RouteContext): Router {
       peers: () => ctx.resolvePeerUrls?.() ?? [],
       peerUrlAllowlist: () => (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
     }, req.query.scope === 'pool' ? 'pool' : 'local');
-    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true });
+    // The same one-line-per-setting summary the owner's phone shows, so the agent can answer "is something
+    // off that team access needs?". Read-only: turning a setting on stays the owner's phone tap. null when
+    // this agent has no team router (no app pairing).
+    const switches = ctx.mobilePairingService?.teamSwitchesSummary;
+    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true, teamSwitches: switches ? switches() : null });
   });
 
   // The owner's one-time repair (spec: "Owner recovery"). The token is the auth, the
@@ -15392,6 +15642,14 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!Array.isArray(b.authorities) || b.authorities.length === 0
       || b.authorities.some((a: any) => typeof a?.action !== 'string' || !a.action || typeof a?.bounds !== 'object' || a.bounds === null)) {
       res.status(400).json({ error: 'authorities must be a non-empty array of { action, bounds, requiresCondition? }' });
+      return;
+    }
+    // The repair-setting configure action and its operator-unlock author are reserved for
+    // POST /subscription-relogin/configure-pool, which issues them only after verifying a recent
+    // dashboard PIN unlock (spec one-tap-unattended-repair, Amendment 2026-11-10).
+    if (b.authorities.some((a: any) => a.action === SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION)
+      || b.author === SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR) {
+      res.status(400).json({ error: 'the repair-setting configure permission is issued only by the Accounts page' });
       return;
     }
     if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
@@ -21239,10 +21497,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const reader = unread.resolveReader({ person: ctx.mobilePairingService ? devicePersonOf(req) : null, viaDevice: true });
       return reader ? { readUpTo: unread.readUpTo(reader, `telegram:${topicId}`) } : {};
     };
+    // Pinned messages (conversation-pinned-messages): the agent-wide pin list rides on every answer.
+    const pinsField = (): Record<string, unknown> => (ctx.appConversations && isConversationPinsEnabled(ctx.config) ? { pins: pinRowsFor(ctx.appConversations.store, `telegram:${topicId}`) } : {});
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, ...readUpToField() });
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, ...readUpToField(), ...pinsField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -21301,7 +21561,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField() });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -24383,6 +24643,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const membership=Object.fromEntries((ctx.coordinator?.managers?.identityManager?.getActiveMachines()??[]).map(row=>[row.machineId,Date.parse(row.entry.pairedAt)]));
     return recoveryPoolHealth(ctx.meshSelfId??null,(ctx.listPoolMachines?.()??[]).map(p=>p.machineId),Date.now(),membership);
   }
+  /** The /pool fields that say how long a machine has been out of reach and whether anything is fixing it (CMT-1541). */
+  function reachFieldsOf(row: Record<string, unknown> | undefined): Record<string, unknown> {
+    if (!row) return {};
+    const out: Record<string, unknown> = {};
+    for (const k of ['liveness', 'ropeCondition', 'ropeAllDownSince', 'reconnect']) if (row[k] !== undefined) out[k] = row[k];
+    return out;
+  }
   function poolView(): Record<string, unknown> {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     // Rope-condition decoration: the registry's `online` flag feeds placement and
@@ -24391,10 +24658,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // evaluation. Attach the live classification so reachability renders
     // honestly without touching placement semantics. Monitor dark → absent.
     const nickOf = (id: string): string => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine';
-    const machines = decorateWithRopeCondition(
+    // CMT-1541: whether this machine is re-dialing a peer it cannot reach (prober dark → absent).
+    const machines = decorateWithReconnect(decorateWithRopeCondition(
       ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
       ctx.ropeHealthMonitor?.status().peers,
-    ).map((m) => ({
+    ), sync?.ropeHealth).map((m) => ({
       ...m,
       // trustworthy-machine-load A5: the one wording template, rendered server-side
       // so every consumer (dashboard, digests, peers) says the same honest thing.
@@ -29398,6 +29666,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (forwardedTopicName && !trust && ingressDecision.senderTrusted && Number.isSafeInteger(Number(topicId))) {
       ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true);
     }
+    // A pin made in Telegram, read by the lifeline (conversation-pinned-messages). Only a lifeline-proven
+    // sender; the adapter checks the person who pinned is authorized here.
+    if (topicId && !text && req.body?.pinOnly === true) {
+      const handed = !trust && ingressDecision.senderTrusted
+        ? ctx.telegram?.handleForwardedPin?.({ topicId: Number(topicId), messageId: Number(req.body.pinnedMessageId), serviceMessageId: Number(req.body.pinServiceMessageId), fromUserId: Number(req.body.fromUserId), byName: typeof req.body.fromFirstName === 'string' ? req.body.fromFirstName : '' }) ?? false
+        : false;
+      res.json({ ok: true, pinOnly: true, recorded: handed });
+      return;
+    }
     if (topicId && !text && forwardedTopicName && req.body?.nameOnly === true) {
       res.json({ ok: true, nameOnly: true });
       return;
@@ -30343,6 +30620,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // Chief of Staff taps (docs/specs/chief-of-staff-topic.md §6): like the pairing buttons, a forwarded
+    // `cos:` tap is honoured only with the lifeline proof — a Bearer holder must not be able to forge an owner tap.
+    if (typeof data === 'string' && data.startsWith('cos:') && !callbackDecision.verified) {
+      claimStore.markFailed(callbackQueryId);
+      res.status(403).json({ ok: false, error: 'chief-of-staff tap without lifeline proof' });
+      return;
+    }
     try {
       // Reconstruct a callback query object and process it through TelegramAdapter
       const query = {
@@ -38367,42 +38651,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const state = subscriptionPoolAvailability()?.state;
     return state === 'ready' || state === 'unconfigured';
   };
-  const enforceSubscriptionPoolWriteCapability = (route: string) =>
-    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+  /**
+   * The subscription-pool write barrier for one classified route, as an answer or null (go ahead).
+   * Shared by the route middleware below and the owner phone's Face ID sign-in
+   * (POST /mobile/accounts/sign-in/start runs start-cell's barrier, account-sign-in-face-id).
+   */
+  const subscriptionPoolWriteRefusal = (route: string): { status: number; body: Record<string, unknown> } | null => {
     const capability = SUBSCRIPTION_POOL_WRITE_CAPABILITIES[route];
-    if (!capability) {
-      res.status(500).json({ error: 'Subscription identity mutation route is not classified.' });
-      return;
-    }
-    if (ctx.subscriptionPool && !subscriptionPoolReadable()) {
-      res.status(503).json(subscriptionPoolFailureBody());
-      return;
-    }
+    if (!capability) return { status: 500, body: { error: 'Subscription identity mutation route is not classified.' } };
+    if (ctx.subscriptionPool && !subscriptionPoolReadable()) return { status: 503, body: subscriptionPoolFailureBody() as Record<string, unknown> };
     if (subscriptionPoolAvailability()?.maintenance === 'rollback-cleanup-pending') {
-      res.status(409).json({
+      return { status: 409, body: {
         error: 'subscription-pool-cleanup-pending',
         priorCommitMayHaveSucceeded: true,
         recovery: 're-read-and-restart',
-      });
-      return;
+      } };
     }
     if (
       subscriptionPoolAvailability()?.state === 'unconfigured' &&
       (route === 'PATCH /subscription-pool/:id' || route === 'DELETE /subscription-pool/:id')
     ) {
-      res.status(503).json(subscriptionPoolFailureBody());
-      return;
+      return { status: 503, body: subscriptionPoolFailureBody() as Record<string, unknown> };
     }
-    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) {
-      next();
-      return;
-    }
-    res.status(503).json({
+    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) return null;
+    return { status: 503, body: {
       error: 'Account identity reconciliation is still starting. Try again shortly.',
       code: 'subscription-account-email-reconciliation-running',
       retryable: true,
       emailReconciliation: { state: 'running' },
-    });
+    } };
+  };
+  const enforceSubscriptionPoolWriteCapability = (route: string) =>
+    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+    const refusal = subscriptionPoolWriteRefusal(route);
+    if (refusal) {
+      res.status(refusal.status).json(refusal.body);
+      return;
+    }
+    next();
   };
   const subscriptionEmailGaps = () =>
     (ctx.subscriptionPool && subscriptionPoolReadable() &&
@@ -38723,7 +39009,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    *  mandate from another machine). Synchronous from the on-disk read to the write, so no other
    *  write through this process can interleave (§3 steps 2–6). */
   const applyConfigureHere = (args: { action: 'configure' | 'finish-restart'; rawConfig?: unknown; expectedRevision: string;
-    remote: boolean; provenance: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigProvenance;
+    remote: boolean; operatorUnlockCarried?: boolean;
+    provenance: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigProvenance;
     consume?: () => boolean }): { status: number; body: Record<string, unknown> } => {
     let current: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigView;
     try { current = describeSubscriptionReloginConfig(readOnDiskSubscriptionReloginBlock(ctx.config.stateDir)); }
@@ -38737,7 +39024,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { status: 202, body: { ok: true, changed: false, restartRequested: true, revision: current.revision } };
     }
     const evaluation = evaluateConfigureRequest({ current, rawConfig: args.rawConfig, expectedRevision: args.expectedRevision,
-      verifiedPoolEmails: reloginVerifiedPoolEmails(), remote: args.remote });
+      verifiedPoolEmails: reloginVerifiedPoolEmails(), remote: args.remote, operatorUnlockCarried: args.operatorUnlockCarried });
     if (!evaluation.ok) return { status: evaluation.status, body: { error: evaluation.error, ...(evaluation.detail ? { detail: evaluation.detail } : {}) } };
     if (args.consume && !args.consume()) return { status: 403, body: { error: 'not-authorized' } };
     if (evaluation.alreadyApplied) {
@@ -38786,6 +39073,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
     const peers = new Map((ctx.resolvePeerUrls?.() ?? []).map((p) => [p.machineId, p]));
     const results: ConfigureTargetResult[] = [];
+    const issuedMandates = new Map<string, string>();
     const startedAt = Date.now();
     const PEER_DEADLINE_MS = 75_000;
 
@@ -38811,11 +39099,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const mandate = ctx.coordination.store.issue({
           scope: 'subscription-relogin',
           agents: [resolveAgentFingerprint(ctx), resolveAgentFingerprint(ctx)],
-          authorities: [{ action: SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, bounds: { targetMachineId: machineId, configDigest } }],
+          // operatorUnlock: this route only runs after verifying a recent dashboard PIN unlock; the
+          // claim rides in the signed bounds and is the authority the target needs to RAISE a
+          // machine to "without asking" (operator rule 2026-11-10: any dashboard, any machine).
+          authorities: [{ action: SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION,
+            bounds: { targetMachineId: machineId, configDigest, operatorUnlock: SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } }],
           // The mandate records what was verified (a recent dashboard PIN unlock), never a guessed name.
-          author: 'dashboard-pin-operator', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+          author: SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
         });
         mandateId = mandate.id;
+        issuedMandates.set(machineId, mandate.id);
         const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable: ctx.packageMandateForDelivery(mandate) });
         if (!outcome.ok) {
           const reason = outcome.reason ?? '';
@@ -38858,6 +39151,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     for (const machineId of pending) results.push({ machineId, ok: false, error: 'outcome-unknown' });
     pending.clear();
     queue.length = 0;
+    // The fronting machine's half of the audit: every peer target this unlocked tap addressed.
+    for (const r of results) {
+      appendSubscriptionReloginIssueAudit(ctx.config.stateDir, { targetMachineId: r.machineId, action, mode,
+        mandateId: issuedMandates.get(r.machineId), ok: r.ok, error: r.error });
+    }
 
     // This machine last (its own restart can then never cut off the fan-out or the response).
     const selfTarget = targets.find((t) => t.machineId === selfId);
@@ -38901,7 +39199,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (digest !== bounds.configDigest) { res.status(403).json({ error: 'config-mismatch' }); return; }
     const result = applyConfigureHere({ action, rawConfig: body.config, expectedRevision, remote: true,
-      provenance: { via: 'mandate', mandateId, deliveredBy: record.deliveredBy },
+      operatorUnlockCarried: bounds.operatorUnlockCarried,
+      provenance: { via: 'mandate', mandateId, deliveredBy: record.deliveredBy,
+        ...(bounds.operatorUnlockCarried ? { operatorUnlock: SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } : {}) },
       consume: () => !!store.consume(mandateId) });
     res.status(result.status).json(result.body);
   });
@@ -39855,9 +40155,18 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     mountMobilePermissionsRoutes(router, {
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
-      teamAction: async (kind, req, deviceId) => {
+      // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
+      // Add a Claude or Codex account and start its sign-in here (account-add-face-id).
+      addAccount: (input) => runAddAccountSignIn(input),
+      // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
+      startAccountSignIn: async (accountId, machineId, req) => {
+        const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool/matrix/start-cell');
+        if (refusal) return refusal;
+        return runMatrixStartCell(accountId, machineId, req.app?.locals?.stateDir);
+      },
+      teamAction: async (kind, req, deviceId, target) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
-        return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
+        return run ? await run(kind, req, deviceId, target) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
       },
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {
@@ -40322,10 +40631,70 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         agents: [localFp, localFp] as [string, string],
       }));
       res.json({ enabled: true, offered: enriched });
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — not silent: answered as a 500 with the qualified error
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'follow-me scan failed' });
     }
   });
+
+  /**
+   * D5 single-attempt discipline for one account slot on THIS machine: a live attempt is handed back
+   * (alive or unverifiable fails toward reuse); a dead-pane attempt is abandoned so a fresh drive can
+   * replace record and pane together. Shared by follow-me enroll/start and the phone's add-account route.
+   */
+  function reuseOrSupersedeLiveAttempt(accountId: string): import('../core/PendingLoginStore.js').PendingLogin | null {
+    const wizard = ctx.enrollmentWizard;
+    if (!wizard) return null;
+    const inFlight = wizard.pending().find((l) => l.id === accountId);
+    if (!inFlight) return null;
+    if (enrollPaneAlive(inFlight) !== false) {
+      console.log(`[follow-me] enroll-start id=${accountId} outcome=reused-live-attempt`);
+      return inFlight;
+    }
+    wizard.abandon(inFlight.id);
+    console.log(`[follow-me] enroll-start id=${accountId} outcome=superseded-dead-pane`);
+    return null;
+  }
+
+  /**
+   * Drive a follow-me login for a resolved account on THIS machine: allocate its own login folder
+   * and start the wizard with the operator-approved email (S7), remote-aware. The caller holds the
+   * authorization (a mandate for enroll/start; the owner's Face ID for the phone's add-account route)
+   * and resolves the target. Throws EnrollmentDriveError on a drive failure (no pending login written).
+   */
+  async function driveFollowMeLogin(
+    target: { accountId: string; label: string; provider: string; framework: string; expectedEmail: string },
+    remoteScrapeTimeoutMsCfg: number | undefined,
+  ): Promise<import('../core/PendingLoginStore.js').PendingLogin> {
+    const accountId = target.accountId;
+    const { followMeConfigHomePrefix } = await import('../core/resolveFollowMeEnrollTarget.js');
+    // Allocate this account's own config-home slot on THIS machine (one home per credential).
+    // The prefix follows the account's FRAMEWORK: each CLI reads its own home (`~/.codex` for
+    // codex-cli, `~/.claude` for claude-code), so a codex credential written under a
+    // `.claude-followme-*` home is invisible to the CLI that needs it.
+    const safeAccountId = accountId.replace(/[^a-z0-9-]/gi, '-');
+    const configHome = path.join(os.homedir(), `${followMeConfigHomePrefix(target.framework)}${safeAccountId}`);
+
+    // WS5.2 R6b — this IS the remote/cloud (follow-me) enrollment path, so use the
+    // remote-aware kind selection (device-code single-code flow where supported) and
+    // thread the LARGER scrape-timeout budget (cloud→provider latency + the two-code
+    // window). The budget comes from the config knob (default 180000); omitted ⇒ the
+    // driver's local-LAN default.
+    const remoteScrapeTimeoutMs =
+      typeof remoteScrapeTimeoutMsCfg === 'number' && Number.isFinite(remoteScrapeTimeoutMsCfg)
+        ? remoteScrapeTimeoutMsCfg
+        : undefined;
+
+    return ctx.enrollmentWizard!.start({
+      id: accountId,
+      label: target.label,
+      provider: target.provider as import('../core/PendingLoginStore.js').LoginProvider,
+      framework: target.framework as import('../core/PendingLoginStore.js').PendingLogin['framework'],
+      configHome,
+      expectedEmail: target.expectedEmail,
+      remote: true,
+      remoteScrapeTimeoutMs,
+    });
+  }
 
   // WS5.2 §5.3 (R6/R6a) — Account Follow-Me: DRIVE THE ENROLLMENT START on THIS target machine.
   // After the operator issues the `account-follow-me` mandate (PIN-gated, on this machine's own
@@ -40411,18 +40780,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // abandoned here, then a fresh drive replaces record AND pane together. Without this,
       // wizard.start() would drive a NEW pane first and then hit the store's duplicate-pending
       // refusal, stranding a record that points at the OLD attempt.
-      const inFlight = ctx.enrollmentWizard.pending().find((l) => l.id === accountId);
-      if (inFlight) {
-        if (enrollPaneAlive(inFlight) !== false) {
-          // Alive or unverifiable → fail toward REUSE (never kill a possibly-healthy attempt).
-          console.log(`[follow-me] enroll-start id=${accountId} outcome=reused-live-attempt`);
-          res.status(201).json({ enabled: true, login: publicPendingLogin(inFlight), reused: true });
-          return;
-        }
-        ctx.enrollmentWizard.abandon(inFlight.id);
-        console.log(`[follow-me] enroll-start id=${accountId} outcome=superseded-dead-pane`);
+      const live = reuseOrSupersedeLiveAttempt(accountId);
+      if (live) {
+        res.status(201).json({ enabled: true, login: publicPendingLogin(live), reused: true });
+        return;
       }
-      const { resolveFollowMeEnrollTarget, followMeConfigHomePrefix } = await import('../core/resolveFollowMeEnrollTarget.js');
+      const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
       const localAccounts = ctx.subscriptionPool.list().map((a) => ({
         id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
       }));
@@ -40434,33 +40797,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
 
-      // Allocate this account's own config-home slot on THIS machine (one home per credential).
-      // The prefix follows the account's FRAMEWORK: each CLI reads its own home (`~/.codex` for
-      // codex-cli, `~/.claude` for claude-code), so a codex credential written under a
-      // `.claude-followme-*` home is invisible to the CLI that needs it.
-      const safeAccountId = accountId.replace(/[^a-z0-9-]/gi, '-');
-      const configHome = path.join(os.homedir(), `${followMeConfigHomePrefix(target.framework)}${safeAccountId}`);
-
-      // WS5.2 R6b — this IS the remote/cloud (follow-me) enrollment path, so use the
-      // remote-aware kind selection (device-code single-code flow where supported) and
-      // thread the LARGER scrape-timeout budget (cloud→provider latency + the two-code
-      // window). The budget comes from the config knob (default 180000); omitted ⇒ the
-      // driver's local-LAN default.
-      const remoteScrapeTimeoutMs =
-        typeof afmCfg?.remoteScrapeTimeoutMs === 'number' && Number.isFinite(afmCfg.remoteScrapeTimeoutMs)
-          ? afmCfg.remoteScrapeTimeoutMs
-          : undefined;
-
-      const login = await ctx.enrollmentWizard.start({
-        id: accountId,
-        label: target.label,
-        provider: target.provider as import('../core/PendingLoginStore.js').LoginProvider,
-        framework: target.framework as import('../core/PendingLoginStore.js').PendingLogin['framework'],
-        configHome,
-        expectedEmail: target.expectedEmail,
-        remote: true,
-        remoteScrapeTimeoutMs,
-      });
+      const login = await driveFollowMeLogin({
+        accountId, label: target.label, provider: target.provider, framework: target.framework, expectedEmail: target.expectedEmail,
+      }, afmCfg?.remoteScrapeTimeoutMs);
       res.status(201).json({ enabled: true, login: publicPendingLogin(login) });
     } catch (err) {
       // WS5.2 R6b — a DRIVE failure is honest + retry-able (502), NOT an opaque 500.
@@ -40483,6 +40822,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // scoped so a concurrent double-tap can't interleave two codes into the same login pane.
   const followMeSubmitInFlight = new Set<string>();
   const plainCompleteInFlight = new Set<string>();
+
+  // After a delivered code, the server — not a five-minute background tick and not a
+  // hand-run complete — drives the sign-in to a terminal state the page can poll
+  // (operator report 2026-11-10, topic 33890: "code sent; finishing sign-in" sat forever
+  // while the login had in fact finished). Machine-local: the pane and slot live here;
+  // the fronting dashboard reads it through GET /subscription-pool/follow-me/completion.
+  let followMeCompletionWatcher: FollowMeCompletionWatcher | null = null;
+  const getFollowMeCompletionWatcher = (): FollowMeCompletionWatcher | null => {
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) return null;
+    followMeCompletionWatcher ??= new FollowMeCompletionWatcher({
+      wizard: ctx.enrollmentWizard,
+      paneAlive: (id) => {
+        const login = ctx.enrollmentWizard?.getById(id);
+        return login ? enrollPaneAlive(login) : null;
+      },
+      onValidated: (login, email) => { upsertValidatedAccount(login, email); },
+      afterValidated: (login) => reverifyCompletedEnrollment(login),
+      targetMachineNickname: 'this machine',
+      ...(ctx.followMeCompletionWatcherTiming ?? {}),
+      logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+    });
+    return followMeCompletionWatcher;
+  };
+  /** The completion state for one login: the live watch, else what the durable record says. */
+  const followMeCompletionState = (id: string): FollowMeCompletionSnapshot | { id: string; state: 'waiting-for-code' | 'unknown'; message: string } => {
+    const watched = followMeCompletionWatcher?.get(id);
+    if (watched) return watched;
+    const login = ctx.enrollmentWizard?.getById(id);
+    if (login?.status === 'completed') {
+      const email = ctx.subscriptionPool?.get(id)?.email;
+      return { id, state: 'done', startedAt: login.updatedAt, deadlineAt: login.updatedAt, finishedAt: login.updatedAt,
+        ...(email ? { email } : {}), message: email ? `Signed in as ${email}.` : 'Signed in.' };
+    }
+    if (login?.status === 'abandoned') {
+      return { id, state: 'failed', startedAt: login.updatedAt, deadlineAt: login.updatedAt, finishedAt: login.updatedAt,
+        reason: 'cancelled', message: 'This sign-in was cancelled.' };
+    }
+    if (login) return { id, state: 'waiting-for-code', message: 'Waiting for the sign-in code.' };
+    return { id, state: 'unknown', message: 'This sign-in is not known on this machine.' };
+  };
 
   /** Shared lifecycle core; route-specific gates and in-flight locks stay at call sites. */
   const cancelEnrollment = (
@@ -40676,7 +41055,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (outcome === 'pending') {
       logOutcome('submitted');
-      res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in' });
+      const watcher = getFollowMeCompletionWatcher();
+      const completion = watcher ? watcher.watch(id) : null;
+      res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in', ...(completion ? { completion } : {}) });
       return;
     }
     const result = await ctx.enrollmentWizard.completeFollowMe(id, 'this machine');
@@ -40697,6 +41078,61 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell' });
     } finally {
       followMeSubmitInFlight.delete(id);
+    }
+  });
+
+  // TARGET-LOCAL completion read for a submitted follow-me code: finishing → done | failed.
+  router.get('/subscription-pool/follow-me/enroll/:id/completion', (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.enrollmentWizard) {
+      res.status(503).json({ error: 'enrollment wizard not configured' });
+      return;
+    }
+    res.json({ enabled: true, completion: followMeCompletionState(req.params.id) });
+  });
+
+  // FRONTING RELAY for the completion read: the operator's single dashboard polls this; it
+  // reads the machine doing the login (self → local; peer → that peer's local route).
+  router.get('/subscription-pool/follow-me/completion', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    const id = typeof req.query.id === 'string' ? req.query.id : '';
+    const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    const selfId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    if (!machineId || machineId === selfId) {
+      if (!ctx.enrollmentWizard) {
+        res.status(503).json({ error: 'enrollment wizard not configured' });
+        return;
+      }
+      res.json({ enabled: true, completion: followMeCompletionState(id) });
+      return;
+    }
+    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+    if (!peer) {
+      res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment` });
+      return;
+    }
+    try {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/completion`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+        signal: AbortSignal.timeout(FOLLOWME_SIMPLE_RELAY_FETCH_MS),
+      });
+      const body = await r.json().catch(() => ({}));
+      res.status(r.status).json(body);
+    } catch {
+      // @silent-fallback-ok — a dark peer is a classified 502 the page shows and retries.
+      res.status(502).json({ error: 'could not reach the machine doing the login — still checking' });
     }
   });
 
@@ -40816,33 +41252,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // new authority — it just drives the existing chain in one call so the frontend never handles
   // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
   // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
-  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
+  //
+  // The core after the presence check lives in runMatrixStartCell so the owner phone's Face ID route
+  // (POST /mobile/accounts/sign-in/start, docs/specs/account-sign-in-face-id.md) runs exactly the same
+  // chain and answers exactly the same body. Only the presence proof differs; nothing here is duplicated.
+  type MatrixStartCellResult = { status: number; body: Record<string, unknown> };
+  type MatrixStartCellReady =
+    | { ok: false; result: MatrixStartCellResult }
+    | { ok: true; afmCfg: { enabled?: boolean; remoteScrapeTimeoutMs?: number } | undefined; coordination: NonNullable<typeof ctx.coordination>; enrollmentWizard: NonNullable<typeof ctx.enrollmentWizard>; subscriptionPool: NonNullable<typeof ctx.subscriptionPool> };
+  /** start-cell's preconditions (feature on, mandate engine, wizard and pool present), read live. */
+  function matrixStartCellReady(): MatrixStartCellReady {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
-    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
-      res.status(503).json({ error: 'account follow-me not enabled' });
-      return;
-    }
-    if (!ctx.coordination) {
-      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
-      return;
-    }
-    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) {
-      res.status(503).json({ error: 'enrollment wizard or subscription pool not configured' });
-      return;
-    }
-    const b = req.body ?? {};
-    if (typeof b.accountId !== 'string' || !b.accountId.trim() || typeof b.machineId !== 'string' || !b.machineId.trim()) {
-      res.status(400).json({ error: 'accountId and machineId are required' });
-      return;
-    }
-    // THE LOAD-BEARING GATE (FD4): the dashboard PIN proves operator presence. checkMandatePin
-    // is the EXACT mechanism /mandate/issue-for-machine uses; a missing/invalid PIN sends its own
-    // 401/403/429 response — never start an enrollment without it. The agent shares the Bearer, so
-    // Bearer-only would let any agent session start a cross-machine account login with no operator.
-    if (!checkMandatePin(req, res)) return;
-
-    const accountId = b.accountId.trim();
-    const machineId = b.machineId.trim();
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) return { ok: false, result: { status: 503, body: { error: 'account follow-me not enabled' } } };
+    if (!ctx.coordination) return { ok: false, result: { status: 503, body: { error: 'coordination mandate engine unavailable (no stateDir or init failed)' } } };
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) return { ok: false, result: { status: 503, body: { error: 'enrollment wizard or subscription pool not configured' } } };
+    return { ok: true, afmCfg, coordination: ctx.coordination, enrollmentWizard: ctx.enrollmentWizard, subscriptionPool: ctx.subscriptionPool };
+  }
+  /**
+   * start-cell after its presence check: reuse a live pending login for this pair (self), else issue the
+   * per-(account, machine) mandate and drive the existing mandate-gated enroll/start. The CALLER must
+   * have proven operator presence (dashboard PIN, or the owner phone's Face ID signature over
+   * `account-sign-in <accountId>@<machineId>`); this function adds no authority of its own.
+   */
+  async function runMatrixStartCell(accountId: string, machineId: string, stateDir: string | undefined): Promise<MatrixStartCellResult> {
+    const ready = matrixStartCellReady();
+    if (!ready.ok) return ready.result;
+    const afmCfg = ready.afmCfg;
     const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
     const isSelf = machineId === selfMachineId;
     const localFp = resolveAgentFingerprint(ctx);
@@ -40854,18 +41289,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (isSelf) {
       try {
         const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
-        const localAccounts = ctx.subscriptionPool.list().map((a) => ({
+        const localAccounts = ready.subscriptionPool.list().map((a) => ({
           id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
         }));
         const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
         const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
         if (!target.resolved) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=${target.code}`);
-          res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
-            .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
-          return;
+          return { status: target.code === 'subscription-account-not-found' ? 404 : 409, body: { error: target.reason, code: target.code, accountId, repairRequired: true } };
         }
-        const existing = ctx.enrollmentWizard.pending().find(
+        const existing = ready.enrollmentWizard.pending().find(
           (l) => l.id === accountId && l.status === 'pending'
             && Date.parse(l.ttlExpiresAt) > Date.now()
             && (!l.expectedEmail || l.expectedEmail === target.expectedEmail)
@@ -40882,27 +41315,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
           // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
           // never secrets (same fields the pending-logins surface already serves).
-          res.status(201).json({
+          return { status: 201, body: {
             verificationUrl: existing.verificationUrl, loginId: existing.id, machineId, reused: true,
             expectedEmail: existing.expectedEmail ?? null, ttlExpiresAt: existing.ttlExpiresAt,
             notice: existing.notice ?? null, kind: existing.kind,
-          });
-          return;
+          } };
         }
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix start-cell pre-check failed' });
-        return;
+        return { status: 500, body: { error: err instanceof Error ? operatorError(err, stateDir) : 'matrix start-cell pre-check failed' } };
       }
     }
 
     // Issue the per-(account, targetMachine) account-follow-me mandate — EXACTLY the bounds
-    // /mandate/issue-for-machine writes (R1 exact-bounds, re-mint), PIN already verified above.
+    // /mandate/issue-for-machine writes (R1 exact-bounds, re-mint). Operator presence was already
+    // proven by the caller: the dashboard PIN (start-cell) or a Face ID presence signature
+    // (POST /mobile/accounts/sign-in/start, account-sign-in-face-id).
     // The agents pair is this Echo identity's routing fingerprint (issuer === target identity:
     // the agent following its own account onto another machine), as the scan card does.
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     let mandateId: string;
     try {
-      const mandate = ctx.coordination.store.issue({
+      const mandate = ready.coordination.store.issue({
         scope: 'account-follow-me',
         agents: [localFp, localFp],
         authorities: [
@@ -40917,20 +41350,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // that enrolled adriana); the peer's enroll/start re-verifies the issuance signature.
       if (!isSelf) {
         if (!ctx.packageMandateForDelivery || !ctx.deliverMandateToMachine) {
-          res.status(503).json({ error: 'cross-machine mandate delivery unavailable (no mesh identity)' });
-          return;
+          return { status: 503, body: { error: 'cross-machine mandate delivery unavailable (no mesh identity)' } };
         }
         const portable = ctx.packageMandateForDelivery(mandate);
         const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable });
         if (!outcome.ok) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=deliver-failed`);
-          res.status(502).json({ error: 'could not deliver authorization to the target machine — try again in a moment', retryable: true });
-          return;
+          return { status: 502, body: { error: 'could not deliver authorization to the target machine — try again in a moment', retryable: true } };
         }
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix mandate issuance failed' });
-      return;
+      return { status: 500, body: { error: err instanceof Error ? operatorError(err, stateDir) : 'matrix mandate issuance failed' } };
     }
 
     // Drive the EXISTING mandate-gated enroll/start (no reimplementation of email resolution /
@@ -40943,8 +41373,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
       if (!peer) {
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=peer-unreachable`);
-        res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment`, retryable: true });
-        return;
+        return { status: 502, body: { error: `target machine ${machineId} is not reachable right now — try again in a moment`, retryable: true } };
       }
       baseUrl = peer.url;
     }
@@ -40969,26 +41398,120 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=started`);
         // Flow-detail passthrough (topic 29836 D2/D3) — same fields as the reused-pending
         // branch above, sourced from the freshly-created login the target machine returned.
-        res.status(201).json({
+        return { status: 201, body: {
           verificationUrl: body.login.verificationUrl, loginId: body.login.id ?? accountId, machineId,
           expectedEmail: body.login.expectedEmail ?? null, ttlExpiresAt: body.login.ttlExpiresAt ?? null,
           notice: body.login.notice ?? null, kind: body.login.kind ?? null,
-        });
-        return;
+        } };
       }
       if (r.status === 409) {
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
-        res.status(409).json({ error: body.error || 'cannot resolve approved account email' });
-        return;
+        return { status: 409, body: { error: body.error || 'cannot resolve approved account email' } };
       }
       // Mandate issued but enroll-start failed (drive throw / unreachable / other). Honest
       // retryable 502 — the unused mandate lapses by its TTL; a re-tap reuses or re-mints.
       console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-failed`);
-      res.status(502).json({ error: body.error || 'could not start the sign-in on the target — try again', retryable: true });
+      return { status: 502, body: { error: body.error || 'could not start the sign-in on the target — try again', retryable: true } };
     } catch (err) {
       console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-error`);
-      res.status(502).json({ error: 'could not reach the machine doing the login — try again', retryable: true });
+      return { status: 502, body: { error: 'could not reach the machine doing the login — try again', retryable: true } };
     }
+  }
+
+  /**
+   * Add a new Claude or Codex account from the owner phone and start its sign-in on THIS machine
+   * (docs/specs/account-add-face-id.md). The caller has proven operator presence (Face ID over
+   * `account-add <kind>`). Nothing is written to the pool here: the account joins the pool only when
+   * its sign-in completes and the signed-in account's email matches the email given (the existing
+   * follow-me completion: completeFollowMe S7 gate, then the registrar's verified add, the same core
+   * POST /subscription-pool registers through). No credential is accepted or stored; the answer is
+   * start-cell's shape, so the phone goes straight to "open the sign-in page / paste the code".
+   */
+  async function runAddAccountSignIn(
+    input: { kind: import('../core/newSubscriptionAccountId.js').NewAccountKind; nickname: string | null; email: string },
+  ): Promise<MatrixStartCellResult> {
+    const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool');
+    if (refusal) return refusal;
+    const ready = matrixStartCellReady();
+    if (!ready.ok) return ready.result;
+    const { NEW_ACCOUNT_KINDS, deriveNewAccountId } = await import('../core/newSubscriptionAccountId.js');
+    const { provider, framework } = NEW_ACCOUNT_KINDS[input.kind];
+    // The same identity rule POST /subscription-pool applies: only a slot an identity oracle can verify.
+    if (!isIdentityVerifiableSlot(provider, framework)) {
+      return { status: 400, body: { error: `provider identity verification is not supported for ${provider}/${framework}`, code: 'subscription-account-identity-provider-unsupported' } };
+    }
+    let email: { display: string; key: string };
+    try { email = normalizeSubscriptionEmail(input.email); } catch (err) { // @silent-fallback-ok — not silent: the phone gets a 400 saying the email is not valid
+      return { status: 400, body: { error: 'email must be a valid non-blank provider account email', code: 'bad-email' } };
+    }
+    const nickname = input.nickname ?? email.display;
+    const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    // @silent-fallback-ok — a machine that does not answer leaves only its accounts out of the duplicate check (account-add-face-id side effects); the sign-in completion still refuses a second add of the same email
+    const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews().catch(() => []) : [];
+    // One account per (provider, email): an account already added here or on another machine is
+    // signed in from its own row, never added twice.
+    const sameEmail = (e: unknown): boolean => {
+      try { return typeof e === 'string' && normalizeSubscriptionEmail(e).key === email.key; } catch { return false; } // @silent-fallback-ok — a stored email that does not parse is not the same account
+    };
+    const existing = ready.subscriptionPool.list().find((a) => a.provider === provider && sameEmail(a.email))
+      ?? peerViews.flatMap((v) => v.accounts).find((r) => (r as { provider?: string }).provider === provider && sameEmail(r.email));
+    if (existing) {
+      const existingId = 'id' in existing ? existing.id : existing.accountId;
+      return { status: 409, body: { error: 'That account is already added. Sign it in from its row instead.', code: 'account-already-added', accountId: existingId } };
+    }
+    // A second tap for the same account while its sign-in is still waiting hands back that sign-in
+    // (D5 single-attempt discipline), never a second login folder.
+    const waiting = ready.enrollmentWizard.pending().find((l) => l.provider === provider && l.status === 'pending'
+      && Date.parse(l.ttlExpiresAt) > Date.now() && sameEmail(l.expectedEmail));
+    const live = waiting ? reuseOrSupersedeLiveAttempt(waiting.id) : null;
+    if (live) {
+      console.log(`[accounts] add accountId=${live.id} kind=${input.kind} outcome=reused-pending`);
+      return { status: 201, body: {
+        verificationUrl: live.verificationUrl, loginId: live.id, machineId: selfMachineId, reused: true,
+        expectedEmail: live.expectedEmail ?? null, ttlExpiresAt: live.ttlExpiresAt,
+        notice: live.notice ?? null, kind: live.kind,
+      } };
+    }
+    const { followMeConfigHomePrefix } = await import('../core/resolveFollowMeEnrollTarget.js');
+    const peerIds = new Set(peerViews.flatMap((v) => v.accounts.map((r) => r.accountId)));
+    const taken = (id: string): boolean => !!ready.subscriptionPool.get(id) || !!ready.enrollmentWizard.getById(id) || peerIds.has(id)
+      || fs.existsSync(path.join(os.homedir(), `${followMeConfigHomePrefix(framework)}${id}`));
+    const accountId = deriveNewAccountId(input.kind, input.nickname, email.display, taken, () => randomBytes(2).toString('hex'));
+    if (!accountId) return { status: 409, body: { error: 'Could not pick a free name for this account. Try again with a different nickname.', code: 'account-id-unavailable', retryable: true } };
+    try {
+      const login = await driveFollowMeLogin({ accountId, label: nickname, provider, framework, expectedEmail: email.display }, ready.afmCfg?.remoteScrapeTimeoutMs);
+      console.log(`[accounts] add accountId=${accountId} kind=${input.kind} outcome=started`);
+      return { status: 201, body: {
+        verificationUrl: login.verificationUrl, loginId: login.id, machineId: selfMachineId,
+        expectedEmail: login.expectedEmail ?? null, ttlExpiresAt: login.ttlExpiresAt ?? null,
+        notice: login.notice ?? null, kind: login.kind ?? null,
+      } };
+    } catch (err) {
+      const { EnrollmentDriveError } = await import('../core/EnrollmentWizard.js');
+      console.log(`[accounts] add accountId=${accountId} kind=${input.kind} outcome=drive-failed`);
+      if (err instanceof EnrollmentDriveError) return { status: 502, body: { error: `could not start the sign-in — ${err.operatorMessage}`, retryable: true } };
+      return { status: 502, body: { error: 'could not start the sign-in — try again', retryable: true } };
+    }
+  }
+
+  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
+    const ready = matrixStartCellReady();
+    if (!ready.ok) {
+      res.status(ready.result.status).json(ready.result.body);
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.accountId !== 'string' || !b.accountId.trim() || typeof b.machineId !== 'string' || !b.machineId.trim()) {
+      res.status(400).json({ error: 'accountId and machineId are required' });
+      return;
+    }
+    // THE LOAD-BEARING GATE (FD4): the dashboard PIN proves operator presence. checkMandatePin
+    // is the EXACT mechanism /mandate/issue-for-machine uses; a missing/invalid PIN sends its own
+    // 401/403/429 response — never start an enrollment without it. The agent shares the Bearer, so
+    // Bearer-only would let any agent session start a cross-machine account login with no operator.
+    if (!checkMandatePin(req, res)) return;
+    const r = await runMatrixStartCell(b.accountId.trim(), b.machineId.trim(), res.app?.locals?.stateDir);
+    res.status(r.status).json(r.body);
   });
 
   // Single-segment path → no collision with /enroll/:id/complete (3 segments).
@@ -47597,4 +48120,11 @@ function pruneUnforkBackups(backupsDir: string, safeSlug: string): void {
   } catch {
     // best-effort
   }
+}
+
+/** Push every string leaf of a nested secrets object (depth-bounded). */
+function collectStringLeaves(v: unknown, out: string[], depth = 0): void {
+  if (depth > 8 || v == null) return;
+  if (typeof v === 'string') { out.push(v); return; }
+  if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) collectStringLeaves(x, out, depth + 1);
 }

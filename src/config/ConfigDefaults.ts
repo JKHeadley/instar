@@ -2419,6 +2419,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
       jev: { model: 'jev-1.13.0', timeoutMs: 1500, maxChecksPerDay: 1500 },
     },
   },
+  // Context Budget: Layered Summaries (docs/specs/context-budget-layered-summaries.md).
+  // compactionRecovery: the session-start hook reads Claude Code's stdin `source`
+  // so compaction recovery actually runs (§9.1). A user-facing bug fix: default
+  // on; the switch exists for rollback (off = exactly the old behaviour).
+  contextBudget: {
+    compactionRecovery: { enabled: true },
+  },
 };
 
 /**

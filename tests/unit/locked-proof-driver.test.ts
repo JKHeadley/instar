@@ -10,7 +10,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 // @ts-expect-error — plain .mjs script, no type declarations
-import { CASES, RESUME_WINDOW_MS, TERMINAL, assertProofTarget, generateProofPassword, judge, launchdServePlist, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
+import { BEFORE_ENTER_LEAD_MS, CASES, RESUME_WINDOW_MS, calibrationProblem, measured, TERMINAL, assertProofTarget, generateProofPassword, judge, launchdServePlist, renderExpected, resetAttempts, runCase, selectCases } from '../../scripts/locked-proof/lib.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
 import { RealTarget, VIEWER_READY, ownerOf, parseProcessList, recordPersonStep, refusalFromStatus, setupGaps } from '../../scripts/locked-proof/driver.mjs';
 // @ts-expect-error — plain .mjs script, no type declarations
@@ -693,6 +693,54 @@ describe('locked-proof runner and verdict', () => {
     expect(c.inject).toEqual([{ action: 'kill-guard', at: 'marker:owed' }, { action: 'stop-viewer', at: 'takeover' }]);
     expect(c.guardReplaced).toBe(true);
     expect(c.markerEnd).toEqual(['relocked']);
+  });
+
+  it('before-enter aims from the duty\'s creation and lands before Enter, not on the next poll (fb-fcb17087-521)', async () => {
+    // Live, aiming from the grant opening landed 15 to 890 ms AFTER Enter, and every such run passed.
+    class PacedTyping extends FakeTarget {
+      firedAt: number | null = null;
+      calibration() { return { reserveMs: 300, perCharMs: 40, length: 20, createToEnterMs: 640 }; }
+      async openGrant() { this.typist = true; this.guard = 41; return { id: 'r1' }; }
+      async typePassword() { this.t += 400; this.markers.k = { state: 'owed', requestId: 'r1', createdAt: this.t }; return { sent: true }; }
+      async snapshot() {
+        const k = this.markers.k as Marker | undefined;
+        if (k?.state === 'owed' && typeof k.createdAt === 'number' && this.t >= k.createdAt + 640 && k.enterPendingAt === undefined) k.enterPendingAt = k.createdAt + 640;
+        return super.snapshot();
+      }
+      async act(action: string) { if (action === 'revoke') this.firedAt = this.t; return super.act(action); }
+    }
+    const c = CASES.find((x: { id: string }) => x.id === '15.1');
+    const target = new PacedTyping(c);
+    const ev = await runCase(c, target);
+    const created = 1_000_400;
+    expect(target.firedAt).toBe(created + 640 - BEFORE_ENTER_LEAD_MS);
+    expect(ev.unfired).toEqual([]);
+    expect(ev.verdict.reasons.join(' ')).not.toMatch(/after Enter/);
+  });
+
+  it('a before-enter step that started after Enter fails the case, and the gap is recorded', () => {
+    const c = CASES.find((x: { id: string }) => x.id === '15.7');
+    const ev = { unfired: [], fired: [{ action: 'kill-server', at: 'before-enter', startedAt: 5_891, t: 5_900 }],
+      samples: [{ dirty: true, typist: true, markers: { k: { state: 'owed', enterPendingAt: 5_000 } } }],
+      final: { lockState: 'locked-in-session', markers: { k: { state: 'relocked', enterPendingAt: 5_000 } }, processesGone: true } };
+    const extra = measured(ev);
+    expect(extra.injectMinusEnterMs).toBe(891);
+    expect(judge(c, { ...ev, extra: { ...extra, submissions: 1, submissionsAfterClose: 0 } }).reasons).toContain('before-enter step landed 891 ms after Enter');
+    const before = { ...ev, fired: [{ ...ev.fired[0], startedAt: 4_830 }] };
+    expect(measured(before).injectMinusEnterMs).toBe(-170);
+    expect(judge(c, { ...before, extra: measured(before) }).reasons.join(' ')).not.toMatch(/after Enter/);
+    // The deadline case compares the grant's own limit with Enter.
+    const c153 = CASES.find((x: { id: string }) => x.id === '15.3');
+    const late = { ...ev, grantExpiresAt: 5_002, fired: [{ action: 'wait-deadline', at: 'before-enter', startedAt: 1, t: 1 }] };
+    expect(judge(c153, { ...late, extra: measured(late) }).reasons).toContain('grant limit arrived 2 ms after Enter');
+  });
+
+  it('a run refuses cases its calibration cannot aim, and says which', () => {
+    const p15 = selectCases(['15.1', '15.3', '15.2']);
+    expect(calibrationProblem(selectCases(['12.1', '15.2']), null)).toBeNull();
+    expect(calibrationProblem(p15, null)).toMatch(/no calibration\.json.*15\.1, 15\.3/);
+    expect(calibrationProblem(p15, { reserveMs: 1, perCharMs: 1, length: 20 })).toMatch(/createToEnterMs.*15\.1$|createToEnterMs.*\(needed by 15\.1\)/);
+    expect(calibrationProblem(p15, { reserveMs: 1, perCharMs: 1, length: 20, createToEnterMs: 640 })).toBeNull();
   });
 
   it('a case that throws still resumes and relocks, and fails with the error', async () => {

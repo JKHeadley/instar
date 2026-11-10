@@ -274,6 +274,9 @@ export const DP_MESSAGE_SENTINEL_CLASSIFY = 'message-sentinel-classify';
 /** Hub message + bounded conversation/topic enum → bind intent. */
 export const DP_HUB_INTENT_CLASSIFY = 'hub-intent-classify';
 
+/** Chief of Staff (docs/specs/chief-of-staff-topic.md §2.5): deterministic evidence + bounded conversation tail → project verdict (a SIGNAL; the loop's floors hold authority). */
+export const DP_COS_PROJECT_VERDICT = 'cos-project-verdict';
+
 /** Ambiguous interactive terminal prompt → approve or relay. */
 export const DP_INPUT_CLASSIFY = 'input-classify';
 
@@ -764,6 +767,20 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Outbound coherence review — THE measured high-volume point (3,641 of 4,098 llm calls/24h on the dev agent, spec §5.6); MUST declare sampled:<rate> or budget:<rows/day> at enrollment, never full.',
+  },
+  {
+    decisionPoint: DP_COS_PROJECT_VERDICT,
+    component: 'ChiefOfStaffLoop',
+    status: 'wired',
+    volumeClass: 'budget:200',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The loop grades a restart verdict by whether artifact progress follows within one cadence and a done ' +
+      'verdict by whether the closure stays closed for 14 days (spec §5); those outcomes land in a later tick, so ' +
+      'identity-only rows are recorded now and settled by the loop, never by the judge itself.',
+    reason:
+      'Project check-in verdict (moving/stalled/drifting/waiting/claims-done/unknown) over deterministic evidence and a bounded untrusted conversation tail; provenance stores evidence ids and the tail bound, never the text.',
   },
   {
     decisionPoint: DP_HUB_INTENT_CLASSIFY,

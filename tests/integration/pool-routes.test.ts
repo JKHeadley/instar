@@ -159,7 +159,7 @@ describe('GET /pool — rope-condition decoration (offline-test honesty finding)
   let dir: string;
   let server: Server;
 
-  async function stand(ropeHealthMonitor: unknown): Promise<void> {
+  async function stand(ropeHealthMonitor: unknown, ropeHealth?: unknown[]): Promise<void> {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pool-rope-'));
     const idMgr = new MachineIdentityManager(path.join(dir, '.instar'));
     idMgr.registerMachine(identity('m_a', 'mac-mini'), 'awake');
@@ -179,6 +179,7 @@ describe('GET /pool — rope-condition decoration (offline-test honesty finding)
       stateDir: dir,
       machinePoolRegistry: registry,
       ropeHealthMonitor,
+      ...(ropeHealth ? { coordinator: { getSyncStatus: () => ({ leaseHolder: 'm_a', leaseEpoch: 1, holdsLease: true, ropeHealth }), managers: { identityManager: idMgr } } } : {}),
     };
     const app = express();
     app.use(express.json());
@@ -216,5 +217,24 @@ describe('GET /pool — rope-condition decoration (offline-test honesty finding)
       expect('ropeCondition' in m).toBe(false);
       expect('ropeAllDownSince' in m).toBe(false);
     }
+  });
+
+  // CMT-1541: whether this machine is working to reconnect a peer it cannot reach.
+  it('carries reconnect from the recovery prober: retrying with the next try time', async () => {
+    const next = Date.now() + 120_000;
+    await stand(null, [
+      { peer: 'm_b', kind: 'tailscale', state: 'dead', consecutiveFailures: 4, recoveryStreak: 0, lastResultAt: null, lastProbeAt: null, nextProbeDueAt: next },
+      { peer: 'm_b', kind: 'lan', state: 'exhausted', consecutiveFailures: 9, recoveryStreak: 0, lastResultAt: null, lastProbeAt: null, nextProbeDueAt: next + 60_000 },
+    ]);
+    const body = await (await fetch(server.url + '/pool')).json();
+    const b = body.machines.find((m: any) => m.machineId === 'm_b');
+    expect(b.reconnect).toEqual({ state: 'retrying', nextTryAt: new Date(next).toISOString() });
+    expect('reconnect' in body.machines.find((m: any) => m.machineId === 'm_a')).toBe(false);
+  });
+
+  it('prober dark → no reconnect field (the page says "not known", never "nothing is fixing it")', async () => {
+    await stand(null);
+    const body = await (await fetch(server.url + '/pool')).json();
+    for (const m of body.machines) expect('reconnect' in m).toBe(false);
   });
 });
