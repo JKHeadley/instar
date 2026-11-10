@@ -305,6 +305,18 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   svc.teamActionRunner = (kind, req, deviceId, target) => inTurn(async () => {
     // Settings come before any team exists, so they do not need the log.
+    if (kind === 'team-switch-on' && target === 'team-access') {
+      // One tap for everything team access needs (operator 2026-11-09: "it should be one single thing for the
+      // whole agent"): each setting still off somewhere, in turn, answered together.
+      if (!deps.turnOnEverywhere) return { status: 503, body: { error: 'team-switches-unavailable', detail: 'This agent cannot turn settings on for all its machines yet. Update it first.' } };
+      const off = teamSwitches().map((l) => l.setting).filter((x): x is TeamSwitchSetting => isTeamSwitchSetting(x));
+      const results: TurnOnResult[] = [];
+      for (const setting of off) results.push(await deps.turnOnEverywhere(setting, deviceId));
+      const failed = results.find((r) => r.machines.find((m) => m.self)?.outcome === 'failed');
+      const restarting = results.some((r) => r.machines.find((m) => m.self)?.restarting);
+      if (failed) return { status: 503, body: { error: 'restart-unavailable', setting: 'team-access', results, detail: 'A setting could not be turned on here, or this machine could not restart itself.' } };
+      return { status: 200, body: { ok: true, setting: 'team-access', restarting, settings: off, results } };
+    }
     if (kind === 'team-switch-on') {
       if (!isTeamSwitchSetting(target)) return { status: 400, body: { error: 'bad-setting', detail: 'That is not a setting that can be turned on for the whole agent.' } };
       if (!deps.turnOnEverywhere) return { status: 503, body: { error: 'team-switches-unavailable', detail: 'This agent cannot turn settings on for all its machines yet. Update it first.' } };

@@ -25,3 +25,4 @@ When you add teammates in the app, the People page no longer lists each of my co
 - `tests/unit/team-switches.test.ts`: summary shape, fan-out order, per-machine results, unreachable peer retried across a restart, undialable machine listed.
 - `tests/integration/team-access-routes.test.ts` (team settings block): owner Face ID turn-on, legacy route fans out, member/bearer/unsigned/wrong-setting refused, refusal text no longer says gone.
 - `tests/e2e/team-switches-two-machines.test.ts`: two real servers; the owner's tap on one sets `memoryPrivacy.enabled` in the other's config over the signed machine route and writes its planned-restart flag; a third registered machine with no address is listed unreachable and kept for retry.
+- **One tap:** `setting: "team-access"` turns on everything team access needs, for the whole agent, with one Face ID.
