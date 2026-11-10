@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-10T02:47:13.312Z",
+  "slug": "cb-one-recovery-carrier",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 5,
+  "loc": 264,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/CompactionSentinel.ts",
+      "src/monitoring/compactionSeedMarker.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 261,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -15484,6 +15484,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // calls that used to live here. Dedupes across the three triggers and
     // vetoes zombie cleanup while a recovery is in flight.
     const { CompactionSentinel } = await import('../monitoring/CompactionSentinel.js');
+    const { readSeedMarkerFile } = await import('../monitoring/compactionSeedMarker.js');
     // A session is a legitimate recovery target ONLY while it is in the running
     // set. A finished/failed/killed session drops out of listRunningSessions(),
     // so this is the structural guard that stops both sentinels from "recovering"
@@ -15513,6 +15514,16 @@ export async function startServer(options: StartOptions): Promise<void> {
         // by maxWorkingDefers. See SessionManager.isSessionActivelyWorking.
         isActivelyWorking: (sessionName: string) =>
           sessionManager.isSessionActivelyWorking(sessionName),
+        // One carrier of post-compaction context (context-budget-layered-summaries
+        // §9.1): with the switch on, the sentinel waits for the SessionStart(compact)
+        // hook's seeded marker and stands down when the hook already seeded.
+        isCompactionRecoveryEnabled: () =>
+          liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false,
+        readSeedMarker: (sessionName: string) =>
+          readSeedMarkerFile(
+            config.stateDir,
+            sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId,
+          ),
       },
       // Defaults are production-sensible; override here only if needed.
       {},

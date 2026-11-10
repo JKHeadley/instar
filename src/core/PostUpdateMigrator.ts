@@ -9267,6 +9267,15 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: new jobs offer the report choice');
     }
+    // context-budget-layered-summaries §9.1: the compaction-recovery hook never
+    // ran on Claude Code before this release, so the old sentence promised a
+    // recovery that did not happen. It now runs; name the block to look for.
+    const oldCompactionSurvival = "The compaction-recovery hook re-injects all of this. If it doesn't fire, read `.instar/AGENT.md` immediately.";
+    if (content.includes(oldCompactionSurvival)) {
+      content = content.split(oldCompactionSurvival).join("The compaction-recovery hook re-injects all of this: after a compaction you see an `=== IDENTITY RECOVERY (post-compaction) ===` block. If that block is missing after a compaction, read `.instar/AGENT.md` and `.instar/MEMORY.md` immediately.");
+      patched = true;
+      result.upgraded.push('CLAUDE.md: corrected the Compaction Survival recovery sentence');
+    }
     const port = this.config.port;
     const oldThreadlineStatus = 'This capability is **installed and ready** but **not yet enabled**. I will only connect when you say so.';
     if (content.includes(oldThreadlineStatus)) {
@@ -19542,7 +19551,47 @@ echo ""
 # On compaction, delegate to the dedicated recovery hook
 if [ "\$EVENT" = "compact" ]; then
   if [ -x "$INSTAR_DIR/hooks/instar/compaction-recovery.sh" ]; then
-    exec bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh"
+    if [ "\$CB_RECOVERY_ENABLED" = "false" ] || [ "\$HOOK_FRAMEWORK" != "claude-code" ]; then
+      exec bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh"
+    fi
+    # One carrier of post-compaction context (context-budget-layered-summaries
+    # §9.1): run the recovery seed, then write the seeded marker for this
+    # compaction epoch so the server's CompactionSentinel stands down instead of
+    # injecting a second copy. The marker is written only when the seed exited 0
+    # and printed something; any failure leaves no marker and the server path runs.
+    # The epoch stays empty here: Claude Code flushes this compaction's
+    # compact-boundary entry only after this hook runs (measured on 2.1.321), so
+    # the newest boundary visible now is the PREVIOUS compaction's. The sentinel
+    # binds the epoch to the boundary that follows its report.
+    CB_SEED_OUT=\$(bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh")
+    CB_SEED_RC=\$?
+    printf '%s\\n' "\$CB_SEED_OUT"
+    if [ "\$CB_SEED_RC" -eq 0 ] && [ -n "\$CB_SEED_OUT" ]; then
+      CB_STATE_ROOT="$INSTAR_DIR"
+      if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+        CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
+      fi
+      printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json,os,time
+root=sys.argv[1]
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+sid=str(d.get('session_id') or '')
+if not sid or not all(c.isalnum() or c in '-_' for c in sid) or len(sid)>128:
+    sys.exit(0)
+dirp=os.path.join(root,'state','context-layers','_seeded')
+try:
+    os.makedirs(dirp,mode=0o700,exist_ok=True)
+    tmp=os.path.join(dirp,sid+'.json.tmp')
+    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
+    with os.fdopen(fd,'w') as w:
+        json.dump({'sessionId':sid,'epoch':'','source':'compact','seededAt':int(time.time()*1000)},w)
+    os.replace(tmp,os.path.join(dirp,sid+'.json'))
+except Exception:
+    pass" "\$CB_STATE_ROOT" 2>/dev/null
+    fi
+    exit 0
   fi
 fi
 

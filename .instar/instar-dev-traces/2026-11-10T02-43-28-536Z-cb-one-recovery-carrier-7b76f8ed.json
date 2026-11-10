@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "cb-one-recovery-carrier",
+  "sessionId": "9129212e-3c5a-416c-b4f4-528c322dbef1",
+  "timestamp": "2026-11-10T02:43:28.536Z",
+  "artifactPath": "upgrades/side-effects/cb-one-recovery-carrier.md",
+  "artifactSha256": "2b802846dd01b3d8b95daa6a1d9af9e4a43970315b95e9a471ee390122f6192b",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/CompactionSentinel.ts",
+    "src/monitoring/compactionSeedMarker.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/CompactionSentinel-seed-carrier.test.ts",
+    "tests/unit/PostUpdateMigrator-compactionSurvivalSentence.test.ts",
+    "tests/unit/PostUpdateMigrator-loadAssess.test.ts",
+    "tests/unit/session-start-source-routing.test.ts",
+    "upgrades/next/cb-one-recovery-carrier.md",
+    "upgrades/side-effects/cb-one-recovery-carrier.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fleet-wide change to post-compaction recovery (server stands down when the hook seeded), driven by the approved converged spec; reversible by config switch.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
