@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-10T21:02:40.000Z",
-      "auditRef": "docs/audits/always-serves-a-team-building-family-2026-11-10.json",
-      "auditSha256": "7f6421a50f13c114477904a12378dad188ffd4604750ec221bf62b884b18fcbe",
-      "areaSha256": "9acf4bfa9cb71cacdbabc49a9e14bdc65a4fbfd38219c4068a43e697263d931f",
+      "lastAuditedAt": "2026-11-10T21:16:00.000Z",
+      "auditRef": "docs/audits/always-serves-a-team-building-family-2026-11-10-r2.json",
+      "auditSha256": "8c2bb067ee81b161a3c36d99d71f51aff357e49e4f9855b9d493e4deca7b97f3",
+      "areaSha256": "bce94074eabddfffbf34850d2f89eff83aaf05467b810add95192cf7508f8a83",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40
