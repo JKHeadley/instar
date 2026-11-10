@@ -1,5 +1,7 @@
 # Conversations durable replication and witness security review
 
+> Historical checkpoint from 2026-11-05. It does not describe the current state; see `upgrades/next/conversation-graph-core-increment-a.md` and the side-effects notes under `upgrades/side-effects/conversation-graph-*` for that.
+
 Review scope: approved conversation-effort-hierarchy-v3 §7.2 and §8.1 increment A; local immutable source, journal transport/repair, historical authority verification, witness prepare/commit/cancel/erasure, and signed final-certificate persistence. This is a checkpoint review, not increment-A certification or release approval.
 
 ## Verified implementation

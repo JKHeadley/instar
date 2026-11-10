@@ -1,5 +1,7 @@
 # Conversations delegation security checkpoint
 
+> Historical checkpoint from 2026-11-05. It does not describe the current state; see `upgrades/next/conversation-graph-core-increment-a.md` and the side-effects notes under `upgrades/side-effects/conversation-graph-*` for that.
+
 Spec: `docs/specs/conversation-effort-hierarchy-v3.md` §7.2 and §8.1. This checkpoint implements source verification and tests. It does not certify Increment A, expose Increment B, or claim an installed fleet spawn hook.
 
 ## Authority and canonical core

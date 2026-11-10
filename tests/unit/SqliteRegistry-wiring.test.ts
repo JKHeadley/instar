@@ -21,7 +21,6 @@ import { fileURLToPath } from 'node:url';
 import {
   closeAllSqlite,
   sqliteRegistrySize,
-  closeAllSqlite,
   __resetSqliteRegistryForTests,
 } from '../../src/core/SqliteRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
