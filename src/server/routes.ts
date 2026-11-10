@@ -2,6 +2,7 @@ import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
+import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -8904,6 +8905,39 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.contextLayers.status());
+  });
+  // context-budget-layered-summaries §11: the measurement backend — cost-weighted
+  // tokens per request per session and topic, live context size, rework (pending
+  // while the ledger poller lags), extractor spend per day by trigger, LayerUpdate
+  // spend against its reserve, U size, archive/layer bytes, G/C growth for the
+  // live-set budget. Read-only, bounded; 503 when the layers are off.
+  const contextBudgetMetricsMemo = new Map<string, { at: number; layers: unknown; body: ReturnType<typeof computeContextBudgetMetrics> }>();
+  router.get('/context-budget/metrics', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const parsed = parseMetricsQuery({ topic: req.query.topic, sinceHours: req.query.sinceHours });
+    if (!parsed.ok) { res.status(400).json({ error: parsed.error }); return; }
+    try {
+      // The computation is synchronous (SQLite reads, directory stats): one result
+      // per query shape is reused for 30 s so a polling card cannot stack it.
+      const memoKey = `${parsed.query.topicId ?? '*'}:${parsed.query.sinceHours ?? ''}`;
+      const hit = contextBudgetMetricsMemo.get(memoKey);
+      if (hit && Date.now() - hit.at < 30_000 && hit.layers === ctx.contextLayers) { res.json({ ...hit.body, cachedForMs: Date.now() - hit.at }); return; }
+      const body = computeContextBudgetMetrics({
+        layers: ctx.contextLayers,
+        stateDir: ctx.config.stateDir,
+        ledger: ctx.tokenLedger ?? null,
+        topicIntentStore: ctx.topicIntentStore ?? null,
+        topicMemory: ctx.topicMemory ?? null,
+      }, parsed.query);
+      if (contextBudgetMetricsMemo.size > 200) contextBudgetMetricsMemo.clear();
+      contextBudgetMetricsMemo.set(memoKey, { at: Date.now(), layers: ctx.contextLayers, body });
+      res.json(body);
+    } catch (err) {
+      res.status(500).json({ error: `context-budget metrics failed: ${(err as Error).message}` });
+    }
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {

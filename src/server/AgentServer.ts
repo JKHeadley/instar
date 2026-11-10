@@ -280,6 +280,7 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { claudeTranscriptRoots } from '../monitoring/claudeTranscriptRoots.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
@@ -2425,6 +2426,12 @@ export class AgentServer {
         bridgeNativeHealToDegradation();
         const dbPath = path.join(serverDataDir, 'token-ledger.db');
         const claudeProjectsDir = path.join(os.homedir(), '.claude', 'projects');
+        // Every config home a session can be routed to (fb-7e0b2088-ae5): the
+        // process default, every ~/.claude* login on the host, and every
+        // claude-code account in the subscription pool. Re-read each scan, so a
+        // login enrolled after boot is picked up; de-duplicated by real path.
+        const subscriptionPoolForRoots = options.subscriptionPool ?? null;
+        const claudeProjectsDirs = () => claudeTranscriptRoots({ pool: subscriptionPoolForRoots });
         // Bound the first-boot scan: with deep history (eg one local agent
         // had 119k JSONLs / 12GB of transcripts), an unbounded synchronous
         // scan blocks the event loop for minutes. We cap per-tick work and
@@ -2433,6 +2440,7 @@ export class AgentServer {
         this.tokenLedger = new TokenLedger({
           dbPath,
           claudeProjectsDir,
+          claudeProjectsDirs,
           maxFileAgeMs: 30 * 24 * 60 * 60 * 1000, // 30 days
           maxFilesPerScan: 500,
           yieldEveryNFiles: 25,

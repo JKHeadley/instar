@@ -209,7 +209,21 @@ export interface CaptureLoopDeps {
    * never be re-stamped fresh from an awareness that did not move.
    */
   onCaptured?: (topicId: number, entry: CaptureTurnEntry) => void;
+  /**
+   * Measurement only (context budget §11): told how every capture attempt that
+   * reached the layer path ended — a turn past the pre-filter or a tick — and
+   * by which trigger. Never affects capture; a throw is swallowed.
+   */
+  onLayerOutcome?: (topicId: number, trigger: 'turn' | 'tick', outcome: CaptureOutcome) => void;
   now?: () => number;
+}
+
+/** The capture statuses that reached the layer path (a turn past every pre-LLM skip, or a tick). */
+const LAYER_PATH_STATUSES: ReadonlySet<CaptureStatus> = new Set(['captured', 'deferred-budget', 'skipped-shed', 'degraded']);
+
+function noteLayerOutcome(deps: CaptureLoopDeps, topicId: number | undefined, trigger: 'turn' | 'tick', outcome: CaptureOutcome): void {
+  if (!deps.onLayerOutcome || topicId === undefined || !LAYER_PATH_STATUSES.has(outcome.status)) return;
+  try { deps.onLayerOutcome(topicId, trigger, outcome); } catch { /* @silent-fallback-ok — a measurement observer never affects capture */ }
 }
 
 export type CaptureStatus =
@@ -285,6 +299,16 @@ export function selectPromptRefs<T extends EstablishedRef & { projection: Projec
  * (see createCaptureLoop) so the rate ceiling persists across turns.
  */
 export async function captureTurn(
+  deps: CaptureLoopDeps,
+  entry: CaptureTurnEntry,
+  rateState?: Map<number, number[]>,
+): Promise<CaptureOutcome> {
+  const outcome = await captureTurnInner(deps, entry, rateState);
+  noteLayerOutcome(deps, typeof entry.topicId === 'number' ? entry.topicId : undefined, 'turn', outcome);
+  return outcome;
+}
+
+async function captureTurnInner(
   deps: CaptureLoopDeps,
   entry: CaptureTurnEntry,
   rateState?: Map<number, number[]>,
@@ -418,6 +442,12 @@ export async function captureTurn(
 export const TICK_MESSAGE_PREFIX = 'tick-';
 
 export async function captureTick(deps: CaptureLoopDeps, topicId: number, digestText: string): Promise<CaptureOutcome> {
+  const outcome = await captureTickInner(deps, topicId, digestText);
+  noteLayerOutcome(deps, topicId, 'tick', outcome);
+  return outcome;
+}
+
+async function captureTickInner(deps: CaptureLoopDeps, topicId: number, digestText: string): Promise<CaptureOutcome> {
   const now = deps.now ?? (() => Date.now());
   try {
     if (deps.shouldShed?.()) {
