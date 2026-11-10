@@ -460,6 +460,9 @@ export function setupRefusal(status, data) {
     'browser-proof-invalid': 'This browser\'s key could not be checked. Try again.',
     'duplicate-key': 'This browser\'s key is already in use. Try again to make a new one.',
     'operator-session-required': 'Your PIN is needed to set up this browser.',
+    'setup-ended': 'This setup ended. Start it again.',
+    'browser-setup-waiting': 'Another browser is already waiting for approval. Approve or decline it first.',
+    'browser-setups-paused': 'A browser setup was declined in the last hour, so new browser setups are paused for now.',
     'too-many-browsers': 'This machine already has the most browsers it allows. Remove one in People > Phones first.',
     'too-many-setups': 'Too many browsers were set up in the last hour.',
     'replaces-invalid': 'The earlier key of this browser could not be checked.',
@@ -471,10 +474,24 @@ export function setupRefusal(status, data) {
   return d.detail || `Setting up this browser did not work (the server answered ${status}).`;
 }
 
+/**
+ * The private Telegram chat an approval message arrives in, by the bot's own name when the server knows it
+ * ("your private Telegram chat with Echo Agent (@echo_bot), not a group"), so it is not looked for in a group.
+ */
+export function privateChatWords(chat) {
+  const name = chat && typeof chat.name === 'string' && chat.name.trim() ? chat.name.trim().slice(0, 64) : null;
+  if (!name) return 'your private Telegram chat with the agent';
+  const user = typeof chat.username === 'string' && /^[A-Za-z0-9_]{3,64}$/.test(chat.username) ? ` (@${chat.username})` : '';
+  return `your private Telegram chat with ${name}${user}, not a group`;
+}
+
 /** Where the owner approves a pending browser, by the setup answer's approval path. */
-export function approvalWords(approval) {
-  if (approval === 'telegram' || approval === 'telegram-dm') return 'Approve it in your private Telegram chat with the agent (tap Approve, or type the code here), or on your phone.';
-  if (approval === 'owner-phone') return 'Approve it on your phone.';
+export function approvalWords(approval, chat, telegramBackup) {
+  if (approval === 'telegram' || approval === 'telegram-dm') return `Approve it in ${privateChatWords(chat)} (tap Approve, or type the code here), or on your phone.`;
+  if (approval === 'owner-phone') {
+    return 'Approve it on your iPhone: open the Instar app and confirm with Face ID.'
+      + (telegramBackup === false ? '' : ` Or tap Approve in ${privateChatWords(chat)}, which also has a code you can type here.`);
+  }
   if (approval === 'dashboard') return 'Approved with your PIN.';
   return 'Approve it where the agent asks you to.';
 }

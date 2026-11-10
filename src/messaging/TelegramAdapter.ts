@@ -2364,6 +2364,26 @@ export class TelegramAdapter implements MessagingAdapter {
    * sent only to the owner's private chat, with an optional Decline button. Resolves to the
    * Telegram message id when Telegram accepted it, else null.
    */
+  private botIdentityCache: { at: number; value: { name: string; username: string | null } | null } | null = null;
+  /**
+   * The bot's own display name and username (getMe), cached for an hour. Only for wording, such as the
+   * dashboard naming the private chat an approval message arrives in ("Echo Agent"), so a missed message
+   * is found (2026-11-09: the operator looked in the group and said no code arrived). Null when unknown.
+   */
+  async botIdentity(): Promise<{ name: string; username: string | null } | null> {
+    if (this.botIdentityCache && Date.now() - this.botIdentityCache.at < 3_600_000) return this.botIdentityCache.value;
+    try {
+      const me = await this.apiCall('getMe', {}) as { first_name?: unknown; username?: unknown } | null;
+      const name = typeof me?.first_name === 'string' && me.first_name.trim() ? me.first_name.trim().slice(0, 64) : null;
+      const username = typeof me?.username === 'string' && /^[A-Za-z0-9_]{3,64}$/.test(me.username) ? me.username : null;
+      const value = name ? { name, username } : null;
+      this.botIdentityCache = { at: Date.now(), value };
+      return value;
+    } catch {
+      return null; // @silent-fallback-ok — wording only: the dashboard falls back to "your private Telegram chat with the agent"
+    }
+  }
+
   async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null): Promise<number | null> {
     const owner = this.getOwnerUserId();
     if (!owner) return null;
@@ -2372,9 +2392,14 @@ export class TelegramAdapter implements MessagingAdapter {
       // Only the owner's own pairing and browser-setup messages come here (the code, Approve and
       // Decline). The owner is waiting on the screen that asked for it, so it must never be held as a
       // quiet notification: that answered 409 "could not send you the approval message" (2026-11-08).
+      // Sent as escaped HTML, never through the markdown converter: the text carries a caller-chosen device
+      // name, which must not become a link or bold text inside the bot's own approval message.
+      const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const result = await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.apiCall('sendMessage', {
         chat_id: owner,
-        text,
+        text: escaped,
+        parse_mode: 'HTML',
+        _formatMode: 'html',
         ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
       })) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;

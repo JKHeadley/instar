@@ -324,6 +324,13 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
         await writeRecord(rec); // stored BEFORE sending, so a lost answer never loses the key
       }
       if (rec.status !== 'enrolling') { record = rec; return { ok: true, answer: { deviceId: rec.deviceId, machineId: rec.machineId, host: rec.host, status: rec.status, fingerprint: rec.fingerprint } }; }
+      // With a Telegram owner, the owner's approval on the phone or in Telegram is the proof: no PIN
+      // (docs/specs/browser-setup-no-second-pin.md). If the server still asks for one (the owner was
+      // removed in between), the PIN sheet is shown once.
+      if (st.data.approvalPath === 'telegram') {
+        const first = await send(rec, null, replaceFrom);
+        if (first.ok || first.error !== 'operator-session-required') return first;
+      }
       if (forgetSession) forgetSession();
       const session = askSession ? await askSession() : null;
       if (!session) return { ok: false, status: 0, error: 'cancelled' };
@@ -345,7 +352,7 @@ export function createBrowserDevice({ bearer, fetchFn = (...a) => globalThis.fet
       }
       let r;
       try {
-        r = await fetchFn('/mobile/browser-devices', { method: 'POST', headers: { ...bearerHeaders(), 'Content-Type': 'application/json', 'X-Instar-Operator-Session': session }, body: JSON.stringify(body), cache: 'no-store' });
+        r = await fetchFn('/mobile/browser-devices', { method: 'POST', headers: { ...bearerHeaders(), 'Content-Type': 'application/json', ...(session ? { 'X-Instar-Operator-Session': session } : {}) }, body: JSON.stringify(body), cache: 'no-store' });
       } catch {
         // Lost: the same request again recovers it (step 4), with no new PIN.
         if (Date.now() - started > 30_000) return { ok: false, status: 0, error: 'unreachable' };

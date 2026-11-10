@@ -242,3 +242,19 @@ describe('setup words', () => {
     expect(m.setupRefusal(0, {})).toBe('The agent could not be reached.');
   });
 });
+
+describe('approval wording names the private chat', () => {
+  it('names the bot and says not a group, and falls back without a name', () => {
+    expect(m.approvalWords('telegram', { name: 'Echo Agent', username: 'echo_test_bot' }))
+      .toBe('Approve it in your private Telegram chat with Echo Agent (@echo_test_bot), not a group (tap Approve, or type the code here), or on your phone.');
+    expect(m.privateChatWords({ name: 'Echo Agent', username: null })).toBe('your private Telegram chat with Echo Agent, not a group');
+    expect(m.privateChatWords({ name: 'Echo Agent', username: 'bad name!' })).toBe('your private Telegram chat with Echo Agent, not a group');
+    expect(m.approvalWords('telegram')).toBe('Approve it in your private Telegram chat with the agent (tap Approve, or type the code here), or on your phone.');
+    expect(m.privateChatWords(null)).toBe('your private Telegram chat with the agent');
+  });
+  it('owner-phone comes first, with Telegram as a backup only when its copy went out', () => {
+    expect(m.approvalWords('owner-phone', { name: 'Echo Agent', username: 'echo_test_bot' }, true))
+      .toBe('Approve it on your iPhone: open the Instar app and confirm with Face ID. Or tap Approve in your private Telegram chat with Echo Agent (@echo_test_bot), not a group, which also has a code you can type here.');
+    expect(m.approvalWords('owner-phone', null, false)).toBe('Approve it on your iPhone: open the Instar app and confirm with Face ID.');
+  });
+});

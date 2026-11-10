@@ -43,6 +43,12 @@ export interface DevGatedFeature {
 }
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
+  {
+    name: 'chiefOfStaff',
+    configPath: 'chiefOfStaff.enabled',
+    description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Every side effect goes through the §2.4 action protocol (signed intent, ownership-machine lock, durable executing record, idempotency key) and the existing quota, spawn-cap and pressure gates; it acts only on owner-confirmed bindings while the operator check-in lease is live, with P19 brakes (park, breaker, backoff). PR 2 wires the protocol only; no loop runs until PR 3.',
+  },
   { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
   {
     name: 'scriptRunners',
@@ -714,6 +720,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'multiMachine.stateSync.topicOperator.enabled',
     description: 'WS2.6 cross-machine topic-operator replication — the THIRD PII kind (multi-machine-replicated-store-foundation).',
     justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setAuthenticatedOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
+  },
+  {
+    name: 'jevFirstCommitment',
+    configPath: 'intelligence.jevFirstCommitment.enabled',
+    description: 'Shared Jev-first yes/no path for CommitmentSentinel (jev-first-decision-path.md): shadow by default on a development agent, off on the fleet; only a separately validated confident negative may later skip the detailed incumbent extraction.',
+    justification: 'Shadow changes no commitment verdict or tracker write. Missing Jev key, uncertain answer, oversize or unscrubbable context, model mismatch, timeout and provenance write failure all reach the incumbent; the same feature works with one provider. Jev receives only bounded secret-scrubbed text, the model is pinned, and the kill switch is read live. Fleet use requires an explicit enable and stage promotion after a held-out replay.',
   },
   {
     name: 'jevSignalLive',

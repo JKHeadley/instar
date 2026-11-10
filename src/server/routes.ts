@@ -13903,6 +13903,42 @@ export function createRoutes(ctx: RouteContext): Router {
     res.json({ ...summary, totals, features, classReview, claimVerificationServerAdmittedOnly });
   });
 
+  // Jev-first decision coverage. These are observed call counts; token savings
+  // remain unmeasured until a comparable pre/post window exists, so the API
+  // deliberately returns null rather than laundering a baseline estimate.
+  router.get('/jev-first/summary', (req, res) => {
+    if (!ctx.featureMetricsLedger) {
+      res.status(503).json({ error: 'feature-metrics ledger unavailable' });
+      return;
+    }
+    const rawHours = Number(req.query.sinceHours ?? 168);
+    const sinceHours = Number.isFinite(rawHours) && rawHours > 0 ? Math.min(rawHours, 24 * 30) : 168;
+    const byName = new Map(ctx.featureMetricsLedger.summary({ sinceHours }).features.map((f) => [f.feature, f]));
+    const pointIds = Array.from(byName.keys())
+      .filter((name) => name.startsWith('jev-first:'))
+      .map((name) => name.slice('jev-first:'.length))
+      .sort();
+    const points = pointIds.map((id) => {
+      const decisions = byName.get(`jev-first:${id}`)!;
+      const jev = byName.get(`jev-first-jev:${id}`);
+      const audit = byName.get(`jev-first-audit:${id}`);
+      const total = decisions.fired + decisions.noop;
+      const auditTotal = (audit?.fired ?? 0) + (audit?.noop ?? 0);
+      return {
+        id, decisions: total, jevSettled: decisions.fired, incumbentHandled: decisions.noop,
+        settledShare: total ? decisions.fired / total : null,
+        jevCalls: jev?.realLlmCalls ?? 0, jevErrors: jev?.llmErrors ?? 0,
+        jevTokensIn: jev?.tokensIn ?? 0, jevP50LatencyMs: jev?.p50LatencyMs ?? null,
+        compared: auditTotal, disagreements: audit?.fired ?? 0,
+        disagreementRate: auditTotal ? (audit?.fired ?? 0) / auditTotal : null,
+        bigModelCallsAvoided: decisions.fired,
+        bigModelTokensSaved: null,
+        tokenSavingsStatus: 'unmeasured-pre-post-baseline',
+      };
+    });
+    res.json({ sinceHours, points });
+  });
+
   // ── GrowthMilestoneAnalyst (the proactive growth & milestone analyst) ──────
   // Read-only observability over the maturity/initiative/spec/correction
   // surfaces. The analyst ships DARK (monitoring.growthAnalyst.enabled false) —
@@ -25386,6 +25422,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     res.json({
       enabled: true,
       droppedOrigins: dropped?.list() ?? [],
+      // 'damaged' means the excluded-machines file could not be fully trusted:
+      // droppedOrigins above is only what could be recovered, and adding or
+      // removing exclusions is refused until the file is repaired.
+      droppedOriginsHealth: dropped?.health() ?? null,
       conflictLossCounter: store?.lossCounter ?? 0,
     });
   });
@@ -36895,6 +36935,30 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       {
         tracker,
         ...(quiet ? { log: () => {} } : {}),
+        // Promised update overdue (docs/specs/promised-update-capture.md): after
+        // the honest line is out, hand the promise to the topic's session the
+        // same way a dashboard decision is handed over — the inbound path
+        // delivers to a live session, or resumes / respawns a dead one. It
+        // carries no sender identity, so it is never operator authority.
+        ...(telegram?.onTopicMessage ? {
+          resumePromisedUpdate: async (c: import('../monitoring/CommitmentTracker.js').Commitment) => {
+            const topicId = c.topicId;
+            if (typeof topicId !== 'number') return;
+            const said = boundedHead(String(c.agentResponse || ''), 400);
+            // Not awaited: a respawn can take a while and must not hold the
+            // single-flight reminder pass; a failure is logged, not retried.
+            void Promise.resolve(telegram.onTopicMessage?.({
+              id: `promised-update-${c.id}`,
+              userId: 'promised-update',
+              content: `[promised update overdue] Earlier in this topic you told the user: "${said}". `
+                + `That time has passed and no message from you followed, so the user was just told the update is late. `
+                + `Send the promised update now: what was done, where it stands, and what is next. If the work stopped, resume it.`,
+              channel: { type: 'telegram', identifier: String(topicId) },
+              receivedAt: new Date().toISOString(),
+              metadata: { messageThreadId: topicId, senderUnverified: true, viaPromisedUpdate: true, telegramMessageId: '' },
+            } as never)).catch((err: unknown) => console.warn(`[check-in-reminder] could not hand ${c.id} back to ${topicRef(topicId)}: ${err instanceof Error ? err.message : String(err)}`));
+          },
+        } : {}),
         send: async (topicId, text, identity) => {
           if (!telegram) throw new Error('no-delivery-transport');
           // The origin boundary owns the reservation for the private

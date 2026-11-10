@@ -75,10 +75,21 @@ describe('browser devices — production wiring', () => {
     expect(status0.status).toBe(200);
     // No Telegram owner to speak as: the page is told it cannot send into Telegram here.
     expect(status0.body).toMatchObject({ enabled: true, approvalPath: 'dashboard', telegramSend: false });
+    // No Telegram owner: no private chat to name, and no paired owner phone yet (production boot path).
+    expect(status0.body).toMatchObject({ approvalChat: null, ownerPhoneApproves: false });
 
     const unlock = await request(app).post('/dashboard/unlock').send({ pin: PIN });
     expect(unlock.status).toBe(200);
     const session = unlock.body.operatorSessionToken as string;
+
+    // No Telegram owner: the PIN session is the approval, so a setup without it is refused (browser-setup-no-second-pin).
+    const bare = makeDevice();
+    const bareId = `${Date.now()}-${crypto.randomUUID()}`;
+    const bareTime = String(Date.now());
+    const noPin = await auth(request(app).post('/mobile/browser-devices').set('Host', HOST))
+      .send({ publicKey: bare.publicKey, enrollmentId: bareId, timeMs: bareTime, deviceName: 'e2e bare', proof: bare.sign(enrollProofMessage(HOST, bare.publicKey, bareId, bareTime)) });
+    expect(noPin.status).toBe(403);
+    expect(noPin.body.error).toBe('operator-session-required');
 
     const dev = makeDevice();
     const enrollmentId = `${Date.now()}-${crypto.randomUUID()}`;

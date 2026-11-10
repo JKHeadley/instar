@@ -1351,3 +1351,31 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .skill-pending .need-title { overflow-wrap: anywhere; }
 .skill-pending-why { font-style: italic; }
 .skill-pending .sheet-actions { display: flex; gap: var(--s-2); align-items: center; flex-wrap: wrap; margin-top: var(--s-1); }
+
+/* Quality history at a glance (#/work/maturation?s=quality): small charts, worst first. */
+.qh { max-width: 1200px; }
+.qh-top { display: flex; justify-content: space-between; align-items: baseline; gap: var(--s-3); flex-wrap: wrap; }
+.qh-back, .qh-entry { color: var(--accent); font-weight: 600; font-size: 15px; display: inline-block; min-height: 32px; line-height: 32px; }
+.qh .mb-answer { font-size: clamp(22px, 4vw, 32px); margin: 2px 0 6px; }
+.qh .mb-sub { font-size: 15px; }
+.qh-warn { margin: 8px 0 0; padding: 8px 12px; border: 1px solid var(--attn-line); background: var(--attn-wash); border-radius: var(--r-sm); font-size: 14px; line-height: 1.4; }
+.qh-warn .ask-link { min-height: 28px; line-height: 28px; }
+.qh-coverage { margin: 6px 0 0; font-size: 14px; color: var(--text-muted); line-height: 1.4; }
+.qh-coverage .ask-link { min-height: 28px; line-height: 28px; }
+.qh-key { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 8px 0 12px; font-size: 12px; color: var(--text-muted); }
+.qh-k-goal { color: var(--attn); }
+.qh-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: var(--s-3); }
+.qh-card { border: 1px solid var(--hairline); border-radius: var(--r-md); padding: 8px 12px; min-width: 0; background: var(--surface); }
+.qh-card[data-status="off-goal"] { border-color: var(--attn-line); }
+.qh-name { margin: 0; font-size: 15px; font-weight: 650; line-height: 1.25; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.qh-metric { font-weight: 400; color: var(--text-muted); }
+.qh-card .mb-measurement-chart { margin: 4px 0; }
+.qh-line { margin: 2px 0; font-size: 13px; line-height: 1.35; }
+.qh-foot { margin: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0 12px; }
+.qh-tag { font-size: 12px; color: var(--text-faint); }
+.qh-card .ask-link { font-size: 14px; min-height: 28px; line-height: 28px; }
+.qh-more { margin-top: var(--s-2); }
+.qh .mb-sources { margin-top: var(--s-4); }
+.qh-empty { color: var(--text-muted); font-size: 13px; }
+
+@media (max-width: 600px) { .qh .mb-sub { font-size: 14px; } .qh-coverage { font-size: 13px; } .qh-warn { font-size: 13px; padding: 6px 10px; } .qh-key { margin: 6px 0 8px; } }

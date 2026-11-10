@@ -18,7 +18,7 @@ import {
   parseConversationRef, refString, refFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
-  setupRefusal, approvalWords, blobTypeFor,
+  setupRefusal, approvalWords, privateChatWords, blobTypeFor,
 } from './chats-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
 
@@ -159,8 +159,10 @@ class ChatsPage {
     const err = el('p', { class: 'unlock-error', role: 'alert' });
     const go = el('button', { class: 'btn-primary', type: 'button', text: opts.replace ? 'Set up this browser here' : 'Set up this browser' });
     const path = this.status && this.status.approvalPath;
-    const how = path === 'telegram'
-      ? 'You will be asked for your dashboard PIN, then approve this browser in your private Telegram chat with the agent, or on your phone.'
+    const how = path === 'telegram' && this.status && this.status.ownerPhoneApproves
+      ? 'You will approve this browser on your iPhone with Face ID (a Telegram message comes too, as a backup).'
+      : path === 'telegram'
+      ? `You will approve this browser in ${privateChatWords(this.status && this.status.approvalChat)}, or on your phone.`
       : path === 'dashboard' ? 'You will be asked for your dashboard PIN, which approves this browser.' : 'You will be asked for your dashboard PIN, then to approve this browser.';
     go.addEventListener('click', async () => {
       go.disabled = true; err.textContent = '';
@@ -206,7 +208,7 @@ class ChatsPage {
     });
     this.shell(el('section', { class: 'card chat-setup' },
       el('h2', { class: 'card-title', text: 'Waiting for approval' }),
-      el('p', { class: 'card-line', text: approvalWords(a.approval) }),
+      el('p', { class: 'card-line', text: approvalWords(a.approval, this.status && this.status.approvalChat, a.telegramBackup) }),
       el('p', { class: 'card-line' }, el('span', { text: 'This browser\'s key: ' }), el('strong', { class: 'chat-fingerprint', text: a.fingerprint || (this.device.record && this.device.record.fingerprint) || '' })),
       el('p', { class: 'card-line chat-muted', text: 'Approve only if the key shown in the approval message matches this one.' }),
       el('label', { class: 'chat-label' }, el('span', { text: 'Code' }), code), confirm, left, err));

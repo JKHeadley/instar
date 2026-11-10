@@ -49,6 +49,20 @@ describe('MobilePushService', () => {
     expect(agg.aps.alert.body).toBe('2 more things need you');
   });
 
+  it('a pairing notice says what is waiting and tells the app to open the approval; no device name ever', () => {
+    // Operator 2026-11-09: "the description detail and the notifications is terrible".
+    const b = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'browser-approval', count: 1 }) as any;
+    expect(b.aps.alert).toEqual({ title: 'Echo', body: 'A new browser wants to use your conversations. Tap to approve with Face ID.' });
+    expect(b.instar).toMatchObject({ kind: 'notice', subject: 'browser-approval' });
+    const p = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'phone-approval', count: 1 }) as any;
+    expect(p.aps.alert.body).toBe('A new phone wants to pair. Tap to approve with Face ID.');
+    const plain = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', count: 1 }) as any;
+    expect(plain.aps.alert.body).toBe('Something needs you');
+    expect(plain.instar.subject).toBeUndefined();
+    const bogus = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'x' as never, count: 1 }) as any;
+    expect(bogus.aps.alert.body).toBe('Something needs you');
+  });
+
   it('JWT is ES256 with kid and iss, and verifies', () => {
     const jwt = signApnsJwt({ keyPem: KEY, keyId: 'KEY1', teamId: 'TEAM' }, 1000);
     const [h, c, sig] = jwt.split('.');

@@ -1018,7 +1018,14 @@ enum LockedStore {
         }
         if name == "read" {
             guard let state = readOnly(root: root) else { return failed("store-unreadable") }
-            return ["state": state, "attempts": currentAttempts(state),
+            // Node reads the whole store on every status check; its reply cap is 64,000 bytes.
+            // A store that outgrew it before pruning by count is read through the same trim.
+            var view = state
+            if var markers = view["markers"] as? [String: Any] {
+                for key in prunableKeys(markers) { markers[key] = nil }
+                view["markers"] = markers
+            }
+            return ["state": view, "attempts": currentAttempts(state),
                     "bootSession": bootUUID() ?? "", "loginSession": sessionUUID() ?? ""]
         }
         return withLock(root: root) { state -> [String: Any] in
@@ -1092,17 +1099,31 @@ enum LockedStore {
         }
     }
 
-    /// Keeps the store small: finished duties older than a week carry nothing.
+    /// Finished duties kept beyond those still owed or unreported, newest first.
+    /// About 500 bytes each, so this stays far under Node's 64,000-byte read.
+    static let keptFinished = 30
+
+    /// Keeps the store small: finished duties older than a week carry nothing, and
+    /// only the newest `keptFinished` of them are kept even within the week, so a
+    /// Mac that unlocks often never outgrows the read (126 did, fb-3a84590d-1e8).
     private static func pruneOld(_ state: inout [String: Any]) {
         guard var markers = state["markers"] as? [String: Any] else { return }
+        for key in prunableKeys(markers) { markers[key] = nil }
+        state["markers"] = markers
+    }
+
+    /// Keys that carry nothing: finished (and, if a failed relock, already reported),
+    /// and either older than a week or past the newest `keptFinished`.
+    static func prunableKeys(_ markers: [String: Any]) -> [String] {
         let cutoff = nowMs() - 7 * 24 * 3_600_000
+        var finished: [(key: String, created: Int64)] = []
         for (key, value) in markers {
             guard let entry = value as? [String: Any], isTerminal(entry["state"] as? String),
-                  entry["state"] as? String != "relock-failed" || entry["reported"] as? Bool == true,
-                  ((entry["createdAt"] as? NSNumber)?.int64Value ?? 0) < cutoff else { continue }
-            markers[key] = nil
+                  entry["state"] as? String != "relock-failed" || entry["reported"] as? Bool == true else { continue }
+            finished.append((key, (entry["createdAt"] as? NSNumber)?.int64Value ?? 0))
         }
-        state["markers"] = markers
+        finished.sort { $0.created != $1.created ? $0.created > $1.created : $0.key > $1.key }
+        return finished.enumerated().filter { $0.offset >= keptFinished || $0.element.created < cutoff }.map { $0.element.key }
     }
 
     static func isTerminal(_ state: String?) -> Bool {

@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "browser-approval-phone-first",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-09T19:10:07.378Z",
+  "artifactPath": "upgrades/side-effects/browser-approval-phone-first.md",
+  "artifactSha256": "f43a8cdc07ddb4c5f7d72d9d06618b286ffe313306760a8efe10b39f193b9ab7",
+  "coveredFiles": [
+    "dashboard/console/chats-model.js",
+    "dashboard/console/chats.js",
+    "docs/eli16/browser-approval-phone-first.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/mobileBrowserDevices.ts",
+    "src/server/mobilePairingApproval.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "tests/integration/mobile-pairing-approve.test.ts",
+    "tests/unit/console-chats-model.test.ts",
+    "tests/unit/mobile-browser-devices.test.ts",
+    "upgrades/next/browser-approval-phone-first.md",
+    "upgrades/side-effects/browser-approval-phone-first.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Wording plus phone-first ordering of an existing approval path; no new approval authority; additive fields; revert undoes it",
+  "eli16Path": "docs/eli16/browser-approval-phone-first.md",
+  "sideEffectsPath": "upgrades/side-effects/browser-approval-phone-first.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

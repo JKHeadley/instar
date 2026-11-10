@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-09T18:40:09.119Z",
+  "slug": "jev-first-merge-repair",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 1,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 1,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

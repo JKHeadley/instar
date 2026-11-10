@@ -99,6 +99,33 @@ export type MeshCommand =
       threadId: string;
     }
   | {
+      // Chief of Staff action protocol (docs/specs/chief-of-staff-topic.md §2.4): the lease
+      // holder routes ONE claimed action to the conversation's OWNERSHIP machine. Registered-
+      // peer class — the envelope proves a machine of mine sent it; the HANDLER is the gate:
+      // it verifies the INNER holder signature against the current lease holder + a fresh
+      // renewal, re-checks ownership, the open-intent rule, the stand-down list and the
+      // dedupe index under the conversation lock, and refuses when the feature is off.
+      type: 'cos-action';
+      conversationKey: string;
+      action: 'restart-inject' | 'restart-run' | 'redirect' | 'close' | 'mirror-status';
+      leaseEpoch: number;
+      sequence: number;
+      holderMachineId: string;
+      holderSignature: string;
+      claimedAt: string;
+      payload: { text?: string; durationHours?: number };
+    }
+  | {
+      // Chief of Staff §2.4 step 4: the holder asks the owner to SETTLE an open intent (find
+      // the receipt by idempotency key ⇒ started, else tombstone ⇒ rejected). The holder may
+      // write `lost` only after this answers. Same class and gate as cos-action.
+      type: 'cos-settle';
+      conversationKey: string;
+      intentKey: string;
+      holderMachineId: string;
+      holderSignature: string;
+    }
+  | {
       // WS1.2 drain signal (MULTI-MACHINE-SEAMLESSNESS-SPEC): the transfer
       // planner (router authority) tells the CURRENT owner of `session` to
       // drain its live session because a transfer to `target` is in flight.
@@ -572,6 +599,8 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'a2a-relay-forward':
     case 'a2a-relay-forward-ack':
     case 'a2a-topic-reply-inject':
+    case 'cos-action':
+    case 'cos-settle':
     case 'agent-identity-observe':
     case 'agent-identity-request':
       // agent-identity-observe / agent-identity-request (a2a-single-agent-identity
