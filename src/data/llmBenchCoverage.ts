@@ -371,6 +371,9 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   // ── Judges (judgesClaims: true) ────────────────────────────────────────────
   // Completion evaluators — credit/refuse a claim of asserted work.
   CompletionEvaluator: { claimKind: 'completionClaim' }, // THE motivating callsite: credited a bare "tests pass"
+  // chief-of-staff-topic.md §2.5: the verdict judge refuses or credits a project's "done" claim against its
+  // deterministic checklist (claims-done never closes on the claim alone) → judges a completion claim.
+  ChiefOfStaffLoop: { claimKind: 'completionClaim' },
   UnjustifiedStopGate: { claimKind: 'completionClaim' }, // judges whether a stop is justified = is the claimed work actually done/blocked
   JobReflector: { claimKind: 'completionClaim' }, // reflects on job success/completion (spec §2 pending-wave judge; classified now so the asymmetry can't silently reopen)
 
