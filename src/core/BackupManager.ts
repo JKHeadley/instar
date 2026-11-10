@@ -181,6 +181,10 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   '_fold-markers',
   '_clear-seed',
   '_seeded',
+  // The per-prompt delta's cursors and shadow log (§7.7): machine-local measurement;
+  // a restored cursor would describe a context the restored session does not hold.
+  '_prompt-cursors',
+  '_delta-shadow',
 ]);
 
 /**
