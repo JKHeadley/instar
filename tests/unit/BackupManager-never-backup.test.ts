@@ -48,6 +48,19 @@ describe('BackupManager — never-backup judgment-provenance segments', () => {
     expect(NEVER_BACKUP_PATH_SEGMENTS).toContain('judgment-provenance');
   });
 
+  it('never snapshots fold records, sidecars or the fold lock (context-budget §9.3/§14)', () => {
+    expect(NEVER_BACKUP_PATH_SEGMENTS).toEqual(expect.arrayContaining(['fold-records', 'fold-leases']));
+    const rec = path.join(stateDir, 'state', 'context-layers', '141133', 'fold-records');
+    fs.mkdirSync(rec, { recursive: true });
+    fs.writeFileSync(path.join(rec, 'f1.json'), '{"state":"locked"}');
+    fs.mkdirSync(path.join(stateDir, 'state', 'fold-leases'), { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'state', 'fold-leases', '.local-key.pem'), 'PRIVATE');
+    const bm = new BackupManager(stateDir, { includeFiles: ['state/', 'custom-note.md'] });
+    const snap = bm.createSnapshot('manual');
+    expect(snap.files).toContain('custom-note.md');
+    expect(snap.files.some((f) => f.includes('fold-records') || f.includes('fold-leases'))).toBe(false);
+  });
+
   it('drops provenance includeFiles entries UNCONDITIONALLY while keeping normal files', () => {
     const bm = new BackupManager(stateDir, {
       includeFiles: [

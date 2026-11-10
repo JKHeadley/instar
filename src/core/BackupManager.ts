@@ -148,6 +148,11 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   // machine-local posture as the provenance rows; the filename segment closes
   // alternate relative spellings the stateDir-relative prefix cannot.
   'external-hog-decisions.json',
+  // Fold records and sidecars (context-budget-layered-summaries §9.3/§9.7): a
+  // record restored from backup could resurrect a finished fold's containment.
+  'fold-records',
+  // The fold lock files and the single-machine fold signing key (§14 "Fold lock").
+  'fold-leases',
 ]);
 
 /**

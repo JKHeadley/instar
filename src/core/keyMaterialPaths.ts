@@ -55,6 +55,10 @@ export const KEY_MATERIAL_PATHS: readonly string[] = Object.freeze([
   'state/telegram-test-groups.key',
   // Conversation-bind token secret (32-byte HMAC key).
   'state/conversation-bind-token.secret',
+  // Fold locks (context-budget-layered-summaries §14 "Fold lock"): the
+  // single-machine fold signing key (`.local-key.pem`) and the lock and
+  // monotonic floor files a bearer edit could lower or forge.
+  'state/fold-leases/',
   // Manifest-integrity signing secret (`.instar/state/.manifest-key`,
   // generated at init, 0600). Found by the §5.4 walk: a key the parent lists
   // never named.

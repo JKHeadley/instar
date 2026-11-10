@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-10T14:12:44.969Z",
+  "slug": "cb-fold-coordinator",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 4,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts"
+    ],
+    "addedLines": 2,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "string-only change to degradation-report text; no action or loop"
+  },
+  "verdict": "pass"
+}

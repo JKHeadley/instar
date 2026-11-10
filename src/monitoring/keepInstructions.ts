@@ -45,7 +45,7 @@ export interface KeepInstructionsPointer {
   textPath: string;
   sha256: string;
   chars: number;
-  /** What rendered it (e.g. `standing-packet`, `fold:<foldId>`), for the audit trail. */
+  /** What rendered it (e.g. `standing-packet`, `fold:<topicKey>:<foldId>` (foldKeepSource in foldCarriers.ts — the form the fold boot sweep matches)), for the audit trail. */
   source: string;
   writtenAt: number;
 }
