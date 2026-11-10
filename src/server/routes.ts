@@ -1952,6 +1952,9 @@ export interface RouteContext {
     | null;
   /** AutonomousThroughputFloor status. Null while fleet-dark. */
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
+  chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
   enforcedTerminationStatus?: (() => unknown) | null;
@@ -8324,6 +8327,10 @@ export function createRoutes(ctx: RouteContext): Router {
       baseRoots: deriveBaseRoots(workDir),
       maxDurationMs: ctx.config.autonomousSessions?.maxDurationMs ?? 172_800_000,
       initialStatus,
+      // Chief of Staff (docs/specs/chief-of-staff-topic.md §2.4/§4): a CoS-started run carries its
+      // intent key (recovery finds the receipt by key) and the no-respawn-when-lease-expired marker.
+      ...(body.cosNoRespawn === true ? { cosNoRespawn: true } : {}),
+      ...(typeof body.idempotencyKey === 'string' && body.idempotencyKey ? { idempotencyKey: body.idempotencyKey.slice(0, 300) } : {}),
     });
     if (!result.ok) {
       // One registration per active run (R43): refused + flagged.
@@ -8762,6 +8769,28 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousThroughputFloor.status());
+  });
+
+  // ── Chief of Staff (docs/specs/chief-of-staff-topic.md §5) ──
+  // Loop health first, then the lease, then bound projects. Owner-only: the owner principal is
+  // the bearer holder on this agent (team members reach the agent through conversations, not
+  // the API); the per-project route returns cited evidence, so titles never leave this surface.
+  router.get('/chief-of-staff', (_req, res) => {
+    if (!ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
+      return;
+    }
+    res.json({ ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary() });
+  });
+  router.get('/chief-of-staff/projects/:key', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
+      return;
+    }
+    const key = String(req.params.key ?? '');
+    const detail = ctx.chiefOfStaffLoop.projectDetail(key);
+    if (!detail) { res.status(404).json({ error: 'no bound project with that conversation key' }); return; }
+    res.json(detail);
   });
 
   // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──

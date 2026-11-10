@@ -477,6 +477,11 @@ export class AutonomousRunStore {
     });
   }
 
+  /** The current record carrying `runId`, on any topic (Chief of Staff compensation by exact run id, spec §2.4 step 5). */
+  findByRunId(runId: string): AutonomousRunRecord | null {
+    return this.listCurrentRecords().find((r) => r.runId === runId) ?? null;
+  }
+
   markTerminal(topicId: string, runId: string, status: 'met' | 'ended' | 'expired', reason?: string): AutonomousRunRecord | null {
     return this.update(topicId, runId, (rec) => {
       // Terminality is one-way (R43): never demote a terminal record back to active,
