@@ -1102,6 +1102,13 @@ const SHARED_DEFAULTS: Record<string, unknown> = {
   // fire-and-forget so it never slows message delivery. enabled:false is the
   // kill-switch (store + read routes remain, capture goes inert).
   // See docs/specs/topic-intent-capture-loop.md.
+  // Context Budget: Layered Summaries (docs/specs/context-budget-layered-summaries.md).
+  // compactionRecovery: the session-start hook reads Claude Code's stdin `source`
+  // so compaction recovery actually runs (§9.1). A user-facing bug fix: default
+  // on; the switch exists for rollback (off = exactly the old behaviour).
+  contextBudget: {
+    compactionRecovery: { enabled: true },
+  },
   topicIntent: {
     capture: {
       enabled: true,
