@@ -77,21 +77,52 @@ in shadow mode, recording what it would have done and how the quiz would have
 gone. Then turn it on for one topic, then everywhere, each step with a single
 switch back.
 
-## Fable 5.2's part
+## Three things Justin asked for after reading the first page
 
-Justin asked for Fable 5.2 in both design and review. This draft went through a
-Fable 5.2 design pass before he saw it. It found thirteen flaws in the previous
-version, among them that the old drift check only tested whether the session
-could repeat what it had just been handed, that there was no real undo, and
-that the detail most often needed after a fold (tool output) was not stored
-anywhere searchable. All of its findings were adopted; what changed is listed
-in the spec's Appendix A. In review, Fable 5.2 reads every round alongside the GPT
+**Works with any engine.** The design has one neutral core and a short, fixed
+list of things each engine must be able to do (read its own transcript, take a
+command, say when it compacts, start from a file, launch with starting context,
+set its memory limit, restrict tools during a check). Claude Code is wired
+first; Codex is built in the same phase, and where it cannot do something the
+design falls back to a named lesser path and records that it did.
+
+**A general Instar feature.** Nothing depends on Echo, on Telegram, or on
+Claude Code. It runs on a single machine as fully as in a pool.
+
+**A sentinel beside the session.** The session does the work only it can do:
+declaring milestones, writing its handoff, answering the quiz. A separate,
+persistent watcher notices when that work did not happen (stale summaries, a
+topic that should have folded and never did, ignored checkpoint requests, a
+fold left half-finished, a muted topic left muted) and takes a short list of
+pre-declared, limited actions: ask, rebuild the saved state, undo, switch the
+topic to observe-only, and raise one notice when it runs out of moves. It
+never writes the summaries or the handoff itself, and every action has a
+limit. The pattern, "the one with the context does the work, the one with
+persistence checks it got done", is written up so it can be reused once the
+pilot shows how often the sentinel acted and whether it was right.
+
+## How it was reviewed
+
+Justin asked for Fable 5.2 in both design and review. The draft went through a
+Fable 5.2 design pass before he saw it, then six rounds of formal review, each
+with six specialist reviewers, an outside GPT read and a Fable 5.2 read. The
+rounds found roughly two hundred design problems in total, and every one was
+folded in or recorded with a reason. The largest corrections: several existing
+pieces the design planned to reuse did not work the way they were assumed to
+when the reviewers read the code, so the design now names exactly what it will
+build; a fold is a real transaction with a byte-exact checkpoint to undo to;
+the quiz after a fold tests behaviour, not recitation; and the Codex engine's
+compaction support is described as it is today, not as hoped. The full record
+is in the spec's appendices and the convergence report. In review, Fable 5.2 reads every round alongside the GPT
 and Gemini reviewers.
 
 ## What Justin decides
 
-Which topic goes first; whether a rolled-back fold is mentioned in the topic or
-only on the dashboard; how a "we learned this" change to the purpose gets
-confirmed; whether to set Claude Code's safety-net window early, as a separate
-step; and whether the starting judgments for "comfortable" and "critical"
-working sizes are reasonable to tune from.
+The spec now carries every one of these as a stated default he can override at
+approval: which topic goes first (the build desk, with the busiest topic
+shadowed alongside), how an undone fold is reported (dashboard only unless the
+undo itself fails), how a "we learned this" change to a topic's purpose gets
+confirmed (mentioned and proceed if it only adds; explicit yes if it narrows),
+when to set the engine's safety-net window (per machine, once the recovery
+fix is proven there), and the starting numbers (all written down, each with the
+measurement that replaces it).
