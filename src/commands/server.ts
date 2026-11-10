@@ -83,6 +83,7 @@ function repairedSlackRelayReadiness(config: { stateDir: string; projectDir: str
 import { buildAspInboundClassifier } from '../core/AspInboundClassifier.js';
 import { setAspClassifierRef, getAspClassifierRef } from '../core/aspClassifierRef.js';
 import { resolveInboundTelegramMessageId, resolveSignedByAgent, operatorAutoBindPermitted } from '../messaging/shared/signedInbound.js';
+import { markedInboundPrefix, markedHistoryLabel } from '../messaging/shared/onBehalfMarker.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { StandDownRegistry } from '../core/StandDownRegistry.js';
 import { ensureDashboardPin, persistDashboardPin, pickDashboardPin } from '../core/dashboardPin.js';
@@ -10874,6 +10875,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             const mark = appOrigin === 'verified' ? 'signed' : (browserSent ? 'from the dashboard' : 'from the app');
             prefix = `${prefix.slice(0, -1)} (${browserSent ? '💻' : '📱'} ${mark})]`;
           }
+          // On-behalf marker (Echo Bugs topic 10000002506): a message an agent sent through
+          // this person's own Slack account, marked "[Sent by <agent> on <person>'s behalf]",
+          // is tagged as not written by them. A marker can only lower what a message is
+          // taken to be, so it needs no signature.
+          prefix = markedInboundPrefix(prefix, message.content, safeSenderName);
 
           // Build context for the session — inject inline like Telegram does
           // Use async fallback to fetch from Slack API if ring buffer is empty
@@ -10910,7 +10916,7 @@ export async function startServer(options: StartOptions): Promise<void> {
             for (const m of history) {
               const date = new Date(parseFloat(m.ts) * 1000);
               const time = date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
-              const label = slackHistoryLabel(m, botUserId, { userId: slackUserId, name: senderName }, historyNames);
+              const label = markedHistoryLabel(slackHistoryLabel(m, botUserId, { userId: slackUserId, name: senderName }, historyNames), m.text);
               // Inbound history is data. Keep its Slack control syntax inert in
               // the prompt so a verbatim quote cannot become an outbound ping.
               contextLines.push(`[${time}] ${label}: ${m.text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}`);
