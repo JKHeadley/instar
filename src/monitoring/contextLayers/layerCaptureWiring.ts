@@ -14,7 +14,9 @@
  */
 import fs from 'node:fs';
 import { resolveFrameworkTranscriptPath } from '../../core/FrameworkSessionStore.js';
-import { captureTick, TICK_MESSAGE_PREFIX, type CaptureLoopDeps, type CaptureTurnEntry } from '../../core/TopicIntentCapture.js';
+import { captureTick, TICK_MESSAGE_PREFIX, type CaptureLoopDeps, type CaptureTurnEntry, type CaptureOutcome } from '../../core/TopicIntentCapture.js';
+import { getFeatureMetricsRecorder } from '../../core/CircuitBreakingIntelligenceProvider.js';
+import { LAYER_UPDATE_COMPONENT } from './layerCadence.js';
 import type { TopicIntentStore } from '../../core/TopicIntent.js';
 import type { ContextLayers } from './contextLayersBoot.js';
 import { projectAwareness } from './layerProjection.js';
@@ -28,8 +30,10 @@ export interface LayerSessionSource {
 }
 
 export interface LayerCaptureWiring {
-  captureDeps: Pick<CaptureLoopDeps, 'layerBudget' | 'onCaptured'>;
-  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[] }): { ticker: LayerTicker; stop(): void };
+  captureDeps: Pick<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'onLayerOutcome'>;
+  /** Pass to `createLlmExtractFn` as its usage observer: provider-reported tokens per trigger (§11). */
+  onExtractUsage(input: { message: { id: string } }, usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }): void;
+  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'onLayerOutcome'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[] }): { ticker: LayerTicker; stop(): void };
   /** Projection outcomes, for the status and tests. */
   counts: { projected: number; failed: number };
   /** The session → transcript resolver the ticker uses (exposed for the wiring test). */
@@ -92,12 +96,30 @@ export function wireLayerCapture(o: {
     return out;
   };
 
+  // Measurement (§11): every attempt that reached the layer path is one
+  // LayerUpdate row on /metrics/features (kind event — the tokens stay on the
+  // extractor's own rows) and one count in the per-day, per-trigger rollup.
+  const onLayerOutcome = (_topicId: number, trigger: 'turn' | 'tick', outcome: CaptureOutcome) => {
+    const updated = outcome.status === 'captured' && outcome.awarenessUpdated === true;
+    const deferred = outcome.status === 'deferred-budget' || outcome.status === 'skipped-shed';
+    const error = outcome.status === 'degraded';
+    // A degraded attempt may have failed before the extractor ran: it counts as an error, never as a call.
+    o.layers.spend.recordAttempt(trigger, { called: outcome.status === 'captured', updated, deferred, error });
+    try {
+      getFeatureMetricsRecorder()?.record({ feature: LAYER_UPDATE_COMPONENT, kind: 'event', outcome: error ? 'error' : deferred ? 'shed' : updated ? 'fired' : 'noop' });
+    } catch { /* @silent-fallback-ok — the feature row is a side channel; the rollup above already counted the attempt */ }
+  };
+  const onExtractUsage: LayerCaptureWiring['onExtractUsage'] = (input, usage) => {
+    o.layers.spend.recordUsage(String(input.message.id).startsWith(TICK_MESSAGE_PREFIX) ? 'tick' : 'turn', usage);
+  };
+
   return {
     counts,
     tickSessions,
-    captureDeps: { layerBudget: o.layers.budget, onCaptured },
+    onExtractUsage,
+    captureDeps: { layerBudget: o.layers.budget, onCaptured, onLayerOutcome },
     startTicker(base, opts = {}) {
-      const deps: CaptureLoopDeps = { ...base, layerBudget: o.layers.budget, onCaptured };
+      const deps: CaptureLoopDeps = { ...base, layerBudget: o.layers.budget, onCaptured, onLayerOutcome };
       ticker = new LayerTicker({
         sessions: tickSessions,
         midTurn: async (t) => (await o.sessions.checkSessionWorkState(t)) !== 'idle',
