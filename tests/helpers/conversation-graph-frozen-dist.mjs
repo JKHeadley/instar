@@ -15,25 +15,31 @@ async function packageFiles(repository){
  return [...new Set(names)].sort();
 }
 function inventory(root,names){return names.flatMap(name=>files(root,name)).sort((a,b)=>a.path.localeCompare(b.path));}
+// Change detection only: path, size, mode and modification time, no content hash. Hashing the whole
+// declared package (about 10,000 files) several times made startup slow and load-sensitive.
+function fileMeta(root,names){return names.map(name=>{const stat=fs.lstatSync(path.join(root,name));if(!stat.isFile()||stat.isSymbolicLink())throw new Error('fixture-code-file-invalid');return{path:name,bytes:stat.size,executable:!!(stat.mode&0o111),mtimeNs:String(fs.statSync(path.join(root,name),{bigint:true}).mtimeNs)};});}
 function selected(repository,critical){return critical.map(module=>{const source=path.join(repository,'src',module+'.ts'),built=path.join(repository,'dist',module+'.js');if(fs.statSync(source).mtimeMs>fs.statSync(built).mtimeMs)throw new Error('fixture-current-normal-dist-required');return{module,sourceSha256:sha(fs.readFileSync(source)),loadedDistSha256:sha(fs.readFileSync(built))};});}
 function directories(root,relative,mode,filesAlreadyReadonly=false){const file=path.join(root,relative),stat=fs.lstatSync(file);if(stat.isSymbolicLink())return;if(stat.isDirectory()){fs.chmodSync(file,mode);for(const name of fs.readdirSync(file))directories(root,path.join(relative,name),mode,filesAlreadyReadonly);}else if(stat.isFile()&&mode===0o500){if(filesAlreadyReadonly){if(stat.mode&0o222)throw new Error('fixture-code-writable-copy-refused');}else fs.chmodSync(file,(stat.mode&0o111)?0o500:0o400);}}
 export async function freezeGraphDist(repository,critical,onPhase=()=>{}){
- onPhase('inventory-start');const sourceBefore=selected(repository,critical),names=await packageFiles(repository),before=inventory(repository,names);onPhase('inventory-ready');const root=fs.mkdtempSync(path.join(os.tmpdir(),'conversation-graph-code-'));fs.chmodSync(root,0o700);let SafeFsExecutor;
+ onPhase('inventory-start');const sourceBefore=selected(repository,critical),names=await packageFiles(repository),before=fileMeta(repository,names);onPhase('inventory-ready');const root=fs.mkdtempSync(path.join(os.tmpdir(),'conversation-graph-code-'));fs.chmodSync(root,0o700);let SafeFsExecutor;
  const thaw=()=>{directories(root,'',0o700);};
  try{
-  onPhase('copy-start');const sourceModes=new Map(before.map(row=>[row.path,row.executable?0o500:0o400])),createdParents=new Set([root]);for(const name of names){const destination=path.join(root,name),parent=path.dirname(destination);if(!createdParents.has(parent)){fs.mkdirSync(parent,{recursive:true,mode:0o700});createdParents.add(parent);}fs.writeFileSync(destination,fs.readFileSync(path.join(repository,name)),{flag:'wx',mode:sourceModes.get(name)});}
+  onPhase('copy-start');const sourceModes=new Map(before.map(row=>[row.path,row.executable?0o500:0o400])),createdParents=new Set([root]);for(const name of names){const destination=path.join(root,name),parent=path.dirname(destination);if(!createdParents.has(parent)){fs.mkdirSync(parent,{recursive:true,mode:0o700});createdParents.add(parent);}fs.copyFileSync(path.join(repository,name),destination,fs.constants.COPYFILE_EXCL|fs.constants.COPYFILE_FICLONE);fs.chmodSync(destination,sourceModes.get(name)??0o400);}
   onPhase('copy-ready');
   // Existing installed dependencies only; no install/new dependency or source
   // loader. Own production dist/dashboard/package bytes are independent files.
   fs.symlinkSync(fs.realpathSync(path.join(repository,'node_modules')),path.join(root,'node_modules'),'dir');
   onPhase('guard-import-start');({SafeFsExecutor}=await import(pathToFileURL(path.join(root,'dist/core/SafeFsExecutor.js')).href));
-  onPhase('guard-import-ready');const sourceAfter=selected(repository,critical),afterNames=await packageFiles(repository),after=inventory(repository,afterNames),copied=inventory(root,names);
-  if(JSON.stringify(names)!==JSON.stringify(afterNames)||JSON.stringify(sourceBefore)!==JSON.stringify(sourceAfter)||JSON.stringify(before)!==JSON.stringify(after)||JSON.stringify(before)!==JSON.stringify(copied))throw new Error('fixture-build-changed-during-snapshot');
+  onPhase('guard-import-ready');const sourceAfter=selected(repository,critical),afterNames=await packageFiles(repository),after=fileMeta(repository,afterNames),copied=inventory(root,names);
+  // The source did not change while it was copied (same names, sizes and times), and the copy has the
+  // same names and sizes; the critical modules are also checked by content just below.
+  const shape=rows=>JSON.stringify(rows.map(row=>[row.path,row.bytes,row.executable]).sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0));
+  if(JSON.stringify(names)!==JSON.stringify(afterNames)||JSON.stringify(sourceBefore)!==JSON.stringify(sourceAfter)||JSON.stringify(before)!==JSON.stringify(after)||shape(before)!==shape(copied))throw new Error('fixture-build-changed-during-snapshot');
   const modules=sourceBefore.map(value=>{const copiedFile=copied.find(file=>file.path===`dist/${value.module}.js`);if(!copiedFile||copiedFile.sha256!==value.loadedDistSha256)throw new Error('fixture-module-snapshot-mismatch');return value;});
   const manifestPath=path.join(root,'frozen-code-manifest.json'),assetManifest={format:'isolated-declared-package-v1',assetSelection:'package-json-files-exact-declared-roots',treeSha256:sha(JSON.stringify(copied)),fileCount:copied.length,files:copied,modules};const metadata=fs.openSync(manifestPath,'wx',0o400);try{fs.writeFileSync(metadata,JSON.stringify(assetManifest));fs.fsyncSync(metadata);}finally{fs.closeSync(metadata);}
-  onPhase('verify-ready');directories(root,'',0o500,true);onPhase('readonly-ready');
+  onPhase('verify-ready');directories(root,'',0o500,true);const frozenMetadata=JSON.stringify(fileMeta(root,names));onPhase('readonly-ready');
   let closed=false;return{root,modules,identity:{manifestPath,format:'isolated-declared-package-v1',treeSha256:sha(JSON.stringify(copied)),fileCount:copied.length,createdAt:new Date().toISOString(),assetSelection:'package-json-files-exact-declared-roots',dependencyMode:'existing-node_modules-symlink',dependencyLockSha256:sha(fs.readFileSync(path.join(repository,'package-lock.json')))},moduleURL:name=>pathToFileURL(path.join(root,'dist',name+'.js')).href,
-   assertUnchanged(){if(sha(JSON.stringify(inventory(root,names)))!==sha(JSON.stringify(copied)))throw new Error('fixture-frozen-code-changed');},
+   assertUnchanged(){if(JSON.stringify(fileMeta(root,names))!==frozenMetadata)throw new Error('fixture-frozen-code-changed');},
    close(){if(closed)return;thaw();SafeFsExecutor.safeRmSync(root,{recursive:true,force:true,operation:'graph-live-fixture:frozen-public-code-cleanup'});closed=true;}};
  }catch(error){
   if(!SafeFsExecutor&&fs.existsSync(path.join(root,'dist/core/SafeFsExecutor.js')))try{({SafeFsExecutor}=await import(pathToFileURL(path.join(root,'dist/core/SafeFsExecutor.js')).href));}catch{/* public-code-only incomplete copy has no service/keys/admission; startup remains refused */}
