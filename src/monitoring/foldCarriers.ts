@@ -13,8 +13,10 @@
  *  - `fold-marker`: the per-session marker the fold-marker tool policy reads
  *    (foldMarker.ts).
  *
- * The fold hold and the engine checkpoint register their own carriers in the
- * slices that build them.
+ *  - `engine-checkpoint`: the byte-exact pre-fold transcript (engineCheckpoint.ts);
+ *    deleted on commit or abort, kept for the grace period after a rollback.
+ *
+ * The fold hold registers its carrier at boot (it lives in the routes).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -24,6 +26,8 @@ import { keepInstructionsDir, removeKeepInstructions } from './keepInstructions.
 import { PendingInjectStore } from '../core/PendingInjectStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { foldMarkerCarrier } from './foldMarker.js';
+import { engineCheckpointCarrier } from './engineCheckpoint.js';
+import { FoldRecordStore } from './FoldCoordinator.js';
 
 /** The keep-instructions source string for a fold's staged steering text. */
 export function foldKeepSource(topicKey: string, foldId: string): string {
@@ -111,5 +115,6 @@ export function defaultFoldCarriers(stateDir: string): FoldCarrier[] {
     keepInstructionsCarrier(stateDir),
     pendingInjectCarrier(new PendingInjectStore(path.join(stateDir, 'state'))),
     foldMarkerCarrier(stateDir),
+    engineCheckpointCarrier(stateDir, (topicKey, foldId) => new FoldRecordStore(stateDir).get(topicKey, foldId)?.state ?? null),
   ];
 }

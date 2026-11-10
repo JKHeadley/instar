@@ -29,7 +29,7 @@ export interface FoldBootDeps {
   topicRowsPresent: (topicKey: string) => boolean;
   /** The ContextBudgetSentinel's heartbeat; absent until that slice ships (⇒ no fold begins). */
   sentinelHeartbeatFresh?: () => boolean;
-  /** The replicated layer kind; absent until that slice ships. */
+  /** Is the replicated layer kind registered on this build (the §14 skew rule)? Absent ⇒ false. */
   layerKindPresent?: () => boolean;
   onEvent?: (e: FoldEvent) => void;
 }

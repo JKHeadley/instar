@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-10T11:02:41.000Z",
+  "slug": "cb-engine-checkpoint",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 327,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/BackupManager.ts",
+      "src/monitoring/engineCheckpoint.ts",
+      "src/monitoring/foldCarriers.ts"
+    ],
+    "addedLines": 325,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
