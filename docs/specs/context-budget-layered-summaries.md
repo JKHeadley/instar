@@ -1298,7 +1298,11 @@ session was just handed. So:
 2. **Question generation at stage time**, from the **folded spans the handoff
    named**, through the 6.5 sampler (default 30K tokens; floor: every
    handoff-named decision, evolution and "still needed verbatim" item is always
-   in the sample). Questions are typed: `constraint`, `rejected-approach`,
+   in the sample). In addition, an **independent sample** is drawn from the raw entries the
+   sampler excluded, stratified across the folded span (default 20% of the
+   question budget), so the probe can fail on something neither the handoff nor
+   the sampler named; coverage (share of the span represented) and sampled
+   loss are reported separately on the card (11). Questions are typed: `constraint`, `rejected-approach`,
    `open-thread`, `detail`; an item sourced from a ledger entry, an H1 next step
    or a still-needed item is never `detail`. Count: at least one per finished
    span and per open thread (floor 1), with a deterministic ceiling set by the
