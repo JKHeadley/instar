@@ -140,7 +140,7 @@ export function createMobilePinRouter(deps: MobilePinRouteDeps): Router {
         conversationKey: t.key, messageId, pinned, by: { name: person.name, role: person.role }, preview, source: 'app',
         machineId: svc!.deps.machineId(), at: new Date(now()).toISOString(), eventId,
       });
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — reported via reportDegradation and answered as a 503 the person sees. E2E-PAIRING: EXEMPT — comment-only marker; the route is covered by tests/e2e/conversation-pins-alive.test.ts
       svc!.deps.reportDegradation?.('AppConversations.pin', err instanceof Error ? err.message : String(err));
       res.status(503).json({ error: 'conversation-unavailable', detail: 'The pin could not be saved. Try again.' });
       return;
