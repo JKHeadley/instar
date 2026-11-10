@@ -43,6 +43,7 @@ import { SelfHealGate, SqliteSelfHealEpisodeStore, type SelfHealEpisodeStore, ty
 import type { FoldCoordinator, FoldRecord, FoldRecordStore } from './FoldCoordinator.js';
 import { pruneSettledCheckpoints } from './engineCheckpoint.js';
 import type { CanaryReport, CanarySession, CompactionCanary } from './compactionCanary.js';
+import { readSuiteResults, adapterSuiteDir, type AdapterSuiteResult } from './adapterVerificationSuite.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
 
@@ -89,7 +90,18 @@ export interface ContextBudgetSentinelDeps {
    * topic sessions' transcripts; its report rides the sentinel's status.
    */
   canary?: { instance: CompactionCanary; sessions(): CanarySession[]; switchOn(): boolean };
+  /**
+   * The adapter verification suite's trigger (§9.6: "triggers: adapter build and
+   * any change of the retained engine binary version"): when the engine version
+   * has no recorded result, run the suite once (in its own process), at most once
+   * per version per `retryAfterMs` (default 24 h), one run at a time.
+   */
+  adapterSuite?: { currentVersion(): string | null; run(): Promise<void>; retryAfterMs?: number };
 }
+
+const SUITE_RETRY_MS = 24 * 60 * 60_000;
+/** Attempts per engine version before the trigger gives up (the status shows it). */
+const SUITE_MAX_ATTEMPTS = 3;
 
 type Ctx = { topicKey: string; foldId: string };
 
@@ -111,6 +123,14 @@ export interface SentinelStatus {
   lastError: string | null;
   /** The compaction canary's report (null when no canary is wired). */
   canary: CanaryReport | null;
+  /** The adapter verification suite's recorded results on this machine, newest first, and whether a run is in progress. */
+  adapterSuite: {
+    running: boolean; results: AdapterSuiteResult[]; attempts: Record<string, { count: number; lastAt: number }>; gaveUp: string[];
+    /** The engine version the trigger sees now (null: unknown — a wrong binary path or a failed probe). */
+    engineVersion: string | null;
+    /** The latest attempt's outcome (`last-run.json`), including an inconclusive run's errors. */
+    lastRun: Record<string, unknown> | null;
+  };
 }
 
 function keyHash(value: string): string { return crypto.createHash('sha256').update(value).digest('hex').slice(0, 24); }
@@ -187,6 +207,7 @@ export class ContextBudgetSentinel {
       clean = await this.step('torn', () => this.escalateTorn()) && clean;
       clean = await this.step('outbox', () => this.flushOutbox()) && clean;
       if (this.d.canary) { const k = this.d.canary; clean = await this.step('canary', () => k.instance.scan(k.sessions(), k.switchOn())) && clean; }
+      if (this.d.adapterSuite) clean = await this.step('adapter-suite', () => this.maybeRunAdapterSuite()) && clean;
       clean = await this.step('checkpoints', () => { this.checkpointsPruned += pruneSettledCheckpoints(this.d.stateDir, this.now()).length; }) && clean;
       clean = await this.step('prune', () => { this.gate.pruneTerminal(); }) && clean;
       // The heartbeat means a WORKING sentinel: a tick with a failed step does not refresh it.
@@ -317,6 +338,30 @@ export class ContextBudgetSentinel {
     return true;
   }
 
+  private suiteRunning = false;
+
+  /** Start the suite (not awaited) when this engine version has no recorded result and no recent attempt. */
+  private maybeRunAdapterSuite(): void {
+    const k = this.d.adapterSuite!;
+    if (this.suiteRunning) return;
+    const version = k.currentVersion();
+    if (!version) return;
+    if (readSuiteResults(this.d.stateDir).some((r) => r.version === version)) return;
+    const f = path.join(adapterSuiteDir(this.d.stateDir), 'attempts.json');
+    let attempts: Record<string, { count: number; lastAt: number }> = {};
+    try { attempts = JSON.parse(fs.readFileSync(f, 'utf-8')) as typeof attempts; } catch { attempts = {}; } // @silent-fallback-ok — no attempts yet
+    const prev = attempts[version];
+    if (prev && (prev.count >= SUITE_MAX_ATTEMPTS || this.now() - prev.lastAt < (k.retryAfterMs ?? SUITE_RETRY_MS))) return;
+    // Recorded BEFORE the run, so a crash mid-run still counts as the attempt (bounded retries).
+    attempts[version] = { count: (prev?.count ?? 0) + 1, lastAt: this.now() };
+    fs.mkdirSync(path.dirname(f), { recursive: true, mode: 0o700 });
+    const tmp = `${f}.${process.pid}.tmp`; fs.writeFileSync(tmp, JSON.stringify(attempts), { mode: 0o600 }); fs.renameSync(tmp, f);
+    this.suiteRunning = true;
+    this.d.audit?.({ event: 'adapter-suite-started', reason: version });
+    void k.run().catch((err) => this.d.audit?.({ event: 'adapter-suite-failed', reason: err instanceof Error ? err.message : String(err) }))
+      .finally(() => { this.suiteRunning = false; });
+  }
+
   private snapshotDir(): string { return path.join(this.d.stateDir, 'state', 'context-budget', 'termination'); }
   private readSnapshot(foldId: string): TerminationSnapshot | null {
     try {
@@ -427,6 +472,15 @@ export class ContextBudgetSentinel {
       checkpointsPruned: this.checkpointsPruned,
       lastError: this.lastError,
       canary: this.d.canary ? this.d.canary.instance.report(this.d.canary.switchOn()) : null,
+      adapterSuite: (() => {
+        let attempts: Record<string, { count: number; lastAt: number }> = {};
+        try { attempts = JSON.parse(fs.readFileSync(path.join(adapterSuiteDir(this.d.stateDir), 'attempts.json'), 'utf-8')) as typeof attempts; } catch { attempts = {}; } // @silent-fallback-ok — no attempts yet
+        const results = readSuiteResults(this.d.stateDir);
+        const gaveUp = Object.entries(attempts).filter(([v, a]) => a.count >= SUITE_MAX_ATTEMPTS && !results.some((r) => r.version === v)).map(([v]) => v);
+        let lastRun: Record<string, unknown> | null = null;
+        try { lastRun = JSON.parse(fs.readFileSync(path.join(adapterSuiteDir(this.d.stateDir), 'last-run.json'), 'utf-8')) as Record<string, unknown>; } catch { lastRun = null; } // @silent-fallback-ok — no run yet
+        return { running: this.suiteRunning, results: results.slice(0, 5), attempts, gaveUp, engineVersion: this.d.adapterSuite?.currentVersion() ?? null, lastRun };
+      })(),
     };
   }
 }
