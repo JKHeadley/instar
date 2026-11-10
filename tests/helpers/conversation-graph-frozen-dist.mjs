@@ -12,7 +12,10 @@ async function packageFiles(repository){
  if(!Array.isArray(declared)||!declared.length)throw new Error('fixture-normal-package-list-invalid');
  const roots=[...declared,...['package.json','README.md','LICENSE','LICENSE.md'].filter(name=>fs.existsSync(path.join(repository,name)))],names=[];
  for(const name of roots){if(typeof name!=='string'||path.isAbsolute(name)||name.split('/').some(part=>part==='..'||part==='')||/[?*{}]/.test(name)||name==='.claude'||name.startsWith('.instar')||name.startsWith('node_modules'))throw new Error('fixture-package-path-refused');for(const file of files(repository,name,[],false))names.push(file.path);}
- return [...new Set(names)].sort();
+ // Unit tests create and delete temporary native helpers in dist/native (for example
+ // instar-desktop-capture-test-<pid>-<n>) while other lanes run. They are not package code, and a
+ // file vanishing mid-copy failed this snapshot inside Local Verify; leave them out.
+ return [...new Set(names)].filter(name=>!/^dist\/native\/instar-desktop-[a-z]+-test-[^/]*$/.test(name)).sort();
 }
 function inventory(root,names){return names.flatMap(name=>files(root,name)).sort((a,b)=>a.path.localeCompare(b.path));}
 // Change detection only: path, size, mode and modification time, no content hash. Hashing the whole
