@@ -79,3 +79,6 @@ Concern raised and resolved: the two MUST-FIX items are fixed with tests; seven 
 
 ## Post-rebase addendum (2026-11-09): the lock-held spawn option
 The executor spawns inside `withConversationLock`, which is not re-entrant, so this PR had switched the topic spawn between the locked and unlocked SessionManager entry by binding one or the other — which also moved the spawn call out of the literal shape the topic-profile wiring ratchet pins (`spawnInteractiveSession(bootstrapMessage, sessionName, {` followed by the per-topic effort spread). The switch is now an option: `conversationLockHeld: true` on the spawn options makes `spawnInteractiveSession` skip taking the lock it would otherwise take, the call keeps its literal shape, and the unlocked entry remains the only place that spawns. Same behaviour, one fewer bound-method indirection.
+
+## Post-rebase addendum 2: write-domain declaration
+Main's write-domain ratchet requires every mutating route to declare where its write converges. `POST /chief-of-staff/*` (the check-in here; bind, tap and triage in PR 5) is classified `machine-local` with a `ws2x-replicated` story: each call writes to this machine's own chief-of-staff journal stream, single writer by origin, replicated by journal sync and folded from the union everywhere; the journal is not on a git-synced path. Declaration only; no behaviour change.
