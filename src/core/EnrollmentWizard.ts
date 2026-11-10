@@ -33,6 +33,7 @@ import {
 import type { IdentityOracle } from './CredentialLocationLedger.js';
 import { validateEnrolledAccountEmail } from './AccountFollowMeEmailGate.js';
 import { ensureAgentOwnedMemory } from './AgentOwnedMemory.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 /** The public artifact a framework login yields (no secret). */
 export interface LoginArtifact {
@@ -610,6 +611,13 @@ export class EnrollmentWizard {
           // and eligible for the next bounded sweep.
           const error = err instanceof Error ? err.message : String(err);
           this.logger.warn(`[EnrollmentWizard] completion pool-add failed for ${login.id}: ${error}`);
+          DegradationReporter.getInstance().report({
+            feature: 'EnrollmentWizard.completeLanded',
+            primary: 'Add the validated sign-in back to the subscription pool',
+            fallback: 'Login left pending; the next sweep or watch retries',
+            reason: `Why: ${error}`,
+            impact: `Account ${login.id} stays signed out in the pool until a retry succeeds`,
+          });
           return { outcome: 'finalize-failed', error };
         }
       }

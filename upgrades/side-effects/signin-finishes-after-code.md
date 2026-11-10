@@ -113,6 +113,10 @@ The review moved the keychain fix to the shared read primitive (rather than patc
 
 ---
 
+## Local-verify follow-up
+
+Local verify on 27ed1bfb flagged two ratchets, both caused by this change: (1) `no-silent-fallbacks` counted the new `finalize-failed` catch in `EnrollmentWizard.completeLanded` (it logged but did not report) — it now also reports through `DegradationReporter`; (2) `pool-rope-health-feedback` caught the completion relay dialing a peer with a bare `fetch` — it now uses `poolPeerFetch`, so the read feeds mesh rope health like every other pool fan-out.
+
 ## Evidence pointers
 
 - Live keychain dump (Mac Studio, 2026-11-10 ~19:35Z): service `Claude Code-credentials-8aa0bca8` had `acct="unknown"` (mdat 2026-11-08 02:27:55Z) and `acct=dabombstudio` (mdat 2026-11-10 19:16:18Z). The bare `-s` read returned a token expiring 2026-11-08 10:27:54Z; the usage endpoint answered 429 for it.

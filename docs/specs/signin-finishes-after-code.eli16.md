@@ -19,6 +19,8 @@ Second, and deeper: that background check, the usage poller and the identity che
 - The page asks for that result and shows it. As soon as the code is sent, the form disappears and a large spinner with "Finishing the sign-in on Mac Studio…" takes its place. Then it shows "Signed in as …" with a Done button, or what went wrong with one "Start the sign-in again" button. The older Subscriptions tab does the same.
 - When the usage read gets an error answer, the log now says so instead of skipping the account in silence.
 
+If adding the account back to the list fails after a confirmed sign-in, that failure is now reported to the agent's problem log instead of only a log line, and the dashboard's question to another machine about a sign-in goes through the same path as every other machine-to-machine read, so a slow or unreachable machine shows up in the mesh health view.
+
 ## Safeguards
 
 The finishing step never trusts a file just being there: it needs either the saved login to have changed since the sign-in started, or (only once the sign-in window has closed) a live check against Anthropic that names the expected account. A different account is never added. A failure leaves the account as it was, so a retry starts clean. The wait is bounded, and only one watch runs per sign-in.

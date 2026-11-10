@@ -41097,7 +41097,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
     try {
-      const r = await fetch(`${peer.url}/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/completion`, {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/completion`, {
         headers: { Authorization: `Bearer ${ctx.config.authToken}` },
         signal: AbortSignal.timeout(FOLLOWME_SIMPLE_RELAY_FETCH_MS),
       });
