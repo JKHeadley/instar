@@ -70,3 +70,7 @@ Low. Revert; or `contextBudget.compactionRecovery.enabled: false` silences the h
 ## Second-pass review
 
 **Reviewer (independent subagent, 2026-11-09):** "Concur with the review." Contract re-confirmed in the 2.1.321 binary (per-output cut, then `\n\n` join; block only sets `blockedBy`). Verified: every path exits 0, bounded stdin read, embedded python safe under the shell quoting, UTF-16 vs code-point counting can only under-count on the hook side, realpath confinement, writer/hook schema in step, migration parity and coexistence. Minor notes, all addressed in this commit: (1) staged text is also displayed in the session (`userDisplayMessage`) — now disclosed in section 5; (2) the 9,000 margin's stated reason was wrong (the cut is per output) — corrected in code comment and Summary; (3) unused `INSTAR_DIR` — kept, it mirrors the clear-seed hook and seeds `CB_STATE_ROOT`; (4) symlinked text inside `_keep` pointing outside — unit test added. The reviewer's own run used the default vitest config, which does not collect integration/e2e files; both pass under their configs (`vitest.integration.config.ts`, `vitest.e2e.config.ts`).
+
+## Addendum (2026-11-10) — silent-fallback marker
+
+`writeKeepInstructions`' catch returns a typed `{ written: false, reason: 'write-failed' }` to its caller and stages nothing (the hook then prints nothing: today's compaction). The no-silent-fallbacks lint counted it; it now carries a `@silent-fallback-ok` reason. No behaviour change.

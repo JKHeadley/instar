@@ -103,6 +103,7 @@ export function writeKeepInstructions(
     fs.renameSync(`${p.pointer}.tmp`, p.pointer);
     return { written: true, pointer };
   } catch {
+    // @silent-fallback-ok — not silent: the caller gets a typed `write-failed` and nothing is staged, so the hook prints nothing (today's compaction)
     return { written: false, reason: 'write-failed' };
   }
 }
