@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "on-behalf-marker",
+  "sessionId": "1085eac5-2091-446e-9173-09107ff386a4",
+  "timestamp": "2026-11-10T02:56:30.232Z",
+  "artifactPath": "upgrades/side-effects/on-behalf-marker.md",
+  "artifactSha256": "fe70d01df0e928b40f1bd57498abd7b702991109a322af8e9423192307f5ceae",
+  "coveredFiles": [
+    "docs/specs/on-behalf-marker.eli16.md",
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/messaging/shared/onBehalfMarker.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/on-behalf-marker.test.ts",
+    "upgrades/next/on-behalf-marker.md",
+    "upgrades/side-effects/on-behalf-marker.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Labelling-only: a shared marker format/parser applied to Slack inbound tags and history, plus an awareness section with an idempotent migration; no block/allow surface, a revert undoes it.",
+  "eli16Path": "docs/specs/on-behalf-marker.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/on-behalf-marker.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

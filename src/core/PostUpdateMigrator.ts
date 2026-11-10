@@ -336,6 +336,26 @@ A Telegram, Slack or app topic is the user's conversation. It is never a channel
 }
 
 /**
+ * Acting as my operator, and doing errands myself (Echo Bugs topic 10000002506,
+ * 2026-11-09): an agent asked its operator to check a list its own key read, and
+ * to message it in Slack when its browser held the operator's signed-in account.
+ * SHARED by `generateClaudeMd` and `migrateClaudeMd`. Content-sniff marker: the heading.
+ */
+export const ACTING_AS_OPERATOR_CLAUDEMD_MARKER = '### Before I ask my operator to check or send something';
+export function ACTING_AS_OPERATOR_CLAUDEMD_SECTION(port: number): string {
+  return `
+${ACTING_AS_OPERATOR_CLAUDEMD_MARKER}
+
+Before a message asks my operator to look at, check, open or send something, I check what I can already reach, and do it myself when I can:
+- **My own key reads everything the dashboard and the app show**: the conversation list (Slack and Telegram rows and their names), message history, sessions, jobs, attention items. "Only your screen can see it" is never true of those. Example: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/conversations\`.
+- **My browser profiles** list the accounts signed in on this machine, including my operator's own: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles\`. I can use those to look, check, or send a test or on-their-behalf message.
+- **Anything I send through my operator's account is marked**, on every platform: start it with \`[Sent by <my name> on <operator name>'s behalf]\` (add \`, test\` inside the brackets for a test). When a marked message comes back in, Slack tags it "marked: sent by … not written by …", so I never take it as my operator's own words. On Telegram, sends through the operator's account are also signed.
+- Never through their account without asking first: a purchase, a settings change, or a real message to someone else in their name. Taste questions ("does this feel right to you?") are still theirs.
+- The outbound check stops a "can you check this for me" message when the reach above covers it.
+`;
+}
+
+/**
  * Sharing at the first pairing (docs/specs/session-pool-activation-at-pairing.md). SHARED by
  * `generateClaudeMd` and `migrateClaudeMd`. Content-sniff marker: the heading.
  */
@@ -9732,6 +9752,12 @@ setTimeout(() => process.exit(0), 2000);
       content += SESSION_HANDOFF_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Talking to my other sessions section');
+    }
+    // Acting as my operator / doing errands myself (Echo Bugs topic 10000002506): heading-sniffed.
+    if (!content.includes(ACTING_AS_OPERATOR_CLAUDEMD_MARKER)) {
+      content += ACTING_AS_OPERATOR_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Before I ask my operator to check or send something section');
     }
     if (!content.includes(PAIR_SHARING_CLAUDEMD_MARKER)) {
       content += PAIR_SHARING_CLAUDEMD_SECTION(port);
