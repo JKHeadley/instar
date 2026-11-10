@@ -13,12 +13,20 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
  */
 describe('joinMesh with a --dir that does not exist yet', () => {
   const roots: string[] = [];
-  afterEach(() => { vi.restoreAllMocks(); for (const r of roots) SafeFsExecutor.safeRmSync(r, { recursive: true, force: true, operation: 'join-missing-dir-test-cleanup' }); });
+  const originalPath = process.env.PATH;
+  afterEach(() => { vi.restoreAllMocks(); process.env.PATH = originalPath; for (const r of roots) SafeFsExecutor.safeRmSync(r, { recursive: true, force: true, operation: 'join-missing-dir-test-cleanup' }); });
 
   it('creates the state folder and writes the machine-local config instead of crashing', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'join-missing-dir-'));
     roots.push(root);
     const dir = path.join(root, 'not-yet', 'home');
+    // Joining loads the config before scaffolding it, and loading needs a
+    // session CLI on PATH. CI machines have none, so put a stand-in first on
+    // PATH: the test is about the missing folder, not about which CLI exists.
+    const fakeBin = path.join(root, 'fakebin');
+    fs.mkdirSync(fakeBin);
+    fs.writeFileSync(path.join(fakeBin, 'claude'), '#!/bin/sh\necho "0.0.0-test (Claude Code)"\n', { mode: 0o755 });
+    process.env.PATH = `${fakeBin}${path.delimiter}${originalPath ?? ''}`;
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(process, 'exit').mockImplementation(((code?: number) => { throw new Error(`exit:${code}`); }) as never);
     // An unreachable pairing URL: every step after the scaffold may fail, but not with ENOENT.

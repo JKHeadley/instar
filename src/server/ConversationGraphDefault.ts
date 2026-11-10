@@ -63,7 +63,7 @@ export class ConversationGraphDefault {
  private readonly metadataFrames=new GraphOwnedControlMetadataFrames(this.frameBudget);
  private privateFrames:GraphOwnedControlFrameCache|null=null;
  private sourceSessionsV2:GraphOwnedSourceStreamSessionsV2|null=null;private sourceSessionsOpening:Promise<GraphOwnedSourceStreamSessionsV2>|null=null;private sourceSessionGeneration=0;
- readonly router=Router();private native:Native|null;private standalone:ConversationGraphStandalone|null=null;
+ readonly router:Router=Router();private native:Native|null;private standalone:ConversationGraphStandalone|null=null;
  private readonly transitionWork=new Map<string,{sender:string;requestHash:string;state:'running'|'complete'|'refused';result?:unknown}>();
  private frontierValue:GraphCustodyPeerFrontier|null=null;private readonly frontierSnapshots=new Map<string,{peer:string;snapshot:GraphCustodyPeerSnapshot;createdAt:number}>();private transitionValue:ConversationGraphCustodyTransition|null=null;private standaloneRuntimeBound=false;private custodyAuthorityValue:GraphCustodyProfileAuthority|null=null;private owned:OwnedGraphCustody|null=null;private runtimeValue:ConversationGraphReplicationRuntime|null=null;
  private chain:Promise<unknown>=Promise.resolve();private closed=false;private timer:NodeJS.Timeout|null=null;private tickWork:Promise<unknown>|null=null;

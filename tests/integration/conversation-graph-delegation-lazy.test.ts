@@ -2,6 +2,9 @@
  * CAS + signed delegation through actual source/witness custody. No model run. */
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';import crypto from 'node:crypto';import {execFile} from 'node:child_process';import {promisify} from 'node:util';
 import {it,expect,vi} from 'vitest';
+import {detectTmuxPath} from '../../src/core/Config.js';
+/** The host's real tmux (Homebrew on the Mac, a built copy on CI); the wrapper only adds a private socket. */
+const realTmux=():string=>{const found=detectTmuxPath();if(!found)throw new Error('tmux not found');return found;};
 import {ConversationGraphDefault} from '../../src/server/ConversationGraphDefault.js';
 import {ConversationGraphDelegationManager} from '../../src/server/ConversationGraphDelegationManager.js';
 import {createConversationGraphDelegationFactory} from '../../src/server/ConversationGraphDelegationFactory.js';
@@ -9,7 +12,7 @@ import {StateManager} from '../../src/core/StateManager.js';import {Conversation
 const run=promisify(execFile);
 it('awaits first owner publication, derives real solo CAS, retries failed directory barrier and commits original signed spawn once',async()=>{
  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'graph-lazy-')),tmux=path.join(dir,'tmux'),socket=`graph-lazy-${crypto.randomUUID()}`;
- fs.writeFileSync(tmux,`#!/bin/sh\nexec /opt/homebrew/bin/tmux -L '${socket}' "$@"\n`,{mode:0o700});
+ fs.writeFileSync(tmux,`#!/bin/sh\nexec '${realTmux()}' -L '${socket}' "$@"\n`,{mode:0o700});
  const lock=new SingleInstanceLock({stateDir:dir});expect((await lock.acquire()).acquired).toBe(true);
  const state=new StateManager(dir),auth=createConversationBindAuth(dir),conversations=new ConversationRegistry({stateDir:dir,machineId:()=>manager.nativeDelegationDependencies!.identity.loadIdentity().machineId});
  const telegram=new TelegramAdapter({token:'',chatId:'-1001'},dir,{suppressLifelineAutoCreate:true});

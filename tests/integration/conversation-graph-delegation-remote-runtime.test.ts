@@ -1,6 +1,9 @@
 /** Real HTTP signed dispatch admission + isolated tmux bootstrap + actual
  * signed runtime peer transport/native lease/W HTTP/all-member certificate. */
 import {describe,it,expect,vi} from 'vitest';
+import {detectTmuxPath} from '../../src/core/Config.js';
+/** The host's real tmux (Homebrew on the Mac, a built copy on CI); the wrapper only adds a private socket. */
+const realTmux=():string=>{const found=detectTmuxPath();if(!found)throw new Error('tmux not found');return found;};
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -35,7 +38,7 @@ describe('actual remote launch provenance runtime',()=>{
   const states=managers.map(manager=>new StateManager(manager.baseDir)),auth=managers.map(manager=>createConversationBindAuth(manager.baseDir));
   const telegram=managers.map(manager=>new TelegramAdapter({token:'',chatId:'-1001'},manager.baseDir,{suppressLifelineAutoCreate:true}));
   const socket=`graph-remote-${crypto.randomUUID()}`,tmux=path.join(managers[1].baseDir,'owned-tmux');
-  await fs.writeFile(tmux,`#!/bin/sh\nexec /opt/homebrew/bin/tmux -L '${socket}' "$@"\n`,{mode:0o700});
+  await fs.writeFile(tmux,`#!/bin/sh\nexec '${realTmux()}' -L '${socket}' "$@"\n`,{mode:0o700});
   states[0].saveSession({id:'actual-parent',name:'parent',tmuxSession:'actual-parent-tmux',status:'running',startedAt:new Date(Date.now()-1000).toISOString()});
   telegram[0].registerTopicSession(42,'actual-parent-tmux');
   const bridges=[runtime,peer].map((r,index)=>new ConversationGraphDelegationRemoteRuntime({runtime:r,agentId:'echo',identity:managers[index],admission:options[index].writeAdmission,

@@ -22,10 +22,16 @@ function globalCleanupCandidates():string[]{
  const volta=path.join(home,'.volta','tools','image','packages','instar');if(fs.existsSync(volta))found.push(volta);
  return found.sort();
 }
+/** The server refuses to boot without the configured framework's CLI. CI has no Codex, and maxSessions is 0, so nothing ever runs it:
+ * use a real codex when one is found, otherwise a stand-in that only answers --version, kept in the fixture folder so cleanup removes it. */
+function codexBinary(fixtureDir:string):string{
+ const found=(process.env.PATH??'').split(path.delimiter).map(dir=>path.join(dir,'codex')).find(file=>{try{fs.accessSync(file,fs.constants.X_OK);return true;}catch{return false;}});if(found)return found;
+ const dir=path.join(fixtureDir,'fakebin'),file=path.join(dir,'codex');fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(file,'#!/bin/sh\necho "codex-cli 0.0.0-test"\n',{mode:0o755});return file;
+}
 export function normalCliFixtureConfig(projectDir:string,port:number,token:string,pin:string){
  return {projectName:'conversations-cli-'+path.basename(path.dirname(projectDir)),projectDir,host:'127.0.0.1',port,authToken:token,dashboardPin:pin,secrets:{forceFileKey:true},developmentAgent:false,
   codex:{autoArmHooks:false},threadline:{relayEnabled:false,spawn:{drainEnabled:false}},scheduler:{enabled:false,jobsFile:path.join(projectDir,'.instar','jobs.json')},messaging:[],tunnel:{enabled:false},updates:{autoApply:false},feedback:{enabled:false},telemetry:{enabled:false},
-  sessions:{maxSessions:0,framework:'codex-cli'},enabledFrameworks:['codex-cli'],multiMachine:{conversationGraph:{readEnabled:true,correctionsEnabled:true},meshTransport:{enabled:false,tailscaleEnabled:false}},
+  sessions:{maxSessions:0,framework:'codex-cli',frameworkBinaryPaths:{'codex-cli':codexBinary(path.dirname(projectDir))}},enabledFrameworks:['codex-cli'],multiMachine:{conversationGraph:{readEnabled:true,correctionsEnabled:true},meshTransport:{enabled:false,tailscaleEnabled:false}},
   monitoring:{systemReview:{enabled:false},quotaTracking:false,memoryMonitoring:false,watchdog:{enabled:false},telemetry:{enabled:false},sessionReaper:{enabled:false},agentWorktreeReaper:{enabled:false,githubMergeCheck:false},externalHogSentinel:{enabled:false},orphanedWorkSentinel:{enabled:false},mcpProcessReaper:{enabled:false},codexArmSessionSweeper:{enabled:false},bootHealthBeacon:{enabled:false},rateLimitSentinel:{enabled:false},socketDisconnectSentinel:{enabled:false}},
  };
 }

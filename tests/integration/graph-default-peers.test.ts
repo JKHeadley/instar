@@ -42,9 +42,10 @@ const managers:ConversationGraphDefault[]=[],servers:Server[]=[],journals:Cohere
 // nonemptyAct wraps shared prototypes to log phases; each wrap is undone after its test so wrappers never stack or outlive it.
 const prototypeRestores:Array<()=>void>=[];
 afterEach(()=>{for(const restore of prototypeRestores.splice(0).reverse())restore();});
-afterEach(async()=>{for(const server of servers.splice(0)){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}for(const manager of managers.splice(0))await manager.close();for(const journal of journals.splice(0))journal.close();});
+afterEach(async()=>{for(const server of servers.splice(0)){server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}for(const manager of managers.splice(0))await manager.close();for(const journal of journals.splice(0))journal.close();},60_000);
 async function fixture(genesisMembers?:()=>readonly string[]|undefined){return setupGraphDefaultNativePeers({track:{managers,servers,journals},genesisMembers});}
-describe('owned default across actual registered native peers',()=>{
+// Several cases take 10 to 30 s on CI; the push lane's 10 s default would cut them off.
+describe('owned default across actual registered native peers',{timeout:180_000},()=>{
  it('blocks encoded raw signing through both actual peer and local custody dispatch after negative role evidence',async()=>{
   const f=await fixture(),[host,follower]=f.defaults;await host.ensureOwner({principalKey:'owner:echo',authenticationMethod:'owner-dashboard',requestId:'raw-custody-owner-visit',isCurrent:()=>true});await follower.ensureOwner({principalKey:'owner:echo',authenticationMethod:'owner-dashboard',requestId:'raw-custody-peer-visit',isCurrent:()=>true});
   const runtime=host.runtime!,peer=follower.runtime!,current=runtime.actuation(),hostId=runtime.machineId,path='/%761/%61gents/%65cho/%6cease',service=(host as unknown as {owned:OwnedGraphCustody}).owned.service,observe=vi.spyOn(service,'observeLease');

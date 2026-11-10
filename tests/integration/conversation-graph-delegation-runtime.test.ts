@@ -2,6 +2,9 @@
  * fsynced delegation source+proposal. No live model, witness or central route
  * callback is claimed by this isolated integration. */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { detectTmuxPath } from '../../src/core/Config.js';
+/** The host's real tmux (Homebrew on the Mac, a built copy on CI); the wrapper only adds a private socket. */
+const realTmux=():string=>{const found=detectTmuxPath();if(!found)throw new Error('tmux not found');return found;};
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,7 +38,7 @@ describe('successful local spawn runtime provenance with actual tmux bootstrap',
     // One owned test socket. No command targets the user's normal tmux server.
     const socket = `graph-${crypto.randomUUID()}`;
     tmux = path.join(dir, 'tmux');
-    fs.writeFileSync(tmux, `#!/bin/sh\nexec /opt/homebrew/bin/tmux -L '${socket}' "$@"\n`, { mode: 0o700 });
+    fs.writeFileSync(tmux, `#!/bin/sh\nexec '${realTmux()}' -L '${socket}' "$@"\n`, { mode: 0o700 });
     const identity = new MachineIdentityManager(dir); const local = await identity.generateIdentity();
     const now = Date.now(); const state = new StateManager(dir); const auth = createConversationBindAuth(dir);
     const registry = new ConversationRegistry({ stateDir: dir, machineId: () => local.machineId });

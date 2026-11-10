@@ -71,4 +71,5 @@ it('preserves original M1 certified history through actual planned M2 then fresh
   }finally{clearInterval(timingInterval);console.info('[historical-loss-method-timing-final]',JSON.stringify(methodTiming.snapshot()));methodTiming.restore();for(const release of restore)release();}
  }finally{await server.stop();await f.cleanup();}
  }finally{if(metricsTimer)clearInterval(metricsTimer);if(observer){const value=observer.snapshot();console.info('[historical-loss-safe-sites-final]',JSON.stringify({failure:value.failure,callsiteSampling:value.callsiteSampling,sampleCount:value.samples.length}));}observer?.close();}
-},120000);
+// About 60 s on the Studio, past 120 s on CI and WSL (slower fsync, two machines sharing one event loop). The bound guards hangs, not speed.
+},360000);

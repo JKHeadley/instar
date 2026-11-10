@@ -3,7 +3,7 @@ import express from 'express';
 import { GraphWitnessService, type GraphWitnessServiceOptions } from '../core/GraphWitnessService.js';
 import { createGraphWitnessRoutes } from './graphWitnessRoutes.js';
 
-export function createGraphWitnessServer(options: GraphWitnessServiceOptions) {
+export function createGraphWitnessServer(options: GraphWitnessServiceOptions): { app: express.Express; service: GraphWitnessService } {
   const service = new GraphWitnessService(options);
   const app = express();
   app.disable('x-powered-by');

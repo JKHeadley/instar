@@ -20,7 +20,9 @@ function freshGrantCurrent(stateDir:string,grantId:string,key:string):boolean{
 afterEach(()=>{vi.restoreAllMocks();for(const directory of directories.splice(0))SafeFsExecutor.safeRmSync(directory,{recursive:true,force:true,operation:'owner-policy-test:teardown'});});
 describe('durable config-coupled dashboard policy generation',()=>{
  it('loads the managed generation through the actual Instar config loader',()=>{
-  const project=fixture(),stateDir=path.join(project.stateDir,'.instar');fs.mkdirSync(stateDir);const liveConfig=new LiveConfig(stateDir);liveConfig.set('dashboardPin','private-A');
+  const project=fixture(),stateDir=path.join(project.stateDir,'.instar');fs.mkdirSync(stateDir);
+  // loadConfig refuses a missing session CLI; CI has none, and this test is about the PIN generation, so name an executable that exists.
+  fs.writeFileSync(path.join(stateDir,'config.json'),JSON.stringify({sessions:{framework:'claude-code',frameworkBinaryPaths:{'claude-code':process.execPath}}}));const liveConfig=new LiveConfig(stateDir);liveConfig.set('dashboardPin','private-A');
   const generation=readConversationGraphOwnerPolicy({stateDir})!.generation,config=loadConfig(project.stateDir);expect(config.dashboardPinGeneration).toBe(generation);expect(config.dashboardPin).toBe('private-A');
  });
  it('migrates a legacy PIN only at explicit owner first use, then reads the current disk pair',()=>{
