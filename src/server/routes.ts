@@ -763,6 +763,8 @@ import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
 import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
+import { detectOperatorErrand } from '../core/operator-errand.js';
+import { buildAgentReach } from '../core/agent-reach.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
@@ -4580,6 +4582,26 @@ export function createRoutes(ctx: RouteContext): Router {
       } catch {
         // @silent-fallback-ok — detector errors never override the authority; skip the signal.
       }
+      // Reach-aware B17 (Echo Bugs topic 10000002506): the operator-errand SIGNAL plus
+      // the AGENT REACH context (browser-profile accounts + what the agent's own key
+      // reads). Built only when an errand-shaped ask is present in a reply, so every
+      // other review is unchanged. Fail-OPEN: any error leaves both undefined and the
+      // gate runs exactly as before.
+      let agentReach: import('../core/agent-reach.js').AgentReach | undefined;
+      try {
+        if (kindForSignals === 'reply') {
+          const errand = detectOperatorErrand(text);
+          if (errand.errand) {
+            signals.operatorErrand = { errand: true, phrase: errand.phrase };
+            const registry =
+              ctx.playwrightRegistry?.() ??
+              new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
+            agentReach = buildAgentReach(registry);
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
+      }
 
       // ── Standing-authorization CONTEXT for B17 (BIAS-TO-ACTION-SPEC D3/D4/D7/D8) ──
       // The askWhenAuthorized signal above is INERT without this verified grant.
@@ -4865,6 +4887,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // Undefined in observe-only mode (the default) and on every uncertainty,
           // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
           standingAuthorization,
+          agentReach,
           // jev-signal-live: only callers with an acknowledge-and-override path
           // opt in (see the option's doc). Everyone else — and every non-route
           // caller of the gate — keeps the detector-only path.
