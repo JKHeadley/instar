@@ -10330,6 +10330,23 @@ export async function startServer(options: StartOptions): Promise<void> {
           // Read once by the create that asked; an engine-switch restart's entry is replaced by the next start.
           onRefused: (key, why) => { if (_appStartRefusals.size > 500) _appStartRefusals.clear(); _appStartRefusals.set(key, why); },
         });
+        // Replication (§4.8): emit every local event; land peers' events already on disk.
+        if (replicatedRecordEmitter) {
+          const emitter = replicatedRecordEmitter;
+          appSvc.store.setReplicationHook((ev) => emitter.emit(
+            replMod.APP_CONVERSATIONS_STORE_KEY,
+            replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
+            replMod.buildAppConversationRecordData(ev),
+          ));
+        }
+        if (replicatedRecordEmitter && appKeyLedger) {
+          const emitter = replicatedRecordEmitter;
+          appKeyLedger.setReplicationHook((row) => emitter.emit(
+            ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY,
+            ledgerReplMod.deriveDeviceKeyLedgerRecordKey(row),
+            ledgerReplMod.buildDeviceKeyLedgerRecordData(row),
+          ));
+        }
         // Context-budget §14: app conversations get TopicMemory rows through the shared
         // key rule, local and replicated events alike (the key is derived from the
         // event itself, so every machine writes the same row). Behind contextBudget.enabled.
@@ -10366,23 +10383,6 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
         appRowsOn = topicRowWriter.channelOn('app');
         if (appRowsOn) reconcileAppRows('boot');
-        // Replication (§4.8): emit every local event; land peers' events already on disk.
-        if (replicatedRecordEmitter) {
-          const emitter = replicatedRecordEmitter;
-          appSvc.store.setReplicationHook((ev) => emitter.emit(
-            replMod.APP_CONVERSATIONS_STORE_KEY,
-            replMod.deriveAppConversationRecordKey(ev.conversationKey, ev.eventId),
-            replMod.buildAppConversationRecordData(ev),
-          ));
-        }
-        if (replicatedRecordEmitter && appKeyLedger) {
-          const emitter = replicatedRecordEmitter;
-          appKeyLedger.setReplicationHook((row) => emitter.emit(
-            ledgerReplMod.DEVICE_KEY_LEDGER_STORE_KEY,
-            ledgerReplMod.deriveDeviceKeyLedgerRecordKey(row),
-            ledgerReplMod.buildDeviceKeyLedgerRecordData(row),
-          ));
-        }
         if (replicatedPeerStreamReader && cjOwnMachineId && appKeyLedger) {
           try {
             const reader = replicatedPeerStreamReader;

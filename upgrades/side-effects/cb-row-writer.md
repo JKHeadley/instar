@@ -134,3 +134,8 @@ Clear to ship as a dark-for-app, correctness-fix-for-Slack slice. During the bui
 - **`closure`:** `n/a`
 - **Reason:** one-shot event-driven action, not a self-triggered loop. The only "notify" this change adds is the row writer's DegradationReporter row on a refused write, emitted at most once per inbound message the writer is handed; it never retries, re-drives or re-fires on its own, so there is no control loop to converge.
 - No agent-authored-artifact defect: the Slack key fix corrects source code, not a prompt, hook, config, skill or standards text.
+
+## CI follow-up (PR #3044)
+
+`tests/unit/app-conversation-service.test.ts` pins the app wiring in `server.ts`: it checks that `setReplicationHook(` appears within 9000 characters of `const appSvc = new AppConversationService({`. The app-row listener and reconcile block had been inserted before the replication hooks, which pushed `setReplicationHook(` past that window. The replication hook was never removed or changed. The fix moves the row-writer block below both replication hooks (code order only; it registers at the same boot step), so the pinned layout holds and the test is unchanged.
+
