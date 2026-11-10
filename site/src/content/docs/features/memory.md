@@ -85,3 +85,21 @@ curl -X POST localhost:4040/topic/summarize
 instar memory reindex   # Rebuild the search index
 instar memory status    # Index stats
 ```
+
+## Context budget: layered summaries
+
+Long conversations are compressed by Claude Code when they near the context window. Instar's context-budget work keeps what matters across that compression: a short, current summary of each conversation, a durable record of its decisions, and an archive of the transcript that was folded away.
+
+```bash
+# The compaction-recovery health check, per machine and engine: whether every
+# compaction got its recovery block (healthy, accruing, diverged, uninitialized),
+# including recoveries that were cut to a preview by the hook-output limit.
+curl -H "Authorization: Bearer $AUTH" localhost:4040/context-budget/sentinel
+
+# The per-topic summary store and transcript archive on this machine:
+# roots and permissions, topics, bytes, and replication outcomes.
+# Returns 503 while contextBudget.enabled is off (it is on for development agents only).
+curl -H "Authorization: Bearer $AUTH" localhost:4040/context-budget/layers
+```
+
+Everything written to the summary store is scrubbed of secrets first, and the operator's own words are never copied into it: the store only keeps a pointer to the original message and a fingerprint of it.
