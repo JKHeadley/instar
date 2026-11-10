@@ -38,7 +38,15 @@ lessons-engaged:
   - "memory: compaction-recovery-never-runs — the fix is Phase 0 and the canary is permanent"
   - "memory: the-autonomous-maturation-design-already-exists — the phase ladder is the maturation ladder, not a parallel one"
   - "declined: per-topic pressure-band overrides (dropped), the user-words digest (measured, deferred with owner), a new workflow engine for the fold transaction (reuses Durable Inbound Message Queue, PendingInjectStore, LlmQueue, SelfHealGate, the outbound funnel and the recovery veto)"
-review-convergence: null
+review-convergence: "2026-11-10T00:52:33.430Z"
+review-iterations: 6
+review-completed-at: "2026-11-10T00:52:33.430Z"
+review-report: "docs/specs/reports/context-budget-layered-summaries-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 17
+cheap-to-change-tags: 0
+contested-then-cleared: 38
 ---
 
 # Context Budget: Layered Summaries (v9)
@@ -838,9 +846,11 @@ What it may do, all pre-declared and bounded (Standard B), **only on the
 machine that owns the topic** (`ownerOf(topic) === self`; sentinels elsewhere
 observe and record): ask the session (milestone ask, checkpoint request, up to
 the counts in 7.2); re-stage and re-verify a packet; run the heal ladder of
-9.1; quarantine, roll back or sweep a fold (9.3); drop a topic to shadow mode
-(the breaker); pre-render a reduced packet (9.5); raise one notice when a
-ladder is exhausted. **Each ladder is a `SelfHealGate` declaration**
+9.1; press a synthetic compaction on a **throwaway** session (the canary's
+positive control, 9.1; never on a live topic); run the adapter verification
+suite (9.6); quarantine, roll back or sweep a fold (9.3); drop a topic to
+shadow mode (the breaker); pre-render a reduced packet (9.5); raise one notice
+when a ladder is exhausted. **Each ladder is a `SelfHealGate` declaration**
 (`src/core/SelfHealGate.ts`, already in production with three consumers): a
 `SelfHealSpec` per cause with `remediationActions` (operation, idempotency
 guard, compensation), `maxAttempts`, `backoffMs`, `maxWallClockMs`, `classId`
@@ -853,19 +863,20 @@ synchronous today; rollback and re-stage are not); **per-incident episode
 keys** (`topic+cause+incidentId`) with **bounded pruning** of terminal episodes
 (the store today holds 256 rows, never prunes, and treats `exhausted` as
 terminal per key, which would make every ladder one-shot per topic and page the
-operator when the store fills); and a derived cap sized from the number of
-owned topics times causes, with one notice when the cap is reached rather than
-a notice per failed write. Fields common to every ladder: `dedupe-key:
-machine+topic+cause`; `breaker: 3 same-cause exhaustions in 24 h ⇒ one notice`;
+operator when the store fills); and a **per-key ring** (the derived cap is
+four episodes per `topic+cause`, evicting the oldest terminal episode, refusing
+only when all four are live, and pruning terminal episodes at the next tick),
+in the sentinel's **own episode store file** so its cap is per controller and
+never darkens another consumer's gate. Fields common to every ladder: `dedupe-key:
+machine-topic-cause-incidentId`; `breaker: 3 same-cause exhaustions in 24 h ⇒ one notice`;
 `max-notification-latency: 300s`; `audit-location:
 context-layers/<topic>/fold-records`; `class: recoverable` (data-loss class
 escalates on the same tick). The sentinel ticks every 5 minutes (Defaults) over
 the topics this machine owns; the exhaustion notice for a topic whose hold is
 still held goes to the **Attention queue and the dashboard** immediately, and
-to the topic itself only once the hold is released; the fold hold admits
-exactly one bypass, a fixed-template notice whose origin is the sentinel (the
-template carries no session-authored text), so the operator is never muted
-about a stuck fold by the fold's own containment.
+to the topic itself only once the hold is released; the fold hold admits no
+bypass, so the operator hears about a stuck fold through Attention, never
+through the held topic.
 
 What it never does: write A, G, U, C or H3 (it may request a rebuild; the
 layer writers write); author or alter a handoff; send to the user outside the
@@ -981,8 +992,8 @@ observability, but `report` runs today's path unchanged. A fleet machine's
 post-compaction behaviour with the switch off is exactly today's.
 
 **Standing canary** (P20, Standard B; run by the `ContextBudgetSentinel`, 7.8).
-Scope: **topic-bound sessions only** (job and other sessions have no packet and
-are out of scope). Per `(machine, engine, version)`, counts of compaction
+Scope: **topic-bound sessions, plus the throwaway sessions the synthetic press
+targets** (job and other sessions have no packet and are out of scope). Per `(machine, engine, version)`, counts of compaction
 detections, PostCompact records and recovery blocks in the transcript. **The
 detection channel is independent of the hooks under test, with one rule**: the
 engine-written **compact-boundary entry** in the transcript (for Claude Code it
@@ -1014,11 +1025,11 @@ same way. Self-heal is a **ladder by cause** with `remediation-actions:
 installed ⇒ re-run the migration; installed but no recovery block ⇒ re-stage
 the standing packet and inject it once through the **injection step** of the
 `recoverCompactedSession` helper called directly (never through `report`, which
-this section short-circuits), idempotent on `(session, PostCompact record id)`,
+this section short-circuits), idempotent on `(session, context epoch)`,
 with compensation: the seeded marker (7.7) makes a later hook seed for that
 epoch a no-op; detection without a real compaction ⇒ record only. Brakes:
 `max-attempts: 3` per session per day, `backoff: 10 min, 1 h`, `max-wall-clock:
-30 min`, `dedupe-key: machine+session`, `breaker: 3 heals of the same cause in
+30 min`, `dedupe-key: machine-session-epoch` (the context epoch of 7.7, per incident), `breaker: 3 heals of the same cause in
 24 h ⇒ raise once`, `max-notification-latency: 300s` (the registry ceiling),
 `audit-location: context-layers/<topic>/fold-records (scrubbed)`, `class:
 recoverable` (a lost protected-class item after a failed rollback is data-loss
@@ -1033,10 +1044,12 @@ packet marker). With the switch on, `CompactionSentinel.report` short-circuits
 epoch exists within a bound (default 30 s **after the compact-boundary entry**,
 that is after compaction completed, not after the pre-compaction event). If no
 marker appears, the server-side path runs once with the standing packet
-through the **idle-gated** inject path (`PendingInjectStore`, delivered only at
-an idle prompt, exactly as compaction recovery's mid-turn guard requires; never
-a bare `injectMessage`), idempotent on the compaction epoch, whose seeded
-marker then makes any late hook seed a no-op. One injector at a
+through the **idle-gated** inject path (`PendingInjectStore`, whose
+redelivery for this record is released only when `isSessionActivelyWorking()`
+is false **and** the pane shows a ready prompt, re-checked each tick within the
+step bound; the store's readiness probe alone is not the predicate; never a
+bare `injectMessage`), idempotent on the compaction epoch (the compact-boundary entry's id), whose
+seeded marker then makes any late hook seed a no-op. One injector at a
 time, never keyed on the PostCompact record alone (that record comes from the
 hook family being verified).
 
@@ -1091,16 +1104,20 @@ pointer, counts), never size-refusable, and it has **one writer**: the
 on `(foldId, step, generation)` in the `CommitmentTracker.mutate` shape, so a
 late runner, the sentinel and a boot sweep can never act on the same record
 twice. Every fold and sentinel action is **owner-only**, where "owner" means **the
-machine hosting the topic's live session, and in a pool also the topic's
-ownership record** (`ownerOf(topic) === self`; on a single-machine agent that
-is always this machine and no pool record is consulted); a non-owner machine
+machine hosting the topic's live session, and, when the session pool's
+placement is live, also the topic's ownership record** (`ownerOf(topic) ===
+self`; on a single-machine agent, and on a multi-machine agent whose session
+pool is `dark`, the host is the owner by default and no record is consulted;
+when placement is live and the record is missing ⇒ `fold-skipped:
+owner-unknown`); a non-owner machine
 holding a replica of the record observes and records, never acts; lists (discarded entries, lock-window
 entry bounds) live in sidecar records keyed by `foldId`. States: `prepared`,
 `shadow-probing`, `locked`, `snapshotted`, `staged`, `replacing`, `probing`,
 `committed`, `rolled-back`, `quarantined`, `aborted`. **Every carrier the fold touches is
 keyed by `foldId`**: the staged packet, the fold hold, the per-session marker
-files (the live session's, the rung-2 candidate's and the shadow answerer's,
-each written at that session's spawn with its own `INSTAR_SESSION_ID`), the
+files (the live session's, the rung-2 candidate's and the shadow answerer's;
+the coordinator supplies the candidate's and answerer's `INSTAR_SESSION_ID` to
+the spawn call so their markers exist before their first tool call), the
 `hold: fold` queue rows, the `PendingInjectStore` records, the suspended
 session's reconciler exemption, the reap-guard veto, the PresenceProxy
 suppression, and the **engine checkpoint** (whose grace deletion the sentinel
@@ -1157,7 +1174,9 @@ discarded **loudly** (recorded, counted).
    `local` medium on a single machine; CAS push per step on the `git` medium,
    measured in Phase 0). Record the ownership epoch and the lease generation;
    at most one fold per machine may be past the point of no return at a time
-   (Defaults), which also bounds the non-preemptible judge slots.
+   (Defaults; a second fold reaching step 5 is declined, `fold-skipped:
+   machine-busy`, never queued), which also bounds the non-preemptible judge
+   slots.
    Write the **fold hold** and the **per-session marker file** (10) if the
    prepare step did not; the handoff turn then runs under them. Register the
    reap-guard veto and the all-tier PresenceProxy and stall suppressions.
@@ -1379,8 +1398,9 @@ the original.
 added to the File Viewer's `NEVER_SERVED_PREFIXES`; `state/context-layers/*/`
 is added to backup `includeFiles` as the directory entry `state/context-layers/` (a glob with a wildcard in a middle segment is silently skipped by the backup manager) and `state/context-archive/` is **not**
 (the derived layers are LLM outputs; A, G and U are row references into
-TopicMemory, so `topic-memory.db` **joins the backup** `includeFiles` with this
-feature; fold records and sidecars are listed in `NEVER_BACKUP_PATH_SEGMENTS`
+TopicMemory, so `topic-memory.db*` (the WAL set, the glob shape the backup manager
+already uses for two other databases) **joins the backup** `includeFiles` with
+this feature; fold records and sidecars are listed in `NEVER_BACKUP_PATH_SEGMENTS`
 so a restore never resurrects a fold in flight; the archive is declared
 reconstructable-or-lost, and on a single-machine agent a disk loss rebuilds the
 derived layers from the backup's rows plus `pre-layer` chunks; the
@@ -1451,7 +1471,9 @@ decision logs question, answer, reference span and grade (under 9.7), and a dete
 shadow state) answers the probe in a **throwaway headless session seeded with
 the staged packet**, running the live session's model (so the would-be `lost`
 rate predicts live behaviour), under the same fold-marker tool policy, with a
-read-only lookup token scoped to the topic, costed on its own budget line and
+read-only lookup token bound to a **synthetic non-channel place** for the topic
+(the memory session guard's channel places are group-wide, so a new place kind
+is added) and spawned with `omitAuthEnv`, costed on its own budget line and
 counted in the Phase 2 break-even measurement; the live session is not the
 answerer.
 
@@ -1559,7 +1581,7 @@ user-content folds.
 | Replicated record caps (14) | invariant (ceilings) | `basis: external-constraint; evidence: the journal applier cap (DEFAULT_MAX_ENTRY_BYTES 8 KB, per-kind raise to 64 KB) and the 80 KB wire limit`; state transitions never size-refusable; G per entry; H3 over cap ⇒ rebuild under a tighter C2 selection with disclosure | deterministic |
 | Sentinel actions (7.8) | judgment-candidate | floor: only the pre-declared `SelfHealGate` remediation actions, owner-only, each with the gate's brakes; never writes a layer, never authors a handoff, one notice per exhausted ladder | the gate's ladders; operator on the notice |
 | Fold record transitions (9.3) | invariant | `basis: enumerable-domain; evidence: compare-and-swap on (foldId, step, generation) by the owner's FoldCoordinator; any other writer is refused; every carrier's lifetime follows the record` | deterministic |
-| Folds past the point of no return per machine (9.3) | invariant (ceiling) | `basis: external-constraint; evidence: the LlmQueue background lane's concurrency (3) minus the interactive reserve`; default 1 | deterministic |
+| Folds past the point of no return per machine (9.3) | invariant (ceiling) | `basis: external-constraint; evidence: the LlmQueue background lane's concurrency (maxConcurrent 3), of which at most one slot may be non-preemptible without starving interactive work`; default 1; a second fold at step 5 ⇒ `fold-skipped: machine-busy` | deterministic |
 | Milestone / pin control rate (7.1) | judgment-candidate | floor: excess controls are **coalesced** into the next ask, never refused; default 6 per topic per hour | deterministic brakes |
 | Quarantine reconciliation bound (9.3) | judgment-candidate | floor: holds stay until a terminal record; default 15 minutes then force-end, rollback-degraded, release, one notice | the owner's sentinel |
 | Engine capability resolution (9.6) | invariant | `basis: enumerable-domain; evidence: each adapter capability is supported/partial/synthesized/absent per (machine, engine, version) from the verification suite`; each value maps to a named outcome; absent tool policy ⇒ no fold | deterministic |
@@ -1742,7 +1764,7 @@ Default posture is `unified`. Per surface:
 |---|---|---|
 | Small layers A, G (per entry), C (open and current-phase), C2, H1–H3, U **referent stubs**, fold records and sidecars, backoff and breaker state, fold holds | unified | a new replicated kind registered in both `JOURNAL_KINDS` and `ReplicatedKindRegistry`; the kind's bounds type gains `maxRecordBytes` and `liveSetBudget` fields (a code addition beside today's `retention` and `rateCap`), with caps **derived** from the journal constants (default applier cap 8 KB, per-kind raise to 64 KB, 80 KB wire), enforced as refuse-never-truncate **only on content records** (a fold record is state and pointers and is never size-refusable; lists live in sidecars; G replicates per entry so the never-archive floor is never cut; an oversize H3 is rebuilt under a tighter C2 selection with disclosure), a live-set budget sized in Phase 1 from measured G/C growth (C older than the C2 range is **proxied-on-read**, below), unique record keys per entry with status changes re-emitting the record (HLC-latest compaction), and the **skew rule**: a holder on a version without the kind refuses the fold (`fold-path-unavailable: layers-not-replicated`) and the move is noted on the card. On topic move the new owner has the topic's layer set through replication and its rows through the relay-path carrier before its first fold |
 | Older C beyond the C2 range | proxied-on-read | served from the machine that holds it over the archive's carrier; `/chunks` shows `chunk-elsewhere` and `unknown` on an unreachable peer |
-| U bodies and the message-row source | re-derived from rows, with a row carrier | U is rebuilt on the owner from TopicMemory by sender row. **Every channel must have a row writer**: today Telegram's poller writes rows on the lease holder, Slack's writer collapses to one row per channel (its message id is cast to 0 under the unique key) and app conversations write none, so Phase 1 adds a channel-neutral row writer (Slack with real message ids, app conversations, iMessage and WhatsApp through the same path); a topic on a channel without a row source refuses to fold (`fold-skipped: no-row-source`). Rows are written on the machine whose adapter received the message, so the build **carries the row on the relay path** that already forwards each message to the topic's owner (journal-sync mesh RPC, landing in the owner's TopicMemory), with a per-topic watermark; the fold's precondition is that the owner's TopicMemory holds the topic's rows up to its last message id, else not clean ⇒ no fold |
+| U bodies and the message-row source | re-derived from rows, with a row carrier | U is rebuilt on the owner from TopicMemory by sender row. **Every channel must have a row writer**: today Telegram's poller writes rows on the lease holder, Slack's writer collapses to one row per channel (its message id is cast to 0 under the unique key) and app conversations write none, so Phase 1 adds a channel-neutral row writer (Slack, app conversations, iMessage and WhatsApp through the same path) with a **key rule** every machine derives identically, because A/G/U references `(message id, hash, length)` must match across machines: TopicMemory gains a nullable `channel_message_id TEXT` through its existing migration path and the integer `message_id` is derived deterministically per channel (Telegram: the native id; Slack: `ts × 1e6`; app and other channels: the replicated HLC of the message), so `UNIQUE(message_id, topic_id)` never collapses rows; a topic on a channel without a row source refuses to fold (`fold-skipped: no-row-source`). Rows are written on the machine whose adapter received the message, so the build **carries the row on the relay path** that already forwards each message to the topic's owner (the existing `deliverMessage` forward-to-owner path, which already carries the message to the owner at least once with a durable receipt; landing in the owner's TopicMemory), with a per-topic **contiguous-ack watermark**; the fold's precondition is that the owner's TopicMemory holds the topic's rows up to its last message id, else not clean ⇒ no fold |
 | Engine checkpoint (9.3 step 3) | machine-local | `machine-local-justification: hardware-bound-resource` — a byte-exact engine transcript that only resumes on the machine whose transcript directory holds it; never served, never replicated, never backed up; deleted by the sentinel on commit or after the grace period; a crash leaves it to the boot sweep's orphan pass |
 | Ledger entry bodies (operator messages, 6.2) | unified via a chunked carrier for non-owners | the owner renders bodies from its TopicMemory rows (above); for machines that are not the owner the ledger record carries bounded references (row id, SHA-256, length, privacy scope) and the body travels in **chunked content-addressed blobs** through the same replicated kind (each chunk under the applier cap; reassembly bounded by the declared length and verified against the hash before render), so a long directive is never refused; blobs referenced by a live ledger entry are **re-emitted** on each retention rotation so they never age out while live; a body whose chunks have not arrived renders as `body-elsewhere` with its hash on a non-owner's view, and the stage verifier on the owner refuses a packet whose protected row is not present locally |
 | `ContextBudgetSentinel` | owner-acts, others observe | one instance per machine; it acts only on topics this machine owns and reads replicated records for the rest; its episodes live in the `SelfHealGate` episode store on the owner |
@@ -1871,6 +1893,7 @@ revert reinstalls the previous hooks.
 | Milestone finished (7.4) | handoff's "finished" list | the span's detail is no longer needed | PR state, test result, commitment state, artifact presence | contradicted or unknown ⇒ demoted to tail |
 | Exclusive session (9.3) | pool session list | one live session serves the topic | topic ownership record; per-peer classified answers; `isPeerPresumedDead` | ownership unverifiable or a serving peer unreachable ⇒ `peer-unknown` ⇒ lock refused; a presumed-dead non-owner counts as no session |
 | Fold record state (9.3) | durable record under 9.7 | the fold reached step S | lock record, epoch and generation; every carrier tagged with the foldId | missing or torn ⇒ treated as `quarantined` ⇒ rollback by the boot sweep; orphan carriers with no record ⇒ cleared loudly |
+| Episode store at cap (7.8) | ring eviction count and `create-failed` refusals | the sentinel can still open an episode for a new incident | the per-key ring holds at most four live episodes; refusals are counted on the card | a refusal ⇒ `episode-store-full` degradation record, one notice, never a silent dark sentinel |
 | Sentinel rows (7.8): stale layers, eligible topic without a fold, declined checkpoints, non-terminal fold past bound, hold or marker outliving its record, oversize standing packet, unrestored reduced packet | the store and the fold records | the session failed to do owed work, or a carrier leaked | the matching transcript evidence (no handoff turn, no fold record, marker file vs record) | missing evidence ⇒ `unknown`, counted, no action beyond an ask |
 | Engine capability (9.6) | the adapter's capability record per (machine, engine, version) | the capability works here now | the verification suite's recorded result for the retained binary **this session runs** | unmeasured or version changed ⇒ `absent` until the suite re-runs for that binary |
 | Compaction detected (9.1) | the engine's compact-boundary entry; a context-size drop; a synthetic press; the native event | a compaction happened for this session | the boundary entry alone detects; a size drop needs the entry or a synthetic press and is excluded over a fold record's or seeded clear epoch's range; the native event alone never detects | no boundary entry and no corroborated drop ⇒ not a detection; synthesized-only engines count but never heal |
@@ -1907,7 +1930,7 @@ revert reinstalls the previous hooks.
   transitions refusing a second writer; quarantine re-acquisition with a new
   generation and the reconciliation-bound exhaustion path; the engine
   checkpoint restoring a transcript with scrub-triggering and oversize entries
-  byte-exactly; the `SelfHealGate` extensions (pool-shared refusal, async remediation, per-incident episode keys with bounded pruning); the transcript detection channel
+  byte-exactly; the `SelfHealGate` extensions (pool-shared refusal, async remediation, per-incident episode keys with a per-key ring and the sentinel's own store file); the transcript detection channel
   reading `diverged` for a hook that never fires; chunked ledger bodies with
   `body-elsewhere`; the relay-path row carrier with the watermark precondition; keyed fenced lease on
   `local` and `git` media with the key in the signed tuple; break-even
@@ -2249,3 +2272,11 @@ convergence report states plainly so the approver can weigh it.
 | Shadow fold's record terminal before its probe | Fable 1 | Adopted: `shadow-probing` child state (9.3) |
 | Cache-blind estimator optimistic on the cost side | Fable 2 | Adopted: costs at the uncached rate (7.2) |
 | Wording residue (short expiry, stale-marker row, superseded names in 18, seed-success anchor, Phase 2 queue, step 0 preconditions, hung coordinator, Codex shadow source, cache counters row, layer-set pull) | Fable left-behind | Adopted in passing |
+| Owner test never true when the session pool is dark on a multi-machine agent | integration D1 | Adopted: host is owner by default when placement is dark; `owner-unknown` when live and missing (9.3) |
+| Backup entry needs the WAL glob; unused hold bypass | integration D2 D3 | Adopted (9.7, 7.8) |
+| Inject-store redelivery is not idle-gated by the working predicate | adversarial 1 | Adopted: `isSessionActivelyWorking()` false plus a ready prompt, re-checked per tick (9.1) |
+| Shadow answerer's read-only token has no buildable place; candidate marker cannot precede the first tool call | security N1 N2 | Adopted: synthetic non-channel place with `omitAuthEnv`; coordinator-supplied session id at spawn (10, 9.3) |
+| Episode store refuses at the derived cap and darkens the sentinel | scalability 1 | Adopted: per-key ring with eviction, own store file (7.8, 17) |
+| Stale per-topic keys in three places; synthetic press absent from the action list and canary scope | lessons R6-1 R6-2 | Adopted (7.8, 9.1, 18) |
+| Channel-neutral row writer has no cross-machine key rule | DC R6-1 | Adopted: `channel_message_id` plus a deterministic `message_id` derivation per channel (14) |
+| Second fold at the point of no return; basis wording; relay verb and contiguous ack | scalability, integration left-behind | Adopted (9.3, 12, 14) |
