@@ -19,7 +19,8 @@ import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 const execFileP = promisify(execFile);
 export const GiB = 1024 ** 3;
 
-export type CategoryId = 'npm-cache' | 'derived-data';
+/** `context-archive`: the per-topic transcript archive (context-budget-layered-summaries §9.7). */
+export type CategoryId = 'npm-cache' | 'derived-data' | 'context-archive';
 
 export interface CategoryResult {
   category: CategoryId;
