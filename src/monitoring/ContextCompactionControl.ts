@@ -1,7 +1,7 @@
 import { detectContextExhaustion } from './QuotaExhaustionDetector.js';
 
 export interface ContextCompactionSessionControl {
-  injectInternalControlCommand(sessionName: string, conversationId: string, command: '/compact'): boolean;
+  injectInternalControlCommand(sessionName: string, conversationId: string, command: '/compact' | '/clear'): boolean;
   captureOutput(sessionName: string, lines: number): string | null;
 }
 

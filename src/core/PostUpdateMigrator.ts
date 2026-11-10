@@ -283,6 +283,85 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
 
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
  *  add/update migrations so the three cannot drift. */
+/**
+ * The clear-seed hook's settings entry (context-budget-layered-summaries §9.2).
+ * Shared by init and migrateSettings so both install the same command.
+ */
+export const CLEAR_SEED_SETTINGS_HOOK = {
+  type: 'command',
+  command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/clear-seed.sh"',
+  timeout: 5,
+} as const;
+
+/**
+ * The clear-seed check, embedded in the hook as `python3 -c` (no `"`, `$` or
+ * backtick inside, so it survives the shell double-quoting). argv[1] is the
+ * state root. The pointer schema is written by `writeClearSeedPointer`
+ * (src/monitoring/clearSeedPointer.ts); keep the two in step.
+ */
+const CLEAR_SEED_PY = [
+  'import sys,json,os,time,hashlib',
+  'root=sys.argv[1]',
+  "iid=sys.argv[2] if len(sys.argv)>2 else ''",
+  "if not iid or len(iid)>128 or not all(c.isalnum() or c in '-_' for c in iid):",
+  '    sys.exit(0)',
+  'try:',
+  '    d=json.load(sys.stdin)',
+  'except Exception:',
+  '    sys.exit(0)',
+  "if d.get('source')!='clear':",
+  '    sys.exit(0)',
+  "sid=str(d.get('session_id') or '')",
+  "if not sid or len(sid)>128 or not all(c.isalnum() or c in '-_' for c in sid):",
+  '    sys.exit(0)',
+  'try:',
+  "    c=json.load(open(os.path.join(root,'config.json')))",
+  "    if ((c.get('contextBudget') or {}).get('compactionRecovery') or {}).get('enabled') is False:",
+  '        sys.exit(0)',
+  'except SystemExit:',
+  '    raise',
+  'except Exception:',
+  '    pass',
+  "layers=os.path.realpath(os.path.join(root,'state','context-layers'))",
+  "ptr=os.path.join(layers,'_clear-seed',iid+'.json')",
+  'try:',
+  '    p=json.load(open(ptr))',
+  'except Exception:',
+  '    sys.exit(0)',
+  'now=int(time.time()*1000)',
+  "if p.get('instarSessionId')!=iid or not isinstance(p.get('leaseExpiresAt'),int) or p['leaseExpiresAt']<=now:",
+  '    sys.exit(0)',
+  "fid=str(p.get('foldId') or '')",
+  "if not fid or len(fid)>128 or not all(c.isalnum() or c in '-_' for c in fid):",
+  '    sys.exit(0)',
+  "pkt=os.path.realpath(os.path.join(layers,str(p.get('packetPath') or '')))",
+  'if not pkt.startswith(layers+os.sep) or not os.path.isfile(pkt):',
+  '    sys.exit(0)',
+  'try:',
+  "    body=open(pkt,'rb').read(8*1024*1024+1)",
+  'except Exception:',
+  '    sys.exit(0)',
+  "if len(body)>8*1024*1024 or hashlib.sha256(body).hexdigest()!=p.get('sha256'):",
+  '    sys.exit(0)',
+  "claimed=ptr+'.claimed-'+str(now)",
+  'try:',
+  '    os.rename(ptr,claimed)',
+  'except Exception:',
+  '    sys.exit(0)',
+  "sys.stdout.write(body.decode('utf-8','replace'))",
+  'sys.stdout.flush()',
+  "mdir=os.path.join(layers,'_seeded')",
+  'try:',
+  '    os.makedirs(mdir,mode=0o700,exist_ok=True)',
+  "    tmp=os.path.join(mdir,sid+'.json.tmp')",
+  '    fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)',
+  "    with os.fdopen(fd,'w') as w:",
+  "        json.dump({'sessionId':sid,'epoch':fid,'source':'clear','seededAt':int(time.time()*1000)},w)",
+  "    os.replace(tmp,os.path.join(mdir,sid+'.json'))",
+  'except Exception:',
+  '    pass',
+].join('\n');
+
 export const RESOURCE_PLACEMENT_CLAUDE_MD_LINE = `- **Resource-aware placement (heavy work goes to big machines with room):** placement compares machines by per-core load from FRESH evidence (a load number older than a minute does not count, and a machine with none never wins by default). A machine counts as big enough for heavy work (builds, full test runs, simulators) at 12+ cores and 32+ GB; heavy work goes only to such a machine with headroom right now (fresh verdict not saturated/impaired, under 1.0 load per core including heavy helpers it just accepted), otherwise it waits with a named reason. Local Verify peer hand-offs follow the same rule, so a small machine like a Mac Mini no longer receives full verifies. A job can declare \`workWeight: "heavy"\`; it then skips a machine below that size while another online big machine exists (the job-silence alert explains it). Per machine, \`multiMachine.placement.heavyWork\`: \`allow\` lifts the size rule for that machine, \`deny\` keeps heavy work off it (\`auto\` = by size); it is advertised in that machine's load report. **Before running heavy helper work in an in-session subagent** (a subagent always runs on THIS machine), read \`GET /pool/placement/preview?workWeight=heavy\` (read-only: the choice and one row per machine with size, fresh per-core load, headroom and why). If it picks another machine, or this one has no headroom, start a headless helper instead: \`POST /pool/heavy-work/spawn\` with header \`X-Instar-Request: 1\` and \`{ "name": "...", "prompt": "..." }\` — it picks the machine and starts the helper there through that machine's own \`/sessions/spawn\`. The helper works in THAT machine's agent home: its prompt must fetch its inputs from a shared source (a pushed git branch into a fresh worktree there) and return results through a shared channel (a pushed branch or PR, or a message to my session). Outcomes: 201 started; 409 \`heavy-work-no-machine\` (nothing big enough has room: wait, or run locally only if the preview shows this machine has headroom); 502 \`target-refused\`; 504 \`target-unconfirmed\` — never retry it: read that machine's sessions, finished ones included (\`GET /sessions\` with \`scope=pool\` and \`include=all\`), and check the work's shared results and side effects before ever starting it again.`;
 export const OVERLOAD_SHED_CLAUDE_MD_LINE = `- **Overload shed (trustworthy-machine-load, P3):** a machine that has refused new work for 3 minutes AND is at 85% or more of its session limit moves a conversation off, one at a time, to a healthy machine (direct contact under 2 min, \`loadVerdict\` \`ok\`, not refusing work, at least 2 free session slots after what it has already reserved there). Only conversations with a running session that has sat quiet for 10 minutes move, so this frees session slots and memory, not CPU. The move goes through the same drain as a manual transfer: the session here closes and the conversation carries on there at its next message. Pinned conversations, Slack conversations and conversations with a live autonomous run stay. Brakes: at most 2 moves an hour, 2 tries per conversation per overload episode, a moved conversation stays put for 6 hours wherever it landed, and a machine seen refusing work in the last 30 min never receives moved work. Live moves need pool stage \`rebalance\`, a fresh rebalance proof on this machine, and \`dryRun: false\`; otherwise it only logs what it WOULD move. Each machine earns its proof with \`POST /session-pool/rebalance-proof\` \`{ topic, to }\` (202 with a run id; \`GET /session-pool/rebalance-proof/RUN_ID\` for the result), which really moves a topic listed in \`multiMachine.sessionPool.rebalanceProofTopics\` and passes only if the old session is gone and the target answers once. A proof lasts 30 days; without a fresh one the stage steps down to \`live-transfer\`. Stale-owner notices say "struggling" or "refusing" when that is the evidence. Registry First: \`GET /overload-shed\` → \`{ enabled, dryRun, overloadedSince, isSource, liveMove, reservations, movesLastHour, counters }\`; audit \`logs/overload-shed.jsonl\` (\`would-move\` and \`move-outcome\` rows carry the numbers behind each decision). Ships dev-gated + dry-run (\`monitoring.overloadShed\`). When the user asks "why did my conversation move machines?" or "why is this overloaded machine still holding work?" → read \`GET /overload-shed\` before guessing.`;
 
@@ -7800,6 +7879,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       result.upgraded.push('hooks/instar/session-start.sh (capability awareness)');
     } catch (err) {
       result.errors.push(`session-start.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // context-budget-layered-summaries §9.2 rung 1: seeds a staged fold packet
+      // after an Instar-injected /clear. Silent on a human /clear (no staged packet).
+      fs.writeFileSync(path.join(instarHooksDir, 'clear-seed.sh'), this.getClearSeedHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/clear-seed.sh (fold packet seed after /clear)');
+    } catch (err) {
+      result.errors.push(`clear-seed.sh: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     try {
@@ -17228,6 +17316,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // Migrate existing session-start paths from flat to instar/ subdirectory
       this.migrateSettingsHookPaths(hooks.SessionStart as unknown[], result);
     }
+    {
+      // context-budget-layered-summaries §9.2 rung 1: a `clear` matcher running
+      // the clear-seed hook (its own script, so a human /clear stays silent).
+      const sessionStart = hooks.SessionStart as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+      if (!sessionStart.some(e => e.hooks?.some(h => h.command?.includes('clear-seed.sh')))) {
+        sessionStart.push({ matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added SessionStart clear matcher (clear-seed.sh)');
+      }
+    }
 
     // Add UserPromptSubmit hook for Telegram topic context injection
     if (!hooks.UserPromptSubmit) {
@@ -19254,11 +19352,12 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
+      case 'clear-seed': return this.getClearSeedHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
       case 'external-operation-gate': return this.getExternalOperationGateHook();
@@ -19458,6 +19557,57 @@ except Exception:
   fi
 fi
 
+`;
+  }
+
+  /**
+   * The clear-seed hook (context-budget-layered-summaries §9.2 rung 1). Runs on
+   * SessionStart with source "clear". It prints a fold packet ONLY when the
+   * FoldCoordinator staged one for exactly this Instar session: a pointer at
+   * `<state>/context-layers/_clear-seed/<INSTAR_SESSION_ID>.json` naming a packet under
+   * the context-layers root, whose sha256 matches and whose lock has not
+   * expired. The pointer is claimed by an atomic rename before anything is
+   * printed, so a packet seeds at most once. With no valid pointer (a human
+   * /clear), the switch off, or another engine, it prints nothing and exits 0:
+   * exactly today's behaviour, where no hook ran on clear.
+   *
+   * Keyed on INSTAR_SESSION_ID, not the stdin session_id: measured on Claude
+   * Code 2.1.321, /clear starts a NEW Claude session id and transcript file,
+   * and the hook's stdin carries only the new id, so a pointer keyed on the
+   * pre-clear id would never be found. INSTAR_SESSION_ID is set in the pane's
+   * environment at spawn and survives the clear. The seeded marker is keyed on
+   * the new Claude session id (what the server binds next).
+   */
+  private getClearSeedHook(): string {
+    return `#!/bin/bash
+# Clear-seed hook (context-budget-layered-summaries §9.2 rung 1).
+# Silent unless a staged, verified, single-use fold packet exists for this session.
+INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+CB_STATE_ROOT="\$INSTAR_DIR"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+  CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
+fi
+[ "\${INSTAR_FRAMEWORK:-claude-code}" = "claude-code" ] || exit 0
+HOOK_INPUT=\$(python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.0
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<65536:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,8192)
+        if not chunk: break
+        buf+=chunk
+        try:
+            import json; json.loads(buf.decode('utf-8','replace')); break
+        except Exception:
+            pass
+except Exception:
+    pass
+sys.stdout.write(buf.decode('utf-8','replace'))" 2>/dev/null)
+[ -n "\$INSTAR_SESSION_ID" ] || exit 0
+printf '%s' "\$HOOK_INPUT" | python3 -c "${CLEAR_SEED_PY}" "\$CB_STATE_ROOT" "\$INSTAR_SESSION_ID" 2>/dev/null
+exit 0
 `;
   }
 
