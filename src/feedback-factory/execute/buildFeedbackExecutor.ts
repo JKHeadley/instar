@@ -4,6 +4,7 @@
  * executor shares the drain database, the triage owner fence and the epoch. Test seams
  * (`overrides`) replace only the external boundaries (git, GitHub, sandbox runtime, sessions).
  */
+import { createOperatorLinkOriginResolver, originOrNull } from '../../server/dashboardPaths.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -174,6 +175,8 @@ export function buildFeedbackExecutor(input: {
   localVerifyNeedsRestart?: () => boolean;
   raiseAttention: (item: AttentionInput) => Promise<void>;
   tunnelUrl: () => string | null;
+  /** True when this agent runs a tunnel (up or not): links then wait for its public URL instead of using localhost. */
+  tunnelConfigured?: () => boolean;
   /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
   paceTicks?: FeedbackExecutorServiceOptions['paceTicks'];
   overrides?: Partial<Pick<FeedbackExecutorServiceOptions, 'git' | 'github' | 'runner' | 'deps' | 'sessions' | 'admission' | 'identityFacts' | 'commitIdentity' | 'clock' | 'sleep' | 'sessionWaitMs'>> & { homeDir?: string };
@@ -283,7 +286,10 @@ export function buildFeedbackExecutor(input: {
     ghCredentialHelper: null,
     raiseAttention: input.raiseAttention,
     reportDegradation: (event) => DegradationReporter.getInstance().report(event),
-    dashboardLink: () => `${input.tunnelUrl() ?? `http://localhost:${config.port}`}/dashboard?tab=feedback-drain`,
+    dashboardLink: (() => {
+      const resolveOrigin = createOperatorLinkOriginResolver({ port: config.port, tunnelConfigured: input.tunnelConfigured ?? (() => false), tunnelUrl: input.tunnelUrl });
+      return () => { const origin = originOrNull(resolveOrigin()); return origin ? `${origin}/dashboard?tab=feedback-drain` : null; };
+    })(),
     ...(input.overrides?.sleep ? { sleep: input.overrides.sleep } : {}),
     ...(input.overrides?.sessionWaitMs !== undefined ? { sessionWaitMs: input.overrides.sessionWaitMs } : {}),
     paceTicks: input.paceTicks ?? null,

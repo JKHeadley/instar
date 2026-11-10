@@ -17,6 +17,10 @@
  * holds: the row lands in the attention queue / Notifications feed, and pushes
  * only where the operator chose to push that category.
  *
+ * The link must open on the operator's phone: while this agent's tunnel is configured but not
+ * up yet (right after a restart), the caller returns `'deferred'` and the pass tries again
+ * later, instead of sending a localhost link.
+ *
  * Restart-safe without new state: the reminder text names the absolute time the
  * wait started, so a restart that re-sends it lands as an unchanged repeat on
  * the same attention row (no second push). A new waiting spell (re-offered
@@ -79,8 +83,12 @@ export interface ApprovalReminderDeps {
   /** Episodes on THIS machine in state `suggested`. */
   listSuggested: () => SubscriptionReloginEpisode[];
   waitingSince: (ep: SubscriptionReloginEpisode) => number | null;
-  /** Deliver one reminder (the existing attention path). A rejection retries next tick. */
-  remind: (due: ApprovalReminderDue) => Promise<void> | void;
+  /**
+   * Deliver one reminder (the existing attention path). A rejection retries next tick.
+   * Returning `'deferred'` means "not yet" (e.g. the tunnel has no public URL yet, so the link
+   * would not open on the operator's phone): nothing is sent and the next pass tries again.
+   */
+  remind: (due: ApprovalReminderDue) => Promise<void | 'deferred'> | void | 'deferred';
   thresholdMs: number;
   /** True while a reminder must not be sent (the operator's night hours); the pass waits for the next tick. */
   inQuietHours?: (nowMs: number) => boolean;
@@ -108,7 +116,10 @@ export class SubscriptionReloginApprovalReminder {
       catch { return done; /* @silent-fallback-ok: an unreadable store reminds nothing this pass; the next pass reads again */ }
       for (const due of dueApprovalReminders(episodes, { nowMs, thresholdMs: this.d.thresholdMs, waitingSince: this.d.waitingSince, sent: this.sent })) {
         try {
-          await this.d.remind(due);
+          if (await this.d.remind(due) === 'deferred') {
+            this.d.log?.(`[relogin-reminder] reminder for ${due.episode.id} deferred (no public link yet); retrying next pass`);
+            continue;
+          }
           this.sent.add(due.key);
           done.push(due.key);
         } catch (err) {

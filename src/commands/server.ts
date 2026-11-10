@@ -230,6 +230,7 @@ import { MachineEvidenceStore } from '../core/MachineEvidenceStore.js';
 import { AttentionConditionStore, baseKeyOfItemId } from '../core/AttentionConditionStore.js';
 import { resolveSubscriptionReloginAttention, subscriptionReloginConditionKey } from '../core/SubscriptionReloginAttention.js';
 import { SubscriptionReloginApprovalReminder, DEFAULT_APPROVAL_REMINDER_HOURS, waitingSinceMs, approvalReminderSummary } from '../core/SubscriptionReloginApprovalReminder.js';
+import { createOperatorLinkOriginResolver, PublicLinkPendingError } from '../server/dashboardPaths.js';
 import { DEFAULT_SLOW_RETRY, outsideQuietHours } from '../core/SubscriptionReloginService.js';
 import { isWslHost } from '../core/wslPlatform.js';
 import { emailMismatchAttentionIdPrefix } from '../core/AccountFollowMeEmailGate.js';
@@ -14685,6 +14686,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Only disabled if explicitly set to tunnel.enabled = false
     const tunnelEnabled = config.tunnel?.enabled !== false;
     let tunnel: TunnelManager | undefined;
+    // Operator-facing links (notices, reminders) must open on a phone: with a tunnel configured but
+    // not up yet, link-bearing notices wait for the public URL instead of sending localhost.
+    const operatorLinkOrigin = createOperatorLinkOriginResolver({
+      port: config.port, tunnelConfigured: () => !!tunnel, tunnelUrl: () => tunnel?.url,
+    });
     if (tunnelEnabled) {
       // Persist tunnel config if it wasn't in config.json yet (existing agents)
       if (!config.tunnel) {
@@ -17367,10 +17373,11 @@ export async function startServer(options: StartOptions): Promise<void> {
         const notify = telegram ? async (episode: import('../core/SubscriptionReloginStore.js').SubscriptionReloginEpisode,
           deliveryKey: string, kind: 'approval' | 'operator-only' | 'terminal' | 'phone-tap') => {
           const doorway = episode.framework === 'codex-cli' ? 'Codex' : 'Claude Code';
-          // The dashboard's Subscriptions tab, where the operator can finish from a phone.
-          let subscriptionsLink = `http://localhost:${config.port}/dashboard?tab=subscriptions`;
-          try { if (tunnel?.url) subscriptionsLink = `${tunnel.url}/dashboard?tab=subscriptions`; }
-          catch { /* @silent-fallback-ok — tunnel URL is best-effort; the local link still names the tab */ }
+          // The dashboard's Subscriptions tab, where the operator can finish from a phone. While the
+          // tunnel is configured but not up, a notice carrying this link is retried (the store's
+          // backoff) rather than sent with a localhost link the phone cannot open.
+          const origin = operatorLinkOrigin();
+          const subscriptionsLink = `${origin.kind === 'pending' ? `http://localhost:${config.port}` : origin.origin}/dashboard?tab=subscriptions`;
           // A helper-reported macOS permission rides the reason token `agent-permission-<name>`.
           const permissionReason = episode.failureClass === 'automation-permission'
             ? (subscriptionReloginRuntime?.store.listEvents(episode.id, 5)
@@ -17408,6 +17415,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 : `${doorway} subscription is signed in again (verified elsewhere)`);
             return;
           }
+          if (origin.kind === 'pending' && summary.includes(subscriptionsLink)) throw new PublicLinkPendingError();
           await telegram!.createAttentionItem({ id: deliveryKey.replace(/:/g, '-'), title: `${doorway} sign-in repair`,
             summary, description: summary, category: 'subscription-relogin', conditionKey,
             priority: kind === 'phone-tap' ? 'URGENT' : 'HIGH',
@@ -17529,10 +17537,10 @@ export async function startServer(options: StartOptions): Promise<void> {
             log: (line) => console.warn(line),
             remind: async ({ episode, waitingSinceMs: since }) => {
               const doorway = episode.framework === 'codex-cli' ? 'Codex' : 'Claude Code';
-              let base = `http://localhost:${config.port}`;
-              try { if (tunnel?.url) base = tunnel.url; }
-              catch { /* @silent-fallback-ok — tunnel URL is best-effort; the local link still opens the page */ }
-              const link = `${base}/dashboard/console/#/capacity/accounts?s=needs`;
+              // A link the phone cannot open is no path to act: wait for the tunnel's public URL.
+              const origin = operatorLinkOrigin();
+              if (origin.kind === 'pending') return 'deferred';
+              const link = `${origin.origin}/dashboard/console/#/capacity/accounts?s=needs`;
               const email = subscriptionPool.get(episode.accountId)?.email ?? null;
               const summary = approvalReminderSummary({ doorway, account: email, machine: null, waitingSinceMs: since, link });
               await tg.createAttentionItem({ id: `subscription-relogin-${episode.id}-approval-reminder`, title: `${doorway} sign-in repair is waiting for you`,
