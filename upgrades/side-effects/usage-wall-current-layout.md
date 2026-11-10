@@ -93,3 +93,7 @@ Reviewer verdict after fixes: "Concur after fixes" (60/60 in the two changed sui
 ## Follow-up commit
 
 The shared limit-evidence lookup moved from a private SessionManager method to a module function over `listRunningSessions`, `configHomeForSession`, `setClaudeSessionId` and the project dir. The existing integration test calls `confirmSessionUsageLimit` on a narrow stand-in, and the private method broke it. No behavior change. `tests/integration/session-usage-limit-evidence.test.ts` now also covers `usageWallFromTranscript` (wall vs throttle, exact session only); 11/11 pass.
+
+## Follow-up: source pin
+
+`tests/unit/usage-limit-key-pickup.test.ts` pinned the `{ defaultWhenUnset: true, defaultWhenAbsent: true }` options text inside `confirmSessionUsageLimit`. The lookup moved into `limitEvidenceTranscript`, so the pin now asserts that both `confirmSessionUsageLimit` and `usageWallFromTranscript` route through that one lookup, and that the lookup calls `configHomeForSession` with both options. The guarantee is the same, and it now also covers the new reader. No source change.
