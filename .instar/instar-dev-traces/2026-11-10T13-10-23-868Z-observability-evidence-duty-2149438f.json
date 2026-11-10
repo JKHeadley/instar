@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "observability-evidence-duty",
+  "sessionId": "8e9e2742-87e9-40e2-ac7d-af55bba2defa",
+  "timestamp": "2026-11-10T13:10:23.868Z",
+  "artifactPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "artifactSha256": "26733b10adeee5ab09b8f93fa71a99ede3a99b31c01c62e3665a3980e3e57203",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/improvement-observability-amendment6-combined-building-2026-11-09.json",
+    "docs/audits/improvement-observability-building-2026-11-06.json",
+    "docs/audits/improvement-observability-combined-building-2026-11-06.json",
+    "docs/constitution-alignment-map.md",
+    "docs/standards-registry-area-audits.json"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only constitution sharpening already reviewed and operator-approved; this trace corrects the final-head second-pass coverage to include the audit files the reviewer was given.",
+  "eli16Path": "docs/specs/observability-evidence-duty.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/observability-evidence-duty.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
