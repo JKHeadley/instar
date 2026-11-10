@@ -291,6 +291,70 @@ export const POST_COMPACT_SETTINGS_HOOK = {
   timeout: 5,
 } as const;
 
+/**
+ * The PreCompact steering hook's settings entry (context-budget-layered-summaries
+ * §9.1, §9.5). Its own entry under PreCompact, separate from the event reporter's,
+ * so the reporter and native-events migrations (which only touch reporter hooks)
+ * leave it alone. Shared by init and migrateSettings.
+ */
+export const PRE_COMPACT_STEER_SETTINGS_HOOK = {
+  type: 'command',
+  command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/pre-compact-steer.sh"',
+  timeout: 5,
+} as const;
+
+/**
+ * The steering check, embedded in the hook as `python3 -c` (no `"`, `$` or
+ * backtick inside, so it survives the shell double-quoting). argv[1] is the
+ * state root, argv[2] the Instar session id. Prints the staged, hash-verified
+ * keep-instructions text and nothing else; never composes, never blocks.
+ * Schema written by `writeKeepInstructions` (src/monitoring/keepInstructions.ts);
+ * keep the two in step.
+ */
+const KEEP_INSTRUCTIONS_PY = [
+  'import sys,json,os,hashlib',
+  'root=sys.argv[1]',
+  "iid=sys.argv[2] if len(sys.argv)>2 else ''",
+  "if not iid or len(iid)>128 or not all(c.isalnum() or c in '-_' for c in iid):",
+  '    sys.exit(0)',
+  'try:',
+  '    d=json.load(sys.stdin)',
+  'except Exception:',
+  '    sys.exit(0)',
+  "if d.get('hook_event_name')!='PreCompact':",
+  '    sys.exit(0)',
+  'try:',
+  "    c=json.load(open(os.path.join(root,'config.json')))",
+  "    if ((c.get('contextBudget') or {}).get('compactionRecovery') or {}).get('enabled') is False:",
+  '        sys.exit(0)',
+  'except SystemExit:',
+  '    raise',
+  'except Exception:',
+  '    pass',
+  "layers=os.path.realpath(os.path.join(root,'state','context-layers'))",
+  "ptr=os.path.join(layers,'_keep',iid+'.json')",
+  'try:',
+  '    p=json.load(open(ptr))',
+  'except Exception:',
+  '    sys.exit(0)',
+  "if p.get('schema')!='keep-instructions/1' or p.get('instarSessionId')!=iid:",
+  '    sys.exit(0)',
+  "txt=os.path.realpath(os.path.join(layers,str(p.get('textPath') or '')))",
+  'if not txt.startswith(layers+os.sep) or not os.path.isfile(txt):',
+  '    sys.exit(0)',
+  'try:',
+  "    body=open(txt,'rb').read(36001)",
+  'except Exception:',
+  '    sys.exit(0)',
+  "if len(body)>36000 or hashlib.sha256(body).hexdigest()!=p.get('sha256'):",
+  '    sys.exit(0)',
+  "t=body.decode('utf-8','replace')",
+  'if len(t)>9000:',
+  '    sys.exit(0)',
+  'sys.stdout.write(t)',
+  'sys.stdout.flush()',
+].join('\n');
+
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
  *  add/update migrations so the three cannot drift. */
 /**
@@ -7925,6 +7989,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       result.upgraded.push('hooks/instar/post-compact.sh (stores the compaction summary)');
     } catch (err) {
       result.errors.push(`post-compact.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // context-budget-layered-summaries §9.1/§9.5: prints the staged keep-
+      // instructions into Claude's compaction prompt. Never composes, never blocks.
+      fs.writeFileSync(path.join(instarHooksDir, 'pre-compact-steer.sh'), this.getPreCompactSteerHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/pre-compact-steer.sh (keep-instructions for compaction)');
+    } catch (err) {
+      result.errors.push(`pre-compact-steer.sh: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     try {
@@ -17406,6 +17479,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         result.upgraded.push('.claude/settings.json: added PostCompact hook (post-compact.sh)');
       }
     }
+    {
+      // context-budget-layered-summaries §9.1: a separate PreCompact entry for the
+      // steering hook (the reporter migrations only touch reporter hooks).
+      const preCompact = (hooks.PreCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+      if (!preCompact.some(e => e.hooks?.some(h => h.command?.includes('pre-compact-steer.sh')))) {
+        preCompact.push({ matcher: '', hooks: [{ ...PRE_COMPACT_STEER_SETTINGS_HOOK }] });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added PreCompact steering hook (pre-compact-steer.sh)');
+      }
+    }
 
     // Add UserPromptSubmit hook for Telegram topic context injection
     if (!hooks.UserPromptSubmit) {
@@ -19432,13 +19515,14 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'post-compact' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'post-compact' | 'pre-compact-steer' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
       case 'clear-seed': return this.getClearSeedHook();
       case 'post-compact': return this.getPostCompactHook();
+      case 'pre-compact-steer': return this.getPreCompactSteerHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
       case 'external-operation-gate': return this.getExternalOperationGateHook();
@@ -19688,6 +19772,43 @@ except Exception:
 sys.stdout.write(buf.decode('utf-8','replace'))" 2>/dev/null)
 [ -n "\$INSTAR_SESSION_ID" ] || exit 0
 printf '%s' "\$HOOK_INPUT" | python3 -c "${CLEAR_SEED_PY}" "\$CB_STATE_ROOT" "\$INSTAR_SESSION_ID" 2>/dev/null
+exit 0
+`;
+  }
+
+  /**
+   * The PreCompact steering hook (context-budget-layered-summaries §9.1, §9.5).
+   * Claude Code merges a successful PreCompact hook's stdout into the summary
+   * prompt as newCustomInstructions (2.1.321; cut at 10,000 characters). This
+   * prints the pre-rendered keep-instructions staged for this Instar session,
+   * after a hash check, and nothing otherwise. Always exits 0 (exit 2 would
+   * block the compaction). Silent on another engine, without a session id, or
+   * with the switch off.
+   */
+  private getPreCompactSteerHook(): string {
+    return `#!/bin/bash
+# PreCompact steering hook (context-budget-layered-summaries §9.1/§9.5).
+# Prints staged, verified keep-instructions; never composes, never blocks.
+INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+CB_STATE_ROOT="\$INSTAR_DIR"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+  CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
+fi
+[ "\${INSTAR_FRAMEWORK:-claude-code}" = "claude-code" ] || exit 0
+[ -n "\$INSTAR_SESSION_ID" ] || exit 0
+python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.0
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<65536:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,8192)
+        if not chunk: break
+        buf+=chunk
+except Exception:
+    pass
+sys.stdout.buffer.write(buf)" 2>/dev/null | python3 -c "${KEEP_INSTRUCTIONS_PY}" "\$CB_STATE_ROOT" "\$INSTAR_SESSION_ID" 2>/dev/null
 exit 0
 `;
   }
