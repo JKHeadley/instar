@@ -290,6 +290,8 @@ describe('Chief of Staff: pinned row and tree order (chief-of-staff-topic.md §1
     const rows = m.listRows({ conversations: [{ id: 1, platform: 'telegram', title: 'x' }, { id: 2, platform: 'telegram', title: 'y' }] });
     expect(rows.every((r) => r.parent === null)).toBe(true);
     expect(m.orderWithTree(rows, null).map((r) => [r.key, r.depth])).toEqual([['telegram:1', 0], ['telegram:2', 0]]);
+  });
+});
 
 describe('pinned messages (conversation-pinned-messages)', () => {
   const pins = [

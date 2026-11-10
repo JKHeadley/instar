@@ -2456,7 +2456,7 @@ export class TelegramAdapter implements MessagingAdapter {
   }
 
   /** Pin or unpin one message in a topic's chat in Telegram itself, quietly (conversation-pinned-messages). */
-  async pinTopicMessage(topicId: number, messageId: number, pinned: boolean): Promise<void> {
+  async setTopicMessagePin(topicId: number, messageId: number, pinned: boolean): Promise<void> {
     // The chat a topic lives in (issues-group topics live in the issues chat); the pin calls take no thread.
     const dest = toWireParams({ chat_id: this.config.chatId, message_thread_id: topicId }, this.topicSpace());
     const params: Record<string, unknown> = { chat_id: dest.chat_id, message_id: messageId };

@@ -52,8 +52,8 @@ describe('the adapter and pins', () => {
   it('pins quietly and unpins with ids only, in the topic chat', async () => {
     const calls: Array<[string, Record<string, unknown>]> = [];
     (adapter as unknown as Proc).apiCall = async (m, p) => { calls.push([m, p]); return {}; };
-    await adapter.pinTopicMessage(77, 400, true);
-    await adapter.pinTopicMessage(77, 400, false);
+    await adapter.setTopicMessagePin(77, 400, true);
+    await adapter.setTopicMessagePin(77, 400, false);
     expect(calls).toEqual([
       ['pinChatMessage', { chat_id: '-1001', message_id: 400, disable_notification: true }],
       ['unpinChatMessage', { chat_id: '-1001', message_id: 400 }],

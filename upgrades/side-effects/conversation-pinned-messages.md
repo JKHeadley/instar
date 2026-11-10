@@ -97,3 +97,7 @@ The reviewer's 12 findings were each addressed: exact team mappings (unit test),
 - `tests/integration/conversation-pins.test.ts` — app/Telegram/Slack routes over the real device-signed pipeline.
 - `tests/e2e/conversation-pins-alive.test.ts` — production AgentServer boot: pin is 200, listed, on history, token-readable.
 - `tests/unit/console-chats-model.test.ts`, `tests/unit/console-chats-page.test.ts` — dashboard bar, menu, list, signed pin call.
+
+## Addendum (2026-11-10): rebase onto the chief-of-staff work
+
+Main gained its own `TelegramAdapter.pinTopicMessage(topicId, messageId)` (the Chief of Staff greeting pin, #3008). This change's message pin was renamed to `setTopicMessagePin(topicId, messageId, pinned)` so the two no longer collide; behavior of both is unchanged. The dashboard import list and the chats-model tests now carry both features (conversation pin row from #3008, message pins from this change). Over-block, under-block, authority and multi-machine answers above are unaffected; rollback is still reverting this PR.

@@ -6944,7 +6944,7 @@ export class AgentServer {
           const row = options.telegram!.getTopicHistory(topicId, 500).find((m) => String(m.messageId) === messageId);
           return row && typeof row.text === 'string' ? deviceTextForRow(row.text) : null;
         },
-        pin: (topicId: number, messageId: number, pinned: boolean) => options.telegram!.pinTopicMessage(topicId, messageId, pinned),
+        pin: (topicId: number, messageId: number, pinned: boolean) => options.telegram!.setTopicMessagePin(topicId, messageId, pinned),
       } : null;
       this.app.use(createMobilePinRouter({
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,

@@ -47,3 +47,5 @@ Everything on the server side in one change: the store records, the routes for t
 ## What you actually need to decide
 
 Nothing beyond the request: this builds what Justin asked for. The one judgement call is that pinning follows the "may send" rule rather than a new permission, so anyone who can write in a conversation can also pin in it.
+
+**Note after rebasing (2026-11-10):** another change that landed first lets the Chief of Staff pin its own greeting in Telegram, and it used the same internal name this change used for pinning a message. This change's version was renamed so both work side by side. Nothing you see changes: pinning a message still pins it in the app, the dashboard and the Telegram topic, and the Chief of Staff greeting pin keeps working as it did.
