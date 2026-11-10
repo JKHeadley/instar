@@ -79,3 +79,6 @@ Concern raised and resolved: the four MUST-FIX items are fixed with tests, eight
 
 ## Post-rebase addendum (2026-11-09): LLM coverage registration
 Main gained three ratchets after this PR was cut: every LLM component must be classified for untrusted input, for injection exposure, and for bench coverage. `ChiefOfStaffLoop` (the §2.5 verdict judge) is registered as judging untrusted content (`true`: session tail, owner and agent messages, linked-work evidence), exposed on all three input shapes, and bench-pending (wave-3) — graded in production by its decision-quality seam (`DP_COS_PROJECT_VERDICT`) until a battery lands; the pending baseline in the ratchet test names it with that reason. No behaviour change.
+
+## Post-rebase addendum 2: capability discovery
+The status routes (`GET /chief-of-staff`, `GET /chief-of-staff/projects/:key`) are now classified in the capability index as `chiefOfStaff`, so an agent asked "is anything stalled?" finds them in `/capabilities` instead of reading topics one by one; its build reports whether the loop is wired and the lease live, and `enabled: false` where the feature is off. Read-only, no behaviour change.
