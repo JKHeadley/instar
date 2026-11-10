@@ -125,6 +125,14 @@ describe('resolveClaudeReviewerModel — pinned frontier, no silent fallback (§
     expect(resolveClaudeReviewerModel(undefined)).toEqual({ ok: true, model: 'claude-fable-5' });
   });
 
+  it("accepts the operator's explicit Fable 5.2 pin (claude-fable-5-2, 2026-11-09) without changing the default", () => {
+    const res = resolveClaudeReviewerModel({
+      specConverge: { reviewers: { anthropic: { model: 'claude-fable-5-2' } } },
+    });
+    expect(res).toEqual({ ok: true, model: 'claude-fable-5-2' });
+    expect(resolveClaudeReviewerModel(undefined)).toEqual({ ok: true, model: 'claude-fable-5' });
+  });
+
   it('REJECTS a tier word (override-not-concrete) — never a dead reviewer', () => {
     const res = resolveClaudeReviewerModel({
       specConverge: { reviewers: { anthropic: { model: 'capable' } } },
