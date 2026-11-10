@@ -66,6 +66,18 @@ export interface GuardManifestEntry {
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
+    // ContextBudgetSentinel (docs/specs/context-budget-layered-summaries.md §7.8, §9.3):
+    // reconciles quarantined context folds (verified termination before any release) and
+    // keeps containment on any unknown. Ships dark; its heartbeat is a fold precondition,
+    // so off ⇒ no fold can begin. Built and ticked only when on (no runtime registration).
+    key: 'contextBudget.sentinel', kind: 'config',
+    configPath: 'contextBudget.sentinel.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 300_000, process: 'server', expectRuntime: false,
+    component: 'ContextBudgetSentinel',
+    description: 'Context Budget sentinel: reconciles quarantined context folds and escalates torn fold records; off ⇒ no fold can begin.',
+  },
+  {
     key: 'scheduler.jobCoverage', kind: 'code-default', defaultEnabled: true,
     expectedTickMs: 300_000, process: 'server', expectRuntime: false,
     component: 'JobCoverageMonitor',

@@ -115,6 +115,9 @@ export function defaultFoldCarriers(stateDir: string): FoldCarrier[] {
     keepInstructionsCarrier(stateDir),
     pendingInjectCarrier(new PendingInjectStore(path.join(stateDir, 'state'))),
     foldMarkerCarrier(stateDir),
-    engineCheckpointCarrier(stateDir, (topicKey, foldId) => new FoldRecordStore(stateDir).get(topicKey, foldId)?.state ?? null),
+    engineCheckpointCarrier(stateDir, (topicKey, foldId) => {
+      const seen = new FoldRecordStore(stateDir).inspect(topicKey, foldId);
+      return seen.kind === 'ok' ? seen.record.state : seen.kind === 'torn' ? 'unreadable' : null;
+    }),
   ];
 }

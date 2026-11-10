@@ -1285,6 +1285,8 @@ export interface RouteContext {
   standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry | null;
   /** context-budget-layered-summaries §10: the egress fold hold. Null ⇒ no fold can hold a topic. */
   foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null;
+  /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel, or null when it is off. */
+  contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -8879,6 +8881,16 @@ export function createRoutes(ctx: RouteContext): Router {
   // Loop health first, then the lease, then bound projects. Owner-only: the owner principal is
   // the bearer holder on this agent (team members reach the agent through conversations, not
   // the API); the per-project route returns cited evidence, so titles never leave this surface.
+  // context-budget-layered-summaries §7.8/§9.1: the ContextBudgetSentinel's status —
+  // its heartbeat, quarantined and torn folds, and the standing compaction canary's
+  // state per machine/engine/version. Read-only; 503 when the sentinel is off.
+  router.get('/context-budget/sentinel', (_req, res) => {
+    if (!ctx.contextBudgetSentinel) {
+      res.status(503).json({ error: 'context-budget sentinel not enabled on this agent', enableWith: 'contextBudget.sentinel.enabled' });
+      return;
+    }
+    res.json(ctx.contextBudgetSentinel.status());
+  });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
       res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
