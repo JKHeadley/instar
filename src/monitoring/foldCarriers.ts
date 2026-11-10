@@ -10,8 +10,11 @@
  *    fold carrier and is never released here).
  *  - `pending-inject`: a PendingInjectStore record tagged with the fold.
  *
- * The fold hold, the per-session markers and the engine checkpoint register
- * their own carriers in the slices that build them.
+ *  - `fold-marker`: the per-session marker the fold-marker tool policy reads
+ *    (foldMarker.ts).
+ *
+ * The fold hold and the engine checkpoint register their own carriers in the
+ * slices that build them.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +23,7 @@ import { listClearSeedPointers, contextLayersRoot } from './clearSeedPointer.js'
 import { keepInstructionsDir, removeKeepInstructions } from './keepInstructions.js';
 import { PendingInjectStore } from '../core/PendingInjectStore.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { foldMarkerCarrier } from './foldMarker.js';
 
 /** The keep-instructions source string for a fold's staged steering text. */
 export function foldKeepSource(topicKey: string, foldId: string): string {
@@ -106,5 +110,6 @@ export function defaultFoldCarriers(stateDir: string): FoldCarrier[] {
     clearSeedPointerCarrier(stateDir),
     keepInstructionsCarrier(stateDir),
     pendingInjectCarrier(new PendingInjectStore(path.join(stateDir, 'state'))),
+    foldMarkerCarrier(stateDir),
   ];
 }

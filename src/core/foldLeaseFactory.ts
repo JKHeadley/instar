@@ -17,6 +17,8 @@ import { sign as signEd25519, verify as verifyEd25519, generateSigningKeyPair, M
 
 /** The fold lock's base TTL before Phase 0 measures the p99 fold duration (§9.3: floor ≥ p95). */
 export const FOLD_LOCK_DEFAULT_TTL_MS = 10 * 60_000;
+/** The lock TTL ceiling (§9.3: every step's hard maximum is 3× its bound): bounds a last-known fold hold under store faults. */
+export const FOLD_LOCK_TTL_CEILING_MS = 3 * FOLD_LOCK_DEFAULT_TTL_MS;
 
 export function foldLeaseDir(stateDir: string): string {
   return path.join(stateDir, 'state', 'fold-leases');
