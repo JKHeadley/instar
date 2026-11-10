@@ -194,7 +194,90 @@ describe('accounts page in a DOM', () => {
     ([...doc.querySelectorAll('.signin-steps button')].find((b) => b.textContent === 'Send the code') as HTMLButtonElement).click();
     await tick(3);
     expect(posts[1]).toEqual({ url: '/subscription-pool/follow-me/submit-code', body: { machineId: 'm2', id: 'L1', code: 'abc-123' } });
-    expect(doc.querySelector('.signin-steps .action-status')!.textContent).toBe('Signed in on Mac Mini.');
+    // The form is gone: one clear result and one button.
+    expect(doc.querySelector('.signin-steps')).toBeNull();
+    expect(doc.querySelector('.signin-progress.done .signin-progress-title')!.textContent).toBe('Signed in on Mac Mini.');
+    expect(doc.querySelector('.signin-progress input')).toBeNull();
+    expect([...doc.querySelectorAll('.sheet button:not(.sheet-close)')].map((b) => b.textContent)).toEqual(['Done']);
+  });
+
+  // Operator report 2026-11-10 (topic 33890): after Send the dialog kept the live form and a
+  // faint "code sent; finishing sign-in" line, and looked stalled.
+  const openSignIn = async (submitAnswer: Record<string, unknown>, completions: Array<Record<string, unknown>>) => {
+    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const gets: string[] = [];
+    dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:4040/dashboard/console/#/capacity/accounts' });
+    const g = globalThis as Record<string, unknown>;
+    Object.assign(g, { window: dom.window, document: dom.window.document, location: dom.window.location, history: dom.window.history, localStorage: dom.window.localStorage, requestAnimationFrame: (f: () => void) => setTimeout(f, 0) });
+    dom.window.localStorage.setItem('instar_token', 't');
+    const table: Record<string, unknown> = {
+      '/sessions': { sessions: [] }, '/health': { project: { name: 'echo' } },
+      '/subscription-pool?scope=pool': { enabled: true, accounts: [row({ status: 'needs-reauth', machineId: 'm2', machineNickname: 'Mac Studio' })], pool: { failed: [] } },
+      '/subscription-relogin?scope=pool': { enabled: true, episodes: [] }, '/subscription-pool/in-use': { enabled: true }, '/pool': { machines: [] },
+    };
+    g.fetch = async (url: string, opts?: { method?: string; body?: string }) => {
+      if (opts && opts.method === 'POST') {
+        posts.push({ url, body: JSON.parse(opts.body || '{}') });
+        if (url === '/subscription-pool/matrix/start-cell') return { ok: true, status: 200, json: async () => ({ verificationUrl: 'https://claude.ai/oauth/x', loginId: 'L1', expectedEmail: 'luna@x.io' }) };
+        if (url === '/subscription-pool/follow-me/submit-code') return { ok: true, status: 200, json: async () => submitAnswer };
+      }
+      if (url.startsWith('/subscription-pool/follow-me/completion?')) {
+        gets.push(url);
+        const c = completions.length > 1 ? completions.shift() : completions[0];
+        return { ok: true, status: 200, json: async () => ({ enabled: true, completion: c }) };
+      }
+      const b = table[url];
+      return b === undefined ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(b)) };
+    };
+    vi.resetModules();
+    await import('../../dashboard/console/console.js');
+    const tick = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise((r) => setTimeout(r, 15)); };
+    await tick(15);
+    const doc = dom.window.document;
+    (doc.querySelector('#sec-needs button.btn-quiet') as HTMLButtonElement).click();
+    await tick(3);
+    (doc.querySelector('.pin-input') as HTMLInputElement).value = '123456';
+    (doc.querySelector('.pin-form') as HTMLFormElement).dispatchEvent(new dom.window.Event('submit', { cancelable: true }));
+    await tick(5);
+    (doc.querySelector('.signin-steps .reason-input') as HTMLInputElement).value = 'abc-123';
+    ([...doc.querySelectorAll('.signin-steps button')].find((b) => b.textContent === 'Send the code') as HTMLButtonElement).click();
+    await tick(3);
+    return { doc, posts, gets, tick };
+  };
+
+  it('a sent code replaces the form with a prominent in-progress view, then says who signed in', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'], shouldAdvanceTime: true });
+    try {
+      const { doc, gets } = await openSignIn({ outcome: 'submitted', message: 'code sent; finishing sign-in', completion: { state: 'finishing' } },
+        [{ state: 'finishing' }, { state: 'done', email: 'gearfinity3d@gmail.com' }]);
+      expect(doc.querySelector('.signin-steps')).toBeNull();
+      expect(doc.querySelector('.signin-progress[aria-busy="true"] .signin-spinner')).not.toBeNull();
+      expect(doc.querySelector('.signin-progress-title')!.textContent).toBe('Finishing the sign-in on Mac Studio…');
+      expect(doc.querySelectorAll('.sheet input')).toHaveLength(0);
+      expect(doc.querySelectorAll('.sheet button:not(.sheet-close)')).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(4_500);
+      expect(gets[0]).toBe('/subscription-pool/follow-me/completion?machineId=m2&id=L1');
+      expect(doc.querySelector('.signin-progress.done .signin-progress-title')!.textContent).toBe('Signed in as gearfinity3d@gmail.com on Mac Studio.');
+      expect([...doc.querySelectorAll('.sheet button:not(.sheet-close)')].map((b) => b.textContent)).toEqual(['Done']);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a sign-in that fails after the code shows the reason and one retry action', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout'], shouldAdvanceTime: true });
+    try {
+      const { doc } = await openSignIn({ outcome: 'submitted', completion: { state: 'finishing' } },
+        [{ state: 'failed', reason: 'window-closed', message: 'x' }]);
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(doc.querySelector('.signin-progress.failed .signin-progress-title')!.textContent).toBe('The sign-in did not finish.');
+      expect(doc.querySelector('.signin-progress.failed .row-sub')!.textContent).toBe('The sign-in window closed before the sign-in finished.');
+      expect([...doc.querySelectorAll('.sheet button:not(.sheet-close)')].map((b) => b.textContent)).toEqual(['Start the sign-in again']);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('a code the machine refused brings the form back with what went wrong', async () => {
+    const { doc } = await openSignIn({ error: 'that does not look like a sign-in code — paste only the code the page gave you' }, []);
+    expect(doc.querySelector('.signin-steps .reason-input')).not.toBeNull();
+    expect(doc.querySelector('.signin-steps .action-status')!.textContent).toMatch(/does not look like a sign-in code/);
   });
 
   const render = async (accounts: unknown[]) => {

@@ -134,6 +134,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-pool/enroll/:id/cancel',
         'POST /subscription-pool/enroll/:id/complete',
         'POST /subscription-pool/enroll/reissue-expired',
+        'GET /subscription-pool/follow-me/completion',
+        'GET /subscription-pool/follow-me/enroll/:id/completion',
       ],
     }),
   },

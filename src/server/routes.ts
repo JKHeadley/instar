@@ -1,4 +1,5 @@
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
@@ -1335,6 +1336,8 @@ export interface RouteContext {
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
   /** Deterministic test seam after plain enrollment completion owns its id. */
   enrollmentCompleteInFlightHook?: (id: string) => void | Promise<void>;
+  /** Test seam: shorten the post-submit completion watch (poll interval, bound, grace). */
+  followMeCompletionWatcherTiming?: { pollMs?: number; timeoutMs?: number; windowClosedGraceMs?: number };
   /** WS5.2 R12 — Account Follow-Me revocation data-plane executor. Constructed in the server with
    *  REAL deps (cooperative local wipe + durable pending store + attention emit). Null when the
    *  server wiring did not construct it (e.g. lightweight test harnesses). The `/mandate/:id/revoke`
@@ -40793,6 +40796,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const followMeSubmitInFlight = new Set<string>();
   const plainCompleteInFlight = new Set<string>();
 
+  // After a delivered code, the server — not a five-minute background tick and not a
+  // hand-run complete — drives the sign-in to a terminal state the page can poll
+  // (operator report 2026-11-10, topic 33890: "code sent; finishing sign-in" sat forever
+  // while the login had in fact finished). Machine-local: the pane and slot live here;
+  // the fronting dashboard reads it through GET /subscription-pool/follow-me/completion.
+  let followMeCompletionWatcher: FollowMeCompletionWatcher | null = null;
+  const getFollowMeCompletionWatcher = (): FollowMeCompletionWatcher | null => {
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) return null;
+    followMeCompletionWatcher ??= new FollowMeCompletionWatcher({
+      wizard: ctx.enrollmentWizard,
+      paneAlive: (id) => {
+        const login = ctx.enrollmentWizard?.getById(id);
+        return login ? enrollPaneAlive(login) : null;
+      },
+      onValidated: (login, email) => { upsertValidatedAccount(login, email); },
+      afterValidated: (login) => reverifyCompletedEnrollment(login),
+      targetMachineNickname: 'this machine',
+      ...(ctx.followMeCompletionWatcherTiming ?? {}),
+      logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+    });
+    return followMeCompletionWatcher;
+  };
+  /** The completion state for one login: the live watch, else what the durable record says. */
+  const followMeCompletionState = (id: string): FollowMeCompletionSnapshot | { id: string; state: 'waiting-for-code' | 'unknown'; message: string } => {
+    const watched = followMeCompletionWatcher?.get(id);
+    if (watched) return watched;
+    const login = ctx.enrollmentWizard?.getById(id);
+    if (login?.status === 'completed') {
+      const email = ctx.subscriptionPool?.get(id)?.email;
+      return { id, state: 'done', startedAt: login.updatedAt, deadlineAt: login.updatedAt, finishedAt: login.updatedAt,
+        ...(email ? { email } : {}), message: email ? `Signed in as ${email}.` : 'Signed in.' };
+    }
+    if (login?.status === 'abandoned') {
+      return { id, state: 'failed', startedAt: login.updatedAt, deadlineAt: login.updatedAt, finishedAt: login.updatedAt,
+        reason: 'cancelled', message: 'This sign-in was cancelled.' };
+    }
+    if (login) return { id, state: 'waiting-for-code', message: 'Waiting for the sign-in code.' };
+    return { id, state: 'unknown', message: 'This sign-in is not known on this machine.' };
+  };
+
   /** Shared lifecycle core; route-specific gates and in-flight locks stay at call sites. */
   const cancelEnrollment = (
     id: string,
@@ -40985,7 +41028,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (outcome === 'pending') {
       logOutcome('submitted');
-      res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in' });
+      const watcher = getFollowMeCompletionWatcher();
+      const completion = watcher ? watcher.watch(id) : null;
+      res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in', ...(completion ? { completion } : {}) });
       return;
     }
     const result = await ctx.enrollmentWizard.completeFollowMe(id, 'this machine');
@@ -41006,6 +41051,61 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell' });
     } finally {
       followMeSubmitInFlight.delete(id);
+    }
+  });
+
+  // TARGET-LOCAL completion read for a submitted follow-me code: finishing → done | failed.
+  router.get('/subscription-pool/follow-me/enroll/:id/completion', (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.enrollmentWizard) {
+      res.status(503).json({ error: 'enrollment wizard not configured' });
+      return;
+    }
+    res.json({ enabled: true, completion: followMeCompletionState(req.params.id) });
+  });
+
+  // FRONTING RELAY for the completion read: the operator's single dashboard polls this; it
+  // reads the machine doing the login (self → local; peer → that peer's local route).
+  router.get('/subscription-pool/follow-me/completion', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    const id = typeof req.query.id === 'string' ? req.query.id : '';
+    const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    const selfId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    if (!machineId || machineId === selfId) {
+      if (!ctx.enrollmentWizard) {
+        res.status(503).json({ error: 'enrollment wizard not configured' });
+        return;
+      }
+      res.json({ enabled: true, completion: followMeCompletionState(id) });
+      return;
+    }
+    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+    if (!peer) {
+      res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment` });
+      return;
+    }
+    try {
+      const r = await fetch(`${peer.url}/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/completion`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+        signal: AbortSignal.timeout(FOLLOWME_SIMPLE_RELAY_FETCH_MS),
+      });
+      const body = await r.json().catch(() => ({}));
+      res.status(r.status).json(body);
+    } catch {
+      // @silent-fallback-ok — a dark peer is a classified 502 the page shows and retries.
+      res.status(502).json({ error: 'could not reach the machine doing the login — still checking' });
     }
   });
 
