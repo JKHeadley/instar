@@ -15970,6 +15970,16 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
       result.upgraded.push('CLAUDE.md: added "what are we working on" Registry-First row (initiative discoverability)');
     }
 
+    // Context Budget sentinel (context-budget-layered-summaries §7.8/§9.1): route
+    // "does compaction recovery work" to its read surface. Idempotent: inserted
+    // once after the "What are we working on?" row, sniffed on the route.
+    if (!content.includes('/context-budget/sentinel') && content.includes('| What are we working on?')) {
+      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off), plus any quarantined or unreadable context folds. \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
+      content = content.replace(/(\| What are we working on\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
+    }
+
     // Process Health (Dashboard Tab) — Agent Awareness backfill for the
     // Failure-Learning Loop's read surface. Fresh inits get this via
     // generateClaudeMd; existing agents get it here on update. The copy mirrors

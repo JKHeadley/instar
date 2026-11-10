@@ -1563,6 +1563,41 @@ const feedbackTriageActionList: SelfActionController = {
  * episode state is durable (triage_meta), so a restart resumes the ladder
  * instead of restarting it.
  */
+/**
+ * context-budget-quarantine-reconcile — the ContextBudgetSentinel's quarantine
+ * ladder (context-budget-layered-summaries §9.3): one SelfHealGate episode per
+ * quarantined fold, at most 12 attempts and a 45-minute wall clock, then
+ * exhausted (one Attention item) and RETAINED for 24 h so the same fold never
+ * re-opens a ladder. Pressure model: a quarantine that never resolves, ticked
+ * every 5 minutes for a day.
+ */
+const contextBudgetQuarantineReconcile: SelfActionController = {
+  id: 'context-budget-quarantine-reconcile',
+  actionVerb: 'converge-quarantined-fold',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (pool-shared async SelfHealGate ladder per quarantined fold: <=12 attempts / 45 min, exhausted episodes retained 24 h)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetQuarantineReconcile.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WALL_CLOCK_MS = 45 * 60_000; const MAX_ATTEMPTS = 12;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-quarantine') as { attempts: number; startedAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, startedAt: f.clock.nowMs(), exhausted: false };
+      if (st.exhausted) { f.durableState.set('cb-quarantine', st); return; }
+      if (st.attempts >= MAX_ATTEMPTS || f.clock.nowMs() - st.startedAt >= WALL_CLOCK_MS) { f.durableState.set('cb-quarantine', { ...st, exhausted: true }); return; }
+      sink.emit({ verb: 'converge-quarantined-fold', target: 'fold:f1' });
+      f.durableState.set('cb-quarantine', { ...st, attempts: st.attempts + 1 });
+    } };
+  },
+};
+
 const feedbackTriageSelfHealProbe: SelfActionController = {
   id: 'feedback-triage-self-heal-probe',
   actionVerb: 'retry-authority-probe',
@@ -5278,6 +5313,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobScriptTriageBackup,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,
+  contextBudgetQuarantineReconcile,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,

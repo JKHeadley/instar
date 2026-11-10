@@ -287,12 +287,17 @@ function scan(stateDir: string): Array<{ topicKey: string; foldId: string; point
  * settled and kept for the grace period (the sentinel prunes it). A
  * checkpoint with no record at all is an orphan and is removed.
  */
-export function engineCheckpointCarrier(stateDir: string, recordState: (topicKey: string, foldId: string) => FoldState | null, now: () => number = Date.now): FoldCarrier {
+/** The fold record's state for a checkpoint: a state, `null` (no record), or `'unreadable'` (a torn record — never release). */
+export type CheckpointRecordState = FoldState | null | 'unreadable';
+
+export function engineCheckpointCarrier(stateDir: string, recordState: (topicKey: string, foldId: string) => CheckpointRecordState, now: () => number = Date.now): FoldCarrier {
   return {
     kind: 'engine-checkpoint',
     list: () => scan(stateDir).filter((e) => !e.pointer?.settledAt).map((e) => ({ topicKey: e.topicKey, foldId: e.foldId })),
     release: (topicKey, foldId) => {
       const state = recordState(topicKey, foldId);
+      // A torn record is an unknown: the checkpoint may be the only restore target. Keep it.
+      if (state === 'unreadable') return;
       const c = readEngineCheckpoint(stateDir, topicKey, foldId);
       // committed: the fold took; aborted: the context was never replaced; no
       // record: an orphan. Only a ROLLED-BACK fold keeps it for the grace period.

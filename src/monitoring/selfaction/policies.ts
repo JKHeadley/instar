@@ -125,6 +125,23 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // ContextBudgetSentinel quarantine reconciliation (context-budget-layered-summaries
+    // §9.3): SelfHealGate consumer, pool-shared (only the topic's owner acts). Governor
+    // admission is capacity telemetry; the durable episode store owns the 12-attempt /
+    // 45-minute ladder and the 24 h retention of exhausted folds. Relief: a stuck fold
+    // keeps a conversation paused, so a governor failure must not block its release.
+    controllerId: 'context-budget-quarantine-reconcile',
+    actionVerb: 'converge-quarantined-fold',
+    direction: 'relief',
+    resource: 'pool-shared',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 12,
+    totalCountCeiling: 48,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 48, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Swap-thrash bound (~72/day incident). 8 / 45 min dwell; staleTtl 60s.
     controllerId: 'proactive-swap-monitor',
     actionVerb: 'account-swap',

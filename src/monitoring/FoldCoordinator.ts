@@ -133,6 +133,27 @@ export class FoldRecordStore {
     }
   }
 
+  /**
+   * Tell an ABSENT record from a TORN one (the file exists but cannot be
+   * read). `get` reads both as null; a caller that would release containment
+   * must use this, because a torn record is an unknown and nothing is
+   * released on an unknown (§9.3).
+   */
+  inspect(topicKey: string, foldId: string): { kind: 'absent' } | { kind: 'torn' } | { kind: 'ok'; record: FoldRecord } {
+    if (!SAFE_ID.test(topicKey) || !SAFE_ID.test(foldId)) return { kind: 'absent' };
+    const rec = this.get(topicKey, foldId);
+    if (rec) return { kind: 'ok', record: rec };
+    return fs.existsSync(this.fileFor(topicKey, foldId)) ? { kind: 'torn' } : { kind: 'absent' };
+  }
+
+  /** Every record file on a topic that exists but cannot be read. */
+  tornRecords(topicKey: string): string[] {
+    let files: string[] = [];
+    try { files = fs.readdirSync(this.dirFor(topicKey)); } catch { return []; /* @silent-fallback-ok — no fold-records directory means no records */ }
+    return files.filter((f) => /^[A-Za-z0-9_-]+\.json$/.test(f) && !f.endsWith('.sidecar.json'))
+      .map((f) => f.slice(0, -5)).filter((id) => this.inspect(topicKey, id).kind === 'torn');
+  }
+
   put(rec: FoldRecord): void { this.write(this.fileFor(rec.topicKey, rec.foldId), rec); }
 
   getSidecar(topicKey: string, foldId: string): FoldSidecar {
@@ -209,7 +230,7 @@ export interface FoldPreconditions {
 export type FoldSkip =
   | 'not-owner' | 'owner-unknown' | 'no-sentinel' | 'no-row-source' | 'peer-unknown' | 'not-exclusive'
   | 'no-hold-queue' | 'layers-not-replicated' | 'rows-missing' | 'fold-in-progress' | 'lock-held' | 'shadow-mode'
-  | 'machine-busy';
+  | 'machine-busy' | 'torn-record';
 
 export type FoldEvent =
   | { type: 'begun'; record: FoldRecord }
@@ -313,6 +334,8 @@ export class FoldCoordinator {
     if (!owner) return skip('not-owner');
     if (this.breaker(topicKey).shadowMode) return skip('shadow-mode');
     if (this.activeFold(topicKey)) return skip('fold-in-progress');
+    // An unreadable record is an unknown fold that may still hold containment (§9.3): no new fold beside it.
+    if (this.o.store.tornRecords(topicKey).length > 0) return skip('torn-record');
     if (!p.hasRowSource(topicKey)) return skip('no-row-source');
     if (!p.sentinelHeartbeatFresh()) return skip('no-sentinel');
     if (variant === 'default') {
@@ -467,8 +490,9 @@ export class FoldCoordinator {
    * orphan carrier. Synchronous. Returns the quarantined records for the
    * sentinel's asynchronous rollback (step 8).
    */
-  recoverPendingFolds(): { aborted: FoldRecord[]; quarantined: FoldRecord[]; orphans: Array<{ kind: string; topicKey: string; foldId: string }>; observedOnly: string[]; resettled: string[] } {
-    const out = { aborted: [] as FoldRecord[], quarantined: [] as FoldRecord[], orphans: [] as Array<{ kind: string; topicKey: string; foldId: string }>, observedOnly: [] as string[], resettled: [] as string[] };
+  recoverPendingFolds(): { aborted: FoldRecord[]; quarantined: FoldRecord[]; orphans: Array<{ kind: string; topicKey: string; foldId: string }>; observedOnly: string[]; resettled: string[]; torn: Array<{ topicKey: string; foldId: string }> } {
+    const out = { aborted: [] as FoldRecord[], quarantined: [] as FoldRecord[], orphans: [] as Array<{ kind: string; topicKey: string; foldId: string }>, observedOnly: [] as string[], resettled: [] as string[], torn: [] as Array<{ topicKey: string; foldId: string }> };
+    const tornSeen = new Set<string>();
     for (const topicKey of this.o.store.topics()) {
       for (const rec of this.o.store.list(topicKey)) {
         if (TERMINAL_STATES.has(rec.state)) {
@@ -515,7 +539,15 @@ export class FoldCoordinator {
       let held: Array<{ topicKey: string; foldId: string }> = [];
       try { held = c.list(); } catch { held = []; }
       for (const h of held) {
-        const rec = SAFE_ID.test(h.topicKey) && SAFE_ID.test(h.foldId) ? this.o.store.get(h.topicKey, h.foldId) : null;
+        const seen = SAFE_ID.test(h.topicKey) && SAFE_ID.test(h.foldId) ? this.o.store.inspect(h.topicKey, h.foldId) : { kind: 'absent' as const };
+        // A TORN record is an unknown: its carriers (holds, markers, the
+        // checkpoint) stay in force; the sentinel escalates it (§9.3).
+        if (seen.kind === 'torn') {
+          const k = `${h.topicKey}/${h.foldId}`;
+          if (!tornSeen.has(k)) { tornSeen.add(k); out.torn.push({ topicKey: h.topicKey, foldId: h.foldId }); }
+          continue;
+        }
+        const rec = seen.kind === 'ok' ? seen.record : null;
         if (rec && !TERMINAL_STATES.has(rec.state)) continue;
         if (rec && !(this.o.preconditions.isSweepOwner?.(h.topicKey) ?? this.o.preconditions.isOwner(h.topicKey) === true)) continue;
         try { c.release(h.topicKey, h.foldId); } catch (err) { console.warn(`[FoldCoordinator] orphan ${c.kind} release failed:`, err); }
