@@ -1,4 +1,5 @@
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -329,7 +330,7 @@ import { PairingInviteTelegram, CALLBACK_PREFIX as PAIRING_CALLBACK_PREFIX, reso
 import { PairingTopicStore } from '../threadline/PairingTopicStore.js';
 import { ConnectEnableController, readConnectEnableStatus } from '../threadline/connectEnable.js';
 import { shouldOwnTelegramPoll } from '../lifeline/telegramPollOwnership.js';
-import { sharedLifelineIngressSecretHolder } from '../core/LifelineIngressSecret.js';
+import { sharedLifelineIngressSecretHolder, readLifelineIngressSecret } from '../core/LifelineIngressSecret.js';
 import { TelegramCallbackDedupe } from './TelegramCallbackDedupe.js';
 import { readSessionClocks } from '../core/SessionClockReader.js';
 import { P13_PROTOCOL_VERSION } from '../core/CompletionEvaluator.js';
@@ -6920,6 +6921,50 @@ export function createRoutes(ctx: RouteContext): Router {
       impact: 'if this start followed a compaction, the topic briefing and recent messages were not restored',
     });
   };
+
+  // context-budget-layered-summaries §9.1/§9.5: the PostCompact hook forwards
+  // Claude's compact_summary here. Mapped session → topic, scrubbed
+  // (scrubForStore + a live-value pass against the agent's own secrets) and
+  // stored under the topic's layer store. Observability only in Phase 0; a
+  // session with no topic (a job) records nothing.
+  router.post('/hooks/post-compact', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (body.hook_event_name !== 'PostCompact') {
+      res.status(400).json({ recorded: false, reason: 'not-post-compact' });
+      return;
+    }
+    const instarSessionId = String(req.get('X-Instar-Session-Id') ?? '');
+    const claudeSessionId = typeof body.session_id === 'string' ? body.session_id : '';
+    const session = instarSessionId ? ctx.sessionManager.getSessionById(instarSessionId) : undefined;
+    if (!session) {
+      res.status(200).json({ recorded: false, reason: 'unknown-session' });
+      return;
+    }
+    const tgTopic = ctx.telegram?.getTopicForSession?.(session.tmuxSession) ?? session.telegramTopicId ?? null;
+    const topicKey = tgTopic != null ? String(tgTopic) : session.slackChannelId ? `slack-${session.slackChannelId}` : null;
+    if (!topicKey) {
+      res.status(200).json({ recorded: false, reason: 'no-topic' });
+      return;
+    }
+    // §9.7 live-value pass: the auth token, the PIN, the lifeline ingress
+    // secret and every string in the secret store (shape patterns miss a
+    // `KEY=value` dump of a real value). Each source is best-effort.
+    const liveSecrets: string[] = [ctx.config.authToken, ctx.config.dashboardPin].filter((v): v is string => typeof v === 'string');
+    try { const l = readLifelineIngressSecret(ctx.config.stateDir); if (l) liveSecrets.push(l); } catch { /* @silent-fallback-ok — no lifeline secret on this machine */ }
+    try { collectStringLeaves(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), liveSecrets); } catch { /* @silent-fallback-ok — no readable secret store; shape scrub still runs */ }
+    const result = recordPostCompact(ctx.config.stateDir, {
+      topicKey,
+      instarSessionId,
+      claudeSessionId,
+      trigger: typeof body.trigger === 'string' ? body.trigger : 'unknown',
+      summary: typeof body.compact_summary === 'string' ? body.compact_summary : '',
+      receivedAt: Date.now(),
+    }, liveSecrets);
+    res.status(200).json(result.recorded
+      ? { recorded: true, topicKey, trigger: result.record.trigger, summaryChars: result.record.summaryChars, redactionKinds: result.record.redactionKinds }
+      : { recorded: false, reason: result.reason });
+  });
+
   router.post('/hooks/events', (req, res) => {
     if (!ctx.hookEventReceiver) {
       res.status(503).json({ error: 'HookEventReceiver not initialized' });
@@ -47764,4 +47809,11 @@ function pruneUnforkBackups(backupsDir: string, safeSlug: string): void {
   } catch {
     // best-effort
   }
+}
+
+/** Push every string leaf of a nested secrets object (depth-bounded). */
+function collectStringLeaves(v: unknown, out: string[], depth = 0): void {
+  if (depth > 8 || v == null) return;
+  if (typeof v === 'string') { out.push(v); return; }
+  if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) collectStringLeaves(x, out, depth + 1);
 }

@@ -281,6 +281,16 @@ export function raiseLaunchdProcessCeilings(plistXml: string, floor: number): st
   });
 }
 
+/**
+ * The PostCompact hook's settings entry (context-budget-layered-summaries §9.1).
+ * Shared by init and migrateSettings so both install the same command.
+ */
+export const POST_COMPACT_SETTINGS_HOOK = {
+  type: 'command',
+  command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/post-compact.sh"',
+  timeout: 5,
+} as const;
+
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
  *  add/update migrations so the three cannot drift. */
 /**
@@ -7888,6 +7898,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       result.upgraded.push('hooks/instar/clear-seed.sh (fold packet seed after /clear)');
     } catch (err) {
       result.errors.push(`clear-seed.sh: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
+      // context-budget-layered-summaries §9.1: forwards Claude's compact_summary
+      // to the server, which scrubs and stores it. Prints nothing.
+      fs.writeFileSync(path.join(instarHooksDir, 'post-compact.sh'), this.getPostCompactHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/post-compact.sh (stores the compaction summary)');
+    } catch (err) {
+      result.errors.push(`post-compact.sh: ${err instanceof Error ? err.message : String(err)}`);
     }
 
     try {
@@ -17326,6 +17345,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         result.upgraded.push('.claude/settings.json: added SessionStart clear matcher (clear-seed.sh)');
       }
     }
+    {
+      // context-budget-layered-summaries §9.1: a PostCompact entry running
+      // post-compact.sh (stores Claude's compact_summary under the layer store).
+      const postCompact = (hooks.PostCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+      if (!postCompact.some(e => e.hooks?.some(h => h.command?.includes('post-compact.sh')))) {
+        postCompact.push({ matcher: '', hooks: [{ ...POST_COMPACT_SETTINGS_HOOK }] });
+        patched = true;
+        result.upgraded.push('.claude/settings.json: added PostCompact hook (post-compact.sh)');
+      }
+    }
 
     // Add UserPromptSubmit hook for Telegram topic context injection
     if (!hooks.UserPromptSubmit) {
@@ -19352,12 +19381,13 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'post-compact' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
       case 'session-start': return this.getSessionStartHook();
       case 'clear-seed': return this.getClearSeedHook();
+      case 'post-compact': return this.getPostCompactHook();
       case 'mcp-health-autorefresh': return this.getMcpHealthAutorefreshHook();
       case 'compaction-recovery': return this.getCompactionRecovery();
       case 'external-operation-gate': return this.getExternalOperationGateHook();
@@ -19607,6 +19637,47 @@ except Exception:
 sys.stdout.write(buf.decode('utf-8','replace'))" 2>/dev/null)
 [ -n "\$INSTAR_SESSION_ID" ] || exit 0
 printf '%s' "\$HOOK_INPUT" | python3 -c "${CLEAR_SEED_PY}" "\$CB_STATE_ROOT" "\$INSTAR_SESSION_ID" 2>/dev/null
+exit 0
+`;
+  }
+
+  /**
+   * The PostCompact hook (context-budget-layered-summaries §9.1, §9.5). Claude
+   * Code hands it `trigger` and `compact_summary`; it forwards the stdin JSON
+   * to `POST /hooks/post-compact` (bounded read, 3 s curl, never blocks) with
+   * the Instar session id, and prints nothing. The server scrubs and stores the
+   * summary under the topic's layer store. Silent no-op without a token, a
+   * port, an Instar session id, or on another engine.
+   */
+  private getPostCompactHook(): string {
+    return `#!/bin/bash
+# PostCompact hook (context-budget-layered-summaries §9.1): forwards Claude's
+# compact_summary to the agent server, which scrubs and stores it. Prints nothing.
+[ "\${INSTAR_FRAMEWORK:-claude-code}" = "claude-code" ] || exit 0
+[ -n "\$INSTAR_AUTH_TOKEN" ] && [ -n "\$INSTAR_SESSION_ID" ] || exit 0
+INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
+PC_CONFIG_FILE="\$INSTAR_DIR/config.json"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -f "\$INSTAR_AGENT_HOME/.instar/config.json" ]; then
+  PC_CONFIG_FILE="\$INSTAR_AGENT_HOME/.instar/config.json"
+fi
+PC_PORT="\${INSTAR_PORT:-}"
+[ -z "\$PC_PORT" ] && PC_PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$PC_CONFIG_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+[ -n "\$PC_PORT" ] || exit 0
+python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.5
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<2097152:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,65536)
+        if not chunk: break
+        buf+=chunk
+except Exception:
+    pass
+sys.stdout.buffer.write(buf)" 2>/dev/null | curl -s -m 3 -X POST "http://localhost:\${PC_PORT}/hooks/post-compact" \\
+  -H "Authorization: Bearer \$INSTAR_AUTH_TOKEN" -H 'Content-Type: application/json' \\
+  -H "X-Instar-Session-Id: \$INSTAR_SESSION_ID" --data-binary @- >/dev/null 2>&1
 exit 0
 `;
   }

@@ -59,7 +59,7 @@ import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDC
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
-import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
 import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
@@ -4458,6 +4458,8 @@ function installHooks(stateDir: string): void {
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
   // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
   fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
+  // PostCompact hook (context-budget-layered-summaries §9.1): stores the compaction summary.
+  fs.writeFileSync(path.join(hooksDir, 'post-compact.sh'), migrator.getHookContent('post-compact'), { mode: 0o755 });
 
   // Auto-restart-on-MCP-inaccessible — fired backgrounded by session-start.sh.
   // Dark by default; enabled on development agents. Install on fresh init too so
@@ -5471,6 +5473,14 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
     }
     if (!sessionStart.some(e => (e.hooks as Array<{ command?: string }> | undefined)?.some(h => h.command?.includes('clear-seed.sh')))) {
       sessionStart.push({ matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] });
+    }
+  }
+
+  // PostCompact (context-budget-layered-summaries §9.1): store Claude's compaction summary.
+  {
+    const postCompact = (hooks.PostCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    if (!postCompact.some(e => e.hooks?.some(h => h.command?.includes('post-compact.sh')))) {
+      postCompact.push({ matcher: '', hooks: [{ ...POST_COMPACT_SETTINGS_HOOK }] });
     }
   }
 

@@ -434,6 +434,23 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // POST /hooks/post-compact (context-budget-layered-summaries §9.1, §14): the
+  // PostCompact hook reports from the session's own machine over loopback; the
+  // scrubbed summary lands under that machine's .instar/state/context-layers/,
+  // which is git-ignored. Observability only in Phase 0; nothing replicates.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/hooks/post-compact',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'per-topic PostCompact records under .instar/state/context-layers/<topic>/post-compact/, git-ignored; written by the machine hosting the session',
+    },
+  });
+
   // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
   // THIS machine's own identity file, rebuilds THIS process's relay client, appends one row
   // to this machine's key-free audit log. Local effect only; carries no key; installs

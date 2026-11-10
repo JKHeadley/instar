@@ -1788,6 +1788,9 @@ export class AgentServer {
     // Threadline MCP over local HTTP (threadline-mcp-local-http D1): its own
     // small parser, before the broad 12 MB one.
     this.app.use('/mcp/threadline', express.json({ limit: '256kb' }));
+    // PostCompact record route (context-budget-layered-summaries §14 body cap):
+    // the hook reads at most 2 MiB of stdin; the store keeps at most 512 KiB.
+    this.app.use('/hooks/post-compact', express.json({ limit: '2mb' }));
     // Native hook events: admission (loopback, no forwarding headers, bearer,
     // Content-Length ≤ 4 MB) runs BEFORE any body is read, then the route's own
     // 4 MB parser — both ahead of the global parser, which runs before
