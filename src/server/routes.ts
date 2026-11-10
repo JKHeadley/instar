@@ -40549,7 +40549,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         agents: [localFp, localFp] as [string, string],
       }));
       res.json({ enabled: true, offered: enriched });
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — not silent: answered as a 500 with the qualified error
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'follow-me scan failed' });
     }
   });
@@ -41262,16 +41262,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { status: 400, body: { error: `provider identity verification is not supported for ${provider}/${framework}`, code: 'subscription-account-identity-provider-unsupported' } };
     }
     let email: { display: string; key: string };
-    try { email = normalizeSubscriptionEmail(input.email); } catch (err) {
-      return { status: 400, body: { error: err instanceof Error ? err.message : 'email must be a valid non-blank provider account email', code: 'bad-email' } };
+    try { email = normalizeSubscriptionEmail(input.email); } catch (err) { // @silent-fallback-ok — not silent: the phone gets a 400 saying the email is not valid
+      return { status: 400, body: { error: 'email must be a valid non-blank provider account email', code: 'bad-email' } };
     }
     const nickname = input.nickname ?? email.display;
     const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    // @silent-fallback-ok — a machine that does not answer leaves only its accounts out of the duplicate check (account-add-face-id side effects); the sign-in completion still refuses a second add of the same email
     const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews().catch(() => []) : [];
     // One account per (provider, email): an account already added here or on another machine is
     // signed in from its own row, never added twice.
     const sameEmail = (e: unknown): boolean => {
-      try { return typeof e === 'string' && normalizeSubscriptionEmail(e).key === email.key; } catch { return false; }
+      try { return typeof e === 'string' && normalizeSubscriptionEmail(e).key === email.key; } catch { return false; } // @silent-fallback-ok — a stored email that does not parse is not the same account
     };
     const existing = ready.subscriptionPool.list().find((a) => a.provider === provider && sameEmail(a.email))
       ?? peerViews.flatMap((v) => v.accounts).find((r) => (r as { provider?: string }).provider === provider && sameEmail(r.email));

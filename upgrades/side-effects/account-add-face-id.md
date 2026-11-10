@@ -125,3 +125,8 @@ Concur with the review
 - `tests/unit/account-add-face-id.test.ts`
 - `tests/integration/account-add-face-id.test.ts`
 - `tests/e2e/account-add-face-id-alive.test.ts`
+
+## Addendum (2026-11-10): two repo floors
+
+- Storage-error ratchet: a bad email now answers with a fixed plain message ("email must be a valid non-blank provider account email") instead of the parser's own error text, so no internal error text reaches the phone.
+- No-silent-fallbacks ratchet: four catches in the add path carry the `@silent-fallback-ok` marker with their reason: the bad-email 400, the peer-view read that leaves an unreachable machine out of the duplicate check (already listed above), a stored email that does not parse is not a match, and the follow-me scan catch that answers a 500 (it is flagged only because the new helper now sits right after it).

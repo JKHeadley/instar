@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "account-add-face-id",
+  "sessionId": "cc8c02d4-8d7b-43a3-a0f1-fb6d97695567",
+  "timestamp": "2026-11-10T16:31:26.964Z",
+  "artifactPath": "upgrades/side-effects/account-add-face-id.md",
+  "artifactSha256": "6dd184ce0896485b1697a959d5f1c3c79c358f50a613162de9d9745aa1b8bf29",
+  "coveredFiles": [
+    "docs/specs/account-add-face-id.eli16.md",
+    "src/server/routes.ts",
+    "upgrades/side-effects/account-add-face-id.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Repo-floor fixes: fixed bad-email message, reasoned silent-fallback markers; no behavior change beyond the error text",
+  "eli16Path": "docs/specs/account-add-face-id.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/account-add-face-id.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

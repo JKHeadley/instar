@@ -45,3 +45,5 @@ is shared with your other machines, is the same as today.
 
 One thing differs from the request as written: the email is required, not optional. Without it the
 agent cannot check that the right account signed in, and would hold every sign-in. It is one field.
+
+**Two small fixes (2026-11-10):** a mistyped email now gets one plain, fixed message, never the server's internal error text, and the places where the add step deliberately carries on after a small failure are marked with the reason, as the repo requires.
