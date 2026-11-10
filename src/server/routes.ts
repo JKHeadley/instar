@@ -40114,6 +40114,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     mountMobilePermissionsRoutes(router, {
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
+      // Add a Claude or Codex account and start its sign-in here (account-add-face-id).
+      addAccount: (input) => runAddAccountSignIn(input),
       // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
       startAccountSignIn: async (accountId, machineId, req) => {
         const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool/matrix/start-cell');
@@ -40587,10 +40589,70 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         agents: [localFp, localFp] as [string, string],
       }));
       res.json({ enabled: true, offered: enriched });
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — not silent: answered as a 500 with the qualified error
       res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'follow-me scan failed' });
     }
   });
+
+  /**
+   * D5 single-attempt discipline for one account slot on THIS machine: a live attempt is handed back
+   * (alive or unverifiable fails toward reuse); a dead-pane attempt is abandoned so a fresh drive can
+   * replace record and pane together. Shared by follow-me enroll/start and the phone's add-account route.
+   */
+  function reuseOrSupersedeLiveAttempt(accountId: string): import('../core/PendingLoginStore.js').PendingLogin | null {
+    const wizard = ctx.enrollmentWizard;
+    if (!wizard) return null;
+    const inFlight = wizard.pending().find((l) => l.id === accountId);
+    if (!inFlight) return null;
+    if (enrollPaneAlive(inFlight) !== false) {
+      console.log(`[follow-me] enroll-start id=${accountId} outcome=reused-live-attempt`);
+      return inFlight;
+    }
+    wizard.abandon(inFlight.id);
+    console.log(`[follow-me] enroll-start id=${accountId} outcome=superseded-dead-pane`);
+    return null;
+  }
+
+  /**
+   * Drive a follow-me login for a resolved account on THIS machine: allocate its own login folder
+   * and start the wizard with the operator-approved email (S7), remote-aware. The caller holds the
+   * authorization (a mandate for enroll/start; the owner's Face ID for the phone's add-account route)
+   * and resolves the target. Throws EnrollmentDriveError on a drive failure (no pending login written).
+   */
+  async function driveFollowMeLogin(
+    target: { accountId: string; label: string; provider: string; framework: string; expectedEmail: string },
+    remoteScrapeTimeoutMsCfg: number | undefined,
+  ): Promise<import('../core/PendingLoginStore.js').PendingLogin> {
+    const accountId = target.accountId;
+    const { followMeConfigHomePrefix } = await import('../core/resolveFollowMeEnrollTarget.js');
+    // Allocate this account's own config-home slot on THIS machine (one home per credential).
+    // The prefix follows the account's FRAMEWORK: each CLI reads its own home (`~/.codex` for
+    // codex-cli, `~/.claude` for claude-code), so a codex credential written under a
+    // `.claude-followme-*` home is invisible to the CLI that needs it.
+    const safeAccountId = accountId.replace(/[^a-z0-9-]/gi, '-');
+    const configHome = path.join(os.homedir(), `${followMeConfigHomePrefix(target.framework)}${safeAccountId}`);
+
+    // WS5.2 R6b — this IS the remote/cloud (follow-me) enrollment path, so use the
+    // remote-aware kind selection (device-code single-code flow where supported) and
+    // thread the LARGER scrape-timeout budget (cloud→provider latency + the two-code
+    // window). The budget comes from the config knob (default 180000); omitted ⇒ the
+    // driver's local-LAN default.
+    const remoteScrapeTimeoutMs =
+      typeof remoteScrapeTimeoutMsCfg === 'number' && Number.isFinite(remoteScrapeTimeoutMsCfg)
+        ? remoteScrapeTimeoutMsCfg
+        : undefined;
+
+    return ctx.enrollmentWizard!.start({
+      id: accountId,
+      label: target.label,
+      provider: target.provider as import('../core/PendingLoginStore.js').LoginProvider,
+      framework: target.framework as import('../core/PendingLoginStore.js').PendingLogin['framework'],
+      configHome,
+      expectedEmail: target.expectedEmail,
+      remote: true,
+      remoteScrapeTimeoutMs,
+    });
+  }
 
   // WS5.2 §5.3 (R6/R6a) — Account Follow-Me: DRIVE THE ENROLLMENT START on THIS target machine.
   // After the operator issues the `account-follow-me` mandate (PIN-gated, on this machine's own
@@ -40676,18 +40738,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // abandoned here, then a fresh drive replaces record AND pane together. Without this,
       // wizard.start() would drive a NEW pane first and then hit the store's duplicate-pending
       // refusal, stranding a record that points at the OLD attempt.
-      const inFlight = ctx.enrollmentWizard.pending().find((l) => l.id === accountId);
-      if (inFlight) {
-        if (enrollPaneAlive(inFlight) !== false) {
-          // Alive or unverifiable → fail toward REUSE (never kill a possibly-healthy attempt).
-          console.log(`[follow-me] enroll-start id=${accountId} outcome=reused-live-attempt`);
-          res.status(201).json({ enabled: true, login: publicPendingLogin(inFlight), reused: true });
-          return;
-        }
-        ctx.enrollmentWizard.abandon(inFlight.id);
-        console.log(`[follow-me] enroll-start id=${accountId} outcome=superseded-dead-pane`);
+      const live = reuseOrSupersedeLiveAttempt(accountId);
+      if (live) {
+        res.status(201).json({ enabled: true, login: publicPendingLogin(live), reused: true });
+        return;
       }
-      const { resolveFollowMeEnrollTarget, followMeConfigHomePrefix } = await import('../core/resolveFollowMeEnrollTarget.js');
+      const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
       const localAccounts = ctx.subscriptionPool.list().map((a) => ({
         id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
       }));
@@ -40699,33 +40755,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return;
       }
 
-      // Allocate this account's own config-home slot on THIS machine (one home per credential).
-      // The prefix follows the account's FRAMEWORK: each CLI reads its own home (`~/.codex` for
-      // codex-cli, `~/.claude` for claude-code), so a codex credential written under a
-      // `.claude-followme-*` home is invisible to the CLI that needs it.
-      const safeAccountId = accountId.replace(/[^a-z0-9-]/gi, '-');
-      const configHome = path.join(os.homedir(), `${followMeConfigHomePrefix(target.framework)}${safeAccountId}`);
-
-      // WS5.2 R6b — this IS the remote/cloud (follow-me) enrollment path, so use the
-      // remote-aware kind selection (device-code single-code flow where supported) and
-      // thread the LARGER scrape-timeout budget (cloud→provider latency + the two-code
-      // window). The budget comes from the config knob (default 180000); omitted ⇒ the
-      // driver's local-LAN default.
-      const remoteScrapeTimeoutMs =
-        typeof afmCfg?.remoteScrapeTimeoutMs === 'number' && Number.isFinite(afmCfg.remoteScrapeTimeoutMs)
-          ? afmCfg.remoteScrapeTimeoutMs
-          : undefined;
-
-      const login = await ctx.enrollmentWizard.start({
-        id: accountId,
-        label: target.label,
-        provider: target.provider as import('../core/PendingLoginStore.js').LoginProvider,
-        framework: target.framework as import('../core/PendingLoginStore.js').PendingLogin['framework'],
-        configHome,
-        expectedEmail: target.expectedEmail,
-        remote: true,
-        remoteScrapeTimeoutMs,
-      });
+      const login = await driveFollowMeLogin({
+        accountId, label: target.label, provider: target.provider, framework: target.framework, expectedEmail: target.expectedEmail,
+      }, afmCfg?.remoteScrapeTimeoutMs);
       res.status(201).json({ enabled: true, login: publicPendingLogin(login) });
     } catch (err) {
       // WS5.2 R6b — a DRIVE failure is honest + retry-able (502), NOT an opaque 500.
@@ -41244,6 +41276,82 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     } catch (err) {
       console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-error`);
       return { status: 502, body: { error: 'could not reach the machine doing the login — try again', retryable: true } };
+    }
+  }
+
+  /**
+   * Add a new Claude or Codex account from the owner phone and start its sign-in on THIS machine
+   * (docs/specs/account-add-face-id.md). The caller has proven operator presence (Face ID over
+   * `account-add <kind>`). Nothing is written to the pool here: the account joins the pool only when
+   * its sign-in completes and the signed-in account's email matches the email given (the existing
+   * follow-me completion: completeFollowMe S7 gate, then the registrar's verified add, the same core
+   * POST /subscription-pool registers through). No credential is accepted or stored; the answer is
+   * start-cell's shape, so the phone goes straight to "open the sign-in page / paste the code".
+   */
+  async function runAddAccountSignIn(
+    input: { kind: import('../core/newSubscriptionAccountId.js').NewAccountKind; nickname: string | null; email: string },
+  ): Promise<MatrixStartCellResult> {
+    const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool');
+    if (refusal) return refusal;
+    const ready = matrixStartCellReady();
+    if (!ready.ok) return ready.result;
+    const { NEW_ACCOUNT_KINDS, deriveNewAccountId } = await import('../core/newSubscriptionAccountId.js');
+    const { provider, framework } = NEW_ACCOUNT_KINDS[input.kind];
+    // The same identity rule POST /subscription-pool applies: only a slot an identity oracle can verify.
+    if (!isIdentityVerifiableSlot(provider, framework)) {
+      return { status: 400, body: { error: `provider identity verification is not supported for ${provider}/${framework}`, code: 'subscription-account-identity-provider-unsupported' } };
+    }
+    let email: { display: string; key: string };
+    try { email = normalizeSubscriptionEmail(input.email); } catch (err) { // @silent-fallback-ok — not silent: the phone gets a 400 saying the email is not valid
+      return { status: 400, body: { error: 'email must be a valid non-blank provider account email', code: 'bad-email' } };
+    }
+    const nickname = input.nickname ?? email.display;
+    const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    // @silent-fallback-ok — a machine that does not answer leaves only its accounts out of the duplicate check (account-add-face-id side effects); the sign-in completion still refuses a second add of the same email
+    const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews().catch(() => []) : [];
+    // One account per (provider, email): an account already added here or on another machine is
+    // signed in from its own row, never added twice.
+    const sameEmail = (e: unknown): boolean => {
+      try { return typeof e === 'string' && normalizeSubscriptionEmail(e).key === email.key; } catch { return false; } // @silent-fallback-ok — a stored email that does not parse is not the same account
+    };
+    const existing = ready.subscriptionPool.list().find((a) => a.provider === provider && sameEmail(a.email))
+      ?? peerViews.flatMap((v) => v.accounts).find((r) => (r as { provider?: string }).provider === provider && sameEmail(r.email));
+    if (existing) {
+      const existingId = 'id' in existing ? existing.id : existing.accountId;
+      return { status: 409, body: { error: 'That account is already added. Sign it in from its row instead.', code: 'account-already-added', accountId: existingId } };
+    }
+    // A second tap for the same account while its sign-in is still waiting hands back that sign-in
+    // (D5 single-attempt discipline), never a second login folder.
+    const waiting = ready.enrollmentWizard.pending().find((l) => l.provider === provider && l.status === 'pending'
+      && Date.parse(l.ttlExpiresAt) > Date.now() && sameEmail(l.expectedEmail));
+    const live = waiting ? reuseOrSupersedeLiveAttempt(waiting.id) : null;
+    if (live) {
+      console.log(`[accounts] add accountId=${live.id} kind=${input.kind} outcome=reused-pending`);
+      return { status: 201, body: {
+        verificationUrl: live.verificationUrl, loginId: live.id, machineId: selfMachineId, reused: true,
+        expectedEmail: live.expectedEmail ?? null, ttlExpiresAt: live.ttlExpiresAt,
+        notice: live.notice ?? null, kind: live.kind,
+      } };
+    }
+    const { followMeConfigHomePrefix } = await import('../core/resolveFollowMeEnrollTarget.js');
+    const peerIds = new Set(peerViews.flatMap((v) => v.accounts.map((r) => r.accountId)));
+    const taken = (id: string): boolean => !!ready.subscriptionPool.get(id) || !!ready.enrollmentWizard.getById(id) || peerIds.has(id)
+      || fs.existsSync(path.join(os.homedir(), `${followMeConfigHomePrefix(framework)}${id}`));
+    const accountId = deriveNewAccountId(input.kind, input.nickname, email.display, taken, () => randomBytes(2).toString('hex'));
+    if (!accountId) return { status: 409, body: { error: 'Could not pick a free name for this account. Try again with a different nickname.', code: 'account-id-unavailable', retryable: true } };
+    try {
+      const login = await driveFollowMeLogin({ accountId, label: nickname, provider, framework, expectedEmail: email.display }, ready.afmCfg?.remoteScrapeTimeoutMs);
+      console.log(`[accounts] add accountId=${accountId} kind=${input.kind} outcome=started`);
+      return { status: 201, body: {
+        verificationUrl: login.verificationUrl, loginId: login.id, machineId: selfMachineId,
+        expectedEmail: login.expectedEmail ?? null, ttlExpiresAt: login.ttlExpiresAt ?? null,
+        notice: login.notice ?? null, kind: login.kind ?? null,
+      } };
+    } catch (err) {
+      const { EnrollmentDriveError } = await import('../core/EnrollmentWizard.js');
+      console.log(`[accounts] add accountId=${accountId} kind=${input.kind} outcome=drive-failed`);
+      if (err instanceof EnrollmentDriveError) return { status: 502, body: { error: `could not start the sign-in — ${err.operatorMessage}`, retryable: true } };
+      return { status: 502, body: { error: 'could not start the sign-in — try again', retryable: true } };
     }
   }
 
