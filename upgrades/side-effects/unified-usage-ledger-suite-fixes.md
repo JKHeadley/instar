@@ -12,6 +12,8 @@ The full unit suite on the merged head (3,502 files) found four failures caused 
 - `storage-error-response-ratchet.test.ts` flagged `usageRoutes.ts` returning `err.message` from a catch. The only error passed through is `UsageQueryError`, whose text is written for the caller; it now carries an explicit `userText` field and the route sends that, so no OS or database message can reach a response.
 - `feature-ladders-coverage.test.ts`: `usage.ledger` (the spec's named ladder) gets an entry in `src/data/feature-ladders.json` — standard risk, dev-agent-live then fleet, 7-day soaks, measured from an hourly `fired` / `error` the ingest tick now records to the shared feature-evidence log (`AgentServer`), rate-limited to one each an hour.
 
+- The e2e suite (4,046 tests) found that the holder's first usage pull ran at boot, adding a `/usage/rollup` request to peers that `mobile-remote-media-alive` and `mobile-slack-holder-proxy-alive` count exactly. The first pull now runs one minute after boot on an unref'd timer (then every 5 minutes as before); a boot pull was never needed, and this keeps startup lighter.
+
 Remaining full-suite failures (48 tests in `MacDesktopHostCapture`, `MacDesktopHostIdentity`, `desktop-displays`) fail identically on `origin/main` on this machine (checked in a clean checkout); they are environmental and unrelated.
 
 ## Decision-point inventory
@@ -58,4 +60,4 @@ Safe.
 
 ## Evidence pointers
 
-- The four suites pass after the fix; `npx tsc --noEmit` exit 0; desktop failures reproduced on a clean `origin/main` checkout.
+- The four suites and the two e2e files pass after the fix; the full integration suite (803 files, 6,716 tests) passes; `npx tsc --noEmit` exit 0; desktop failures reproduced on a clean `origin/main` checkout.

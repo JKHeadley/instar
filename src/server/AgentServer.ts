@@ -2538,7 +2538,10 @@ export class AgentServer {
           isHolder: isUsageHolder,
         });
         this.usagePuller.start();
-        void this.usagePuller.pullAll();
+        // First pull a minute after boot (not at boot): keeps startup light and gives
+        // the lease a moment to settle before the holder decides to pull.
+        const firstPull = setTimeout(() => { void this.usagePuller?.pullAll(); }, 60_000);
+        if (typeof firstPull.unref === 'function') firstPull.unref();
         this.usageRouteDeps = {
           ledger,
           prices: usagePrices,
