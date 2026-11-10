@@ -15,11 +15,12 @@ Nothing yet on a normal agent. On a development agent: the Chief of Staff keeps 
 - Failover settle: the current holder settles a previous holder's stale intent (outcome names the prior holder).
 - Verified close: `confirm-done` requires a live lease, re-checks deterministic items, records `done-verified` (owner-confirmed).
 - `POST /mobile/chief-of-staff/check-in` (owner phones); `POST /chief-of-staff/triage` (PIN) → a private triage view; `ChiefOfStaffTriage` (pure).
+- Live-proof fixes: the holder's own machine proves lease freshness with its own live lease (actions no longer stall at `claimed` on the holder); `getChatMemberCount` / `getChatAdministrators` classified at the Telegram egress door (the one-reader rule and memory-privacy reader count can run).
 - `POST /chief-of-staff/projects` (PIN): the owner binds a conversation as a project (confirmed binding + tree link); `POST /chief-of-staff/projects/:key/tap` (PIN): Unpark / Confirm-done from the dashboard.
 
 ## Evidence
 
 - `tests/unit/ChiefOfStaffLoop.test.ts`: parked project reaches the note from the fold with a fresh instance; note cadence from records across instances; immediate cap from records; unknown streak derived; confirm-done ignored when paused / when a check fails (note names it) / closes and mirrors when all pass.
-- `tests/unit/ChiefOfStaffActionProtocol.test.ts`: previous-holder settle — non-holder unknown, fresh claim unknown, older claim settled with the prior holder named.
+- `tests/unit/ChiefOfStaffActionProtocol.test.ts`: the holder's own machine executes and settles with no peer-observed renewal; previous-holder settle — non-holder unknown, fresh claim unknown, older claim settled with the prior holder named.
 - `tests/unit/chief-of-staff-triage.test.ts`: floors, tunables, ordering, counts, escaping, empty tracker.
 - `tests/integration/chief-of-staff-app-surface.test.ts`: the owner's paired phone checks in; a Bearer caller is refused; feature off ⇒ 503.

@@ -152,6 +152,14 @@ describe('ChiefOfStaffActionProtocol — local happy paths', () => {
     const st = [...foldIntentState(w.journal.entries).values()][0];
     expect(st.runId).toMatch(/^run-m_a-/); expect(st.open).toBe(false);
   });
+  it("the holder's own machine acts with NO peer-observed renewal: its own live lease is the freshness proof (live-proof fix, 2026-11-09)", async () => {
+    // The LeaseCoordinator stamps a renewal watermark only for PEER holders, so on the holder's own
+    // machine (the only machine, on a single-machine agent) freshRenewalWithin(self) is always false.
+    const w = world(); w.fresh = false; const A = machine(w, 'm_a');
+    const r = await A.claim({ conversationKey: CK, action: 'restart-run', payload: { durationHours: 2, text: 'continue' } });
+    expect(r.outcome).toBe('started'); expect(w.started).toHaveLength(1);
+    expect(states(w)).toEqual(['restart-run:started']);
+  });
   it('redirect: injects into the live session and records started with an inject id', async () => {
     const w = world(); const A = machine(w, 'm_a');
     const r = await A.claim({ conversationKey: CK, action: 'redirect', payload: { text: 'back to the goal' } });
@@ -185,7 +193,8 @@ describe('ChiefOfStaffActionProtocol — refusals (every reason, safe side)', ()
     const good: CosActionCommand = sealed({ type: 'cos-action', conversationKey: CK, action: 'redirect', leaseEpoch: 7, sequence: 1, holderMachineId: 'm_a', claimedAt: new Date(T0).toISOString(), payload: { text: 'x' } });
     expect(await A.execute({ ...good, holderSignature: 'sig(m_z:nope)' })).toMatchObject({ outcome: 'rejected', reason: 'holder-signature-invalid' });
     w.holder = 'm_b'; expect(await A.execute(good)).toMatchObject({ outcome: 'rejected', reason: 'not-current-holder' }); w.holder = 'm_a';
-    w.fresh = false; expect(await A.execute(good)).toMatchObject({ outcome: 'rejected', reason: 'holder-lease-stale' }); w.fresh = true;
+    // A PEER holder whose observed renewal went stale is refused; the holder's OWN machine proves freshness with its live lease (see the happy-path case).
+    w.fresh = false; expect(await machine(w, 'm_b').execute(good)).toMatchObject({ outcome: 'rejected', reason: 'holder-lease-stale' }); w.fresh = true;
     w.owner[CK] = 'm_b'; expect(await A.execute(good)).toMatchObject({ outcome: 'rejected', reason: 'not-owner' }); w.owner[CK] = 'm_a';
     w.operatorLeaseLive = false; expect(await A.execute(good)).toMatchObject({ outcome: 'rejected', reason: 'operator-lease-expired' }); w.operatorLeaseLive = true;
     w.gate[CK] = { nextActionAllowedAt: null, newestCheckAgeMs: 60 * 60_000 }; expect(await A.execute(good)).toMatchObject({ outcome: 'rejected', reason: 'lagging-fold' });
@@ -372,7 +381,7 @@ describe('ChiefOfStaffActionProtocol — replay window, signed payload, no write
     const w = world(); const A = machine(w, 'm_a');
     await A.execute({ ...base(), holderSignature: 'sig(m_z:nope)' });
     w.holder = 'm_b'; await A.execute(base()); w.holder = 'm_a';
-    w.fresh = false; await A.execute(base()); w.fresh = true;
+    w.fresh = false; await machine(w, 'm_b').execute(base()); w.fresh = true; // stale PEER holder (the holder's own machine proves freshness with its live lease)
     await A.execute(base({ leaseEpoch: 6 }));
     expect(w.journal.entries).toHaveLength(0);
     // ...whereas an authenticated refusal (operator lease expired) does leave a durable rejected record.
@@ -397,12 +406,23 @@ describe('ChiefOfStaffActionProtocol — settle is authenticated like execute', 
     expect(await A.settle({ type: 'cos-settle', conversationKey: CK, intentKey: `${CK}:7:8`, holderMachineId: 'm_z', holderSignature: `sig(m_z:${canonicalSettle({ conversationKey: CK, intentKey: `${CK}:7:8` })})` })).toEqual({ settled: 'unknown' });
     // Signed by the holder but for a key nobody claimed.
     expect(await A.settle({ type: 'cos-settle', conversationKey: CK, intentKey: `${CK}:7:999`, holderMachineId: 'm_a', holderSignature: `sig(m_a:${canonicalSettle({ conversationKey: CK, intentKey: `${CK}:7:999` })})` })).toEqual({ settled: 'unknown' });
-    // Holder whose renewal went stale.
+    // Holder whose renewal went stale, seen from a PEER machine (the holder's own machine proves freshness with its live lease).
     w.fresh = false;
-    expect(await A.settle({ type: 'cos-settle', conversationKey: CK, intentKey: `${CK}:7:8`, holderMachineId: 'm_a', holderSignature: `sig(m_a:${canonicalSettle({ conversationKey: CK, intentKey: `${CK}:7:8` })})` })).toEqual({ settled: 'unknown' });
+    expect(await machine(w, 'm_b').settle({ type: 'cos-settle', conversationKey: CK, intentKey: `${CK}:7:8`, holderMachineId: 'm_a', holderSignature: `sig(m_a:${canonicalSettle({ conversationKey: CK, intentKey: `${CK}:7:8` })})` })).toEqual({ settled: 'unknown' });
     w.fresh = true;
     expect(w.journal.entries.length).toBe(before);
     // The real holder settling the real (receipt-less) claim tombstones it.
+    expect(await A.settle({ type: 'cos-settle', conversationKey: CK, intentKey: `${CK}:7:8`, holderMachineId: 'm_a', holderSignature: `sig(m_a:${canonicalSettle({ conversationKey: CK, intentKey: `${CK}:7:8` })})` })).toEqual({ settled: 'rejected' });
+    expect(foldIntentState(w.journal.entries).get(`${CK}:7:8`)!.state).toBe('rejected');
+  });
+});
+
+describe('settle on the holder\'s own machine (live-proof fix)', () => {
+  it('settles a receipt-less claim with no peer-observed renewal, because its own lease is live', async () => {
+    const w = world(); w.fresh = false; const A = machine(w, 'm_a');
+    const { buildIntent } = await import('../../src/core/ChiefOfStaffStore.js');
+    const { canonicalSettle } = await import('../../src/core/ChiefOfStaffActionProtocol.js');
+    w.journal.seam('m_a').emit(`${CK}:7:8`, buildIntent({ conversationKey: CK, action: 'restart-run', leaseEpoch: 7, sequence: 8, claimedAt: new Date(T0).toISOString(), machine: 'm_a', holderSignature: 's' }));
     expect(await A.settle({ type: 'cos-settle', conversationKey: CK, intentKey: `${CK}:7:8`, holderMachineId: 'm_a', holderSignature: `sig(m_a:${canonicalSettle({ conversationKey: CK, intentKey: `${CK}:7:8` })})` })).toEqual({ settled: 'rejected' });
     expect(foldIntentState(w.journal.entries).get(`${CK}:7:8`)!.state).toBe('rejected');
   });

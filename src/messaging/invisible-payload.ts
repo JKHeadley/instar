@@ -207,6 +207,9 @@ export const NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS: ReadonlySet<string> = new
   'getFile',
   'getChat',
   'getChatMember',
+  // Both take only chat_id and return member data (Bot API: getChatMemberCount, getChatAdministrators) — no caller-authored text reaches a reader.
+  'getChatMemberCount',
+  'getChatAdministrators',
   'deleteWebhook',
   'deleteMessage',
   'closeForumTopic',

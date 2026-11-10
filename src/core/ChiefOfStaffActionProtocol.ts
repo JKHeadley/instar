@@ -342,6 +342,17 @@ export class ChiefOfStaffActionProtocol {
    *  them, so an unauthenticated peer cannot populate the replicated store or pre-reject a key. */
   static readonly PRE_AUTH_REASONS: ReadonlySet<CosRejectReason> = new Set<CosRejectReason>(['invalid-command', 'holder-signature-invalid', 'not-current-holder', 'holder-lease-stale']);
 
+  /** Is the holder's lease fresh? The coordinator stamps a renewal watermark only for PEER holders
+   *  (an observer-side timestamp on a nonce that advanced), so for the machine that holds the lease
+   *  itself the proof is its own live lease: `holdsLease()` is false once that lease expired or was
+   *  released. Without this split, every command executing on the holder's own machine (the common
+   *  case, and the ONLY case on a single machine) refused `holder-lease-stale` before writing anything
+   *  (live proof, 2026-11-09: four intents stuck at `claimed`). */
+  private holderFresh(holder: string): boolean {
+    if (holder === this.d.machineId) return this.d.lease.holdsLease();
+    return this.d.lease.freshRenewalWithin(holder, this.d.lease.ttlMs);
+  }
+
   verifyCommand(cmd: CosActionCommand): CosRejectReason | null {
     if (!cmd || cmd.type !== 'cos-action' || !deriveIntentKey(cmd.conversationKey, cmd.leaseEpoch, cmd.sequence)) return 'invalid-command';
     if (typeof cmd.claimedAt !== 'string' || !Number.isFinite(Date.parse(cmd.claimedAt))) return 'invalid-command';
@@ -352,7 +363,7 @@ export class ChiefOfStaffActionProtocol {
     try { holder = this.d.lease.currentHolder(); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ holder = null; }
     if (!holder || holder !== cmd.holderMachineId) return 'not-current-holder';
     let fresh = false;
-    try { fresh = this.d.lease.freshRenewalWithin(holder, this.d.lease.ttlMs); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ fresh = false; }
+    try { fresh = this.holderFresh(holder); } catch { /* @silent-fallback-ok: resolves to the SAFE side by design (refuse / stand down / no side effect) — the Chief of Staff action protocol must never act on an unreadable seam; every refusal is recorded or returned, never swallowed into action (docs/specs/chief-of-staff-topic.md §2.4) */ fresh = false; }
     if (!fresh) return 'holder-lease-stale';
     // Replay window: the command must belong to the CURRENT lease epoch (§2.6) and its signed
     // claim time must be younger than one run ceiling; the dedupe index covers the rest.
@@ -456,7 +467,7 @@ export class ChiefOfStaffActionProtocol {
     let holder: string | null = null;
     try { holder = this.d.lease.currentHolder(); } catch { /* @silent-fallback-ok: an unreadable lease view answers unknown (no write) */ holder = null; }
     if (!holder || holder !== cmd.holderMachineId) return { settled: 'unknown' };
-    if (!this.safeBool(() => this.d.lease.freshRenewalWithin(holder!, this.d.lease.ttlMs), false)) return { settled: 'unknown' };
+    if (!this.safeBool(() => this.holderFresh(holder!), false)) return { settled: 'unknown' };
     const claim = latestPerKey(this.safeUnion()).get(cmd.intentKey);
     if (!claim || claim.data.recordType !== 'intent' || claim.data.conversationKey !== cmd.conversationKey) return { settled: 'unknown' };
     // CMT-1417: after a lease failover the CURRENT holder (verified above, fresh renewal) may settle an intent a
