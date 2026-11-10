@@ -175,6 +175,7 @@ describe('Feature Delivery Completeness', () => {
       'Registry First — people:',
       'Registry First — team access:',
       'Registry First — team requests:',
+      'Registry First — team settings:', // team-switches-agent-wide: one line and one tap per team setting for the whole agent (templates.ts + migrator parity).
       'Decision journal — principle is required:',
       'Decision journal confidence contract:', // ACT-1522: finite [0,1] write contract + legacy-unmeasurable posture; template, existing-agent migrator, and Codex/Gemini shadow parity.
       'Alignment score — N/A means not assessed:',

@@ -365,7 +365,7 @@ import { acceptedHeavy, classifySpawnRefusal, heavyReservations, previewPlacemen
 import { isWorkWeight } from '../core/machineResourceProfile.js';
 import { classifyMachineEmptyState } from './poolEmptyState.js';
 import { formatLivenessLine } from '../core/machineLiveness.js';
-import { decorateWithRopeCondition } from './poolRopeCondition.js';
+import { decorateWithRopeCondition, decorateWithReconnect } from './poolRopeCondition.js';
 // LLM-Decision Quality Meter (llm-decision-quality-meter §5.5) — P9/P10 routes.
 import { runGradePassWithIdleProof } from '../core/JobGradePassIdleVerifier.js';
 import { buildDirectJobSupervisionQuality } from './directJobSupervisionQuality.js';
@@ -763,6 +763,8 @@ import { detectRawFilePath } from '../core/raw-file-path.js';
 import { detectParkedOnUser } from '../core/parked-on-user.js';
 import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
+import { detectOperatorErrand } from '../core/operator-errand.js';
+import { buildAgentReach } from '../core/agent-reach.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
 import {
@@ -1954,6 +1956,9 @@ export interface RouteContext {
     | null;
   /** AutonomousThroughputFloor status. Null while fleet-dark. */
   autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5). */
+  chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+  chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
   /** F2 enforced-termination watchdog status getter. Null when dark/disabled.
    *  Powers GET /autonomous/enforced-termination (spec: enforced-termination-watchdog.md). */
   enforcedTerminationStatus?: (() => unknown) | null;
@@ -4584,6 +4589,26 @@ export function createRoutes(ctx: RouteContext): Router {
       } catch {
         // @silent-fallback-ok — detector errors never override the authority; skip the signal.
       }
+      // Reach-aware B17 (Echo Bugs topic 10000002506): the operator-errand SIGNAL plus
+      // the AGENT REACH context (browser-profile accounts + what the agent's own key
+      // reads). Built only when an errand-shaped ask is present in a reply, so every
+      // other review is unchanged. Fail-OPEN: any error leaves both undefined and the
+      // gate runs exactly as before.
+      let agentReach: import('../core/agent-reach.js').AgentReach | undefined;
+      try {
+        if (kindForSignals === 'reply') {
+          const errand = detectOperatorErrand(text);
+          if (errand.errand) {
+            signals.operatorErrand = { errand: true, phrase: errand.phrase };
+            const registry =
+              ctx.playwrightRegistry?.() ??
+              new PlaywrightProfileRegistry({ stateDir: ctx.config.stateDir, projectDir: ctx.config.projectDir, listVaultNames: () => [] });
+            agentReach = buildAgentReach(registry);
+          }
+        }
+      } catch {
+        // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
+      }
 
       // ── Standing-authorization CONTEXT for B17 (BIAS-TO-ACTION-SPEC D3/D4/D7/D8) ──
       // The askWhenAuthorized signal above is INERT without this verified grant.
@@ -4869,6 +4894,7 @@ export function createRoutes(ctx: RouteContext): Router {
           // Undefined in observe-only mode (the default) and on every uncertainty,
           // so the gate's verdict is unchanged until graduation (BIAS-TO-ACTION D8).
           standingAuthorization,
+          agentReach,
           // jev-signal-live: only callers with an acknowledge-and-override path
           // opt in (see the option's doc). Everyone else — and every non-route
           // caller of the gate — keeps the detector-only path.
@@ -8305,6 +8331,10 @@ export function createRoutes(ctx: RouteContext): Router {
       baseRoots: deriveBaseRoots(workDir),
       maxDurationMs: ctx.config.autonomousSessions?.maxDurationMs ?? 172_800_000,
       initialStatus,
+      // Chief of Staff (docs/specs/chief-of-staff-topic.md §2.4/§4): a CoS-started run carries its
+      // intent key (recovery finds the receipt by key) and the no-respawn-when-lease-expired marker.
+      ...(body.cosNoRespawn === true ? { cosNoRespawn: true } : {}),
+      ...(typeof body.idempotencyKey === 'string' && body.idempotencyKey ? { idempotencyKey: body.idempotencyKey.slice(0, 300) } : {}),
     });
     if (!result.ok) {
       // One registration per active run (R43): refused + flagged.
@@ -8743,6 +8773,28 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.autonomousThroughputFloor.status());
+  });
+
+  // ── Chief of Staff (docs/specs/chief-of-staff-topic.md §5) ──
+  // Loop health first, then the lease, then bound projects. Owner-only: the owner principal is
+  // the bearer holder on this agent (team members reach the agent through conversations, not
+  // the API); the per-project route returns cited evidence, so titles never leave this surface.
+  router.get('/chief-of-staff', (_req, res) => {
+    if (!ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
+      return;
+    }
+    res.json({ ...ctx.chiefOfStaffLoop.status(), protocol: ctx.chiefOfStaffProtocol?.status() ?? null, projects: ctx.chiefOfStaffLoop.projectsSummary() });
+  });
+  router.get('/chief-of-staff/projects/:key', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) {
+      res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });
+      return;
+    }
+    const key = String(req.params.key ?? '');
+    const detail = ctx.chiefOfStaffLoop.projectDetail(key);
+    if (!detail) { res.status(404).json({ error: 'no bound project with that conversation key' }); return; }
+    res.json(detail);
   });
 
   // ── Standby-Write Reconciliation (docs/specs/standby-write-reconciliation.md §6) ──
@@ -11772,7 +11824,15 @@ export function createRoutes(ctx: RouteContext): Router {
         isSelf: boolean;
         sessionCount: number;
         emptyState?: { kind: string; text: string; lastSeen: string | null };
+        /** CMT-1541: a peer that did not answer carries its /pool reachability fields. */
+        reach?: Record<string, unknown>;
       }> = [];
+      let poolRowsMemo: Array<Record<string, unknown>> | null = null;
+      const poolRows = (): Array<Record<string, unknown>> => {
+        if (poolRowsMemo) return poolRowsMemo;
+        try { poolRowsMemo = (poolView().machines as Array<Record<string, unknown>>) ?? []; } catch { poolRowsMemo = []; /* @silent-fallback-ok: no reach fields → the page says "not known" */ }
+        return poolRowsMemo;
+      };
       // Registry-wide roster: self + every known machine. listPoolMachines is
       // the /guards?scope=pool accounting boundary (every registered machine,
       // online or not). Absent (single-machine/dark) → roster is just self.
@@ -11808,6 +11868,7 @@ export function createRoutes(ctx: RouteContext): Router {
           );
           entry.emptyState = { kind: state.kind, text: state.text, lastSeen: state.lastSeen };
         }
+        if (!isSelf && peerFetchReason.get(machineId)) entry.reach = reachFieldsOf(poolRows().find((r) => r.machineId === machineId));
         machines.push(entry);
       }
 
@@ -24420,6 +24481,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const membership=Object.fromEntries((ctx.coordinator?.managers?.identityManager?.getActiveMachines()??[]).map(row=>[row.machineId,Date.parse(row.entry.pairedAt)]));
     return recoveryPoolHealth(ctx.meshSelfId??null,(ctx.listPoolMachines?.()??[]).map(p=>p.machineId),Date.now(),membership);
   }
+  /** The /pool fields that say how long a machine has been out of reach and whether anything is fixing it (CMT-1541). */
+  function reachFieldsOf(row: Record<string, unknown> | undefined): Record<string, unknown> {
+    if (!row) return {};
+    const out: Record<string, unknown> = {};
+    for (const k of ['liveness', 'ropeCondition', 'ropeAllDownSince', 'reconnect']) if (row[k] !== undefined) out[k] = row[k];
+    return out;
+  }
   function poolView(): Record<string, unknown> {
     const sync = ctx.coordinator ? ctx.coordinator.getSyncStatus() : null;
     // Rope-condition decoration: the registry's `online` flag feeds placement and
@@ -24428,10 +24496,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // evaluation. Attach the live classification so reachability renders
     // honestly without touching placement semantics. Monitor dark → absent.
     const nickOf = (id: string): string => verifiedEntityName(id, ctx.machinePoolRegistry?.getCapacity(id)?.nickname) ?? 'another machine';
-    const machines = decorateWithRopeCondition(
+    // CMT-1541: whether this machine is re-dialing a peer it cannot reach (prober dark → absent).
+    const machines = decorateWithReconnect(decorateWithRopeCondition(
       ctx.machinePoolRegistry ? ctx.machinePoolRegistry.getCapacities() : [],
       ctx.ropeHealthMonitor?.status().peers,
-    ).map((m) => ({
+    ), sync?.ropeHealth).map((m) => ({
       ...m,
       // trustworthy-machine-load A5: the one wording template, rendered server-side
       // so every consumer (dashboard, digests, peers) says the same honest thing.
@@ -39895,9 +39964,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     mountMobilePermissionsRoutes(router, {
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
-      teamAction: async (kind, req, deviceId) => {
+      teamAction: async (kind, req, deviceId, target) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
-        return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
+        return run ? await run(kind, req, deviceId, target) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
       },
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {

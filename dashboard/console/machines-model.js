@@ -6,6 +6,7 @@
 
 import { machineState, ago } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableClause, poolMachine } from './unreachable-model.js';
 
 const STATE_ORDER = { bad: 0, attn: 1, stale: 2, unknown: 3, ok: 4 };
 
@@ -181,6 +182,7 @@ export function machineCareLine(r) {
   return [`Restart care is watching only, nothing restarts.`, uptime, last, held.length ? `Holding now: ${held.join(', ')}` : null].filter(Boolean).join(' · ');
 }
 
+const UNREACHED = new Set(['offline', 'peer-unreachable', 'timeout', 'unreachable']);
 const CARE_FAILED = {
   offline: 'offline',
   'not-enabled': 'not turned on there',
@@ -209,7 +211,7 @@ function careShort(d) {
  * Returns { header, byMachine: {machineId: line}, selfLine, missing: [line] } or null.
  * An older server ignores scope and answers its own status only: treated as self.
  */
-export function machineCarePool(r) {
+export function machineCarePool(r, { pool = null, now = Date.now() } = {}) {
   if (!r || !r.ok || !r.data) return null;
   const d = r.data;
   const header = 'Restart care is watching only, nothing restarts.';
@@ -225,6 +227,7 @@ export function machineCarePool(r) {
     if (m.self) selfLine = line;
   }
   const failed = d.pool && Array.isArray(d.pool.failed) ? d.pool.failed : [];
-  const missing = failed.map((f) => `${f.machineNickname || 'a machine with no name yet'}: can’t tell, ${CARE_FAILED[f.reason] || 'no answer'}`);
+  // A machine that is out of reach says for how long and whether anything is fixing it (CMT-1541).
+  const missing = failed.map((f) => `${f.machineNickname || 'a machine with no name yet'}: can’t tell, ${UNREACHED.has(f.reason) ? unreachableClause(poolMachine(pool, f.machineId), f, now) : CARE_FAILED[f.reason] || 'no answer'}`);
   return { header, byMachine, selfLine, missing };
 }

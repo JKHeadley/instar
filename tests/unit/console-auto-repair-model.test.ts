@@ -22,7 +22,10 @@ describe('auto-repair section model', () => {
     expect(by.self).toMatchObject({ canTurnOn: true, defaultTick: false, stateWords: 'Off' });
     expect(by.peerU).toMatchObject({ canTurnOn: true, defaultTick: true, uncovered: ['b@x.io'] });
     expect(by.peerA).toMatchObject({ canTurnOn: false, defaultTick: false });
-    expect(by.peerA.blockedWhy).toMatch(/own dashboard/);
+    // CMT-1541: a plain reason, not an instruction that reads as offered here.
+    expect(by.peerA.blockedWhy).toMatch(/Repairing without asking is off there, and it can only be switched on from that machine itself/);
+    expect(by.peerA.blockedWhy).toMatch(/another machine is not allowed to raise/);
+    expect(by.peerOff.blockedWhy).toBe(by.peerA.blockedWhy);
     expect(by.peerOff).toMatchObject({ canTurnOn: false, canSwitchBack: false });
   });
 
@@ -36,7 +39,27 @@ describe('auto-repair section model', () => {
 
   it('older and unreachable machines are listed but cannot be ticked', () => {
     const m = buildAutoRepair(read([], { configsMissing: ['old'], failed: [{ machineId: 'gone', error: 'timeout' }] }), { names: { old: 'Laptop' } });
-    expect(m.rows.map((r: any) => r.unreadable)).toEqual(expect.arrayContaining(['Needs an Instar update first', 'Couldn’t read this machine']));
+    expect(m.rows.find((r: any) => r.machineId === 'old').unreadable).toBe('Needs an Instar update first');
+    // CMT-1541: no /pool evidence → says plainly that how long and whether anything is fixing it are not known.
+    expect(m.rows.find((r: any) => r.machineId === 'gone').unreadable).toBe("Couldn't reach a machine with no name yet (for how long is not known); not known whether anything is fixing it.");
+  });
+
+  it('an unreachable machine says how long and whether anything is fixing it (CMT-1541)', () => {
+    const now = Date.parse('2026-11-09T12:00:00Z');
+    const pool = { ok: true, data: { machines: [
+      { machineId: 'lap', nickname: 'Laptop', liveness: { state: 'unreachable', source: 'direct', evidenceAt: '2026-11-09T11:48:00Z' }, reconnect: { state: 'retrying' } },
+    ] } };
+    const m = buildAutoRepair(read([], { failed: [{ machineId: 'lap', error: 'timeout' }] }), { names: { lap: 'Laptop' }, poolMachines: pool, now });
+    expect(m.rows[0].unreadable).toBe("Couldn't reach Laptop for 12 min; reconnecting by itself.");
+  });
+
+  it('the owner-must-enable-here result reads as the same plain reason', () => {
+    expect(resultWords({ ok: false, error: 'owner-must-enable-here' })).toMatch(/can only be switched on from that machine itself/);
+  });
+
+  it('rows this page cannot change carry no tick-box permission (canTurnOn and canSwitchBack both false)', () => {
+    const m = buildAutoRepair(read([cfg('peerA', 'approval', ['a@x.io'], ['a@x.io'], { remote: true, machineNickname: 'Mac Mini' })]));
+    expect(m.rows[0]).toMatchObject({ canTurnOn: false, canSwitchBack: false, defaultTick: false });
   });
 
   it('builds the exact request: own machine 0/0, other machines keep their waits; approval keeps list and waits', () => {

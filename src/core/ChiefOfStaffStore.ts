@@ -239,11 +239,19 @@ export const chiefOfStaffRecordStoreSchema: StoreFieldSchema = {
         if (!isMachine(raw.machine)) return null;
         if (!isIso(raw.at)) return null;
         if (raw.note !== undefined && !isShortText(raw.note, 500)) return null;
+        let doneItems: Record<string, 'pass' | 'fail' | 'unknown'> | undefined;
+        if (raw.doneItems !== undefined) {
+          if (!raw.doneItems || typeof raw.doneItems !== 'object' || Array.isArray(raw.doneItems)) return null;
+          const entries = Object.entries(raw.doneItems as Record<string, unknown>);
+          if (entries.length > 64 || !entries.every(([k, v]) => isShortText(k, 64) && (v === 'pass' || v === 'fail' || v === 'unknown'))) return null;
+          doneItems = Object.fromEntries(entries) as Record<string, 'pass' | 'fail' | 'unknown'>;
+        }
         return {
           recordType: type, conversationKey: ck, verdict: raw.verdict, evidenceHash: raw.evidenceHash, evidenceIds: raw.evidenceIds,
           progressSeen: raw.progressSeen, machine: raw.machine, at: raw.at,
           ...(raw.netDiffHighWater !== undefined ? { netDiffHighWater: raw.netDiffHighWater } : {}),
           ...(raw.note !== undefined ? { note: raw.note } : {}),
+          ...(doneItems !== undefined ? { doneItems } : {}),
         };
       }
       case 'intent': {
@@ -350,6 +358,8 @@ export function buildLifecycleEvent(conversationKey: string, event: CosLifecycle
 
 export interface CheckEventInput {
   conversationKey: string; verdict: CosVerdict; evidenceHash: string; evidenceIds: string[]; progressSeen: boolean; netDiffHighWater?: number; machine: string; at: string; note?: string;
+  /** The deterministic done-item results at this check — the DURABLE baseline the next check's progress detection compares against (never an in-memory map). */
+  doneItems?: Record<string, 'pass' | 'fail' | 'unknown'>;
 }
 
 export function buildCheckEvent(c: CheckEventInput): Build {
@@ -554,6 +564,8 @@ export interface ProjectCheckState {
   breakerTripped: boolean;
   nextCheckAt: string | null;
   nextActionAllowedAt: string | null;
+  /** Done-item results recorded on the newest check (the durable progress baseline); null when the newest check carried none. */
+  lastDoneItems: Record<string, 'pass' | 'fail' | 'unknown'> | null;
 }
 
 const ACTION_ATTEMPT_ACTIONS: ReadonlySet<CosAction> = new Set<CosAction>(['restart-inject', 'restart-run', 'redirect']);
@@ -622,6 +634,7 @@ export function foldProjectCheckState(entries: UnionEntry[], conversationKey: st
     breakerTripped,
     nextCheckAt,
     nextActionAllowedAt,
+    lastDoneItems: last && last.doneItems && typeof last.doneItems === 'object' ? (last.doneItems as Record<string, 'pass' | 'fail' | 'unknown'>) : null,
   };
 }
 

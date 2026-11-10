@@ -218,6 +218,7 @@ import { createMobileConversationRouter, appOwnerName } from './mobileConversati
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
 import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
+import { PeerLacksSwitchRoute, PeerRefusedSwitch, PeerSwitchFailed, TeamSwitchApplier, type LocalApply, type SwitchPeer, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import type { TeamAccessRow } from '../core/TeamAccessLog.js';
 import { deriveRole } from '../permissions/SlackPrincipalResolver.js';
 import { buildMobileSlackBridge, createMobileSlackRouter, slackListRows, slackOwnerUserId, slackUnreadSource } from './mobileSlackRoutes.js';
@@ -487,6 +488,10 @@ export class AgentServer {
   private config: InstarConfig;
   /** Mobile pairing links (docs/specs/mobile-pairing-link.md). */
   private teamPullTimer: ReturnType<typeof setInterval> | null = null;
+  /** The owner's one tap that turns a team setting on for every machine (team-switches-agent-wide). */
+  teamSwitchApplier: TeamSwitchApplier | null = null;
+  /** Each dialable peer, as the switch applier reaches it; set when the team exchange starts. */
+  private teamSwitchPeers: () => SwitchPeer[] = () => [];
   private teamConversationChange: (<T>(ref: string, change: () => Promise<T> | T) => Promise<T>) | null = null;
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
@@ -600,6 +605,39 @@ export class AgentServer {
     this.mobilePairing?.reconcileTeamPhones();
   }
 
+  /**
+   * Turn one team setting on here, from the owner's tap on any machine of this agent. Only ever on.
+   * Restarts this machine (a supervised, planned restart) when what is running is not yet on.
+   */
+  private applyTeamSwitchHere(setting: TeamSwitchSetting, options: {
+    config: InstarConfig;
+    liveConfig?: { set(path: string, value: unknown): void; get?<T>(path: string, def: T): T };
+    sessionManager: { memoryPrivacyStatus?(): { enabled?: boolean } | null | undefined };
+  }, by: string): LocalApply {
+    const live = options.liveConfig;
+    if (!live?.get) throw new Error('team-switch-no-live-config');
+    let changed = false;
+    const ensure = (dotPath: string, on: boolean): void => {
+      if (on) return;
+      live.set(dotPath, true);
+      changed = true;
+    };
+    let running: boolean;
+    if (setting === 'memory-privacy') {
+      ensure('memoryPrivacy.enabled', live.get<unknown>('memoryPrivacy.enabled', undefined) === true);
+      running = options.sessionManager.memoryPrivacyStatus?.()?.enabled === true;
+    } else {
+      // App conversations need phone pairing on too; both are read as the gate reads them.
+      ensure('mobilePairing.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.enabled', undefined), options.config));
+      ensure('mobilePairing.native.enabled', resolveDevAgentGate(live.get<boolean | undefined>('mobilePairing.native.enabled', undefined), options.config));
+      running = isMobileNativeEnabled(options.config);
+    }
+    console.log(`[team-access] ${setting} turned on for the whole agent (asked by ${by}); ${changed ? 'set here' : 'already set here'}`);
+    if (running && !changed) return { changed: false, restarting: false };
+    if (!this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`)) throw new Error('team-switch-restart-unavailable');
+    return { changed, restarting: true };
+  }
+
   /** The regular exchange of access rows. Silent with no peers, so a one-machine agent sees nothing. */
   private startTeamPuller(options: {
     config: InstarConfig;
@@ -622,6 +660,18 @@ export class AgentServer {
         body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
       });
     };
+    this.teamSwitchPeers = () => (options.resolvePeerUrls?.() ?? []).map((peer) => ({
+      machineId: peer.machineId,
+      turnOn: async (setting: TeamSwitchSetting, requestedBy?: string | null): Promise<LocalApply> => {
+        const r = await call(peer, '/api/team-access/switch-on', { setting, ...(requestedBy ? { requestedBy } : {}) });
+        if (r.status === 404) throw new PeerLacksSwitchRoute(peer.machineId);
+        if (r.status === 400) throw new PeerRefusedSwitch(peer.machineId);
+        if (r.status === 500) throw new PeerSwitchFailed(`${peer.machineId} could not apply it`);
+        if (!r.ok) throw new Error(`team-switch-on-${r.status}`);
+        const body = await r.json() as { changed?: unknown; restarting?: unknown };
+        return { changed: body.changed === true, restarting: body.restarting === true };
+      },
+    }));
     svc.teamPuller = new TeamAccessPuller({
       log: () => svc.teamLog(),
       peers: () => (options.resolvePeerUrls?.() ?? []).map((peer) => ({
@@ -645,7 +695,8 @@ export class AgentServer {
     options.coordinator?.setLeaseHold?.(() => (svc.teamOn() || (svc.teamLog()?.mayHaveTeam() ?? false)) && (!isMobileNativeEnabled(options.config) || (svc.teamPuller?.behind() ?? false)));
     if (!(options.mobileRoutes?.start ?? !process.env.VITEST)) return;
     void svc.teamPuller.tick();
-    this.teamPullTimer = setInterval(() => { void svc.teamPuller?.tick(); }, PULL_INTERVAL_MS);
+    // Requests a machine missed (asleep, no address, an older build) are tried again on the same tick.
+    this.teamPullTimer = setInterval(() => { void svc.teamPuller?.tick(); void this.teamSwitchApplier?.retryPending(); }, PULL_INTERVAL_MS);
     this.teamPullTimer.unref();
   }
 
@@ -790,6 +841,9 @@ export class AgentServer {
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+    /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+    chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     windowLifecycleTick?: (() => void) | null;
     passkeyHealthDigestTick?: (() => Promise<unknown>) | null;
     identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -1720,6 +1774,9 @@ export class AgentServer {
       | import('../monitoring/AutonomousLivenessReconciler.js').AutonomousLivenessReconciler
       | null;
     autonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor | null;
+    /** Chief of Staff (docs/specs/chief-of-staff-topic.md §5): the check-in loop + action protocol, null where the dev-gated feature is off. */
+    chiefOfStaffLoop?: import('../core/ChiefOfStaffLoop.js').ChiefOfStaffLoop | null;
+    chiefOfStaffProtocol?: import('../core/ChiefOfStaffActionProtocol.js').ChiefOfStaffActionProtocol | null;
     /** F2 enforced-termination watchdog status getter (spec: enforced-termination-watchdog.md).
      *  Powers GET /autonomous/enforced-termination. Function-typed to avoid a class import. */
     enforcedTerminationStatus?: (() => unknown) | null;
@@ -2313,6 +2370,7 @@ export class AgentServer {
           standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
         };
       };
+      machineRouteContext.teamSwitchOn = (setting, senderId, requestedBy) => this.applyTeamSwitchHere(setting, options, `machine ${senderId}${requestedBy ? ` for ${requestedBy}` : ''}`);
       machineRouteContext.teamAccessPush = async (rows, senderId) => {
         const log = this.mobilePairing?.teamLog() ?? null;
         if (!log) throw new Error('team-access-unavailable');
@@ -6082,6 +6140,8 @@ export class AgentServer {
       resumeQueue: options.resumeQueue ?? null,
       resumeDrainer: options.resumeDrainer ?? null,
       autonomousLivenessReconciler: options.autonomousLivenessReconciler ?? null,
+      chiefOfStaffLoop: options.chiefOfStaffLoop ?? null,
+      chiefOfStaffProtocol: options.chiefOfStaffProtocol ?? null,
       autonomousThroughputFloor: options.autonomousThroughputFloor ?? (globalThis as { __instarAutonomousThroughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloor }).__instarAutonomousThroughputFloor ?? null,
       enforcedTerminationStatus: options.enforcedTerminationStatus ?? null,
       operatorStopRecorder: options.operatorStopRecorder ?? null,
@@ -7054,6 +7114,23 @@ export class AgentServer {
       const topicNumber = (key: string) => options.state.get<number>(key) ?? null;
       const isSystemTopicHere = (id: number) => id === topicNumber('agent-attention-topic') || id === topicNumber('agent-updates-topic') || id === options.telegram?.getLifelineTopicId();
       const isJobTopicHere = (id: number) => Object.values(options.state.get<Record<string, number>>('job-topic-mappings') ?? {}).includes(id);
+      const teamSelfId = (): string | null => options.coordinator?.identity?.machineId ?? options.meshSelfId ?? null;
+      const peerStanding = (machineId: string) => pairingSvc.teamPuller?.standings().find((p) => p.machineId === machineId)?.standing ?? null;
+      const teamSwitches = new TeamSwitchApplier({
+        selfMachineId: teamSelfId,
+        peers: () => this.teamSwitchPeers(),
+        knownMachines: () => {
+          try { return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false)); } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
+        },
+        applyLocal: (setting) => this.applyTeamSwitchHere(setting, options, 'the owner\'s phone'),
+        reportsOn: (setting, machineId) => {
+          const s = peerStanding(machineId);
+          return !!s && (setting === 'memory-privacy' ? s.privacy : s.native);
+        },
+        file: path.join(options.config.stateDir, TEAM_ACCESS_DIR, 'switch-requests.json'),
+        reportError: (err) => pairingSvc.reportTeamFault('TeamAccess.switch', err),
+      });
+      this.teamSwitchApplier = teamSwitches;
       this.app.use(createTeamRouter(pairingSvc, {
         signer: () => loadMachineSigner(options.config.stateDir),
         applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),
@@ -7099,6 +7176,15 @@ export class AgentServer {
           options.liveConfig?.set('memoryPrivacy.enabled', true);
           return this.requestSupervisedRestart('memory privacy turned on for team members', 'team-memory-privacy');
         },
+        turnOnEverywhere: (setting, requestedBy) => teamSwitches.turnOn(setting, `owner-device-${requestedBy}`.slice(0, 128).replace(/[^A-Za-z0-9_-]/g, '-')),
+        selfStanding: () => {
+          const privacy = options.sessionManager.memoryPrivacyStatus?.();
+          return {
+            machineId: teamSelfId() ?? 'this-machine',
+            standing: { enforcement: TEAM_ENFORCEMENT_VERSION, native: isMobileNativeEnabled(options.config), privacy: !!privacy?.enabled && !!privacy.sandboxReady },
+          };
+        },
+        switchRequests: () => teamSwitches.requested(),
         // On: the live status. Off: what turning it on for team members would give (several people).
         agentSessionsWhenOn: () => {
           const status = options.sessionManager.memoryPrivacyStatus?.();

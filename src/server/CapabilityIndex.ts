@@ -73,7 +73,17 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'teamPeople',
     prefixes: ['/team'],
     description: 'Who can reach this agent, how, and what each person can see. The owner\'s phone gives access; the agent can only take it away.',
-    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'POST /team/proposals', 'GET /mobile/team/requests', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy'] }),
+    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'POST /team/proposals', 'GET /mobile/team/requests', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy', 'POST /mobile/team/switches/turn-on'] }),
+  },
+  {
+    key: 'chiefOfStaff',
+    prefixes: ['/chief-of-staff'],
+    description: 'The Chief of Staff (docs/specs/chief-of-staff-topic.md): which projects it watches, each one\'s last verdict (moving, stalled, waiting on you, claims done, unknown), restarts, parks, and whether the owner\'s check-in lease is live. Check this for "is anything stalled" before reading topics one by one.',
+    build: ({ ctx }) => {
+      const loop = (ctx as { chiefOfStaffLoop?: { status?: () => { lease?: { live?: boolean } } } | null }).chiefOfStaffLoop;
+      if (!loop?.status) return { enabled: false };
+      return { enabled: true, leaseLive: loop.status().lease?.live === true, endpoints: ['GET /chief-of-staff', 'GET /chief-of-staff/projects/:key'] };
+    },
   },
   {
     key: 'capabilityRegistry',

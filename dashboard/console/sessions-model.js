@@ -8,6 +8,7 @@
 
 import { verifiedDisplayName, uniqueNamedChoices } from './display-identity.js';
 import { sessionTopicName } from './topic-names.js';
+import { unreachableClause } from './unreachable-model.js';
 
 /**
  * What a person reads for a "door" (an AI tool a session runs on: Claude Code, Codex...). One place,
@@ -210,11 +211,11 @@ export function buildSessions(sessionsRes, { ws = null, now = Date.now(), topicN
   const needsLook = rows.filter((r) => r.duplicate || r.activity === 'quiet');
   const working = rows.filter((r) => !needsLook.includes(r));
   const failedIds = new Set((Array.isArray(pool.failed) ? pool.failed : []).map((f) => f.machineId));
+  // How long it has been out of reach and whether anything is fixing it (CMT-1541).
+  const failedById = new Map((Array.isArray(pool.failed) ? pool.failed : []).map((f) => [f.machineId, f]));
   const unanswered = [...failedIds].map((id) => {
     const m = machines.find((x) => x.machineId === id);
-    const es = m && m.emptyState;
-    const last = es && es.lastSeen ? spanWords(now - Date.parse(es.lastSeen)) : null;
-    return { machineId: id, name: nicknameOf(pool, id), words: last && last !== 'now' ? `not answering (last seen ${last} ago)` : 'not answering' };
+    return { machineId: id, name: nicknameOf(pool, id), words: unreachableClause((m && m.reach) || null, failedById.get(id), now) };
   });
   const idleMachines = multi ? machines.filter((m) => m.sessionCount === 0 && !failedIds.has(m.machineId)).map((m) => ({
     machineId: m.machineId, name: verifiedDisplayName(m.nickname, m.machineId) || 'another machine',

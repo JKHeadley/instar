@@ -332,6 +332,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "LLM-provider plumbing reached through a dynamic import in a certified module; shared across every internal LLM feature and certified by its own suites — binding it would re-freeze releases on unrelated provider churn"
     },
     {
+      "file": "src/core/agent-reach.ts",
+      "reason": "Pure reach-record builder/renderer for the tone gate's B17 context (no I/O beyond the injected registry read, no delivery logic); reached through MessagingToneGate, outside the Stage-B canaried delivery path, certified by its own suite"
+    },
+    {
       "file": "src/core/internal-id-leak.ts",
       "reason": "cross-cutting utility shared far beyond Codex delivery, certified by its own suite; binding it would re-freeze releases on unrelated churn"
     },

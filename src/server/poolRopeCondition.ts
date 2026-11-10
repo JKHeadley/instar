@@ -64,3 +64,46 @@ export function decorateWithRopeCondition<T extends { machineId: string }>(
     return decorated;
   });
 }
+
+/** One row of the rope recovery prober's view (MultiMachineSyncStatus.ropeHealth). */
+export interface RopeProbeSourceRow {
+  peer: string;
+  state: 'healthy' | 'dead' | 'exhausted';
+  nextProbeDueAt: number | null;
+}
+
+/**
+ * Is anything working to reconnect this machine? (CMT-1541: every "no answer
+ * from X" notice says how long and whether something is fixing it.)
+ *
+ *   connected       — at least one connection to it works; the failed read was
+ *                     something else (busy, an error), and the next read asks again.
+ *   retrying        — every connection is down and this machine keeps re-dialing
+ *                     on its normal back-off.
+ *   retrying-slowly — every connection is down and the re-dial has failed so often
+ *                     it now tries only at the slow floor rate.
+ */
+export interface ReconnectDecoration {
+  reconnect?: { state: 'connected' | 'retrying' | 'retrying-slowly'; nextTryAt?: string };
+}
+
+/**
+ * Decorate pool rows with the recovery prober's per-peer state. Absent prober
+ * (dark on the fleet) or no row for a peer ⇒ no field: "not known", never a
+ * fabricated "nothing is fixing it". Pure.
+ */
+export function decorateWithReconnect<T extends { machineId: string }>(
+  machines: T[],
+  rows: RopeProbeSourceRow[] | null | undefined,
+): Array<T & ReconnectDecoration> {
+  if (!rows || rows.length === 0) return machines;
+  return machines.map((m) => {
+    const mine = rows.filter((r) => r.peer === m.machineId);
+    if (mine.length === 0) return m;
+    if (mine.some((r) => r.state === 'healthy')) return { ...m, reconnect: { state: 'connected' as const } };
+    const due = mine.map((r) => r.nextProbeDueAt).filter((t): t is number => typeof t === 'number' && Number.isFinite(t));
+    const nextTryAt = due.length ? new Date(Math.min(...due)).toISOString() : undefined;
+    const state = mine.some((r) => r.state === 'dead') ? 'retrying' as const : 'retrying-slowly' as const;
+    return { ...m, reconnect: nextTryAt ? { state, nextTryAt } : { state } };
+  });
+}

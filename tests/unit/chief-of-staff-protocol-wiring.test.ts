@@ -49,13 +49,13 @@ describe('Chief of Staff protocol wiring — 1. SOURCE assertions', () => {
   });
 });
 
-describe('Chief of Staff protocol wiring — 2. DARKNESS (no loop calls claim yet)', () => {
-  it('no runtime call site claims an action', () => {
+describe('Chief of Staff protocol wiring — 2. SOLE CLAIMER (only the check-in loop claims an action)', () => {
+  it('the loop is the only runtime call site that claims an action', () => {
     const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
       const p = path.join(dir, d.name);
       return d.isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
     });
     const offenders = walk(path.join(ROOT, 'src')).filter((f) => !f.endsWith('ChiefOfStaffActionProtocol.ts') && /_cosProtocol\??\.claim\(|protocol\.claim\(\{ conversationKey/.test(fs.readFileSync(f, 'utf-8')));
-    expect(offenders).toEqual([]);
+    expect(offenders.map((f) => path.basename(f))).toEqual(['ChiefOfStaffLoop.ts']);
   });
 });

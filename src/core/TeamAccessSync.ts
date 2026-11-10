@@ -258,6 +258,14 @@ export class TeamAccessPuller {
     });
   }
 
+  /** What each peer last said about itself, for the agent-level settings line. A machine marked gone is left out. */
+  standings(): Array<{ machineId: string; standing: MachineStanding }> {
+    return this.deps.peers().flatMap((p) => {
+      const s = this.standing.get(p.machineId);
+      return s && !this.gone(p.machineId) ? [{ machineId: p.machineId, standing: s }] : [];
+    });
+  }
+
   /** Is a reachable peer holding rows this machine has not taken in? Such a machine must not take the serving lease. */
   behind(): boolean { return this.behindPeers.size > 0; }
 

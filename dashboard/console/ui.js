@@ -51,7 +51,7 @@ export function note(text) { return el('p', { class: 'card-note', text }); }
 export const MACHINES_PAGE = '#/capacity/machines';
 /** A note about a machine that did not answer: anything that fails links to the problem. */
 export function machineIssue(text) {
-  return /did not answer|not answering|didn[’']t answer|Couldn['’]t read other machines/i.test(String(text || ''));
+  return /did not answer|not answering|didn[’']t answer|Couldn['’]t reach |Couldn['’]t read other machines/i.test(String(text || ''));
 }
 export function noteLinked(text) {
   if (!machineIssue(text)) return note(text);

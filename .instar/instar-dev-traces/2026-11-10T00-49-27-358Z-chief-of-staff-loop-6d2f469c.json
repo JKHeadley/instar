@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-loop",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T00:49:27.358Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-loop.md",
+  "artifactSha256": "5db5eb78db059855e53adf0c7b2e5a5dcf730a0d0cc6a3cf73901c67cca54c33",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "src/data/llmBenchCoverage.ts",
+    "tests/unit/llm-bench-coverage-ratchet.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Registration rows for the Chief of Staff judge in the LLM coverage tables (no behaviour change) under the converged, approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

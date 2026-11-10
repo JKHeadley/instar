@@ -338,6 +338,26 @@ A Telegram, Slack or app topic is the user's conversation. It is never a channel
 }
 
 /**
+ * Acting as my operator, and doing errands myself (Echo Bugs topic 10000002506,
+ * 2026-11-09): an agent asked its operator to check a list its own key read, and
+ * to message it in Slack when its browser held the operator's signed-in account.
+ * SHARED by `generateClaudeMd` and `migrateClaudeMd`. Content-sniff marker: the heading.
+ */
+export const ACTING_AS_OPERATOR_CLAUDEMD_MARKER = '### Before I ask my operator to check or send something';
+export function ACTING_AS_OPERATOR_CLAUDEMD_SECTION(port: number): string {
+  return `
+${ACTING_AS_OPERATOR_CLAUDEMD_MARKER}
+
+Before a message asks my operator to look at, check, open or send something, I check what I can already reach, and do it myself when I can:
+- **My own key reads everything the dashboard and the app show**: the conversation list (Slack and Telegram rows and their names), message history, sessions, jobs, attention items. "Only your screen can see it" is never true of those. Example: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/mobile/conversations\`.
+- **My browser profiles** list the accounts signed in on this machine, including my operator's own: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/playwright-profiles\`. I can use those to look, check, or send a test or on-their-behalf message.
+- **Anything I send through my operator's account is marked**, on every platform: start it with \`[Sent by <my name> on <operator name>'s behalf]\` (add \`, test\` inside the brackets for a test). When a marked message comes back in, Slack tags it "marked: sent by … not written by …", so I never take it as my operator's own words. On Telegram, sends through the operator's account are also signed.
+- Never through their account without asking first: a purchase, a settings change, or a real message to someone else in their name. Taste questions ("does this feel right to you?") are still theirs.
+- The outbound check stops a "can you check this for me" message when the reach above covers it.
+`;
+}
+
+/**
  * Sharing at the first pairing (docs/specs/session-pool-activation-at-pairing.md). SHARED by
  * `generateClaudeMd` and `migrateClaudeMd`. Content-sniff marker: the heading.
  */
@@ -9741,6 +9761,12 @@ setTimeout(() => process.exit(0), 2000);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Talking to my other sessions section');
     }
+    // Acting as my operator / doing errands myself (Echo Bugs topic 10000002506): heading-sniffed.
+    if (!content.includes(ACTING_AS_OPERATOR_CLAUDEMD_MARKER)) {
+      content += ACTING_AS_OPERATOR_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Before I ask my operator to check or send something section');
+    }
     if (!content.includes(PAIR_SHARING_CLAUDEMD_MARKER)) {
       content += PAIR_SHARING_CLAUDEMD_SECTION(port);
       patched = true;
@@ -9831,6 +9857,12 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n- **Registry First — people:** before answering who can reach this agent or what someone can see, read `GET /team/people` (add `?scope=pool` on several machines). It lists each person, how they reach the agent and what they can see, and it names any machine that did not answer. When the owner asks in their own chat to turn on memory privacy, set `memoryPrivacy.enabled: true` in the config on every machine and restart.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added people Registry First awareness');
+    }
+
+    if (!content.includes('Registry First — team settings:')) {
+      content += '\n- **Registry First — team settings:** a team needs memory privacy and app conversations on every machine. `GET /mobile/team/context` → `teamSwitches` lists each setting that is off somewhere, with `offOn` (the machines) and one action for the whole agent; the owner turns it on with one Face ID tap in People (`POST /mobile/team/switches/turn-on`), which reaches every machine and restarts each one that changed. A machine is "gone" only when it stopped answering (`waitingOn`), never because a setting is off — never tell the owner to mark a live machine gone.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team settings Registry First awareness');
     }
 
     if (!content.includes('Decision journal — principle is required:')) {
@@ -11759,6 +11791,17 @@ Rule: I do not state that work landed inside another agent's state unless I have
         content = content.replace(oneClickEnd, oneClickEnd + '\n' + oneTapBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added one-tap repair setting awareness');
+      }
+    }
+    // CMT-1541: approval reminder + unreachable-machine notice awareness, content-sniffed.
+    if (content.includes('One-tap repair setting (Accounts page)') && !content.includes('Repair waiting for approval: reminder')) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- **One-tap repair setting (Accounts page)**'));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, ...["- **Repair waiting for approval: reminder** \u2014 a sign-in repair in approval mode that has waited for the operator's tap longer than `subscriptionPool.assistedRelogin.approvalReminderHours` (default 4; 0 turns it off) gets ONE reminder per waiting spell on the same attention row as its first notice, with the direct link (dashboard URL + `#/capacity/accounts?s=needs`). It follows Quiet by Default (attention queue and Notifications feed; pushed only where the operator chose to push that category), never goes out during the repair's night hours (`slowRetry.quietHours`), and never approves anything. **When to use** (PROACTIVE): the user asks why a sign-in is still broken \u2192 check `GET /subscription-relogin?scope=pool` for `suggested` episodes and send the direct link; never tap Repair for them.", "- **Unreachable-machine notices** \u2014 every dashboard \"No answer from <machine>\" line says how long the machine has been out of reach (from its last direct contact in `GET /pool` \u2192 `liveness`, else `ropeAllDownSince`) and whether anything is fixing it (`GET /pool` \u2192 `reconnect`: `retrying`, `retrying-slowly`, `connected`; absent when the recovery probe is off, which reads as \"not known\"). Use the same two facts when telling the user a machine is unreachable."]);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added sign-in approval reminder and unreachable-notice awareness');
       }
     }
     // The old "configure this on any machine" sentence now points at the section.
@@ -16347,6 +16390,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
       '**Registry First — team requests:',
+      // team-switches-agent-wide: a team setting is turned on for the whole agent, never per machine, on every framework.
+      '**Registry First — team settings:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is
@@ -17792,6 +17837,16 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         patched = true;
         result.upgraded.push('config.json: added dark feedback triage account selection mode');
       }
+    }
+
+    // Chief of Staff (docs/specs/chief-of-staff-topic.md): the owner-tunable defaults, added only
+    // when missing. `enabled` is deliberately NOT written: omitted follows the dev-agent gate.
+    {
+      const cos = (config.chiefOfStaff && typeof config.chiefOfStaff === 'object') ? config.chiefOfStaff as Record<string, unknown> : {};
+      const defaults: Record<string, unknown> = { displayName: 'Chief of Staff', tickMinutes: 15, defaultCadenceHours: 24, maxRunHours: 4, operatorLeaseHours: 72, noteCadenceHours: 24, noteTime: '08:00', maxRestartsWithoutProgress: 3, breakerRestartsPerWeek: 5, immediateMessagesPerDay: 3, judgeDailyCents: 15 };
+      let added = false;
+      for (const [k, v] of Object.entries(defaults)) { if (cos[k] === undefined) { cos[k] = v; added = true; } }
+      if (added) { config.chiefOfStaff = cos; patched = true; result.upgraded.push('config.json: Chief of Staff defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
     }
 
     // An already-configured verifier gets the explicit dark diagnosis default;

@@ -74,6 +74,8 @@ import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS }
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
+import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
+import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -5183,9 +5185,38 @@ const emailFallbackRetry: SelfActionController = {
   },
 };
 
+
+/** relogin-approval-reminder (CMT-1541): a sign-in repair waits for the operator's tap forever. The
+ * reminder fires ONCE per waiting spell (the spell key is held), then stays quiet however long it waits. */
+const reloginApprovalReminder: SelfActionController = {
+  id: 'relogin-approval-reminder',
+  actionVerb: 'notify',
+  models: 'src/core/SubscriptionReloginApprovalReminder.ts (SubscriptionReloginApprovalReminder.tick — dueApprovalReminders, held by spell key)',
+  modelsPath: 'src/core/SubscriptionReloginApprovalReminder.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart forgets the held spell keys, but the reminder text is fixed for one waiting spell (it names the absolute wait start), so the re-raised observation lands on the same attention row unchanged and is absorbed without a repost.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 4 * 24 * 7,
+  tickMs: 15 * 60_000,
+  makeUnderPressure(f, sink) {
+    const sent = new Set<string>();
+    const waiting = { id: 'ep-1', state: 'suggested', mode: 'approval', updatedAt: new Date(0).toISOString() } as unknown as SubscriptionReloginEpisode;
+    return {
+      tick() {
+        sink.considered += 1;
+        for (const due of dueApprovalReminders([waiting], { nowMs: f.clock.nowMs(), thresholdMs: 4 * 3_600_000, waitingSince: () => 0, sent })) {
+          sink.emit({ verb: 'notify', target: `relogin:${due.episode.id}` });
+          sent.add(due.key);
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   graphSourceSweepCheckpointRetry,
   graphSourceStatusPollRetry,
+  reloginApprovalReminder,
   peerPlaceSessionTick,
   skillLearningHealRevertFirst,
   skillLearningHealIndexRetire,

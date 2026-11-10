@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-09T23:29:20.354Z",
+  "slug": "cmt1541-dashboard-unreachable-and-approval-reminder",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 288,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SubscriptionReloginApprovalReminder.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/server/poolRopeCondition.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 285,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The relogin-approval-reminder controller is driven a week of 15-minute passes against a repair that waits forever; it fires once per waiting spell (held spell key), so a version that re-fired every pass would scale with the horizon and fail the bound."
+    },
+    "component": "SubscriptionReloginApprovalReminder"
+  },
+  "verdict": "pass"
+}

@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-10T04:17:36.613Z",
+  "slug": "chief-of-staff-loop",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 11,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/SessionManager.ts",
+      "src/data/llmBenchCoverage.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new controller: a classification row and the same spawn under the same lock discipline."
+  },
+  "verdict": "pass"
+}

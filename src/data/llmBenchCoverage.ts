@@ -41,6 +41,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   AttributionJudge: { pending: 'wave-3' },
+  // chief-of-staff-topic.md §2.5: the per-project verdict judge (stalled / moving / claims-done / unknown over a
+  // bounded evidence bundle). Graded in production by its decision-quality seam (DP_COS_PROJECT_VERDICT:
+  // progress observed after a restart) until a bench battery lands.
+  ChiefOfStaffLoop: { pending: 'wave-3' },
   // CompletionEvaluator has TWO judged surfaces; both benched.
   CompletionEvaluator: { task: 'completion-judge+p13-stop-judge' },
   ExternalOperationGate: { task: 'external-op-gate' },
@@ -194,6 +198,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   StallTriageNurse: true,
   CommitmentSentinel: true,
   PresenceProxy: true,
+  ChiefOfStaffLoop: true, // judges a project's session tail + owner/agent messages + linked-work evidence
   MessageSentinel: true,
   ProjectDriftChecker: true,
   TemporalCoherenceChecker: true,
@@ -366,6 +371,9 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   // ── Judges (judgesClaims: true) ────────────────────────────────────────────
   // Completion evaluators — credit/refuse a claim of asserted work.
   CompletionEvaluator: { claimKind: 'completionClaim' }, // THE motivating callsite: credited a bare "tests pass"
+  // chief-of-staff-topic.md §2.5: the verdict judge refuses or credits a project's "done" claim against its
+  // deterministic checklist (claims-done never closes on the claim alone) → judges a completion claim.
+  ChiefOfStaffLoop: { claimKind: 'completionClaim' },
   UnjustifiedStopGate: { claimKind: 'completionClaim' }, // judges whether a stop is justified = is the claimed work actually done/blocked
   JobReflector: { claimKind: 'completionClaim' }, // reflects on job success/completion (spec §2 pending-wave judge; classified now so the asymmetry can't silently reopen)
 
@@ -525,6 +533,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   StallTriageNurse: { pending: 'contract-wave-2' }, // closed stall-triage diagnosis label
   CommitmentSentinel: { pending: 'contract-wave-2' }, // closed commitment-detected verdict + structured envelope
   PresenceProxy: { pending: 'contract-wave-2' }, // closed tier-3 stall verdict
+  ChiefOfStaffLoop: { pending: 'contract-wave-2' }, // closed project verdict (moving/stalled/drifting/claims-done/waiting-on-user/unknown) + cited evidence ids
   ProjectDriftChecker: { pending: 'contract-wave-2' }, // closed on-project verdict
   TemporalCoherenceChecker: { pending: 'contract-wave-2' }, // closed temporal-coherence verdict
   SessionWatchdog: { pending: 'contract-wave-2' }, // closed stuck verdict
@@ -854,6 +863,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   StallTriageNurse: exposed(EXPOSED_MODEL), // session output
   CommitmentSentinel: exposed(EXPOSED_USER_MODEL), // both sides of a conversation
   PresenceProxy: exposed(EXPOSED_MODEL), // session-stall over session output
+  ChiefOfStaffLoop: exposed(EXPOSED_ALL), // owner + agent messages, session tail, gh/page evidence
   MessageSentinel: exposed(EXPOSED_USER), // inbound user message (R8 input-classifier — must stay exposed)
   ProjectDriftChecker: exposed(EXPOSED_MODEL_TOOL), // session work + files
   TemporalCoherenceChecker: exposed(EXPOSED_USER_MODEL),
