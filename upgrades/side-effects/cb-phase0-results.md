@@ -92,3 +92,4 @@ Clear to commit. The report surfaces one finding that affects later slices: Clau
 ## Evidence pointers
 
 `docs/specs/reports/context-budget-phase0-results.md` (sections 1–12, with the run times and machine for each number).
+- Release-note fragment added.
