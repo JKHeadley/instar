@@ -12040,11 +12040,25 @@ Rule: I do not state that work landed inside another agent's state unless I have
       !content.includes('One-tap repair setting (Accounts page)')
     ) {
       const oneClickEnd = 'an unreachable peer is shown honestly and suppresses competing actions until truth returns.';
-      const oneTapBullet = "- **One-tap repair setting (Accounts page)** \u2014 the console Accounts page has an **Automatic sign-in repair** section (direct link: the dashboard URL + `#/capacity/accounts?s=auto-repair`). Each machine's row shows its setting in plain words, the exact accounts its list will hold, accounts not covered yet, and which accounts will still ask and why. After one PIN unlock, **Turn on for ticked machines** sets the operator's own machine to repair without asking and refreshes the account list of any other machine already set that way; **Switch ticked machines back to asking first** undoes it; **Finish restarting** re-queues a restart that did not happen. A machine set to \"asks you first\", watching only, or off is never escalated from another machine. It reads `GET /subscription-relogin?scope=pool` (`pool.configs`) and writes through `POST /subscription-relogin/configure-pool` (recent dashboard unlock only) \u2192 a signed, single-use mandate \u2192 `POST /subscription-relogin/configure-with-mandate` on each target. **When to use** (PROACTIVE): the user wants sign-in repair on everywhere, or an account was added and its machine's row says it isn't covered \u2192 send the direct link to the section. Never call the configure routes yourself; they need the operator's unlock.";
+      const oneTapBullet = "- **One-tap repair setting (Accounts page)** \u2014 the console Accounts page has an **Automatic sign-in repair** section (direct link: the dashboard URL + `#/capacity/accounts?s=auto-repair`). Each machine's row shows its setting in plain words, the exact accounts its list will hold, accounts not covered yet, and which accounts will still ask and why. After one PIN unlock, **Turn on for ticked machines** sets every ticked machine (the one showing the dashboard or any other paired machine of the agent) to repair without asking over that machine's own accounts, and on a machine already set that way only refreshes the list and keeps its waits; **Switch ticked machines back to asking first** undoes it; **Finish restarting** re-queues a restart that did not happen. Any machine's dashboard can do this for every paired machine (operator rule 2026-11-10): the operator's recent PIN unlock rides in the signed single-use mandate; the target still refuses an account it does not hold, a stale read, or a mandate without that unlock. It reads `GET /subscription-relogin?scope=pool` (`pool.configs`) and writes through `POST /subscription-relogin/configure-pool` (recent dashboard unlock only) \u2192 a signed, single-use mandate \u2192 `POST /subscription-relogin/configure-with-mandate` on each target. **When to use** (PROACTIVE): the user wants sign-in repair on everywhere, or an account was added and its machine's row says it isn't covered \u2192 send the direct link to the section. Never call the configure routes yourself; they need the operator's unlock.";
       if (content.includes(oneClickEnd)) {
         content = content.replace(oneClickEnd, oneClickEnd + '\n' + oneTapBullet);
         patched = true;
         result.upgraded.push('CLAUDE.md: added one-tap repair setting awareness');
+      }
+    }
+    // Operator rule 2026-11-10 (any dashboard, any machine): reword the installed one-tap bullet,
+    // which said another machine could never raise a machine's repair setting. Content-sniffed and
+    // idempotent: each old sentence is replaced only while it is still present.
+    {
+      const oldTurnOn = "sets the operator's own machine to repair without asking and refreshes the account list of any other machine already set that way";
+      const newTurnOn = "sets every ticked machine (the one showing the dashboard or any other paired machine of the agent) to repair without asking over that machine's own accounts, and on a machine already set that way only refreshes the list and keeps its waits";
+      const oldNever = 'A machine set to "asks you first", watching only, or off is never escalated from another machine.';
+      const newAny = "Any machine's dashboard can do this for every paired machine (operator rule 2026-11-10): the operator's recent PIN unlock rides in the signed single-use mandate; the target still refuses an account it does not hold, a stale read, or a mandate without that unlock.";
+      if (content.includes(oldTurnOn) || content.includes(oldNever)) {
+        content = content.replace(oldTurnOn, newTurnOn).replace(oldNever, newAny);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: one-tap repair setting now works for every machine from any dashboard');
       }
     }
     // CMT-1541: approval reminder + unreachable-machine notice awareness, content-sniffed.

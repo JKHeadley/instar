@@ -179,7 +179,7 @@ function autoRepairSection(model, refresh) {
   if (!model.ok || model.rows.length === 0) return null;
   const section = el('section', { class: 'page-sections', id: 'sec-auto-repair' },
     el('h2', { class: 'eyebrow', text: 'Automatic sign-in repair' }),
-    el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. A machine whose setting is off, watching only, or “asks you first” has no tick box: only that machine can switch itself on, from its own dashboard, because another machine is not allowed to raise it.' }));
+    el('p', { class: 'row-sub', text: 'When an account gets signed out, the agent signs it back in by itself on the machines ticked here. You can switch any of this agent’s machines on or back to asking first from this page, whichever machine is showing it.' }));
   const held = () => { const changed = [...autoRepairTicks.keys()].length > 0; if (changed) section.setAttribute('data-interaction-open', '1'); else section.removeAttribute('data-interaction-open'); };
   const lastResult = (id) => autoRepairResults && autoRepairResults.results.find((r) => r.machineId === id);
   const rows = el('div', { class: 'rows' }, model.rows.map((row) => {
@@ -201,7 +201,7 @@ function autoRepairSection(model, refresh) {
     if (row.uncovered.length && row.mode === 'unattended') lines.push(`${row.uncovered.length} account${row.uncovered.length === 1 ? '' : 's'} on this machine ${row.uncovered.length === 1 ? 'isn’t' : 'aren’t'} covered yet`);
     if (row.stillAsk.length) lines.push(`${row.stillAsk.length} of ${row.stillAskTotal} will still ask: ${[...new Set(row.stillAsk)].join('; ')}`);
     if (row.waitsLine) lines.push(row.waitsLine);
-    if (row.self && row.mode !== 'unattended' && row.canTurnOn) lines.push('Turning this on: repairs run without asking, including accounts never repaired on this machine.' + (row.minimums[0] || row.minimums[1] ? ` It also removes the wait of ${row.minimums[0]} repairs / ${row.minimums[1]} days.` : ''));
+    if (row.mode !== 'unattended' && row.canTurnOn) lines.push((row.mode === 'off' || row.mode === 'observe' ? 'Turning this on switches repair on here (it is ' + (row.mode === 'off' ? 'off' : 'only watching') + ' now). ' : '') + 'Repairs run without asking, including accounts never repaired on this machine.' + (row.minimums[0] || row.minimums[1] ? ` It also removes the wait of ${row.minimums[0]} repairs / ${row.minimums[1]} days.` : ''));
     if (row.blockedWhy) lines.push(row.blockedWhy);
     const prior = lastResult(row.machineId);
     if (prior) {

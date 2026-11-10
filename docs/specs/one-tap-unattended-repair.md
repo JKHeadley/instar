@@ -11,6 +11,8 @@ depends-on:
 approved: true
 approved-by: "Justin (operator) directed this build on 2026-11-07 in topic 33890 ('All machines should use all accounts ... auto login and sign and repair functional. Yes, go'), relayed to the building session by echo-subscription-management; under his standing direction (2026-10-22) that only constitution changes need his separate sign-off. No constitution file is touched."
 review-convergence: "2026-11-08T09:22:55.908Z"
+amended: "2026-11-10"
+amendment-directed-by: "Justin (operator), 2026-11-10 11:15 PST, topic 33890, verbatim: 'This is an Instar failure. A user should be able to take ALL actions for an agent on the dashboard, regardless of which machine is serving/driving that dashboard'. See the section Amendment 2026-11-10."
 review-iterations: 6
 review-completed-at: "2026-11-08T09:22:55.908Z"
 review-report: "docs/specs/reports/one-tap-unattended-repair-convergence.md"
@@ -64,6 +66,73 @@ that foundation; the gaps are filed as their own feedback (see Left behind). Wha
 does do is bound what a rogue or buggy signer can achieve (target-side identity check,
 compare-and-set, closed config set, provenance audit), so a forged mandate cannot widen the
 allow-list beyond the target's own verified accounts or silently rewrite an unrelated setting.
+
+## Amendment 2026-11-10: any dashboard, any machine
+
+**The operator rule.** Justin, 2026-11-10 11:15 PST, topic 33890, verbatim: "This is an Instar
+failure. A user should be able to take ALL actions for an agent on the dashboard, regardless of
+which machine is serving/driving that dashboard". The original design (below, §3 step 4 and §6)
+let another machine only refresh the list of a machine already set to "without asking"; a machine
+that was off, watch-only or "asks you first" could be raised only from its own dashboard. That
+made an action available on one dashboard and missing on another, which the rule forbids.
+
+**What changes.** A PIN-unlocked operator on any machine's dashboard can switch any paired machine
+of the agent to "repairs without asking" (from off, watch-only or "asks you first") and back to
+"asks you first", through the same `configure-pool` → signed single-use mandate →
+`configure-with-mandate` path. Every readable row with accounts gets a tick box. Turning a machine
+on, wherever it is, sets no waits (0/0), exactly as turning on the machine you are on always did; a
+machine already set to "without asking" keeps its waits and only gets its list refreshed.
+
+**Why the carried PIN unlock is sufficient authority.** The original rationale (§3 step 4) already
+established that Instar has one operator principal per agent: the dashboard PIN is agent-wide, so
+the person unlocked on any dashboard is the same person who would unlock the target's own
+dashboard. The only thing the restriction protected was a per-machine *mode* choice, and the person
+who made that choice is the same principal now making a new one, deliberately, by ticking that
+machine's row (rows other than already-unattended ones start unticked). The round-6 objection to a
+"confirm on that machine" step applies with more force to the restriction itself: other machines'
+dashboards are not reachable from the operator's phone, so it blocked the operator while guarding
+nothing the agent-wide PIN did not already allow. The authority is therefore the operator's recent
+PIN unlock on the issuing dashboard, and it is made explicit and checkable on the target: the
+fronting route issues the mandate only after `verifyDashboardOperatorSession` passes, writes
+`author: 'dashboard-pin-operator'`, and binds `operatorUnlock: 'dashboard-pin-session'` into the
+authority's bounds. Both fields are inside the canonical bytes the R4a issuance signature covers,
+so they cannot be added or altered in transit. The target raises a machine only when both are
+present (`readConfigureBounds` → `operatorUnlockCarried`); a mandate without them (an older issuing
+machine, or anything not issued by the unlocked route) can still refresh a list on a machine
+already "without asking", as before, but is refused `403 operator-unlock-missing` for a raise.
+This is the same strength as every other PIN-gated action in the subsystem (see "Honest scope of
+the authority": not a cryptographic barrier against the agent itself); it adds no new trust
+assumption, it removes a restriction that rested on a per-machine owner the system does not have.
+
+**What still blocks.** Unchanged and enforced on the target for every remote request:
+
+- an unpaired or unreachable machine: no mandate is issued (`target-unreachable`), and an
+  unregistered sender's delivery is refused before any signature check;
+- a stale read: compare-and-set on `expectedRevision` (`stale-config`);
+- an identity that is not one of the target's own verified pool emails
+  (`identity-not-on-this-machine`), or an unreadable pool (`pool-unreadable`);
+- a mandate that is expired, already used, for another machine, or whose digest does not match the
+  exact config (`not-authorized` / `config-mismatch`);
+- a raise that tries to set waits (`invalid-config`), or any request to disable repair or set
+  watch-only (closed set, `invalid-config`);
+- a raise without the carried unlock (`operator-unlock-missing`).
+
+Audit rows on both sides: the target's `logs/subscription-relogin-config.jsonl` line now also
+records `previousMode` and the carried `operatorUnlock`; the fronting machine appends an
+`operator-configure-issued` line per peer target (target, mandate id, requested mode, outcome).
+Supervised restart, minimum-evidence fields and nonce single use are unchanged.
+
+**Mixed versions.** A target on an older Instar still answers a raise with
+`owner-must-enable-here`; the card reads it as "that machine needs an Instar update before it can be
+switched on from here". A new target answering a raise from an older fronting machine says
+`operator-unlock-missing`, read as "the machine you tapped on needs an Instar update".
+
+**Where the original text below is superseded:** the §2 "This machine" difference for
+`unattended` (remote now follows the same waits rule), the remote clause of §3 step 4 and its
+consent paragraph, the §6 tick rule and the `owner-must-enable-here` row of the result table, the
+"Which machines change" and "Remote without asking only on a machine already unattended" rows of
+Decision points touched, the per-machine-consent sentence of Multi-machine posture, and the
+`owner-must-enable-here` items in Testing and Maturation. The rest of the design stands.
 
 ## Proposed design
 
