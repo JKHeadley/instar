@@ -11,9 +11,11 @@
  * `unknown` until ownership records are consulted. Every one of those reads
  * as a named `fold-skipped` reason, never as a fold.
  */
-import { FoldCoordinator, FoldRecordStore, type FoldEvent, type FoldPreconditions } from './FoldCoordinator.js';
+import path from 'node:path';
+import { FoldCoordinator, FoldRecordStore, TERMINAL_STATES, type FoldEvent, type FoldPreconditions } from './FoldCoordinator.js';
+import { FoldHoldStore } from './FoldHoldStore.js';
 import { defaultFoldCarriers } from './foldCarriers.js';
-import { createFoldLeaseLockForAgent } from '../core/foldLeaseFactory.js';
+import { createFoldLeaseLockForAgent, FOLD_LOCK_TTL_CEILING_MS } from '../core/foldLeaseFactory.js';
 
 export interface FoldBootDeps {
   stateDir: string;
@@ -61,4 +63,39 @@ export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordi
     ...(d.onEvent ? { onEvent: d.onEvent } : {}),
   });
   return { coordinator, holderId };
+}
+
+/**
+ * The egress fold hold, built the way the server builds it (§10): its record
+ * reads go to the same fold-record store the coordinator writes, its refusals
+ * are audited, and its known-holds set is rebuilt from disk. Register its
+ * carrier on the coordinator BEFORE the boot sweep.
+ */
+export function buildFoldHolds(d: {
+  stateDir: string;
+  onUnreadable?: (e: { topicKey: string; foldId?: string; error?: string }) => void;
+  /** An expired hold whose fold record is missing or torn is still refusing sends. */
+  onStaleUnresolved?: (e: { topicKey: string; foldId?: string }) => void;
+}): FoldHoldStore {
+  const records = new FoldRecordStore(d.stateDir);
+  const staleReported = new Set<string>();
+  const holds = new FoldHoldStore({
+    stateDir: d.stateDir,
+    ttlCeilingMs: FOLD_LOCK_TTL_CEILING_MS,
+    recordOpen: (topicKey, foldId) => {
+      const r = records.get(topicKey, foldId);
+      return r ? !TERMINAL_STATES.has(r.state) : null;
+    },
+    auditFile: path.join(d.stateDir, 'state', 'context-layers', '_fold-hold-audit.jsonl'),
+    ...(d.onUnreadable || d.onStaleUnresolved ? { onAudit: (e) => {
+      if (e.type === 'fold-hold-unreadable') d.onUnreadable?.(e);
+      else if (e.type === 'fold-hold-stale-unresolved') {
+        // Once per fold per process: every refused send would otherwise report again.
+        const k = `${e.topicKey}/${e.foldId ?? ''}`;
+        if (!staleReported.has(k)) { staleReported.add(k); d.onStaleUnresolved?.(e); }
+      }
+    } } : {}),
+  });
+  holds.rebuild();
+  return holds;
 }
