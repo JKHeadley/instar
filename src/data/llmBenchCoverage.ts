@@ -41,6 +41,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   AttributionJudge: { pending: 'wave-3' },
+  // chief-of-staff-topic.md §2.5: the per-project verdict judge (stalled / moving / claims-done / unknown over a
+  // bounded evidence bundle). Graded in production by its decision-quality seam (DP_COS_PROJECT_VERDICT:
+  // progress observed after a restart) until a bench battery lands.
+  ChiefOfStaffLoop: { pending: 'wave-3' },
   // CompletionEvaluator has TWO judged surfaces; both benched.
   CompletionEvaluator: { task: 'completion-judge+p13-stop-judge' },
   ExternalOperationGate: { task: 'external-op-gate' },
@@ -194,6 +198,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   StallTriageNurse: true,
   CommitmentSentinel: true,
   PresenceProxy: true,
+  ChiefOfStaffLoop: true, // judges a project's session tail + owner/agent messages + linked-work evidence
   MessageSentinel: true,
   ProjectDriftChecker: true,
   TemporalCoherenceChecker: true,
@@ -854,6 +859,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   StallTriageNurse: exposed(EXPOSED_MODEL), // session output
   CommitmentSentinel: exposed(EXPOSED_USER_MODEL), // both sides of a conversation
   PresenceProxy: exposed(EXPOSED_MODEL), // session-stall over session output
+  ChiefOfStaffLoop: exposed(EXPOSED_ALL), // owner + agent messages, session tail, gh/page evidence
   MessageSentinel: exposed(EXPOSED_USER), // inbound user message (R8 input-classifier — must stay exposed)
   ProjectDriftChecker: exposed(EXPOSED_MODEL_TOOL), // session work + files
   TemporalCoherenceChecker: exposed(EXPOSED_USER_MODEL),
