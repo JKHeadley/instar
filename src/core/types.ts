@@ -4092,6 +4092,11 @@ export interface InstarConfig {
        * `enabled` omitted ⇒ true wherever native conversations are on; `false` turns unread off alone. Read live.
        */
       unread?: { enabled?: boolean };
+      /**
+       * Pinned messages in conversations (docs/specs/conversation-pinned-messages.md). `enabled`
+       * omitted ⇒ true wherever native conversations are on; `false` turns pins off alone. Read live.
+       */
+      pins?: { enabled?: boolean };
     };
     /**
      * Dashboard browsers as signed devices (docs/specs/dashboard-conversations-browser-device.md).

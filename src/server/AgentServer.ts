@@ -209,6 +209,7 @@ import { ConversationUnreadService, type TelegramRowLike } from '../core/Convers
 import type { ConversationReadMarkerStore } from '../core/ConversationReadMarkers.js';
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
+import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
 import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
@@ -6934,6 +6935,30 @@ export class AgentServer {
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
         }) : undefined,
       }));
+      // Pinned messages (docs/specs/conversation-pinned-messages.md): pins live in the app conversation
+      // store; Telegram pins are also made in Telegram by the machine serving it, Slack pins in Slack.
+      const pinTelegram = options.telegram ? {
+        exists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId),
+        serving: () => this.mobilePairing!.holdsLease(),
+        textOf: (topicId: number, messageId: string) => {
+          const row = options.telegram!.getTopicHistory(topicId, 500).find((m) => String(m.messageId) === messageId);
+          return row && typeof row.text === 'string' ? deviceTextForRow(row.text) : null;
+        },
+        pin: (topicId: number, messageId: number, pinned: boolean) => options.telegram!.pinTopicMessage(topicId, messageId, pinned),
+      } : null;
+      this.app.use(createMobilePinRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: () => this.appConversations?.deps.machineId() ?? 'local',
+        telegram: pinTelegram ? () => pinTelegram : null,
+        slack: slackBridge ? () => slackBridge : null,
+      }));
+      // A pin someone makes inside Telegram is recorded here (only the polling machine receives it; the event replicates).
+      if (options.telegram && this.appConversations) {
+        const app = this.appConversations;
+        options.telegram.onTopicMessagePinned = (p) => {
+          recordTelegramPin({ config: options.config, service: app, textOf: pinTelegram?.textOf, report: (d) => app.deps.reportDegradation?.('AppConversations.telegramPin', d) }, p);
+        };
+      }
       const slackRegistry = options.slack ? routeCtx.conversationRegistry ?? null : null;
       this.app.use(createMobileMediaRouter({
         pairing: this.mobilePairing, service: this.appConversations, mediaEnabled: isMobileMediaEnabled(options.config),

@@ -62,6 +62,7 @@ import type { RouteContext } from './routes.js';
 import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { deviceTextForRow } from '../core/appPlatformMedia.js';
+import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { ConversationUnreadService, type Reader, type UnreadFields } from '../core/ConversationUnreadService.js';
 import { isMessagePosition, isReaderKey, CATCH_UP_PAGE } from '../core/ConversationReadMarkers.js';
 import {
@@ -535,6 +536,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
 
   /** The unread service when it is on, else null. */
   const unreadOn = (): ConversationUnreadService | null => (deps.unread && deps.unread.enabled() ? deps.unread : null);
+  const pinsOn = (): boolean => isConversationPinsEnabled(deps.config);
   /** The reader of a list or history request: the phone's person, or the agent's forwarded `reader=` key (§3.5). */
   const readerOf = (req: Request): Reader | null => {
     const u = unreadOn();
@@ -1035,7 +1037,9 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     // Unread (§3.5): a device reader's effective position, for the "Unread messages" divider.
     const unreadReader = principalOf(req).kind === 'device' ? readerOf(req) : null;
     const readUpTo = unreadReader && unreadOn() ? { readUpTo: unreadOn()!.readUpTo(unreadReader, `app:${key.toLowerCase()}`) } : {};
-    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo }); return; }
+    // Pinned messages (conversation-pinned-messages) ride on every history answer, so a poll sees new pins.
+    const pins = pinsOn() && live ? { pins: pinRowsFor(svc!.store, key, (id) => deps.pairing.mayReadMessageId(reader, key, id)) } : {};
+    if (!pool) { res.json({ conversationKey: key, messages: rows, nextBefore: page.nextBefore, ...readUpTo, ...pins }); return; }
     // Pool read (§4.5/§4.8): each machine's page before the same boundary, merged by eventId
     // (this machine's row wins). A row only a peer holds is not yet replicated here, so this
     // machine cannot check it: `originVerified: "unknown"`, never the peer's verdict. Never
@@ -1069,7 +1073,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     const oldest = pageRows[pageRows.length - 1];
     res.json({
       conversationKey: key, messages: pageRows.reverse(),
-      nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed }, ...readUpTo,
+      nextBefore: more && oldest ? `${String(oldest.at)},${String(oldest.eventId)}` : null, pool: { failed: peers.failed }, ...readUpTo, ...pins,
     });
   });
 
@@ -1104,10 +1108,13 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
     res.json({
       conversationKey: key,
       events: page.events.filter((e) => {
-        // A message, and anything about one, such as its transcript.
-        const about = (e as { messageId?: unknown }).messageId;
+        // A message, and anything about one, such as its transcript or a pin (conversation-pinned-messages).
+        if (e.kind === 'pin' && !pinsOn()) return false;
+        const about = e.kind === 'pin' ? e.pinnedMessageId : (e as { messageId?: unknown }).messageId;
         // Text about a message that has not reached this machine waits for it.
-        if (typeof about !== 'string' || (e.kind !== 'transcript' && !svc!.store.hasMessage(about))) return true;
+        if (typeof about !== 'string' || (e.kind !== 'transcript' && e.kind !== 'pin' && !svc!.store.hasMessage(about))) return true;
+        // A pin of a message not held in this conversation here cannot be checked, so it waits for the message.
+        if (e.kind === 'pin' && !svc!.store.getMessageEvent(key, about)) return false;
         return deps.pairing.mayReadMessageId(devicePersonOf(req), key, about);
       }).map((e) => {
         const { origin: _origin, receipt: _receipt, ingestSeq: _seq, ...rest } = e as typeof e & { origin?: DeviceSignedOrigin; receipt?: MachineReceipt };

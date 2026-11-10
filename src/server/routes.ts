@@ -33,6 +33,7 @@ import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
 import { consolePageUrl, createOperatorLinkOriginResolver, originOrNull } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
+import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
@@ -21392,10 +21393,12 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const reader = unread.resolveReader({ person: ctx.mobilePairingService ? devicePersonOf(req) : null, viaDevice: true });
       return reader ? { readUpTo: unread.readUpTo(reader, `telegram:${topicId}`) } : {};
     };
+    // Pinned messages (conversation-pinned-messages): the agent-wide pin list rides on every answer.
+    const pinsField = (): Record<string, unknown> => (ctx.appConversations && isConversationPinsEnabled(ctx.config) ? { pins: pinRowsFor(ctx.appConversations.store, `telegram:${topicId}`) } : {});
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, ...readUpToField() });
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, ...readUpToField(), ...pinsField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -21454,7 +21457,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField() });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -29558,6 +29561,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const forwardedTopicName = typeof req.body?.topicName === 'string' ? req.body.topicName : null;
     if (forwardedTopicName && !trust && ingressDecision.senderTrusted && Number.isSafeInteger(Number(topicId))) {
       ctx.telegram?.captureTopicName?.(Number(topicId), forwardedTopicName, req.body?.topicRenamed === true);
+    }
+    // A pin made in Telegram, read by the lifeline (conversation-pinned-messages). Only a lifeline-proven
+    // sender; the adapter checks the person who pinned is authorized here.
+    if (topicId && !text && req.body?.pinOnly === true) {
+      const handed = !trust && ingressDecision.senderTrusted
+        ? ctx.telegram?.handleForwardedPin?.({ topicId: Number(topicId), messageId: Number(req.body.pinnedMessageId), serviceMessageId: Number(req.body.pinServiceMessageId), fromUserId: Number(req.body.fromUserId), byName: typeof req.body.fromFirstName === 'string' ? req.body.fromFirstName : '' }) ?? false
+        : false;
+      res.json({ ok: true, pinOnly: true, recorded: handed });
+      return;
     }
     if (topicId && !text && forwardedTopicName && req.body?.nameOnly === true) {
       res.json({ ok: true, nameOnly: true });

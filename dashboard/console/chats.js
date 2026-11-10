@@ -19,6 +19,7 @@ import {
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
   setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
+  pinsFrom, pinBarText, nextPinIndex, pinIdOf, pinsPathOf, pinOutcomeWords,
 } from './chats-model.js';
 import { chiefOfStaffNeedRows } from './needs-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
@@ -470,7 +471,7 @@ class ChatsPage {
 
   openView(ref) {
     const row = this.rows.find((r) => r.key === refString(ref));
-    const v = { ref, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0 };
+    const v = { ref, live: true, list: [], nextBefore: null, oldestTs: null, media: new Map(), mediaQueue: [], mediaInFlight: 0, slackKey: null, abort: this.abortable(), sending: 0, pins: [], pinIndex: 0 };
     this.view = v;
     const title = el('h2', { class: 'chat-title', text: row ? row.title : (ref.kind === 'telegram' ? `Topic ${ref.id}` : 'Conversation') });
     // Opened from a link before the list arrived: the real title is filled in when the list paints.
@@ -490,9 +491,10 @@ class ChatsPage {
     v.paused = el('p', { class: 'card-line chat-muted chat-paused', hidden: true, text: 'Live updates paused here — this conversation refreshes when you click into this window.' });
     v.statusLine = el('p', { class: 'card-line chat-muted', role: 'status' });
     v.nodes = new Map();
+    v.pinBar = this.pinBar(v);
     setKids(this.viewEl, el('div', { class: 'chat-open' },
       el('div', { class: 'chat-bar' }, back, el('div', { class: 'chat-titles' }, title, el('p', { class: 'chat-sub', text: row ? row.kindLabel : ({ app: 'App', telegram: 'Telegram', slack: 'Slack' })[ref.kind] })), menu),
-      v.paused, v.earlier, v.msgs, this.composer(v), v.statusLine));
+      v.pinBar, v.paused, v.earlier, v.msgs, this.composer(v), v.statusLine));
     this.pageEl.classList.add('has-open');
     this.paintList();
     this.loadFirst(v);
@@ -532,6 +534,8 @@ class ChatsPage {
   applyHistory(v, data, { replace = false, earlier = false } = {}) {
     if (!data) return;
     if (v.ref.kind === 'slack' && typeof data.conversationKey === 'string') v.slackKey = data.conversationKey;
+    const pins = pinsFrom(data);
+    if (pins) this.setPins(v, pins);
     const rows = Array.isArray(data.messages) ? data.messages : [];
     const next = bubbles(v.ref.kind, rows, { own: this.ownCheck() });
     if (earlier || replace) {
@@ -588,7 +592,7 @@ class ChatsPage {
     for (const [id, n] of v.nodes) if (!want.has(id)) { n.remove(); v.nodes.delete(id); }
     let prev = null;
     for (const b of v.list) {
-      const sig = JSON.stringify([b.text, b.delivery && b.delivery.label, b.mark && b.mark.label, b.attachments.length, b.who]);
+      const sig = JSON.stringify([b.text, b.delivery && b.delivery.label, b.mark && b.mark.label, b.attachments.length, b.who, this.isPinned(v, b)]);
       let n = v.nodes.get(b.id);
       if (!n || n.dataset.sig !== sig) {
         const fresh = this.bubbleNode(v, b);
@@ -613,11 +617,135 @@ class ChatsPage {
     if (b.at) meta.push(el('span', { class: 'chat-time', text: shortTime(b.at) }));
     if (b.delivery) meta.push(el('span', { class: `chat-delivery tone-${b.delivery.tone}`, text: b.delivery.label }));
     if (b.mark) meta.push(el('span', { class: `chat-mark tone-${b.mark.tone}`, text: b.mark.label }));
-    return el('div', { class: `chat-bubble chat-${b.side}`, 'data-id': b.id },
+    const pinId = this.canPin(v) ? pinIdOf(v.ref.kind, b) : null;
+    if (this.isPinned(v, b)) meta.push(el('span', { class: 'chat-pinned-mark', text: 'Pinned' }));
+    if (pinId) {
+      const more = el('button', { class: 'btn-quiet chat-msg-menu', type: 'button', text: '⋯', 'aria-label': 'Message options' });
+      more.addEventListener('click', () => this.messageMenu(v, pinId));
+      meta.push(more);
+    }
+    return el('div', { class: `chat-bubble chat-${b.side}`, 'data-id': b.id, ...(b.messageId ? { 'data-message-id': b.messageId } : {}) },
       b.who ? el('div', { class: 'chat-who', text: b.who }) : null,
       b.text ? el('div', { class: 'chat-text', text: b.text }) : null,
       b.attachments.length ? el('div', { class: 'chat-files' }, b.attachments.map((a) => this.attachmentNode(v, a))) : null,
       el('div', { class: 'chat-meta' }, meta));
+  }
+
+  // ── pinned messages (docs/specs/conversation-pinned-messages.md) ──
+  /** The bar under the title: the pin it shows (tap to jump, then the next), and the list of all pins. */
+  pinBar(v) {
+    const jump = el('button', { class: 'chat-pin-jump', type: 'button', 'aria-label': 'Go to pinned message' });
+    const all = el('button', { class: 'btn-quiet chat-pin-all', type: 'button', text: 'All pins' });
+    jump.addEventListener('click', () => this.onPinBar(v));
+    all.addEventListener('click', () => this.pinList(v));
+    const bar = el('div', { class: 'chat-pinbar', hidden: true }, jump, all);
+    v.pinJump = jump;
+    return bar;
+  }
+  setPins(v, pins) {
+    const before = JSON.stringify(v.pins.map((p) => p.messageId));
+    v.pins = pins;
+    if (v.pinIndex >= pins.length) v.pinIndex = 0;
+    const t = pinBarText(pins, v.pinIndex);
+    v.pinBar.hidden = !t;
+    if (t) {
+      setKids(v.pinJump, el('span', { class: 'chat-pin-label', text: t.count ? `${t.label} · ${t.count}` : t.label }), el('span', { class: 'chat-pin-preview', text: t.preview }));
+    }
+    // A bubble's "Pinned" mark follows the list.
+    if (before !== JSON.stringify(pins.map((p) => p.messageId))) this.paintBubbles(v);
+  }
+  isPinned(v, b) {
+    return Boolean(b && b.messageId && v.pins && v.pins.some((p) => p.messageId === b.messageId));
+  }
+  /** Pins change only where a message can be sent (a read-only Telegram view shows them but cannot change them). */
+  canPin(v) {
+    return !(v.ref.kind === 'telegram' && this.status && this.status.telegramSend === false);
+  }
+  pinsPath(v) {
+    const base = pinsPathOf(v.ref);
+    if (!base) return null;
+    return v.ref.kind === 'slack' ? `${base}?machine=${encodeURIComponent(this.slackMachine(v.ref) || '')}` : base;
+  }
+  async loadPins(v) {
+    const path = this.pinsPath(v);
+    if (!path || !v.live) return;
+    const r = await this.call('GET', path);
+    if (!v.live || r.gone || !r.ok) return;
+    const pins = pinsFrom(r.data);
+    if (pins) this.setPins(v, pins);
+  }
+  async onPinBar(v) {
+    const t = pinBarText(v.pins, v.pinIndex);
+    if (!t) return;
+    const found = await this.jumpTo(v, t.messageId);
+    if (!found) v.statusLine.textContent = 'That message is further back than the dashboard has loaded.';
+    v.pinIndex = nextPinIndex(v.pinIndex, v.pins.length);
+    this.setPins(v, v.pins);
+  }
+  /** Scroll to a message and flash it, loading up to 5 earlier pages to find it. */
+  async jumpTo(v, messageId) {
+    for (let i = 0; i <= 5 && v.live; i++) {
+      const b = v.list.find((x) => x.messageId === messageId);
+      const n = b ? v.nodes.get(b.id) : null;
+      if (n) {
+        if (typeof n.scrollIntoView === 'function') n.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        n.classList.add('chat-flash');
+        this.later(() => n.classList.remove('chat-flash'), 1600);
+        return true;
+      }
+      if (v.earlier.hidden || i === 5) return false;
+      await this.loadEarlier(v);
+    }
+    return false;
+  }
+  messageMenu(v, messageId) {
+    const pinned = v.pins.some((p) => p.messageId === messageId);
+    const err = el('p', { class: 'unlock-error', role: 'alert' });
+    const go = el('button', { class: 'btn-primary', type: 'button', text: pinned ? 'Unpin' : 'Pin' });
+    go.addEventListener('click', async () => {
+      go.disabled = true;
+      const words = await this.setPinned(v, messageId, !pinned);
+      go.disabled = false;
+      if (words === null) { closeSheet(); return; }
+      if (words.error) { err.textContent = words.text; return; }
+      closeSheet();
+      if (words.text) v.statusLine.textContent = words.text;
+    });
+    sheet({ title: 'Message' }, el('div', { class: 'pin-form' }, go, err));
+  }
+  /** Pin or unpin; answers null when the browser is gone, else the words to show (an error, or a platform refusal). */
+  async setPinned(v, messageId, pinned) {
+    const path = pinsPathOf(v.ref);
+    if (!path) return { error: true, text: 'That did not work. Try again.' };
+    const json = { messageId, pinned, requestId: newRequestId(this.device.clock.now()), ...(v.ref.kind === 'slack' ? { machine: this.slackMachine(v.ref) || '' } : {}) };
+    const r = await this.call('POST', path, { json });
+    if (r.gone) return null;
+    if (r.ok) { const pins = pinsFrom(r.data); if (pins && v.live) this.setPins(v, pins); }
+    return { error: !r.ok, text: pinOutcomeWords(r) };
+  }
+  pinList(v) {
+    const rows = v.pins.map((p) => {
+      const open = el('button', { class: 'chat-pin-row-open', type: 'button' }, el('span', { class: 'chat-pin-preview', text: p.preview || 'Pinned message' }),
+        el('span', { class: 'chat-pin-by', text: [p.who ? `Pinned by ${p.who}` : 'Pinned', p.fromTelegram ? 'in Telegram' : '', p.pinnedAt ? shortTime(p.pinnedAt) : ''].filter(Boolean).join(' · ') }));
+      open.addEventListener('click', async () => { closeSheet(); const ok = await this.jumpTo(v, p.messageId); if (!ok) v.statusLine.textContent = 'That message is further back than the dashboard has loaded.'; });
+      const kids = [open];
+      if (this.canPin(v)) {
+        const un = el('button', { class: 'btn-quiet chat-pin-unpin', type: 'button', text: 'Unpin' });
+        un.addEventListener('click', async () => {
+          un.disabled = true;
+          const words = await this.setPinned(v, p.messageId, false);
+          if (words === null) { closeSheet(); return; }
+          if (words.error) { un.disabled = false; v.statusLine.textContent = words.text; return; }
+          closeSheet();
+          if (words.text) v.statusLine.textContent = words.text;
+          if (v.pins.length) this.pinList(v);
+        });
+        kids.push(un);
+      }
+      return el('li', { class: 'chat-pin-row' }, kids);
+    });
+    sheet({ title: v.pins.length === 1 ? '1 pinned message' : `${v.pins.length} pinned messages` },
+      rows.length ? el('ul', { class: 'chat-pin-list' }, rows) : el('p', { class: 'confirm-text', text: 'Nothing is pinned here.' }));
   }
 
   async loadEarlier(v) {
@@ -1044,7 +1172,11 @@ class ChatsPage {
     if (m.mode === 'list') { this.applyList(m.data, false); return; }
     const v = this.view;
     if (!v || refString(v.ref) !== m.ref || !v.live) return;
-    if (m.mode === 'events') { const since = v.list.find((b) => !b.id.startsWith('local:'))?.at || null; this.setBubbles(v, applyEvents(v.list, m.data.events, { own: this.ownCheck(), since })); }
+    if (m.mode === 'events') {
+      const since = v.list.find((b) => !b.id.startsWith('local:'))?.at || null;
+      this.setBubbles(v, applyEvents(v.list, m.data.events, { own: this.ownCheck(), since }));
+      if (Array.isArray(m.data.events) && m.data.events.some((e) => e && e.kind === 'pin')) this.loadPins(v);
+    }
     else this.applyHistory(v, m.data);
   }
 
