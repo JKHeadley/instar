@@ -12673,7 +12673,11 @@ export function createRoutes(ctx: RouteContext): Router {
       peers: () => ctx.resolvePeerUrls?.() ?? [],
       peerUrlAllowlist: () => (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist,
     }, req.query.scope === 'pool' ? 'pool' : 'local');
-    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true });
+    // The same one-line-per-setting summary the owner's phone shows, so the agent can answer "is something
+    // off that team access needs?". Read-only: turning a setting on stays the owner's phone tap. null when
+    // this agent has no team router (no app pairing).
+    const switches = ctx.mobilePairingService?.teamSwitchesSummary;
+    res.json({ ...answer, privacyOn: ctx.sessionManager.memoryPrivacyStatus().enabled === true, teamSwitches: switches ? switches() : null });
   });
 
   // The owner's one-time repair (spec: "Owner recovery"). The token is the auth, the

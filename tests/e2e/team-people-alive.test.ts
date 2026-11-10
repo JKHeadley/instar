@@ -55,6 +55,9 @@ describe('team people is alive', () => {
     const before = await auth(request(app).get('/team/people'));
     expect(before.status).toBe(200);
     expect(before.body.count).toBe(1);
+    // The team settings summary rides the same read on the production boot path (memory privacy is off here).
+    expect(Array.isArray(before.body.teamSwitches)).toBe(true);
+    expect(before.body.teamSwitches.map((l: { setting: string }) => l.setting)).toContain('memory-privacy');
     expect(wiring.reachablePeople.warning()).toBeNull();
 
     const verdict = await wiring.tracker.onInbound({ senderKey: 'slack:U9', placeKey: 'slack:C1', placeKind: 'shared' } as never);

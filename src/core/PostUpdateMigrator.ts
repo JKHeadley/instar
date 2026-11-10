@@ -9995,9 +9995,30 @@ setTimeout(() => process.exit(0), 2000);
     }
 
     if (!content.includes('Registry First — team settings:')) {
-      content += '\n- **Registry First — team settings:** a team needs memory privacy and app conversations on every machine. `GET /mobile/team/context` → `teamSwitches` lists each setting that is off somewhere, with `offOn` (the machines) and one action for the whole agent; the owner turns it on with one Face ID tap in People (`POST /mobile/team/switches/turn-on`), which reaches every machine and restarts each one that changed. A machine is "gone" only when it stopped answering (`waitingOn`), never because a setting is off — never tell the owner to mark a live machine gone.\n';
+      content += '\n- **Registry First — team settings:** a team needs memory privacy and app conversations on every machine. `GET /team/people` → `teamSwitches` (my own token reads it; the owner\'s phone sees the same lines) lists each setting that is off somewhere, with `offOn` (the machines) and one action for the whole agent; the owner turns it on with one Face ID tap in People (`POST /mobile/team/switches/turn-on`), which reaches every machine and restarts each one that changed. A machine is "gone" only when it stopped answering (`waitingOn`), never because a setting is off — never tell the owner to mark a live machine gone.\n';
       patched = true;
       result.upgraded.push('CLAUDE.md: added team settings Registry First awareness');
+    }
+
+    // The team-settings lookup first pointed at GET /mobile/team/context, which answers only the owner's
+    // phone, so the agent's own token got 403 and it could not follow its own rule. Rewrite that one
+    // phrase on the installed team-settings line (bullet or table row) to the token-readable route.
+    {
+      const oldTeamSwitchRead = '`GET /mobile/team/context` → `teamSwitches` lists each setting that is off somewhere';
+      const newTeamSwitchRead = '`GET /team/people` → `teamSwitches` (my own token reads it; the owner\'s phone sees the same lines) lists each setting that is off somewhere';
+      const lines = content.split('\n');
+      let rewrote = false;
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes('Registry First — team settings:') && lines[i].includes(oldTeamSwitchRead)) {
+          lines[i] = lines[i].replace(oldTeamSwitchRead, newTeamSwitchRead);
+          rewrote = true;
+        }
+      }
+      if (rewrote) {
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: team settings lookup now reads GET /team/people');
+      }
     }
 
     if (!content.includes('Decision journal — principle is required:')) {

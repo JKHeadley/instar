@@ -1,5 +1,6 @@
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
+import type { TeamSwitchLine } from '../core/TeamSwitches.js';
 import type { TeamActionKind } from './mobilePermissionsRoutes.js';
 import { storageErrorResponse } from '../core/storageMachineName.js';
 import { verifiedInboundMirrorEnvelope, isQuietReceipt, QuietRecordedError } from '../messaging/NotificationSelectivityGate.js';
@@ -626,6 +627,12 @@ export class MobilePairingService {
 
   /** The exchange with peers; absent on an agent with no machine identity. */
   teamPuller: TeamAccessPuller | null = null;
+
+  /**
+   * Set by the team router: the read-only settings summary the owner's phone shows, one line per setting
+   * (team-switches-agent-wide). The agent reads it through GET /team/people; nothing here turns a setting on.
+   */
+  teamSwitchesSummary: (() => TeamSwitchLine[]) | null = null;
 
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
   teamActionRunner: ((kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<{ status: number; body: unknown }>) | null = null;
