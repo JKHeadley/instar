@@ -3,8 +3,8 @@ title: "Context Budget: Layered Summaries"
 slug: "context-budget-layered-summaries"
 author: "echo"
 created: "2026-11-09"
-revised: "2026-11-09 (v8 — spec-converge round 5 folded in; v4 round 1, v5 round 2, v6 round 3 + operator notes, v7 round 4)"
-status: "draft v8 (in review)"
+revised: "2026-11-09 (v9 — round 6 external findings folded in after the cap; v4 round 1, v5 round 2, v6 round 3 + operator notes, v7 round 4, v8 round 5)"
+status: "draft v9 (final review round complete)"
 approved: false
 commitment: "CMT-1536"
 requested-by: "Justin, topic 130742, 2026-11-09 14:01 PST; refined in topic 141133, 2026-11-09 14:12 PST"
@@ -41,9 +41,9 @@ lessons-engaged:
 review-convergence: null
 ---
 
-# Context Budget: Layered Summaries (v8)
+# Context Budget: Layered Summaries (v9)
 
-Status: **draft v8, in review (rounds 1 to 5 and the operator's notes folded in).** No code yet. Needs `/spec-converge` (with Fable
+Status: **draft v9. Six review rounds complete (the Tier-2 cap); the round-6 findings below were folded in after the cap and are so marked in the convergence report.** No code yet. Needs `/spec-converge` (with Fable
 5.2 as a reviewer) and Justin's read before any build.
 
 ## 0. What changed, and why
@@ -188,6 +188,19 @@ row and the sentinel as its grace actor; ledger blobs have liveness and
 re-emit rules; the prepared window holds inbound for the handoff's bound; the
 verification suite has a named runner and store. Appendix F lists every round-5
 finding with its disposition.
+
+**v8 → v9 (round 6, the cap).** The final round found nothing structural;
+its paragraph-sized items are folded in here and marked in the convergence
+report as fixed after the cap without a further round: probe turns may read
+only the packet in context and the mediated lookups (no file reads, so the
+on-disk checkpoint and archive cannot leak into a "retained" answer); the
+canary's health is judged over a **verification epoch** that restarts after a
+remediation, so a once-broken hook can become healthy again; quarantine
+exhaustion releases containment only after **verified termination** of the
+candidate, otherwise quarantine stays and the operator is told; a shadow fold
+runs its probe under a non-terminal **`shadow-probing`** child state; the
+cache-blind estimator prices costs at the uncached rate; and the wording
+residue the round listed is cleaned. Appendix G lists round 6.
 
 The v1 findings about today's failures (section 3) stand; they were re-verified
 on a second machine, and the round-1 lessons-aware reviewer independently
@@ -636,18 +649,18 @@ estimates the **benefit of folding now** as:
 > The estimator is an input, named as such; a fold is worth asking for when
 > expected remaining turns exceed break-even by the margin (default 1.5×). On
 > an engine with no cache accounting (9.6) the estimator is **cache-blind and
-> conservative**: every context token is priced at the cache-read rate, so the
-> saving is a lower bound and the fold is never over-sold; `unknown` is
-> reserved for poller lag, never for a missing cost model.
+> conservative on both sides**: the saving is priced at the cache-read rate (a
+> lower bound) and every cost term (handoff turn, send-back, packet write,
+> probe turns) at the uncached-input rate (an upper bound), so the fold is
+> never over-sold; shadow handoffs on such an engine use the same estimator;
+> `unknown` is reserved for poller lag, never for a missing cost model.
 
 **The handoff is written while the cache is warm** (right after a reply, or at
 idle shortly before the cache TTL expires). **Default: the lock is taken before
 the handoff**, so the handoff, the stage, the replace and the probe run under
 one lock, one hold and one marker, and the packet's cache write is paid once.
 The `prepared` state (9.3 step 0) exists for the replace-later variant and for
-shadow handoffs; in it the fold hold and the marker are written **at prepare**,
-keyed by `foldId` with a short expiry, and released when the stage is
-invalidated, before the user's message is answered. The alternative,
+shadow handoffs; in it the fold hold and the marker are written **at prepare**, keyed by `foldId` and released by the record's transition when the stage is invalidated, before the user's message is answered. The alternative,
 **replace at the next clean stop after staging**, keeps the staged packet only
 while no transcript entry has been added past the recorded last entry id (a
 user message both invalidates the stage and is answered normally; the stage is
@@ -984,10 +997,14 @@ action on **throwaway sessions only**, never on a live operator topic. An
 engine whose detection is only `synthesized` (9.6) is counted but never healed
 by injection. The **context epoch** is a deterministic transcript key: the
 compact-boundary entry's id after a compaction, the `foldId` after a fold, the
-spawn id otherwise; every writer of the seeded marker derives it the same way. States, defined on **detections**: `n/a: switch-off`;
-`uninitialized` (switch on, zero detected compactions since it turned on);
-`diverged` (≥ 1 detected compaction, fewer than all with both artifacts);
-`healthy` (≥ N detected, default 3, all with both artifacts). Phase 0 runs a
+spawn id otherwise; every writer of the seeded marker derives it the same way. States, defined on **detections within the current verification epoch**
+(the epoch restarts whenever the switch turns on or a remediation completes,
+so a historical failure is preserved in the audit but never blocks recovery):
+`n/a: switch-off`; `uninitialized` (switch on, zero detected compactions in the
+epoch); `diverged` (≥ 1 detected compaction in the epoch, fewer than all with
+both artifacts); `healthy` (≥ N detected in the epoch, default 3, all with both
+artifacts, at least one of them a fresh positive control after the last
+remediation). Phase 0 runs a
 **synthetic positive control** on the test and dev agents (a server-pressed
 compaction through the adapter's control-command path), so `healthy` is
 reachable in hours and a hook that has never worked is caught in Phase 0, not
@@ -1079,8 +1096,8 @@ ownership record** (`ownerOf(topic) === self`; on a single-machine agent that
 is always this machine and no pool record is consulted); a non-owner machine
 holding a replica of the record observes and records, never acts; lists (discarded entries, lock-window
 entry bounds) live in sidecar records keyed by `foldId`. States: `prepared`,
-`locked`, `snapshotted`, `staged`, `replacing`, `probing`, `committed`,
-`rolled-back`, `quarantined`, `aborted`. **Every carrier the fold touches is
+`shadow-probing`, `locked`, `snapshotted`, `staged`, `replacing`, `probing`,
+`committed`, `rolled-back`, `quarantined`, `aborted`. **Every carrier the fold touches is
 keyed by `foldId`**: the staged packet, the fold hold, the per-session marker
 files (the live session's, the rung-2 candidate's and the shadow answerer's,
 each written at that session's spawn with its own `INSTAR_SESSION_ID`), the
@@ -1092,27 +1109,31 @@ own while the fold record is non-terminal, and all are released by the
 terminal transition. A **boot sweep for folds** (`recoverPendingFolds`, run by the
 sentinel on the owner) executes on the same unconditional synchronous path as
 the inbound sweep, **before it**, and resolves every non-terminal record and
-every orphan carrier whose `foldId` has no record: at or before `staged` ⇒
-discard staged writes, delete the packet, release lock, hold and marker
-(synchronously); `replacing`, `probing` or `quarantined` ⇒ mark `quarantined`
+every orphan carrier whose `foldId` has no record: at or before `staged`, and
+`shadow-probing`, ⇒ discard staged writes, delete the packet, release lock,
+hold and markers (synchronously); `replacing`, `probing` or `quarantined` ⇒ mark `quarantined`
 synchronously and hand step 8 to the sentinel's asynchronous path. A record
 restored from backup in a non-terminal state is swept to `aborted`. Inject records
 carrying a `foldId` are never redelivered by the generic sweep; an orphan is
 discarded **loudly** (recorded, counted).
 
 0. **Prepare** (replace-later variant and shadow handoffs only; the default
-   path starts at step 1). Preconditions: the live inbound queue (as in step 1)
-   and no other non-terminal record for the topic. The fold hold and the
+   path starts at step 1). Preconditions: the same as step 1's (owner, sentinel
+   heartbeat, row source, live inbound queue) except the exclusive-session and
+   layer-kind checks, and no other non-terminal record for the topic. The fold hold and the
    per-session marker are written **first**, keyed by `foldId`; inbound is held
    with `hold: fold` **for the handoff step's wall-clock bound only**; the
    handoff turn runs under the lock-window suppression (10); the packet is
    built and verified (step 4's rules) and staged under the `foldId` with the
    transcript's last entry id. At handoff-turn end the coordinator records the
-   transition: for a shadow handoff the record goes `aborted`-by-design and the
-   hold, marker and inbound are released at once (the throwaway answerer runs
-   under its own marker); for the replace-later variant the record stays
-   `prepared` under a coordinator-enforced bound (default: the cache TTL) after
-   which it goes `aborted`. A stage is invalidated by any later transcript
+   transition: for a shadow handoff the live session's hold, marker and inbound
+   are released at once and the record moves to the non-terminal
+   **`shadow-probing`** state (a child record under the same `foldId`) that
+   owns only the staged packet and the throwaway answerer's marker, is bounded
+   by the probe step bounds, is swept by the boot sweep as a discard, and ends
+   `aborted`-by-design once the shadow probe is graded; for the replace-later
+   variant the record stays `prepared` under a coordinator-enforced bound
+   (default: the cache TTL) after which it goes `aborted`. A stage is invalidated by any later transcript
    entry, and held inbound is delivered as the record goes terminal.
 1. **Lock.** Precondition: this machine **owns the topic** (hosts its live
    session; in a pool also `ownerOf(topic) === self` with the record not
@@ -1205,12 +1226,19 @@ owner's sentinel takes over through a **coordinator handover**: the
 `FoldCoordinator` on the same machine transfers the keyed lease to the sentinel
 with a new generation under the same `foldId` (a handover, not a re-acquire,
 because the lease store refuses to acquire a lease it still considers held by
-a live peer), and the sentinel runs step 8; non-owner sentinels observe only. Reconciliation has a
+a live peer), and the sentinel runs step 8; non-owner sentinels observe only. A hung
+coordinator that cannot perform the handover falls to lease expiry, after which
+the boot sweep or the sentinel's next tick takes the record as `quarantined`. Reconciliation has a
 numbered bound (default 15 minutes, Defaults). If step 8 cannot confirm the
-candidate is gone within it, the sentinel **force-ends** the candidate, takes
-the `rollback-degraded` path, releases the holds, and raises one notice through
-the exempt path (7.8). Holds are released only by a terminal record, never by
-expiry alone.
+candidate is gone within it, the sentinel **force-ends** the candidate and
+**verifies termination** (tmux absent, no live child process, no transcript
+growth for one tick); only then does it take the `rollback-degraded` path,
+release the holds and raise one notice (7.8). If termination cannot be
+verified, containment **stays**: the hold, the deny-all marker and the inbound
+hold remain, the record stays `quarantined`, and the sentinel escalates to the
+operator through the Attention queue with the topic named; nothing is released
+on an unknown. Holds are released only by a terminal record, never by expiry
+alone.
 
 **Fencing.** Every session mutation, commit, and release of a hold or queue is
 fenced by the ownership epoch **and the record's current lease generation**
@@ -1295,7 +1323,7 @@ one throwaway session per run):
 
 | Capability | Claude Code adapter | Codex adapter (as the code stands today) | `absent` / `partial` outcome |
 |---|---|---|---|
-| Transcript read (entries, ids, background start/completion, cache counters) | the session JSONL (`TokenLedgerPoller`) | the rollout read-then-tail bridge and the ledger's Codex scan: `supported` | no transcript ⇒ no estimator, no clean stop, no fold |
+| Transcript read (entries, ids, background start/completion; cache counters where the engine writes them) | the session JSONL (`TokenLedgerPoller`) | the rollout read-then-tail bridge and the ledger's Codex scan: `supported` for entries and ids; cache counters `absent` (see the cost-model row) | no transcript ⇒ no estimator, no clean stop, no fold |
 | Control-command inject (`/compact`, `/clear`) | `injectInternalControlCommand` | `absent` (`triggerCompact` throws `UnsupportedCapabilityError`) | rung 2 only |
 | Compaction detection | native `PreCompact` hook plus the transcript channel | `synthesized` (`trackContextUsage` fires at 85% of an assumed 200K window, with no callers wired today) plus the transcript channel | synthesized ⇒ counted by the canary, never healed by injection; Phase 1 wires the caller |
 | Pre-compaction steering | `PreCompact` + `newCustomInstructions` | `absent` (the engine takes no instructions) | the standing packet is the only recovery; the window is not lowered |
@@ -1391,9 +1419,11 @@ session was just handed. So:
    span and per open thread (floor 1), with a deterministic ceiling set by the
    `FoldProbe` budget.
 3. **After the seed**: the reseeded session answers them using the packet and
-   the lookups, each probe turn within its wall-clock bound. Grades are
-   constrained to `retained`, `retrievable`, `lost`, and **delivery and
-   behaviour are tracked separately**: a deterministic presence search of the
+   the mediated lookups only (file-reading tools are denied for the turn, 10's
+   policy; an attempted read of the checkpoint or archive is a denied, counted
+   event and the Tier 2 tests include one), each probe turn within its
+   wall-clock bound. Grades are constrained to `retained`, `retrievable`,
+   `lost`, and **delivery and behaviour are tracked separately**: a deterministic presence search of the
    packet bytes corrects a grader's claim that an item was *absent* (a false
    "not delivered" diagnosis), but a wrong or missing *answer* about a
    constraint that is present stays `lost`; presence never converts a failed
@@ -1417,9 +1447,7 @@ session was just handed. So:
    for a `detail` item only; a second `lost` rolls back (9.3 step 8).
 
 The probe grader is **tier 1** (section 15): grades are an enumerated set, every
-decision logs question, answer, reference span and grade (under 9.7), and a
-deterministic rule (protected-class lost ⇒ rollback; verifiably present ⇒ not
-lost) sits above the model's grade. **Shadow mode** (Phase 2 and the breaker's
+decision logs question, answer, reference span and grade (under 9.7), and a deterministic rule (protected-class lost ⇒ rollback; byte presence corrects only an "absent" diagnosis, never a wrong answer) sits above the model's grade. **Shadow mode** (Phase 2 and the breaker's
 shadow state) answers the probe in a **throwaway headless session seeded with
 the staged packet**, running the live session's model (so the would-be `lost`
 rate predicts live behaviour), under the same fold-marker tool policy, with a
@@ -1467,9 +1495,11 @@ an unresolved fold and is removed only by a terminal record), not by a server
 query: no marker ⇒ the hook allows and exits (every other session is untouched,
 including the lifeline's); a malformed marker ⇒ deny; marker present ⇒
 a **strict command-shape allowlist, match-fail-closed** (the doorway-scan
-guard's shape): an enumerated set of read tools (file read, glob, grep; not web fetch, which
-is egress), and shell invocations whose argv is exactly a `GET` to a localhost
-lookup route by prefix; **deny by default** everything else, including file
+guard's shape): **no file-reading tools at all** during a probe turn (file read, glob, grep and
+web fetch are denied, because the engine checkpoint, the archive and the layer
+store sit on the same disk and a read of them would count as retention), only
+shell invocations whose argv is exactly a `GET` to a localhost lookup route by
+prefix (the mediated, logged lookups, which are what `retrievable` counts); **deny by default** everything else, including file
 writes, sub-agents, `bash -c`, `python3 -c`, `node -e`, compound
 commands, URLs built from variables, any `curl`/`fetch` to `/telegram/*`,
 `/slack/*`, `/deliver*` or `api.telegram.org`, the relay script and the
@@ -1559,7 +1589,7 @@ user-content folds.
 | Packet oversize on a fold (9.2) | invariant | `basis: irreversible-consequence; evidence: a truncated protected class is a silent cut (P24)`; refuse, never truncate | deterministic |
 | Packet oversize on the compaction path (9.5) | judgment-candidate | floor: protected class reduced last and only with in-band disclosure; a respawn fold is scheduled to restore the full packet | deterministic reduction order |
 | Fold ladder rung (9.2) | invariant | `basis: enumerable-domain; evidence: Phase 0 pass/fail per rung per machine per installed Claude Code version` | deterministic |
-| Probe/handoff suppression (10) | invariant | `basis: irreversible-consequence; evidence: a leaked probe is a user-facing incident`; fold hold checked first on the owner, scoped to topics with a known hold, sticky-last-known under store faults with a TTL-ceiling bound; marker-file tool policy scoped to the marked session, match-fail-closed, stale marker expires | deterministic |
+| Probe/handoff suppression (10) | invariant | `basis: irreversible-consequence; evidence: a leaked probe is a user-facing incident`; fold hold checked first on the owner, scoped to topics with a known hold, sticky-last-known under store faults with a TTL-ceiling bound; marker-file tool policy scoped to the marked session, match-fail-closed, a stale marker denies while its record is open | deterministic |
 | Archive retention (9.7) | judgment-candidate | floor: never evict a span a chunk points at while the phase is current; chunk marked raw-evicted on eviction | Disk Steward |
 | Rollback notice (13) | invariant | `basis: enumerable-domain; evidence: failed rollback or breaker trip ⇒ one line in the topic through the outbound gate; successful rollback ⇒ dashboard + Home count` | deterministic |
 | Fold controls (7.1) | invariant | `basis: enumerable-domain; evidence: accepted only from the topic's own live session (place binding); refused while a lock is held` | deterministic |
@@ -1696,7 +1726,7 @@ change; the measurement that may replace each is named):
 | Layer freshness target | H1 ≤ 2 user turns behind; H3 ≤ 1 fold or 24 hours behind | Phase 1 |
 | Quarantine reconciliation bound | 15 minutes, then force-end and rollback-degraded | Phase 0 |
 | Engine checkpoint grace | 24 hours after rollback | Phase 0 |
-| Seed-success bound for the report short-circuit | 30 s after detection | Phase 0 |
+| Seed-success bound for the report short-circuit | 30 s after the compact-boundary entry | Phase 0 |
 | Shadow answerer budget | 50 cents per day | Phase 2 |
 | Per-engine shadow minimum before fleet | 20 shadow folds | Phase 2 |
 | Milestone / pin control rate limit | 6 per topic per hour | Phase 2 |
@@ -1710,7 +1740,7 @@ Default posture is `unified`. Per surface:
 
 | Surface | Posture | How |
 |---|---|---|
-| Small layers A, G (per entry), C (open and current-phase), C2, H1–H3, U **referent stubs**, fold records and sidecars, backoff and breaker state, fold holds | unified | a new replicated kind registered in both `JOURNAL_KINDS` and `ReplicatedKindRegistry`; the kind's bounds type gains `maxRecordBytes` and `liveSetBudget` fields (a code addition beside today's `retention` and `rateCap`), with caps **derived** from the journal constants (default applier cap 8 KB, per-kind raise to 64 KB, 80 KB wire), enforced as refuse-never-truncate **only on content records** (a fold record is state and pointers and is never size-refusable; lists live in sidecars; G replicates per entry so the never-archive floor is never cut; an oversize H3 is rebuilt under a tighter C2 selection with disclosure), a live-set budget sized in Phase 1 from measured G/C growth (C older than the C2 range is **proxied-on-read**, below), unique record keys per entry with status changes re-emitting the record (HLC-latest compaction), and the **skew rule**: a holder on a version without the kind refuses the fold (`fold-path-unavailable: layers-not-replicated`) and the move is noted on the card. On topic move the new owner pulls the topic's layer set before its first fold |
+| Small layers A, G (per entry), C (open and current-phase), C2, H1–H3, U **referent stubs**, fold records and sidecars, backoff and breaker state, fold holds | unified | a new replicated kind registered in both `JOURNAL_KINDS` and `ReplicatedKindRegistry`; the kind's bounds type gains `maxRecordBytes` and `liveSetBudget` fields (a code addition beside today's `retention` and `rateCap`), with caps **derived** from the journal constants (default applier cap 8 KB, per-kind raise to 64 KB, 80 KB wire), enforced as refuse-never-truncate **only on content records** (a fold record is state and pointers and is never size-refusable; lists live in sidecars; G replicates per entry so the never-archive floor is never cut; an oversize H3 is rebuilt under a tighter C2 selection with disclosure), a live-set budget sized in Phase 1 from measured G/C growth (C older than the C2 range is **proxied-on-read**, below), unique record keys per entry with status changes re-emitting the record (HLC-latest compaction), and the **skew rule**: a holder on a version without the kind refuses the fold (`fold-path-unavailable: layers-not-replicated`) and the move is noted on the card. On topic move the new owner has the topic's layer set through replication and its rows through the relay-path carrier before its first fold |
 | Older C beyond the C2 range | proxied-on-read | served from the machine that holds it over the archive's carrier; `/chunks` shows `chunk-elsewhere` and `unknown` on an unreachable peer |
 | U bodies and the message-row source | re-derived from rows, with a row carrier | U is rebuilt on the owner from TopicMemory by sender row. **Every channel must have a row writer**: today Telegram's poller writes rows on the lease holder, Slack's writer collapses to one row per channel (its message id is cast to 0 under the unique key) and app conversations write none, so Phase 1 adds a channel-neutral row writer (Slack with real message ids, app conversations, iMessage and WhatsApp through the same path); a topic on a channel without a row source refuses to fold (`fold-skipped: no-row-source`). Rows are written on the machine whose adapter received the message, so the build **carries the row on the relay path** that already forwards each message to the topic's owner (journal-sync mesh RPC, landing in the owner's TopicMemory), with a per-topic watermark; the fold's precondition is that the owner's TopicMemory holds the topic's rows up to its last message id, else not clean ⇒ no fold |
 | Engine checkpoint (9.3 step 3) | machine-local | `machine-local-justification: hardware-bound-resource` — a byte-exact engine transcript that only resumes on the machine whose transcript directory holds it; never served, never replicated, never backed up; deleted by the sentinel on commit or after the grace period; a crash leaves it to the boot sweep's orphan pass |
@@ -1779,8 +1809,11 @@ are the rungs (13.17).
    suite has a recorded result and the card has shown a week
    of layer freshness within target on the dev agent and the delta comparison
    shows no rework rise.
-3. **Phase 2 — shadow folding (dev-agent-live).** Sampled handoffs at clean
-   stops; packets staged and verified; probe questions generated and answered
+3. **Phase 2 — shadow folding (dev-agent-live).** The dev agent runs the live
+   inbound queue (a step 0 precondition). Sampled handoffs at clean stops on
+   Claude Code topics and on at least two Codex topics the operator's
+   development agent keeps for this purpose (the per-engine shadow minimum is
+   earned there); packets staged and verified; probe questions generated and answered
    by a throwaway headless session seeded with the packet; would-be grades and
    costs recorded. Ends on at least 40 shadow folds with the would-be `lost`
    rate and the measured per-fold cost term.
@@ -1863,7 +1896,10 @@ revert reinstalls the previous hooks.
   expiry between steps, renewal during a step, owner-epoch change, user message
   before the point of no return, PreCompact during a lock, restart at every
   step (boot sweep), the consecutive-rollback breaker and the judge-preempted
-  exclusion; quarantine on lease expiry beside a live candidate; the
+  exclusion; quarantine handover on lease expiry or a step bound beside a live
+  candidate, with verified termination before release; the `shadow-probing`
+  child state; an attempted checkpoint read during a probe turn denied and
+  counted; the
   materialise-and-resume restore and the `rollback-degraded` path; held-row TTL
   freeze and record-gated release; the fold reserve; the sentinel's rows and
   ladders with sustained failure; the adapter capability table with an
@@ -1871,11 +1907,9 @@ revert reinstalls the previous hooks.
   transitions refusing a second writer; quarantine re-acquisition with a new
   generation and the reconciliation-bound exhaustion path; the engine
   checkpoint restoring a transcript with scrub-triggering and oversize entries
-  byte-exactly; the `SelfHealGate` extensions (pool-shared refusal, async
-  remediation, per-topic episode key); the transcript detection channel
+  byte-exactly; the `SelfHealGate` extensions (pool-shared refusal, async remediation, per-incident episode keys with bounded pruning); the transcript detection channel
   reading `diverged` for a hook that never fires; chunked ledger bodies with
-  `body-elsewhere`; lease-holder-to-owner row replication with the watermark
-  precondition; keyed fenced lease on
+  `body-elsewhere`; the relay-path row carrier with the watermark precondition; keyed fenced lease on
   `local` and `git` media with the key in the signed tuple; break-even
   estimator with `unknown` inputs; probe typing, count floor, the
   protected-class rule and the presence override; `source` parsing with
@@ -2197,3 +2231,21 @@ confirmed in round 6 as its stopping point. Nothing was rejected.
 | `topic-memory.db` not backed up while layers reference its rows; fold records restorable | integration | Adopted (9.7) |
 | Milestone/pin rate limit semantics | lessons | Adopted: coalesce, never refuse (12) |
 | Precision items (17 judge-preempted wording, rung keyed on the session's binary, fencing wording, clean-stop row wording, Codex suite phase wording, glossary checkpoint, frontmatter version) | several | Adopted in passing |
+
+## Appendix G — spec-converge round 6 (the cap): disposition
+
+Six is the Tier-2 round cap. The round's internal reviewers' verdicts are in
+the convergence report. The external reads found the items below; none is
+structural, none is a safety, security or data-loss item left open, and each
+was folded into v9 **after the cap without a further review round**, which the
+convergence report states plainly so the approver can weigh it.
+
+| Theme | Raised by | Disposition |
+|---|---|---|
+| Probe turns could read the on-disk checkpoint or archive | GPT 1 | Adopted: no file-reading tools during a probe turn; attempted read denied and counted (10) |
+| Canary health cumulative and unrecoverable after a fix | GPT 2 | Adopted: verification epoch restarts after remediation (9.1) |
+| Quarantine exhaustion releases containment without verified termination | GPT 3 | Adopted: verified termination or containment stays and the operator is told (9.3) |
+| Residual "verifiably present ⇒ not lost" wording | GPT P | Adopted (10) |
+| Shadow fold's record terminal before its probe | Fable 1 | Adopted: `shadow-probing` child state (9.3) |
+| Cache-blind estimator optimistic on the cost side | Fable 2 | Adopted: costs at the uncached rate (7.2) |
+| Wording residue (short expiry, stale-marker row, superseded names in 18, seed-success anchor, Phase 2 queue, step 0 preconditions, hung coordinator, Codex shadow source, cache counters row, layer-set pull) | Fable left-behind | Adopted in passing |
