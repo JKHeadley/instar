@@ -35,6 +35,8 @@ export interface ClearSeedPointer {
   /** Epoch ms; the hook refuses the pointer at or after this instant. */
   leaseExpiresAt: number;
   writtenAt: number;
+  /** The fold's topic, so the fold boot sweep can match this carrier to its record. */
+  topicKey?: string;
 }
 
 export function contextLayersRoot(stateDir: string): string {
@@ -53,7 +55,7 @@ export function clearSeedPointerPath(stateDir: string, instarSessionId: string):
  */
 export function writeClearSeedPointer(
   stateDir: string,
-  input: { instarSessionId: string; claudeSessionId: string; foldId: string; packetFile: string; leaseExpiresAt: number },
+  input: { instarSessionId: string; claudeSessionId: string; foldId: string; packetFile: string; leaseExpiresAt: number; topicKey?: string },
   now: number = Date.now(),
 ): ClearSeedPointer | null {
   const ptrPath = clearSeedPointerPath(stateDir, input.instarSessionId);
@@ -72,6 +74,7 @@ export function writeClearSeedPointer(
     sha256: crypto.createHash('sha256').update(body).digest('hex'),
     leaseExpiresAt: Math.floor(input.leaseExpiresAt),
     writtenAt: now,
+    ...(input.topicKey && SAFE_ID.test(input.topicKey) ? { topicKey: input.topicKey } : {}),
   };
   fs.mkdirSync(path.dirname(ptrPath), { recursive: true, mode: 0o700 });
   const tmp = `${ptrPath}.tmp`;
@@ -97,4 +100,23 @@ export function removeClearSeedPointer(stateDir: string, instarSessionId: string
       SafeFsExecutor.safeRmSync(path.join(dir, f), { force: true, operation: 'src/monitoring/clearSeedPointer.ts:removeClearSeedPointer' });
     }
   }
+}
+
+/**
+ * Every clear-seed pointer on disk (live and claimed), for the fold carrier's
+ * boot-sweep listing. Torn files are skipped.
+ */
+export function listClearSeedPointers(stateDir: string): Array<{ file: string; pointer: ClearSeedPointer }> {
+  const dir = path.join(contextLayersRoot(stateDir), '_clear-seed');
+  let files: string[] = [];
+  try { files = fs.readdirSync(dir); } catch { return []; }
+  const out: Array<{ file: string; pointer: ClearSeedPointer }> = [];
+  for (const f of files) {
+    if (!/\.json(\.claimed-\d+)?$/.test(f)) continue;
+    try {
+      const pointer = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8')) as ClearSeedPointer;
+      if (pointer && typeof pointer.foldId === 'string' && typeof pointer.instarSessionId === 'string') out.push({ file: path.join(dir, f), pointer });
+    } catch { /* @silent-fallback-ok — a torn pointer is not a carrier the sweep can attribute; the hook refuses it too */ }
+  }
+  return out;
 }

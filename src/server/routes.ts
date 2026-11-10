@@ -756,6 +756,7 @@ import type { CoherenceGate } from '../core/CoherenceGate.js';
 import type { MessagingToneGate } from '../core/MessagingToneGate.js';
 import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
+import { foldKeyForConversation } from '../monitoring/FoldHoldStore.js';
 import { RelayRefusedError } from '../core/TelegramRelay.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
@@ -1286,6 +1287,8 @@ export interface RouteContext {
    *  construction in server.ts. It holds NO authority over ownership: it mirrors
    *  verdicts the reconciler and the ownership records own. */
   standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry | null;
+  /** context-budget-layered-summaries §10: the egress fold hold. Null ⇒ no fold can hold a topic. */
+  foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -4312,9 +4315,31 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   }
 
+  /**
+   * The egress fold hold (context-budget-layered-summaries §10): while a fold
+   * runs on a conversation, its handoff and probe turns are internal, so every
+   * session-authored send for that conversation is refused `fold-hold` (409,
+   * terminal: the relay does not queue a refused send; a send that got 000/5xx
+   * while the server was down IS queued — a tracked Phase 2 precondition). Keyed by the channel-neutral fold key, so it holds on
+   * Telegram, Slack, app, WhatsApp and iMessage alike. Independent of the
+   * stand-down muzzle; never dry-run. The store's verdict carries its own
+   * scoped fail direction (§10) and every refusal is audited there.
+   */
+  function foldHoldRefusal(channel: string, conversation: string | number | undefined | null): OutboundEvaluation | null {
+    if (!ctx.foldHolds || conversation === undefined || conversation === null) return null;
+    const key = foldKeyForConversation(channel, conversation);
+    if (!key) return null;
+    const v = ctx.foldHolds.check(key);
+    if (!v.held) return null;
+    return { ok: false, status: 409, reason: 'fold-hold', body: { error: 'fold-hold', foldId: v.foldId, retryable: false } };
+  }
+
   /** Existing local stand-down authority, shared across reply and prepared
    * transports. Unknown ownership still RELEASES exactly as before. */
   function authorizeTelegramSessionSend(topicId: number): OutboundEvaluation {
+    // The fold hold first: it runs BEFORE the relay fork (§10), on the owner.
+    const foldHeld = foldHoldRefusal('telegram', topicId);
+    if (foldHeld) return foldHeld;
     if (ctx.standDownRegistry) {
       try {
         const sdEntry = ctx.standDownRegistry.getByTopic(topicId);
@@ -4452,6 +4477,9 @@ export function createRoutes(ctx: RouteContext): Router {
       toneAdvisoryComplied?: string;
     },
   ): Promise<OutboundEvaluation> {
+    // ── Fold hold (context-budget-layered-summaries §10) — first, on every channel ──
+    const foldHeld = foldHoldRefusal(channel, channel === 'telegram' ? options.topicId : options.attributionConversation);
+    if (foldHeld) return foldHeld;
     // ── Localhost-link guard (operator-mandated HARD rule, 2026-06-05) ──
     // A clickable localhost/loopback link must never reach a user — the user
     // is almost never on the machine this server runs on. This is a

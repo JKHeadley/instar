@@ -142,6 +142,9 @@ export const INSTAR_WILDCARD_PRETOOLUSE_HOOKS: ReadonlyArray<InstarSettingsHookE
     // timeout free.
     timeout: 2000,
   },
+  // context-budget-layered-summaries §10: the fold-marker tool policy. Steady state
+  // is one env read and, for an Instar session, one marker-file read; no HTTP.
+  { type: 'command', command: `node "${PD}/.instar/hooks/instar/fold-marker-guard.js"`, blocking: true, timeout: 2000 },
 ];
 
 /**

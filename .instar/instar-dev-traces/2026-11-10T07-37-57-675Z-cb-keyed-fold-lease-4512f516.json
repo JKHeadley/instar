@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "cb-keyed-fold-lease",
+  "sessionId": "8678c84d-037f-4b82-a432-297906c6bdba",
+  "timestamp": "2026-11-10T07:37:57.675Z",
+  "artifactPath": "upgrades/side-effects/cb-keyed-fold-lease.md",
+  "artifactSha256": "0808f4dbf78f84e3198ebfcd055c29162e1dff6b7fd19d6cb0680aac5a33bb70",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/FencedLease.ts",
+    "src/core/KeyedLease.ts",
+    "src/core/foldLeaseFactory.ts",
+    "tests/e2e/fold-lease-production-crypto.test.ts",
+    "tests/integration/keyed-lease-git-medium.test.ts",
+    "tests/unit/KeyedLease.test.ts",
+    "upgrades/next/cb-keyed-fold-lease.md",
+    "upgrades/side-effects/cb-keyed-fold-lease.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "New cryptographic lock primitive inside the machine-lease module (FencedLease); converged and approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot lock primitive (acquire/renew/release/handover called by its owner per step); no self-triggered loop, timer or retry. The store lock refuses rather than retries."
+  }
+}

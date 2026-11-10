@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "cb-fold-coordinator",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T14:11:15.564Z",
+  "artifactPath": "upgrades/side-effects/cb-fold-coordinator.md",
+  "artifactSha256": "50e93beb4ff1357a9a0d7ec04ea7098d62ccf93c7b4e1670943757383a9c4788",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/side-effects/cb-fold-coordinator.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the task-7 slice: two degradation-report strings render the topic through topicRef (topic-name ratchet); no behaviour change",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "string-only change to degradation-report text; no action or loop"
+  }
+}

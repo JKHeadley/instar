@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "cb-fold-coordinator",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T09:15:19.345Z",
+  "artifactPath": "upgrades/side-effects/cb-fold-coordinator.md",
+  "artifactSha256": "9eaf8c8803effca834cc2dad3055220f8362fd98041816df41a5483a724a5b34",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/BackupManager.ts",
+    "src/core/PendingInjectStore.ts",
+    "src/core/foldLeaseFactory.ts",
+    "src/core/keyMaterialPaths.ts",
+    "src/monitoring/FoldCoordinator.ts",
+    "src/monitoring/clearSeedPointer.ts",
+    "src/monitoring/foldCarriers.ts",
+    "src/monitoring/foldCoordinatorBoot.ts",
+    "src/monitoring/keepInstructions.ts",
+    "tests/e2e/fold-coordinator-crash-lifecycle.test.ts",
+    "tests/integration/fold-coordinator-boot-wiring.test.ts",
+    "tests/unit/BackupManager-never-backup.test.ts",
+    "tests/unit/FoldCoordinator.test.ts",
+    "upgrades/next/cb-fold-coordinator.md",
+    "upgrades/side-effects/cb-fold-coordinator.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Lifecycle state machine with a boot sweep that releases carriers (spec §9.3); no fold can begin in production yet; reversible by revert.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

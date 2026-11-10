@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "improvement-evidence-history",
+  "sessionId": "30384209-0957-44f8-9037-d33d452ffbc6",
+  "timestamp": "2026-11-06T05:37:55.788Z",
+  "artifactPath": "upgrades/side-effects/improvement-evidence-history.md",
+  "artifactSha256": "577d2425a8c11adeaf5303ef6889d8b3c077b4daa8f207ed571cac9a2bcc05f2",
+  "coveredFiles": [
+    "docs/audits/improvement-observability-building-2026-11-06.json",
+    "upgrades/side-effects/improvement-evidence-history.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Documentation-only review record shape repair for the unchanged independently reviewed audit; no new approval, content digest, floor or runtime change.",
+  "eli16Path": "docs/specs/improvement-evidence-history.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/improvement-evidence-history.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

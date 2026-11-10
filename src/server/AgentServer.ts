@@ -1276,6 +1276,8 @@ export class AgentServer {
     /** Duplicate-session stand-down registry (docs/specs/duplicate-session-standdown.md).
      *  Absent ⇒ the feature is dark on this agent ⇒ every /standdown route 503s. */
     standDownRegistry?: import('../core/StandDownRegistry.js').StandDownRegistry;
+    /** context-budget-layered-summaries §10: the egress fold hold (outbound chokepoints refuse `fold-hold`). */
+    foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore;
     standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
@@ -5798,6 +5800,7 @@ export class AgentServer {
       workQueue: options.workQueue ?? null,
       prHandLease: options.prHandLease ?? null,
       standDownRegistry: options.standDownRegistry ?? null,
+      foldHolds: options.foldHolds ?? null,
       standDownAudit: options.standDownAudit ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
