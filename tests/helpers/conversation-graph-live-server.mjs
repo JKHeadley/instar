@@ -49,7 +49,9 @@ export async function startGraphLiveServer({bind='127.0.0.1',controlBind='127.0.
   // Real dashboard PIN protocol establishes the default; no phone Graph call
   // is ever answered or authorized by this fixture control server.
   const unlocked=await fetch(agentURL+'/dashboard/unlock',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({pin}),signal:AbortSignal.timeout(15000)});const unlock=await unlocked.json();if(unlocked.status!==200||typeof unlock.operatorSessionToken!=='string')throw new Error('fixture-real-pin-unlock-refused');
-  const roots=await fetch(agentURL+'/conversation-graph/roots',{headers:{authorization:`Bearer ${bearer}`,'X-Instar-AgentId':agentId,'X-Instar-Operator-Session':unlock.operatorSessionToken},signal:AbortSignal.timeout(15000)});if(roots.status!==200||!manager.runtime)throw new Error('fixture-real-owner-bootstrap-refused');await roots.arrayBuffer();
+  // The first owner visit composes the graph runtime lazily; under heavy test load that can answer
+  // 503 (not ready yet) for a few seconds. Retry only that answer, bounded, and name the last status.
+  let roots,rootsDeadline=Date.now()+30000;for(;;){roots=await fetch(agentURL+'/conversation-graph/roots',{headers:{authorization:`Bearer ${bearer}`,'X-Instar-AgentId':agentId,'X-Instar-Operator-Session':unlock.operatorSessionToken},signal:AbortSignal.timeout(15000)});if(roots.status===200&&manager.runtime)break;if(roots.status!==503||Date.now()>rootsDeadline)throw new Error('fixture-real-owner-bootstrap-refused-'+roots.status+(manager.runtime?'':'-no-runtime'));await roots.arrayBuffer();await new Promise(resolve=>setTimeout(resolve,500));}await roots.arrayBuffer();
   const pairing=server.mobilePairing;if(!pairing?.nativeOn||!pairing.keyLedger)throw new Error('fixture-real-native-verifier-unavailable');
   const controlHandler=async(req,res)=>{try{
    const remote=(req.socket.remoteAddress??'').replace(/^::ffff:/,'');if(!['127.0.0.1','::1',...(controlBind!=='127.0.0.1'?[studioIP]:[])].includes(remote))return json(res,403,{code:'fixture-control-peer-refused'});
