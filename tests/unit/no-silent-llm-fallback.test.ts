@@ -59,7 +59,6 @@ const REVIEWED_ADVISORY: Record<string, string> = {
   'threadline/A2ACheckInProxy.ts': 'no catch — advisory A2A check-in proxy; failure propagates to the router',
   'core/TopicIntentArcCheck.ts': 'returns {actsOn:[],contradicts:[]} — advisory intent-arc analysis, no gated action',
   'core/JobReflector.ts': 'returns null/defaults — advisory post-job reflection',
-  'core/TopicIntentCapture.ts': 'returns {status:"degraded"} — explicitly marks degraded; advisory intent capture',
   'core/ProjectDriftChecker.ts': 'returns empty drift — advisory project-drift signal, no gated action',
   // core/CompletionEvaluator.ts REMOVED from REVIEWED_ADVISORY (llm-decision-quality-meter
   // P7 correlation-persistence wiring): it now carries a @silent-fallback-ok marker

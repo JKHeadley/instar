@@ -988,6 +988,7 @@ let _foldCoordinator: import('../monitoring/FoldCoordinator.js').FoldCoordinator
 /** The ContextBudgetSentinel (context-budget §7.8): dev-gated; its heartbeat is a fold precondition. */
 let _contextBudgetSentinel: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null = null;
 let _contextLayers: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null = null;
+let _layerTicker: { stop(): void } | null = null;
 /** context-budget-layered-summaries §10: the egress fold hold, checked at the shared outbound chokepoints. */
 let _foldHolds: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null = null;
 /** True while the listener daemon owns inbound relay handling (no capability then). */
@@ -18604,6 +18605,19 @@ export async function startServer(options: StartOptions): Promise<void> {
         // nothing ever invoked ingest()). Chains the prior callback; capture is
         // fire-and-forget + degrade-safe so it NEVER blocks or slows delivery.
         // Spec: docs/specs/topic-intent-capture-loop.md.
+        // Context budget §3.2 item 7: a machine with the layers on but no shared
+        // intelligence cannot keep H1 current. Say so loudly instead of serving
+        // an empty briefing as if nothing were happening; the freshness stamp
+        // reads stale/unknown on every topic here.
+        if (_contextLayers && (!sharedIntelligence || (config.topicIntent?.capture?.enabled ?? true) === false)) {
+          DegradationReporter.getInstance().report({
+            feature: 'contextBudget.layers.capture',
+            primary: 'The topic-intent capture loop keeps each conversation\'s current-work summary fresh',
+            fallback: 'No capture on this machine: summaries for conversations owned here go stale',
+            reason: !sharedIntelligence ? 'No shared intelligence provider is configured on this machine' : 'topicIntent.capture.enabled is false while contextBudget.enabled is on',
+            impact: 'Conversation summaries on this machine are not updated; briefings carry a stale or unknown freshness stamp.',
+          });
+        }
         if (sharedIntelligence && (config.topicIntent?.capture?.enabled ?? true)) {
           try {
             const { TopicIntentExtractor, createLlmExtractFn } = await import('../core/TopicIntentExtractor.js');
@@ -18625,7 +18639,18 @@ export async function startServer(options: StartOptions): Promise<void> {
               );
             });
             const captureExtractor = new TopicIntentExtractor(topicIntentStore, captureExtractFn);
+            // Context budget Phase 1 (§6, §6.4): with the layers on, the capture
+            // loop gets real brakes (per-topic + component token ceilings,
+            // deferral counted) and mirrors H1/H2 into the layer store, and a
+            // transcript-growth ticker keeps H1 current for tool-heavy sessions.
+            const layerWiring = _contextLayers
+              ? (await import('../monitoring/contextLayers/layerCaptureWiring.js')).wireLayerCapture({
+                  layers: _contextLayers, store: topicIntentStore, sessions: sessionManager as unknown as import('../monitoring/contextLayers/layerCaptureWiring.js').LayerSessionSource,
+                  machine: _meshSelfId ?? 'local', projectDir: config.projectDir,
+                })
+              : null;
             const captureLoop = createCaptureLoop({
+              ...(layerWiring ? layerWiring.captureDeps : {}),
               extractor: captureExtractor,
               store: topicIntentStore,
               topicMemory,
@@ -18650,6 +18675,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                 provenance: entry.provenance,
               });
             };
+            if (layerWiring) {
+              _layerTicker = layerWiring.startTicker({
+                extractor: captureExtractor, store: topicIntentStore, topicMemory,
+                shouldShed: () => { const r = quotaTracker?.getRecommendation(); return r === 'critical' || r === 'stop'; },
+              }, { liveSecrets: () => _contextLayers?.liveSecrets() ?? [] });
+              console.log(pc.green('  Context layers: H1/H2 projection + transcript-growth ticks wired'));
+            }
             // Anti-"shipped-but-asleep" marker for the wiring-integrity test.
             (globalThis as Record<string, unknown>).__instarTopicIntentCaptureWired = true;
             console.log(pc.green('  Topic-intent capture loop wired (per-turn extraction → store)'));
@@ -18694,6 +18726,15 @@ export async function startServer(options: StartOptions): Promise<void> {
             }
           } catch (err) {
             console.warn('[TopicIntentCapture] init failed:', (err as Error).message);
+            if (_contextLayers) {
+              DegradationReporter.getInstance().report({
+                feature: 'contextBudget.layers.capture',
+                primary: 'The topic-intent capture loop keeps each conversation\'s current-work summary fresh',
+                fallback: 'No capture on this machine until the next restart',
+                reason: `Capture wiring failed: ${(err as Error).message}`,
+                impact: 'Conversation summaries on this machine are not updated; briefings carry a stale or unknown freshness stamp.',
+              });
+            }
           }
         }
 

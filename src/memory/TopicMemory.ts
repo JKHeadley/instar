@@ -566,6 +566,21 @@ export class TopicMemory {
   }
 
   /**
+   * How far a layer stamped at `messageId` is behind the topic: the messages
+   * (and the operator-typed ones among them) stored after that row, in
+   * storage order. `null` when the stamp's row is not in this database (the
+   * freshness is then unknown, never "fresh").
+   * context-budget-layered-summaries §6: "as of <time>, <n> messages behind".
+   */
+  countMessagesAfter(topicId: number, messageId: number): { total: number; fromUser: number } | null {
+    if (!this.db) return null;
+    const at = this.db.prepare('SELECT MAX(id) AS id FROM messages WHERE topic_id = ? AND message_id = ?').get(topicId, messageId) as { id: number | null } | undefined;
+    if (!at || at.id === null || at.id === undefined) return null;
+    const row = this.db.prepare('SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN from_user = 1 THEN 1 ELSE 0 END), 0) AS fromUser FROM messages WHERE topic_id = ? AND id > ?').get(topicId, at.id) as { total: number; fromUser: number };
+    return { total: row?.total ?? 0, fromUser: row?.fromUser ?? 0 };
+  }
+
+  /**
    * Get all messages by a specific user across all topics.
    * Used by /mydata export (GDPR Article 15).
    */

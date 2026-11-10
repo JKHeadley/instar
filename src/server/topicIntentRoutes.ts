@@ -57,6 +57,8 @@ export function createTopicIntentRoutes(deps: {
    *  pre-existing tests and out-of-process integrations keep working
    *  unchanged. Production passes `arcCheck` directly. */
   arcCheckClassify?: ArcCheckClassifyFn | null;
+  /** The current-work layer's freshness stamp (context-budget §6); absent ⇒ not rendered. */
+  layerFreshness?: ((topicId: number) => { line: string; stale: boolean | 'unknown' } | null) | null;
 }): Router {
   const router = Router();
   const { topicIntentStore: store } = deps;
@@ -175,7 +177,9 @@ export function createTopicIntentRoutes(deps: {
     const parsed = TopicIdParam.safeParse(req.params.topicId);
     if (!parsed.success) return res.status(400).type('text/plain').send('');
     const topicId = parsed.data;
-    const result = renderTopicIntentBriefing(store, topicId);
+    let freshness: { line: string; stale: boolean | 'unknown' } | null = null;
+    try { freshness = deps.layerFreshness?.(topicId) ?? null; } catch { freshness = null; /* @silent-fallback-ok — the briefing renders without the stamp */ }
+    const result = renderTopicIntentBriefing(store, topicId, { freshness });
     // Surface-side metering (spec §10): a prompt/compaction briefing fetch =
     // the captured set actually reached agent context. Record it + contents.
     try {

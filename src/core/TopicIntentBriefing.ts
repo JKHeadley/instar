@@ -23,6 +23,12 @@ export interface BriefingOptions {
   nowMs?: number;
   /** Maximum number of items per section (defaults to 8). */
   maxPerSection?: number;
+  /**
+   * The current-work layer's freshness stamp from the context layer store
+   * (context-budget-layered-summaries §6: "as of <time>, <n> messages
+   * behind"). Rendered on the CURRENT WORK block when present.
+   */
+  freshness?: { line: string; stale: boolean | 'unknown' } | null;
 }
 
 export interface BriefingResult {
@@ -112,6 +118,9 @@ export function renderTopicIntentBriefing(
     lines.push(`    goal: ${awareness.currentWork.goal}`);
     lines.push(`    trend: ${awareness.currentWork.trend}`);
     lines.push(`    themes: ${awareness.currentWork.themes.join(' · ')}`);
+    if (opts.freshness) {
+      lines.push(`    ${opts.freshness.line}${opts.freshness.stale === true ? ' — STALE: behind its freshness target' : opts.freshness.stale === 'unknown' ? ' — freshness unknown' : ''}`);
+    }
     if (awarenessLagTurns > 2) {
       lines.push(`  FRESHNESS WARNING: projection is ${awarenessLagTurns} user turns behind; treat it as stale orientation.`);
     }
