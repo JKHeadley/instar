@@ -1,6 +1,6 @@
 /** Actual native/member/source/W SQLite transition and physical negative purge.
  * Synthetic identities/temporary roles only; no production host/key/backup claim. */
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import fs from 'node:fs';import path from 'node:path';import crypto from 'node:crypto';import Database from 'better-sqlite3';
 import {setupGraphRuntimeFixture as setup,witnesses} from '../helpers/conversation-graph-runtime.js';
 import {GraphCustodyBootstrapStore} from '../../src/core/GraphCustodyBootstrap.js';
@@ -19,6 +19,8 @@ import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {ConversationGraphLocalErasureFence} from '../../src/core/ConversationGraphLocalErasure.js';
 import {signGraphErasureIngress} from '../../src/core/GraphErasureProtocol.js';
 import {canonicalHash,signGraphRecord,unsigned,GRAPH_SIGNATURE_DOMAINS as D,witnessActionPayload,graphRewrapInventoryHash} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 const pem=(key:crypto.KeyObject)=>key.export({format:'pem',type:key.type==='private'?'pkcs8':'spki'}).toString();
 describe('retired role erasure without historical signing keys',()=>{

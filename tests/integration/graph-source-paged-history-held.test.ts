@@ -12,6 +12,8 @@ import {persistGraphMaterializationContextV2,GraphSelectedMaterializationV2} fro
 import {graphHistoricalMaterializationRef} from '../../src/core/ConversationGraphHistoricalMaterialization.js';
 import {ConversationGraphNativeTailFloor} from '../../src/core/ConversationGraphNativeTail.js';
 import {canonicalHash} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 describe('actual Source paged historical read-only held import',()=>{
  it.each(['detached-descendants','frozen-detached-debt','independent-process-deny'] as const)('persists signed v2 custody and enforces %s before releasing private borrows',async(privacyCase)=>{

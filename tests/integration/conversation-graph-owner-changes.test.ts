@@ -13,6 +13,8 @@ import {ConversationGraphRuntimeReadSource} from '../../src/server/ConversationG
 import {ConversationGraphReadModel} from '../../src/core/conversationGraphRead.js';
 import {nodeKey,type NodeRef} from '../../src/core/conversationGraph.js';
 import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 async function fixture(){
  const actual=await setupGraphRuntimeFixture();

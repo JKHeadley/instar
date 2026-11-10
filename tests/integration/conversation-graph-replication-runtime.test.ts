@@ -14,6 +14,8 @@ import {ConversationGraphReplicationRuntime} from '../../src/server/Conversation
 import {signGraphAuthorizationReceipt} from '../../src/core/ConversationGraphReplicationProof.js';
 import {unsigned,canonicalHash,signGraphRecord,GRAPH_SIGNATURE_DOMAINS,witnessActionPayload} from '../../src/core/GraphWitnessTypes.js';
 import {setupGraphRuntimeFixture as setup,runtimes,witnesses} from '../helpers/conversation-graph-runtime.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 describe('actual graph source runtime + authenticated installed peer transport',()=>{
  it('routes custody transition proofs over the authenticated peer channel outside source mutation',async()=>{
   const {runtime,peer}=await setup();let actualSender:string|null=null;

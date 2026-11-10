@@ -1,13 +1,15 @@
 /** Actual Native/Source/retained owner plan; synthetic Root signatures are
  * component authority, not proof of fresh human admission or a shipped role. */
 import fs from 'node:fs/promises';import path from 'node:path';
-import {it,expect} from 'vitest';
+import {it,expect,vi} from 'vitest';
 import {setupNativeMemberLossFixture} from '../helpers/graph-native-member-loss-fixture.js';
 import {GraphMemberLossHeldPreflight} from '../../src/core/GraphMemberLossHeldPreflight.js';
 import {NativeDecommissionLeasePermit} from '../../src/core/NativeDecommissionLeasePermit.js';
 import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {buildGraphRecoverySourceManifest} from '../../src/core/ConversationGraphReplicationTransfer.js';
 import {canonicalHash,signGraphRecord,GRAPH_SIGNATURE_DOMAINS as D,witnessActionPayload} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 it('copies exact original live wrappers into custody-only revision namespace and refuses missing/forged origin without regenerating',async()=>{
  const f=await setupNativeMemberLossFixture(0,true,false,true),r=f.runtime,coordinator=f.nativeOptions.leaseCoordinator,hold=f.authority.beginMemberLossHold(f.intent,f.context,r.machineId,f.survivor.loadSigningKey()),snapshot=await r.source.verifyMemberLossInventory(r.reader,r.droppedOriginRegistry,r.intake,f.authority,f.intent),preflight=GraphMemberLossHeldPreflight.collect({authority:f.authority,snapshot,context:f.context,intent:f.intent,holds:[hold]}),floor=await f.store.captureNativeFloor(coordinator,f.intent,f.context),progress=f.store.beginNativeOperation(f.consent,f.context,f.intent,preflight,floor);

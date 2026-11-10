@@ -13,6 +13,8 @@ import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {DroppedOriginRegistry} from '../../src/core/RollbackUnmerge.js';
 import {canonicalHash} from '../../src/core/GraphWitnessTypes.js';
 import {ConversationGraphNativeTailFloor} from '../../src/core/ConversationGraphNativeTail.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 function ledger(f:Awaited<ReturnType<typeof setupGraphSourceStreamRowFixture>>,durableBytes=64*1024*1024){return new GraphSourceCapacityLedger({stateRoot:f.recipient.baseDir,agentId:'echo',identity:f.recipient,lock:f.options[1].instanceLock,ownerPublicKey:f.f.owner.publicKey,policy:{v:1,durableBytes,transientBytes:32*1024*1024,metadataBytes:8*1024*1024,futureSidecarBytesPerRecord:65536,futureRowOverheadBytes:65536}});}
 async function cold(f:Awaited<ReturnType<typeof setupGraphSourceStreamRowFixture>>){const runtime=await ConversationGraphReplicationRuntime.open({...f.options[1],custodyAuthority:f.authorities[1]});runtimes.push(runtime);return runtime;}
 describe('actual Source-owned quarantined original promotion',()=>{

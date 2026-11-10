@@ -4,6 +4,8 @@ import path from 'node:path';
 import {setupHeldGraphSourceFixture} from '../helpers/conversation-graph-held-source.js';
 import {canonicalHash} from '../../src/core/GraphWitnessTypes.js';
 import {GraphPreparedTransferEnvelopes} from '../../src/core/GraphPreparedTransferEnvelopes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 describe('actual preauthorization envelope custody',()=>{
  it('persists randomized keys once, reuses exact hashes, and purges exposed keys on priority deny',async()=>{

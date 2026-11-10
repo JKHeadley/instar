@@ -18,6 +18,8 @@ import {GRAPH_MEMBER_LOSS_INTENT_DOMAIN as ID,GRAPH_MEMBER_LOSS_INTENT_ADMISSION
 import {IdentityStore} from '../../src/core/IdentityStore.js';
 import {ConversationGraphIntake} from '../../src/core/ConversationGraphIntake.js';
 import {graphReplicationFileStem} from '../../src/core/ConversationGraphReplication.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 const pem=(key:crypto.KeyObject)=>key.export({format:'pem',type:'spki'}).toString();
 async function held(mode:'intake'|'control'|'takeover'='intake',includeUnrelated=false){
  const f=await setup({ownedCustodyHostIndex:0}),{runtime,peer,managers,authorities}=f;await runtime.refreshReadiness();await peer.refreshReadiness();

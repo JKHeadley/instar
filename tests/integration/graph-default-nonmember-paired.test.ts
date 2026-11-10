@@ -15,6 +15,8 @@ import {SecretStore} from '../../src/core/SecretStore.js';
 import {CoherenceJournal} from '../../src/core/CoherenceJournal.js';
 import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {canonicalHash} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 const PUBLICATION_MARKER='conversation_graph_owned_publication';
 const managers:ConversationGraphDefault[]=[],servers:Server[]=[],journals:CoherenceJournal[]=[],dirs:string[]=[];

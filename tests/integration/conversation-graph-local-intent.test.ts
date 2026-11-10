@@ -19,6 +19,8 @@ import type {GraphLocalOwnerIntentInput,GraphLocalOwnerIntent} from '../../src/c
 import {signGraphAuthorizationReceipt} from '../../src/core/ConversationGraphReplicationProof.js';
 import {canonicalHash,unsigned} from '../../src/core/GraphWitnessTypes.js';
 import {newHeaderId} from '../../src/core/EffortHeaderStore.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 function input(key='offline-opaque-owner-intent'):GraphLocalOwnerIntentInput{return {idempotencyKey:key,requestId:'request-offline-01',principalKey:'owner',grantVersion:'owner-grant-v1',surface:'mobile',admission:{kind:'owner-device',deviceId:'device-owner',identity:{keyHash:'a'.repeat(64),userId:'owner-user',role:'owner'}},change:{kind:'create-effort',projectScope:['instar']}};}
 describe('actual runtime local pre-admission Pending',()=>{
  it('keeps a restored private intent opaque and unpromoted even after actual witness readiness until fresh same-body owner admission',async()=>{

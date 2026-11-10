@@ -2,13 +2,15 @@ import {ConversationGraphReplicationRuntime} from '../../src/server/Conversation
 import {runtimes} from '../helpers/conversation-graph-runtime.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {setupGraphSourceStreamRowFixture} from '../helpers/graph-source-stream-row.js';
 import {GraphSourceCapacityLedger} from '../../src/core/GraphSourceCapacityLedger.js';
 import {GraphOwnedSourceStreamDecoderV2} from '../../src/core/GraphOwnedSourceStreamV2.js';
 import {GraphOwnedSourceStreamReceiverV2} from '../../src/core/GraphOwnedSourceStreamReceiverV2.js';
 import {ConversationGraphNativeTailFloor} from '../../src/core/ConversationGraphNativeTail.js';
 import {canonicalHash,verifyMembershipTransferReceipt} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 describe('actual Source-backed transient transfer bridge',()=>{
  it('keeps original receipt/hash identity while cold-reading promoted Source instead of retaining transfer private parts',async()=>{

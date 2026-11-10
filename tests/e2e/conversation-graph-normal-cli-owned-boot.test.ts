@@ -1,7 +1,7 @@
 /** Real normal CLI composition. No injected Graph/Default/native runtime.
  * Public npm metadata checks are allowed; all state/cache/registry is temporary.
  * No phone/tunnel/pairing UI or deployment claim. */
-import {it,expect} from 'vitest';
+import {it,expect,vi} from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,8 @@ import crypto from 'node:crypto';
 import {MachineIdentityManager} from '../../src/core/MachineIdentity.js';
 import {SafeFsExecutor} from '../../src/core/SafeFsExecutor.js';
 import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 const pause=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
 async function freePort(){const server=net.createServer();await new Promise<void>(resolve=>server.listen(0,'127.0.0.1',resolve));const address=server.address();if(!address||typeof address==='string')throw new Error('fixture-port');const port=address.port;await new Promise<void>(resolve=>server.close(()=>resolve()));return port;}

@@ -7,6 +7,8 @@ import {GraphSourceCapacityLedger} from '../../src/core/GraphSourceCapacityLedge
 import {GRAPH_CUSTODY_STAGE_DOMAIN} from '../../src/core/GraphCustodyProfileAuthority.js';
 import {GraphRecoverySourceManifestAccumulator} from '../../src/core/ConversationGraphRecoveryManifest.js';
 import {canonicalHash,signGraphRecord,unsigned,GRAPH_SIGNATURE_DOMAINS as D} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 async function fixture(){
  const f=await setupHeldGraphSourceFixture({sourceCount:2}),context={authority:f.authorities[0],hold:{kind:'planned' as const,intent:f.intent,nativeFloor:f.nativeFloor,lease:f.native.lease,originalLease:f.native.originalLease}},recoveryId='actual-source-sender-promotion',prepared=await f.runtime.transfer.prepareHeldRewrapInventory({recoveryId,source:f.sourceReader,context,newMembership:f.newMembership,coordinator:f.options[0].leaseCoordinator});

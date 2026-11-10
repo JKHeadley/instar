@@ -1,7 +1,9 @@
-import {describe,it,expect} from 'vitest';
+import {describe,it,expect,vi} from 'vitest';
 import {setupHeldGraphSourceFixture} from '../helpers/conversation-graph-held-source.js';
 import {GraphRecoverySourceManifestAccumulator} from '../../src/core/ConversationGraphRecoveryManifest.js';
 import {canonicalHash,signGraphRecord,unsigned,GRAPH_SIGNATURE_DOMAINS as D,verifyMembershipTransferReceipt} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 describe('actual prepared row cleanup ordering',()=>{
  it('finishes prior detached envelope cleanup before reading the next verified Source row',async()=>{

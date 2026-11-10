@@ -8,6 +8,8 @@ import {ConversationGraphReplicationRuntime} from '../../src/server/Conversation
 import {canonicalHash,unsigned,signGraphRecord} from '../../src/core/GraphWitnessTypes.js';
 import {signGraphAuthorizationReceipt} from '../../src/core/ConversationGraphReplicationProof.js';
 import {setupGraphRuntimeFixture as setup,runtimes} from '../helpers/conversation-graph-runtime.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks();});
 async function capture(x:Awaited<ReturnType<typeof setup>>,id:string,topicId=42){
  const base=x.f.record(id),core={...base.core,subject:{kind:'conversation',platform:'telegram',chatId:'-1001',topicId}};

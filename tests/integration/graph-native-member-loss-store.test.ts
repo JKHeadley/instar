@@ -28,6 +28,8 @@ import {GraphNativeMemberLossStore,graphMemberLossNativeIdentities} from '../../
 import {GRAPH_MEMBER_LOSS_INTENT_DOMAIN,GRAPH_MEMBER_LOSS_INTENT_ADMISSION_DOMAIN,verifyGraphMemberLossIntent,verifyGraphNativeMemberLossReceipt,type GraphMemberLossIntentProof} from '../../src/core/GraphMemberLossNativeProof.js';
 import {GRAPH_OWNER_MEMBER_LOSS_ADMISSION_DOMAIN,GRAPH_OWNER_MEMBER_LOSS_CONSENT_DOMAIN,graphOwnerMemberLossConfirmationHash,verifyGraphOwnerMemberLossConsent,type GraphOwnerMemberLossPayload} from '../../src/core/GraphOwnerMemberLoss.js';
 import {canonicalHash,signGraphRecord,unsigned,witnessActionPayload,verifyMembershipActivation,type GraphMembershipActivationCertificate} from '../../src/core/GraphWitnessTypes.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 afterEach(()=>vi.restoreAllMocks());
 describe('actual native member-loss lifecycle evidence (not human admission)',()=>{
  it('requires a real revoked epoch/registry/transaction, retains historical identity and a cold negative hold',async()=>{

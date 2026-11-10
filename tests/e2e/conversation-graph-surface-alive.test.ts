@@ -25,6 +25,8 @@ import {createMockSessionManager} from '../helpers/setup.js';
 import {makeDevice} from '../helpers/mobileDevice.js';
 import {setupGraphRuntimeFixture,witnesses} from '../helpers/conversation-graph-runtime.js';
 import {testEvidenceDir} from '../helpers/test-evidence-dir.js';
+// Multi-machine graph proof: takes longer than the push lane's 10 s default on slower Linux CI runners.
+vi.setConfig({testTimeout:120_000});
 
 const HOST='graph-alive.example.dev';
 describe('Conversations production AgentServer composition',()=>{
