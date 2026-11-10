@@ -40,6 +40,7 @@ import { validatePairingCode } from '../core/PairingProtocol.js';
 import type { PairingSession } from '../core/PairingProtocol.js';
 import type { IdentityReannounceService, ReannounceEvaluationContext } from '../core/IdentityReannounce.js';
 import { encryptForSync } from '../core/SecretStore.js';
+import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 import { IdentityStore, IdentityStoreRefusal } from '../core/IdentityStore.js';
 import { identityRecoveryBearerResponseMessage } from '../core/IdentityRecoveryBearer.js';
 import { identityProjectionBatchMessage } from '../core/IdentityProjectionEnvelope.js';
@@ -73,6 +74,11 @@ export interface MachineRouteContext {
   teamJoinBlocked?: (enforcement: number) => boolean;
   /** Team access: the rows a peer lacks, from any origin (team-roles-and-access, "Step 2b"). */
   teamAccessRows?: (have: Record<string, number>, heads: Record<string, string>, senderId: string) => { rows: unknown[]; vector: Record<string, number>; starts?: Record<string, number> };
+  /**
+   * Another machine of this agent asks this one to turn a team setting on (team-switches-agent-wide).
+   * Only `memory-privacy` or `app-conversations`, only ever on, then this machine's own supervised restart.
+   */
+  teamSwitchOn?: (setting: TeamSwitchSetting, senderId: string, requestedBy: string | null) => Promise<{ changed: boolean; restarting: boolean }> | { changed: boolean; restarting: boolean };
   /** A peer sent rows this machine lacks. */
   teamAccessPush?: (rows: unknown[], senderId: string) => Promise<{ added: number; refused: number }>;
   /** Machine identity manager */
@@ -250,6 +256,18 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     if (!Array.isArray(rows) || rows.length > 500) { res.status(400).json({ error: 'bad-rows' }); return; }
     try { res.json(await ctx.teamAccessPush(rows, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId)); }
     catch { res.status(500).json({ error: 'team-access-push-failed' }); } // @silent-fallback-ok — the sender keeps the rows and retries
+  });
+
+  // The owner turned a team setting on for the whole agent; the machine that took the tap asks each peer here.
+  // Narrow on purpose: two named settings, only ever on, so a machine of this agent can never use it to loosen anything.
+  router.post('/api/team-access/switch-on', authMiddleware, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.teamSwitchOn) { res.status(503).json({ error: 'team-switches-unavailable' }); return; }
+    const body = (req.body ?? {}) as { setting?: unknown; requestedBy?: unknown };
+    if (!isTeamSwitchSetting(body.setting)) { res.status(400).json({ error: 'bad-setting' }); return; }
+    const requestedBy = typeof body.requestedBy === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(body.requestedBy) ? body.requestedBy : null;
+    try { res.json({ ok: true, ...(await ctx.teamSwitchOn(body.setting, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId, requestedBy)) }); }
+    catch { res.status(500).json({ error: 'team-switch-failed' }); } // @silent-fallback-ok — the sender records it and tries again
   });
 
   // E2E-PAIRING: tests/e2e/desktop-setup-boot-lifecycle.test.ts

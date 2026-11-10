@@ -9851,6 +9851,12 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added people Registry First awareness');
     }
 
+    if (!content.includes('Registry First — team settings:')) {
+      content += '\n- **Registry First — team settings:** a team needs memory privacy and app conversations on every machine. `GET /mobile/team/context` → `teamSwitches` lists each setting that is off somewhere, with `offOn` (the machines) and one action for the whole agent; the owner turns it on with one Face ID tap in People (`POST /mobile/team/switches/turn-on`), which reaches every machine and restarts each one that changed. A machine is "gone" only when it stopped answering (`waitingOn`), never because a setting is off — never tell the owner to mark a live machine gone.\n';
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added team settings Registry First awareness');
+    }
+
     if (!content.includes('Decision journal — principle is required:')) {
       content += '\n- **Decision journal — principle is required:** `POST /intent/journal` now REFUSES (400) a decision that names no guiding principle, and refuses invented field names by name rather than storing them. A field no reader consumes makes a submission look recorded without being recorded. Writable fields: `sessionId`, `decision`, `principle`, `topicId`, `jobSlug`, `alternatives`, `confidence`, `context`, `conflict`, `tags`, `evidence` — put reasoning in `context`, guiding intent in `principle`. `GET /intent/journal/stats` carries `principledCount`/`unprincipledCount`, because `topPrinciples: []` alone cannot distinguish "nothing decided yet" from "many decisions, none said why". The machine dispatch path is exempt.\n';
       patched = true;
@@ -16376,6 +16382,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
       '**Registry First — team requests:',
+      // team-switches-agent-wide: a team setting is turned on for the whole agent, never per machine, on every framework.
+      '**Registry First — team settings:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is

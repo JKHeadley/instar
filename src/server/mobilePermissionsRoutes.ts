@@ -44,6 +44,7 @@ import { FLOOR_ACTION_LABELS } from '../core/AuthorizationRequestStore.js';
 import { verifiedEntityName } from '../messaging/shared/channelIdentity.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
+import { isTeamSwitchSetting, type TeamSwitchSetting } from '../core/TeamSwitches.js';
 
 export const MOBILE_PERMISSIONS_SCHEMA_VERSION = 1;
 export const PERMISSION_ACTION_VERSION = 'instar-permission-action-v1';
@@ -94,7 +95,9 @@ export type PermissionAction =
   /** "Bring it back here" (app-conversations-in-the-pool §2.2): Face ID, behind the same write gate as Move. */
   | { kind: 'session-bring-back'; target: string; confirmed: boolean }
   | { kind: 'session-close'; target: string; tmux: string; machine: string | null }
-  | { kind: TeamActionKind; target: 'team' }
+  | { kind: Exclude<TeamActionKind, 'team-switch-on'>; target: 'team' }
+  /** One setting turned on for the whole agent (team-switches-agent-wide); the setting is on the signed line. */
+  | { kind: 'team-switch-on'; target: TeamSwitchSetting }
   | { kind: 'session-new'; target: 'new'; name: string; platform: SessionPlatformChoice; framework: string | null; model: string | null; machine: string | null }
   | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null };
 
@@ -125,6 +128,7 @@ export function actionLine(a: PermissionAction): string {
     case 'session-bring-back': return `session-bring-back ${a.target} ${a.confirmed ? 'confirmed' : 'ask'}`;
     case 'session-close': return `session-close ${a.target} ${a.tmux} ${a.machine ?? 'here'}`;
     case 'team-off': case 'team-restore': case 'team-memory-privacy': case 'team-origin-gone': return `${a.kind} team`;
+    case 'team-switch-on': return `team-switch-on ${a.target}`;
     case 'session-new': return `session-new new ${reasonHash(a.name)} ${a.platform} ${a.framework ?? 'none'} ${a.model ?? 'none'} ${a.machine ?? 'auto'}`;
     case 'session-default': return `session-default new-topic-default ${a.framework ?? 'none'} ${a.model ?? 'none'}`;
   }
@@ -132,7 +136,7 @@ export function actionLine(a: PermissionAction): string {
 
 /** The exact bytes the presence key signs for one action. */
 /** What the owner confirms with Face ID on the team screens. */
-export type TeamActionKind = 'team-off' | 'team-restore' | 'team-memory-privacy' | 'team-origin-gone';
+export type TeamActionKind = 'team-off' | 'team-restore' | 'team-memory-privacy' | 'team-origin-gone' | 'team-switch-on';
 
 export function permissionPresenceMessage(deviceId: string, host: string, challenge: string, line: string): string {
   return `${PERMISSION_ACTION_VERSION}\n${deviceId}\n${host.toLowerCase()}\n${challenge}\n${line}`;
@@ -143,6 +147,7 @@ export function buildAction(kind: unknown, target: unknown, extra: { value?: unk
   // A session door names a conversation reference, whose Slack form has uppercase ids (checked below).
   if (typeof target !== 'string' || (kind === 'session-door' ? !conversationKeys(target) : !TARGET_PATTERN.test(target))) return { ok: false, error: 'bad-target' };
   if (kind === 'team-off' || kind === 'team-restore' || kind === 'team-memory-privacy' || kind === 'team-origin-gone') return { ok: true, action: { kind, target: 'team' } };
+  if (kind === 'team-switch-on') return isTeamSwitchSetting(target) ? { ok: true, action: { kind, target } } : { ok: false, error: 'bad-setting' };
   if (kind === 'approve-request') {
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };
@@ -596,7 +601,7 @@ export interface MobilePermissionsDeps {
   /** A session control: runs the dashboard's own route and answers in the phone's words (mobileSessionControlsRoutes.ts). */
   sessionAction?: (action: SessionAction, deviceId: string) => Promise<ActionResult>;
   /** Team access's Face ID actions (team-roles-and-access §3.6, §4.1). */
-  teamAction?: (kind: TeamActionKind, req: Request, deviceId: string) => Promise<ActionResult>;
+  teamAction?: (kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<ActionResult>;
   now?: () => number;
 }
 
@@ -728,7 +733,7 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
 
   router.post('/mobile/permissions/challenge', (req: Request, res: Response) => {
     const b = rec(req.body);
-    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone');
+    const g = writeGate(req, res, b.action === 'team-off' || b.action === 'team-restore' || b.action === 'team-memory-privacy' || b.action === 'team-origin-gone' || b.action === 'team-switch-on');
     if (!g) return;
     const built = buildAction(b.action, b.target, actionExtras(b));
     if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
@@ -835,15 +840,16 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   sessionRoute('/mobile/sessions/new', 'session-new', () => 'new');
   sessionRoute('/mobile/sessions/default', 'session-default', () => 'new-topic-default');
 
-  const teamRoute = (routePath: string, kind: TeamActionKind): void => {
+  const teamRoute = (routePath: string, kind: TeamActionKind, targetOf: (req: Request) => unknown = () => 'team'): void => {
     router.post(routePath, async (req: Request, res: Response) => {
       const g = writeGate(req, res, true);
       if (!g) return;
-      const built = buildAction(kind, 'team', {});
-      if (!built.ok || !proven(req, res, g, built.action)) return;
+      const built = buildAction(kind, targetOf(req), {});
+      if (!built.ok) { audit.record({ event: 'refused', deviceId: g.deviceId, personId: g.personId, route: auditRoute(req), reason: built.error, status: 400 }); res.status(400).json({ error: built.error }); return; }
+      if (!proven(req, res, g, built.action)) return;
       let r: ActionResult;
       try {
-        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId) : { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
+        r = deps.teamAction ? await deps.teamAction(kind, req, g.deviceId, built.action.target) : { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
       } catch (err) {
         // The reason goes to the log. The phone gets words a person can use.
         console.warn(`[team-access] ${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -857,6 +863,8 @@ export function mountMobilePermissionsRoutes(router: Router, deps: MobilePermiss
   teamRoute('/mobile/team/restore', 'team-restore');
   teamRoute('/mobile/team/origin-gone', 'team-origin-gone');
   teamRoute('/mobile/team/memory-privacy', 'team-memory-privacy');
+  // One tap turns a setting on for every machine of the agent. The setting is the signed target.
+  teamRoute('/mobile/team/switches/turn-on', 'team-switch-on', (req) => rec(req.body).setting ?? rec(req.body).target);
 
   router.post('/mobile/permissions/features/:id', async (req: Request, res: Response) => {
     const g = writeGate(req, res);

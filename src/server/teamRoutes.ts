@@ -16,6 +16,8 @@ import { ORG_ROLES, type OrgRole } from '../permissions/types.js';
 import { tierOfRole } from '../permissions/TeamAccess.js';
 import { TeamRequests, eventsMatchChange, parseRequestChange, requestSummary, type Requester } from '../core/TeamRequests.js';
 import { topicPlaceKey } from '../users/TeamConfinement.js';
+import type { MachineStanding } from '../core/TeamAccessSync.js';
+import { isTeamSwitchSetting, teamSwitchSummary, type TeamSwitchSetting, type TurnOnResult } from '../core/TeamSwitches.js';
 import { buildSignedOrigin } from './mobileConversationRoutes.js';
 import { devicePersonOf, principalOf, type MobilePairingService } from './mobilePairingRoutes.js';
 
@@ -39,6 +41,15 @@ export interface TeamRouteDeps {
   restoreRefs: () => { teamRefs: ConfinedEntry[]; allRefs: () => ConfinedEntry[] };
   /** Turn memory privacy on here and restart this machine (§3.6). */
   requireMemoryPrivacy: () => Promise<boolean> | boolean;
+  /**
+   * Turn one team setting on for the whole agent: every peer, then this machine (team-switches-agent-wide).
+   * Absent on an embedder that predates it, where memory privacy falls back to this machine alone.
+   */
+  turnOnEverywhere?: (setting: TeamSwitchSetting, requestedBy: string) => Promise<TurnOnResult>;
+  /** This machine's own standing, so the settings line counts it beside its peers. */
+  selfStanding?: () => { machineId: string; standing: MachineStanding } | null;
+  /** Requests already sent and not yet seen applied. */
+  switchRequests?: () => Array<{ setting: TeamSwitchSetting; machineId: string }>;
   /**
    * What other agents get once memory privacy is on (memory-privacy-agent-places): the live
    * `agentSessions` status when it is already on, otherwise what turning it on would give. The
@@ -167,6 +178,15 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
 
   const send = (res: Response, r: Refusal): void => { res.status(r.status).json({ error: r.error, detail: r.detail }); };
 
+  /** The owner's one tap, answered per machine. Only this machine failing makes it a failure: a quiet peer is retried. */
+  const switchAnswer = (r: TurnOnResult): { status: number; body: unknown } => {
+    const self = r.machines.find((m) => m.self);
+    if (self?.outcome === 'failed') {
+      return { status: 503, body: { error: 'restart-unavailable', setting: r.setting, machines: r.machines, detail: 'The setting could not be turned on here, or this machine could not restart itself. Try again.' } };
+    }
+    return { status: 200, body: { ok: true, setting: r.setting, restarting: self?.restarting ?? false, machines: r.machines } };
+  };
+
   // One access change at a time: each check below must still be true when its row is written.
   let writes: Promise<unknown> = Promise.resolve();
   const inTurn = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -283,7 +303,14 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     }
   };
 
-  svc.teamActionRunner = (kind, req, deviceId) => inTurn(async () => {
+  svc.teamActionRunner = (kind, req, deviceId, target) => inTurn(async () => {
+    // Settings come before any team exists, so they do not need the log.
+    if (kind === 'team-switch-on') {
+      if (!isTeamSwitchSetting(target)) return { status: 400, body: { error: 'bad-setting', detail: 'That is not a setting that can be turned on for the whole agent.' } };
+      if (!deps.turnOnEverywhere) return { status: 503, body: { error: 'team-switches-unavailable', detail: 'This agent cannot turn settings on for all its machines yet. Update it first.' } };
+      return switchAnswer(await deps.turnOnEverywhere(target, deviceId));
+    }
+    if (kind === 'team-memory-privacy' && deps.turnOnEverywhere) return switchAnswer(await deps.turnOnEverywhere('memory-privacy', deviceId));
     const log = svc.teamLog();
     if (!log) return { status: 503, body: { error: 'team-access-unavailable', detail: 'Team access is not available on this agent.' } };
     if (kind === 'team-memory-privacy') {
@@ -322,11 +349,21 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     return { status: 200, body: { ok: true } };
   });
 
+  /** One line per setting for the whole agent, never one line per machine (team-switches-agent-wide). */
+  const teamSwitches = () => {
+    const self = deps.selfStanding?.() ?? null;
+    return teamSwitchSummary([...(self ? [self] : []), ...(svc.teamPuller?.standings?.() ?? [])], deps.switchRequests?.() ?? []);
+  };
+
   /** A machine last known unable to keep a team's promises blocks anything new, and existing phones keep working (§3.6). */
   const floorOk = (res: Response): boolean => {
     const behind = svc.teamPuller?.belowFloor() ?? [];
     if (behind.length === 0) return true;
-    res.status(409).json({ error: 'machine-below-floor', machines: behind, detail: `${behind.length === 1 ? 'A machine' : 'Some machines'} on this agent cannot keep team access private yet. Update ${behind.length === 1 ? 'it' : 'them'} or mark ${behind.length === 1 ? 'it' : 'them'} as gone first.` });
+    const update = behind.some((b) => b.reason === 'old-build');
+    // A setting that is off is turned on for the whole agent; a machine is gone only when it stopped answering.
+    res.status(409).json({ error: 'machine-below-floor', machines: behind, teamSwitches: teamSwitches(), detail: update
+      ? 'A machine on this agent is on an older version. Update the agent first.'
+      : 'A setting team access needs is off on part of this agent. Turn it on for the whole agent from People first.' });
     return false;
   };
 
@@ -367,7 +404,9 @@ export function createTeamRouter(svc: MobilePairingService, deps: TeamRouteDeps)
     res.json({
       ownerPersonKey: log?.state().ownerPersonKey ?? owner.userId, ownerLinks: owner.links, several: owner.several,
       teamOn: svc.teamOn(), refusal: svc.teamRefusal(), held: log?.gaps() ?? [], openRequests: requests.open().length,
+      // Older apps read machinesBelowFloor; newer ones show teamSwitches, one line and one action per setting.
       machinesBelowFloor: svc.teamPuller?.belowFloor() ?? [], waitingOn: svc.teamPuller?.waitingOn() ?? [],
+      teamSwitches: teamSwitches(),
       // What marking a machine as gone has to name: each stream held here and how far it runs.
       streams: log?.vector() ?? {},
       // Restore is offered up front, not only after a write fails.

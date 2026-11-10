@@ -628,7 +628,7 @@ export class MobilePairingService {
   teamPuller: TeamAccessPuller | null = null;
 
   /** Set by the team router: the Face ID team actions (§3.6, §4.1). */
-  teamActionRunner: ((kind: TeamActionKind, req: Request, deviceId: string) => Promise<{ status: number; body: unknown }>) | null = null;
+  teamActionRunner: ((kind: TeamActionKind, req: Request, deviceId: string, target?: string) => Promise<{ status: number; body: unknown }>) | null = null;
 
   /** Tell a team phone's readers about a reply in a Telegram topic they hold. */
   teamTopicReply(topicId: number): void {
@@ -2290,7 +2290,7 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/team\/invites$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/grants$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
     { method: 'POST', re: /^\/mobile\/team\/people\/[^/]{1,128}$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'team-writes' },
-    { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy|origin-gone)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/team\/(off|restore|memory-privacy|origin-gone|switches\/turn-on)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     // People and roles §3.5: the owner's grant switches (owner phones only, checked in the route).
     { method: 'GET', re: /^\/mobile\/people$/, statuses: active },
     { method: 'POST', re: /^\/mobile\/people\/[^/]{1,128}\/grants$/, statuses: active },
