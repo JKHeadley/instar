@@ -33,7 +33,7 @@ describe('Chief of Staff loop wiring', () => {
   });
   it('second-pass fixes: one-reader rule fails CLOSED, an orphan run is compensated, a lease-expired CoS run is not revived', () => {
     expect(server).toContain('readers === null || readers > 1');
-    expect(server).toContain("cosRunStore.markTerminal(String(t), body.runId, 'ended', 'cos-spawn-failed')");
+    expect(server).toContain("cosRunStore.markTerminal(String(t), registeredRun, 'ended', 'cos-spawn-failed')");
     expect(server).toContain('cosRunStore.findByRunId(runId)');
     expect(server).toContain("return 'cos-lease-expired'");
   });
