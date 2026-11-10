@@ -2427,6 +2427,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // the permission switches, and adding accounts joins it). Owner phones only; never named for a team phone.
     // E2E-PAIRING: EXEMPT — rate-bucket name only; the route is covered by the account-sign-in-face-id e2e test
     { method: 'POST', re: /^\/mobile\/accounts\/sign-in\/start$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
+    // Add a Claude or Codex account with Face ID (docs/specs/account-add-face-id.md): same path, the account-actions bucket, owner only.
+    { method: 'POST', re: /^\/mobile\/accounts\/add$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'account-actions' },
   ];
   const mapped = rules.map((rule) => {
     const named = TEAM_ROUTE_TIERS.find(([method, re]) => method === rule.method && re.source === rule.re.source);
