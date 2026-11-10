@@ -13,7 +13,8 @@ PR #3013 adds or changes about 188 paths under `tests/` and `docs/audits/` (171 
 The live-fixture e2e kept failing only inside Local Verify's full parallel run. Startup phase logs showed the snapshot copy of ~10,000 files taking up to 69 s on a busy disk, so the test's start window ran out while the fixture server was still copying (the server itself never failed). Changes:
 - `tests/helpers/conversation-graph-frozen-dist.mjs`: change detection by path, size, mode and nanosecond mtime instead of hashing the source twice; files copied concurrently with a clone; only the copy is hashed, once; the critical server modules are still compared by content; after the first copy error no worker starts another file.
 - `tests/helpers/conversation-graph-live-server.mjs`: a 503 (not ready) first owner visit is retried for up to 30 s; startup phases and a full startup failure are written to `/tmp` so a lane-only failure can be read.
-- `tests/e2e/conversation-graph-live-fixture.test.ts`: start window 180 s, child lifetime 300 s, test timeout 300 s; the phase-named timeout error stays.
+- `tests/e2e/conversation-graph-live-fixture.test.ts`: start window 180 s, child lifetime 300 s, test timeout 300 s; the phase-named timeout error stays. A diagnostic `catch` writes the error stack and the last 8 KB of the child's stderr (control token and PIN redacted) to `/tmp/instar-live-fixture-test-failure.log` (mode 0600) and rethrows, so pass/fail and the `finally` cleanup are unchanged.
+- `tests/helpers/conversation-graph-frozen-dist.mjs`: the snapshot leaves out `dist/native/instar-desktop-<kind>-test-*`, temporary helpers the desktop unit tests create and delete in another lane (one vanished mid-copy, ENOENT).
 
 ## 1. Over-block
 No issue identified.
@@ -54,3 +55,7 @@ Verdict: concur. All 188 harness paths in the diff (the gate's 169-path list) we
 **Reviewer:** independent fresh Claude subagent (Opus 5.5), 2026-11-10 03:47 PST, given the diffs since the first review, not the author's conclusion.
 
 Second verdict, on the follow-up: concur. The snapshot still pins an exact, content-hashed copy of the built package: the source is checked for changes by name, size and nanosecond mtime, the copy is fully hashed, and the critical modules are compared by content, so only a writer that keeps the old mtime could slip a non-critical change past it. The longer start, lifetime and test windows only tolerate disk load, with the phase-named timeout kept, and the 503 retry is bounded and limited to the documented "not ready" answer, so no real refusal is masked. Its one should-fix (cleanup racing copy workers after an error) is applied. Notes kept: the fixed `/tmp` diagnostic names follow an existing file and the phase log is never trimmed.
+
+**Reviewer:** independent fresh Claude subagent (Opus 5.5), 2026-11-10 08:13 PST, given the diagnostic diff, not the author's conclusion.
+
+Third verdict, on the diagnostic catch: concur. Test semantics are unchanged (the same error is rethrown and `finally` still runs); it exposes nothing new, since the bearer token is redacted no more and no less than in the existing evidence-dir stderr log and AgentServer has no console path that prints the token, PIN or session secrets. Its optional note (redact before cutting to 8 KB) is applied.
