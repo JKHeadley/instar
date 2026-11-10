@@ -147,7 +147,8 @@ export interface FeedbackExecutorServiceOptions {
   ghCredentialHelper: string | null;
   raiseAttention: (item: AttentionInput) => Promise<void>;
   reportDegradation: (event: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => void;
-  dashboardLink: () => string;
+  /** The dashboard link for the operator, or null while it would not open on a phone yet (tunnel starting). */
+  dashboardLink: () => string | null;
   /** How long a canary or verification step may wait for a session to end. */
   sessionWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -2228,6 +2229,8 @@ export class FeedbackExecutorService {
   /** Lines for the operator action list (§5): each entry carries the meta key that stamps it once. */
   actionItems(): Array<{ line: string; metaKey: string }> {
     const link = this.opts.dashboardLink();
+    // No openable link yet: offer nothing this pass, so nothing is stamped as shown.
+    if (link === null) return [];
     const items: Array<{ line: string; metaKey: string }> = [];
     const avail = this.availability;
     if (avail?.reason === 'approver-not-independent' && avail.approver) {

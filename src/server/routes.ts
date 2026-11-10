@@ -31,7 +31,7 @@ import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack
 import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDisplay, originEvidenceFromProducer, validateDeviceOriginRow, validateMessageOriginEvidence, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging/telegram-origin/types.js';
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
-import { consolePageUrl } from './dashboardPaths.js';
+import { consolePageUrl, createOperatorLinkOriginResolver, originOrNull } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
@@ -8177,8 +8177,15 @@ export function createRoutes(ctx: RouteContext): Router {
       const r = await withNotificationEnvelope(envelope, async () => (ctx.telegram)!.sendToTopic(topicId, text));
       return r.recorded ? r : { messageId: requireTelegramDelivery(r).messageId };
     },
-    dashboardLink: (topicId: string) =>
-      `http://localhost:${ctx.config.port}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}`,
+    // The phone must be able to open it: the tunnel's address when up, localhost only with no
+    // tunnel at all; while a configured tunnel is starting the link is left out (reply-to-ratify still works).
+    dashboardLink: (() => {
+      const resolveOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
+      return (topicId: string) => {
+        const origin = originOrNull(resolveOrigin());
+        return origin ? `${origin}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}` : null;
+      };
+    })(),
     recordMetric: (o) => scopeAccretionMetric(o, 'ratification'),
     log: (m) => console.warn(m),
   });

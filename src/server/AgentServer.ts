@@ -3887,6 +3887,7 @@ export class AgentServer {
                 return enqueue.call(this.telegramAdapter, item);
               },
               tunnelUrl: () => options.tunnel?.url ?? null,
+              tunnelConfigured: () => !!options.tunnel,
               paceTicks: this.queuePaceTickLog(options.config),
               overrides: options.feedbackTriageDeps,
             });
@@ -3926,6 +3927,7 @@ export class AgentServer {
                   await enqueue.call(this.telegramAdapter, item);
                 },
                 tunnelUrl: () => options.tunnel?.url ?? null,
+                tunnelConfigured: () => !!options.tunnel,
                 paceTicks: this.queuePaceTickLog(options.config),
                 overrides: options.feedbackExecuteDeps,
               });
