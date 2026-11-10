@@ -211,6 +211,7 @@ import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
 import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
 import { TopicMemory } from '../memory/TopicMemory.js';
+import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow } from '../memory/topicRowWriter.js';
 import { SemanticMemory } from '../memory/SemanticMemory.js';
 import { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js';
 import { QuotaTracker } from '../monitoring/QuotaTracker.js';
@@ -9212,6 +9213,14 @@ export async function startServer(options: StartOptions): Promise<void> {
     // late-bound (the adapter is built just below); no adapter ⇒ "(name unresolved)".
     setTopicNameResolver((id) => telegram?.getTopicName(id) ?? null);
     let topicMemory: TopicMemory | undefined;
+    // The channel-neutral TopicMemory row writer (context-budget-layered-summaries §14):
+    // every channel's rows go through one key rule. Telegram and Slack write
+    // unconditionally (Slack's key is a correctness fix); new rows for app
+    // conversations are behind `contextBudget.enabled`, read live.
+    const topicRowWriter = new TopicRowWriter({
+      topicMemory: () => topicMemory,
+      channelEnabled: (channel) => channel === 'app' ? liveConfig.get<boolean>('contextBudget.enabled', false) === true : true,
+    });
     const telegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
     // Telegram added after the install step (the recommended-services recipe, or a hand-added entry) left no reply
     // script, so a session could read the group but never answer. Write it when missing; an existing one is never touched.
@@ -9990,8 +9999,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const tm = topicMemory;
         telegram.onMessageLogged = (entry) => {
           if (entry.topicId != null && tm) {
-            tm.insertMessage({
-              messageId: entry.messageId,
+            const body = {
               topicId: entry.topicId,
               text: entry.text,
               fromUser: entry.fromUser,
@@ -10001,7 +10009,15 @@ export async function startServer(options: StartOptions): Promise<void> {
               senderUsername: entry.senderUsername,
               telegramUserId: entry.telegramUserId,
               forwarded: entry.forwarded,
-            });
+              ...(entry.rowOrigin ? { origin: entry.rowOrigin } : {}),
+            };
+            // A real Telegram id goes through the key rule (§14); anything else
+            // keeps the legacy insert unchanged.
+            if (Number.isSafeInteger(entry.messageId) && entry.messageId > 0) {
+              topicRowWriter.writeRow({ channel: 'telegram', nativeId: entry.messageId }, body);
+            } else {
+              tm.insertMessage({ ...body, messageId: entry.messageId });
+            }
           }
         };
       } catch (err) {
@@ -10311,6 +10327,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           // Read once by the create that asked; an engine-switch restart's entry is replaced by the next start.
           onRefused: (key, why) => { if (_appStartRefusals.size > 500) _appStartRefusals.clear(); _appStartRefusals.set(key, why); },
+        });
+        // Context-budget §14: app conversations get TopicMemory rows through the shared
+        // key rule, local and replicated events alike (the key is derived from the
+        // event itself, so every machine writes the same row). Behind contextBudget.enabled.
+        appSvc.store.addAppendListener((ev) => {
+          if (ev.kind !== 'message' && ev.kind !== 'media-message') return;
+          if (!topicRowWriter.channelOn('app')) return;
+          writeAppConversationRow(topicRowWriter, ev, {
+            aliasFor: (key) => conversationRegistry.appAliasFor(key),
+            ownerUserId: () => _memoryPrivacyWired.ownerUserId() ?? null,
+          });
         });
         // Replication (§4.8): emit every local event; land peers' events already on disk.
         if (replicatedRecordEmitter) {
@@ -13205,6 +13232,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           return q?.enabled === true && q?.dryRun === false && foldPoolGateOpen(livePool());
         },
         topicRowsPresent: () => false, // the relay-path row carrier and watermark arrive in Phase 1 (§14)
+        // §14: a topic folds only when its channel has a row writer that is on.
+        hasRowSource: (topicId) => topicRowWriter.hasRowSource(topicId),
         // No live sentinel, no fold (§7.8): read lazily, the sentinel is built after the sweep.
         sentinelHeartbeatFresh: () => _contextBudgetSentinel?.heartbeatFresh() ?? false,
         // The skew rule (§14): only a build that registered the layer kind may fold.
@@ -19220,18 +19249,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               existingSlackCallback(entry);
             }
 
-            // TopicMemory dual-write (matches Telegram's insertMessage pattern)
-            // TopicMemory uses numeric topicId; for Slack we use the synthetic hash
-            if (entry.channelId && topicMemory) {
-              const synId = slackChannelToSyntheticId(String(entry.channelId));
-              topicMemory.insertMessage({
-                messageId: typeof entry.messageId === 'number' ? entry.messageId : 0,
-                topicId: synId,
-                text: entry.text,
-                fromUser: entry.fromUser,
-                timestamp: entry.timestamp,
-                sessionName: entry.sessionName,
-                senderName: entry.senderName,
+            // TopicMemory dual-write under the Slack synthetic topic id. The key is `ts × 1e6` (context-budget §14): the old `messageId: 0` cast
+            // collapsed every message in a channel into one row. The sender binds to the
+            // person the memory-privacy resolver names (§6.1).
+            if (topicMemory) {
+              writeSlackLogRow(topicRowWriter, entry, {
+                topicIdFor: (channelId) => slackChannelToSyntheticId(channelId),
+                resolveUserId: (slackUserId) => _memoryUserResolver?.slack(slackUserId)?.id,
               });
             }
 

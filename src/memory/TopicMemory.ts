@@ -48,7 +48,46 @@ export interface TopicMessage {
   privacyScope?: import('../core/types.js').PrivacyScopeType;
   /** Explicit platform forwarding provenance; undefined means legacy/unknown. */
   forwarded?: boolean;
+  /**
+   * The channel's own message id, kept verbatim (context-budget §14 key rule):
+   * Telegram the native id, Slack the `ts`, an app conversation the event id.
+   * Undefined on legacy rows and on writers that predate the row writer.
+   */
+  channelMessageId?: string;
+  /**
+   * Set only on rows that reached this topic through another agent
+   * (context-budget §8): `relay` (a Threadline relay message mirrored in) or
+   * `a2a` (this agent's own agent-to-agent traffic mirrored in). Such rows are
+   * kept and labelled, and carry no operator authority. Undefined otherwise.
+   */
+  origin?: TopicRowOrigin;
 }
+
+/** Row origins that mark a TopicMemory row as arriving from another agent (§8). */
+export const TOPIC_ROW_ORIGINS = ['relay', 'a2a'] as const;
+export type TopicRowOrigin = (typeof TOPIC_ROW_ORIGINS)[number];
+
+/** A recorded origin, or undefined for anything else (an unknown value is never guessed). */
+export function coerceTopicRowOrigin(value: unknown): TopicRowOrigin | undefined {
+  return typeof value === 'string' && (TOPIC_ROW_ORIGINS as readonly string[]).includes(value)
+    ? value as TopicRowOrigin
+    : undefined;
+}
+
+/** What a keyed insert did (context-budget §14). */
+export type KeyedInsertResult =
+  /** A new row landed. */
+  | { outcome: 'inserted' }
+  /** The same channel message was already stored (a replay); nothing changed. */
+  | { outcome: 'duplicate' }
+  /** A legacy row with this integer key and no channel id was adopted: its channel id was filled in. */
+  | { outcome: 'adopted' }
+  /** The integer key is held by a DIFFERENT channel message: refused, the existing row is untouched. */
+  | { outcome: 'collision'; existingChannelMessageId: string }
+  /** The channel id is already stored under a DIFFERENT integer key: refused (a key-rule mismatch). */
+  | { outcome: 'key-mismatch'; existingMessageId: number }
+  /** TopicMemory is not open. */
+  | { outcome: 'not-ready' };
 
 export interface TopicSummary {
   topicId: number;
@@ -91,7 +130,7 @@ export interface TopicContext {
   topicName: string | null;
 }
 
-const SCHEMA_VERSION = '5';
+const SCHEMA_VERSION = '6';
 
 /**
  * Map a raw SQLite row to a TopicMessage with proper type coercion.
@@ -106,6 +145,8 @@ function mapRow(row: any): TopicMessage {
     userId: row.userId ?? undefined,
     privacyScope: row.privacyScope ?? undefined,
     forwarded: row.forwarded == null ? undefined : !!row.forwarded,
+    channelMessageId: row.channelMessageId ?? undefined,
+    origin: coerceTopicRowOrigin(row.origin),
   };
 }
 
@@ -260,6 +301,8 @@ export class TopicMemory {
         user_id TEXT,
         privacy_scope TEXT DEFAULT 'private',
         forwarded INTEGER,
+        channel_message_id TEXT,
+        origin TEXT,
         UNIQUE(message_id, topic_id)
       );
 
@@ -313,6 +356,9 @@ export class TopicMemory {
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(telegram_user_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id)');
     this.db.exec('CREATE INDEX IF NOT EXISTS idx_messages_privacy ON messages(privacy_scope)');
+    // Context-budget §14: one row per channel message. Partial, so legacy rows
+    // (NULL channel id) never conflict with each other.
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_channel_msg ON messages(topic_id, channel_message_id) WHERE channel_message_id IS NOT NULL');
 
     // Set schema version
     this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)').run('schema_version', SCHEMA_VERSION);
@@ -393,6 +439,21 @@ export class TopicMemory {
         this.db.exec('ALTER TABLE messages ADD COLUMN forwarded INTEGER');
       }
     }
+
+    if (currentVersion < '6') {
+      // Migration v5 → v6 (context-budget-layered-summaries §14, §8): the
+      // channel's own message id and the relay/A2A row origin. Both nullable
+      // and inert on existing rows (unknown, never guessed). The unique index
+      // on (topic_id, channel_message_id) is created after this pass.
+      const columns = this.db.prepare("PRAGMA table_info(messages)").all() as Array<{ name: string }>;
+      const columnNames = new Set(columns.map(c => c.name));
+      if (!columnNames.has('channel_message_id')) {
+        this.db.exec('ALTER TABLE messages ADD COLUMN channel_message_id TEXT');
+      }
+      if (!columnNames.has('origin')) {
+        this.db.exec('ALTER TABLE messages ADD COLUMN origin TEXT');
+      }
+    }
   }
 
   // ── Message Operations ──────────────────────────────────────
@@ -405,8 +466,8 @@ export class TopicMemory {
     if (!this.db) return;
 
     const stmt = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       msg.messageId, msg.topicId, msg.text, msg.fromUser ? 1 : 0,
@@ -414,6 +475,7 @@ export class TopicMemory {
       msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
       msg.userId ?? null, msg.privacyScope ?? 'private',
       msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
+      msg.channelMessageId ?? null, msg.origin ?? null,
     );
 
     // Update topic metadata
@@ -427,14 +489,53 @@ export class TopicMemory {
   }
 
   /**
+   * Insert a row keyed by the channel-neutral key rule (context-budget §14):
+   * the integer `messageId` derived deterministically per channel, and the
+   * channel's own id in `channelMessageId` (required here). Unlike
+   * `insertMessage`, this never ignores silently: a replay of the same channel
+   * message is `duplicate`, and an integer key already held by a DIFFERENT
+   * channel message is `collision` (refused, the stored row untouched), so the
+   * caller can count it. A legacy row with this key and no channel id is
+   * adopted (its channel id filled in), so rows written before the column
+   * existed do not read as collisions.
+   */
+  insertKeyedMessage(msg: TopicMessage & { channelMessageId: string }): KeyedInsertResult {
+    const db = this.db;
+    if (!db) return { outcome: 'not-ready' };
+    if (typeof msg.channelMessageId !== 'string' || msg.channelMessageId.length === 0) {
+      throw new Error('insertKeyedMessage requires a channelMessageId');
+    }
+    if (!Number.isSafeInteger(msg.messageId)) {
+      throw new Error(`insertKeyedMessage requires a safe-integer messageId (got ${String(msg.messageId)})`);
+    }
+    return db.transaction((): KeyedInsertResult => {
+      const byKey = db.prepare('SELECT id, channel_message_id AS cmid FROM messages WHERE topic_id = ? AND message_id = ?')
+        .get(msg.topicId, msg.messageId) as { id: number; cmid: string | null } | undefined;
+      const byChannel = db.prepare('SELECT id, message_id AS mid FROM messages WHERE topic_id = ? AND channel_message_id = ?')
+        .get(msg.topicId, msg.channelMessageId) as { id: number; mid: number } | undefined;
+      if (byKey) {
+        if (byKey.cmid === msg.channelMessageId) return { outcome: 'duplicate' };
+        if (byKey.cmid !== null) return { outcome: 'collision', existingChannelMessageId: byKey.cmid };
+        if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };
+        db.prepare('UPDATE messages SET channel_message_id = ?, origin = COALESCE(origin, ?) WHERE id = ?')
+          .run(msg.channelMessageId, msg.origin ?? null, byKey.id);
+        return { outcome: 'adopted' };
+      }
+      if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };
+      this.insertMessage(msg);
+      return { outcome: 'inserted' };
+    })();
+  }
+
+  /**
    * Batch-insert messages (for JSONL import).
    */
   insertMessages(messages: TopicMessage[]): number {
     if (!this.db) return 0;
 
     const insert = this.db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -446,6 +547,7 @@ export class TopicMemory {
           msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
           msg.userId ?? null, msg.privacyScope ?? 'private',
           msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
+          msg.channelMessageId ?? null, msg.origin ?? null,
         );
         if (result.changes > 0) count++;
       }
@@ -468,7 +570,8 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ?
       ORDER BY timestamp DESC, id DESC
@@ -494,7 +597,8 @@ export class TopicMemory {
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername,
              telegram_user_id AS telegramUserId, user_id AS userId,
-             privacy_scope AS privacyScope, forwarded
+             privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ? AND timestamp >= ?
       ORDER BY timestamp ASC, id ASC
@@ -521,7 +625,8 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ?
         AND (
@@ -576,7 +681,8 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE user_id = ?
       ORDER BY timestamp ASC
@@ -697,7 +803,8 @@ export class TopicMemory {
       SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
              timestamp, session_name AS sessionName,
              sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
-             user_id AS userId, privacy_scope AS privacyScope, forwarded
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
       FROM messages
       WHERE topic_id = ? AND message_id > ?
       ORDER BY timestamp ASC
@@ -790,8 +897,8 @@ export class TopicMemory {
 
     const db = this.db;
     const insert = db.prepare(`
-      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO messages (message_id, topic_id, text, from_user, timestamp, session_name, sender_name, sender_username, telegram_user_id, user_id, privacy_scope, forwarded, channel_message_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     let count = 0;
@@ -810,6 +917,7 @@ export class TopicMemory {
             msg.senderName ?? null, msg.senderUsername ?? null, msg.telegramUserId ?? null,
             msg.userId ?? null, msg.privacyScope ?? 'private',
             msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
+            msg.channelMessageId ?? null, msg.origin ?? null,
           );
           if (result.changes > 0) count++;
         }
@@ -841,6 +949,7 @@ export class TopicMemory {
             userId: entry.userId ?? undefined,
             privacyScope: entry.privacyScope ?? undefined,
             forwarded: entry.forwarded == null ? undefined : entry.forwarded === true,
+            origin: coerceTopicRowOrigin(entry.rowOrigin),
           });
           if (batch.length >= BATCH_SIZE) {
             flushBatch();
