@@ -458,10 +458,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     // The routes live under the '/mobile' prefix already claimed by the mobilePairing entry, so this
     // awareness entry claims no new top-level prefix (the empty-prefix precedent above).
     prefixes: [],
-    description: 'Native Accounts, What thinking costs and Resource usage screens for the Instar iPhone app (docs/specs/mobile-native-capacity-screens.md): GET /mobile/accounts (subscription accounts across the machines that answer: signed in or needing sign-in per machine, usage windows with reset times), GET /mobile/spend?window=today|week|month (recorded pay-per-use cost across machines with its basis, this machine\'s paid-route limits, conversation token totals), GET /mobile/resources (CPU and memory for the agent, its server and sessions on this machine). Read-only trimmed summaries for an owner phone (device-signed, ownerOnly) or the bearer token; an MSP phone gets 403 owner-phone-required.',
+    description: 'Native Accounts, What thinking costs and Resource usage screens for the Instar iPhone app (docs/specs/mobile-native-capacity-screens.md): GET /mobile/accounts (subscription accounts across the machines that answer: signed in or needing sign-in per machine, usage windows with reset times), GET /mobile/spend?window=today|week|month (recorded pay-per-use cost across machines with its basis, this machine\'s paid-route limits, conversation token totals), GET /mobile/resources (CPU and memory for the agent, its server and sessions on this machine). Read-only trimmed summaries for an owner phone (device-signed, ownerOnly) or the bearer token; an MSP phone gets 403 owner-phone-required. POST /mobile/accounts/sign-in/start {accountId, machineId, challenge, presenceSig} starts a fresh sign-in for one account on one machine with a Face ID presence signature in place of the dashboard PIN (owner phone only; challenge action account-sign-in, target <accountId>@<machineId>; docs/specs/account-sign-in-face-id.md); it runs start-cell\'s own core and answers the same body.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/accounts', 'GET /mobile/spend', 'GET /mobile/resources'],
+      endpoints: ['GET /mobile/accounts', 'GET /mobile/spend', 'GET /mobile/resources', 'POST /mobile/accounts/sign-in/start'],
     }),
   },
   {

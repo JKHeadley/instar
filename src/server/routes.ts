@@ -38433,42 +38433,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const state = subscriptionPoolAvailability()?.state;
     return state === 'ready' || state === 'unconfigured';
   };
-  const enforceSubscriptionPoolWriteCapability = (route: string) =>
-    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+  /**
+   * The subscription-pool write barrier for one classified route, as an answer or null (go ahead).
+   * Shared by the route middleware below and the owner phone's Face ID sign-in
+   * (POST /mobile/accounts/sign-in/start runs start-cell's barrier, account-sign-in-face-id).
+   */
+  const subscriptionPoolWriteRefusal = (route: string): { status: number; body: Record<string, unknown> } | null => {
     const capability = SUBSCRIPTION_POOL_WRITE_CAPABILITIES[route];
-    if (!capability) {
-      res.status(500).json({ error: 'Subscription identity mutation route is not classified.' });
-      return;
-    }
-    if (ctx.subscriptionPool && !subscriptionPoolReadable()) {
-      res.status(503).json(subscriptionPoolFailureBody());
-      return;
-    }
+    if (!capability) return { status: 500, body: { error: 'Subscription identity mutation route is not classified.' } };
+    if (ctx.subscriptionPool && !subscriptionPoolReadable()) return { status: 503, body: subscriptionPoolFailureBody() as Record<string, unknown> };
     if (subscriptionPoolAvailability()?.maintenance === 'rollback-cleanup-pending') {
-      res.status(409).json({
+      return { status: 409, body: {
         error: 'subscription-pool-cleanup-pending',
         priorCommitMayHaveSucceeded: true,
         recovery: 're-read-and-restart',
-      });
-      return;
+      } };
     }
     if (
       subscriptionPoolAvailability()?.state === 'unconfigured' &&
       (route === 'PATCH /subscription-pool/:id' || route === 'DELETE /subscription-pool/:id')
     ) {
-      res.status(503).json(subscriptionPoolFailureBody());
-      return;
+      return { status: 503, body: subscriptionPoolFailureBody() as Record<string, unknown> };
     }
-    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) {
-      next();
-      return;
-    }
-    res.status(503).json({
+    if (capability === 'readOnlyOrNonIdentity' || !ctx.subscriptionEmailBarrier?.isBlocking()) return null;
+    return { status: 503, body: {
       error: 'Account identity reconciliation is still starting. Try again shortly.',
       code: 'subscription-account-email-reconciliation-running',
       retryable: true,
       emailReconciliation: { state: 'running' },
-    });
+    } };
+  };
+  const enforceSubscriptionPoolWriteCapability = (route: string) =>
+    (_req: ExpressRequest, res: ExpressResponse, next: () => void): void => {
+    const refusal = subscriptionPoolWriteRefusal(route);
+    if (refusal) {
+      res.status(refusal.status).json(refusal.body);
+      return;
+    }
+    next();
   };
   const subscriptionEmailGaps = () =>
     (ctx.subscriptionPool && subscriptionPoolReadable() &&
@@ -39920,6 +39922,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     mountMobilePermissionsRoutes(router, {
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
+      // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
+      // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
+      startAccountSignIn: async (accountId, machineId, req) => {
+        const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool/matrix/start-cell');
+        if (refusal) return refusal;
+        return runMatrixStartCell(accountId, machineId, req.app?.locals?.stateDir);
+      },
       teamAction: async (kind, req, deviceId, target) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
         return run ? await run(kind, req, deviceId, target) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
@@ -40881,33 +40890,32 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // new authority — it just drives the existing chain in one call so the frontend never handles
   // fingerprints or raw mandate JSON. Idempotent: a re-tap reuses an existing valid pending login
   // for this pair (no duplicate, no stacked mandate). Dark behind multiMachine.accountFollowMe.
-  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
+  //
+  // The core after the presence check lives in runMatrixStartCell so the owner phone's Face ID route
+  // (POST /mobile/accounts/sign-in/start, docs/specs/account-sign-in-face-id.md) runs exactly the same
+  // chain and answers exactly the same body. Only the presence proof differs; nothing here is duplicated.
+  type MatrixStartCellResult = { status: number; body: Record<string, unknown> };
+  type MatrixStartCellReady =
+    | { ok: false; result: MatrixStartCellResult }
+    | { ok: true; afmCfg: { enabled?: boolean; remoteScrapeTimeoutMs?: number } | undefined; coordination: NonNullable<typeof ctx.coordination>; enrollmentWizard: NonNullable<typeof ctx.enrollmentWizard>; subscriptionPool: NonNullable<typeof ctx.subscriptionPool> };
+  /** start-cell's preconditions (feature on, mandate engine, wizard and pool present), read live. */
+  function matrixStartCellReady(): MatrixStartCellReady {
     const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean; remoteScrapeTimeoutMs?: number } } }).multiMachine?.accountFollowMe;
-    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
-      res.status(503).json({ error: 'account follow-me not enabled' });
-      return;
-    }
-    if (!ctx.coordination) {
-      res.status(503).json({ error: 'coordination mandate engine unavailable (no stateDir or init failed)' });
-      return;
-    }
-    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) {
-      res.status(503).json({ error: 'enrollment wizard or subscription pool not configured' });
-      return;
-    }
-    const b = req.body ?? {};
-    if (typeof b.accountId !== 'string' || !b.accountId.trim() || typeof b.machineId !== 'string' || !b.machineId.trim()) {
-      res.status(400).json({ error: 'accountId and machineId are required' });
-      return;
-    }
-    // THE LOAD-BEARING GATE (FD4): the dashboard PIN proves operator presence. checkMandatePin
-    // is the EXACT mechanism /mandate/issue-for-machine uses; a missing/invalid PIN sends its own
-    // 401/403/429 response — never start an enrollment without it. The agent shares the Bearer, so
-    // Bearer-only would let any agent session start a cross-machine account login with no operator.
-    if (!checkMandatePin(req, res)) return;
-
-    const accountId = b.accountId.trim();
-    const machineId = b.machineId.trim();
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) return { ok: false, result: { status: 503, body: { error: 'account follow-me not enabled' } } };
+    if (!ctx.coordination) return { ok: false, result: { status: 503, body: { error: 'coordination mandate engine unavailable (no stateDir or init failed)' } } };
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) return { ok: false, result: { status: 503, body: { error: 'enrollment wizard or subscription pool not configured' } } };
+    return { ok: true, afmCfg, coordination: ctx.coordination, enrollmentWizard: ctx.enrollmentWizard, subscriptionPool: ctx.subscriptionPool };
+  }
+  /**
+   * start-cell after its presence check: reuse a live pending login for this pair (self), else issue the
+   * per-(account, machine) mandate and drive the existing mandate-gated enroll/start. The CALLER must
+   * have proven operator presence (dashboard PIN, or the owner phone's Face ID signature over
+   * `account-sign-in <accountId>@<machineId>`); this function adds no authority of its own.
+   */
+  async function runMatrixStartCell(accountId: string, machineId: string, stateDir: string | undefined): Promise<MatrixStartCellResult> {
+    const ready = matrixStartCellReady();
+    if (!ready.ok) return ready.result;
+    const afmCfg = ready.afmCfg;
     const selfMachineId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
     const isSelf = machineId === selfMachineId;
     const localFp = resolveAgentFingerprint(ctx);
@@ -40919,18 +40927,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (isSelf) {
       try {
         const { resolveFollowMeEnrollTarget } = await import('../core/resolveFollowMeEnrollTarget.js');
-        const localAccounts = ctx.subscriptionPool.list().map((a) => ({
+        const localAccounts = ready.subscriptionPool.list().map((a) => ({
           id: a.id, email: a.email, nickname: a.nickname, provider: a.provider, framework: a.framework,
         }));
         const peerViews = ctx.accountFollowMePeerViews ? await ctx.accountFollowMePeerViews() : [];
         const target = resolveFollowMeEnrollTarget({ accountId, localAccounts, peerViews });
         if (!target.resolved) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=${target.code}`);
-          res.status(target.code === 'subscription-account-not-found' ? 404 : 409)
-            .json({ error: target.reason, code: target.code, accountId, repairRequired: true });
-          return;
+          return { status: target.code === 'subscription-account-not-found' ? 404 : 409, body: { error: target.reason, code: target.code, accountId, repairRequired: true } };
         }
-        const existing = ctx.enrollmentWizard.pending().find(
+        const existing = ready.enrollmentWizard.pending().find(
           (l) => l.id === accountId && l.status === 'pending'
             && Date.parse(l.ttlExpiresAt) > Date.now()
             && (!l.expectedEmail || l.expectedEmail === target.expectedEmail)
@@ -40947,27 +40953,27 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           // and kind ride along so the matrix CELL can carry the complete flow end-to-end instead
           // of stranding those steps in the bottom Pending-logins panel. All operator-facing,
           // never secrets (same fields the pending-logins surface already serves).
-          res.status(201).json({
+          return { status: 201, body: {
             verificationUrl: existing.verificationUrl, loginId: existing.id, machineId, reused: true,
             expectedEmail: existing.expectedEmail ?? null, ttlExpiresAt: existing.ttlExpiresAt,
             notice: existing.notice ?? null, kind: existing.kind,
-          });
-          return;
+          } };
         }
       } catch (err) {
-        res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix start-cell pre-check failed' });
-        return;
+        return { status: 500, body: { error: err instanceof Error ? operatorError(err, stateDir) : 'matrix start-cell pre-check failed' } };
       }
     }
 
     // Issue the per-(account, targetMachine) account-follow-me mandate — EXACTLY the bounds
-    // /mandate/issue-for-machine writes (R1 exact-bounds, re-mint), PIN already verified above.
+    // /mandate/issue-for-machine writes (R1 exact-bounds, re-mint). Operator presence was already
+    // proven by the caller: the dashboard PIN (start-cell) or a Face ID presence signature
+    // (POST /mobile/accounts/sign-in/start, account-sign-in-face-id).
     // The agents pair is this Echo identity's routing fingerprint (issuer === target identity:
     // the agent following its own account onto another machine), as the scan card does.
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
     let mandateId: string;
     try {
-      const mandate = ctx.coordination.store.issue({
+      const mandate = ready.coordination.store.issue({
         scope: 'account-follow-me',
         agents: [localFp, localFp],
         authorities: [
@@ -40982,20 +40988,17 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // that enrolled adriana); the peer's enroll/start re-verifies the issuance signature.
       if (!isSelf) {
         if (!ctx.packageMandateForDelivery || !ctx.deliverMandateToMachine) {
-          res.status(503).json({ error: 'cross-machine mandate delivery unavailable (no mesh identity)' });
-          return;
+          return { status: 503, body: { error: 'cross-machine mandate delivery unavailable (no mesh identity)' } };
         }
         const portable = ctx.packageMandateForDelivery(mandate);
         const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable });
         if (!outcome.ok) {
           console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=deliver-failed`);
-          res.status(502).json({ error: 'could not deliver authorization to the target machine — try again in a moment', retryable: true });
-          return;
+          return { status: 502, body: { error: 'could not deliver authorization to the target machine — try again in a moment', retryable: true } };
         }
       }
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir) : 'matrix mandate issuance failed' });
-      return;
+      return { status: 500, body: { error: err instanceof Error ? operatorError(err, stateDir) : 'matrix mandate issuance failed' } };
     }
 
     // Drive the EXISTING mandate-gated enroll/start (no reimplementation of email resolution /
@@ -41008,8 +41011,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
       if (!peer) {
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=peer-unreachable`);
-        res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment`, retryable: true });
-        return;
+        return { status: 502, body: { error: `target machine ${machineId} is not reachable right now — try again in a moment`, retryable: true } };
       }
       baseUrl = peer.url;
     }
@@ -41034,26 +41036,44 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=started`);
         // Flow-detail passthrough (topic 29836 D2/D3) — same fields as the reused-pending
         // branch above, sourced from the freshly-created login the target machine returned.
-        res.status(201).json({
+        return { status: 201, body: {
           verificationUrl: body.login.verificationUrl, loginId: body.login.id ?? accountId, machineId,
           expectedEmail: body.login.expectedEmail ?? null, ttlExpiresAt: body.login.ttlExpiresAt ?? null,
           notice: body.login.notice ?? null, kind: body.login.kind ?? null,
-        });
-        return;
+        } };
       }
       if (r.status === 409) {
         console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=cannot-resolve-email`);
-        res.status(409).json({ error: body.error || 'cannot resolve approved account email' });
-        return;
+        return { status: 409, body: { error: body.error || 'cannot resolve approved account email' } };
       }
       // Mandate issued but enroll-start failed (drive throw / unreachable / other). Honest
       // retryable 502 — the unused mandate lapses by its TTL; a re-tap reuses or re-mints.
       console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-failed`);
-      res.status(502).json({ error: body.error || 'could not start the sign-in on the target — try again', retryable: true });
+      return { status: 502, body: { error: body.error || 'could not start the sign-in on the target — try again', retryable: true } };
     } catch (err) {
       console.log(`[matrix] start-cell accountId=${accountId} machineId=${machineId} outcome=enroll-start-error`);
-      res.status(502).json({ error: 'could not reach the machine doing the login — try again', retryable: true });
+      return { status: 502, body: { error: 'could not reach the machine doing the login — try again', retryable: true } };
     }
+  }
+
+  router.post('/subscription-pool/matrix/start-cell', enforceSubscriptionPoolWriteCapability('POST /subscription-pool/matrix/start-cell'), async (req, res) => {
+    const ready = matrixStartCellReady();
+    if (!ready.ok) {
+      res.status(ready.result.status).json(ready.result.body);
+      return;
+    }
+    const b = req.body ?? {};
+    if (typeof b.accountId !== 'string' || !b.accountId.trim() || typeof b.machineId !== 'string' || !b.machineId.trim()) {
+      res.status(400).json({ error: 'accountId and machineId are required' });
+      return;
+    }
+    // THE LOAD-BEARING GATE (FD4): the dashboard PIN proves operator presence. checkMandatePin
+    // is the EXACT mechanism /mandate/issue-for-machine uses; a missing/invalid PIN sends its own
+    // 401/403/429 response — never start an enrollment without it. The agent shares the Bearer, so
+    // Bearer-only would let any agent session start a cross-machine account login with no operator.
+    if (!checkMandatePin(req, res)) return;
+    const r = await runMatrixStartCell(b.accountId.trim(), b.machineId.trim(), res.app?.locals?.stateDir);
+    res.status(r.status).json(r.body);
   });
 
   // Single-segment path → no collision with /enroll/:id/complete (3 segments).
