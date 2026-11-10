@@ -322,7 +322,7 @@ export class CompactionSentinel extends EventEmitter {
   private seedWaitApplies(sessionName: string): boolean {
     if (!this.deps.readSeedMarker || !this.deps.isCompactionRecoveryEnabled) return false;
     let enabled = false;
-    try { enabled = this.deps.isCompactionRecoveryEnabled(); } catch { enabled = false; }
+    try { enabled = this.deps.isCompactionRecoveryEnabled(); } catch { enabled = false; /* @silent-fallback-ok — an unreadable switch means no seed wait: the server sends its own recovery (today's path) */ }
     if (!enabled) return false;
     const fw = this.deps.getSessionFramework?.(sessionName);
     return fw === undefined || fw === 'claude-code';
@@ -337,7 +337,7 @@ export class CompactionSentinel extends EventEmitter {
     if (this.active.get(state.sessionName) !== state) return; // cleared meanwhile
     const now = this.now();
     let marker: { seededAt: number; epoch: string } | null = null;
-    try { marker = this.deps.readSeedMarker!(state.sessionName); } catch { marker = null; }
+    try { marker = this.deps.readSeedMarker!(state.sessionName); } catch { marker = null; /* @silent-fallback-ok — no readable marker means "not seeded": the server delivers the recovery itself */ }
     const consumed = this.consumedSeedAt.get(state.sessionName) ?? -Infinity;
     const boundary = this.readCompactBoundary(state, consumed);
     // The marker must belong to THIS compaction (second-pass review, slice 2):
@@ -417,14 +417,14 @@ export class CompactionSentinel extends EventEmitter {
               && (best === null || t > best.at)) {
               best = { at: t, uuid: typeof e.uuid === 'string' ? e.uuid : '' };
             }
-          } catch { /* partial first line */ }
+          } catch { /* @silent-fallback-ok — a partial first line in the tail window is skipped, not an error */ }
         }
         return best;
       } finally {
         fs.closeSync(fd);
       }
     } catch {
-      return null;
+      return null; // @silent-fallback-ok — an unreadable transcript yields no boundary, so the marker is not trusted and the server recovers
     }
   }
 

@@ -33,6 +33,6 @@ export function readSeedMarkerFile(stateDir: string, claudeSessionId: string | u
     if (typeof raw.seededAt !== 'number' || !Number.isFinite(raw.seededAt)) return null;
     return { seededAt: raw.seededAt, epoch: typeof raw.epoch === 'string' ? raw.epoch : '' };
   } catch {
-    return null;
+    return null; // @silent-fallback-ok — missing or torn marker reads as "not seeded"; the server sends recovery, never less
   }
 }

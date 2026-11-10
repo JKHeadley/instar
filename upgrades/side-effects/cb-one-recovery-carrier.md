@@ -72,3 +72,7 @@ Machine-local by design: the marker is written and read on the machine hosting t
 Reviewer concurred on bash correctness, stuck-state handling, and switch-off / non-Claude byte-identity.
 
 **Second pass: Concur after revisions** (verified against the code; 37/37 in the four affected test files). One narrow residual named under Under-block; artifact wording corrected.
+
+## Addendum (2026-11-10) — silent-fallback markers
+
+The repo's no-silent-fallbacks lint (`tests/unit/no-silent-fallbacks.test.ts`, baseline 494 on main) counted five of this change's catch blocks as silent. Each is a deliberate fail-safe in the direction of *today's behaviour* (the server sends its own recovery): an unreadable recovery switch, an unreadable or torn seed marker, a partial first line in the transcript tail window, and an unreadable transcript (no boundary ⇒ the marker is not trusted). Each now carries a `@silent-fallback-ok` reason; no behaviour changes. Lint back to 494; the CompactionSentinel and compaction unit tests (82) pass.
