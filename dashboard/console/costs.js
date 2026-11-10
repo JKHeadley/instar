@@ -7,6 +7,9 @@ import { buildCostsPage, WINDOWS, DEFAULT_WINDOW, GRAINS, windowParams, spendQue
 import { el, setKids, pageHead, section, sheet, story, details, note, cantTell, firstPaint, markNeed } from './ui.js';
 import { legacyHref } from './nav-model.js';
 import { sessionLabel } from './home-model.js';
+import { buildUsageSection, grainFor, drillQuery, ledgerOff } from './usage-model.js';
+import { usageSection } from './usage.js';
+import { topicNameMap } from './topic-names.js';
 
 const EYEBROW = 'Capacity · What thinking costs';
 const COST_KEYS = ['door', 'modelId', 'doorClass', 'priceBasis', 'costBasis', 'tokensIn', 'tokensOut', 'tokensCached', 'grossUsd', 'subsidyUsd', 'netUsd', 'committedUsd', 'providerReportedUsd', 'providerDriftPct', 'unpricedTokensIn', 'unpricedTokensOut', 'priceStale', 'notLiveYet'];
@@ -15,7 +18,8 @@ const CHECK_KEYS = ['feature', 'calls', 'realCalls', 'fired', 'noop', 'unclassif
 const SESSION_KEYS = ['sessionId', 'projectPath', 'model', 'totalTokens', 'eventCount', 'firstTs', 'lastTs'];
 
 // One time control for the whole page, and the grain under "More detail"; both kept across refreshes.
-const view = { window: DEFAULT_WINDOW, grain: 'day' };
+// The usage section's split and drill path are kept across refreshes too.
+const view = { window: DEFAULT_WINDOW, grain: 'day', usage: { split: 'model', path: [] } };
 
 export async function renderCosts(main, ctx) {
   const { get } = ctx;
@@ -27,6 +31,25 @@ export async function renderCosts(main, ctx) {
     get(`/tokens/summary?since=${w.sinceMs}`), get(`/tokens/sessions?since=${w.sinceMs}&limit=20`), get(`/tokens/codex-sessions?since=${w.sinceMs}&limit=20`), get('/tokens/orphans?idleMs=1800000'),
     get('/intelligence/routing/chains'), get('/sessions'),
   ]);
+  // Unified usage ledger (docs/specs/unified-usage-ledger.md, Slice 5). A 503 (switched off on
+  // this agent) hides the section entirely; the reads above are unchanged.
+  const uSince = Math.floor(w.sinceMs);
+  const uGrain = grainFor(w.key);
+  const usageSummaryRes = await get(`/usage/summary?since=${uSince}&grain=${uGrain}`);
+  let usageModel = { off: true };
+  if (!ledgerOff(usageSummaryRes)) {
+    const [uSeries, uTree, uTopic, uJob, uFeature, uCoverage, uTopics] = await Promise.all([
+      get(`/usage/series?since=${uSince}&grain=${uGrain}&split=${view.usage.split}`),
+      get(drillQuery(view.usage.path, uSince)),
+      get(`/usage/top?dim=topic&limit=8&since=${uSince}`), get(`/usage/top?dim=job&limit=8&since=${uSince}`), get(`/usage/top?dim=feature&limit=8&since=${uSince}`),
+      get('/usage/coverage'), get('/telegram/topics?scope=pool'),
+    ]);
+    const topicNames = topicNameMap(uTopics);
+    usageModel = buildUsageSection(
+      { summary: usageSummaryRes, series: uSeries, tree: uTree, topTopic: uTopic, topJob: uJob, topFeature: uFeature, coverage: uCoverage },
+      { split: view.usage.split, phrase: w.phrase, path: view.usage.path, namesOf: (k) => topicNames[k] || `Conversation ${k}` },
+    );
+  }
   // Conversation names: the session list carries each live session's Claude conversation id.
   const names = {};
   if (sessions.ok && Array.isArray(sessions.data && sessions.data.sessions)) for (const s of sessions.data.sessions) if (s && s.claudeSessionId) names[s.claudeSessionId] = sessionLabel(s);
@@ -49,6 +72,7 @@ export async function renderCosts(main, ctx) {
     spending ? markNeed(el('div', { class: 'need-card' }, el('span', { class: 'need-title', text: spending.title }), el('span', { class: 'need-sub', text: spending.why }),
       el('a', { class: 'btn-primary btn-inline', href: legacyHref('spend'), text: 'Open the spending controls' })), 'spending') : null,
     el('div', { class: 'page-controls' }, routingLink),
+    usageSection(usageModel, { get, sinceMs: uSince, state: view.usage, repaint }),
     el('div', { class: 'page-sections' },
       recordedSection(page, repaint),
       checksSection(page.checks),
