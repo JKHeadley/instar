@@ -13267,7 +13267,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         DegradationReporter.getInstance().report({
           feature: 'FoldCoordinator.bootSweep',
           primary: 'Every fold carrier is released by its fold record\'s terminal transition',
-          fallback: `Kept every carrier of fold ${t.foldId} (topic ${t.topicKey}): its record is unreadable`,
+          fallback: `Kept every carrier of fold ${t.foldId} (${topicRef(t.topicKey)}): its record is unreadable`,
           reason: 'A fold record file exists but cannot be read (torn or corrupt)',
           impact: "That conversation's containment stays in force; the sentinel raises it to the operator.",
         });

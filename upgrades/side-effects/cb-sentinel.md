@@ -92,3 +92,8 @@ Revert, or leave `contextBudget.sentinel.enabled` off (the default). With it off
 6. The dark flag's owner and review date — stated in "Phase 0 posture" (owner Echo; turned on for the test agent in the task 11 verification run; dev-agent default decided in Phase 1).
 
 **Post-commit fix (2026-11-10, found by a whole-stack run of every changed test file):** (1) `tests/integration/fold-coordinator-boot-wiring.test.ts` (task 7) still asserted the OLD torn-record behaviour (carriers released as orphans); this slice deliberately changed it, so the test now asserts the new rule — nothing released, the record reported in `torn`, every carrier still present. My per-slice test selection only ran files the slice touched, so it missed this one. (2) The tick step wrapper's catch now carries its `@silent-fallback-ok` reason (it is not silent: `lastError`, an audit row, and a stale heartbeat), bringing the no-silent-fallbacks count back to its baseline.
+
+## Addendum (2026-11-10): ratchets found by the whole-stack unit run
+
+- **Topic names.** The sentinel's notice titles, its where-text and the boot sweep's torn-record report named the fold's topic as a bare id. They now render it through `topicRef`, which gives the topic id plus its verified name, or "(name unresolved)". This changes text only.
+- **Maturation ladder.** `contextBudget.sentinel` ships dark, so it now has a ladder entry in `src/data/feature-ladders.json`: sensitive risk, tracking `needed`, owner-driven rungs, owner Echo under CMT-1536. Before its first rung, the sentinel tick must record featureEvidence fired/error rows. The adapter suite's switch is listed as an alias, because it is part of the same feature.

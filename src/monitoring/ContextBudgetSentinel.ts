@@ -44,6 +44,7 @@ import type { FoldCoordinator, FoldRecord, FoldRecordStore } from './FoldCoordin
 import { pruneSettledCheckpoints } from './engineCheckpoint.js';
 import type { CanaryReport, CanarySession, CompactionCanary } from './compactionCanary.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { topicRef } from '../messaging/shared/topicRef.js';
 
 export const CONTEXT_BUDGET_SENTINEL_TICK_MS = 5 * 60_000;
 export const QUARANTINE_RECONCILE_BOUND_MS = 15 * 60_000;
@@ -286,7 +287,7 @@ export class ContextBudgetSentinel {
     this.enqueue({
       notice: {
         id: `context-budget-rollback-degraded-${c.topicKey}-${c.foldId}`,
-        title: `A context fold on topic ${c.topicKey} was rolled back the slow way`,
+        title: `A context fold on ${topicRef(c.topicKey)} was rolled back the slow way`,
         summary: `Fold ${c.foldId} could not finish or roll back within its time limit, so its session was ended and the conversation was released. Its earlier context may need restoring by hand.`,
         priority: 'HIGH',
       },
@@ -368,7 +369,7 @@ export class ContextBudgetSentinel {
   private onGateNotice(n: SelfHealNotice): Promise<void> | void {
     const m = /^self-heal:([0-9a-f]{24}):/.exec(n.id);
     const ctx = m ? this.noticeTopics.get(m[1]) : undefined;
-    const where = ctx ? `topic ${ctx.topicKey} (fold ${ctx.foldId})` : 'a topic on this machine';
+    const where = ctx ? `${topicRef(ctx.topicKey)} (fold ${ctx.foldId})` : 'a topic on this machine';
     const exhausted = ['max-attempts', 'wall-clock', 'flap', 'state-failure'].includes(n.reason);
     return this.d.attention({
       id: `context-budget-quarantine-${ctx ? `${ctx.topicKey}-${ctx.foldId}` : n.id.replace(/[^A-Za-z0-9_-]/g, '-')}-${n.reason}`,
@@ -398,7 +399,7 @@ export class ContextBudgetSentinel {
       if (raised.has(k) || this.d.ownsTopic(x.topicKey) !== true) continue;
       this.enqueue({ notice: {
         id: `context-budget-torn-record-${x.topicKey}-${x.foldId}`,
-        title: `A context fold record on topic ${x.topicKey} is unreadable`,
+        title: `A context fold record on ${topicRef(x.topicKey)} is unreadable`,
         summary: `The record for fold ${x.foldId} is damaged, so the conversation's pause and its saved copy are kept in place rather than released on a guess. It needs a look before that conversation can continue normally.`,
         priority: 'URGENT',
       } });

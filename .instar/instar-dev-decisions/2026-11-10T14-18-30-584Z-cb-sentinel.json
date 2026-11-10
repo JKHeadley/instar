@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-10T14:18:30.584Z",
+  "slug": "cb-sentinel",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 10,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/data/feature-ladders.json",
+      "src/monitoring/ContextBudgetSentinel.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "text renders and a registry entry; no action or loop"
+  },
+  "verdict": "pass"
+}
