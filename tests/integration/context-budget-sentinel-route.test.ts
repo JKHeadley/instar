@@ -76,6 +76,23 @@ describe('GET /context-budget/sentinel', () => {
     expect(r.body.canary.groups[0]).toMatchObject({ engine: 'claude-code', version: '2.1.321', detected: 1, pending: 1 });
   });
 
+  it('the status carries the adapter verification suite\'s recorded results (newest first)', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-route-suite-')); dirs.push(stateDir);
+    const { writeSuiteResult, evaluateSuite } = await import('../../src/monitoring/adapterVerificationSuite.js');
+    writeSuiteResult(stateDir, { schema: 'adapter-suite/1', engine: 'claude-code', version: '2.1.322', machine: 'm1', ranAt: 2, durationMs: 70_715, capabilities: evaluateSuite({ tokens: { alpha: 'A-1', steer: 'S-1', seed: 'D-1', clear: 'C-1', delta: 'E-1', deny: 'F-1' }, errors: [] }) });
+    const built = buildFoldCoordinator({ stateDir, runningTopicSessions: () => [], poolPlacementLive: () => false, inboundQueueLive: () => true, topicRowsPresent: () => false, layerKindPresent: () => true });
+    const sentinel = new ContextBudgetSentinel({
+      stateDir, machineId: built.holderId, coordinator: built.coordinator, store: new FoldRecordStore(stateDir),
+      ownsFold: () => true, ownsTopic: () => true, candidates: () => [], tmuxAlive: () => false, kill: () => {}, fileBytes: () => null, attention: () => {},
+      admit: async () => ({ outcome: 'allow' as const, token: { id: 't' } as AdmissionToken, reason: 'admitted' as const }), consumeToken: () => ({ proceed: true, valid: true }),
+      episodeStore: new InMemorySelfHealEpisodeStore(),
+    });
+    const r = await request(appFor(stateDir, sentinel)).get('/context-budget/sentinel');
+    expect(r.status).toBe(200);
+    expect(r.body.adapterSuite).toMatchObject({ running: false, results: [{ engine: 'claude-code', version: '2.1.322', machine: 'm1' }] });
+    expect(r.body.adapterSuite.results[0].capabilities.toolPolicy).toMatchObject({ state: 'absent' });
+  });
+
   it('the capability index classifies /context-budget and reports the sentinel', () => {
     const entry = CAPABILITY_INDEX.find((e) => e.key === 'contextBudget')!;
     expect(entry.prefixes).toContain('/context-budget');

@@ -88,7 +88,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'contextBudget',
     prefixes: ['/context-budget'],
-    description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, and the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a). Check this before saying compaction recovery works.',
+    description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a) — and the recorded results of the adapter verification suite (which engine capabilities the engine version on this machine really supports). Check this before saying compaction recovery works.',
     build: ({ ctx }) => {
       const s = (ctx as { contextBudgetSentinel?: { heartbeatFresh?: () => boolean } | null }).contextBudgetSentinel;
       if (!s?.heartbeatFresh) return { enabled: false };

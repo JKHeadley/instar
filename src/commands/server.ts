@@ -13279,7 +13279,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // never by the dev-agent default. Dark ⇒ no heartbeat ⇒ no fold can begin.
       if (liveConfig.get<boolean>('contextBudget.sentinel.enabled', false) === true) {
         const { ContextBudgetSentinel } = await import('../monitoring/ContextBudgetSentinel.js');
-        const { productionSentinelSessionDeps, productionCanarySessions } = await import('../monitoring/contextBudgetSentinelBoot.js');
+        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite } = await import('../monitoring/contextBudgetSentinelBoot.js');
         const { CompactionCanary } = await import('../monitoring/compactionCanary.js');
         const { FoldRecordStore } = await import('../monitoring/FoldCoordinator.js');
         const { governor: sentinelGovernor, consumeAdmissionToken: sentinelConsume } = await import('../monitoring/selfaction/governor.js');
@@ -13308,6 +13308,11 @@ export async function startServer(options: StartOptions): Promise<void> {
             sessions: productionCanarySessions({ sessions: sessionManager, projectDir: config.projectDir }),
             switchOn: () => liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false,
           },
+          // The adapter verification suite (§9.6): re-run on any change of the engine binary
+          // version. Its own switch (it spends model calls), default off.
+          ...(liveConfig.get<boolean>('contextBudget.adapterSuite.enabled', false) === true
+            ? { adapterSuite: productionAdapterSuite({ stateDir: config.stateDir, machine: built.holderId, claudePath: config.sessions.claudePath }) }
+            : {}),
           audit: (e) => { if (e.event !== 'gate:attempt-finished') console.log(pc.dim(`  [context-budget-sentinel] ${e.event}${e.reason ? `: ${e.reason}` : ''}`)); },
         });
         const sentinelRef = _contextBudgetSentinel;
