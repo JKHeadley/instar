@@ -36,7 +36,11 @@ import { redactLiveValues } from '../PostCompactStore.js';
 import { contextLayersRoot } from '../clearSeedPointer.js';
 import type { ContextLayerRecordType } from '../contextLayerKind.js';
 
-export const DERIVED_TYPES = ['h1', 'h2', 'h3', 'chunk', 'c2', 'u-stub', 'probe'] as const;
+/**
+ * `watermark`: the per-topic chunk coverage watermark (§6.5), a machine-local
+ * sidecar: never replicated (each machine's transcripts are its own).
+ */
+export const DERIVED_TYPES = ['h1', 'h2', 'h3', 'chunk', 'c2', 'u-stub', 'probe', 'watermark'] as const;
 export type DerivedType = typeof DERIVED_TYPES[number];
 export const PROTECTED_TYPES = ['anchor', 'ledger-entry', 'u'] as const;
 export type ProtectedType = typeof PROTECTED_TYPES[number];
@@ -178,7 +182,7 @@ function protectedDataOk(v: unknown, depth = 0): boolean {
 
 /** The replicated record type for a stored type (U bodies are rows, only their stubs replicate). */
 const REPLICATED_TYPE: Record<string, ContextLayerRecordType | null> = {
-  h1: 'h1', h2: 'h2', h3: 'h3', chunk: 'chunk', c2: 'c2', 'u-stub': 'u-stub', probe: null,
+  h1: 'h1', h2: 'h2', h3: 'h3', chunk: 'chunk', c2: 'c2', 'u-stub': 'u-stub', probe: null, watermark: null,
   anchor: 'anchor', 'ledger-entry': 'ledger-entry', u: null,
 };
 
