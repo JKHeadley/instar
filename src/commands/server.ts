@@ -5899,6 +5899,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     // feature ships (PR 2/3) and `multiMachine.stateSync.chiefOfStaff` is on.
     const { CHIEF_OF_STAFF_KIND_REGISTRATION } = await import('../core/ChiefOfStaffStore.js');
     replicatedKindRegistry.register(CHIEF_OF_STAFF_KIND_REGISTRATION);
+    // Context Budget layers (docs/specs/context-budget-layered-summaries.md §14): register
+    // `context-layer-record`. Registration is INERT — nothing emits until the layer store
+    // (Phase 1) writes through it and `multiMachine.stateSync.contextLayers` is on. Its presence
+    // is the fold coordinator's skew precondition (`layerKindPresent`).
+    const { CONTEXT_LAYER_KIND_REGISTRATION } = await import('../monitoring/contextLayerKind.js');
+    replicatedKindRegistry.register(CONTEXT_LAYER_KIND_REGISTRATION);
 
     // U4.2 (docs/specs/u4-2-stale-owner-release.md §2.4, R-r3-1) — register the
     // `topic-claim-annotation` kind (claim suspension + per-topic claim budget +
@@ -13177,7 +13183,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // a fold that crashed at or before `staged` is discarded (record aborted,
     // carriers and lock released); one past the point of no return is
     // quarantined for the sentinel; orphan carriers are released loudly. In
-    // Phase 0 no fold can begin (no sentinel heartbeat, no layer kind yet), so
+    // Phase 0 no fold can begin (no sentinel heartbeat yet), so
     // on a healthy agent this finds nothing.
     try {
       const { buildFoldCoordinator } = await import('../monitoring/foldCoordinatorBoot.js');
@@ -13197,6 +13203,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           return q?.enabled === true && q?.dryRun === false && foldPoolGateOpen(livePool());
         },
         topicRowsPresent: () => false, // the relay-path row carrier and watermark arrive in Phase 1 (§14)
+        // The skew rule (§14): only a build that registered the layer kind may fold.
+        layerKindPresent: () => replicatedKindRegistry.isReplicatedKind('context-layer-record'),
       });
       _foldCoordinator = built.coordinator;
       // The egress fold hold (§10): a carrier of the fold, so it is registered

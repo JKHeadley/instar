@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-10T11:26:43.548Z",
+  "slug": "cb-layer-kind",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 266,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/monitoring/contextLayerKind.ts",
+      "src/monitoring/foldCoordinatorBoot.ts"
+    ],
+    "addedLines": 261,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
