@@ -15449,6 +15449,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextBlock = topicMemory.formatContextForSession(topicId, 20);
         } catch (err) {
           console.warn(`[CompactionResume] (${triggerLabel}) topicMemory failed, falling back to inline history:`, err);
+          // @silent-fallback-ok — the inline JSONL history below carries the same recent messages (the session-spawn precedence)
         }
       }
       if (!contextBlock) {

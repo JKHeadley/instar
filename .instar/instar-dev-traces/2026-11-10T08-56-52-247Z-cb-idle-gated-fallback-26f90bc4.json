@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "cb-idle-gated-fallback",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T08:56:52.247Z",
+  "artifactPath": "upgrades/side-effects/cb-idle-gated-fallback.md",
+  "artifactSha256": "9394ff25bd2d84fae34bcb0e63d1cd8396028b48fb88cfda8e83239c6707cff9",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/monitoring/CompactionSentinel.ts",
+    "upgrades/side-effects/cb-idle-gated-fallback.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Degradation reports and @silent-fallback-ok reasons on the approved slice-6 fallback path's catch blocks so the silent-fallback lint holds its baseline; no control-flow change.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

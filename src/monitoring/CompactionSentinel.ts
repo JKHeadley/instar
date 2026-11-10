@@ -35,6 +35,7 @@
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { DegradationReporter } from './DegradationReporter.js';
 import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
 import { findNewestGeminiSessionSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
@@ -462,6 +463,13 @@ export class CompactionSentinel extends EventEmitter {
       built = await fb.build(name, state.trigger);
     } catch (err) {
       console.warn(`[Sentinel] fallback build threw on "${name}":`, err);
+      DegradationReporter.getInstance().report({
+        feature: 'CompactionSentinel.fallback',
+        primary: 'Build the post-compaction briefing for an idle-gated, durable delivery',
+        fallback: 'Plain recovery injection (the pre-fallback path)',
+        reason: `fallback build threw: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'The session gets the older, plainer recovery prompt after this compaction.',
+      });
       built = 'unsupported';
     }
     if (this.active.get(name) !== state) return; // cleared meanwhile
@@ -477,7 +485,16 @@ export class CompactionSentinel extends EventEmitter {
       tmuxSession: name, epoch, trigger: state.trigger, text: built.text, stagedAt: this.now(),
       ...(boundaryAt !== null ? { boundaryAt } : {}),
     };
-    try { fb.stage(staged); } catch (err) { console.warn(`[Sentinel] fallback stage failed on "${name}" (delivering without durability):`, err); }
+    try { fb.stage(staged); } catch (err) {
+      console.warn(`[Sentinel] fallback stage failed on "${name}" (delivering without durability):`, err);
+      DegradationReporter.getInstance().report({
+        feature: 'CompactionSentinel.fallback',
+        primary: 'Stage the post-compaction briefing durably before waiting for idle',
+        fallback: 'Hold it in memory only',
+        reason: `stage failed: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'A server restart before delivery would lose this briefing.',
+      });
+    }
     state.status = 'awaiting-idle';
     console.log(`[Sentinel] fallback staged for "${name}" (epoch ${epoch}); waiting for an idle, ready prompt`);
     this.emit('compaction:fallback-staged', { ...state, epoch });
@@ -487,7 +504,7 @@ export class CompactionSentinel extends EventEmitter {
   /** Same freshness rule as awaitSeed: the marker must belong to THIS compaction. */
   private seedMarkerCovers(state: RecoveryState, staged: StagedCompactionFallback): boolean {
     let marker: { seededAt: number; epoch: string } | null = null;
-    try { marker = this.deps.readSeedMarker?.(state.sessionName) ?? null; } catch { marker = null; }
+    try { marker = this.deps.readSeedMarker?.(state.sessionName) ?? null; } catch { marker = null; /* @silent-fallback-ok — unreadable marker reads as "not seeded", so the staged fallback is kept, never dropped */ }
     if (!marker) return false;
     const consumed = this.consumedSeedAt.get(state.sessionName) ?? -Infinity;
     if (!(marker.seededAt > consumed)) return false;
@@ -517,18 +534,19 @@ export class CompactionSentinel extends EventEmitter {
     }
     let working = false;
     let ready = false;
-    try { working = this.deps.isActivelyWorking?.(name) ?? false; } catch { working = false; }
+    try { working = this.deps.isActivelyWorking?.(name) ?? false; } catch { working = false; /* @silent-fallback-ok — the ready-prompt check below still gates delivery */ }
     // One injector at a time: a pending initial-message inject for this session
     // (e.g. the boot sweep's re-delivery) goes first.
     let otherPending = false;
-    try { otherPending = fb.otherInjectPending?.(name) ?? false; } catch { otherPending = false; }
-    try { ready = !working && !otherPending && fb.isReadyPrompt(name); } catch { ready = false; }
+    try { otherPending = fb.otherInjectPending?.(name) ?? false; } catch { otherPending = false; /* @silent-fallback-ok — the ready-prompt check below still gates delivery */ }
+    try { ready = !working && !otherPending && fb.isReadyPrompt(name); } catch { ready = false; /* @silent-fallback-ok — not provably idle means keep waiting (bounded by the idle deadline) */ }
     if (ready) {
       // Re-check at release, not just at stage time: the session may have
       // answered the user while we waited (the text names an unanswered message).
       let fresh: { text: string } | 'declined' | 'unsupported' | null = null;
       try { fresh = await fb.build(name, state.trigger); } catch (err) {
         // A builder error is not an answer: keep waiting and try again next tick.
+        // @silent-fallback-ok — retried on the next tick; the idle deadline bounds it.
         console.warn(`[Sentinel] fallback rebuild threw on "${name}"; retrying next tick:`, err);
       }
       if (this.active.get(name) !== state) return;
@@ -551,7 +569,16 @@ export class CompactionSentinel extends EventEmitter {
       state.baselineJsonlSize = baseline?.size ?? state.baselineJsonlSize;
       state.baselineJsonlMtime = baseline?.mtime ?? state.baselineJsonlMtime;
       let accepted = false;
-      try { accepted = fb.inject(name, fresh.text); } catch (err) { console.warn(`[Sentinel] fallback inject threw on "${name}":`, err); }
+      try { accepted = fb.inject(name, fresh.text); } catch (err) {
+        console.warn(`[Sentinel] fallback inject threw on "${name}":`, err);
+        DegradationReporter.getInstance().report({
+          feature: 'CompactionSentinel.fallback',
+          primary: 'Deliver the post-compaction briefing at an idle prompt',
+          fallback: 'None: the recovery is recorded as failed',
+          reason: `inject threw: ${err instanceof Error ? err.message : String(err)}`,
+          impact: 'This compaction ends without a briefing; the session continues from its compacted summary.',
+        });
+      }
       fb.clear(name);
       this.emit('compaction:inject-attempted', { ...state, accepted });
       if (!accepted) {
@@ -602,9 +629,18 @@ export class CompactionSentinel extends EventEmitter {
     const fb = this.deps.fallback;
     if (!fb) return out;
     let staged: StagedCompactionFallback[] = [];
-    try { staged = fb.list(); } catch { staged = []; }
+    try { staged = fb.list(); } catch (err) {
+      staged = [];
+      DegradationReporter.getInstance().report({
+        feature: 'CompactionSentinel.fallback',
+        primary: 'Resume staged post-compaction briefings at boot',
+        fallback: 'Resume none this boot',
+        reason: `staged list unreadable: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'A briefing staged before the restart is not delivered.',
+      });
+    }
     let enabled = false;
-    try { enabled = this.deps.isCompactionRecoveryEnabled?.() ?? false; } catch { enabled = false; }
+    try { enabled = this.deps.isCompactionRecoveryEnabled?.() ?? false; } catch { enabled = false; /* @silent-fallback-ok — unreadable switch at boot withdraws staged briefings loudly (each withdrawal is reported) */ }
     for (const rec of staged) {
       const name = rec.tmuxSession;
       const age = this.now() - rec.stagedAt;
