@@ -115,7 +115,9 @@ describe('jobsMigrate', () => {
 
     const userBody = fs.readFileSync(path.join(agentStateDir, 'jobs', 'user', 'my-custom-job.md'), 'utf-8');
     expect(userBody).toContain('Do my thing');
-    expect(userBody).toContain('toolAllowlist:'); // user jobs default to ['Read']
+    // EVO-008: migration writes no toolAllowlist — a migrated job never declared one, and a
+    // written ['Read'] would read as the author's choice once tool lists are applied.
+    expect(userBody).not.toContain('toolAllowlist:');
 
     const manifest = JSON.parse(
       fs.readFileSync(path.join(agentStateDir, 'jobs', 'schedule', 'my-custom-job.json'), 'utf-8'),

@@ -72,6 +72,10 @@ export interface Session {
    *  renders engine-aware (a Codex session must not display as a Claude one).
    *  Populated at spawn from the resolved framework; undefined on legacy records. */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
+  /** EVO-008: the tool list this session was CONFINED to (no bypass flag; dontAsk +
+   *  --tools). Set by SessionManager only after the final launch argv passed the whole
+   *  confinement contract on a Claude lane; unset on every other launch and on old records. */
+  confinedTools?: string[];
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */

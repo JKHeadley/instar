@@ -316,6 +316,24 @@ Seventeen existing built-in jobs can run as small scripts with NO Claude session
 }
 
 /**
+ * Job tool limits (EVO-008, docs/specs/job-tool-allowlist-real-enforcement.md §9). SHARED by
+ * `generateClaudeMd` (new installs) and `patchClaudeMdContent` (existing agents), mirrored to
+ * the AGENTS.md / GEMINI.md shadows. Content-sniff marker: the heading `### Job tool limits`.
+ */
+export const JOB_TOOL_LIMITS_CLAUDEMD_MARKER = '### Job tool limits';
+export function JOB_TOOL_LIMITS_CLAUDEMD_SECTION(port: number): string {
+  return `
+${JOB_TOOL_LIMITS_CLAUDEMD_MARKER} (when a job's tool list is really applied)
+
+A scheduled job's \`toolAllowlist\` (or the scheduler's [Read] clamp for an unauthorized \`"*"\`) is APPLIED only for a job that runs on Claude, only while \`jobs.toolAllowlistEnforcement.enabled\` is on (omitted = on for a development agent, off on the fleet), and only when every name is a tool Claude honours. Then the job starts with exactly those tools and every other tool is refused. Otherwise the list is recorded but the job has its framework's normal tools.
+- **Never tell anyone a job "can only read" from its list alone.** Read the run: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/jobs/SLUG/history\` → \`toolsConfined\` (true = the limit was applied to that run) and \`toolEnforcement\` (why: \`confined\`, \`confined-with-shell\`, \`gate-off\`, \`read-only-default\`, \`unsupported-tool-names\`, \`not-applied:<framework>\`, ...). Old rows have neither field: unknown.
+- A list that includes \`Bash\` limits Claude's tools, not what the job can do: the shell can still change files. A user job whose list is exactly \`["Read"]\` is treated as the old default and NOT applied. To make a job's list binding, add \`toolAllowlistEnforce: true\` to its frontmatter: the list is then applied exactly (even a bare \`["Read"]\`, even where the switch defaults off) and the job is NOT started rather than run without it (unknown tool name, or an engine with no per-tool limit). Codex and other engines have no per-tool limit: the list is recorded, not applied.
+- While the switch is on, a built-in job whose lock file looks tampered with is cut to Read whatever it declares, and is not started on an engine that cannot apply that. With the switch off it is recorded and reported, not limited.
+- **When to use** (PROACTIVE): a job fails because a tool was refused → give it the tools it needs in its list (e.g. \`["Read","Bash"]\`); widening an instar job to \`"*"\` with \`unrestrictedTools: true\` is its owner's call (ask the operator), not a flag to flip yourself. Rollback: \`jobs.toolAllowlistEnforcement.enabled: false\`, read at the next launch.
+`;
+}
+
+/**
  * Session-to-session handoffs (bug 2026-11-03, Echo Bugs topic 10000001474): a
  * desk session posted an agent-to-agent task request into the user's Telegram
  * topic because Telegram was the only path that reached the other session, and
@@ -9756,6 +9774,15 @@ setTimeout(() => process.exit(0), 2000);
       result.skipped.push('CLAUDE.md: Scheduled jobs run as scripts section already present');
     }
 
+    // Job tool limits (EVO-008 §9): content-sniffed on the heading.
+    if (!content.includes(JOB_TOOL_LIMITS_CLAUDEMD_MARKER)) {
+      content += JOB_TOOL_LIMITS_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Job tool limits section');
+    } else {
+      result.skipped.push('CLAUDE.md: Job tool limits section already present');
+    }
+
     // Session-to-session handoffs (bug 2026-11-03): content-sniffed on the heading.
     if (!content.includes(SESSION_HANDOFF_CLAUDEMD_MARKER)) {
       content += SESSION_HANDOFF_CLAUDEMD_SECTION(port);
@@ -16623,6 +16650,9 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // job-cost-reduction §8 item 6: script jobs and triage are server-side, so a
       // Codex/Gemini agent needs the same read surfaces.
       '### Scheduled jobs run as scripts',
+      // EVO-008: tool lists are applied only on Claude, so a Codex/Gemini agent is exactly
+      // the one that must know its job lists are recorded, not applied.
+      '### Job tool limits',
       // disk-steward: the steward, its pool read and the prune route are server-side and
       // framework-neutral, so a Codex/Gemini agent must know how to answer "how full is
       // the disk?" and "clear disk on <machine>" from the same section.

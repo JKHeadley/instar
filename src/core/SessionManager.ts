@@ -757,6 +757,41 @@ export function applyClaudeToolConfinement(argv: string[], tools: string[]): voi
   }
 }
 
+/** EVO-008 §3b: the fixed first line of every confined prompt (never a control character). */
+export const CONFINED_PROMPT_LEAD = 'Instructions follow.';
+
+/**
+ * EVO-008 §4: the whole confinement contract, checked on the FINAL argv just before launch:
+ * no bypass flag; `--permission-mode dontAsk`; `--tools` and `--allowedTools` equal the list;
+ * `--no-chrome`; `--strict-mcp-config`; exactly one `--mcp-config`, the empty server map.
+ * Throws `confined-tools-adapter-missing` so a spawn never runs (or records) a confinement
+ * that a later argv change undid.
+ */
+export function assertClaudeConfinementContract(argv: string[], tools: string[]): void {
+  const list = tools.join(',');
+  const valueAfter = (flag: string): string | undefined => {
+    const at = argv.indexOf(flag);
+    return at >= 0 ? argv[at + 1] : undefined;
+  };
+  const mcpConfigs = argv.reduce<string[]>((acc, a, i) => (a === '--mcp-config' ? [...acc, argv[i + 1] ?? ''] : acc), []);
+  let emptyMcp = false;
+  if (mcpConfigs.length === 1) {
+    try {
+      const parsed = JSON.parse(mcpConfigs[0]) as { mcpServers?: Record<string, unknown> };
+      emptyMcp = !!parsed && typeof parsed.mcpServers === 'object' && parsed.mcpServers !== null
+        && Object.keys(parsed.mcpServers).length === 0 && Object.keys(parsed).length === 1;
+    } catch { emptyMcp = false; }
+  }
+  const ok = !argv.includes('--dangerously-skip-permissions')
+    && valueAfter('--permission-mode') === 'dontAsk'
+    && valueAfter('--tools') === list
+    && valueAfter('--allowedTools') === list
+    && argv.includes('--no-chrome')
+    && argv.includes('--strict-mcp-config')
+    && emptyMcp;
+  if (!ok) throw new Error('confined-tools-adapter-missing: the confined launch form was not intact on the final argv');
+}
+
 interface MemorySessionPlan {
   audience: MemoryAudience;
   placeKey: string | null;
@@ -4425,6 +4460,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
      */
     confinedTools?: string[];
     /**
+     * EVO-008: with `confinedTools`, refuse BEFORE launching when the resolved headless
+     * framework cannot apply the confined form (anything but claude-code), instead of
+     * ignoring `confinedTools` and running with the framework's normal tools. The scheduler
+     * sets it for a tamper-clamped instar job (fail closed).
+     */
+    requireToolConfinement?: boolean;
+    /**
      * Launch on the agent's default model, ignoring `model` (the job's tier). Triage sessions use it:
      * the operator asked for "a real session with real intelligence", not the template's tier.
      */
@@ -4444,7 +4486,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.useAgentDefaultModel) options = { ...options, model: undefined };
     if (options.confinedTools) {
       // dontAsk refuses any tool the settings do not allow: the allowlist IS the tool list.
-      options = { ...options, allowedTools: [...options.confinedTools], disableProjectMcp: true };
+      // EVO-008 §3b: a confined prompt never starts with a control character. Typed into the
+      // interactive lane, a first `!` runs a shell command even with only Read allowed
+      // (measured on Claude Code 2.1.322); a first `/` runs a slash command; on the headless
+      // lane a first `-` could parse as an option. One fixed plain line goes first.
+      options = {
+        ...options,
+        allowedTools: [...options.confinedTools],
+        disableProjectMcp: true,
+        prompt: `${CONFINED_PROMPT_LEAD}\n${options.prompt ?? ''}`,
+      };
     }
     if (options.omitAuthEnv && (this.config.anthropicApiKey ?? '').length > 0) {
       throw new Error('omit-auth-env-unsupported: the agent authenticates Claude through an env token');
@@ -4637,6 +4688,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (options.confinement && (headlessFramework !== options.confinement.framework || headlessFramework !== 'claude-code')) {
       throw new Error(`confinement-unsupported-framework: ${headlessFramework}`);
     }
+    if (options.confinedTools && options.requireToolConfinement && headlessFramework !== 'claude-code') {
+      throw new Error(`confined-tools-unavailable: this job's tool list cannot be applied on ${headlessFramework}, so it was not started`);
+    }
     if (await this.shouldRerouteToInteractive(headlessFramework)) {
       const gate = this.evaluateRerouteGate(options.name, Boolean(options.jobSlug && options.triggeredBy?.startsWith('scheduler:')));
       if (gate.allow) {
@@ -4736,6 +4790,11 @@ rm()  { "${shimRunner}" rm  "$@"; }
         }
       }
     }
+    // EVO-008 §4: re-check the WHOLE confinement contract on the final argv; only then may
+    // the session record carry `confinedTools` (the scheduler reads it as the proof).
+    const headlessConfined = options.confinedTools && headlessFramework === 'claude-code'
+      ? (assertClaudeConfinementContract(headlessSpec.argv, options.confinedTools), [...options.confinedTools])
+      : undefined;
 
     // K9: build PATH env with shim prepended (when shim was installed)
     const inheritedPath = process.env.PATH ?? '';
@@ -4933,6 +4992,8 @@ rm()  { "${shimRunner}" rm  "$@"; }
       // headless one-shot signals completion by process exit — today's behavior).
       launchLane: 'headless',
       completionMode: 'exit',
+      // EVO-008: set ONLY after the final argv passed the confinement contract check.
+      ...(headlessConfined ? { confinedTools: headlessConfined } : {}),
       ...(options.confinement ? { confinedConfigHome: headlessSpec.envOverrides.CLAUDE_CONFIG_DIR ?? defaultClaudeConfigHome() } : {}),
       ...this.threadlineTransportTag(headlessThreadline),
     };
@@ -5186,6 +5247,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (reroutedThreadline.transport === 'http' && reroutedThreadline.claudeConfigPath) {
       launchSpec.argv.push('--mcp-config', reroutedThreadline.claudeConfigPath);
     }
+    // EVO-008 §4: the whole confinement contract on the final argv, before launch.
+    const reroutedConfined = options.confinedTools
+      ? (assertClaudeConfinementContract(launchSpec.argv, options.confinedTools), [...options.confinedTools])
+      : undefined;
 
     // K9: build PATH env with shim prepended (when shim was installed) — same as
     // the headless block.
@@ -5356,6 +5421,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       framework: 'claude-code',
       prompt: options.prompt,
       maxDurationMinutes: options.maxDurationMinutes,
+      ...(reroutedConfined ? { confinedTools: reroutedConfined } : {}),
       // Subscription-pool pinning: tag with the account this launched under, so
       // auto-swap can move it when that account hits a quota wall.
       ...(pinnedAccount ? { subscriptionAccountId: pinnedAccount.accountId } : {}),
@@ -7095,12 +7161,45 @@ rm()  { "${shimRunner}" rm  "$@"; }
     return true;
   }
   private readonly confinedWriteRefusals = new Set<string>();
+
+  /**
+   * EVO-008 §3b guard 2: text written into a `confinedTools` session never starts with a
+   * control character. Claude's input box runs a first `!` as a shell command regardless of
+   * `--tools` (measured on 2.1.322), a first `/` as a slash command, a first `#` as a memory
+   * write. Such text goes in behind the plain lead line; every other write is unchanged.
+   */
+  private guardConfinedToolsText(tmuxSession: string, text: string): string {
+    const first = text.trimStart().charAt(0);
+    if (first !== '!' && first !== '/' && first !== '#') return text;
+    let session: Session | undefined;
+    try {
+      session = this.state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === tmuxSession);
+    } catch {
+      // @silent-fallback-ok — an unreadable session list must not let a control character
+      // through to a session that MIGHT be confined: lead it anyway (harmless when unconfined).
+      return `${CONFINED_PROMPT_LEAD}\n${text}`;
+    }
+    if (!session?.confinedTools || session.confinedTools.length === 0) return text;
+    return `${CONFINED_PROMPT_LEAD}\n${text}`;
+  }
   /** tmux sessions the D2 startup driver currently holds (the one writer a confined session admits). */
   private readonly confinedStartupHolders = new Set<string>();
 
   /** Public form of the D3 guard for writers outside SessionManager (the server's tmuxOps.sendKeys). */
   isConfinedWriteRefused(tmuxSession: string): boolean {
-    return this.confinedWriteRefused(tmuxSession, 'text');
+    if (this.confinedWriteRefused(tmuxSession, 'text')) return true;
+    // EVO-008 §3b: an outside writer (the server's tmuxOps.sendKeys, which types text line by
+    // line with no paste wrapping or lead line) never writes into a `confinedTools` session —
+    // a later line starting with `!` would run a shell regardless of the session's tool list.
+    try {
+      const session = this.state.listSessions({ status: 'running' }).find((s) => s.tmuxSession === tmuxSession);
+      return !!session?.confinedTools && session.confinedTools.length > 0;
+    } catch {
+      // @silent-fallback-ok — unreachable in practice (confinedWriteRefused above reads the same
+      // list and would have thrown first); refusing here would block message delivery to EVERY
+      // session, a larger harm than the narrow case it guards.
+      return false;
+    }
   }
 
   sendKey(tmuxSession: string, key: string): boolean {
@@ -9586,6 +9685,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // D3 (docs/specs/confined-spawn-subscription-reroute.md): the real text chokepoint. A confined
     // session takes text from no Instar writer (prompt delivery, control commands, retries).
     if (this.confinedWriteRefused(tmuxSession, 'text')) return;
+    text = this.guardConfinedToolsText(tmuxSession, text);
     const exactTarget = `=${tmuxSession}:`;
     const postPasteDelaySec = framework === 'codex-cli' ? '1.5' : '0.5';
     const enterPresses = framework === 'codex-cli' ? 2 : 1;
