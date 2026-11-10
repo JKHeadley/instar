@@ -13,7 +13,7 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { DeliveredMandateStore } from '../../src/coordination/DeliveredMandateStore.js';
 import { packageMandateForDelivery } from '../../src/coordination/AccountFollowMeMandateBridge.js';
 import { acceptMandateDelivery } from '../../src/coordination/AccountFollowMeMandateDelivery.js';
-import { describeSubscriptionReloginConfig } from '../../src/core/SubscriptionReloginOperatorConfig.js';
+import { describeSubscriptionReloginConfig, subscriptionReloginConfigureDigest, validateSubscriptionReloginOperatorInput } from '../../src/core/SubscriptionReloginOperatorConfig.js';
 
 interface TestServer { url: string; close: () => Promise<void> }
 async function listen(app: express.Express): Promise<TestServer> {
@@ -133,17 +133,73 @@ describe('one-tap repair setting: configure-pool → configure-with-mandate', ()
     expect(replay).toMatchObject({ status: 403, body: { error: 'not-authorized' } });
   });
 
-  it('never escalates a remote machine that is asks-first, watch-only or off', async () => {
+  it('raises a remote machine that is asks-first, watch-only or off with a valid mandate (operator 2026-11-10), audited on both sides', async () => {
     for (const block of [{ enabled: true, mode: 'approval', dryRun: false, unattendedPolicy: { identities: ['a@x.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 } },
       { enabled: true, mode: 'unattended' }, { enabled: false }]) {
       await start(block as any);
-      const before = fs.readFileSync(path.join(target.dir, 'config.json'), 'utf8');
       const r = await post(front.server.url, '/subscription-relogin/configure-pool', { mode: 'unattended',
-        targets: [{ machineId: TARGET, expectedRevision: revisionOf(target.dir), identities: ['a@x.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 }] });
-      expect(r.body.results[0]).toMatchObject({ ok: false, error: 'owner-must-enable-here' });
-      expect(fs.readFileSync(path.join(target.dir, 'config.json'), 'utf8')).toBe(before);
+        targets: [{ machineId: TARGET, expectedRevision: revisionOf(target.dir), identities: POOL, minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 }] });
+      expect(r.body.results[0]).toMatchObject({ machineId: TARGET, ok: true, mode: 'unattended', changed: true, restartRequested: true });
+      expect(readBlock(target.dir)).toMatchObject({ enabled: true, mode: 'unattended', dryRun: false,
+        unattendedPolicy: { identities: POOL, minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 } });
+      const targetAudit = fs.readFileSync(path.join(target.dir, 'logs', 'subscription-relogin-config.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(targetAudit.at(-1)).toMatchObject({ via: 'mandate', deliveredBy: FRONT, mandateId: 'cfg-1', operatorUnlock: 'dashboard-pin-session', mode: 'unattended' });
+      expect(['approval', 'observe', 'off']).toContain(targetAudit.at(-1).previousMode);
+      const frontAudit = fs.readFileSync(path.join(front.dir, 'logs', 'subscription-relogin-config.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(frontAudit.at(-1)).toMatchObject({ action: 'operator-configure-issued', targetMachineId: TARGET, mandateId: 'cfg-1', ok: true, operatorUnlock: 'dashboard-pin-session' });
       for (const s of servers.splice(0)) await s.close();
     }
+  });
+
+  it('a raise with waits, or with an account the target does not hold, is refused and changes nothing', async () => {
+    await start({ enabled: false });
+    const before = fs.readFileSync(path.join(target.dir, 'config.json'), 'utf8');
+    const rev = revisionOf(target.dir);
+    const waits = await post(front.server.url, '/subscription-relogin/configure-pool', { mode: 'unattended',
+      targets: [{ machineId: TARGET, expectedRevision: rev, identities: POOL, minimumSuccessfulRepairs: 10, minimumEvidenceDays: 30 }] });
+    expect(waits.body.results[0]).toMatchObject({ ok: false, error: 'invalid-config' });
+    const foreign = await post(front.server.url, '/subscription-relogin/configure-pool', { mode: 'unattended',
+      targets: [{ machineId: TARGET, expectedRevision: rev, identities: ['z@evil.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 }] });
+    expect(foreign.body.results[0]).toMatchObject({ ok: false, error: 'identity-not-on-this-machine' });
+    expect(fs.readFileSync(path.join(target.dir, 'config.json'), 'utf8')).toBe(before);
+  });
+
+  // A correctly signed mandate delivered straight into the target's store, bypassing the fronting
+  // route: what the target does when the PIN-unlock claim is absent, or the mandate has expired.
+  function deliverDirect(opts: { id: string; withUnlock: boolean; expiresAt: string; rawConfig: unknown; expectedRevision: string }) {
+    const parsed = validateSubscriptionReloginOperatorInput(opts.rawConfig);
+    if (!parsed.ok) throw new Error('bad test config');
+    const configDigest = subscriptionReloginConfigureDigest(parsed.value, opts.expectedRevision);
+    const mandate = { id: opts.id, createdAt: new Date().toISOString(), scope: 'subscription-relogin', agents: ['fp', 'fp'],
+      authorities: [{ action: 'subscription-relogin-configure', bounds: { targetMachineId: TARGET, configDigest,
+        ...(opts.withUnlock ? { operatorUnlock: 'dashboard-pin-session' } : {}) } }],
+      author: opts.withUnlock ? 'dashboard-pin-operator' : 'justin', expiresAt: opts.expiresAt };
+    const portable = packageMandateForDelivery(mandate as any, FRONT, keys.privateKey);
+    target.store.put(portable, FRONT, keys.publicKey.export({ type: 'spki', format: 'pem' }).toString());
+    return parsed.value;
+  }
+
+  it('a mandate that does not carry the PIN unlock cannot raise a machine; an expired one is refused; a used one is refused', async () => {
+    await start({ enabled: false });
+    const before = fs.readFileSync(path.join(target.dir, 'config.json'), 'utf8');
+    const expectedRevision = revisionOf(target.dir);
+    const raw = { enabled: true, mode: 'unattended', dryRun: false, unattendedPolicy: { identities: POOL, minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 } };
+    const later = new Date(Date.now() + 10 * 60_000).toISOString();
+
+    const config = deliverDirect({ id: 'no-unlock', withUnlock: false, expiresAt: later, rawConfig: raw, expectedRevision });
+    const noUnlock = await post(target.server.url, '/subscription-relogin/configure-with-mandate', { mandateId: 'no-unlock', action: 'configure', config, expectedRevision });
+    expect(noUnlock).toMatchObject({ status: 403, body: { error: 'operator-unlock-missing' } });
+
+    deliverDirect({ id: 'expired', withUnlock: true, expiresAt: new Date(Date.now() - 60_000).toISOString(), rawConfig: raw, expectedRevision });
+    const expired = await post(target.server.url, '/subscription-relogin/configure-with-mandate', { mandateId: 'expired', action: 'configure', config, expectedRevision });
+    expect(expired).toMatchObject({ status: 403, body: { error: 'not-authorized' } });
+    expect(fs.readFileSync(path.join(target.dir, 'config.json'), 'utf8')).toBe(before);
+
+    deliverDirect({ id: 'good', withUnlock: true, expiresAt: later, rawConfig: raw, expectedRevision });
+    const good = await post(target.server.url, '/subscription-relogin/configure-with-mandate', { mandateId: 'good', action: 'configure', config, expectedRevision });
+    expect(good).toMatchObject({ status: 202, body: { ok: true, mode: 'unattended', changed: true } });
+    const replay = await post(target.server.url, '/subscription-relogin/configure-with-mandate', { mandateId: 'good', action: 'configure', config, expectedRevision });
+    expect(replay).toMatchObject({ status: 403, body: { error: 'not-authorized' } });
   });
 
   it('refuses an email the target does not hold and a remote change to the waits', async () => {
@@ -163,7 +219,7 @@ describe('one-tap repair setting: configure-pool → configure-with-mandate', ()
     const toB = await post(front.server.url, '/subscription-relogin/configure-pool', { mode: 'approval',
       targets: [{ machineId: TARGET, expectedRevision: revA, identities: ['a@x.io'], minimumSuccessfulRepairs: 0, minimumEvidenceDays: 0 }] });
     expect(toB.body.results[0]).toMatchObject({ ok: true, mode: 'approval' });
-    // Back to unattended can only be done on the machine itself; simulate the owner doing it there.
+    // Simulate a write on the machine itself moving the counter (A→B→A).
     const blk = readBlock(target.dir); blk.mode = 'unattended'; blk.generation += 1;
     const raw = JSON.parse(fs.readFileSync(path.join(target.dir, 'config.json'), 'utf8')); raw.subscriptionPool.assistedRelogin = blk;
     fs.writeFileSync(path.join(target.dir, 'config.json'), JSON.stringify(raw));

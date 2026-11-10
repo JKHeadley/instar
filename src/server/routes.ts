@@ -237,10 +237,11 @@ import {
   validateSubscriptionReloginOperatorInput,
   writeSubscriptionReloginRestartRequest,
   subscriptionReloginFinishRestartDigest,
+  appendSubscriptionReloginIssueAudit,
 } from '../core/SubscriptionReloginOperatorConfig.js';
 import { evaluateConfigureRequest } from '../core/SubscriptionReloginRemoteConfigure.js';
 import { acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
-import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION } from '../coordination/AccountFollowMeMandateDelivery.js';
+import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
@@ -15635,6 +15636,14 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!Array.isArray(b.authorities) || b.authorities.length === 0
       || b.authorities.some((a: any) => typeof a?.action !== 'string' || !a.action || typeof a?.bounds !== 'object' || a.bounds === null)) {
       res.status(400).json({ error: 'authorities must be a non-empty array of { action, bounds, requiresCondition? }' });
+      return;
+    }
+    // The repair-setting configure action and its operator-unlock author are reserved for
+    // POST /subscription-relogin/configure-pool, which issues them only after verifying a recent
+    // dashboard PIN unlock (spec one-tap-unattended-repair, Amendment 2026-11-10).
+    if (b.authorities.some((a: any) => a.action === SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION)
+      || b.author === SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR) {
+      res.status(400).json({ error: 'the repair-setting configure permission is issued only by the Accounts page' });
       return;
     }
     if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
@@ -38994,7 +39003,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    *  mandate from another machine). Synchronous from the on-disk read to the write, so no other
    *  write through this process can interleave (§3 steps 2–6). */
   const applyConfigureHere = (args: { action: 'configure' | 'finish-restart'; rawConfig?: unknown; expectedRevision: string;
-    remote: boolean; provenance: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigProvenance;
+    remote: boolean; operatorUnlockCarried?: boolean;
+    provenance: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigProvenance;
     consume?: () => boolean }): { status: number; body: Record<string, unknown> } => {
     let current: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigView;
     try { current = describeSubscriptionReloginConfig(readOnDiskSubscriptionReloginBlock(ctx.config.stateDir)); }
@@ -39008,7 +39018,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { status: 202, body: { ok: true, changed: false, restartRequested: true, revision: current.revision } };
     }
     const evaluation = evaluateConfigureRequest({ current, rawConfig: args.rawConfig, expectedRevision: args.expectedRevision,
-      verifiedPoolEmails: reloginVerifiedPoolEmails(), remote: args.remote });
+      verifiedPoolEmails: reloginVerifiedPoolEmails(), remote: args.remote, operatorUnlockCarried: args.operatorUnlockCarried });
     if (!evaluation.ok) return { status: evaluation.status, body: { error: evaluation.error, ...(evaluation.detail ? { detail: evaluation.detail } : {}) } };
     if (args.consume && !args.consume()) return { status: 403, body: { error: 'not-authorized' } };
     if (evaluation.alreadyApplied) {
@@ -39057,6 +39067,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
     const peers = new Map((ctx.resolvePeerUrls?.() ?? []).map((p) => [p.machineId, p]));
     const results: ConfigureTargetResult[] = [];
+    const issuedMandates = new Map<string, string>();
     const startedAt = Date.now();
     const PEER_DEADLINE_MS = 75_000;
 
@@ -39082,11 +39093,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const mandate = ctx.coordination.store.issue({
           scope: 'subscription-relogin',
           agents: [resolveAgentFingerprint(ctx), resolveAgentFingerprint(ctx)],
-          authorities: [{ action: SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, bounds: { targetMachineId: machineId, configDigest } }],
+          // operatorUnlock: this route only runs after verifying a recent dashboard PIN unlock; the
+          // claim rides in the signed bounds and is the authority the target needs to RAISE a
+          // machine to "without asking" (operator rule 2026-11-10: any dashboard, any machine).
+          authorities: [{ action: SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION,
+            bounds: { targetMachineId: machineId, configDigest, operatorUnlock: SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } }],
           // The mandate records what was verified (a recent dashboard PIN unlock), never a guessed name.
-          author: 'dashboard-pin-operator', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+          author: SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
         });
         mandateId = mandate.id;
+        issuedMandates.set(machineId, mandate.id);
         const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable: ctx.packageMandateForDelivery(mandate) });
         if (!outcome.ok) {
           const reason = outcome.reason ?? '';
@@ -39129,6 +39145,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     for (const machineId of pending) results.push({ machineId, ok: false, error: 'outcome-unknown' });
     pending.clear();
     queue.length = 0;
+    // The fronting machine's half of the audit: every peer target this unlocked tap addressed.
+    for (const r of results) {
+      appendSubscriptionReloginIssueAudit(ctx.config.stateDir, { targetMachineId: r.machineId, action, mode,
+        mandateId: issuedMandates.get(r.machineId), ok: r.ok, error: r.error });
+    }
 
     // This machine last (its own restart can then never cut off the fan-out or the response).
     const selfTarget = targets.find((t) => t.machineId === selfId);
@@ -39172,7 +39193,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (digest !== bounds.configDigest) { res.status(403).json({ error: 'config-mismatch' }); return; }
     const result = applyConfigureHere({ action, rawConfig: body.config, expectedRevision, remote: true,
-      provenance: { via: 'mandate', mandateId, deliveredBy: record.deliveredBy },
+      operatorUnlockCarried: bounds.operatorUnlockCarried,
+      provenance: { via: 'mandate', mandateId, deliveredBy: record.deliveredBy,
+        ...(bounds.operatorUnlockCarried ? { operatorUnlock: SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } : {}) },
       consume: () => !!store.consume(mandateId) });
     res.status(result.status).json(result.body);
   });

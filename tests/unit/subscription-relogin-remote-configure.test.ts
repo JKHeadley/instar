@@ -13,9 +13,10 @@ const cfg = (mode: 'approval' | 'unattended', ids: string[], mins = [0, 0]) => (
 });
 const pool = ['a@x.io', 'b@x.io', 'c@x.io'];
 
-function run(current: ReturnType<typeof block>, raw: unknown, opts: { remote: boolean; rev?: string; poolEmails?: string[] | null }) {
+function run(current: ReturnType<typeof block>, raw: unknown, opts: { remote: boolean; unlock?: boolean; rev?: string; poolEmails?: string[] | null }) {
   const view = describeSubscriptionReloginConfig(current as never);
-  return evaluateConfigureRequest({ current: view, rawConfig: raw, expectedRevision: opts.rev ?? view.revision, verifiedPoolEmails: opts.poolEmails === undefined ? pool : opts.poolEmails, remote: opts.remote });
+  return evaluateConfigureRequest({ current: view, rawConfig: raw, expectedRevision: opts.rev ?? view.revision, verifiedPoolEmails: opts.poolEmails === undefined ? pool : opts.poolEmails,
+    remote: opts.remote, operatorUnlockCarried: opts.unlock ?? opts.remote });
 }
 
 describe('evaluateConfigureRequest', () => {
@@ -26,11 +27,28 @@ describe('evaluateConfigureRequest', () => {
 
 
 
-  it('remote "without asking" is refused where the owner chose asks-first, watch-only or off', () => {
+  it('remote "without asking" RAISES asks-first, watch-only and off when the mandate carries the PIN unlock (operator 2026-11-10)', () => {
     for (const mode of ['approval', 'observe', 'off'] as const) {
-      const r = run(block(mode, ['a@x.io']), cfg('unattended', ['a@x.io']), { remote: true });
-      expect(r).toMatchObject({ ok: false, error: 'owner-must-enable-here' });
+      const r = run(block(mode, ['a@x.io']), cfg('unattended', ['a@x.io', 'b@x.io']), { remote: true, unlock: true });
+      expect(r).toMatchObject({ ok: true, alreadyApplied: false });
     }
+  });
+
+  it('a remote raise WITHOUT the carried PIN unlock is refused (older issuer, or not the unlocked route)', () => {
+    for (const mode of ['approval', 'observe', 'off'] as const) {
+      const r = run(block(mode, ['a@x.io']), cfg('unattended', ['a@x.io']), { remote: true, unlock: false });
+      expect(r).toMatchObject({ ok: false, status: 403, error: 'operator-unlock-missing' });
+    }
+    // A list refresh on a machine already "without asking" never needed the raise authority.
+    expect(run(block('unattended', ['a@x.io']), cfg('unattended', ['a@x.io', 'b@x.io']), { remote: true, unlock: false }))
+      .toMatchObject({ ok: true });
+  });
+
+  it('a remote raise sets no waits and still only lists this machine\'s own accounts', () => {
+    expect(run(block('off', []), cfg('unattended', ['a@x.io'], [10, 30]), { remote: true })).toMatchObject({ ok: false, error: 'invalid-config' });
+    expect(run(block('off', []), cfg('unattended', ['z@evil.io']), { remote: true })).toMatchObject({ ok: false, error: 'identity-not-on-this-machine' });
+    expect(run(block('off', []), cfg('unattended', ['a@x.io']), { remote: true, poolEmails: null })).toMatchObject({ ok: false, error: 'pool-unreadable' });
+    expect(run(block('off', []), cfg('unattended', ['a@x.io']), { remote: true, rev: 'sha256:old' })).toMatchObject({ ok: false, error: 'stale-config' });
   });
 
   it('a remote tap cannot lower the waits', () => {

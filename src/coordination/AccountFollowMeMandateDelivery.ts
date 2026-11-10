@@ -74,6 +74,14 @@ export function readFollowMeBounds(
 /** The one authority a one-tap repair-setting mandate carries (spec one-tap-unattended-repair §2). */
 export const SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION = 'subscription-relogin-configure';
 const CONFIG_DIGEST = /^sha256:[0-9a-f]{64}$/;
+/**
+ * The signed claim a configure mandate carries when the issuing dashboard verified a recent PIN
+ * unlock before issuing it (operator rule 2026-11-10: any dashboard can take every action for the
+ * agent). Bound into the mandate's authority bounds, so it is covered by the R4a issuance signature.
+ */
+export const SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK = 'dashboard-pin-session';
+/** The mandate author the unlocked fronting route writes (what was verified, never a name). */
+export const SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR = 'dashboard-pin-operator';
 
 /**
  * True when the mandate carries EXACTLY one authority and it is a repair-setting configure. Used by
@@ -88,13 +96,16 @@ export function isConfigureOnlyMandate(mandate: PortableMandate['mandate'] | und
 /** Read the configure bounds off an (already-R4a-verified) configure-only mandate, or null. */
 export function readConfigureBounds(
   mandate: PortableMandate['mandate'],
-): { targetMachineId: string; configDigest: string } | null {
+): { targetMachineId: string; configDigest: string; operatorUnlockCarried: boolean } | null {
   if (!isConfigureOnlyMandate(mandate)) return null;
   const b = (mandate.authorities[0].bounds ?? {}) as Record<string, unknown>;
   const targetMachineId = typeof b.targetMachineId === 'string' ? b.targetMachineId : '';
   const configDigest = typeof b.configDigest === 'string' ? b.configDigest : '';
   if (!targetMachineId || !CONFIG_DIGEST.test(configDigest)) return null;
-  return { targetMachineId, configDigest };
+  // Both the bound claim and the author are in the signed canonical bytes.
+  const operatorUnlockCarried = b.operatorUnlock === SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK
+    && mandate.author === SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR;
+  return { targetMachineId, configDigest, operatorUnlockCarried };
 }
 
 /**

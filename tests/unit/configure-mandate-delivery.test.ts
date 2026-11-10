@@ -54,7 +54,15 @@ describe('configure-only mandate delivery', () => {
   it('shape helpers', () => {
     expect(isConfigureOnlyMandate(mandate([configure()]))).toBe(true);
     expect(isConfigureOnlyMandate(mandate([configure(), configure()]))).toBe(false);
-    expect(readConfigureBounds(mandate([configure()]))).toEqual({ targetMachineId: 'self', configDigest: DIGEST });
+    expect(readConfigureBounds(mandate([configure()]))).toEqual({ targetMachineId: 'self', configDigest: DIGEST, operatorUnlockCarried: false });
+  });
+
+  it('reads the carried PIN-unlock claim only when both the signed bound and the author say so', () => {
+    const withUnlock = { action: 'subscription-relogin-configure', bounds: { targetMachineId: 'self', configDigest: DIGEST, operatorUnlock: 'dashboard-pin-session' } };
+    expect(readConfigureBounds(mandate([withUnlock]))?.operatorUnlockCarried).toBe(true);
+    expect(readConfigureBounds({ ...mandate([withUnlock]), author: 'justin' })?.operatorUnlockCarried).toBe(false);
+    const wrongValue = { ...withUnlock, bounds: { ...withUnlock.bounds, operatorUnlock: 'yes' } };
+    expect(readConfigureBounds(mandate([wrongValue]))?.operatorUnlockCarried).toBe(false);
   });
 
   it('the mesh RBAC gate passes the command to the coarse check', () => {
