@@ -335,6 +335,25 @@ describe('ContextBudgetSentinel', () => {
     });
   });
 
+  it('runs the canary each tick and reports it in status; a failing canary scan leaves the heartbeat stale', async () => {
+    const { CompactionCanary } = await import('../../src/monitoring/compactionCanary.js');
+    const instance = new CompactionCanary({ stateDir, machineId: 'm_self', now: () => now });
+    const tr = path.join(stateDir, 'tr.jsonl');
+    fs.writeFileSync(tr, '');
+    const sessionsFn = vi.fn(() => [{ topicKey: T, claudeSessionId: 'sid', transcriptPath: tr, engine: 'claude-code' }]);
+    const s = make({ canary: { instance, sessions: sessionsFn, switchOn: () => true } });
+    await s.tick();
+    fs.appendFileSync(tr, JSON.stringify({ type: 'system', subtype: 'compact_boundary', compactMetadata: { trigger: 'auto' }, uuid: 'b1', timestamp: new Date(now).toISOString(), sessionId: 'sid', version: '2.1.321' }) + '\n');
+    advance(1_000); await s.tick();
+    expect(sessionsFn).toHaveBeenCalledTimes(2);
+    expect(s.status().canary?.groups[0]).toMatchObject({ engine: 'claude-code', version: '2.1.321', detected: 1, pending: 1 });
+    expect(s.heartbeatFresh()).toBe(true);
+    const broken = make({ canary: { instance, sessions: () => { throw new Error('session list failed'); }, switchOn: () => true } });
+    await broken.tick();
+    expect(broken.heartbeatFresh()).toBe(false);
+    expect(broken.status().lastError).toMatch(/^canary/);
+  });
+
   it('runs the checkpoint grace pass each tick', async () => {
     const dir = path.join(stateDir, 'state', 'context-archive', T, 'checkpoints');
     fs.mkdirSync(dir, { recursive: true });

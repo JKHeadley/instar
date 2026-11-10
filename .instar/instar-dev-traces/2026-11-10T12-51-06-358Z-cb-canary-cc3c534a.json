@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "cb-canary",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T12:51:06.358Z",
+  "artifactPath": "upgrades/side-effects/cb-canary.md",
+  "artifactSha256": "a7d4dfbb53bb76c2b699360fd619f1ef1503e735b1e2cf458e0f425b3b455c57",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/ContextBudgetSentinel.ts",
+    "src/monitoring/compactionCanary.ts",
+    "src/monitoring/contextBudgetSentinelBoot.ts",
+    "src/scaffold/templates.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/context-budget-canary-alive.test.ts",
+    "tests/integration/context-budget-sentinel-route.test.ts",
+    "tests/unit/ContextBudgetSentinel.test.ts",
+    "tests/unit/compaction-canary.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/migrate-context-budget-sentinel-row.test.ts",
+    "upgrades/next/cb-canary.md",
+    "upgrades/side-effects/cb-canary.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A new read route and a CLAUDE.md row shipped to every agent (template + migration); observation only",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

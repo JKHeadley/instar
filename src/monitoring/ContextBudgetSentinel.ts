@@ -24,6 +24,8 @@
  *     raises one Attention item naming the topic.
  *  3. CHECKPOINT GRACE PASS — `pruneSettledCheckpoints` deletes rolled-back
  *     folds' engine checkpoints after their 24 h grace.
+ *  3b. OUTBOX and CANARY — pending notices are sent; the standing compaction
+ *     canary (§9.1, `compactionCanary.ts`) scans the topic sessions' transcripts.
  *  4. GATE PRUNE — after the attempts (the gate's idle rule assumes the caller
  *     attempts before it prunes, and ticks well inside the ladder's wall clock).
  *  5. HEARTBEAT — the fold coordinator's `sentinelHeartbeatFresh` precondition
@@ -40,6 +42,7 @@ import path from 'node:path';
 import { SelfHealGate, SqliteSelfHealEpisodeStore, type SelfHealEpisodeStore, type SelfHealGateDeps, type SelfHealNotice, type SelfHealRemediationResult, type SelfHealSpec } from '../core/SelfHealGate.js';
 import type { FoldCoordinator, FoldRecord, FoldRecordStore } from './FoldCoordinator.js';
 import { pruneSettledCheckpoints } from './engineCheckpoint.js';
+import type { CanaryReport, CanarySession, CompactionCanary } from './compactionCanary.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export const CONTEXT_BUDGET_SENTINEL_TICK_MS = 5 * 60_000;
@@ -80,6 +83,11 @@ export interface ContextBudgetSentinelDeps {
   tickMs?: number;
   reconcileBoundMs?: number;
   bootId?: string;
+  /**
+   * The standing compaction canary (§9.1): observation only. Each tick scans the
+   * topic sessions' transcripts; its report rides the sentinel's status.
+   */
+  canary?: { instance: CompactionCanary; sessions(): CanarySession[]; switchOn(): boolean };
 }
 
 type Ctx = { topicKey: string; foldId: string };
@@ -100,6 +108,8 @@ export interface SentinelStatus {
   torn: Array<{ topicKey: string; foldId: string }>;
   checkpointsPruned: number;
   lastError: string | null;
+  /** The compaction canary's report (null when no canary is wired). */
+  canary: CanaryReport | null;
 }
 
 function keyHash(value: string): string { return crypto.createHash('sha256').update(value).digest('hex').slice(0, 24); }
@@ -175,6 +185,7 @@ export class ContextBudgetSentinel {
       clean = await this.step('quarantine', () => this.reconcileQuarantines()) && clean;
       clean = await this.step('torn', () => this.escalateTorn()) && clean;
       clean = await this.step('outbox', () => this.flushOutbox()) && clean;
+      if (this.d.canary) { const k = this.d.canary; clean = await this.step('canary', () => k.instance.scan(k.sessions(), k.switchOn())) && clean; }
       clean = await this.step('checkpoints', () => { this.checkpointsPruned += pruneSettledCheckpoints(this.d.stateDir, this.now()).length; }) && clean;
       clean = await this.step('prune', () => { this.gate.pruneTerminal(); }) && clean;
       // The heartbeat means a WORKING sentinel: a tick with a failed step does not refresh it.
@@ -414,6 +425,7 @@ export class ContextBudgetSentinel {
       torn: this.lastTorn,
       checkpointsPruned: this.checkpointsPruned,
       lastError: this.lastError,
+      canary: this.d.canary ? this.d.canary.instance.report(this.d.canary.switchOn()) : null,
     };
   }
 }

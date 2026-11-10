@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import type { Session } from '../core/types.js';
 import type { ContextBudgetSentinelDeps, FoldCandidate } from './ContextBudgetSentinel.js';
+import type { CanarySession } from './compactionCanary.js';
 
 /**
  * Is a tmux session alive? `true` / `false` only on a definite answer; a
@@ -57,4 +58,20 @@ export function productionSentinelSessionDeps(o: {
     },
     fileBytes: (fp) => { try { return fs.statSync(fp).size; } catch { return null; } }, // @silent-fallback-ok — an unreadable transcript is "no evidence of quiet": containment stays
   };
+}
+
+/**
+ * The canary's scope (§9.1): topic-bound sessions whose engine and transcript
+ * are known. Today Claude Code; another engine joins when its adapter's
+ * transcript channel is verified (task 11 / Phase 1).
+ */
+export function productionCanarySessions(o: { sessions: SentinelSessionSource; projectDir: string }): () => CanarySession[] {
+  return () => o.sessions.listRunningSessions()
+    .filter((s) => typeof s.telegramTopicId === 'number' && !!s.claudeSessionId && s.framework === 'claude-code')
+    .map((s) => {
+      const configHome = typeof o.sessions.configHomeForSession === 'function' ? o.sessions.configHomeForSession(s.tmuxSession) : undefined;
+      const transcriptPath = resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: s.claudeSessionId as string, projectDir: (s as { cwd?: string }).cwd ?? o.projectDir, ...(configHome ? { configHome } : {}) });
+      return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: 'claude-code' };
+    })
+    .filter((x) => x.transcriptPath !== '');
 }
