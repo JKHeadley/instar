@@ -8828,6 +8828,55 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!r.ok) { res.status(r.reason === 'no-signer' ? 503 : 409).json({ error: r.reason }); return; }
     res.json({ ok: true, lease: r.lease });
   });
+  // POST /chief-of-staff/triage — the one-time first-run triage list (spec: Migration and rollout):
+  // a private view over the active initiative records with keep / review / archive per record and the
+  // reason from the record's own facts. PIN-gated (owner tap); writes nothing but the view. Re-run with
+  // `force: true`; otherwise an existing list is returned.
+  router.post('/chief-of-staff/triage', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    if (!ctx.initiativeTracker || !ctx.viewer) { res.status(503).json({ error: !ctx.initiativeTracker ? 'initiative tracker not available' : 'private viewer not configured' }); return; }
+    const existing = ctx.state.get<string>('chief-of-staff-triage-view');
+    if (existing && (req.body ?? {}).force !== true && ctx.viewer.get(existing)) { res.json({ ok: true, id: existing, localUrl: `/view/${existing}`, existing: true }); return; }
+    const { buildTriage } = await import('../core/ChiefOfStaffTriage.js');
+    // "Active records" in the digest's sense: everything not completed / archived / abandoned — the paused and
+    // awaiting-user ones are exactly what the needs-you floor exists for.
+    const LIVE = new Set(['active', 'awaiting-user', 'paused', 'halted']);
+    const active = (ctx.initiativeTracker.list() as unknown as Array<Record<string, unknown>>).filter((i) => LIVE.has(String(i.status)));
+    const list = buildTriage(active.map((i) => ({ id: String(i.id), title: String(i.title ?? i.id), description: typeof i.description === 'string' ? i.description : undefined, status: String(i.status ?? 'active'), lastTouchedAt: String(i.lastTouchedAt ?? i.updatedAt ?? ''), needsUser: i.needsUser === true, needsUserReason: typeof i.needsUserReason === 'string' ? i.needsUserReason : undefined, blockers: Array.isArray(i.blockers) ? (i.blockers as string[]) : [], links: Array.isArray(i.links) ? (i.links as Array<{ url?: string }>) : [] })), new Date());
+    const view = ctx.viewer.create('Chief of Staff — first-run triage', list.markdown, undefined, { source: { type: 'chief-of-staff', id: 'triage' } });
+    if (!ctx.state.readOnly) { try { ctx.state.set('chief-of-staff-triage-view', view.id); } catch { /* @silent-fallback-ok: a standby cannot record the id; the view still exists and the response carries its link */ } }
+    res.status(201).json({ ok: true, id: view.id, localUrl: `/view/${view.id}`, counts: list.counts, rows: list.rows.length, generatedAt: list.generatedAt });
+  });
+  // POST /chief-of-staff/projects — the owner binds a conversation as a project (spec §1.3: a binding is
+  // written ONLY by an owner tap; here the dashboard's PIN is that tap). Body: conversationKey, goal,
+  // doneDefinition[{id,kind,text,certify?}], checkCadenceHours?, linked{repos,branches,domains}?, initiativeId?,
+  // parentConversationKey? (default: under the Chief of Staff root). Validation is the store schema's.
+  router.post('/chief-of-staff/projects', (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof b.conversationKey !== 'string' || typeof b.goal !== 'string' || !Array.isArray(b.doneDefinition)) { res.status(400).json({ error: 'conversationKey, goal and doneDefinition are required' }); return; }
+    const r = ctx.chiefOfStaffLoop.bindProject({
+      conversationKey: b.conversationKey, goal: b.goal, doneDefinition: b.doneDefinition as never,
+      ...(typeof b.checkCadenceHours === 'number' ? { checkCadenceHours: b.checkCadenceHours } : {}),
+      ...(b.linked && typeof b.linked === 'object' ? { linked: b.linked as never } : {}),
+      ...(typeof b.initiativeId === 'string' ? { initiativeId: b.initiativeId } : {}),
+      ...(b.parentConversationKey === null || typeof b.parentConversationKey === 'string' ? { parentConversationKey: b.parentConversationKey as string | null } : {}),
+    });
+    if (!r.ok) { res.status(r.reason === 'invalid-binding' ? 400 : 409).json({ error: r.reason }); return; }
+    res.status(201).json({ ok: true, conversationKey: r.conversationKey });
+  });
+  // POST /chief-of-staff/projects/:key/tap — the owner's Unpark / Confirm-done from the dashboard (PIN = the tap).
+  router.post('/chief-of-staff/projects/:key/tap', async (req, res) => {
+    if (!ctx.chiefOfStaffLoop) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    if (!requireMandatePin(req, res)) return;
+    const action = String((req.body ?? {}).action ?? '');
+    if (action !== 'unpark' && action !== 'confirm-done') { res.status(400).json({ error: 'action must be unpark or confirm-done' }); return; }
+    const key = String(req.params.key ?? '');
+    const r = await ctx.chiefOfStaffLoop.ownerTap(`cos:${action}:${key}`, 'owner-tap');
+    res.status(r === 'ok' ? 200 : 409).json({ ok: r === 'ok', result: r });
+  });
   router.get('/chief-of-staff/projects/:key', (req, res) => {
     if (!ctx.chiefOfStaffLoop) {
       res.status(503).json({ error: 'chief-of-staff not enabled on this agent' });

@@ -120,6 +120,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['POST', '/mobile/desktop-unlock/challenge'],
       ['POST', '/mobile/desktop-unlock'],
       ['POST', '/mobile/dashboard-pin/challenge'],
+      // The Chief of Staff check-in from the owner's phone (chief-of-staff-topic.md §4).
+      ['POST', '/mobile/chief-of-staff/check-in'],
       ['POST', '/mobile/dashboard-pin/reveal'],
       // The desktop calls the app makes after a Face ID unlock (§2.2).
       ['GET', '/desktop/targets'],

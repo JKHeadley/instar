@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-10T00:21:38.619Z",
+  "slug": "chief-of-staff-live",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 18,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ChiefOfStaffActionProtocol.ts",
+      "src/messaging/invisible-payload.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "No new self-triggered controller: the holder-freshness split lets an already-bounded action execute where it was wrongly refused, and the egress classification admits two chat_id-only reads."
+  },
+  "verdict": "pass"
+}

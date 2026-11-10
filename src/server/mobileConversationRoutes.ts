@@ -28,6 +28,7 @@
  * none. Only `verified` adds "📱 signed" to the session tag.
  */
 import { storageErrorResponse } from '../core/storageMachineName.js';
+import { mobileOwnerDeviceAdmission } from './mobileOwnerDeviceAdmission.js';
 import { DEFAULT_ORIGIN_DISPLAY } from '../messaging/telegram-origin/OriginPresentation.js';
 import type { OriginDisplaySettings } from '../messaging/telegram-origin/types.js';
 import { deviceOriginRow, validateDeviceOriginRow, type DeviceOriginRow } from '../messaging/messageOrigin.js';
@@ -245,6 +246,8 @@ export interface MobileConversationRouteDeps {
    * where the feature is off. Served only to owner-role callers (a team or MSP phone sees neither field).
    */
   chiefOfStaff?: () => { pinnedKey: string | null; parents: Map<string, string | null> } | null;
+  /** Chief of Staff §4: the owner's phone checks in; absent where the feature is off. */
+  chiefOfStaffCheckIn?: (principal: string) => { ok: true; lease: unknown } | { ok: false; reason: string };
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
   /**
@@ -668,6 +671,17 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
   });
 
   // ── Catch-up between my machines (§3.3): Bearer only, never a phone (not on the device allowlist) ──
+  // POST /mobile/chief-of-staff/check-in — the owner's phone renews the operator lease (spec §4: "a message or
+  // tap from an owner-admitted device"). The device allowlist admits owner phones only; the admission is
+  // re-read here so a revoked or downgraded device never renews.
+  router.post('/mobile/chief-of-staff/check-in', (req: Request, res: Response) => {
+    const adm = mobileOwnerDeviceAdmission(deps.pairing, req);
+    if (!adm || !adm.isCurrent()) { res.status(403).json({ error: 'owner-phone-required' }); return; }
+    if (!deps.chiefOfStaffCheckIn) { res.status(503).json({ error: 'chief-of-staff not enabled on this agent' }); return; }
+    const r = deps.chiefOfStaffCheckIn(`device:${adm.deviceId}`);
+    if (!r.ok) { res.status(r.reason === 'no-signer' ? 503 : 409).json({ error: r.reason }); return; }
+    res.json({ ok: true, lease: r.lease });
+  });
   router.get('/mobile/conversations/read-markers', (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc) { off(res); return; }

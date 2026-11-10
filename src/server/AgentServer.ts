@@ -6921,6 +6921,7 @@ export class AgentServer {
         pool: routeCtx,
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
         // Chief of Staff §1.4: the pinned conversation + tree for owner-role callers; absent where the feature is off.
+        chiefOfStaffCheckIn: options.chiefOfStaffLoop ? (principal: string) => options.chiefOfStaffLoop!.checkIn({ renewedVia: 'app', principal }) : undefined,
         chiefOfStaff: options.chiefOfStaffLoop ? () => {
           const loop = options.chiefOfStaffLoop!;
           const t = this.state.get<number>('chief-of-staff-topic');

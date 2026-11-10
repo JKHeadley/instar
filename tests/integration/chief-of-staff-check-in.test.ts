@@ -45,6 +45,7 @@ function app(opts: { loop: boolean }) {
     protocol: { claim: async () => ({ outcome: 'rejected', reason: 'n/a' }), standDown: () => null, settleOpenIntent: async () => 'lost', operatorLeaseLive: () => false } as never,
     mirrorInitiativeStatus: () => {}, sendNote: async () => {}, sendImmediate: async () => {}, statusUrl: () => 'x', localHour: () => 8,
     sign: (c) => sign(c, keys.priv),
+    rootConversationKey: () => 'telegram:900',
   });
   const state = new Map<string, unknown>([['chief-of-staff-topic', 900]]);
   const ctx = {
@@ -82,5 +83,24 @@ describe('POST /chief-of-staff/check-in', () => {
     expect(renewals).toHaveLength(1); expect(renewals[0].data.renewedVia).toBe('console'); expect(renewals[0].data.principal).toBe('console:owner');
     const after = await request(a).get('/chief-of-staff').set(auth);
     expect(after.body.lease.live).toBe(true);
+  });
+});
+
+describe('POST /chief-of-staff/projects + /projects/:key/tap (PIN-gated owner surface)', () => {
+  it('binds a project with the PIN, lists it, refuses a bad body and a wrong PIN, and taps unpark/confirm-done through the loop', async () => {
+    const { a, entries } = app({ loop: true });
+    const body = { conversationKey: 'telegram:1', goal: 'Ship the thing', doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }], linked: { repos: ['o/r'] } };
+    expect((await request(a).post('/chief-of-staff/projects').set(auth).send({ ...body, pin: '000000' })).status).toBeGreaterThanOrEqual(400);
+    expect((await request(a).post('/chief-of-staff/projects').set(auth).send({ pin: '424242', goal: 'no key' })).status).toBe(400);
+    const ok = await request(a).post('/chief-of-staff/projects').set(auth).send({ ...body, pin: '424242' });
+    expect(ok.status).toBe(201);
+    expect(entries.filter((e) => e.data.recordType === 'binding')).toHaveLength(1);
+    expect(entries.find((e) => e.data.recordType === 'tree' && e.data.conversationKey === 'telegram:1')?.data.parentConversationKey).toBe('telegram:900');
+    const list = await request(a).get('/chief-of-staff').set(auth);
+    expect(list.body.projects.map((p: { conversationKey: string }) => p.conversationKey)).toEqual(['telegram:1']);
+    const tap = await request(a).post('/chief-of-staff/projects/telegram:1/tap').set(auth).send({ pin: '424242', action: 'unpark' });
+    expect(tap.status).toBe(200); expect(tap.body.result).toBe('ok');
+    const bad = await request(a).post('/chief-of-staff/projects/telegram:1/tap').set(auth).send({ pin: '424242', action: 'explode' });
+    expect(bad.status).toBe(400);
   });
 });

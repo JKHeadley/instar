@@ -29159,7 +29159,8 @@ export async function startServer(options: StartOptions): Promise<void> {
                       body: JSON.stringify({ topicId: String(t), condition: (text ?? 'Chief of Staff restart').slice(0, 500), workDir: config.projectDir, startedAt, endAt, cosNoRespawn: true, idempotencyKey }),
                     });
                     const body = (await res.json().catch(() => /* @silent-fallback-ok: a non-JSON reply is reported as register-failed with the HTTP status on the next line */ ({}))) as { ok?: boolean; runId?: string; existingRunId?: string; error?: string };
-                    if (!res.ok || !body.ok || !body.runId) throw new Error(`register-failed:${body.error ?? body.existingRunId ?? res.status}`);
+                    const registeredRun = cosMod.registeredRunId(res.ok, body);
+                    if (!registeredRun) throw new Error(`register-failed:${body.error ?? body.existingRunId ?? res.status}`);
                     try {
                       await spawnSessionForTopic(sessionManager, telegram, `topic-${t}`, t,
                         `[chief-of-staff automated — not operator words; key ${idempotencyKey}]\n${text ?? ''}`,
@@ -29167,11 +29168,11 @@ export async function startServer(options: StartOptions): Promise<void> {
                     } catch (e) {
                       // §2.4 step 5 compensation: a registered run whose session never started must not sit `open`
                       // (it would stand the Chief of Staff down for maxRunHours and 409 the retry).
-                      try { cosRunStore.markTerminal(String(t), body.runId, 'ended', 'cos-spawn-failed'); } catch { /* @silent-fallback-ok: the aborted intent is recorded by the protocol; a stuck run record is swept by the daily run sweep and surfaced on /chief-of-staff */ }
-                      throw new Error(`spawn-failed:${(e as Error)?.message ?? e} (run ${body.runId} ended)`);
+                      try { cosRunStore.markTerminal(String(t), registeredRun, 'ended', 'cos-spawn-failed'); } catch { /* @silent-fallback-ok: the aborted intent is recorded by the protocol; a stuck run record is swept by the daily run sweep and surfaced on /chief-of-staff */ }
+                      throw new Error(`spawn-failed:${(e as Error)?.message ?? e} (run ${registeredRun} ended)`);
                     }
                     _claimOwnershipForAutonomousSpawn?.(t);
-                    return { runId: body.runId };
+                    return { runId: registeredRun };
                   },
                   inject: async ({ conversationKey, text, idempotencyKey }) => {
                     const t = topicOf(conversationKey);
