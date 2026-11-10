@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "account-sign-in-face-id",
+  "sessionId": "a99dbbdc-8512-4250-9e5c-69afd492759d",
+  "timestamp": "2026-11-10T06:07:55.352Z",
+  "artifactPath": "upgrades/side-effects/account-sign-in-face-id.md",
+  "artifactSha256": "347a8c65e3c240cad50ce2e8cc6211ca41dd9e93244df8bac009237366e2f986",
+  "specPath": "docs/specs/account-sign-in-face-id.md",
+  "coveredFiles": [
+    "docs/specs/account-sign-in-face-id.eli16.md",
+    "docs/specs/account-sign-in-face-id.md",
+    "src/server/CapabilityIndex.ts",
+    "src/server/middleware.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/mobilePermissionsRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/account-sign-in-face-id-alive.test.ts",
+    "tests/integration/account-sign-in-face-id.test.ts",
+    "tests/unit/account-sign-in-face-id.test.ts",
+    "upgrades/next/account-sign-in-face-id.md",
+    "upgrades/side-effects/account-sign-in-face-id.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Authorization surface: a new owner-phone route that starts an account sign-in with a Face ID proof in place of the dashboard PIN.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

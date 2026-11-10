@@ -132,6 +132,8 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000'],
       ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000/cursor'],
       ['POST', '/desktop/requests/00000000-0000-4000-8000-000000000000/ticket'],
+      // Start an account sign-in with Face ID instead of the PIN (account-sign-in-face-id).
+      ['POST', '/mobile/accounts/sign-in/start'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);
