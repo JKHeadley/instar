@@ -27,5 +27,14 @@
   "tier": 2,
   "tierReasoning": "A self-triggered process that spends model calls (own switch, default off) and records engine capability evidence",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "context-budget-adapter-suite is registered in selfActionRegistry: at most 3 suite runs per engine version ever (durable attempt count stamped before each run, 24 h floor), one at a time; a recorded version never re-runs"
+    }
+  }
 }
