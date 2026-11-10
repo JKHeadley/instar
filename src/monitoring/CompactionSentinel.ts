@@ -44,6 +44,7 @@ export type CompactionStatus =
   | 'pending-inject'    // state created; first inject dispatched
   | 'verifying'         // inject done, waiting for verify-window to elapse
   | 'deferring'         // session is actively working; waiting WITHOUT re-injecting
+  | 'awaiting-seed'     // waiting for the SessionStart(compact) hook's seeded marker
   | 'retrying'          // verification failed, scheduling next attempt
   | 'recovered'         // session produced output → success
   | 'failed';           // max attempts exhausted without recovery
@@ -135,6 +136,21 @@ export interface CompactionSentinelDeps {
    */
   isActivelyWorking?: (sessionName: string) => boolean;
 
+  /**
+   * One carrier of post-compaction context (context-budget-layered-summaries
+   * §9.1). Is compaction recovery switched on for this machine
+   * (`contextBudget.compactionRecovery.enabled`)? Off or absent ⇒ today's path
+   * unchanged: no seed wait, the server injects as before.
+   */
+  isCompactionRecoveryEnabled?: () => boolean;
+
+  /**
+   * Read the seeded marker the SessionStart(compact) hook writes after its
+   * recovery seed succeeded (`state/context-layers/_seeded/<claudeSessionId>.json`).
+   * Returns null when there is none. Absent ⇒ no seed wait.
+   */
+  readSeedMarker?: (sessionName: string) => { seededAt: number; epoch: string } | null;
+
   /** Override for Date.now — for tests. */
   now?: () => number;
 
@@ -160,6 +176,18 @@ export interface CompactionSentinelConfig {
    * to disable deferral entirely (restores pre-fix behavior).
    */
   maxWorkingDefers?: number;
+  /**
+   * How long after compaction completed (the transcript's compact-boundary
+   * entry) to wait for the hook's seeded marker before the server path runs.
+   */
+  seedWaitMs?: number;
+  /**
+   * Upper bound on the seed wait while no compact-boundary entry has appeared
+   * yet (a PreCompact report arrives before the compaction itself finishes).
+   */
+  seedMaxWaitMs?: number;
+  /** Poll interval while awaiting the seeded marker. */
+  seedPollMs?: number;
 }
 
 const DEFAULTS = {
@@ -168,12 +196,19 @@ const DEFAULTS = {
   maxInjectAttempts: 3,
   recoveryGuardMs: 10 * 60_000,    // 10 minutes — protection from zombie-killer
   maxWorkingDefers: 10,            // up to 10×verifyWindowMs (~4min) of "actively working" before forcing an inject
+  seedWaitMs: 30_000,              // spec §9.1: 30 s after the compact-boundary entry
+  seedMaxWaitMs: 180_000,          // a compaction still running after 3 min falls back to the server path
+  seedPollMs: 2_000,
 };
+
+/** Accept a marker or boundary written up to this long before the report (watchdog reports late). */
+const SEED_LOOKBACK_MS = 120_000;
 
 export interface CompactionSentinelEvents {
   'compaction:detected': [RecoveryState];
   'compaction:inject-attempted': [RecoveryState & { accepted: boolean }];
   'compaction:deferred': [RecoveryState];
+  'compaction:seeded': [RecoveryState & { epoch: string }];
   'compaction:recovered': [RecoveryState & { jsonlDelta: number }];
   'compaction:failed': [RecoveryState & { reason: string }];
 }
@@ -185,6 +220,8 @@ export class CompactionSentinel extends EventEmitter {
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly recentReports = new Map<string, number>(); // sessionName → lastReportedAt
   private deferIf?: (sessionName: string) => boolean;
+  /** sessionName → seededAt of the last hook marker that already covered a compaction (idempotence). */
+  private readonly consumedSeedAt = new Map<string, number>();
 
   constructor(deps: CompactionSentinelDeps, config: CompactionSentinelConfig = {}) {
     super();
@@ -196,6 +233,9 @@ export class CompactionSentinel extends EventEmitter {
       maxInjectAttempts: config.maxInjectAttempts ?? DEFAULTS.maxInjectAttempts,
       recoveryGuardMs: config.recoveryGuardMs ?? DEFAULTS.recoveryGuardMs,
       maxWorkingDefers: config.maxWorkingDefers ?? DEFAULTS.maxWorkingDefers,
+      seedWaitMs: config.seedWaitMs ?? DEFAULTS.seedWaitMs,
+      seedMaxWaitMs: config.seedMaxWaitMs ?? DEFAULTS.seedMaxWaitMs,
+      seedPollMs: config.seedPollMs ?? DEFAULTS.seedPollMs,
     };
   }
 
@@ -267,7 +307,125 @@ export class CompactionSentinel extends EventEmitter {
       `size=${state.baselineJsonlSize ?? 'n/a'}`,
     );
     this.emit('compaction:detected', state);
+    if (this.seedWaitApplies(sessionName)) {
+      state.status = 'awaiting-seed';
+      this.awaitSeed(state);
+      return;
+    }
     this.attemptInjection(state);
+  }
+
+  /**
+   * The seed wait applies only with the switch on, a marker reader wired, and a
+   * Claude Code session (other engines have no SessionStart(compact) seed yet).
+   */
+  private seedWaitApplies(sessionName: string): boolean {
+    if (!this.deps.readSeedMarker || !this.deps.isCompactionRecoveryEnabled) return false;
+    let enabled = false;
+    try { enabled = this.deps.isCompactionRecoveryEnabled(); } catch { enabled = false; }
+    if (!enabled) return false;
+    const fw = this.deps.getSessionFramework?.(sessionName);
+    return fw === undefined || fw === 'claude-code';
+  }
+
+  /**
+   * Wait for the hook's seeded marker for this compaction. Seeded ⇒ the session
+   * already has its recovery context; the server stands down (one carrier).
+   * No marker within the bound ⇒ today's server path runs once.
+   */
+  private awaitSeed(state: RecoveryState): void {
+    if (this.active.get(state.sessionName) !== state) return; // cleared meanwhile
+    const now = this.now();
+    let marker: { seededAt: number; epoch: string } | null = null;
+    try { marker = this.deps.readSeedMarker!(state.sessionName); } catch { marker = null; }
+    const consumed = this.consumedSeedAt.get(state.sessionName) ?? -Infinity;
+    const boundary = this.readCompactBoundary(state, consumed);
+    // The marker must belong to THIS compaction (second-pass review, slice 2):
+    //  - newer than any marker already consumed for this session;
+    //  - written after this compaction's boundary entry (2 s clock slack; the
+    //    hook runs once compaction completes, before the entry is flushed), or,
+    //    while that boundary is not yet visible, after this report itself.
+    // The hook writes an empty epoch (it cannot see this compaction's boundary);
+    // the epoch is bound here to the boundary entry's id (§7.7).
+    const markerFresh = marker !== null
+      && marker.seededAt > consumed
+      && (boundary
+        ? marker.seededAt >= boundary.at - 2_000
+        : marker.seededAt >= state.detectedAt - this.lookbackFor(state));
+    if (marker && markerFresh) {
+      const key = boundary?.uuid || marker.epoch || `t${marker.seededAt}`;
+      this.consumedSeedAt.set(state.sessionName, marker.seededAt);
+      console.log(`[Sentinel] "${state.sessionName}" seeded by its compaction hook (epoch ${key}); server recovery stands down`);
+      this.emit('compaction:seeded', { ...state, epoch: key });
+      this.finalize(state, 'recovered');
+      return;
+    }
+    const boundaryAt = boundary ? boundary.at : null;
+    const deadline = boundaryAt !== null
+      ? Math.max(boundaryAt, state.detectedAt) + this.cfg.seedWaitMs
+      : state.detectedAt + this.cfg.seedMaxWaitMs;
+    if (now >= deadline) {
+      console.log(
+        `[Sentinel] no hook seed for "${state.sessionName}" ` +
+        `(${boundaryAt !== null ? 'compaction finished' : 'no compact boundary seen'}); server recovery runs`,
+      );
+      state.status = 'pending-inject';
+      this.attemptInjection(state);
+      return;
+    }
+    const handle = this.setTimer(() => {
+      this.timers.delete(state.sessionName);
+      this.awaitSeed(state);
+    }, Math.min(this.cfg.seedPollMs, Math.max(1, deadline - now)));
+    this.timers.set(state.sessionName, handle);
+  }
+
+  /**
+   * How far before the report this compaction's evidence may lie. A PreCompact
+   * report precedes the compaction, so nothing earlier belongs to it (2 s clock
+   * slack); the watchdog poll and the recovery route report after the fact.
+   */
+  private lookbackFor(state: RecoveryState): number {
+    return state.trigger === 'PreCompact' ? 2_000 : SEED_LOOKBACK_MS;
+  }
+
+  /**
+   * Time and id of the newest compact-boundary entry in the session's transcript that
+   * is not older than the report (minus the trigger's lookback) and newer than the
+   * last consumed marker (so a compaction already handled is never re-bound), or null. The engine
+   * writes this entry when compaction completes; it is the spec's anchor for
+   * the seed wait.
+   */
+  private readCompactBoundary(state: RecoveryState, after: number): { at: number; uuid: string } | null {
+    const p = state.baselineJsonlPath;
+    if (!p) return null;
+    try {
+      const fd = fs.openSync(p, 'r');
+      try {
+        const size = fs.fstatSync(fd).size;
+        const len = Math.min(size, 524_288);
+        const buf = Buffer.alloc(len);
+        fs.readSync(fd, buf, 0, len, size - len);
+        let best: { at: number; uuid: string } | null = null;
+        for (const line of buf.toString('utf-8').split('\n')) {
+          if (!line.includes('compact_boundary')) continue;
+          try {
+            const e = JSON.parse(line) as { subtype?: string; timestamp?: string; uuid?: string };
+            if (e.subtype !== 'compact_boundary' || !e.timestamp) continue;
+            const t = Date.parse(e.timestamp);
+            if (Number.isFinite(t) && t >= state.detectedAt - this.lookbackFor(state) && t > after
+              && (best === null || t > best.at)) {
+              best = { at: t, uuid: typeof e.uuid === 'string' ? e.uuid : '' };
+            }
+          } catch { /* partial first line */ }
+        }
+        return best;
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -292,6 +450,7 @@ export class CompactionSentinel extends EventEmitter {
       this.timers.delete(sessionName);
     }
     this.active.delete(sessionName);
+    this.consumedSeedAt.delete(sessionName);
   }
 
   /** Stop all pending timers. Safe to call multiple times. */
@@ -300,6 +459,7 @@ export class CompactionSentinel extends EventEmitter {
     this.timers.clear();
     this.active.clear();
     this.recentReports.clear();
+    this.consumedSeedAt.clear();
   }
 
   /** Get current active recovery state (test introspection). */

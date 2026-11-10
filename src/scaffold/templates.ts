@@ -337,7 +337,7 @@ Core files: .instar/AGENT.md (identity), .instar/MEMORY.md (learnings), .instar/
 Server: curl http://localhost:${port}/health | Capabilities: curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/capabilities
 \`\`\`
 
-**What compaction erases**: Your name, your principles, what you were working on, who you work with. The compaction-recovery hook re-injects all of this. If it doesn't fire, read \`.instar/AGENT.md\` immediately.
+**What compaction erases**: Your name, your principles, what you were working on, who you work with. The compaction-recovery hook re-injects all of this: after a compaction you see an \`=== IDENTITY RECOVERY (post-compaction) ===\` block. If that block is missing after a compaction, read \`.instar/AGENT.md\` and \`.instar/MEMORY.md\` immediately.
 
 **What survives**: Files on disk. Your state directory. Your server. Your MEMORY.md. These are your continuity — your identity is stored in infrastructure, not in context.
 
@@ -2422,7 +2422,7 @@ Core files: .instar/AGENT.md (identity), .instar/MEMORY.md (learnings), .instar/
 Server: curl http://localhost:${port}/health | Self-Knowledge: curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/self-knowledge/search?q=QUERY"
 \`\`\`
 
-**What compaction erases**: Your name, your principles, what you were working on, who you work with. The compaction-recovery hook re-injects all of this. If it doesn't fire, read \`.instar/AGENT.md\` immediately.
+**What compaction erases**: Your name, your principles, what you were working on, who you work with. The compaction-recovery hook re-injects all of this: after a compaction you see an \`=== IDENTITY RECOVERY (post-compaction) ===\` block. If that block is missing after a compaction, read \`.instar/AGENT.md\` and \`.instar/MEMORY.md\` immediately.
 
 **What survives**: Files on disk. Your state directory. Your server. Your MEMORY.md. These are your continuity — your identity is stored in infrastructure, not in context.
 `;

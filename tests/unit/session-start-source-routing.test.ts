@@ -11,6 +11,8 @@
  *   - non-Claude engine (INSTAR_FRAMEWORK=codex-cli) ⇒ today's branch (env only)
  *   - switch off (contextBudget.compactionRecovery.enabled=false) ⇒ today's branch
  *   - an open pipe that never closes ⇒ the hook is bounded and still starts
+ *   - a successful compact seed writes the seeded marker (one carrier, §9.1);
+ *     a failed or empty seed, the switch off, or a non-Claude engine writes none
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -114,4 +116,64 @@ describe('session-start hook routes on the stdin source (§9.1)', () => {
     expect(out).toContain('=== SESSION START ===');
     expect(Date.now() - started).toBeLessThan(14_000);
   }, 20_000);
+});
+
+describe('seeded marker after the compact seed (§9.1 one carrier)', () => {
+  const SID = 'abcd-1234';
+  const markerFile = () => path.join(projectDir, '.instar', 'state', 'context-layers', '_seeded', `${SID}.json`);
+  const recovery = (body: string) =>
+    fs.writeFileSync(path.join(projectDir, '.instar', 'hooks', 'instar', 'compaction-recovery.sh'), `#!/bin/bash\n${body}\n`, { mode: 0o755 });
+
+  it('writes the marker after a successful seed, epoch left for the server to bind', () => {
+    const transcript = path.join(projectDir, 't.jsonl');
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: 'user', uuid: 'u0' }),
+      JSON.stringify({ type: 'system', subtype: 'compact_boundary', uuid: 'boundary-9' }),
+      '',
+    ].join('\n'));
+    const out = run(JSON.stringify({ source: 'compact', session_id: SID, transcript_path: transcript }));
+    expect(out).toContain('RECOVERY_RAN');
+    const m = JSON.parse(fs.readFileSync(markerFile(), 'utf-8'));
+    // The boundary visible at hook time is the PREVIOUS compaction's (Claude Code
+    // flushes the current one after the hook), so the hook never stamps it.
+    expect(m).toMatchObject({ sessionId: SID, epoch: '', source: 'compact' });
+    expect(typeof m.seededAt).toBe('number');
+    expect(fs.statSync(markerFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it('writes no marker when the seed fails', () => {
+    recovery('echo PARTIAL\nexit 3');
+    const out = run(JSON.stringify({ source: 'compact', session_id: SID }));
+    expect(out).toContain('PARTIAL');
+    expect(fs.existsSync(markerFile())).toBe(false);
+  });
+
+  it('writes no marker when the seed prints nothing', () => {
+    recovery('true');
+    run(JSON.stringify({ source: 'compact', session_id: SID }));
+    expect(fs.existsSync(markerFile())).toBe(false);
+  });
+
+  it('refuses a session id that could escape the marker directory', () => {
+    run(JSON.stringify({ source: 'compact', session_id: '../../evil' }));
+    expect(fs.existsSync(path.join(projectDir, '.instar', 'state', 'context-layers', '_seeded'))).toBe(false);
+  });
+
+  it('writes no marker with the switch off', () => {
+    writeConfig({ contextBudget: { compactionRecovery: { enabled: false } } });
+    run(JSON.stringify({ source: 'compact', session_id: SID }), { CLAUDE_HOOK_MATCHER: 'compact' });
+    expect(fs.existsSync(markerFile())).toBe(false);
+  });
+
+  it('writes the marker under the agent home for a worktree session', () => {
+    const agentHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ss-home-'));
+    fs.mkdirSync(path.join(agentHome, '.instar'), { recursive: true });
+    try {
+      run(JSON.stringify({ source: 'compact', session_id: SID }), { INSTAR_AGENT_HOME: agentHome });
+      expect(fs.existsSync(path.join(agentHome, '.instar', 'state', 'context-layers', '_seeded', `${SID}.json`))).toBe(true);
+      expect(fs.existsSync(markerFile())).toBe(false);
+    } finally {
+      SafeFsExecutor.safeRmSync(agentHome, { recursive: true, force: true, operation: 'tests/unit/session-start-source-routing.test.ts' });
+    }
+  });
 });
