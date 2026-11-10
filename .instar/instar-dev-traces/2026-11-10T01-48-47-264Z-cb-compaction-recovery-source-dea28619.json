@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "cb-compaction-recovery-source",
+  "sessionId": "9129212e-3c5a-416c-b4f4-528c322dbef1",
+  "timestamp": "2026-11-10T01:48:47.264Z",
+  "artifactPath": "upgrades/side-effects/cb-compaction-recovery-source.md",
+  "artifactSha256": "defe25e6dc16b28d5db5b366cd24b57bebed6d16132bfa9466ef0051146ab77f",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "docs/specs/context-budget-layered-summaries.eli16.md",
+    "docs/specs/context-budget-layered-summaries.md",
+    "docs/specs/reports/context-budget-layered-summaries-convergence.md",
+    "docs/specs/reports/context-budget-layered-summaries-fable52-design-pass.md",
+    "src/commands/init.ts",
+    "src/config/ConfigDefaults.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/server/routes.ts",
+    "tests/integration/session-start-source-unknown-route.test.ts",
+    "tests/unit/session-start-source-routing.test.ts",
+    "upgrades/next/cb-compaction-recovery-source.md",
+    "upgrades/side-effects/cb-compaction-recovery-source.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fleet-wide change to every Claude Code agent's post-compaction context, driven by the approved converged spec; reversible by config switch.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

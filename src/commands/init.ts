@@ -5444,7 +5444,8 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
 
   // SessionStart: identity injection on all lifecycle events
   // Uses the correct Claude Code hook type (not PostToolUse or Notification)
-  // The session-start.sh hook handles event routing internally via CLAUDE_HOOK_MATCHER
+  // The session-start.sh hook routes on the "source" field Claude Code passes in its stdin JSON
+  // (context-budget-layered-summaries §9.1; CLAUDE_HOOK_MATCHER is only a legacy fallback).
   const sessionStartHook = {
     type: 'command',
     command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
