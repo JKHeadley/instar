@@ -1061,6 +1061,22 @@ describe('team settings for the whole agent (team-switches-agent-wide)', () => {
     expect(ctx.body.waitingOn).toEqual([]);
   });
 
+  it('the agent reads the same lines the phone shows, and its token cannot read the phone route or turn anything on', async () => {
+    const { e, asked } = await rig();
+    const owner = phone(e);
+    const ctx = await send(e, owner, 'GET', '/mobile/team/context');
+    // GET /team/people serves exactly this summary to the agent token.
+    expect(e.svc.teamSwitchesSummary).toBeTypeOf('function');
+    expect(e.svc.teamSwitchesSummary!()).toEqual(ctx.body.teamSwitches);
+    expect((await request(e.app).get('/mobile/team/context').set('Authorization', 'Bearer tok-1')).status).toBe(403);
+    for (const setting of ['memory-privacy', 'app-conversations', 'team-access']) {
+      const r = await bearer(e, '/mobile/team/switches/turn-on', { setting });
+      expect([401, 403]).toContain(r.status);
+    }
+    expect([401, 403]).toContain((await bearer(e, '/mobile/team/memory-privacy', {})).status);
+    expect(asked).toEqual([]);
+  });
+
   it('the owner turns a setting on for every machine with Face ID, and the answer lists each machine', async () => {
     const { e, asked, machines } = await rig();
     const owner = phone(e);
