@@ -15419,52 +15419,61 @@ export async function startServer(options: StartOptions): Promise<void> {
       prepareInjectionText,
     } = await import('../messaging/shared/compactionResumePayload.js');
 
+    /**
+     * The Telegram recovery text for a compacted session (shared by the direct
+     * path below and the §9.1 idle-gated fallback). `declined` = nothing to
+     * recover (session gone, or no unanswered user message); `unsupported` =
+     * not a Telegram-bound session (Slack keeps its own direct path).
+     */
+    const buildTelegramCompactionText = (sessionName: string, triggerLabel: string): { text: string; topicId: number } | 'declined' | 'unsupported' => {
+      if (!sessionManager.isSessionAlive(sessionName)) return 'declined';
+      if (!telegram) return 'unsupported';
+      const topicId = telegram.getTopicForSession(sessionName);
+      if (!topicId) return 'unsupported';
+      // Walk history backward, skipping PresenceProxy standby messages and
+      // server-emitted delivery/lifecycle acks. Those are from-agent but
+      // they are NOT real responses — treating them as "agent answered"
+      // is what let this recovery path silently decline for 15 minutes
+      // while the user's question sat unanswered. See
+      // isSystemOrProxyMessage / findLastRealMessage for the canonical filter.
+      const history = telegram.getTopicHistory(topicId, 20);
+      const lastReal = findLastRealMessage(history);
+      if (!lastReal?.fromUser) return 'declined';
+      console.log(`[CompactionResume] (${triggerLabel}) topic ${topicId} session "${sessionName}" has unanswered message — recovering`);
+      // Prefer topicMemory (summary + recent messages + search hint);
+      // fall back to inline JSONL history when the SQLite store isn't
+      // ready. Matches the session-spawn precedence in this file.
+      let contextBlock = '';
+      if (topicMemory?.isReady()) {
+        try {
+          contextBlock = topicMemory.formatContextForSession(topicId, 20);
+        } catch (err) {
+          console.warn(`[CompactionResume] (${triggerLabel}) topicMemory failed, falling back to inline history:`, err);
+        }
+      }
+      if (!contextBlock) {
+        const topicName = telegram.getTopicName?.(topicId) ?? undefined;
+        contextBlock = formatInlineHistory(history, { topicName, label: 'TOPIC CONTEXT' });
+      }
+      const payload = buildCompactionResumePayload(contextBlock);
+      const injectText = prepareInjectionText(payload, triggerLabel, topicId);
+      // Topic tag so InputGuard accepts the direct injection.
+      return { text: `[telegram:${topicId}] ${injectText}`, topicId };
+    };
+
     const recoverCompactedSession = async (sessionName: string, triggerLabel: string): Promise<boolean> => {
       if (!sessionManager.isSessionAlive(sessionName)) return false;
 
       // Telegram path
-      if (telegram) {
-        const topicId = telegram.getTopicForSession(sessionName);
-        if (topicId) {
-          // Walk history backward, skipping PresenceProxy standby messages and
-          // server-emitted delivery/lifecycle acks. Those are from-agent but
-          // they are NOT real responses — treating them as "agent answered"
-          // is what let this recovery path silently decline for 15 minutes
-          // while the user's question sat unanswered. See
-          // isSystemOrProxyMessage / findLastRealMessage for the canonical filter.
-          const history = telegram.getTopicHistory(topicId, 20);
-          const lastReal = findLastRealMessage(history);
-          if (lastReal?.fromUser) {
-            console.log(`[CompactionResume] (${triggerLabel}) topic ${topicId} session "${sessionName}" has unanswered message — recovering`);
-
-            // Prefer topicMemory (summary + recent messages + search hint);
-            // fall back to inline JSONL history when the SQLite store isn't
-            // ready. Matches the session-spawn precedence in this file.
-            let contextBlock = '';
-            if (topicMemory?.isReady()) {
-              try {
-                contextBlock = topicMemory.formatContextForSession(topicId, 20);
-              } catch (err) {
-                console.warn(`[CompactionResume] (${triggerLabel}) topicMemory failed, falling back to inline history:`, err);
-              }
-            }
-            if (!contextBlock) {
-              const topicName = telegram.getTopicName?.(topicId) ?? undefined;
-              contextBlock = formatInlineHistory(history, { topicName, label: 'TOPIC CONTEXT' });
-            }
-
-            const payload = buildCompactionResumePayload(contextBlock);
-            const injectText = prepareInjectionText(payload, triggerLabel, topicId);
-            // Direct injection with topic tag so InputGuard accepts it.
-            const tagged = `[telegram:${topicId}] ${injectText}`;
-            const ok = sessionManager.injectMessage(sessionName, tagged);
-            if (ok) {
-              console.log(`[CompactionResume] (${triggerLabel}) direct re-inject OK for topic ${topicId}`);
-              return true;
-            }
-            console.warn(`[CompactionResume] (${triggerLabel}) direct re-inject FAILED for topic ${topicId}`);
-          }
+      const built = buildTelegramCompactionText(sessionName, triggerLabel);
+      if (typeof built === 'object') {
+        // Direct injection — bypass triage (see the note above).
+        const ok = sessionManager.injectMessage(sessionName, built.text);
+        if (ok) {
+          console.log(`[CompactionResume] (${triggerLabel}) direct re-inject OK for topic ${built.topicId}`);
+          return true;
         }
+        console.warn(`[CompactionResume] (${triggerLabel}) direct re-inject FAILED for topic ${built.topicId}`);
       }
 
       // Slack path — handled in the Slack-aware block below (needs slackChannelToSyntheticId).
@@ -15485,6 +15494,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // vetoes zombie cleanup while a recovery is in flight.
     const { CompactionSentinel } = await import('../monitoring/CompactionSentinel.js');
     const { readSeedMarkerFile } = await import('../monitoring/compactionSeedMarker.js');
+    const { createCompactionFallbackDeps } = await import('../monitoring/compactionFallbackStore.js');
+    const { PendingInjectStore } = await import('../core/PendingInjectStore.js');
     // A session is a legitimate recovery target ONLY while it is in the running
     // set. A finished/failed/killed session drops out of listRunningSessions(),
     // so this is the structural guard that stops both sentinels from "recovering"
@@ -15524,6 +15535,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             config.stateDir,
             sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId,
           ),
+        // §9.1: the fallback after a missed seed is staged durably in
+        // PendingInjectStore and released only at an idle, ready prompt.
+        fallback: createCompactionFallbackDeps({
+          store: new PendingInjectStore(path.join(config.stateDir, 'state')),
+          build: async (sessionName, trigger) => {
+            const built = buildTelegramCompactionText(sessionName, trigger);
+            return typeof built === 'object' ? { text: built.text } : built;
+          },
+          isReadyPrompt: (sessionName) => sessionManager.classifyPaneState(sessionName) === 'ready',
+          inject: (sessionName, text) => sessionManager.injectMessage(sessionName, text),
+        }),
       },
       // Defaults are production-sensible; override here only if needed.
       {},
@@ -15623,6 +15645,21 @@ export async function startServer(options: StartOptions): Promise<void> {
     // already owns.
     rateLimitSentinel.setDeferIf(s => compactionSentinel.isRecoveryActive(s));
     compactionSentinel.setDeferIf(s => rateLimitSentinel.isRecoveryActive(s));
+    // §9.1: a post-compaction fallback staged before this restart resumes under
+    // the same idle gate; one that is stale or whose session is gone is reported.
+    {
+      const resumed = compactionSentinel.resumeStagedFallbacks();
+      for (const w of resumed.withdrawn) {
+        DegradationReporter.getInstance().report({
+          feature: 'CompactionSentinel.fallback',
+          primary: 'Deliver the post-compaction briefing staged before a restart at the next idle prompt',
+          fallback: `Staged briefing for "${w.tmuxSession}" withdrawn: ${w.reason}`,
+          reason: 'A server restart interrupted the post-compaction fallback',
+          impact: 'That session may not have received its briefing after a compaction; its next user message carries recent context as usual.',
+        });
+      }
+      if (resumed.resumed.length > 0) console.log(`[Sentinel] resumed ${resumed.resumed.length} staged compaction fallback(s)`);
+    }
 
     // Triggers: watchdog poll + SessionManager idle-error emit. Both deduped by
     // the sentinel.
