@@ -8075,6 +8075,15 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      // context-budget-layered-summaries §10: the fold-marker tool policy. Exits at
+      // once for any session with no fold marker; always overwritten.
+      fs.writeFileSync(path.join(instarHooksDir, 'fold-marker-guard.js'), this.getFoldMarkerGuardHook(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/fold-marker-guard.js (fold-marker tool policy, PreToolUse *)');
+    } catch (err) {
+      result.errors.push(`fold-marker-guard.js: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'working-set-artifact-recorder.js'), this.getWorkingSetArtifactRecorderHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/working-set-artifact-recorder.js (interactive working-set artifact recorder, PostToolUse Write/Edit, fire-and-forget, dark by default)');
     } catch (err) {
@@ -19531,7 +19540,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
    * Get the content of a named hook template.
    * Used by init.ts to share canonical hook content without duplication.
    */
-  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'post-compact' | 'pre-compact-steer' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
+  getHookContent(name: 'signin-profile-guard' | 'telegram-origin-guard' | 'session-start' | 'clear-seed' | 'post-compact' | 'pre-compact-steer' | 'mcp-health-autorefresh' | 'compaction-recovery' | 'external-operation-gate' | 'deferral-detector' | 'analysis-paralysis-guard' | 'self-stop-guard' | 'standdown-guard' | 'fold-marker-guard' | 'slopcheck-guard' | 'post-action-reflection' | 'external-communication-guard' | 'scope-coherence-collector' | 'scope-coherence-checkpoint' | 'claim-intercept' | 'claim-intercept-response' | 'telegram-topic-context' | 'response-review' | 'stop-gate-router' | 'attribution-gate' | 'auto-approve-permissions' | 'skill-usage-telemetry' | 'build-stop-hook' | 'model-tier-skill-entry' | 'model-tier-reconciler' | 'completion-claim-observe'): string {
     switch (name) {
       case 'signin-profile-guard': return signinProfileGuardHook();
       case 'telegram-origin-guard': return originToolGuardHook();
@@ -19545,6 +19554,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       case 'deferral-detector': return this.getDeferralDetectorHook();
       case 'self-stop-guard': return this.getSelfStopGuardHook();
       case 'standdown-guard': return this.getStandDownGuardHook();
+      case 'fold-marker-guard': return this.getFoldMarkerGuardHook();
       case 'slopcheck-guard': return this.getSlopcheckGuardHook();
       case 'analysis-paralysis-guard': return this.getAnalysisParalysisGuardHook();
       case 'post-action-reflection': return this.getPostActionReflectionHook();
@@ -22846,6 +22856,163 @@ process.stdin.on('end', async () => {
 
 // Backstop: if stdin never ends, never hang the tool — allow after a bounded wait.
 setTimeout(() => process.exit(0), 8000);
+`;
+  }
+
+  /**
+   * The fold-marker tool policy (context-budget-layered-summaries §10).
+   * Canonical source: this method (a blocking decision lives where the ratchets
+   * can see it — the TypeScript population, like the stand-down guard).
+   * Written with String.raw so its regex backslashes survive; the body has no
+   * backtick and no dollar-brace.
+   */
+  private getFoldMarkerGuardHook(): string {
+    return String.raw`#!/usr/bin/env node
+// Fold-marker tool policy — PreToolUse hook on the '*' matcher.
+// Spec: docs/specs/context-budget-layered-summaries.md §10 ("fold-marker tool policy").
+//
+// A fold's handoff and probe turns are internal. While a fold runs, the owner
+// writes a MARKER FILE for each session it drives, keyed by the Instar session
+// id (never the engine's own id, which rotates at a /clear):
+//   <agent home>/.instar/state/context-layers/_fold-markers/<INSTAR_SESSION_ID>.json
+// This hook decides from that local file alone (no server query):
+//   - no INSTAR_SESSION_ID, or no marker      -> allow, exit at once (every other
+//     session, the lifeline's included, is untouched);
+//   - malformed marker                        -> deny;
+//   - marker past its stamped expiry          -> deny while the fold record for
+//     its foldId is non-terminal (a missing or torn record counts as open);
+//     allow, and record, once the record is terminal;
+//   - live marker                             -> strict command-shape allowlist,
+//     match-fail-closed: NO file-reading tools at all (the engine checkpoint, the
+//     archive and the layer store sit on this disk), and the only allowed call is
+//     a Bash command that is exactly a GET to a localhost lookup route. Everything
+//     else is denied: writes, sub-agents, interpreters, compound commands,
+//     variables in URLs, sends, MCP tools.
+// Every decision under a marker is appended to
+//   _fold-markers/<foldId>.decisions.jsonl
+// (the per-fold refusal and lookup counts).
+// Fail direction: an error WITH a marker present denies; without one it never does.
+//
+// Canonical source: PostUpdateMigrator.getFoldMarkerGuardHook() (String.raw; no
+// backticks and no dollar-brace in this body).
+// Dynamic import('node:...') so it runs under both CJS and ESM hosts.
+
+var SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+var TERMINAL = ['committed', 'rolled-back', 'aborted'];
+// Mediated, logged lookups (spec §6 L0): what a probe's 'retrievable' grade counts.
+var LOOKUP_PREFIXES = ['/topic/search', '/memory/search', '/context-layers/lookup'];
+// The URL MUST be double-quoted (both quotes), so '&', ';' and '|' inside it are
+// literal. Nothing in the quoted URL may expand or escape: no '$', backtick,
+// backslash or quote (the character classes below exclude them).
+var LOOKUP_RE = /^curl(?: -(?:s|sS|fsS|sf))?(?: -H "Authorization: Bearer \$(?:AUTH|INSTAR_AUTH_TOKEN)")? "http:\/\/(?:localhost|127\.0\.0\.1):(\d{2,5})(\/[A-Za-z0-9\/_.\-]*)(\?[A-Za-z0-9_.~%=&+\-]*)?"$/;
+
+function isLookupCommand(cmd, port) {
+  if (typeof cmd !== 'string' || cmd.length > 2000 || /[\n\r]/.test(cmd)) return false;
+  var m = LOOKUP_RE.exec(cmd);
+  if (!m) return false;
+  // Only THIS agent's server: its lookups are the mediated, logged ones.
+  if (String(m[1]) !== String(port)) return false;
+  var p = m[2];
+  if (p.indexOf('..') !== -1 || p.indexOf('//') !== -1 || p.indexOf('/./') !== -1) return false;
+  if (m[3] && /%2e|%2f|%5c/i.test(m[3])) return false;
+  for (var i = 0; i < LOOKUP_PREFIXES.length; i++) {
+    var pre = LOOKUP_PREFIXES[i];
+    if (p === pre || p.indexOf(pre + '/') === 0) return true;
+  }
+  return false;
+}
+
+function deny(reason) {
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: 'fold-marker: ' + reason,
+    },
+  }));
+  process.exit(0);
+}
+
+if (typeof module !== 'undefined' && module.exports && require.main !== module) {
+  module.exports = { isLookupCommand: isLookupCommand, LOOKUP_PREFIXES: LOOKUP_PREFIXES };
+} else {
+  var iid = process.env.INSTAR_SESSION_ID || '';
+  // No Instar session id: outside this hook's reach. Exit before reading stdin.
+  if (!iid || !SAFE_ID.test(iid)) process.exit(0);
+
+  var data = '';
+  process.stdin.on('data', function (c) { data += c; });
+  process.stdin.on('end', async function () {
+    var markerPresent = false;
+    try {
+      var fsMod = await import('node:fs');
+      var pathMod = await import('node:path');
+      // The AGENT HOME, not the project dir: a worktree session's
+      // CLAUDE_PROJECT_DIR is the checkout, which holds no state/.
+      var agentHome = process.env.INSTAR_AGENT_HOME || process.env.CLAUDE_PROJECT_DIR || '.';
+      var layers = pathMod.join(agentHome, '.instar', 'state', 'context-layers');
+      var markersDir = pathMod.join(layers, '_fold-markers');
+      var markerFile = pathMod.join(markersDir, iid + '.json');
+      // Deny only for a marker that provably EXISTS. If its existence cannot be
+      // established (no file, or an unreadable directory), this session is not
+      // provably marked, and an unmarked session is never denied.
+      try { fsMod.lstatSync(markerFile); } catch (e0) { return process.exit(0); }
+      var raw;
+      try {
+        raw = fsMod.readFileSync(markerFile, 'utf-8');
+      } catch (e) {
+        return deny('marker unreadable');
+      }
+      markerPresent = true;
+      var marker;
+      try { marker = JSON.parse(raw); } catch (e2) { return deny('malformed marker'); }
+      if (!marker || marker.schema !== 'fold-marker/1' || marker.instarSessionId !== iid
+        || !SAFE_ID.test(String(marker.foldId)) || !SAFE_ID.test(String(marker.topicKey))
+        || typeof marker.expiresAt !== 'number' || !isFinite(marker.expiresAt)) {
+        return deny('malformed marker');
+      }
+
+      var input = {};
+      try { input = JSON.parse(data || '{}'); } catch (e3) { input = {}; }
+      var tool = typeof input.tool_name === 'string' ? input.tool_name : '';
+      var command = input.tool_input && typeof input.tool_input.command === 'string' ? input.tool_input.command : '';
+
+      var log = function (decision, reason) {
+        try {
+          fsMod.appendFileSync(pathMod.join(markersDir, marker.foldId + '.decisions.jsonl'),
+            JSON.stringify({ at: Date.now(), iid: iid, foldId: marker.foldId, tool: tool, decision: decision, reason: reason }) + '\n',
+            { mode: 384 });
+        } catch (e4) { /* the decision stands; the count is best-effort */ }
+      };
+
+      if (Date.now() >= marker.expiresAt) {
+        var state = null;
+        try {
+          var rec = JSON.parse(fsMod.readFileSync(pathMod.join(layers, marker.topicKey, 'fold-records', marker.foldId + '.json'), 'utf-8'));
+          state = rec && typeof rec.state === 'string' ? rec.state : null;
+        } catch (e5) { state = null; }
+        if (state && TERMINAL.indexOf(state) !== -1) { log('allow', 'stale-marker-terminal-record'); return process.exit(0); }
+        log('deny', 'stale-marker-open-record');
+        return deny('this conversation is mid-fold and its fold is unresolved');
+      }
+
+      // The lookup must reach THIS agent's server. If its port cannot be read,
+      // no lookup is allowed (a guessed port could be another server).
+      var port = null;
+      try {
+        var cfg = JSON.parse(fsMod.readFileSync(pathMod.join(agentHome, '.instar', 'config.json'), 'utf-8'));
+        if (cfg && Number.isInteger(cfg.port)) port = cfg.port;
+      } catch (e6) { port = null; }
+      if (tool === 'Bash' && port !== null && isLookupCommand(command.trim(), port)) { log('allow', 'lookup'); return process.exit(0); }
+      log('deny', tool || 'unknown-tool');
+      return deny((tool || 'this tool') + ' is not allowed during a fold\'s internal turn; only localhost lookup GETs are');
+    } catch (err) {
+      // An error WITH a marker present denies; without one the hook never denies.
+      if (markerPresent) return deny('internal error');
+      return process.exit(0);
+    }
+  });
+}
 `;
   }
 
