@@ -982,6 +982,8 @@ let _agentIdentityDeps: import('../core/AgentIdentityRuntime.js').AgentIdentityR
  *  Built at the inbound-queue sweep's boot site (before recoverPendingInjects),
  *  shared with the relay consumer and AgentServer. Null ⇒ never constructed. */
 let _inboundIdLedger: import('../threadline/InboundIdLedger.js').InboundIdLedgerController | null = null;
+/** context-budget-layered-summaries §9.3: the boot-built fold coordinator (single writer of fold records). */
+let _foldCoordinator: import('../monitoring/FoldCoordinator.js').FoldCoordinator | null = null;
 /** True while the listener daemon owns inbound relay handling (no capability then). */
 let _inboundIdLedgerDaemonDeferred = false;
 /** Late-bound holder for the pool registry (assigned where it is constructed) —
@@ -13168,6 +13170,59 @@ export async function startServer(options: StartOptions): Promise<void> {
       } catch { /* @silent-fallback-ok — AgentServer falls back to its own construction */ }
     }
 
+    // ── Fold boot sweep (context-budget-layered-summaries §9.3) ──
+    // Same unconditional synchronous boot path as the inbound sweep, BEFORE it:
+    // a fold that crashed at or before `staged` is discarded (record aborted,
+    // carriers and lock released); one past the point of no return is
+    // quarantined for the sentinel; orphan carriers are released loudly. In
+    // Phase 0 no fold can begin (no sentinel heartbeat, no layer kind yet), so
+    // on a healthy agent this finds nothing.
+    try {
+      const { buildFoldCoordinator } = await import('../monitoring/foldCoordinatorBoot.js');
+      const { inboundQueuePoolGateOpen: foldPoolGateOpen } = await import('../core/inboundQueueConfig.js');
+      // Read LIVE on every call: a StageAdvancer move at runtime must reach the
+      // retained coordinator (an owner check on a boot-time snapshot fails open).
+      const livePool = () => liveConfig.get<{ enabled?: boolean; stage?: string } | undefined>('multiMachine.sessionPool', undefined);
+      const built = buildFoldCoordinator({
+        stateDir: config.stateDir,
+        runningTopicSessions: () => sessionManager.listRunningSessions()
+          .filter((s) => typeof s.telegramTopicId === 'number')
+          .map((s) => ({ topicKey: String(s.telegramTopicId) })),
+        poolPlacementLive: () => { const p = livePool(); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; },
+        // The same three gates the inbound boot sweep applies (enabled, not dry-run, pool gate open).
+        inboundQueueLive: () => {
+          const q = liveConfig.get<{ enabled?: boolean; dryRun?: boolean } | undefined>('multiMachine.sessionPool.inboundQueue', undefined);
+          return q?.enabled === true && q?.dryRun === false && foldPoolGateOpen(livePool());
+        },
+        topicRowsPresent: () => false, // the relay-path row carrier and watermark arrive in Phase 1 (§14)
+      });
+      _foldCoordinator = built.coordinator;
+      const swept = built.coordinator.recoverPendingFolds();
+      if (swept.aborted.length + swept.quarantined.length + swept.orphans.length > 0) {
+        console.log(pc.dim(`  [fold] boot sweep: aborted=${swept.aborted.length} quarantined=${swept.quarantined.length} orphan-carriers=${swept.orphans.length}`));
+      }
+      for (const o of swept.orphans) {
+        DegradationReporter.getInstance().report({
+          feature: 'FoldCoordinator.bootSweep',
+          primary: 'Every fold carrier is released by its fold record\'s terminal transition',
+          fallback: `Released an orphan ${o.kind} for fold ${o.foldId} (topic ${o.topicKey}) with no record`,
+          reason: 'A fold carrier outlived its record (crash or restored state)',
+          impact: 'None after release; recorded so a recurring orphan is visible.',
+        });
+      }
+      for (const q of swept.quarantined) {
+        DegradationReporter.getInstance().report({
+          feature: 'FoldCoordinator.bootSweep',
+          primary: 'A fold past the point of no return completes or rolls back in the same process',
+          fallback: `Fold ${q.foldId} on topic ${q.topicKey} is quarantined for the sentinel's rollback`,
+          reason: q.reason ?? 'crashed past the point of no return',
+          impact: "That conversation's containment (hold, markers) stays in force until the rollback runs.",
+        });
+      }
+    } catch (err) {
+      console.error(`[server] fold boot sweep failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+
     // ── Durable Inbound Message Queue: unconditional boot sweep (§5.3) ──
     // MUST run BEFORE recoverPendingInjects (boot ordering, spec §3.4): the
     // sweep consults injection receipts and vetoes PIS records for
@@ -13183,7 +13238,8 @@ export async function startServer(options: StartOptions): Promise<void> {
       const pisMod = await import('../core/PendingInjectStore.js');
       const sweepPis = new pisMod.PendingInjectStore(path.join(config.stateDir, 'state'));
       const pisRecordsForTopic = (sessionKey: string) =>
-        sweepPis.list().records.filter((r) => String(r.telegramTopicId ?? '') === sessionKey);
+        // A fold-tagged inject belongs to its fold record (§9.3): never matched, cleared or counted here.
+        sweepPis.list().records.filter((r) => !r.fold && String(r.telegramTopicId ?? '') === sessionKey);
       const qRaw = config.multiMachine?.sessionPool?.inboundQueue as { enabled?: boolean; dryRun?: boolean } | undefined;
       const poolRaw = config.multiMachine?.sessionPool as { enabled?: boolean; stage?: string } | undefined;
       const { inboundQueuePoolGateOpen: inboundQueuePoolGateOpenAtBoot } = await import('../core/inboundQueueConfig.js');
@@ -30704,7 +30760,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   },
                   holdVerdict,
                   clearPisRecord: (sk) => {
-                    for (const r of queuePis.list().records.filter((x) => String(x.telegramTopicId ?? '') === sk)) {
+                    for (const r of queuePis.list().records.filter((x) => !x.fold && String(x.telegramTopicId ?? '') === sk)) { // a fold's inject is its record's (§9.3)
                       queuePis.clear(r.tmuxSession);
                     }
                   },
