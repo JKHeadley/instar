@@ -1,5 +1,6 @@
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
+import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -1287,6 +1288,7 @@ export interface RouteContext {
   foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null;
   /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel, or null when it is off. */
   contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null;
+  contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -6980,9 +6982,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // §9.7 live-value pass: the auth token, the PIN, the lifeline ingress
     // secret and every string in the secret store (shape patterns miss a
     // `KEY=value` dump of a real value). Each source is best-effort.
-    const liveSecrets: string[] = [ctx.config.authToken, ctx.config.dashboardPin].filter((v): v is string => typeof v === 'string');
-    try { const l = readLifelineIngressSecret(ctx.config.stateDir); if (l) liveSecrets.push(l); } catch { /* @silent-fallback-ok — no lifeline secret on this machine */ }
-    try { collectStringLeaves(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), liveSecrets); } catch { /* @silent-fallback-ok — no readable secret store; shape scrub still runs */ }
+    const liveSecrets = collectAgentLiveSecrets({ stateDir: ctx.config.stateDir, authToken: ctx.config.authToken, dashboardPin: ctx.config.dashboardPin, forceFileKey: ctx.config.secrets?.forceFileKey });
     const result = recordPostCompact(ctx.config.stateDir, {
       topicKey,
       instarSessionId,
@@ -8890,6 +8890,16 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.contextBudgetSentinel.status());
+  });
+  // context-budget-layered-summaries §9.7: the layer store and transcript
+  // archive on this machine — roots and their modes, topic count, bytes, and
+  // what replication did with each write. Read-only; 503 when the layers are off.
+  router.get('/context-budget/layers', (_req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    res.json(ctx.contextLayers.status());
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -47995,9 +48005,3 @@ function pruneUnforkBackups(backupsDir: string, safeSlug: string): void {
   }
 }
 
-/** Push every string leaf of a nested secrets object (depth-bounded). */
-function collectStringLeaves(v: unknown, out: string[], depth = 0): void {
-  if (depth > 8 || v == null) return;
-  if (typeof v === 'string') { out.push(v); return; }
-  if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) collectStringLeaves(x, out, depth + 1);
-}

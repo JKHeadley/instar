@@ -32,7 +32,7 @@ export function cleanMachineName(name: string): string | null {
   return t;
 }
 
-const CATEGORY_LABEL: Record<string, string> = { 'npm-cache': 'npm cache', 'derived-data': 'Xcode build files' };
+const CATEGORY_LABEL: Record<string, string> = { 'npm-cache': 'npm cache', 'derived-data': 'Xcode build files', 'context-archive': 'old conversation transcripts' };
 
 function ago(ms: number): string {
   const h = Math.round(ms / 3_600_000);

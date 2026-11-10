@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { pruneNpmCache, pruneDerivedData, realPruneSeams, type CategoryResult, type PruneSeams } from './diskSteward/pruneCategories.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { pruneContextArchive, CONTEXT_ARCHIVE_DEFAULT_MAX_GIB } from './diskSteward/pruneContextArchive.js';
 
 export interface PruneChildInput {
   runId: string;
@@ -26,6 +27,8 @@ export interface PruneChildInput {
   requestedBy?: { sessionId?: string; topicId?: number } | null;
   dryRun: boolean;
   npmCacheMaxGiB: number;
+  /** Transcript archive limit (context-budget §9.7); absent ⇒ the default. */
+  contextArchiveMaxGiB?: number;
   categoryBudgetMs: number;
   /** Measure sizes and the worktree plan (when a post is due and the cache is old). */
   measure: boolean;
@@ -185,6 +188,16 @@ export async function runPruneChild(input: PruneChildInput, seams: PruneSeams = 
     }
   } finally {
     if (got) releaseCachesLock(lockPath, process.pid);
+  }
+  // The transcript archive is this agent's own state (no shared lock): over its
+  // limit, oldest-superseded spans outside the current phase are evicted.
+  try {
+    categories.push(pruneContextArchive({
+      stateDir: path.join(input.agentHome, '.instar'), dryRun: input.dryRun,
+      maxGiB: input.contextArchiveMaxGiB ?? CONTEXT_ARCHIVE_DEFAULT_MAX_GIB, budgetMs: input.categoryBudgetMs,
+    }));
+  } catch (e) {
+    categories.push({ category: 'context-archive', plannedBytes: 0, plannedItems: 0, removedItems: 0, bytesFreed: 0, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) });
   }
   const result: PruneChildResult = {
     runId: input.runId, startedAt, finishedAt: 0, trigger: input.trigger, dryRun: input.dryRun, categories,
