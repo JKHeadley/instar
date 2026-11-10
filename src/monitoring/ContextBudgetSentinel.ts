@@ -203,7 +203,7 @@ export class ContextBudgetSentinel {
         new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`timed out after ${STEP_TIMEOUT_MS} ms`)), STEP_TIMEOUT_MS); timer.unref?.(); }),
       ]);
       return true;
-    } catch (err) {
+    } catch (err) { // @silent-fallback-ok — not silent: recorded as lastError (in the status), audited, and the tick is unclean so the heartbeat goes stale (no fold can begin)
       this.lastError = `${name}: ${err instanceof Error ? err.message : String(err)}`;
       this.d.audit?.({ event: 'step-failed', reason: this.lastError });
       return false;

@@ -184,7 +184,7 @@ describe('FoldCoordinator boot wiring × real lock × real carriers', () => {
     expect(store.list().records.filter((r) => r.compactionFallback)).toHaveLength(1);
   });
 
-  it('a torn fold record is not acted on, and its carriers are released as orphans (sentinel reconciles torn records later)', () => {
+  it('a torn fold record is not acted on and its carriers are KEPT (never released on an unknown; the sentinel raises it)', () => {
     stageCarriers('ftorn1');
     const dir = path.join(contextLayersRoot(stateDir), TOPIC, 'fold-records');
     fs.mkdirSync(dir, { recursive: true });
@@ -192,7 +192,9 @@ describe('FoldCoordinator boot wiring × real lock × real carriers', () => {
     const swept = buildFoldCoordinator(deps()).coordinator.recoverPendingFolds();
     expect(swept.aborted).toEqual([]);
     expect(swept.quarantined).toEqual([]);
-    expect(swept.orphans.map((o) => o.foldId)).toEqual(['ftorn1', 'ftorn1', 'ftorn1']);
+    expect(swept.orphans).toEqual([]);
+    expect(swept.torn).toEqual([{ topicKey: TOPIC, foldId: 'ftorn1' }]);
+    expect(carriersPresent()).toEqual({ clearSeed: 1, keep: true, inject: 1 });
   });
 
   it('when the quarantine handover fails (lock file gone), the record is still marked quarantined and containment stays', () => {
