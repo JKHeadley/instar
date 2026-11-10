@@ -24,7 +24,11 @@ export async function freezeGraphDist(repository,critical,onPhase=()=>{}){
  onPhase('inventory-start');const sourceBefore=selected(repository,critical),names=await packageFiles(repository),before=fileMeta(repository,names);onPhase('inventory-ready');const root=fs.mkdtempSync(path.join(os.tmpdir(),'conversation-graph-code-'));fs.chmodSync(root,0o700);let SafeFsExecutor;
  const thaw=()=>{directories(root,'',0o700);};
  try{
-  onPhase('copy-start');const sourceModes=new Map(before.map(row=>[row.path,row.executable?0o500:0o400])),createdParents=new Set([root]);for(const name of names){const destination=path.join(root,name),parent=path.dirname(destination);if(!createdParents.has(parent)){fs.mkdirSync(parent,{recursive:true,mode:0o700});createdParents.add(parent);}fs.copyFileSync(path.join(repository,name),destination,fs.constants.COPYFILE_EXCL|fs.constants.COPYFILE_FICLONE);fs.chmodSync(destination,sourceModes.get(name)??0o400);}
+  onPhase('copy-start');const sourceModes=new Map(before.map(row=>[row.path,row.executable?0o500:0o400])),createdParents=new Set([root]);for(const name of names){const parent=path.dirname(path.join(root,name));if(!createdParents.has(parent)){fs.mkdirSync(parent,{recursive:true,mode:0o700});createdParents.add(parent);}}
+  // Copy files concurrently (bounded in practice by libuv's thread pool, 4 by default): one at a time
+  // took up to 70 s for ~10,000 files on a busy disk. After the first error no worker starts another
+  // file, so the cleanup below never races copies still being written.
+  {let next=0,failed=false;const worker=async()=>{for(;;){if(failed)return;const index=next++;if(index>=names.length)return;const name=names[index],destination=path.join(root,name);await fs.promises.copyFile(path.join(repository,name),destination,fs.constants.COPYFILE_EXCL|fs.constants.COPYFILE_FICLONE);await fs.promises.chmod(destination,sourceModes.get(name)??0o400);}};const results=await Promise.allSettled(Array.from({length:64},()=>worker().catch(error=>{failed=true;throw error;})));const firstError=results.find(result=>result.status==='rejected');if(firstError)throw firstError.reason;}
   onPhase('copy-ready');
   // Existing installed dependencies only; no install/new dependency or source
   // loader. Own production dist/dashboard/package bytes are independent files.

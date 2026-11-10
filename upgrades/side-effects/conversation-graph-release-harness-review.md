@@ -8,6 +8,13 @@ PR #3013 adds or changes about 188 paths under `tests/` and `docs/audits/` (171 
 - `tests/unit/SqliteRegistry-wiring.test.ts`: a duplicate `closeAllSqlite` import is removed.
 - The two 2026-11-05 audit files under `docs/audits/` get a one-line header saying they are historical checkpoints, not current state.
 
+## Follow-up after Local Verify (2026-11-10)
+
+The live-fixture e2e kept failing only inside Local Verify's full parallel run. Startup phase logs showed the snapshot copy of ~10,000 files taking up to 69 s on a busy disk, so the test's start window ran out while the fixture server was still copying (the server itself never failed). Changes:
+- `tests/helpers/conversation-graph-frozen-dist.mjs`: change detection by path, size, mode and nanosecond mtime instead of hashing the source twice; files copied concurrently with a clone; only the copy is hashed, once; the critical server modules are still compared by content; after the first copy error no worker starts another file.
+- `tests/helpers/conversation-graph-live-server.mjs`: a 503 (not ready) first owner visit is retried for up to 30 s; startup phases and a full startup failure are written to `/tmp` so a lane-only failure can be read.
+- `tests/e2e/conversation-graph-live-fixture.test.ts`: start window 180 s, child lifetime 300 s, test timeout 300 s; the phase-named timeout error stays.
+
 ## 1. Over-block
 No issue identified.
 
@@ -43,3 +50,7 @@ Defect class: n/a. Closure: n/a.
 **Reviewer:** independent fresh Claude subagent (Opus 5.5), given the diff and the files, not the author's conclusion, 2026-11-09 19:30 PST.
 
 Verdict: concur. All 188 harness paths in the diff (the gate's 169-path list) were reviewed: 171 new files and 17 modified ones. The modified tests contain no weakened or removed assertions; every change follows a real source change (the new `onAccepted` signature, the new journal kind, the vault `syncDurably` interface), and several string-slice checks now end at a named marker instead of a fixed length, which is stricter. The `skipsAdded` flag comes from three env-gated opt-in scale proofs (over 64 MiB HTTP source, 64-member 20,000-row native tail, over 32 MiB metadata pages), each with default-run coverage of the same code at normal size; no failing check is hidden. The new evidence-folder helper, the status-table path-generator rewrite and the prototype-restore wrappers are sound. Notes, none blocking: the opt-in proofs are run by no lane; `SqliteRegistry-wiring.test.ts` had a duplicate import (fixed here); the two 11-05 audit docs are partly out of date (header added here); the live-fixture startup is load- and order-sensitive and its timeout did not name the stalled phase (phase-named error and longer window added here; making the snapshot cheaper is follow-up).
+
+**Reviewer:** independent fresh Claude subagent (Opus 5.5), 2026-11-10 03:47 PST, given the diffs since the first review, not the author's conclusion.
+
+Second verdict, on the follow-up: concur. The snapshot still pins an exact, content-hashed copy of the built package: the source is checked for changes by name, size and nanosecond mtime, the copy is fully hashed, and the critical modules are compared by content, so only a writer that keeps the old mtime could slip a non-critical change past it. The longer start, lifetime and test windows only tolerate disk load, with the phase-named timeout kept, and the 503 retry is bounded and limited to the documented "not ready" answer, so no real refusal is masked. Its one should-fix (cleanup racing copy workers after an error) is applied. Notes kept: the fixed `/tmp` diagnostic names follow an existing file and the phase log is never trimmed.
