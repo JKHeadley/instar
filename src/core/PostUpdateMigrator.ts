@@ -11753,6 +11753,17 @@ Rule: I do not state that work landed inside another agent's state unless I have
         result.upgraded.push('CLAUDE.md: added one-tap repair setting awareness');
       }
     }
+    // CMT-1541: approval reminder + unreachable-machine notice awareness, content-sniffed.
+    if (content.includes('One-tap repair setting (Accounts page)') && !content.includes('Repair waiting for approval: reminder')) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l.startsWith('- **One-tap repair setting (Accounts page)**'));
+      if (at >= 0) {
+        lines.splice(at + 1, 0, ...["- **Repair waiting for approval: reminder** \u2014 a sign-in repair in approval mode that has waited for the operator's tap longer than `subscriptionPool.assistedRelogin.approvalReminderHours` (default 4; 0 turns it off) gets ONE reminder per waiting spell on the same attention row as its first notice, with the direct link (dashboard URL + `#/capacity/accounts?s=needs`). It follows Quiet by Default (attention queue and Notifications feed; pushed only where the operator chose to push that category), never goes out during the repair's night hours (`slowRetry.quietHours`), and never approves anything. **When to use** (PROACTIVE): the user asks why a sign-in is still broken \u2192 check `GET /subscription-relogin?scope=pool` for `suggested` episodes and send the direct link; never tap Repair for them.", "- **Unreachable-machine notices** \u2014 every dashboard \"No answer from <machine>\" line says how long the machine has been out of reach (from its last direct contact in `GET /pool` \u2192 `liveness`, else `ropeAllDownSince`) and whether anything is fixing it (`GET /pool` \u2192 `reconnect`: `retrying`, `retrying-slowly`, `connected`; absent when the recovery probe is off, which reads as \"not known\"). Use the same two facts when telling the user a machine is unreachable."]);
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added sign-in approval reminder and unreachable-notice awareness');
+      }
+    }
     // The old "configure this on any machine" sentence now points at the section.
     {
       const oldConfigureSentence = "A recent dashboard PIN unlock can safely configure this on any machine with `POST /subscription-relogin/configure`; the endpoint validates exact identities, persists an audit row, and requests a supervised restart so the authority change is actually live.";

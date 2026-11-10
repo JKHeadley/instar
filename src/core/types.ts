@@ -5062,6 +5062,13 @@ export interface InstarConfig {
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
       /**
+       * Remind the operator ONCE when an approval-mode repair has waited this many hours for its
+       * tap (CMT-1541). Absent ⇒ 4; 0 turns the reminder off. Delivered on the same attention row
+       * as the first notice (Quiet-by-Default applies) and never during `slowRetry.quietHours`.
+       * Signal only: it never approves a repair.
+       */
+      approvalReminderHours?: number;
+      /**
        * Who chooses each sign-in step (spec agent-driven-relogin): `agent` = a model reading the
        * page's floor-filtered controls; `closed` = the fixed page-class table; `agent-session` = one
        * short-lived agent session follows /subscription-signin section 3 like a person (spec

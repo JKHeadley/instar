@@ -21,7 +21,7 @@ describe('Who can reach me', () => {
   it('never reads a partial pool answer as complete', () => {
     expect(reachHeadline({ count: 2, privacyOn: true, pool: { complete: false } }).sub).toContain('may be incomplete');
     const page = buildReachPage({ ok: true, data: { count: 2, privacyOn: true, people: [], pool: { complete: false, failed: [{ machineId: 'm2' }] } } });
-    expect(page.notes).toContain('m2 did not answer.');
+    expect(page.notes).toContain("Couldn't reach a machine with no name yet (for how long is not known); not known whether anything is fixing it.");
   });
 
   it('labels tiers and the MSP relationship', () => {

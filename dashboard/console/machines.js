@@ -22,7 +22,7 @@ export async function renderMachines(main, ctx) {
   const page = buildMachinesPage(pool, health, Date.now(), { sessionsByMachine: sessions.ok ? byMachine : undefined, needsLook });
   if (!page.ok) { setKids(main, pageHead({ eyebrow: 'Capacity · Machines', headline: 'Machines', tone: 'muted' }), cantTell(page.reason), legacyLink()); return; }
 
-  const carePool = machineCarePool(care);
+  const carePool = machineCarePool(care, { pool });
   const careFor = (m) => (carePool ? (carePool.byMachine[m.id] || (m.isSelf ? carePool.selfLine : null)) : null);
   const cards = el('div', { class: 'machine-cards' }, page.machines.map((m) => {
     const card = el('button', { class: 'machine-card', type: 'button', 'data-state': m.state, 'data-focus-key': `m:${m.id}` },

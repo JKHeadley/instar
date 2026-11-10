@@ -6,6 +6,7 @@
 
 import { ago } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableSentence, poolMachine } from './unreachable-model.js';
 
 export const READING_STALE_MS = 60 * 60 * 1000;
 const NEEDS_SIGN_IN = new Set(['needs-reauth', 'signed-out', 'expired', 'broken']);
@@ -162,7 +163,7 @@ export function accountNotices(accounts, { partial = false, now = Date.now() } =
  * Build the page. episodes: /subscription-relogin?scope=pool episodes (optional).
  * Returns { ok, needs, notices, accounts, headline, sub, facts, partial, tone }.
  */
-export function buildAccountsPage(res, now = Date.now(), { episodes = [], blockers = [], inUse = null, names: extraNames = {} } = {}) {
+export function buildAccountsPage(res, now = Date.now(), { episodes = [], blockers = [], inUse = null, names: extraNames = {}, poolMachines = null } = {}) {
   if (!res.ok) return { ok: false, reason: `Couldn't read accounts: ${res.reason}.` };
   if (res.data && res.data.enabled === false) return { ok: false, reason: 'The account pool is not set up on this agent.' };
   const rows = Array.isArray(res.data && res.data.accounts) ? res.data.accounts : null;
@@ -252,7 +253,9 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
   const machineNames = {};
   for (const r of rows) if (r && r.machineId && r.machineNickname) machineNames[r.machineId] = verifiedDisplayName(r.machineNickname, r.machineId) || machineNames[r.machineId];
   for (const [k, v] of Object.entries(extraNames || {})) if (!machineNames[k]) machineNames[k] = verifiedDisplayName(v, k);
-  const partial = failed.length ? `No answer from ${failed.map((f) => verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || 'a machine with no name yet').join(', ')}; its accounts may be out of date.` : null;
+  // Each unreachable machine says how long and whether anything is fixing it (CMT-1541).
+  const partial = failed.length ? `${failed.map((f) => unreachableSentence(verifiedDisplayName(f.nickname, f.machineId) || verifiedDisplayName(f.machineNickname, f.machineId) || machineNames[f.machineId] || null,
+    poolMachine(poolMachines, f.machineId), f, now)).join(' ')} ${failed.length === 1 ? 'Its accounts' : 'Their accounts'} may be out of date.` : null;
   // warning-path: pageHead
   return { ok: true, needs, notices, accounts, headline, sub: '', facts, partial, tone: needs.length ? 'attn' : 'ok' };
 }

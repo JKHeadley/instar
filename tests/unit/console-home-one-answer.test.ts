@@ -91,13 +91,13 @@ describe('machines are named, never shown by id', () => {
     const names = machineNames(ok({ machines: [{ machineId: 'm1', nickname: 'Mac Mini' }, { machineId: RAW_ID }] }));
     expect(machineLabel({ machineId: 'm1' }, names)).toBe('Mac Mini');
     expect(machineLabel({ machineId: RAW_ID }, names)).toBe('a machine with no name on file');
-    expect(unreachedLine([{ machineId: RAW_ID }], names, 'items')).toBe("Couldn't reach a machine with no name on file, so its items may be missing.");
-    expect(unreachedLine([{ machineId: 'm1' }, { machineId: 'm3', nickname: 'Laptop' }], names, 'sessions')).toBe("Couldn't reach Mac Mini and Laptop, so their sessions may be missing.");
+    expect(unreachedLine([{ machineId: RAW_ID }], names, 'items')).toBe("Couldn't reach a machine with no name on file (for how long is not known); not known whether anything is fixing it. Its items may be missing.");
+    expect(unreachedLine([{ machineId: 'm1' }, { machineId: 'm3', nickname: 'Laptop' }], names, 'sessions')).toBe("Couldn't reach Mac Mini (for how long is not known); not known whether anything is fixing it. Couldn't reach Laptop (for how long is not known); not known whether anything is fixing it. Their sessions may be missing.");
   });
   it('the reported line is gone', () => {
     const items = [...Array.from({ length: 420 }, () => item({ priority: 'LOW', category: 'telegram-origin' }))];
     const m = buildNeeds(ok({ items, pool: { failed: [{ machineId: RAW_ID, error: 'offline' }] } }), NOW, {});
-    expect(m.line).toBe("Couldn't reach a machine with no name on file, so its items may be missing.");
+    expect(m.line).toBe("Couldn't reach a machine with no name on file (for how long is not known); not known whether anything is fixing it. Its items may be missing.");
   });
 });
 

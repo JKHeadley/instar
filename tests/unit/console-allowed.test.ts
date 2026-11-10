@@ -292,7 +292,14 @@ describe('safety checks', () => {
     const localGap = g.look.find((r: { local: boolean }) => r.local);
     expect(localGap.actions).toEqual(['accept']);
     expect(localGap.where).toBe('Mac Studio');
-    expect(g.failed[0].sub).toBe('Can’t tell: it is offline');
+    // CMT-1541: an out-of-reach machine says for how long and whether anything is fixing it.
+    expect(g.failed[0].sub).toBe('Can’t tell: not answering (for how long is not known); not known whether anything is fixing it');
+    const NOW = Date.parse('2026-11-09T12:00:00Z');
+    const withPool = buildGuards(ok({ machineId: 'm1', nickname: 'Mac Studio', guards: [], pool: { machines: [], failed: [{ machineId: 'm3', reason: 'offline' }] } }),
+      { pool: { ok: true, data: { machines: [{ machineId: 'm3', ropeCondition: 'peer-offline', liveness: { state: 'unreachable', source: 'direct', evidenceAt: '2026-11-09T09:00:00Z' } }] } }, now: NOW });
+    expect(withPool.failed[0].sub).toBe('Can’t tell: not answering for 3 hours; it looks switched off or asleep; it reconnects by itself when it wakes, but nothing here can wake it');
+    // A refusal is not a reachability problem: its own words stay.
+    expect(buildGuards(ok({ machineId: 'm1', guards: [], pool: { machines: [], failed: [{ machineId: 'm3', reason: 'unauthorized' }] } })).failed[0].sub).toBe('Can’t tell: it refused the request');
   });
 
   it('single machine: no machine chips; failures are can’t tell', () => {

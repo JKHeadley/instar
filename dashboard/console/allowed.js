@@ -42,14 +42,14 @@ const errWords = (r) => {
 export async function renderAllowed(main, ctx) {
   const { get, post } = ctx;
   firstPaint(main, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Settings · What I’m allowed to do' }), el('h1', { class: 'page-title skeleton', text: 'Loading' })));
-  const [auto, hist, elev, guardsRes, featRes, servicesRes] = await Promise.all([
-    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'), get('/recommended-services'),
+  const [auto, hist, elev, guardsRes, featRes, servicesRes, poolRes] = await Promise.all([
+    get('/autonomy'), get('/autonomy/history'), get('/autonomy/elevation'), get('/guards?scope=pool', 8000), get('/features'), get('/recommended-services'), get('/pool'),
   ]);
   const services = buildServices(servicesRes);
   const profile = buildProfile(auto);
   const history = buildHistory(hist);
   const suggestions = buildSuggestions(elev);
-  const guards = buildGuards(guardsRes);
+  const guards = buildGuards(guardsRes, { pool: poolRes });
   const features = buildFeatures(featRes);
   const refresh = () => renderAllowed(main, ctx);
 
