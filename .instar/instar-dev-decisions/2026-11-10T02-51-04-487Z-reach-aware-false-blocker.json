@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-10T02:51:04.487Z",
+  "slug": "reach-aware-false-blocker",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 298,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MessagingToneGate.ts",
+      "src/core/PlaywrightProfileRegistry.ts",
+      "src/core/agent-reach.ts",
+      "src/core/operator-errand.ts",
+      "src/data/stageBCertifiedSet.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 295,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
