@@ -114,7 +114,7 @@ describe('swap-continuity wiring integrity', () => {
     sessions: Array<{ sessionName: string; accountId: string | null; loginLossAccountId?: string | null; startedAt?: string; refreshable?: boolean }>;
     defaultAccountId?: string | null;
     probe?: (s: string) => Promise<WorkProbeResult>;
-    continuity?: Partial<{ enabled: boolean; dryRun: boolean; deferralCeilingMs: number }>;
+    continuity?: Partial<{ enabled: boolean; dryRun: boolean; deferralCeilingMs: number; wallEscalationPct: number }>;
     loginLoss?: { enabled: boolean; dryRun: boolean };
     defaultSlotRepoint?: { enabled: boolean; dryRun: boolean };
     swapImpl?: (a: { sessionName: string; exhaustedAccountId: string; targetAccountId?: string }) => Promise<{ swapped: boolean; toAccountId: string | null; reason?: string }>;
@@ -394,6 +394,158 @@ describe('swap-continuity wiring integrity', () => {
       // Both sides: backoff expires after dwellMs → the session may regenerate.
       now += 2_700_000;
       expect(engine.inReIntentBackoff('s1', now)).toBe(false);
+    });
+  });
+
+  // fb-f8b946ae-597: a session whose turn read busy for 10+ hours cycled
+  // defer → ceiling drop → backoff → defer at age 0 all night and walled.
+  describe('ProactiveSwapMonitor busy-deferral escalation at the wall-imminent threshold', () => {
+    const ledgerRows = () =>
+      fs.readFileSync(path.join(dir, 'state', 'swap-ledger.jsonl'), 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+
+    it('at/over the escalation threshold: escalates at the ceiling through the reactive-swap class', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 97), acct('cool', 20)];
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate(); // defer (t=0)
+      expect(swap).not.toHaveBeenCalled();
+      now += 120_000;
+      await monitor.evaluate(); // still under the ceiling → keep deferring
+      expect(swap).not.toHaveBeenCalled();
+      now += 180_001;
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20)); // fresh readings
+      const r = await monitor.evaluate(); // ceiling reached at 97% → escalate
+      expect(r.swapped).toEqual(['s1']);
+      expect(swap).toHaveBeenCalledOnce();
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'reactive-swap', targetAccountId: 'cool', exhaustedAccountId: 'hot' });
+      const executed = ledgerRows().find((row) => row.decision === 'swapped');
+      expect(executed).toMatchObject({ wallEscalated: true, deferralAgeMs: 300_001 });
+      expect(ledgerRows().some((row) => row.decision === 'dropped')).toBe(false);
+    });
+
+    it('below the escalation threshold: drops at the ceiling exactly as before', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 94), acct('cool', 20)],
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate();
+      now += 300_001;
+      await monitor.evaluate();
+      expect(swap).not.toHaveBeenCalled();
+      expect(ledgerRows().some((row) => row.decision === 'dropped')).toBe(true);
+    });
+
+    it('the busy age accumulates across a ceiling drop: the next intent escalates without another full wait', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 90), acct('cool', 20)];
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate(); // defer at 90%
+      now += 300_001;
+      await monitor.evaluate(); // ceiling at 90% → drop, backoff
+      expect(swap).not.toHaveBeenCalled();
+      now += 2_700_001; // re-intent backoff over; the account kept burning
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20));
+      const r = await monitor.evaluate(); // first busy probe of the NEW intent
+      expect(r.swapped).toEqual(['s1']);
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'reactive-swap' });
+    });
+
+    it('escalates at most once per busy episode: a failed escalation falls back to the drop', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 97), acct('cool', 20)];
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000 },
+        swapImpl: async () => ({ swapped: false, toAccountId: null, reason: 'refresh-failed' }),
+      });
+      await monitor.evaluate();
+      now += 300_001;
+      await monitor.evaluate(); // escalation attempt — fails
+      expect(swap).toHaveBeenCalledOnce();
+      now += 2_700_001; // past the existing exec-failure backoff
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20));
+      await monitor.evaluate(); // no second escalation → the drop path
+      expect(swap).toHaveBeenCalledOnce();
+      expect(ledgerRows().some((row) => row.decision === 'dropped')).toBe(true);
+    });
+
+    it('an idle probe ends the busy episode: busy time is never counted across idle', async () => {
+      const engine = makeEngine();
+      const accounts = [acct('hot', 97), acct('cool', 20)];
+      let probeResult = busy;
+      let failNext = true;
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts,
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => probeResult,
+        continuity: { deferralCeilingMs: 300_000 },
+        swapImpl: async (a) => {
+          if (failNext) { failNext = false; return { swapped: false, toAccountId: null, reason: 'refresh-failed' }; }
+          return { swapped: true, toAccountId: a.targetAccountId ?? 'cool' };
+        },
+      });
+      await monitor.evaluate(); // busy → defer, episode starts
+      probeResult = idle;
+      now += 60_000;
+      await monitor.evaluate(); // idle → ordinary swap attempt (fails); the episode ends
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'proactive-swap' });
+      probeResult = busy;
+      now += 2_700_001; // past the exec-failure backoff
+      accounts.splice(0, 2, acct('hot', 97), acct('cool', 20));
+      await monitor.evaluate(); // busy again: a NEW episode, so no escalation yet
+      expect(swap).toHaveBeenCalledOnce();
+    });
+
+    it('wallEscalationPct above 100 disables escalation', async () => {
+      const engine = makeEngine();
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 99), acct('cool', 20)],
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => busy,
+        continuity: { deferralCeilingMs: 300_000, wallEscalationPct: 101 },
+      });
+      await monitor.evaluate();
+      now += 300_001;
+      await monitor.evaluate();
+      expect(swap).not.toHaveBeenCalled();
+    });
+
+    it('a session that turns idle swaps the normal proactive way (no escalation needed)', async () => {
+      const engine = makeEngine();
+      let probeResult = busy;
+      const { monitor, swap } = makeMonitor({
+        engine,
+        accounts: [acct('hot', 97), acct('cool', 20)],
+        sessions: [{ sessionName: 's1', accountId: 'hot' }],
+        probe: async () => probeResult,
+        continuity: { deferralCeilingMs: 300_000 },
+      });
+      await monitor.evaluate();
+      probeResult = idle;
+      now += 60_000;
+      await monitor.evaluate();
+      expect(swap.mock.calls[0][0]).toMatchObject({ callerClass: 'proactive-swap' });
     });
   });
 

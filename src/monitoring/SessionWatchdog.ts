@@ -24,6 +24,8 @@ import { withSyncOp } from '../core/InFlightSyncOpMarker.js';
 import {
   evaluateThrottleSettle,
   evaluateUsageWallSettle,
+  detectUsageWall,
+  paneShowsUsageWallBanner,
   RATE_LIMIT_SETTLED_CAPTURE_LINES,
   RATE_LIMIT_DEFAULT_SETTLE_MS,
   type ThrottleSettleState,
@@ -1127,16 +1129,36 @@ export class SessionWatchdog extends EventEmitter {
    * 'usage-wall'. Signal-only: the consumer (UsageWallRescue) decides whether
    * another account has room and moves the session; this method never acts.
    *
-   * Same settled-output discipline as the throttle: the banner must be the
-   * current pane state (only Claude Code chrome below it) AND the pane must be
-   * byte-identical across polls for the settle window.
+   * Same settled-output discipline as the throttle: the wall must be the
+   * session's current state AND the banner region must stay byte-identical
+   * across polls for the settle window (rows below the banner — ticking
+   * background-agent timers — are not part of that fingerprint).
+   *
+   * The wall is current when the pane alone shows it (banner followed only by
+   * chrome) OR when the exact session's own transcript ends on the provider's
+   * usage-wall error and the pane still shows the banner. The transcript is
+   * read only when the pane shows a banner the chrome check could not clear,
+   * so an ordinary poll costs nothing extra.
    */
   checkUsageWall(tmuxSession: string, output: string | null | undefined, now: number = Date.now()): void {
+    let transcriptConfirmed = false;
+    if (!detectUsageWall(output) && paneShowsUsageWallBanner(output)) {
+      const fromTranscript = (this.sessionManager as Partial<Pick<SessionManager, 'usageWallFromTranscript'>>).usageWallFromTranscript;
+      if (typeof fromTranscript === 'function') {
+        try {
+          transcriptConfirmed = Boolean(fromTranscript.call(this.sessionManager, tmuxSession));
+        } catch {
+          // @silent-fallback-ok — unreadable transcript is not evidence; the
+          // pane-only check above still decides.
+          transcriptConfirmed = false;
+        }
+      }
+    }
     const { decision, next } = evaluateUsageWallSettle(
       output,
       this.usageWallSettle.get(tmuxSession),
       now,
-      { settleMs: this.rateLimitSettleMs },
+      { settleMs: this.rateLimitSettleMs, transcriptConfirmed },
     );
     if (decision === 'no-throttle') {
       // A wall this session had settled on (it emitted) is now gone: say so,

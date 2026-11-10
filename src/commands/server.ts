@@ -23378,6 +23378,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         deferralCeilingMs: c?.deferralCeilingMs ?? 1_800_000,
         reactiveGraceMs: c?.reactiveGraceMs ?? 120_000,
         recheckMs: c?.recheckMs ?? 10_000,
+        wallEscalationPct: c?.wallEscalationPct ?? 95,
       };
     };
     try {

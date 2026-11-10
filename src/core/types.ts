@@ -5253,6 +5253,12 @@ export interface InstarConfig {
       reactiveGraceMs?: number;
       /** Busy re-check cadence inside a grace window (default 10000). */
       recheckMs?: number;
+      /** Busy-deferral escalation (default 95): once a session's busy episode
+       *  has been deferred a full deferralCeilingMs and its account is at or
+       *  over this measured %, the proactive swap executes through the
+       *  reactive-swap class (bounded grace, then mitigations) instead of
+       *  being dropped again. Above 100 disables it. */
+      wallEscalationPct?: number;
     };
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {

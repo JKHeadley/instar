@@ -32,7 +32,7 @@ import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
 import { clampWorkEvidence, isMidWork } from './WorkEvidence.js';
-import { claudeSessionIdFromPidFiles, confirmSessionUsageLimit } from '../monitoring/sessionUsageLimitEvidence.js';
+import { claudeSessionIdFromPidFiles, confirmSessionUsageLimit, sessionUsageWallFromTranscript } from '../monitoring/sessionUsageLimitEvidence.js';
 import { resolveFrameworkTranscriptPath } from './FrameworkSessionStore.js';
 import type { OriginSessionLaunch, OriginSessionLifecycle } from '../messaging/telegram-origin/OriginSessionRegistry.js';
 import { captureOriginHookSettings } from '../messaging/telegram-origin/OriginNativeHookProof.js';
@@ -6568,11 +6568,31 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** A helper's limit is never evidence that the session serving the topic is
    * unable to reply. Corroborate the exact main transcript and account home. */
   confirmSessionUsageLimit(tmuxSession: string): string | false {
+    const t = this.limitEvidenceTranscript(tmuxSession);
+    if (!t) return false;
+    return confirmSessionUsageLimit(t.path, t.claudeSessionId) ? t.claudeSessionId : false;
+  }
+
+  /**
+   * The account's usage-wall banner text when the exact session's own
+   * transcript ends on the provider's usage-wall error (not a server
+   * throttle), else null. The SessionWatchdog uses it as the primary wall
+   * signal, with the pane banner as corroboration — pane rows alone broke
+   * every time Claude Code changed its layout (fb-f8b946ae-597).
+   */
+  usageWallFromTranscript(tmuxSession: string): string | null {
+    const t = this.limitEvidenceTranscript(tmuxSession);
+    if (!t) return null;
+    return sessionUsageWallFromTranscript(t.path, t.claudeSessionId);
+  }
+
+  /** The exact claude-code session's transcript path + id, for limit evidence. */
+  private limitEvidenceTranscript(tmuxSession: string): { path: string; claudeSessionId: string } | null {
     const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
-    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return false;
+    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return null;
     // defaultWhenAbsent: safe here because nothing is believed without the exact session's transcript row.
     const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true, defaultWhenAbsent: true });
-    if (!configHome) return false;
+    if (!configHome) return null;
     // No hook has reported the id yet when the very first turn was refused for usage (no tool, no
     // Stop). Claude Code's own per-process record names it; binding it is what the next hook would do.
     let claudeSessionId = session.claudeSessionId;
@@ -6580,11 +6600,12 @@ rm()  { "${shimRunner}" rm  "$@"; }
       claudeSessionId = claudeSessionIdFromPidFiles(configHome, tmuxSession) ?? undefined;
       if (claudeSessionId) this.setClaudeSessionId(session.id, claudeSessionId);
     }
-    if (!claudeSessionId) return false;
-    return confirmSessionUsageLimit(resolveFrameworkTranscriptPath({
+    if (!claudeSessionId) return null;
+    const transcriptPath = resolveFrameworkTranscriptPath({
       framework: 'claude-code', sessionId: claudeSessionId,
       projectDir: session.cwd ?? this.config.projectDir, configHome,
-    }), claudeSessionId) ? claudeSessionId : false;
+    });
+    return transcriptPath ? { path: transcriptPath, claudeSessionId } : null;
   }
 
   /**
