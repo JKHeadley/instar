@@ -5,6 +5,7 @@
  * their transcripts, a THREE-STATE tmux probe, and the kill.
  */
 import { execFile, spawn, spawnSync } from 'node:child_process';
+import { applyClaudeChildAuth } from '../core/claudeChildAuth.js';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
@@ -108,7 +109,7 @@ export function productionAdapterSuite(o: {
     run: () => new Promise<void>((resolve, reject) => {
       const cmd = o.cli ?? [process.execPath, fileURLToPath(new URL('./adapterSuiteCli.js', import.meta.url))];
       // Its own process GROUP (detached), so the 10-minute kill also ends the engine calls under it.
-      const child = spawn(cmd[0], [...cmd.slice(1), o.stateDir, o.machine, o.claudePath], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' } });
+      const child = spawn(cmd[0], [...cmd.slice(1), o.stateDir, o.machine, o.claudePath], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: applyClaudeChildAuth({ ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' }) });
       let out = ''; let err = '';
       child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
       child.stderr.on('data', (b: Buffer) => { err = (err + b.toString()).slice(-2_000); });

@@ -22,18 +22,21 @@ import { FoldRecordStore } from '../../src/monitoring/FoldCoordinator.js';
 import { InMemorySelfHealEpisodeStore } from '../../src/core/SelfHealGate.js';
 import type { AdmissionToken } from '../../src/monitoring/selfaction/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { configureClaudeChildAuth } from '../../src/core/claudeChildAuth.js';
 
 const OP = 'tests/e2e/adapter-suite-lifecycle.test.ts';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 describe('adapter verification suite — production trigger, real child process', () => {
   const dirs: string[] = [];
-  afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: OP }); });
+  afterEach(() => { configureClaudeChildAuth(null); for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: OP }); });
 
   it('an unrecorded engine version is verified once in its own process and the result reaches the sentinel status', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'suite-e2e-')); dirs.push(stateDir);
     const fakeHome = path.join(stateDir, 'fake-claude'); fs.mkdirSync(fakeHome);
     process.env.FAKE_CLAUDE_HOME = fakeHome;
+    // A key-configured agent: every engine call of the suite must carry the configured key.
+    configureClaudeChildAuth(() => 'sk-ant-oat-e2e-configured');
     const suite = productionAdapterSuite({
       stateDir, machine: 'm_e2e', claudePath: path.join(ROOT, 'tests/fixtures/fake-claude-headless.mjs'),
       cli: [path.join(ROOT, 'node_modules/.bin/vite-node'), path.join(ROOT, 'src/monitoring/adapterSuiteCli.ts'), '--'],
@@ -66,6 +69,9 @@ describe('adapter verification suite — production trigger, real child process'
     expect(sentinel.status().adapterSuite.lastRun).toMatchObject({ ok: true, version: '2.1.322' });
     expect(fs.existsSync(path.join(stateDir, 'state', 'context-budget', 'adapter-suite', 'work'))).toBe(false);
     expect(fs.existsSync(path.join(stateDir, 'state', 'context-archive'))).toBe(false); // the restore's checkpoint stayed in the throwaway dir
+    const seen = fs.readFileSync(path.join(fakeHome, 'auth-seen'), 'utf-8').trim().split('\n');
+    expect(seen.length).toBeGreaterThan(3);
+    expect(new Set(seen)).toEqual(new Set(['sk-ant-oat-e2e-configured']));
     await sentinel.tick();
     expect(runs).toBe(1); // recorded: not re-run for this version
   }, 180_000);

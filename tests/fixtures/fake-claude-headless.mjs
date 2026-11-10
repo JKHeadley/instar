@@ -11,6 +11,8 @@ import { spawnSync } from 'node:child_process';
 const args = process.argv.slice(2);
 if (args[0] === '--version') { process.stdout.write('2.1.322 (Claude Code)\n'); process.exit(0); }
 const root = process.env.FAKE_CLAUDE_HOME;
+// Which credential each engine call arrived with (the suite must pass the configured key).
+fs.appendFileSync(path.join(root, 'auth-seen'), `${process.env.CLAUDE_CODE_OAUTH_TOKEN ?? '(none)'}\n`);
 const ctxFile = path.join(root, 'contexts.json');
 const contexts = fs.existsSync(ctxFile) ? JSON.parse(fs.readFileSync(ctxFile, 'utf-8')) : {};
 const cwd = process.cwd();
