@@ -302,6 +302,8 @@ interface TelegramUpdate {
     };
     forum_topic_created?: { name: string };
     forum_topic_edited?: { name?: string };
+    /** A service message: someone pinned this message (conversation-pinned-messages). */
+    pinned_message?: { message_id: number };
   };
   callback_query?: {
     id: string;
@@ -2436,6 +2438,31 @@ export class TelegramAdapter implements MessagingAdapter {
   public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
+  /**
+   * Pinned messages (docs/specs/conversation-pinned-messages.md): an authorized person pinned a
+   * message in a topic. Telegram sends no update for an unpin, so only pins are handed over.
+   */
+  public onTopicMessagePinned: ((p: { topicId: number; messageId: number; serviceMessageId: number; byName: string; atMs: number }) => void) | null = null;
+
+  /**
+   * A pin service message the lifeline read (agents whose lifeline owns polling): handed over only
+   * when the person who pinned is authorized here. Returns whether it was handed over.
+   */
+  handleForwardedPin(p: { topicId: number; messageId: number; serviceMessageId: number; fromUserId: number; byName: string }): boolean {
+    if (!Number.isSafeInteger(p.topicId) || p.topicId <= 0 || !Number.isSafeInteger(p.messageId) || p.messageId <= 0 || !Number.isSafeInteger(p.serviceMessageId)) return false;
+    if (!Number.isSafeInteger(p.fromUserId) || !this.isAuthorized(p.fromUserId)) return false;
+    this.onTopicMessagePinned?.({ topicId: p.topicId, messageId: p.messageId, serviceMessageId: p.serviceMessageId, byName: String(p.byName ?? '').slice(0, 128), atMs: Date.now() });
+    return true;
+  }
+
+  /** Pin or unpin one message in a topic's chat in Telegram itself, quietly (conversation-pinned-messages). */
+  async setTopicMessagePin(topicId: number, messageId: number, pinned: boolean): Promise<void> {
+    // The chat a topic lives in (issues-group topics live in the issues chat); the pin calls take no thread.
+    const dest = toWireParams({ chat_id: this.config.chatId, message_thread_id: topicId }, this.topicSpace());
+    const params: Record<string, unknown> = { chat_id: dest.chat_id, message_id: messageId };
+    if (pinned) params.disable_notification = true;
+    await this.apiCall(pinned ? 'pinChatMessage' : 'unpinChatMessage', params);
+  }
 
   async sendToOwnerDM(text: string): Promise<SendResult | null> {
     const owner = this.getOwnerUserId();
@@ -6131,6 +6158,10 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
 
+    // A pin by someone not authorized here (an anonymous admin, a stranger) is ignored quietly:
+    // it is a service message, not someone asking to talk (conversation-pinned-messages).
+    if (msg.pinned_message && !this.isAuthorized(msg.from.id)) return;
+
     // Auth gating — handle messages from unauthorized/unknown users
     if (!this.isAuthorized(msg.from.id)) {
       await this.handleUnknownUser(msg.from.id, msg.from.first_name, msg.from.username, msg.text);
@@ -6152,6 +6183,19 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {
+      return;
+    }
+
+    // A pin made in Telegram (conversation-pinned-messages): handed to the server, never a message.
+    if (msg.pinned_message) {
+      const pinnedId = msg.pinned_message.message_id;
+      if (Number.isSafeInteger(pinnedId) && pinnedId > 0) {
+        try {
+          this.onTopicMessagePinned?.({ topicId: numericTopicId, messageId: pinnedId, serviceMessageId: msg.message_id, byName: msg.from.first_name, atMs: Date.now() });
+        } catch (err) {
+          console.warn(`[telegram] pin hand-off failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       return;
     }
 

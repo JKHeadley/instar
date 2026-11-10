@@ -789,6 +789,11 @@ export class SlackAdapter implements MessagingAdapter {
     await this.apiClient.call('pins.add', { channel: channelId, timestamp });
   }
 
+  /** Unpin a message (conversation-pinned-messages). */
+  async unpinMessage(channelId: string, timestamp: string): Promise<void> {
+    await this.apiClient.call('pins.remove', { channel: channelId, timestamp });
+  }
+
   /** Send an ephemeral message (visible only to one user). */
   async postEphemeral(channelId: string, userId: string, text: string): Promise<void> {
     await this.formattedApiCall('chat.postEphemeral', { channel: channelId, user: userId, text });

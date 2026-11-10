@@ -168,6 +168,50 @@ describe('Conversations page', () => {
     expect(JSON.parse(sent!.body!).requestId).toMatch(/^\d{13}-/);
   });
 
+  it('pinned messages: the bar shows the newest pin with a count, a message menu pins (signed), and All pins lists them (conversation-pinned-messages)', async () => {
+    const idb = fakeIndexedDB();
+    const bd = await import('../../dashboard/console/browser-device.js');
+    const { keyPair, publicKey } = await bd.generateDeviceKey();
+    idb.stores.set('device', new Map([['m1', { machineId: 'm1', deviceId: 'dev-b1234567', host: 'localhost:4040', status: 'active', keyPair, publicKey, keyHash: await bd.keyHashOf(publicKey) }]]));
+    const at = new Date().toISOString();
+    let pins = [{ messageId: 'msg-1', pinnedAt: at, pinnedBy: { name: 'Justin', role: 'owner' }, preview: 'hello', source: 'app' }];
+    let pinCall: Call | null = null;
+    const { doc } = await boot((c) => {
+      if (c.url.startsWith('/mobile/browser-devices/status')) return { status: 200, body: STATUS };
+      if (c.url.startsWith('/mobile/conversations?scope=pool')) return { status: 200, body: { conversations: [{ id: UUID, platform: 'app', title: 'Plans', lastActivity: at, lastPreview: '' }], nextCursor: null } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/messages`)) return { status: 200, body: { conversationKey: UUID, messages: [{ eventId: 'e1', messageId: 'msg-1', role: 'agent', text: 'hello', at }, { eventId: 'e2', messageId: 'msg-2', role: 'agent', text: 'world', at }], nextBefore: null, pins } };
+      if (c.url.startsWith(`/mobile/chat/app/${UUID}/events`)) return { status: 200, body: { events: [], cursor: 'c1' } };
+      if (c.url === `/mobile/chat/app/${UUID}/pins` && c.method === 'POST') {
+        pinCall = c;
+        pins = [{ messageId: 'msg-2', pinnedAt: at, pinnedBy: { name: 'Justin', role: 'owner' }, preview: 'world', source: 'app' }, ...pins];
+        return { status: 200, body: { ok: true, pinned: true, changed: true, mirror: 'not-applicable', pins } };
+      }
+      return undefined;
+    }, `#/work/chats?c=${encodeURIComponent(`app:${UUID}`)}`, idb);
+    for (let i = 0; i < 10; i++) await flush();
+    const bar = doc.querySelector('.chat-pinbar') as HTMLElement;
+    expect(bar.hidden).toBe(false);
+    expect(bar.textContent).toContain('Pinned');
+    expect(bar.textContent).toContain('hello');
+    expect(doc.querySelector('.chat-bubble[data-message-id="msg-1"] .chat-pinned-mark')?.textContent).toBe('Pinned');
+    // Pin the second message from its menu.
+    (doc.querySelector('.chat-bubble[data-message-id="msg-2"] .chat-msg-menu') as HTMLButtonElement).click();
+    await flush();
+    ([...doc.querySelectorAll('button')].find((b) => b.textContent === 'Pin') as HTMLButtonElement).click();
+    for (let i = 0; i < 10; i++) await flush();
+    expect(pinCall).not.toBeNull();
+    expect(verifySigned(pinCall!, publicKey).ok).toBe(true);
+    expect(JSON.parse(pinCall!.body!)).toMatchObject({ messageId: 'msg-2', pinned: true });
+    expect(doc.querySelector('.chat-pinbar')!.textContent).toContain('1 of 2');
+    expect(doc.querySelector('.chat-pinbar')!.textContent).toContain('world');
+    // All pins lists both, with an Unpin for each.
+    (doc.querySelector('.chat-pin-all') as HTMLButtonElement).click();
+    await flush();
+    expect(doc.querySelectorAll('.chat-pin-row')).toHaveLength(2);
+    expect(doc.querySelectorAll('.chat-pin-unpin')).toHaveLength(2);
+    expect(doc.body.textContent).toContain('2 pinned messages');
+  });
+
   it('a 202 in-progress answer is asked again with the same requestId, and the message shows once (live proof finding)', async () => {
     const idb = fakeIndexedDB();
     const bd = await import('../../dashboard/console/browser-device.js');

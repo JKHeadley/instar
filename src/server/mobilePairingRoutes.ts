@@ -2189,6 +2189,13 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/chat\/\d+$/.source],
   ['GET', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/.source],
   ['POST', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/.source],
+  // Pinned messages (conversation-pinned-messages).
+  ['GET', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/pins$`).source],
+  ['POST', new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/pins$`).source],
+  ['GET', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/.source],
+  ['POST', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/.source],
+  ['GET', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/.source],
+  ['POST', /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/.source],
   ['POST', /^\/mobile\/media\/uploads$/.source],
   ['PUT', new RegExp(`^/mobile/media/uploads/${APP_CONVERSATION_KEY_PATTERN}/chunks/(0|[1-9][0-9]{0,5})$`).source],
   ['GET', new RegExp(`^/mobile/media/uploads/${APP_CONVERSATION_KEY_PATTERN}$`).source],
@@ -2231,6 +2238,11 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['PUT', new RegExp(`^/mobile/media/uploads/${UUID}/chunks/(0|[1-9][0-9]{0,5})$`), 'member'],
   ['GET', new RegExp(`^/mobile/media/uploads/${UUID}$`), 'member'],
   ['POST', /^\/mobile\/media\/purge$/, 'member'],
+  // Pinned messages (conversation-pinned-messages): seeing pins is reading, changing them is using the conversation.
+  ['GET', new RegExp(`^/mobile/chat/app/${UUID}/pins$`), 'guest'],
+  ['POST', new RegExp(`^/mobile/chat/app/${UUID}/pins$`), 'member'],
+  ['GET', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, 'guest'],
+  ['POST', /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, 'member'],
 ];
 
 /** The conversation and operation a team phone's request acts on, read from its path. */
@@ -2242,10 +2254,15 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
   // refused here; the handler would parseInt it into a real topic.
   m = /^\/telegram\/topics\/([^/]+)\/messages$/.exec(pathNorm);
   if (m && method === 'GET') return { ref: `telegram:${m[1]}`, op: 'read' };
+  // Pinned messages: seeing pins is a read, pinning or unpinning is a send (conversation-pinned-messages).
+  m = /^\/mobile\/chat\/([1-9][0-9]{0,15})\/pins$/.exec(pathNorm);
+  if (m) return { ref: `telegram:${Number(m[1])}`, op: method === 'POST' ? 'send' : 'read' };
+  m = /^\/mobile\/chat\/slack\/(-?\d+)\/pins$/.exec(pathNorm);
+  if (m) return { ref: `slack:${m[1]}`, op: method === 'POST' ? 'send' : 'read' };
   m = /^\/mobile\/chat\/slack\/(-?\d+)$/.exec(pathNorm);
   if (m && method === 'POST') return { ref: `slack:${m[1]}`, op: 'send' };
-  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/preview/.+)?$`).exec(pathNorm);
-  if (m) return { ref: m[1], op: method === 'POST' && !m[2] ? 'send' : 'read' };
+  m = new RegExp(`^/mobile/chat/app/(${UUID})(/messages|/events|/pins|/preview/.+)?$`).exec(pathNorm);
+  if (m) return { ref: m[1], op: method === 'POST' && (!m[2] || m[2] === '/pins') ? 'send' : 'read' };
   m = new RegExp(`^/mobile/conversations/(${UUID})$`).exec(pathNorm);
   if (m) return { ref: m[1], op: method === 'DELETE' ? 'delete' : 'rename' };
   return null;
@@ -2284,6 +2301,13 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Slack conversations from the app (§4.9): the machine-local negative durable id.
     { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}$/, statuses: active, sendRoute: true, conversationRef: true },
     { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/messages$/, statuses: active, conversationRef: true },
+    // Pinned messages (conversation-pinned-messages): list and pin/unpin, their own bucket.
+    { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/pins$`), statuses: active, body: 'none', conversationRef: true },
+    { method: 'POST', re: new RegExp(`^/mobile/chat/app/${UUID}/pins$`), statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'pins' },
+    { method: 'GET', re: /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'POST', re: /^\/mobile\/chat\/[1-9][0-9]{0,15}\/pins$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'pins' },
+    { method: 'GET', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/, statuses: active, body: 'none', conversationRef: true },
+    { method: 'POST', re: /^\/mobile\/chat\/slack\/-[1-9][0-9]{0,17}\/pins$/, statuses: active, body: 'json', conversationRef: true, ownBucket: 30, bucket: 'pins' },
     // Reply notification preview (chat-media §4.11); the read token opens it too (NOTIFY_TOKEN_PATHS).
     { method: 'GET', re: new RegExp(`^/mobile/chat/app/${UUID}/preview/[a-z0-9._:-]{1,128}$`), statuses: active, conversationRef: true },
     { method: 'POST', re: /^\/mobile\/device\/push$/, statuses: active },

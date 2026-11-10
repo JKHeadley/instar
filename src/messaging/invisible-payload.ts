@@ -193,7 +193,7 @@ export const BODY_CARRYING_TELEGRAM_METHODS: ReadonlySet<string> = new Set(
  *   sendChatAction           the "typing…" indicator; no text at all
  *   getUpdates/getMe/getFile/getChat/getChatMember   reads; nothing outbound
  *   deleteWebhook/deleteMessage                      removals; no body
- *   closeForumTopic/reopenForumTopic/pinChatMessage/unpinAllForumTopicMessages
+ *   closeForumTopic/reopenForumTopic/pinChatMessage/unpinChatMessage/unpinAllForumTopicMessages
  *                            topic + message state changes; they carry ids, not prose
  */
 export const NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS: ReadonlySet<string> = new Set([
@@ -215,6 +215,7 @@ export const NO_READER_VISIBLE_FIELD_TELEGRAM_METHODS: ReadonlySet<string> = new
   'closeForumTopic',
   'reopenForumTopic',
   'pinChatMessage',
+  'unpinChatMessage',
   'unpinAllForumTopicMessages',
 ]);
 

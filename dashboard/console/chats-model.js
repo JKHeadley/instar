@@ -530,3 +530,54 @@ export function approvalWords(approval, chat, telegramBackup) {
   if (approval === 'dashboard') return 'Approved with your PIN.';
   return 'Approve it where the agent asks you to.';
 }
+
+// ── pinned messages (docs/specs/conversation-pinned-messages.md) ──────────────
+const PIN_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+/** The pins of a history or pins answer, newest pin first; anything malformed is dropped. */
+export function pinsFrom(data) {
+  const raw = data && Array.isArray(data.pins) ? data.pins : null;
+  if (!raw) return null;
+  return raw.filter((p) => p && typeof p.messageId === 'string' && PIN_ID_RE.test(p.messageId)).slice(0, 100).map((p) => ({
+    messageId: p.messageId,
+    pinnedAt: typeof p.pinnedAt === 'string' ? p.pinnedAt : null,
+    who: p.pinnedBy && typeof p.pinnedBy.name === 'string' ? p.pinnedBy.name : null,
+    preview: typeof p.preview === 'string' && p.preview ? p.preview : null,
+    fromTelegram: p.source === 'telegram',
+  }));
+}
+/** What the pinned bar shows for the pin at `index`: its preview and, with more than one pin, "1 of N". */
+export function pinBarText(pins, index) {
+  if (!Array.isArray(pins) || !pins.length) return null;
+  const i = Math.min(Math.max(0, index | 0), pins.length - 1);
+  const p = pins[i];
+  return { label: 'Pinned', count: pins.length > 1 ? `${i + 1} of ${pins.length}` : '', preview: p.preview || 'Pinned message', messageId: p.messageId };
+}
+/** The pin the bar shows after a tap (Telegram's order: the next one, back to the first after the last). */
+export function nextPinIndex(index, count) {
+  if (!count) return 0;
+  return ((index | 0) + 1) % count;
+}
+/** The id a bubble is pinned by, or null when it cannot be pinned (a placeholder, or no message id). */
+export function pinIdOf(kind, b) {
+  if (!b || String(b.id).startsWith('local:') || !b.messageId || !PIN_ID_RE.test(b.messageId)) return null;
+  if (kind === 'telegram' && !/^[1-9][0-9]{0,15}$/.test(b.messageId)) return null;
+  return b.messageId;
+}
+/** The route a conversation's pins are read and changed on. */
+export function pinsPathOf(ref, machine) {
+  if (!ref) return null;
+  if (ref.kind === 'app') return `/mobile/chat/app/${encodeURIComponent(ref.id)}/pins`;
+  if (ref.kind === 'telegram') return `/mobile/chat/${encodeURIComponent(ref.id)}/pins`;
+  if (ref.kind === 'slack') return `/mobile/chat/slack/${encodeURIComponent(ref.id)}/pins`;
+  return null;
+}
+/** The words a pin answer leaves in the status line, or '' when there is nothing to say. */
+export function pinOutcomeWords(r) {
+  if (!r) return 'That did not work. Try again.';
+  if (!r.ok) {
+    const d = r.data || {};
+    if (d.error === 'too-many-pins') return d.detail || 'This conversation already has 100 pinned messages. Unpin one first.';
+    return d.detail || 'That did not work. Try again.';
+  }
+  return r.data && r.data.mirror === 'failed' && typeof r.data.mirrorDetail === 'string' ? r.data.mirrorDetail : '';
+}
