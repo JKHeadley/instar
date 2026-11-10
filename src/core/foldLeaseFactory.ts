@@ -28,7 +28,7 @@ export function machineLeaseCrypto(selfMachineId: string, idMgr: MachineIdentity
     verify: (canonical, signature, holderMachineId) => {
       const pub = idMgr.getSigningPublicKeyPem(holderMachineId);
       if (!pub) return false;
-      try { return verifyEd25519(canonical, signature, pub); } catch { return false; }
+      try { return verifyEd25519(canonical, signature, pub); } catch { return false; /* @silent-fallback-ok — an unverifiable signature is not a held lock (the safe direction) */ }
     },
   };
 }
