@@ -83,3 +83,13 @@ Concern raised: the degradation floods upstream feedback, and the kill switch an
 4. **Holds.** Quoting is correct (`$INSTAR_DIR` with no brace does not interpolate in the TS literal; the rendered JSON body is valid, and I captured it on a listener). Stdin cannot block boot: the bound is 1 s, and a closed or `/dev/null` stdin returns at once. The `/hooks/events` branch placement is safe: auth is router middleware upstream, the 503 guard runs first, and the early return only skips the event store for this one synthetic event, which the memory-session guard never needed. Codex keeps the env-only branch, and rollback via config needs no restart, apart from the worktree gap in point 2.
 
 **Second verdict (same reviewer, after revisions):** Concur after revisions. I re-rendered the hook (`bash -n` clean) and confirmed three things. The switch set off in `$INSTAR_AGENT_HOME/.instar/config.json` now suppresses recovery for a worktree session. The open-pipe start drops to about 0.8 s. The route reports at most once per process per hour, with a constant reason. The unit test (8/8) and the integration test (4/4) pass locally. One small caveat: the hourly limit lives in each `createRoutes` closure, so it holds per router instance, which in production is one per server process.
+
+## CI follow-up (three repo-invariant tests)
+
+CI on the first push failed three structural tests, all caused by this change and none by behaviour:
+
+- `native-hook-events-consumers` reads a fixed 2500-character window of the `/hooks/events` route and expects the shared dispatch call inside it. The inline unknown-source block pushed that call out of the window. The block is now a named helper defined above the route, and the route calls it in one line. Behaviour is unchanged (same hourly throttle, same degradation text, same 204).
+- `lint-dev-agent-dark-gate` pins the line number of every `enabled:` default. The new `contextBudget` block sat in the middle of the defaults and shifted every later row by 7. It now sits at the end of the shared defaults, so no pinned row moves. The value and its default (on) are unchanged.
+- `feature-ladders-coverage` requires the spec's `ladder: contextBudget` line to name a real registry entry. `contextBudget` is added to the ladder registry as `finished`: a default-on bug fix with an ordinary off switch, not a staged rollout. The spec's later fold switches will get real rungs when they ship.
+
+Over-block, under-block and rollback are unchanged from the review above: all three edits are placement or registry edits with no runtime decision added.

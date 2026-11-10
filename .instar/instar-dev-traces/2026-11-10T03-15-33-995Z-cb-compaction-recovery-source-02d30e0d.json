@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "cb-compaction-recovery-source",
+  "sessionId": "9129212e-3c5a-416c-b4f4-528c322dbef1",
+  "timestamp": "2026-11-10T03:15:33.995Z",
+  "artifactPath": "upgrades/side-effects/cb-compaction-recovery-source.md",
+  "artifactSha256": "b37ae1112c1be2d225a5b08d8594f02d78a903ea1186473f0731468e0c979679",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/config/ConfigDefaults.ts",
+    "src/data/feature-ladders.json",
+    "src/server/routes.ts",
+    "upgrades/side-effects/cb-compaction-recovery-source.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI follow-up to the tier-2 compaction-recovery change: relocates a default and a route helper and adds a finished ladder row; no new runtime decision",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
