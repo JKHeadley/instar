@@ -153,6 +153,9 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   'fold-records',
   // The fold lock files and the single-machine fold signing key (§14 "Fold lock").
   'fold-leases',
+  // The retrieval archive and engine checkpoints (§9.7: the archive root is a sibling of
+  // the layers root precisely so it can be excluded; checkpoints are unscrubbed).
+  'context-archive',
 ]);
 
 /**
