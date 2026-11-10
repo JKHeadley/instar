@@ -88,6 +88,8 @@ export interface ConversationListRow {
   unreadCount?: number;
   unreadMore?: true;
   readUpTo?: { atMs: number; id: string } | null;
+  /** Chief of Staff tree (docs/specs/chief-of-staff-topic.md §1.4): the parent conversation key; owner-role callers only. Older apps ignore it. */
+  parentConversationKey?: string | null;
 }
 
 /** The unread fields of a row as the app receives them (§3.5). */
@@ -238,6 +240,11 @@ export interface MobileConversationRouteDeps {
   /** `mobilePairing.native.media.enabled`, resolved at boot. */
   mediaEnabled?: boolean;
   machineId: () => string;
+  /**
+   * Chief of Staff (docs/specs/chief-of-staff-topic.md §1.4): the pinned conversation key and the tree. Absent
+   * where the feature is off. Served only to owner-role callers (a team or MSP phone sees neither field).
+   */
+  chiefOfStaff?: () => { pinnedKey: string | null; parents: Map<string, string | null> } | null;
   /** Telegram topics for the unified list (absent when Telegram is not configured). */
   telegramTopics?: () => Array<{ topicId: number; topicName: string | null; lastActivity: string | null; lastPreview: string | null }>;
   /**
@@ -586,10 +593,21 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       });
     };
     // A peer's preview cannot be judged here, so a team phone lists what this machine holds.
+    // Chief of Staff §1.4: owner-role callers get `parentConversationKey` on every row and, on the first page
+    // (no cursor), a separate `pinned` row; everyone else gets neither. A Bearer read is the operator's own.
+    const cosView = (person === null || person.role === 'owner') ? (deps.chiefOfStaff?.() ?? null) : null;
+    const rowKey = (r: ConversationListRow): string => (r.platform === 'app' ? `app:${String(r.id)}` : `${r.platform}:${String(r.id)}`);
+    const withTree = (rows: ConversationListRow[]): ConversationListRow[] => !cosView ? rows : rows.map((r) => (cosView.parents.has(rowKey(r)) ? { ...r, parentConversationKey: cosView.parents.get(rowKey(r)) ?? null } : r));
+    const pinnedOut = (rows: ConversationListRow[]): Record<string, unknown> => {
+      if (!cosView || !cosView.pinnedKey || cursor !== null) return {};
+      const inPage = rows.find((r) => rowKey(r) === cosView.pinnedKey);
+      const fromLocal = inPage ?? visible(localRowsAfter(null)).map((r) => ({ ...r, machine: self })).find((r) => rowKey(r) === cosView.pinnedKey);
+      return fromLocal ? { pinned: withTree(withFields([fromLocal], false))[0] } : {};
+    };
     if (req.query.scope !== 'pool' || person?.role === 'team') {
       const m = mergeConversationPages([local], limit);
-      const rows = withFields(visible(m.rows), false);
-      res.json({ conversations: rows, nextCursor: m.nextCursor, ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
+      const rows = withTree(withFields(visible(m.rows), false));
+      res.json({ conversations: rows, nextCursor: m.nextCursor, ...pinnedOut(rows), ...ownerNote, ...totals(rows, beyondLocal(m.rows, m.nextCursor !== null)) });
       return;
     }
     // Pool read (§4.8): every answering machine's own page after the same cursor, merged on the
@@ -625,7 +643,7 @@ export function createMobileConversationRouter(deps: MobileConversationRouteDeps
       const all = mergeConversationPages([{ rows: localRows, more: false }, ...peerPages.map((p) => ({ ...p, more: false }))], 10_000).rows;
       beyond = visible(all.slice(limit)).some((r) => r.hasUnread === true || (r.machine === self || r.platform === 'app' ? !!unread.rowFields(reader, r)?.hasUnread : false));
     }
-    res.json({ conversations: rows, nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
+    res.json({ conversations: withTree(rows), ...pinnedOut(rows), nextCursor: m.nextCursor, ...ownerNote, pool: { failed: peers.failed }, ...totals(rows, beyond) });
   });
 
   // ── Read reports (mobile-unread-messages §3.5) ──

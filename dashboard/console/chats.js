@@ -18,8 +18,9 @@ import {
   parseConversationRef, refString, refFromQuery, hashFor, listRows, listMeta, mergeListPages, validTitle,
   bubbles, mergeBubbles, applyEvents, deliveryLabel, mediaRefFor, declaredKindFor, checkFiles, humanSize,
   UNFINISHED_KEY, unfinishedAction, sendOutcome, pollUnion, createScheduler, ANNOUNCE_EVERY_MS, readMarkFor, telegramReadOnlyNote,
-  setupRefusal, approvalWords, privateChatWords, blobTypeFor,
+  setupRefusal, approvalWords, privateChatWords, blobTypeFor, listPinned, orderWithTree,
 } from './chats-model.js';
+import { chiefOfStaffNeedRows } from './needs-model.js';
 import { detectCredentialShape, CREDENTIAL_QUESTION } from './credential-shape.js';
 
 const TOKEN_KEY = 'instar_token';
@@ -103,6 +104,7 @@ class ChatsPage {
       return;
     }
     this.paintLoading();
+    void this.loadChiefOfStaffNeeds().then(() => { if (this.live) this.refreshNeedCard(); });
     const st = await this.device.status(null);
     if (!this.live) return;
     if (st.off) { this.paintNote(OFF_TEXT); return; }
@@ -134,8 +136,58 @@ class ChatsPage {
     this.openApp();
   }
 
+  // ── Chief of Staff (chief-of-staff-topic.md §1.4/§5): what its projects need from the owner leads this page,
+  // in place, with the action (open the Chief of Staff conversation). Same rows as Home's count (needs-model.js).
+  async loadChiefOfStaffNeeds() {
+    this.cosNeeds = []; this.cosRef = null;
+    try {
+      const r = this.ctx && this.ctx.get ? await this.ctx.get('/chief-of-staff') : await this.call('GET', '/chief-of-staff');
+      const rows = chiefOfStaffNeedRows(r, now());
+      this.cosNeeds = Array.isArray(rows) ? rows : [];
+      const key = r && r.ok && r.data && typeof r.data.conversationKey === 'string' ? r.data.conversationKey : null;
+      this.cosRef = key ? parseConversationRef(key) : null;
+      this.cosName = r && r.ok && r.data && typeof r.data.displayName === 'string' ? r.data.displayName : 'Chief of Staff';
+    } catch { this.cosNeeds = []; }
+  }
+  /** The slot the card renders into — one element for the page's life, so a late answer lands in place without a repaint. */
+  needCard() {
+    if (!this.needSlot) this.needSlot = el('div', { class: 'cos-need-slot' });
+    this.refreshNeedCard();
+    return this.needSlot;
+  }
+  refreshNeedCard() {
+    if (!this.needSlot) return;
+    if (!this.cosNeeds || !this.cosNeeds.length) { setKids(this.needSlot); return; }
+    const lead = this.cosNeeds[0];
+    const more = this.cosNeeds.length - 1;
+    const open = el('a', { class: 'btn-primary', href: this.cosRef ? hashFor(this.cosRef) : '#/work/chats', text: `Open ${this.cosName || 'Chief of Staff'}` });
+    const checkIn = el('button', { class: 'btn-quiet', type: 'button', text: 'Check in' });
+    checkIn.addEventListener('click', () => this.checkInWithChiefOfStaff(checkIn));
+    setKids(this.needSlot, el('div', { class: 'need-card', 'data-operator-need': 'chief-of-staff' },
+      el('p', { class: 'need-title', text: lead.main }),
+      lead.sub ? el('p', { class: 'card-line', text: lead.sub }) : null,
+      more > 0 ? el('p', { class: 'card-line chat-muted', text: `+${more} more in the Chief of Staff conversation` }) : null,
+      el('div', { class: 'chat-list-actions' }, open, checkIn)));
+  }
+  /** §4: the dashboard check-in — a PIN prompt, one POST, the PIN not kept. */
+  async checkInWithChiefOfStaff(button) {
+    const pin = await askPin({ title: `Check in with your ${this.cosName || 'Chief of Staff'}`, explain: 'This tells it you are still around, so it may keep restarting and closing work for the next few days. Your PIN is used for this one request and not kept.', adapter: 'body' });
+    if (!pin) return;
+    const token = (() => { try { return localStorage.getItem('instar_token') || ''; } catch { return ''; } })();
+    let r;
+    try {
+      const res = await fetch('/chief-of-staff/check-in', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Instar-Request': '1' }, body: JSON.stringify({ pin: pin.pin }) });
+      r = { ok: res.ok, status: res.status, data: await res.json().catch(() => ({})) };
+    } catch { r = { ok: false, status: 0, data: {} }; }
+    pin.pin = '';
+    const status = el('p', { class: 'action-status', role: 'status', text: r.ok ? 'Checked in. It stays awake for the next few days.' : r.status === 403 ? 'That PIN was not accepted.' : r.status === 503 ? 'The Chief of Staff is not switched on here.' : (r.data && r.data.error) || `The server answered ${r.status || 'nothing'}.` });
+    sheet({ title: 'Check in' }, status);
+    if (r.ok) { await this.loadChiefOfStaffNeeds(); this.refreshNeedCard(); }
+    if (button) button.disabled = false;
+  }
+
   // ── simple states ──
-  shell(...kids) { setKids(this.main, el('div', { class: 'chats-page chat-state' }, el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })), ...kids)); }
+  shell(...kids) { setKids(this.main, el('div', { class: 'chats-page chat-state' }, this.needCard(), el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })), ...kids)); }
   paintLoading() { this.shell(el('p', { class: 'card-line', text: 'Checking this browser…' })); }
   paintNote(text) { this.shell(el('p', { class: 'card-line chat-note', text })); }
   paintRetry(text, retry) {
@@ -295,6 +347,7 @@ class ChatsPage {
     this.viewEl = el('div', { class: 'chat-view' }, el('p', { class: 'chat-pick', text: 'Pick a conversation.' }));
     this.pageEl = el('div', { class: 'chats-page' },
       el('div', { class: 'chat-list' },
+        this.needCard(),
         el('section', { class: 'hero page-hero' }, el('div', { class: 'eyebrow', text: 'Work · Conversations' }), el('h1', { class: 'page-title', text: 'Conversations' })),
         skew ? el('p', { class: 'card-line chat-note', text: `Your computer's clock is ${Math.abs(skew)} minutes off.` }) : null,
         el('div', { class: 'chat-list-actions' }, newBtn, forget),
@@ -322,6 +375,7 @@ class ChatsPage {
   }
   applyList(data, more) {
     const rows = listRows(data);
+    if (!more) this.pinnedKey = (listPinned(data) || {}).key || null; // the first page carries the Chief of Staff pin (§1.4); a later page keeps it
     if (more) { this.pagedMore = true; this.rows = mergeListPages(this.rows, rows); }
     // A refresh of the first page replaces it; pages the operator opened with "Show more" are kept below.
     else this.rows = this.pagedMore ? mergeListPages(rows, this.rows) : rows;
@@ -338,7 +392,7 @@ class ChatsPage {
     }
     if (!this.rows.length) { setKids(this.listEl, el('p', { class: 'card-line chat-muted', text: 'No conversations yet.' })); }
     else {
-      setKids(this.listEl, this.rows.map((r) => el('a', { class: `row chat-row${r.key === open ? ' open' : ''}`, href: hashFor(r.ref), role: 'listitem' },
+      setKids(this.listEl, orderWithTree(this.rows, this.pinnedKey).map((r) => el('a', { class: `row chat-row${r.key === open ? ' open' : ''}${r.key === this.pinnedKey ? ' chat-pinned' : ''} chat-depth-${Math.min(r.depth || 0, 3)}`, href: hashFor(r.ref), role: 'listitem' },
         el('span', { class: 'chat-row-main' },
           el('span', { class: 'chat-row-top' }, el('span', { class: 'chat-row-title', text: r.title }), el('span', { class: `chat-kind chat-kind-${r.kind}`, text: r.kindLabel })),
           el('span', { class: 'chat-row-preview', text: r.preview || ' ' })),

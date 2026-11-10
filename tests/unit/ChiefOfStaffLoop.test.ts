@@ -323,3 +323,27 @@ describe('ChiefOfStaffLoop — second-pass review fixes (2026-11-09)', () => {
     expect(w.notes).toHaveLength(1);
   });
 });
+
+describe('ChiefOfStaffLoop — PR 4 surfaces', () => {
+  it('writes the root tree record for the CoS conversation once it exists, and only once', async () => {
+    const w = world(); const l = loop(w);
+    (l as unknown as { d: { rootConversationKey?: () => string | null } }).d.rootConversationKey = () => 'telegram:9';
+    await l.tick(); w.now += H; await l.tick();
+    const roots = w.j.entries.filter((e) => e.data.recordType === 'tree' && e.data.conversationKey === 'telegram:9');
+    expect(roots).toHaveLength(1); expect(roots[0].data.role).toBe('chief-of-staff'); expect(roots[0].data.parentConversationKey).toBeNull();
+  });
+  it('an unresolvable owner id puts one needs-you line in the note', async () => {
+    const w = world({ hour: 8 }); bind(w); renew(w, T0 - H); const l = loop(w);
+    (l as unknown as { d: { ownerResolvable?: () => boolean } }).d.ownerResolvable = () => false;
+    w.judge = { verdict: 'moving', citedIds: ['run'], reason: 'r' };
+    await l.tick();
+    expect(w.notes.join('\n')).toContain('No owner id is configured');
+  });
+  it('status() derives the lease from the records now, not from the last tick', async () => {
+    const w = world(); bind(w); const l = loop(w);
+    expect(l.status().lease.live).toBe(false);
+    renew(w, w.now - H); // written by another machine (not through this loop) ⇒ visible once the 2 s read memo lapses
+    w.now += 3_000;
+    expect(l.status().lease.live).toBe(true);
+  });
+});

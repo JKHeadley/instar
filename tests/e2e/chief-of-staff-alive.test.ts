@@ -101,6 +101,13 @@ describe('Chief of Staff E2E (feature is alive)', () => {
 
       const noAuth = await request(server.getApp()).get('/chief-of-staff');
       expect(noAuth.status).toBe(401);
+
+      // §1.4: the CoS topic is a system topic — adopted by standbys and listed to the console like Attention/Updates.
+      new StateManager(stateDir).set('chief-of-staff-topic', 900);
+      const sys = await request(server.getApp()).get('/telegram/system-topics').set(auth());
+      expect(sys.status).toBe(200); expect(sys.body.topics.chiefOfStaff).toBe(900);
+      const st = await request(server.getApp()).get('/chief-of-staff').set(auth());
+      expect(st.body.conversationKey).toBe('telegram:900');
     } finally { await server.stop(); journal.close(); }
   });
 });

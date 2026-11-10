@@ -258,3 +258,37 @@ describe('approval wording names the private chat', () => {
     expect(m.approvalWords('owner-phone', null, false)).toBe('Approve it on your iPhone: open the Instar app and confirm with Face ID.');
   });
 });
+
+describe('Chief of Staff: pinned row and tree order (chief-of-staff-topic.md §1.4)', () => {
+  const body = {
+    conversations: [
+      { id: 5, platform: 'telegram', title: 'Unfiled', lastActivity: '2030-01-01T00:00:05Z' },
+      { id: 4, platform: 'telegram', title: 'Sub', lastActivity: '2030-01-01T00:00:04Z', parentConversationKey: 'telegram:3' },
+      { id: 3, platform: 'telegram', title: 'Project', lastActivity: '2030-01-01T00:00:03Z', parentConversationKey: 'telegram:1' },
+      { id: 2, platform: 'telegram', title: 'Orphan', lastActivity: '2030-01-01T00:00:02Z', parentConversationKey: 'telegram:999' },
+      { id: 1, platform: 'telegram', title: '🧭 Chief of Staff', lastActivity: '2030-01-01T00:00:01Z', parentConversationKey: null },
+    ],
+    pinned: { id: 1, platform: 'telegram', title: '🧭 Chief of Staff', lastActivity: '2030-01-01T00:00:01Z', parentConversationKey: null },
+  };
+  it('listPinned reads the pinned row; absent ⇒ null', () => {
+    expect(m.listPinned(body)?.key).toBe('telegram:1');
+    expect(m.listPinned({ conversations: [] })).toBeNull();
+  });
+  it('orderWithTree: pinned first, children under parents depth-first, unknown parents stay top-level in place', () => {
+    const ordered = m.orderWithTree(m.listRows(body), 'telegram:1');
+    expect(ordered.map((r) => [r.key, r.depth])).toEqual([['telegram:1', 0], ['telegram:3', 1], ['telegram:4', 2], ['telegram:5', 0], ['telegram:2', 0]]);
+  });
+  it('a cycle in the records never loops the view and still shows every row', () => {
+    const rows = m.listRows({ conversations: [
+      { id: 7, platform: 'telegram', title: 'A', parentConversationKey: 'telegram:8' },
+      { id: 8, platform: 'telegram', title: 'B', parentConversationKey: 'telegram:7' },
+    ] });
+    const ordered = m.orderWithTree(rows, null);
+    expect(ordered.map((r) => r.key).sort()).toEqual(['telegram:7', 'telegram:8']);
+  });
+  it('without the fields (feature off) nothing changes: no parent, no pin, flat order', () => {
+    const rows = m.listRows({ conversations: [{ id: 1, platform: 'telegram', title: 'x' }, { id: 2, platform: 'telegram', title: 'y' }] });
+    expect(rows.every((r) => r.parent === null)).toBe(true);
+    expect(m.orderWithTree(rows, null).map((r) => [r.key, r.depth])).toEqual([['telegram:1', 0], ['telegram:2', 0]]);
+  });
+});
