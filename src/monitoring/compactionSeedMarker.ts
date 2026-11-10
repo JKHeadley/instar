@@ -22,14 +22,20 @@ export function seedMarkerPath(stateDir: string, claudeSessionId: string): strin
   return path.join(stateDir, 'state', 'context-layers', '_seeded', `${claudeSessionId}.json`);
 }
 
-/** Read the marker; null when missing, malformed, or the id is not a plain session id. */
+/**
+ * Read the compaction seed marker; null when missing, malformed, the id is not a
+ * plain session id, or the marker was written by a fold's clear seed
+ * (`source: 'clear'`, clear-seed.sh): a fold's seed is not a compaction's
+ * recovery and must never stand the compaction path down.
+ */
 export function readSeedMarkerFile(stateDir: string, claudeSessionId: string | undefined): SeedMarker | null {
   if (!claudeSessionId) return null;
   const p = seedMarkerPath(stateDir, claudeSessionId);
   if (!p) return null;
   try {
-    const raw = JSON.parse(fs.readFileSync(p, 'utf-8')) as { seededAt?: unknown; epoch?: unknown; sessionId?: unknown };
+    const raw = JSON.parse(fs.readFileSync(p, 'utf-8')) as { seededAt?: unknown; epoch?: unknown; sessionId?: unknown; source?: unknown };
     if (raw.sessionId !== undefined && raw.sessionId !== claudeSessionId) return null;
+    if (raw.source === 'clear') return null;
     if (typeof raw.seededAt !== 'number' || !Number.isFinite(raw.seededAt)) return null;
     return { seededAt: raw.seededAt, epoch: typeof raw.epoch === 'string' ? raw.epoch : '' };
   } catch {

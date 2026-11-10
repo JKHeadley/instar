@@ -225,4 +225,11 @@ describe('readSeedMarkerFile', () => {
     expect(readSeedMarkerFile(stateDir, UUID)).toBeNull();
     expect(seedMarkerPath(stateDir, '../escape')).toBeNull();
   });
+
+  it("ignores a fold's clear-seed marker, which is not a compaction's recovery", () => {
+    write(UUID, JSON.stringify({ sessionId: UUID, epoch: 'fold-1', source: 'clear', seededAt: 123 }));
+    expect(readSeedMarkerFile(stateDir, UUID)).toBeNull();
+    write(UUID, JSON.stringify({ sessionId: UUID, epoch: '', source: 'compact', seededAt: 124 }));
+    expect(readSeedMarkerFile(stateDir, UUID)).toEqual({ seededAt: 124, epoch: '' });
+  });
 });

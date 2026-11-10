@@ -117,6 +117,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/clear-seed.sh\"",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "InstructionsLoaded": [

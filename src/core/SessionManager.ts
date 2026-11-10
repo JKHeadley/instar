@@ -791,6 +791,10 @@ export function isUnplacedPeerOriginSession(session: Pick<Session, 'triggeredBy'
   return name.includes('msg-warm-') || name.includes('msg-spawn-');
 }
 
+/** Control commands Instar itself may inject into a session's TUI (closed set). */
+export type InternalControlCommand = '/compact' | '/clear';
+export const INTERNAL_CONTROL_COMMANDS: readonly InternalControlCommand[] = ['/compact', '/clear'];
+
 export class SessionManager extends EventEmitter {
   private pendingHeadlessSpawns = 0;
   private pendingScheduledSpawns = 0;
@@ -9390,12 +9394,14 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * false `unknown`. They still serialize through the same physical-effect
    * lock as deliveries, preserving the one-writer pane invariant.
    *
-   * This is intentionally closed to the sole measured command used by context
-   * exhaustion recovery. It is in-process only and bypasses InputGuard because
-   * the command is authored by Instar, not by a user/topic.
+   * This is intentionally closed to the two commands Instar authors: `/compact`
+   * (context exhaustion recovery) and `/clear` (the fold ladder's clear-and-seed
+   * rung, context-budget-layered-summaries §9.2). It is in-process only and
+   * bypasses InputGuard because the command is authored by Instar, not by a
+   * user/topic.
    */
-  injectInternalControlCommand(tmuxSession: string, conversationId: string, command: '/compact'): boolean {
-    if (command !== '/compact' || !conversationId || !this.isSessionAlive(tmuxSession)) return false;
+  injectInternalControlCommand(tmuxSession: string, conversationId: string, command: InternalControlCommand): boolean {
+    if (!INTERNAL_CONTROL_COMMANDS.includes(command) || !conversationId || !this.isSessionAlive(tmuxSession)) return false;
     const framework = this.getSessionFramework(tmuxSession);
     if (this.stageBActivation.active && framework === 'codex-cli') {
       if (!this.trackedPhysicalEffects || !this.inboundDeliveries) return false;

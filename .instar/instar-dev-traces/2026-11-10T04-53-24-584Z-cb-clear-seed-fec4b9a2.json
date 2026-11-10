@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "cb-clear-seed",
+  "sessionId": "9129212e-3c5a-416c-b4f4-528c322dbef1",
+  "timestamp": "2026-11-10T04:53:24.584Z",
+  "artifactPath": "upgrades/side-effects/cb-clear-seed.md",
+  "artifactSha256": "dde791469c980b1f6e8c2950151eb5cddc8c77a1ca064404272f701d51ed8859",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/SessionManager.ts",
+    "src/monitoring/ContextCompactionControl.ts",
+    "src/monitoring/clearSeedPointer.ts",
+    "src/monitoring/compactionSeedMarker.ts",
+    "src/templates/hooks/settings-template.json",
+    "tests/unit/CompactionSentinel-seed-carrier.test.ts",
+    "tests/unit/clear-seed-hook.test.ts",
+    "tests/unit/session-manager-pending-inject-wiring.test.ts",
+    "upgrades/next/cb-clear-seed.md",
+    "upgrades/side-effects/cb-clear-seed.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "fleet-wide settings and hook migration plus a widened in-process control-command chokepoint",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
