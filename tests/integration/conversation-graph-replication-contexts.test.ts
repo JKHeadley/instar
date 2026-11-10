@@ -59,7 +59,7 @@ async function serve(runtime:ConversationGraphReplicationRuntime){
  const host=Object.values(os.networkInterfaces()).flat().find(row=>row&&row.family==='IPv4'&&!row.internal&&/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(row.address))?.address;if(!host)throw new Error('private-interface-required');
  return `http://${host}:${address.port}`;
 }
-async function exerciseHistoricalContext(count:number,requireLarge:boolean){
+async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPages=requireLarge?25:1){
   const fixture=await setupGraphRuntimeFixture(),{f,runtime:origin,peer:oldPeer,service,witness,managers}=fixture;
   await origin.prepareNativeTailClosure();
   const headerId=newHeaderId(),effort={kind:'effort' as const,id:crypto.randomUUID()};let predecessorHash:string|null=null;
@@ -141,7 +141,7 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean){
   expect(restarted.runtime.readiness().retained).toBe(false);
   const bodyRecovery=vi.spyOn(witness,'recover').mockRejectedValue(new Error('independent witness application-body endpoint unavailable'));let repairedReady=false;try{repairedReady=await restarted.runtime.refreshReadiness();}finally{bodyRecovery.mockRestore();}
   expect(repairedReady,(restarted.runtime as unknown as {lastReadinessFailure:string}).lastReadinessFailure).toBe(true);
-  expect(contextPages).toBeGreaterThan(requireLarge?24:0); // >3MiB actually transferred in 128KiB signed pages
+  expect(contextPages).toBeGreaterThanOrEqual(minPages); // the context actually transferred in 128KiB signed pages
   const repaired=restarted.runtime.source.repairRecord(records[0].packet.eventId)!;
   expect(canonicalJson(repaired.certificate)).toBe(originalCertificate);
   expect(restarted.runtime.source.recordsForRepair()).toHaveLength(count);
@@ -153,5 +153,8 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean){
 }
 describe('bounded shared historical proof custody',()=>{
  it('smoke: imports and repairs real eight-row history through the same native/activation/signed-peer ceremony',()=>exerciseHistoricalContext(8,false),120000);
- it('imports, restarts and signed-peer repairs a >3MiB actual historical context with one shared proof file',()=>exerciseHistoricalContext(4000,true),3600000);
+ it('repairs a multi-page historical context across restart through the signed-peer ceremony',()=>exerciseHistoricalContext(300,false,2),600000);
+ // Scale proof: about 30 minutes, longer than a whole Local Verify integration shard. Opt-in like the
+ // other graph scale proofs; the eight-row smoke above runs the same ceremony by default.
+ it.runIf(process.env.GRAPH_HISTORICAL_CONTEXT_SCALE_PROOF==='1')('imports, restarts and signed-peer repairs a >3MiB actual historical context with one shared proof file',()=>exerciseHistoricalContext(4000,true),3600000);
 });
