@@ -533,6 +533,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   StallTriageNurse: { pending: 'contract-wave-2' }, // closed stall-triage diagnosis label
   CommitmentSentinel: { pending: 'contract-wave-2' }, // closed commitment-detected verdict + structured envelope
   PresenceProxy: { pending: 'contract-wave-2' }, // closed tier-3 stall verdict
+  ChiefOfStaffLoop: { pending: 'contract-wave-2' }, // closed project verdict (moving/stalled/drifting/claims-done/waiting-on-user/unknown) + cited evidence ids
   ProjectDriftChecker: { pending: 'contract-wave-2' }, // closed on-project verdict
   TemporalCoherenceChecker: { pending: 'contract-wave-2' }, // closed temporal-coherence verdict
   SessionWatchdog: { pending: 'contract-wave-2' }, // closed stuck verdict

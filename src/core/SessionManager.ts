@@ -7728,11 +7728,13 @@ rm()  { "${shimRunner}" rm  "$@"; }
   async spawnInteractiveSession(...args: Parameters<SessionManager['spawnInteractiveSessionUnlocked']>): Promise<string> {
     const options = args[2];
     const ref = conversationRefOf({ telegramTopicId: options?.telegramTopicId, memoryPlaceKey: options?.memoryPlaceKey, memoryPlace: options?.memoryPlace });
-    if (!ref) return this.spawnInteractiveSessionUnlocked(...args);
+    // `conversationLockHeld`: the caller already holds this conversation's lock (the lock is not re-entrant),
+    // e.g. the Chief of Staff executor spawning inside withConversationLock — spawn directly.
+    if (!ref || options?.conversationLockHeld) return this.spawnInteractiveSessionUnlocked(...args);
     return this.withConversationLock(ref, () => this.spawnInteractiveSessionUnlocked(...args));
   }
 
-  async spawnInteractiveSessionUnlocked(initialMessage?: string, name?: string, options?: { shapedForAudience?: string; reshapeForAudience?: (kind: string, message: string) => string; telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
+  async spawnInteractiveSessionUnlocked(initialMessage?: string, name?: string, options?: { conversationLockHeld?: boolean; shapedForAudience?: string; reshapeForAudience?: (kind: string, message: string) => string; telegramTopicId?: number; slackChannelId?: string; slackThreadTs?: string; resumeSessionId?: string; framework?: IntelligenceFramework; codexLocalProvider?: 'ollama' | 'lmstudio'; defaultModel?: string;
     /** durable-conversation-identity §7: the authenticated bootstrap
      *  conversation ids this session may open durable state on (a Slack spawn
      *  passes its minted conversation id). Falls back to [telegramTopicId]. */

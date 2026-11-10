@@ -24,10 +24,11 @@ describe('Chief of Staff loop wiring', () => {
     expect(server).toContain('operatorLeaseLive: () => _cosLoop?.lease().live ?? false');
     expect(server).toContain('actionGate: (conversationKey) => _cosLoop?.actionGate(conversationKey)');
   });
-  it('the run executor registers with the CoS fields and spawns through the unlocked entry point', () => {
+  it('the run executor registers with the CoS fields and spawns without re-taking the conversation lock it already holds', () => {
     expect(server).toContain('cosNoRespawn: true, idempotencyKey }');
     expect(server).toContain('{ unlocked: true });');
-    expect(server).toContain('spawnOpts?.unlocked ? sessionManager.spawnInteractiveSessionUnlocked.bind(sessionManager)');
+    expect(server).toContain('...(spawnOpts?.unlocked ? { conversationLockHeld: true } : {}),');
+    expect(read('src/core/SessionManager.ts')).toContain('if (!ref || options?.conversationLockHeld) return this.spawnInteractiveSessionUnlocked(...args);');
     expect(read('src/server/routes.ts')).toContain("...(body.cosNoRespawn === true ? { cosNoRespawn: true } : {})");
   });
   it('second-pass fixes: one-reader rule fails CLOSED, an orphan run is compensated, a lease-expired CoS run is not revived', () => {

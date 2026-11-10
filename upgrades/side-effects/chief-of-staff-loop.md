@@ -82,3 +82,7 @@ Main gained three ratchets after this PR was cut: every LLM component must be cl
 
 ## Post-rebase addendum 2: capability discovery
 The status routes (`GET /chief-of-staff`, `GET /chief-of-staff/projects/:key`) are now classified in the capability index as `chiefOfStaff`, so an agent asked "is anything stalled?" finds them in `/capabilities` instead of reading topics one by one; its build reports whether the loop is wired and the lease live, and `enabled: false` where the feature is off. Read-only, no behaviour change.
+
+## Post-rebase addendum 3: parser contract and the lock-held spawn
+- `ChiefOfStaffLoop` is classified on main's parser-contract axis as pending contract wave 2 (it parses a closed verdict set, failing closed to `unknown`) and named in that ratchet's pinned pending baseline.
+- The executor spawns inside `withConversationLock`, which is not re-entrant. This PR first did that by binding the unlocked SessionManager entry in place of the locked one, which moved the topic spawn out of the literal shape the topic-profile wiring ratchet pins. It now passes `conversationLockHeld: true` and `spawnInteractiveSession` skips the lock it would otherwise take: same behaviour, the call keeps its pinned shape, and the unlocked entry stays the only place that spawns.

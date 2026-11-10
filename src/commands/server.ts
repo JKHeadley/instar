@@ -1858,7 +1858,9 @@ export async function spawnSessionForTopic(
   // fail-open in the resolver; undefined = no --effort, today's behavior).
   const profileEffort = resolvedProfile?.effort;
 
-  const newSessionName = await (spawnOpts?.unlocked ? sessionManager.spawnInteractiveSessionUnlocked.bind(sessionManager) : sessionManager.spawnInteractiveSession.bind(sessionManager))(bootstrapMessage, sessionName, {
+  const newSessionName = await sessionManager.spawnInteractiveSession(bootstrapMessage, sessionName, {
+    // The Chief of Staff executor spawns inside withConversationLock (not re-entrant): tell the spawn the lock is held.
+    ...(spawnOpts?.unlocked ? { conversationLockHeld: true } : {}),
     shapedForAudience,
     // A grant can land between shaping this message and the spawn: the entry reshapes it under the lock.
     reshapeForAudience: (kind, message) => (['place', 'none'].includes(kind) && userContextBlock && reducedUserContext
