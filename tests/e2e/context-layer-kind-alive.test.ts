@@ -78,7 +78,7 @@ describe('context layer kind — alive on the production init path', () => {
     } finally { journal.close(); }
   });
 
-  it('with production\'s Phase 0 dependencies (no sentinel heartbeat, no topic rows) a fold is still refused, kind or not', async () => {
+  it('with production\'s Phase 0 dependencies (no sentinel heartbeat yet at boot, no topic rows) a fold is still refused, kind or not', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ctx-layer-prod-')); dirs.push(stateDir);
     const replicatedKindRegistry = new ReplicatedKindRegistry();
     const { CONTEXT_LAYER_KIND_REGISTRATION } = await import('../../src/monitoring/contextLayerKind.js');
@@ -93,7 +93,8 @@ describe('context layer kind — alive on the production init path', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
     const build = src.indexOf('const built = buildFoldCoordinator({');
     const call = src.slice(build, src.indexOf('});', build));
-    expect(call).not.toContain('sentinelHeartbeatFresh');
+    // The heartbeat is read lazily from the sentinel, which is built after the sweep and has not ticked at boot.
+    expect(call).toContain('sentinelHeartbeatFresh: () => _contextBudgetSentinel?.heartbeatFresh() ?? false');
     expect(call).toContain('topicRowsPresent: () => false');
   });
 

@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "cb-sentinel",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T12:17:23.523Z",
+  "artifactPath": "upgrades/side-effects/cb-sentinel.md",
+  "artifactSha256": "5e3d660a79f1acb5a724c1c5fe0d3183d608b23512dcfa7cb47859c5fcae9277",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/monitoring/ContextBudgetSentinel.ts",
+    "src/monitoring/FoldCoordinator.ts",
+    "src/monitoring/contextBudgetSentinelBoot.ts",
+    "src/monitoring/engineCheckpoint.ts",
+    "src/monitoring/foldCarriers.ts",
+    "src/monitoring/guardManifest.ts",
+    "src/monitoring/selfaction/policies.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/context-budget-sentinel-lifecycle.test.ts",
+    "tests/e2e/context-layer-kind-alive.test.ts",
+    "tests/integration/context-budget-sentinel-quarantine.test.ts",
+    "tests/unit/ContextBudgetSentinel.test.ts",
+    "upgrades/next/cb-sentinel.md",
+    "upgrades/side-effects/cb-sentinel.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "A sentinel with authority to end a session and release a conversation's holds; ships dark; fails toward containment",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

@@ -984,6 +984,8 @@ let _agentIdentityDeps: import('../core/AgentIdentityRuntime.js').AgentIdentityR
 let _inboundIdLedger: import('../threadline/InboundIdLedger.js').InboundIdLedgerController | null = null;
 /** context-budget-layered-summaries §9.3: the boot-built fold coordinator (single writer of fold records). */
 let _foldCoordinator: import('../monitoring/FoldCoordinator.js').FoldCoordinator | null = null;
+/** The ContextBudgetSentinel (context-budget §7.8): dev-gated; its heartbeat is a fold precondition. */
+let _contextBudgetSentinel: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null = null;
 /** context-budget-layered-summaries §10: the egress fold hold, checked at the shared outbound chokepoints. */
 let _foldHolds: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null = null;
 /** True while the listener daemon owns inbound relay handling (no capability then). */
@@ -13203,6 +13205,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           return q?.enabled === true && q?.dryRun === false && foldPoolGateOpen(livePool());
         },
         topicRowsPresent: () => false, // the relay-path row carrier and watermark arrive in Phase 1 (§14)
+        // No live sentinel, no fold (§7.8): read lazily, the sentinel is built after the sweep.
+        sentinelHeartbeatFresh: () => _contextBudgetSentinel?.heartbeatFresh() ?? false,
         // The skew rule (§14): only a build that registered the layer kind may fold.
         layerKindPresent: () => replicatedKindRegistry.isReplicatedKind('context-layer-record'),
       });
@@ -13258,6 +13262,50 @@ export async function startServer(options: StartOptions): Promise<void> {
           reason: q.reason ?? 'crashed past the point of no return',
           impact: "That conversation's containment (hold, markers) stays in force until the rollback runs.",
         });
+      }
+      for (const t of swept.torn) {
+        DegradationReporter.getInstance().report({
+          feature: 'FoldCoordinator.bootSweep',
+          primary: 'Every fold carrier is released by its fold record\'s terminal transition',
+          fallback: `Kept every carrier of fold ${t.foldId} (topic ${t.topicKey}): its record is unreadable`,
+          reason: 'A fold record file exists but cannot be read (torn or corrupt)',
+          impact: "That conversation's containment stays in force; the sentinel raises it to the operator.",
+        });
+      }
+      // ── ContextBudgetSentinel (§7.8; Phase 0 core): quarantine reconciliation,
+      // torn-record escalation, the checkpoint grace pass. Ships DARK
+      // (`contextBudget.sentinel.enabled`, default false): it can end a session,
+      // so it is turned on deliberately (the test agent's Phase 0 verification),
+      // never by the dev-agent default. Dark ⇒ no heartbeat ⇒ no fold can begin.
+      if (liveConfig.get<boolean>('contextBudget.sentinel.enabled', false) === true) {
+        const { ContextBudgetSentinel } = await import('../monitoring/ContextBudgetSentinel.js');
+        const { productionSentinelSessionDeps } = await import('../monitoring/contextBudgetSentinelBoot.js');
+        const { FoldRecordStore } = await import('../monitoring/FoldCoordinator.js');
+        const { governor: sentinelGovernor, consumeAdmissionToken: sentinelConsume } = await import('../monitoring/selfaction/governor.js');
+        const sentinelHandle = sentinelGovernor.for('context-budget-quarantine-reconcile');
+        const poolLiveNow = () => { const p = livePool(); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; };
+        const sessionDeps = productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath });
+        _contextBudgetSentinel = new ContextBudgetSentinel({
+          stateDir: config.stateDir,
+          machineId: built.holderId,
+          coordinator: built.coordinator,
+          store: new FoldRecordStore(config.stateDir),
+          // The coordinator's own rule (foldCoordinatorBoot): pool placement live ⇒ unknown; else the
+          // topic's host, or this machine's own record (single machine / dark pool).
+          ownsFold: (rec) => poolLiveNow() ? 'unknown' : (sessionDeps.candidates(rec.topicKey).length > 0 || rec.machineId === built.holderId),
+          ownsTopic: () => poolLiveNow() ? 'unknown' : true,
+          ...sessionDeps,
+          attention: async (n) => {
+            if (!telegram) throw new Error('no attention channel'); // kept in the sentinel's durable outbox and retried
+            await telegram.createAttentionItem({ ...n, category: 'context-budget', sourceContext: 'context-budget-sentinel' });
+          },
+          admit: (target, opts) => sentinelHandle.admit(target, opts),
+          consumeToken: sentinelConsume,
+          audit: (e) => { if (e.event !== 'gate:attempt-finished') console.log(pc.dim(`  [context-budget-sentinel] ${e.event}${e.reason ? `: ${e.reason}` : ''}`)); },
+        });
+        const sentinelRef = _contextBudgetSentinel;
+        setTimeout(() => { void sentinelRef.tick(); }, 30_000).unref?.();
+        setInterval(() => { void sentinelRef.tick(); }, 5 * 60_000).unref?.();
       }
     } catch (err) {
       console.error(`[server] fold boot sweep failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
