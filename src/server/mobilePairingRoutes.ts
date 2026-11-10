@@ -2317,6 +2317,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/accounts$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
     { method: 'GET', re: /^\/mobile\/spend$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
     { method: 'GET', re: /^\/mobile\/resources$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
+    // Unified usage ledger (docs/specs/unified-usage-ledger.md, Slice 4): owner phone only, trimmed.
+    { method: 'GET', re: /^\/mobile\/usage$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'capacity-reads' },
     // Native Plans, What I've learned about you and Other agents (docs/specs/mobile-native-plans-people.md):
     // read-only trimmed summaries, owner phones only, with one shared bucket of their own (they read peers).
     { method: 'GET', re: /^\/mobile\/plans$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'plans-people-reads' },

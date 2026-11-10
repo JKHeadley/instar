@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-slice4",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-10T21:47:58.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-slice4.md",
+  "artifactSha256": "827d63f87ca06dc669d3888566e4c45166d2783b97664aa576b08854e8fa7737",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "src/monitoring/UsageLedger.ts",
+    "src/monitoring/UsagePoolPuller.ts",
+    "src/monitoring/usageReadModel.ts",
+    "src/server/AgentServer.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/mobilePairingRoutes.ts",
+    "src/server/routes.ts",
+    "src/server/usageRoutes.ts",
+    "tests/e2e/unified-usage-ledger-alive.test.ts",
+    "tests/unit/UsageLedger.slice4.test.ts",
+    "tests/unit/capabilities-discoverability.test.ts",
+    "tests/unit/mobile-session-terminal.test.ts",
+    "upgrades/side-effects/unified-usage-ledger-slice4.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Read routes, replication and snapshot over the Tier-2 usage store; read-only, dev-gated",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

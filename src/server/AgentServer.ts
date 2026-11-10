@@ -279,6 +279,7 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { UsagePoolPuller } from '../monitoring/UsagePoolPuller.js';
 import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
@@ -778,6 +779,8 @@ export class AgentServer {
   private tokenLedger: TokenLedger | null = null;
   private usageLedger: UsageLedger | null = null;
   private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
+  private usageRouteDeps: import('./usageRoutes.js').UsageRouteDeps | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private undatedActionResurfacer: UndatedActionResurfacer | null = null;
   private blockerLifecycleService: BlockerLifecycleService | null = null;
@@ -2427,11 +2430,71 @@ export class AgentServer {
         ledger.addCodexRoot(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), process.env.CODEX_HOME ? 'server-env' : 'default');
         setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
         this.usageLedger = ledger;
+        // Slice 4: the backed-up snapshot. Imported only when the live database is empty;
+        // written hourly (never while empty) for BackupManager to copy.
+        const snapshotPath = path.join(options.config.stateDir, 'server-data', 'usage-ledger.snapshot.db');
+        try {
+          const livePeers = new Set((options.resolvePeerUrls?.() ?? []).map(p => p.machineId));
+          const imp = ledger.importSnapshotIfEmpty(snapshotPath, { isLivePoolMember: (id) => livePeers.has(id) });
+          if (imp.outcome !== 'none') console.log(`[instar] usage-ledger snapshot: ${imp.outcome}${imp.fromMachine ? ` (from ${imp.fromMachine})` : ''}`);
+        } catch (err) { /* @silent-fallback-ok: a snapshot that cannot be read leaves the live ledger to rebuild from source files; the outcome is in coverage */
+          console.warn('[instar] usage-ledger snapshot import failed (non-fatal):', err);
+        }
+        // Equivalent-cost prices come from the manifest that ships INSIDE the instar package
+        // (its scripts/ folder is published), not the agent's project dir — an agent install
+        // has no source checkout, so the project dir has no manifest. Canonical points only.
+        const usageThisDir = path.dirname(fileURLToPath(import.meta.url));
+        const usagePkgRoot = [path.resolve(usageThisDir, '..', '..'), path.resolve(usageThisDir, '..', '..', '..')]
+          .find(d => fs.existsSync(path.join(d, 'scripts', 'routing-prices.manifest.json'))) ?? projectDir;
+        const usagePrices = new RoutingPriceAuthority({ projectDir: usagePkgRoot, stateDir: options.config.stateDir });
+        const isUsageHolder = (): boolean => {
+          try { return options.coordinator?.enabled ? options.coordinator.getSyncStatus().holdsLease : true; } catch { return false; }
+        };
+        const peerTarget = (machineId: string) => (options.resolvePeerUrls?.() ?? []).find(p => p.machineId === machineId) ?? null;
+        const peerGet = async (machineId: string, route: string): Promise<{ status: number; body: unknown } | null> => {
+          const peer = peerTarget(machineId);
+          if (!peer) return null;
+          const r = await poolPeerFetch(options.recordRopeResult, peer, route, {
+            headers: { Authorization: `Bearer ${options.config.authToken}`, 'x-usage-proxied': '1' },
+            signal: AbortSignal.timeout(8_000),
+          });
+          return { status: r.status, body: await r.json().catch(() => null) };
+        };
+        this.usagePuller = new UsagePoolPuller({
+          ledger,
+          peers: () => (options.resolvePeerUrls?.() ?? []).map(p => ({ machineId: p.machineId })),
+          fetchPeer: async (machineId, route) => {
+            const r = await peerGet(machineId, route);
+            if (!r) throw new Error('no known address for that machine');
+            if (r.status !== 200) throw new Error(`the machine answered HTTP ${r.status}`);
+            return r.body;
+          },
+          isHolder: isUsageHolder,
+        });
+        this.usagePuller.start();
+        void this.usagePuller.pullAll();
+        this.usageRouteDeps = {
+          ledger,
+          prices: usagePrices,
+          puller: this.usagePuller,
+          isHolder: isUsageHolder,
+          fromHolder: async (route) => {
+            const holder = options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : null;
+            if (!holder) return null;
+            return peerGet(holder, route).catch(() => null);
+          },
+          fromPeer: (machineId, route) => peerGet(machineId, route),
+          bearerOk: () => true,
+        } as import('./usageRoutes.js').UsageRouteDeps;
         let ticks = 0;
         this.usageLedgerTimer = setInterval(() => {
           try {
             this.usageLedger?.scanTick();
-            if (++ticks % 60 === 0) { this.usageLedger?.prune(); this.usageLedger?.dropMissingCheckpoints(); }
+            if (++ticks % 60 === 0) {
+              this.usageLedger?.prune();
+              this.usageLedger?.dropMissingCheckpoints();
+              this.usageLedger?.writeSnapshot(snapshotPath);
+            }
           } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
             console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
           }
@@ -5848,6 +5911,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      usageRouteDeps: () => this.usageRouteDeps,
       // Zero-spend live codex quota (app-server) for GET /codex/usage. Wired
       // here — the composition root — so tests that build routes with a bare
       // ctx stay rollout-only and never spawn a real `codex` subprocess.
@@ -9146,6 +9210,7 @@ export class AgentServer {
       this.revertDetector = null;
     }
     if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
+    this.usagePuller?.stop(); this.usagePuller = null;
     if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {

@@ -24,6 +24,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { NativeModuleHealer } from '../memory/NativeModuleHealer.js';
+import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 export type UsageSource =
   | 'claude-transcript' | 'codex-rollout' | 'intelligence-call'
@@ -211,6 +212,22 @@ const SCHEMA = [
     updated_at INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_pairs_state ON pairs(state)`,
+  // Slice 4: peers' replicated rows (the lease holder's pooled copy) and per-peer cursors.
+  `CREATE TABLE IF NOT EXISTS pool_rollup_hour (\n  ${keyDdl(HOUR_KEY)},\n  ${SUM_DDL},\n  change_seq INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (${HOUR_KEY.join(', ')}))`,
+  `CREATE TABLE IF NOT EXISTS pool_rollup_day (\n  ${keyDdl(DAY_KEY)},\n  ${SUM_DDL},\n  change_seq INTEGER NOT NULL DEFAULT 0,\n  frozen INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (${DAY_KEY.join(', ')}))`,
+  `CREATE TABLE IF NOT EXISTS pool_rollup_session_day (\n  ${keyDdl(SESSION_DAY_KEY)},\n  ${SUM_DDL},\n  change_seq INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (${SESSION_DAY_KEY.join(', ')}))`,
+  `CREATE INDEX IF NOT EXISTS idx_pool_hour_bm ON pool_rollup_hour(bucket, machine)`,
+  `CREATE INDEX IF NOT EXISTS idx_pool_day_bm ON pool_rollup_day(bucket, machine)`,
+  `CREATE INDEX IF NOT EXISTS idx_pool_sd ON pool_rollup_session_day(bucket, session_id)`,
+  `CREATE TABLE IF NOT EXISTS pool_bindings (
+    session_id TEXT NOT NULL, framework TEXT NOT NULL, session_kind TEXT NOT NULL, cwd TEXT, topic_id TEXT, job_slug TEXT,
+    run_id TEXT, account_id TEXT, machine_id TEXT NOT NULL, valid_from INTEGER NOT NULL, valid_to INTEGER,
+    PRIMARY KEY (session_id, valid_from)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pool_peers (
+    machine_id TEXT PRIMARY KEY, generation_id TEXT, last_seq INTEGER NOT NULL DEFAULT 0, last_pull_at INTEGER,
+    warming INTEGER NOT NULL DEFAULT 1, invalid_rows INTEGER NOT NULL DEFAULT 0, generation_changes INTEGER NOT NULL DEFAULT 0
+  )`,
 ];
 
 /** Claude encodes a project dir name by replacing every non-alphanumeric character with '-'. */
@@ -369,6 +386,54 @@ export function normalizeFramework(f: string | null | undefined): UsageFramework
   if (v === 'pi' || v.startsWith('pi-') || v.includes('pi-cli')) return 'pi-cli';
   return 'api';
 }
+
+const PAGE_ROWS = 5_000;
+const PAGE_BYTES = 5 * 1024 * 1024;
+const EXPORT_TABLES = ['rollup_hour', 'rollup_day', 'rollup_session_day', 'session_bindings'] as const;
+const POOL_TABLE: Record<string, string> = {
+  rollup_hour: 'pool_rollup_hour', rollup_day: 'pool_rollup_day', rollup_session_day: 'pool_rollup_session_day', session_bindings: 'pool_bindings',
+};
+
+export interface ExportRow { table: string; row: Record<string, unknown> }
+export interface ExportPage {
+  machineId: string;
+  generationId: string;
+  /** When this database was imported from a snapshot (0 = never): the holder drops pooled rows from here on a generation change. */
+  snapshotAt: number;
+  rows: ExportRow[];
+  lastSeq: number;
+  more: boolean;
+}
+interface PeerCursor {
+  machine_id: string; generation_id: string | null; last_seq: number; last_pull_at: number | null;
+  warming: number; invalid_rows: number; generation_changes: number;
+}
+export type AggregateDim = 'machine' | 'framework' | 'model' | 'session_kind' | 'topic' | 'job' | 'run' | 'feature' | 'session_id';
+export interface AggregateRow {
+  bucket: number;
+  model: string | null;
+  dims: Record<string, string | null>;
+  calls: number;
+  input: number; cacheRead: number; cacheWrite: number; output: number; reasoning: number;
+  /** Calls that did not report input or output (a total over them is partial). */
+  missingAny: number;
+  reportedActualUsd: number;
+  reportedPlanRateUsd: number;
+}
+export interface SnapshotRules {
+  /** Is this id a predecessor of THIS machine in the identity-change ledger? */
+  isPredecessor?: (machineId: string) => boolean;
+  /** Is this id a live pool member right now (mesh state at open)? */
+  isLivePoolMember?: (machineId: string) => boolean;
+  /** Does a pool holder already hold pooled rows for this id? */
+  poolHasRowsFor?: (machineId: string) => boolean;
+}
+export type SnapshotImport = {
+  outcome: 'none' | 'ignored-live-authoritative' | 'unreadable' | 'refused-other-agent' | 'refused-live-member' | 'imported' | 'imported-frozen';
+  fromMachine?: string;
+  snapshotAt?: number;
+  detail?: string;
+};
 
 export class UsageLedger {
   private readonly db: BetterSqliteDatabase;
@@ -586,6 +651,13 @@ export class UsageLedger {
     const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
     // Bindings from queued one-shots must exist before their transcripts are scanned.
     try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
+    if (this.pendingDetailRescan) {
+      this.pendingDetailRescan = false;
+      // After a snapshot import: content before each checkpoint is re-read for detail only (never counted).
+      for (const { path: p, root } of this.db.prepare(`SELECT path, root FROM checkpoints WHERE extra IS NULL`).all() as { path: string; root: string }[]) {
+        try { this.ingestClaudeFile(root, p, { rescanForDetail: true }); } catch { /* @silent-fallback-ok: a detail rescan miss leaves totals intact; only per-request detail is absent */ }
+      }
+    }
     if (this.roots.length === 0 && this.codexRoots.length === 0) return report;
     const queues = [
       ...this.roots.map(r => ({ r, kind: 'claude' as const, files: this.listRootFiles(r.root).filter(f => this.fileChanged(f)) })),
@@ -1157,6 +1229,329 @@ export class UsageLedger {
     out.invocations_dropped = this.queueDropped;
     out.invocations_queued = this.invocationQueue.length;
     return out;
+  }
+
+  // ── Slice 4: replication stream (served by every machine) ───────────
+
+  /**
+   * One page of this machine's own rollup and binding rows changed after `afterSeq`, in
+   * change_seq order (spec: Pool view). Pooled and frozen rows are never exported.
+   */
+  exportPage(afterSeq: number, limit = PAGE_ROWS): ExportPage {
+    const cap = Math.max(1, Math.min(limit, PAGE_ROWS));
+    // A batch shares one change_seq across many rows, so a page only ever ends on a seq
+    // boundary: rows at or below `bound` are complete in every table.
+    let bound = Number.POSITIVE_INFINITY;
+    const fetched: ExportRow[] = [];
+    for (const t of EXPORT_TABLES) {
+      const rows = this.db.prepare(`SELECT * FROM ${t} WHERE change_seq > ? ORDER BY change_seq LIMIT ?`).all(afterSeq, cap) as Record<string, unknown>[];
+      if (rows.length === cap) bound = Math.min(bound, (rows[rows.length - 1].change_seq as number) - 1);
+      for (const row of rows) fetched.push({ table: t, row });
+    }
+    let candidates = fetched.filter(r => (r.row.change_seq as number) <= bound);
+    if (candidates.length === 0 && fetched.length > 0) {
+      // One batch larger than a page: send that whole seq, uncapped.
+      const seq = Math.min(...fetched.map(r => r.row.change_seq as number));
+      candidates = [];
+      for (const t of EXPORT_TABLES) {
+        for (const row of this.db.prepare(`SELECT * FROM ${t} WHERE change_seq = ?`).all(seq) as Record<string, unknown>[]) candidates.push({ table: t, row });
+      }
+    }
+    candidates.sort((a, b) => (a.row.change_seq as number) - (b.row.change_seq as number));
+    // Apply the row and byte caps, again only at seq boundaries.
+    const page: ExportRow[] = [];
+    let bytes = 0;
+    let i = 0;
+    while (i < candidates.length) {
+      const seq = candidates[i].row.change_seq as number;
+      let j = i;
+      let groupBytes = 0;
+      while (j < candidates.length && candidates[j].row.change_seq === seq) { groupBytes += JSON.stringify(candidates[j].row).length; j++; }
+      if (page.length > 0 && (page.length + (j - i) > cap || bytes + groupBytes > PAGE_BYTES)) break;
+      for (let k = i; k < j; k++) page.push(candidates[k]);
+      bytes += groupBytes;
+      i = j;
+    }
+    const lastSeq = page.length ? (page[page.length - 1].row.change_seq as number) : afterSeq;
+    const maxSeq = Number(this.metaGet('change_seq') ?? '0');
+    return {
+      machineId: this.opts.machineId,
+      generationId: this.generationId,
+      snapshotAt: Number(this.metaGet('snapshot_imported_at') ?? '0'),
+      rows: page,
+      lastSeq,
+      more: lastSeq < maxSeq && page.length > 0,
+    };
+  }
+
+  /**
+   * Apply one page pulled from a peer (lease holder only). Rows replace by key, so a
+   * re-read page is idempotent; the cursor advances only after the page commits. A peer
+   * may only write rows under its own machine id; invalid rows are skipped and counted,
+   * and the cursor still advances past them.
+   */
+  applyPeerPage(peerMachineId: string, page: ExportPage): { applied: number; skipped: number; reset: boolean } {
+    let applied = 0, skipped = 0, reset = false;
+    const tx = this.db.transaction(() => {
+      const cur = this.db.prepare('SELECT * FROM pool_peers WHERE machine_id = ?').get(peerMachineId) as PeerCursor | undefined;
+      let after = cur?.last_seq ?? 0;
+      if (cur && cur.generation_id && cur.generation_id !== page.generationId) {
+        // The peer's database was recreated or imported: drop its pooled rows from its
+        // snapshot time on (older hour/session detail survives) and re-pull from zero.
+        const cut = page.snapshotAt || 0;
+        for (const t of ['pool_rollup_hour', 'pool_rollup_day', 'pool_rollup_session_day']) {
+          this.db.prepare(`DELETE FROM ${t} WHERE machine = ? AND bucket >= ?${t === 'pool_rollup_day' ? ' AND frozen = 0' : ''}`).run(peerMachineId, cut);
+        }
+        this.db.prepare('UPDATE pool_peers SET generation_id = ?, last_seq = 0, warming = 1, generation_changes = generation_changes + 1 WHERE machine_id = ?')
+          .run(page.generationId, peerMachineId);
+        after = 0;
+        reset = true;
+        return;
+      }
+      if (!cur) {
+        this.db.prepare('INSERT INTO pool_peers (machine_id, generation_id, last_seq, warming) VALUES (?, ?, 0, 1)').run(peerMachineId, page.generationId);
+      }
+      for (const { table, row } of page.rows) {
+        const ok = this.applyPeerRow(peerMachineId, table, row);
+        if (ok) applied++; else skipped++;
+      }
+      const last = Math.max(after, Number.isFinite(page.lastSeq) ? page.lastSeq : after);
+      this.db.prepare('UPDATE pool_peers SET last_seq = ?, last_pull_at = ?, warming = ?, invalid_rows = invalid_rows + ? WHERE machine_id = ?')
+        .run(last, this.opts.now(), page.more ? 1 : 0, skipped, peerMachineId);
+    });
+    tx();
+    return { applied, skipped, reset };
+  }
+
+  private applyPeerRow(peer: string, table: string, row: Record<string, unknown>): boolean {
+    const target = POOL_TABLE[table];
+    if (!target) return false;
+    if (table === 'session_bindings') {
+      if (row.machine_id !== peer || typeof row.session_id !== 'string' || row.session_id.length > MAX_STR) return false;
+      if (!Number.isInteger(row.valid_from)) return false;
+      const cwd = typeof row.cwd === 'string' ? row.cwd.slice(0, MAX_STR) : null;
+      const s = (v: unknown) => (typeof v === 'string' ? v.slice(0, MAX_STR) : null);
+      this.db.prepare(`INSERT OR REPLACE INTO pool_bindings
+        (session_id, framework, session_kind, cwd, topic_id, job_slug, run_id, account_id, machine_id, valid_from, valid_to)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(row.session_id, s(row.framework) ?? 'api', s(row.session_kind) ?? 'interactive', cwd, s(row.topic_id), s(row.job_slug),
+          s(row.run_id), s(row.account_id), peer, row.valid_from, Number.isInteger(row.valid_to) ? row.valid_to : null);
+      return true;
+    }
+    const keyCols = table === 'rollup_hour' ? HOUR_KEY : table === 'rollup_day' ? DAY_KEY : SESSION_DAY_KEY;
+    if (row.machine !== peer) return false;
+    const vals: Record<string, unknown> = {};
+    for (const c of keyCols) {
+      const v = row[c];
+      if (c === 'bucket') { if (!Number.isInteger(v) || (v as number) < 0) return false; vals[c] = v; continue; }
+      if (typeof v !== 'string' || v.length > MAX_STR) return false;
+      vals[c] = v;
+    }
+    for (const c of SUM_COLS) {
+      const v = row[c];
+      if (c.endsWith('usd')) { if (typeof v !== 'number' || !Number.isFinite(v)) return false; }
+      else if (!Number.isInteger(v) || (v as number) < 0) return false;
+      vals[c] = v;
+    }
+    vals.change_seq = Number.isInteger(row.change_seq) ? row.change_seq : 0;
+    const cols = [...keyCols, ...SUM_COLS, 'change_seq'];
+    this.db.prepare(`INSERT OR REPLACE INTO ${target} (${cols.join(', ')}) VALUES (${cols.map(c => '@' + c).join(', ')})`).run(vals);
+    return true;
+  }
+
+  /** The holder's view of each peer it has pulled. */
+  peerCursors(): Array<{ machineId: string; generationId: string | null; lastSeq: number; lastPullAt: number | null; warming: boolean; invalidRows: number; generationChanges: number }> {
+    return (this.db.prepare('SELECT * FROM pool_peers ORDER BY machine_id').all() as PeerCursor[]).map(r => ({
+      machineId: r.machine_id, generationId: r.generation_id, lastSeq: r.last_seq, lastPullAt: r.last_pull_at,
+      warming: r.warming === 1, invalidRows: r.invalid_rows, generationChanges: r.generation_changes,
+    }));
+  }
+
+  // Pooled copies persist across lease tenures: a new holder serves them while it re-pulls (spec).
+
+  // ── Slice 4: grouped reads over local + pooled rollups ──────────────
+
+  /**
+   * Aggregate rollup rows for buckets in [sinceMs, untilMs) grouped by `groupBy` (always
+   * including the day bucket and model, which pricing needs). `includePool` adds peers'
+   * pooled rows (holder view); local rows are always included.
+   */
+  aggregate(grain: 'hour' | 'day' | 'session-day', sinceMs: number, untilMs: number, groupBy: readonly AggregateDim[], filter: Partial<Record<AggregateDim, string>> = {}, includePool = true): AggregateRow[] {
+    const local = grain === 'hour' ? 'rollup_hour' : grain === 'day' ? 'rollup_day' : 'rollup_session_day';
+    const tables = includePool ? [local, `pool_${local}`] : [local];
+    const allowed = grain === 'session-day' ? SESSION_DAY_KEY : grain === 'hour' ? HOUR_KEY : DAY_KEY;
+    const dims = [...new Set(['bucket', 'model', ...groupBy])].filter(d => (allowed as readonly string[]).includes(d));
+    const where: string[] = ['bucket >= @since', 'bucket < @until'];
+    const params: Record<string, unknown> = { since: sinceMs, until: untilMs };
+    for (const [k, v] of Object.entries(filter)) {
+      if (v === undefined || !(allowed as readonly string[]).includes(k)) continue;
+      where.push(`${k} = @f_${k}`);
+      params[`f_${k}`] = v ?? NONE;
+    }
+    const union = tables.map(t => `SELECT ${[...allowed, ...SUM_COLS].join(', ')} FROM ${t} WHERE ${where.join(' AND ')}`).join(' UNION ALL ');
+    const sql = `SELECT ${dims.join(', ')}, ${SUM_COLS.map(c => `SUM(${c}) AS ${c}`).join(', ')} FROM (${union}) GROUP BY ${dims.join(', ')}`;
+    return (this.db.prepare(sql).all(params) as Record<string, any>[]).map(r => {
+      const out: AggregateRow = {
+        bucket: r.bucket, model: r.model || null,
+        dims: Object.fromEntries(dims.filter(d => d !== 'bucket').map(d => [d, r[d] === NONE ? null : r[d]])) as Record<string, string | null>,
+        calls: r.calls, input: r.tok_input, cacheRead: r.tok_cache_read, cacheWrite: r.tok_cache_write, output: r.tok_output,
+        reasoning: r.tok_reasoning, missingAny: r.miss_input + r.miss_output, reportedActualUsd: r.reported_actual_usd,
+        reportedPlanRateUsd: r.reported_plan_rate_usd,
+      };
+      return out;
+    });
+  }
+
+  /** Raw request rows for one session on THIS machine, capped (spec: 500). */
+  sessionEvents(sessionId: string, limit = 500): Record<string, unknown>[] {
+    return this.db.prepare(`SELECT ts, source, framework, model, session_kind, topic_id, job_slug, run_id, feature, grain, status,
+      tok_input, tok_cache_read, tok_cache_write, tok_output, tok_reasoning, reported_usd, reported_basis
+      FROM usage_events WHERE session_id = ? ORDER BY ts DESC LIMIT ?`).all(sessionId, Math.min(500, Math.max(1, limit))) as Record<string, unknown>[];
+  }
+
+  /** Which machine holds a session's raw rows: this one, a peer (from pooled bindings), or unknown. */
+  sessionOwner(sessionId: string): string | null {
+    if (this.db.prepare('SELECT 1 FROM usage_events WHERE session_id = ? LIMIT 1').get(sessionId)) return this.opts.machineId;
+    const b = this.db.prepare('SELECT machine_id FROM pool_bindings WHERE session_id = ? ORDER BY valid_from DESC LIMIT 1').get(sessionId) as { machine_id: string } | undefined;
+    return b?.machine_id ?? null;
+  }
+
+  get machineId(): string { return this.opts.machineId; }
+
+  // ── Slice 4: backed-up snapshot ─────────────────────────────────────
+
+  /**
+   * Write the slim snapshot (day rollups, bindings, checkpoints, open pairs, identity)
+   * to `snapshotPath`, atomically. Never written while the live database is empty, so an
+   * empty restart can never overwrite a good snapshot.
+   */
+  writeSnapshot(snapshotPath: string): { written: boolean; bytes: number; ms: number } {
+    const t0 = Date.now();
+    const empty = !(this.db.prepare('SELECT 1 FROM rollup_day LIMIT 1').get() || this.db.prepare('SELECT 1 FROM checkpoints LIMIT 1').get());
+    if (empty) return { written: false, bytes: 0, ms: 0 };
+    const tmp = `${snapshotPath}.tmp-${process.pid}`;
+    try { SafeFsExecutor.safeRmSync(tmp, { force: true, operation: 'UsageLedger.writeSnapshot:stale-temp' }); } catch { /* @silent-fallback-ok: a stale temp file is overwritten below */ }
+    fs.mkdirSync(path.dirname(snapshotPath), { recursive: true });
+    const snap = new Database(tmp);
+    try {
+      snap.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
+      for (const ddl of SCHEMA) {
+        if (/CREATE TABLE IF NOT EXISTS (rollup_day|session_bindings|checkpoints|pairs) /.test(ddl)) snap.exec(ddl);
+      }
+      snap.exec('ALTER TABLE checkpoints ADD COLUMN extra TEXT');
+      const copy = (table: string, where = ''): void => {
+        const rows = this.db.prepare(`SELECT * FROM ${table} ${where}`).all() as Record<string, unknown>[];
+        if (!rows.length) return;
+        const cols = Object.keys(rows[0]);
+        const ins = snap.prepare(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${cols.map(c => '@' + c).join(', ')})`);
+        snap.transaction(() => { for (const r of rows) ins.run(r); })();
+      };
+      copy('rollup_day');
+      copy('session_bindings');
+      copy('checkpoints');
+      copy('pairs', `WHERE state != 'settled'`);
+      const m = snap.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
+      m.run('agent_id', this.opts.agentId);
+      m.run('machine_id', this.opts.machineId);
+      m.run('generation_id', this.generationId);
+      m.run('snapshot_at', String(this.opts.now()));
+    } finally { snap.close(); }
+    fs.renameSync(tmp, snapshotPath);
+    const bytes = fs.statSync(snapshotPath).size;
+    const ms = Date.now() - t0;
+    this.metaSet('snapshot_bytes', String(bytes));
+    this.metaSet('snapshot_ms', String(ms));
+    this.metaSet('snapshot_written_at', String(this.opts.now()));
+    return { written: true, bytes, ms };
+  }
+
+  /**
+   * At open, before ingest: import the snapshot only when the live database is empty
+   * (spec: Restore rule). Same or predecessor machine → re-keyed import; a replaced
+   * machine that is not a live pool member and has no pooled rows anywhere → frozen
+   * local slice of its day rollups; anything else, or another agent's snapshot → refused.
+   */
+  importSnapshotIfEmpty(snapshotPath: string, rules: SnapshotRules = {}): SnapshotImport {
+    if (!fs.existsSync(snapshotPath)) return { outcome: 'none' };
+    const liveHasData = !!(this.db.prepare('SELECT 1 FROM rollup_day LIMIT 1').get() || this.db.prepare('SELECT 1 FROM checkpoints LIMIT 1').get());
+    if (liveHasData) { this.recordImport('ignored-live-authoritative'); return { outcome: 'ignored-live-authoritative' }; }
+    let snap: BetterSqliteDatabase;
+    try { snap = new Database(snapshotPath, { readonly: true }); } catch (err) {
+      this.recordImport('unreadable');
+      return { outcome: 'unreadable', detail: err instanceof Error ? err.message : String(err) };
+    }
+    try {
+      const meta = Object.fromEntries((snap.prepare('SELECT key, value FROM meta').all() as { key: string; value: string }[]).map(r => [r.key, r.value]));
+      if (meta.agent_id !== this.opts.agentId) { this.recordImport('refused-other-agent'); return { outcome: 'refused-other-agent' }; }
+      const from = meta.machine_id;
+      const snapAt = Number(meta.snapshot_at ?? '0');
+      const same = from === this.opts.machineId || (rules.isPredecessor?.(from) ?? false);
+      if (!same) {
+        if ((rules.isLivePoolMember?.(from) ?? false) || (rules.poolHasRowsFor?.(from) ?? false)) {
+          this.recordImport('refused-live-member'); return { outcome: 'refused-live-member', fromMachine: from };
+        }
+      }
+      const tx = this.db.transaction(() => {
+        const days = snap.prepare('SELECT * FROM rollup_day').all() as Record<string, unknown>[];
+        if (same) {
+          const cols = [...DAY_KEY, ...SUM_COLS, 'change_seq'];
+          const ins = this.db.prepare(`INSERT OR REPLACE INTO rollup_day (${cols.join(', ')}) VALUES (${cols.map(c => '@' + c).join(', ')})`);
+          const seq = this.nextSeq();
+          for (const r of days) ins.run({ ...r, machine: this.opts.machineId, change_seq: seq });
+          const bcols = ['session_id', 'framework', 'session_kind', 'cwd', 'topic_id', 'job_slug', 'run_id', 'account_id', 'machine_id', 'valid_from', 'valid_to', 'change_seq'];
+          const bins = this.db.prepare(`INSERT OR REPLACE INTO session_bindings (${bcols.join(', ')}) VALUES (${bcols.map(c => '@' + c).join(', ')})`);
+          for (const r of snap.prepare('SELECT * FROM session_bindings').all() as Record<string, unknown>[]) {
+            bins.run({ ...r, machine_id: r.machine_id === from ? this.opts.machineId : r.machine_id, change_seq: this.nextSeq() });
+          }
+          const ccols = ['path', 'root', 'inode', 'head_hash', 'birth_ms', 'offset', 'updated_at', 'extra'];
+          const cins = this.db.prepare(`INSERT OR REPLACE INTO checkpoints (${ccols.join(', ')}) VALUES (${ccols.map(c => '@' + c).join(', ')})`);
+          for (const r of snap.prepare('SELECT * FROM checkpoints').all() as Record<string, unknown>[]) cins.run({ extra: null, ...r });
+          const pcols = ['correlation_key', 'inv_observation_id', 'inv_row', 'inv_start', 'inv_end', 'held', 'file_path', 'last_file_at', 'counted_side', 'state', 'disputed', 'invocations', 'updated_at'];
+          const pins = this.db.prepare(`INSERT OR REPLACE INTO pairs (${pcols.join(', ')}) VALUES (${pcols.map(c => '@' + c).join(', ')})`);
+          for (const r of snap.prepare('SELECT * FROM pairs').all() as Record<string, unknown>[]) pins.run(r);
+          if (from !== this.opts.machineId) this.metaSet('snapshot_previous_machine_id', from);
+        } else {
+          const cols = [...DAY_KEY, ...SUM_COLS, 'change_seq', 'frozen'];
+          const ins = this.db.prepare(`INSERT OR REPLACE INTO pool_rollup_day (${cols.join(', ')}) VALUES (${cols.map(c => '@' + c).join(', ')})`);
+          for (const r of days) ins.run({ ...r, machine: from, change_seq: 0, frozen: 1 });
+        }
+        this.metaSet('snapshot_imported_at', String(snapAt));
+      });
+      tx();
+      const outcome = same ? 'imported' : 'imported-frozen';
+      this.recordImport(outcome, from, snapAt);
+      if (same) this.pendingDetailRescan = true;
+      return { outcome, fromMachine: from, snapshotAt: snapAt };
+    } finally { snap.close(); }
+  }
+
+  /** After a same-machine import, re-read checkpointed Claude files once for detail rows (never counted). */
+  private pendingDetailRescan = false;
+
+  private recordImport(outcome: string, from?: string, at?: number): void {
+    this.metaSet('snapshot_import', JSON.stringify({ outcome, fromMachine: from ?? null, snapshotAt: at ?? null, decidedAt: this.opts.now() }));
+  }
+
+  snapshotStatus(): Record<string, unknown> {
+    const imp = this.metaGet('snapshot_import');
+    return {
+      bytes: Number(this.metaGet('snapshot_bytes') ?? '0'),
+      copyMs: Number(this.metaGet('snapshot_ms') ?? '0'),
+      writtenAt: Number(this.metaGet('snapshot_written_at') ?? '0') || null,
+      oversized: Number(this.metaGet('snapshot_bytes') ?? '0') > 500 * 1024 * 1024,
+      lastImport: imp ? JSON.parse(imp) : null,
+    };
+  }
+
+  /** Shares behind the coverage strip, over day rollups since `sinceMs` (local + pooled). */
+  coverageShares(sinceMs: number): { unattributedTokens: number; totalTokens: number; nullTokenCalls: number; calls: number } {
+    const r = this.db.prepare(`SELECT
+        SUM(tok_input + tok_cache_read + tok_cache_write + tok_output) AS total,
+        SUM(CASE WHEN topic = '' AND job = '' AND feature = '' THEN tok_input + tok_cache_read + tok_cache_write + tok_output ELSE 0 END) AS unattributed,
+        SUM(miss_input) AS nullcalls, SUM(calls) AS calls
+      FROM (SELECT * FROM rollup_day WHERE bucket >= @s UNION ALL SELECT ${[...DAY_KEY, ...SUM_COLS, 'change_seq'].join(', ')} FROM pool_rollup_day WHERE bucket >= @s)`)
+      .get({ s: Math.floor(sinceMs / DAY_MS) * DAY_MS }) as Record<string, number | null>;
+    return { unattributedTokens: r.unattributed ?? 0, totalTokens: r.total ?? 0, nullTokenCalls: r.nullcalls ?? 0, calls: r.calls ?? 0 };
   }
 
   // ── retention ───────────────────────────────────────────────────────

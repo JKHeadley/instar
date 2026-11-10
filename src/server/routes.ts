@@ -35,6 +35,7 @@ import { consolePageUrl } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
+import { mountUsageRoutes } from './usageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
@@ -1659,6 +1660,8 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  /** Unified usage ledger read routes (docs/specs/unified-usage-ledger.md). Absent/null = ledger off (503). */
+  usageRouteDeps?: () => import('./usageRoutes.js').UsageRouteDeps | null;
   /** Zero-spend live codex quota reader (`codex app-server` →
    *  account/rateLimits/read), injected at composition via
    *  buildCodexLiveUsageReader. Absent/null → GET /codex/usage stays
@@ -39456,6 +39459,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { ok: false, off: false, unreached: true };
       }
     };
+    mountUsageRoutes(router, () => ctx.usageRouteDeps?.() ?? null);
     mountMobileCapacityRoutes(router, {
       accountsView: () => subscriptionPoolScopeView(),
       inUseAccountId: async () => {
