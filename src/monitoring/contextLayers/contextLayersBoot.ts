@@ -35,7 +35,7 @@ export interface ContextLayers {
   /** The agent's live secret values (cached), for scrubbing anything bound for an LLM. */
   liveSecrets(): readonly string[];
   /** The current-work layer's freshness against TopicMemory; `unknown` when no H1 record exists yet. */
-  h1Freshness(topicId: number, topicMemory: { countMessagesAfter(topicId: number, messageId: number): { total: number; fromUser: number } | null }): { line: string; stale: boolean | 'unknown' } | null;
+  h1Freshness(topicId: number, topicMemory: { countMessagesAfter(topicId: number, messageId: number): { total: number; fromUser: number } | null }): { line: string; stale: boolean | 'unknown'; userTurnsBehind?: number | null } | null;
   status(): ContextLayersStatus;
 }
 
@@ -124,7 +124,7 @@ export function buildContextLayers(deps: {
       // capture cannot run): the stamp says unknown, never nothing.
       if (!rec) return { line: 'no layer record yet', stale: 'unknown' };
       const f = layerFreshness(rec, (id) => topicMemory.countMessagesAfter(topicId, id));
-      return { line: f.line, stale: f.stale };
+      return { line: f.line, stale: f.stale, userTurnsBehind: f.userTurnsBehind };
     },
     status(): ContextLayersStatus {
       const lr = contextLayersRoot(deps.stateDir);

@@ -34,6 +34,15 @@ export interface LayerCaptureWiring {
   counts: { projected: number; failed: number };
   /** The session → transcript resolver the ticker uses (exposed for the wiring test). */
   tickSessions(): TickSession[];
+  /**
+   * The ContextBudgetSentinel's layer-rebuild seam (§7.8, §17 stale layers):
+   * re-run the H1/H2 projection from the topic's stored awareness, ONLY when
+   * that awareness covers a newer message than the H1 record (a projection
+   * that failed or never ran). Deterministic, no model call, the layer's own
+   * writer. When the awareness itself is behind, nothing is written and the
+   * outcome says so (re-capturing the awareness is a later slice's seam).
+   */
+  reproject(topicId: number): 'reprojected' | 'awareness-behind' | 'no-awareness' | 'failed';
 }
 
 export function wireLayerCapture(o: {
@@ -92,9 +101,24 @@ export function wireLayerCapture(o: {
     return out;
   };
 
+  const reproject = (topicId: number): 'reprojected' | 'awareness-behind' | 'no-awareness' | 'failed' => {
+    const awareness = o.store.read(topicId).awareness;
+    if (!awareness) return 'no-awareness';
+    const src = awareness.currentWork.sourceMessageId;
+    const srcId = Number(src);
+    // A tick-sourced level is projected by the tick itself; a non-numeric source cannot be compared.
+    if ((typeof src === 'string' && src.startsWith(TICK_MESSAGE_PREFIX)) || !Number.isSafeInteger(srcId)) return 'awareness-behind';
+    const prev = o.layers.store.read(String(topicId), 'h1', 'current');
+    if (prev && prev.asOf.lastMessageId !== null && srcId <= prev.asOf.lastMessageId) return 'awareness-behind';
+    const before = counts.projected;
+    project(topicId, null);
+    return counts.projected > before ? 'reprojected' : 'failed';
+  };
+
   return {
     counts,
     tickSessions,
+    reproject,
     captureDeps: { layerBudget: o.layers.budget, onCaptured },
     startTicker(base, opts = {}) {
       const deps: CaptureLoopDeps = { ...base, layerBudget: o.layers.budget, onCaptured };

@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "slug": "cb-sentinel-rows",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T23:33:41.707Z",
+  "artifactPath": "upgrades/side-effects/cb-sentinel-rows.md",
+  "artifactSha256": "307318c0142ad5de4bd16520c9e068b5b423e4c6d5c40cefdcfbf499c612af7c",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/monitoring/ContextBudgetSentinel.ts",
+    "src/monitoring/FoldCoordinator.ts",
+    "src/monitoring/contextBudgetSentinelBoot.ts",
+    "src/monitoring/contextLayers/contextLayersBoot.ts",
+    "src/monitoring/contextLayers/layerCaptureWiring.ts",
+    "src/monitoring/selfaction/policies.ts",
+    "src/scaffold/templates.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/e2e/context-budget-sentinel-rows-alive.test.ts",
+    "tests/integration/context-budget-sentinel-rows.test.ts",
+    "tests/unit/ContextBudgetSentinel-rows.test.ts",
+    "tests/unit/migrate-context-budget-sentinel-row.test.ts",
+    "upgrades/next/cb-sentinel-rows.md",
+    "upgrades/side-effects/cb-sentinel-rows.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds three sentinel rows under an off-by-default switch, including one owner-only, corroborated, gate-braked clear of leaked fold holds and markers.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The orphan-carrier clear and the layer-rebuild request are registered SELF_ACTION_CONTROLLERS; the convergence ratchet proves each settles at <=3 actions under sustained pressure, horizon-independent"
+    },
+    "component": "ContextBudgetSentinel"
+  }
+}
