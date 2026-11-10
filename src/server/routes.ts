@@ -39851,9 +39851,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     mountMobilePermissionsRoutes(router, {
       selfName: () => (ctx.meshSelfId ? verifiedEntityName(ctx.meshSelfId, ctx.machinePoolRegistry?.getCapacity(ctx.meshSelfId)?.nickname) : null),
-      teamAction: async (kind, req, deviceId) => {
+      teamAction: async (kind, req, deviceId, target) => {
         const run = ctx.mobilePairingService?.teamActionRunner;
-        return run ? await run(kind, req, deviceId) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
+        return run ? await run(kind, req, deviceId, target) as Awaited<ReturnType<NonNullable<Parameters<typeof mountMobilePermissionsRoutes>[1]['teamAction']>>> : { status: 503, body: { error: 'team-access-unavailable' } };
       },
       // A route's words can quote a run's goal, so the phone's answer gets the same removal as anything else it reads.
       sessionAction: async (action) => {
