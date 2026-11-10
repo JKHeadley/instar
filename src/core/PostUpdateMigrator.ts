@@ -16345,6 +16345,8 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       // team-roles-and-access: "add someone" must reach the owner's phone, on every framework.
       '**Registry First — team access:',
       '**Registry First — team requests:',
+      // team-switches-agent-wide: a team setting is turned on for the whole agent, never per machine, on every framework.
+      '**Registry First — team settings:',
       // decision-journal: a Codex/Gemini agent that does not learn the new
       // requirement will POST without `principle`, take a 400 it cannot explain,
       // and fall back to recording decisions somewhere nothing reads — which is

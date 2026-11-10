@@ -59,7 +59,7 @@ No competing-signals decision point is added.
 - New machine route `POST /api/team-access/switch-on` (machine auth). An older peer answers 404 and is reported `needs-update`.
 - New context field `teamSwitches`; `machinesBelowFloor` kept.
 - Restarts: each machine that changes restarts itself in a planned way, which ends live sessions there; the app's turn-on sheet already warns about the restart for memory privacy.
-- Agent awareness: a Registry First line in the CLAUDE.md template plus a content-sniffed migration line.
+- Agent awareness: a Registry First line in the CLAUDE.md template plus a content-sniffed migration line. The same line is listed in `migrateFrameworkShadowCapabilities` markers so Codex and Gemini agents get it, and in the section-parity test list.
 
 ## 6b. Operator-surface quality
 
