@@ -529,7 +529,7 @@ Frozen excerpt of the commitment the fleet step is tracked on (ledger: `docs/spe
   default off; an enrolled job with an unknown name is refused before launch; the loader
   accepts the key only as a boolean.
 - `isConfinedWriteRefused` is true for a `confinedTools` session and false otherwise.
-- Consumer (real CLI, opt-in `INSTAR_LIVE_CLAUDE_CONFINEMENT=1`): runs the argv the
+- Consumer (real CLI, opt-in `LIVE_CLAUDE_CONFINEMENT_TEST=1`): runs the argv the
   builder produced against the installed `claude`, from a directory carrying a permissive
   `.claude/settings.json` with an auto-approve hook, and asserts a denied tool's side
   effect did not happen and an allowed tool's did — both sides of the boundary; and reads

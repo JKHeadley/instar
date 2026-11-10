@@ -166,7 +166,7 @@ named — now in §5, with a test. Re-read: "Concur with the review."
 
 ## Evidence pointers
 
-- Live CLI proof (opt-in): `INSTAR_LIVE_CLAUDE_CONFINEMENT=1 npx vitest run --config vitest.integration.config.ts tests/integration/job-tool-confinement-live.test.ts` — 3/3 pass on 2026-11-10 (Read-only: Bash/Write leave no file with a permissive settings file + auto-approve hook; Bash-only: Bash works, Write does not; every confinable name appears in the CLI's own init tool record).
+- Live CLI proof (opt-in): `LIVE_CLAUDE_CONFINEMENT_TEST=1 npx vitest run --config vitest.integration.config.ts tests/integration/job-tool-confinement-live.test.ts` — 3/3 pass on 2026-11-10 (Read-only: Bash/Write leave no file with a permissive settings file + auto-approve hook; Bash-only: Bash works, Write does not; every confinable name appears in the CLI's own init tool record).
 - Manual probes recorded in the spec: inert clamp reproduced (Bash ran under `--allowedTools Read` + bypass); `!touch` typed into a Read-only interactive session created the file, and did not after a plain first line; subagent under `Read,Task` had only Read/Agent.
 - Unit: `tests/unit/scheduler/JobScheduler.tool-enforcement.test.ts`, `tests/unit/session-manager-job-confinement.test.ts`, `tests/unit/job-templates-tool-confinement-census.test.ts`, `tests/unit/PostUpdateMigrator-jobToolLimits.test.ts`, loader cases in `tests/unit/scheduler/JobLoader.agentmd.test.ts`, `tests/unit/commands/jobMigrate.test.ts`.
 

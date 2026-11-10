@@ -65,9 +65,6 @@ const INSTAR_ENV_ALLOWLIST = new Set([
   // (hub-intent-discrimination.test.ts) and the real wedge-canary tests.
   'INSTAR_LIVE_HUB_INTENT',
   'INSTAR_REAL_WEDGE_CANARY_TESTS',
-  // EVO-008 opt-in real-CLI confinement proof (tests/integration/job-tool-confinement-live.test.ts).
-  'INSTAR_LIVE_CLAUDE_CONFINEMENT',
-  'INSTAR_LIVE_CLAUDE_BIN',
 ]);
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('INSTAR_') && !INSTAR_ENV_ALLOWLIST.has(key)) {

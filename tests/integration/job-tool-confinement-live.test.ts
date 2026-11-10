@@ -3,7 +3,7 @@
  * EVO-008 consumer proof against the REAL installed Claude CLI (opt-in: it spends a few
  * cheap model calls). Run on each machine before the fleet step:
  *
- *   INSTAR_LIVE_CLAUDE_CONFINEMENT=1 npx vitest run --config vitest.integration.config.ts tests/integration/job-tool-confinement-live.test.ts
+ *   LIVE_CLAUDE_CONFINEMENT_TEST=1 npx vitest run --config vitest.integration.config.ts tests/integration/job-tool-confinement-live.test.ts
  *
  * It builds the argv the way the job launch does (bypass flag, then the headless extra
  * flags, then applyClaudeToolConfinement), checks the whole contract, and runs it from a
@@ -22,8 +22,8 @@ import { claudeHeadlessExtraFlags } from '../../src/core/frameworkSessionLaunch.
 import { CLAUDE_CONFINABLE_TOOL_NAMES } from '../../src/scheduler/JobScheduler.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
-const LIVE = process.env.INSTAR_LIVE_CLAUDE_CONFINEMENT === '1';
-const CLAUDE = process.env.INSTAR_LIVE_CLAUDE_BIN ?? 'claude';
+const LIVE = process.env.LIVE_CLAUDE_CONFINEMENT_TEST === '1';
+const CLAUDE = process.env.LIVE_CLAUDE_CONFINEMENT_BIN ?? 'claude';
 
 function confinedArgv(tools: string[], prompt: string, extra: string[] = []): string[] {
   const argv = [CLAUDE, '--dangerously-skip-permissions', '--model', 'haiku', ...extra, '-p', `${CONFINED_PROMPT_LEAD}\n${prompt}`];
