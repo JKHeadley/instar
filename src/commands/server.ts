@@ -18726,6 +18726,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               sharedIntelligence,
               (lane, fn, costCents) => sharedLlmQueue.enqueue(lane, fn, costCents),
             );
+            // Context budget §11: the layer wiring (built below) observes each
+            // extraction's provider-reported usage, per trigger. Late-bound.
+            let onLayerExtractUsage: ((input: import('../core/TopicIntentExtractor.js').ExtractorInput, u: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void) | null = null;
             const captureExtractFn = createLlmExtractFn(queuedIntelligence, (reason, topicId) => {
               topicIntentStore.bumpCaptureCounters(
                 topicId,
@@ -18733,7 +18736,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   ? { degraded_no_intelligence: 1 }
                   : { degraded_cap_or_error: 1 },
               );
-            });
+            }, (input, u) => onLayerExtractUsage?.(input, u));
             const captureExtractor = new TopicIntentExtractor(topicIntentStore, captureExtractFn);
             // Context budget Phase 1 (§6, §6.4): with the layers on, the capture
             // loop gets real brakes (per-topic + component token ceilings,
@@ -18745,6 +18748,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   machine: _meshSelfId ?? 'local', projectDir: config.projectDir,
                 })
               : null;
+            if (layerWiring) onLayerExtractUsage = layerWiring.onExtractUsage;
             const captureLoop = createCaptureLoop({
               ...(layerWiring ? layerWiring.captureDeps : {}),
               extractor: captureExtractor,
