@@ -19473,7 +19473,75 @@ fi
 # On startup/resume: outputs a compact identity summary
 # On compact: delegates to compaction-recovery.sh for full injection
 INSTAR_DIR="\${CLAUDE_PROJECT_DIR:-.}/.instar"
-EVENT="\${CLAUDE_HOOK_MATCHER:-startup}"
+
+# Which lifecycle event fired (context-budget-layered-summaries §9.1).
+# Claude Code passes the event as "source" in this hook's stdin JSON and has
+# never set CLAUDE_HOOK_MATCHER, so the old env-only read always resolved to
+# "startup" and the compaction branch below never ran. Read stdin (bounded to
+# 1 s, never blocks boot), keep CLAUDE_HOOK_MATCHER as a fallback, and resolve
+# a Claude Code start with no readable source to "unknown": it gets the
+# startup orientation AND a degradation record, never a silent "startup".
+# Other engines (INSTAR_FRAMEWORK set and not claude-code) keep today's branch.
+# Switch: contextBudget.compactionRecovery.enabled (default on); off = exactly
+# today's behaviour.
+# Config lives in the agent home; a worktree session's CLAUDE_PROJECT_DIR has none.
+CB_CONFIG_FILE="$INSTAR_DIR/config.json"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -f "\$INSTAR_AGENT_HOME/.instar/config.json" ]; then
+  CB_CONFIG_FILE="\$INSTAR_AGENT_HOME/.instar/config.json"
+fi
+HOOK_INPUT=\$(python3 -c "import os,sys,select,time
+buf=b''; end=time.time()+1.0
+try:
+    fd=sys.stdin.fileno()
+    while time.time()<end and len(buf)<65536:
+        r,_,_=select.select([fd],[],[],max(0.0,end-time.time()))
+        if not r: break
+        chunk=os.read(fd,8192)
+        if not chunk: break
+        buf+=chunk
+        try:
+            import json; json.loads(buf.decode('utf-8','replace')); break
+        except Exception:
+            pass
+except Exception:
+    pass
+sys.stdout.write(buf.decode('utf-8','replace'))" 2>/dev/null)
+CB_RECOVERY_ENABLED=\$(python3 -c "import json,sys
+try:
+    c=json.load(open(sys.argv[1]))
+    v=((c.get('contextBudget') or {}).get('compactionRecovery') or {}).get('enabled')
+    print('false' if v is False else 'true')
+except Exception:
+    print('true')" "\$CB_CONFIG_FILE" 2>/dev/null)
+HOOK_FRAMEWORK="\${INSTAR_FRAMEWORK:-claude-code}"
+SOURCE_UNKNOWN=""
+if [ "\$CB_RECOVERY_ENABLED" = "false" ] || [ "\$HOOK_FRAMEWORK" != "claude-code" ]; then
+  EVENT="\${CLAUDE_HOOK_MATCHER:-startup}"
+else
+  HOOK_SOURCE=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json
+try:
+    v=json.load(sys.stdin).get('source')
+    print(v if v in ('startup','resume','clear','compact','fork') else '')
+except Exception:
+    print('')" 2>/dev/null)
+  if [ -n "\$HOOK_SOURCE" ]; then
+    EVENT="\$HOOK_SOURCE"
+  elif [ -n "\$CLAUDE_HOOK_MATCHER" ]; then
+    EVENT="\$CLAUDE_HOOK_MATCHER"
+  else
+    EVENT="startup"
+    SOURCE_UNKNOWN="1"
+  fi
+fi
+if [ -n "\$SOURCE_UNKNOWN" ] && [ -n "\$INSTAR_AUTH_TOKEN" ]; then
+  SU_PORT="\${INSTAR_PORT:-}"
+  [ -z "\$SU_PORT" ] && SU_PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$CB_CONFIG_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+  if [ -n "\$SU_PORT" ]; then
+    curl -s -m 2 -X POST "http://localhost:\${SU_PORT}/hooks/events" \\
+      -H "Authorization: Bearer \$INSTAR_AUTH_TOKEN" -H 'Content-Type: application/json' \\
+      -d "{\\"event\\":\\"SessionStartSourceUnknown\\",\\"sessionId\\":\\"\${INSTAR_SESSION_ID:-}\\"}" >/dev/null 2>&1 &
+  fi
+fi
 
 # Machine-load assessment awareness (CMT-1703) — placed ABOVE the compact delegate
 # so it is emitted on EVERY event INCLUDING compact (this stdout flushes before the

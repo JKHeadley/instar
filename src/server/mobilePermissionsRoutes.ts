@@ -97,7 +97,7 @@ export type PermissionAction =
   | { kind: 'session-close'; target: string; tmux: string; machine: string | null }
   | { kind: Exclude<TeamActionKind, 'team-switch-on'>; target: 'team' }
   /** One setting turned on for the whole agent (team-switches-agent-wide); the setting is on the signed line. */
-  | { kind: 'team-switch-on'; target: TeamSwitchSetting }
+  | { kind: 'team-switch-on'; target: TeamSwitchSetting | 'team-access' }
   | { kind: 'session-new'; target: 'new'; name: string; platform: SessionPlatformChoice; framework: string | null; model: string | null; machine: string | null }
   | { kind: 'session-default'; target: 'new-topic-default'; framework: string | null; model: string | null };
 
@@ -147,7 +147,8 @@ export function buildAction(kind: unknown, target: unknown, extra: { value?: unk
   // A session door names a conversation reference, whose Slack form has uppercase ids (checked below).
   if (typeof target !== 'string' || (kind === 'session-door' ? !conversationKeys(target) : !TARGET_PATTERN.test(target))) return { ok: false, error: 'bad-target' };
   if (kind === 'team-off' || kind === 'team-restore' || kind === 'team-memory-privacy' || kind === 'team-origin-gone') return { ok: true, action: { kind, target: 'team' } };
-  if (kind === 'team-switch-on') return isTeamSwitchSetting(target) ? { ok: true, action: { kind, target } } : { ok: false, error: 'bad-setting' };
+  // 'team-access': everything team access needs, in one Face ID (one signed line names it, so it cannot be replayed as one setting).
+  if (kind === 'team-switch-on') return isTeamSwitchSetting(target) || target === 'team-access' ? { ok: true, action: { kind, target: target as TeamSwitchSetting | 'team-access' } } : { ok: false, error: 'bad-setting' };
   if (kind === 'approve-request') {
     if (typeof extra.proposalHash !== 'string' || !/^[0-9a-f]{64}$/.test(extra.proposalHash)) return { ok: false, error: 'bad-proposal-hash' };
     return { ok: true, action: { kind, target, proposalHash: extra.proposalHash } };

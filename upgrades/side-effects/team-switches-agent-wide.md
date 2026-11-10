@@ -94,3 +94,6 @@ The reviewer found the security sound (owner-only on two layers; the signed line
 - `tests/unit/team-switches.test.ts`
 - `tests/integration/team-access-routes.test.ts` (block "team settings for the whole agent")
 - `tests/e2e/team-switches-two-machines.test.ts`
+
+## Addendum: one tap for everything team access needs
+Operator 2026-11-09 ("it should be one single thing for the whole agent"): `POST /mobile/team/switches/turn-on` also takes `setting: "team-access"`. It turns on, in turn, every setting `teamSwitches` reports off somewhere, and answers `{ok, setting: "team-access", settings, results}` (503 when this machine fails any). The Face ID signed line names `team-access`, so a team-access challenge cannot be spent on one setting, nor the reverse (integration test). Nothing new reaches peers: each setting still goes through the same per-setting fan-out.

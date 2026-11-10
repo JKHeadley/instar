@@ -31,7 +31,7 @@ import { SlackOriginLedger, SlackOriginRecordingError } from '../messaging/slack
 import { slackOriginFooter, currentAgentDisplay, deviceOriginRow, effectiveDisplay, originEvidenceFromProducer, validateDeviceOriginRow, validateMessageOriginEvidence, type DeviceOriginRow } from '../messaging/messageOrigin.js';
 import type { OriginDisplaySettings, TelegramOriginProducer } from '../messaging/telegram-origin/types.js';
 import { resolveReplyOrigin, boundSessionName, localMachineIdentity, type ReplyOriginDeps } from './replyOrigin.js';
-import { consolePageUrl } from './dashboardPaths.js';
+import { consolePageUrl, createOperatorLinkOriginResolver, originOrNull } from './dashboardPaths.js';
 import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS } from '../core/poolReadiness.js';
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
@@ -6903,6 +6903,27 @@ export function createRoutes(ctx: RouteContext): Router {
     res.status(204).end();
   });
 
+  // context-budget-layered-summaries §9.1: the session-start hook could not
+  // read which lifecycle event fired (no `source` in its stdin JSON on a
+  // Claude Code session). The session got the startup orientation; this is
+  // the record that says so, never a silent "startup".
+  // One report per server process per hour: a Claude Code build that drops
+  // `source` would otherwise file one degradation (and, with the remediator
+  // off, one upstream feedback item) per session start across the fleet.
+  // The reason text is constant so any downstream dedupe sees one issue.
+  let sessionStartSourceUnknownLastReportAt = 0;
+  const reportSessionStartSourceUnknown = (): void => {
+    const now = Date.now();
+    if (now - sessionStartSourceUnknownLastReportAt < 60 * 60 * 1000) return;
+    sessionStartSourceUnknownLastReportAt = now;
+    DegradationReporter.getInstance().report({
+      feature: 'compaction-recovery-source',
+      primary: 'session-start hook reads the lifecycle event from Claude Code\'s stdin "source" field',
+      fallback: 'treated the event as a fresh startup (no compaction recovery)',
+      reason: 'session-start hook received no readable source field from Claude Code',
+      impact: 'if this start followed a compaction, the topic briefing and recent messages were not restored',
+    });
+  };
   router.post('/hooks/events', (req, res) => {
     if (!ctx.hookEventReceiver) {
       res.status(503).json({ error: 'HookEventReceiver not initialized' });
@@ -6912,6 +6933,8 @@ export function createRoutes(ctx: RouteContext): Router {
     // Stop-gate: capture SessionStart timestamp (PR0a). Idempotent —
     // first SessionStart for a session id wins. Read before storing the
     // event so a malformed payload doesn't break the gate.
+    if (req.body?.event === 'SessionStartSourceUnknown') { reportSessionStartSourceUnknown(); res.status(204).end(); return; }
+
     if (req.body?.event === 'SessionStart') {
       // A scoped session speaks only for itself: its own session id, never one the body
       // names (memory-privacy-agent-places §5; the evaluation fails open without it).
@@ -8184,8 +8207,15 @@ export function createRoutes(ctx: RouteContext): Router {
       const r = await withNotificationEnvelope(envelope, async () => (ctx.telegram)!.sendToTopic(topicId, text));
       return r.recorded ? r : { messageId: requireTelegramDelivery(r).messageId };
     },
-    dashboardLink: (topicId: string) =>
-      `http://localhost:${ctx.config.port}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}`,
+    // The phone must be able to open it: the tunnel's address when up, localhost only with no
+    // tunnel at all; while a configured tunnel is starting the link is left out (reply-to-ratify still works).
+    dashboardLink: (() => {
+      const resolveOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
+      return (topicId: string) => {
+        const origin = originOrNull(resolveOrigin());
+        return origin ? `${origin}/dashboard?ratify-deferral=${encodeURIComponent(topicId)}` : null;
+      };
+    })(),
     recordMetric: (o) => scopeAccretionMetric(o, 'ratification'),
     log: (m) => console.warn(m),
   });

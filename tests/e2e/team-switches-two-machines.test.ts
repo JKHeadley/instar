@@ -170,5 +170,15 @@ describe('team settings turn on for the whole agent', () => {
     // A request from an unsigned caller is refused by the peer route.
     const unsigned = await fetch(`${B.base}/api/team-access/switch-on`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ setting: 'memory-privacy' }) });
     expect(unsigned.status).toBe(401);
+
+    // One tap for everything team access needs (team-access), with its own signed line.
+    const ch2 = await owner('POST', '/mobile/permissions/challenge', { action: 'team-switch-on', target: 'team-access' });
+    expect(ch2.status).toBe(200);
+    const sig2 = presence.sign(permissionPresenceMessage(r.body.deviceId, HOST, ch2.body.challenge, 'team-switch-on team-access'));
+    const all = await owner('POST', '/mobile/team/switches/turn-on', { setting: 'team-access', challenge: ch2.body.challenge, presenceSig: sig2 });
+    expect(all.status).toBe(200);
+    expect(all.body).toMatchObject({ ok: true, setting: 'team-access' });
+    expect(Array.isArray(all.body.settings)).toBe(true);
+    expect((all.body.results as unknown[]).length).toBe((all.body.settings as unknown[]).length);
   }, 30_000);
 });
