@@ -130,3 +130,7 @@ Concur with the review
 - `tests/integration/account-sign-in-face-id.test.ts`
 - `tests/e2e/account-sign-in-face-id-alive.test.ts`
 - `tests/integration/account-matrix-start-cell-route.test.ts` (regression)
+
+## Addendum (2026-11-10): its own rate bucket
+
+Local Verify found the route answering 429 for every role in the team-access status table: it was the 13th rule sharing the `permission-actions` bucket (12 requests per minute per phone), so a phone that used every Face ID switch in one minute could not start a sign-in. The route now has its own `account-actions` bucket (12 per minute); adding an account joins it. Over-block: lower than before (sign-ins no longer compete with switches). Under-block: a phone can now do 12 switch actions plus 12 sign-in starts per minute instead of 12 total; each sign-in start still needs a fresh Face ID proof and runs start-cell's own barrier, so this does not widen what an attacker without the owner phone can do.

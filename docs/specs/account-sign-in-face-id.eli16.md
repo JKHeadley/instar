@@ -48,3 +48,5 @@ data or migrations change. Undoing it is just removing the route.
 
 Nothing beyond the request itself: this follows the existing rule that a Face ID proof stands in for
 the PIN on owner actions. The app needs its own small update to use the new route.
+
+**Fix after testing (2026-11-10):** the phone has a speed limit for Face ID actions. Starting a sign-in shared one limit with the other Face ID switches, so after a dozen of those in a minute a sign-in was refused with "too many requests". Sign-ins now have their own limit of 12 a minute, and adding an account will share it.
