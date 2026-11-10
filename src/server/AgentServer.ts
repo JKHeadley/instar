@@ -2555,7 +2555,9 @@ export class AgentServer {
         let ticks = 0;
         this.usageLedgerTimer = setInterval(() => {
           try {
-            this.usageLedger?.scanTick();
+            const rep = this.usageLedger?.scanTick();
+            // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
+            if (rep) featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending } });
             if (++ticks % 60 === 0) {
               this.usageLedger?.prune();
               this.usageLedger?.dropMissingCheckpoints();
@@ -2563,6 +2565,7 @@ export class AgentServer {
             }
           } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
             console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
           }
         }, 60_000);
         if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();

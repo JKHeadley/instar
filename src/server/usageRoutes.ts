@@ -63,7 +63,7 @@ export function mountUsageRoutes(router: Router, get: () => UsageRouteDeps | nul
       }
       res.json(build(ctxFor(d, d.isHolder() ? 'pool' : 'this-machine-only'), req.query as Record<string, unknown>));
     } catch (err) {
-      if (err instanceof UsageQueryError) { res.status(400).json({ error: 'bad-query', detail: err.message }); return; }
+      if (err instanceof UsageQueryError) { res.status(400).json({ error: 'bad-query', detail: err.userText }); return; }
       console.warn(`[usage] GET /usage/${name} failed:`, err);
       res.status(500).json({ error: 'usage-read-failed' });
     }

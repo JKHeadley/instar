@@ -36,8 +36,10 @@ export interface ReadContext {
   scope: 'pool' | 'this-machine-only';
 }
 
+/** A bad query parameter. `userText` is written for the caller (never an OS or database error). */
 export class UsageQueryError extends Error {
-  constructor(message: string) { super(message); this.name = 'UsageQueryError'; }
+  readonly userText: string;
+  constructor(message: string) { super(message); this.name = 'UsageQueryError'; this.userText = message; }
 }
 
 export function parseSince(raw: unknown, now: number, maxMs: number, defaultMs: number): { sinceMs: number; clamped: boolean } {
