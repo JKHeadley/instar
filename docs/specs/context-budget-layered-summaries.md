@@ -1258,7 +1258,18 @@ as one field: the scrub's 1 MB oversize fail-safe would otherwise redact the
 archive entirely), **plus a live-value pass** against the agent's own secrets
 (auth token, lifeline secret, secret-store values), because shape patterns miss
 `KEY=value` dumps and this is the first durable store of raw tool output under
-`.instar/`. An oversize field is kept as a pointer with its size, disclosed.
+`.instar/`. An oversize field is kept as a pointer with its size, disclosed. **Protected
+records are references, not scrubbed copies**: A, G and U are stored in the
+layer store as row references (message id, hash, length) and rendered into the
+packet **from the TopicMemory rows themselves** at stage time, so the verifier's
+byte-identity check is against the source row, never against a scrubbed copy;
+the packet file is transient under the lock (0o600, deleted on commit or
+rollback, never served or replicated), and only derived projections (H1–H3, C,
+C2, stubs, probe records, PostCompact summaries) and the retrieval archive are
+scrubbed. A protected row that contains a live secret is still the operator's
+row; it is carried verbatim in the packet and in TopicMemory, and the archive's
+scrubbed projection of it is marked `scrubbed` so a lookup never claims to be
+the original.
 `.instar/state/` is already gitignored and never git-synced; both roots are
 added to the File Viewer's `NEVER_SERVED_PREFIXES`; `state/context-layers/*/`
 is added to backup `includeFiles` as the directory entry `state/context-layers/` (a glob with a wildcard in a middle segment is silently skipped by the backup manager) and `state/context-archive/` is **not**
@@ -1350,8 +1361,9 @@ from the records at boot. The lease holder's chokepoint reads the replicated
 hold as defence in depth. Fail direction, **scoped**: a send for a topic whose
 hold is held and unexpired is refused with `fold-hold` and audited; if the hold
 store is unreadable, only topics whose **last successfully read** state was
-held are refused, bounded by the configured maximum lock TTL ceiling from the
-first unreadable read (or a stated constant when none was ever read); a read
+held are refused, for as long as that fold's record is known non-terminal, and
+otherwise bounded by the configured maximum lock TTL ceiling from the first
+unreadable read (or a stated constant when none was ever read); a read
 error with no last-known hold for the topic ⇒ allow, audit
 `fold-hold-unreadable`, degradation record; sustained unreadability is a
 sentinel watcher (7.8; heal: re-open the store; notify on exhaustion). The
@@ -1360,9 +1372,13 @@ callers) carry no session-authored text and are listed in the build.
 
 Tool use in the probe and handoff turns is governed by a **fold-marker tool
 policy** of its own (for Claude Code a PreToolUse hook), **session-scoped by a
-marker file** the owner writes at lock time (foldId, session, expiry = the lock
-TTL ceiling), not by a server query: no marker ⇒ the hook allows and exits
-(every other session is untouched, including the lifeline's); marker present ⇒
+marker file** the owner writes at prepare or lock time (foldId, the Instar
+session id from `INSTAR_SESSION_ID`, never the engine's own session id, which
+can rotate at a clear; an expiry equal to the lock TTL ceiling that is
+**ignored while the fold record is non-terminal**, so containment is sticky for
+an unresolved fold and is removed only by a terminal record), not by a server
+query: no marker ⇒ the hook allows and exits (every other session is untouched,
+including the lifeline's); a malformed marker ⇒ deny; marker present ⇒
 a **strict command-shape allowlist, match-fail-closed** (the doorway-scan
 guard's shape): an enumerated set of read tools (file read, glob, grep; not web fetch, which
 is egress), and shell invocations whose argv is exactly a `GET` to a localhost
@@ -1391,7 +1407,9 @@ count through `dashboard/console/needs-model.js`):
   asks per fold, declines, `fold-skipped: no-judge` / `no-hold-queue`,
   `fold-deferred: judge-preempted`, `fold-path-unavailable`, `fold-aborted:
   compaction`, `checkpoint-unreachable`;
-- probe results by item type: retained / retrievable / lost / rolled back;
+- probe results by item type: retained / retrievable / lost / rolled back, with
+  the independent sample's loss reported beside the named-item loss and the
+  span coverage share;
 - **rework**: files re-read and commands re-run in the 30 turns after a fold vs
   baseline, computed in the `TokenLedger` scan (eventually consistent);
 - lookups used after a fold, by route; archive bytes per topic; replicated
