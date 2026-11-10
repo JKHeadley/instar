@@ -5,7 +5,10 @@ author: "echo"
 created: "2026-11-09"
 revised: "2026-11-09 (v9 — round 6 external findings folded in after the cap; v4 round 1, v5 round 2, v6 round 3 + operator notes, v7 round 4, v8 round 5)"
 status: "draft v9 (final review round complete)"
-approved: false
+approved: true
+approved-by: "Justin, topic 141133, 2026-11-09 17:22 PST: \"Approved on the spec\""
+approved-at: "2026-11-09T17:22:00-08:00"
+approval-notes: "Build on Opus 5.5; frontier models (Fable 5.2) for design and review, efficient models for building."
 commitment: "CMT-1536"
 requested-by: "Justin, topic 130742, 2026-11-09 14:01 PST; refined in topic 141133, 2026-11-09 14:12 PST"
 parent-principle: "Structure beats Willpower; Harness built-ins before our own; intelligent assessment, not hard caps"
