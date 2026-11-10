@@ -27,5 +27,14 @@
   "tier": 2,
   "tierReasoning": "A sentinel with authority to end a session and release a conversation's holds; ships dark; fails toward containment",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "context-budget-quarantine-reconcile is registered in selfActionRegistry: per fold at most 12 attempts within a 45-minute wall clock, then exhausted and retained 24 h (no re-open); ring of four per topic+cause; governor policy 12/fold, 48/day"
+    }
+  }
 }

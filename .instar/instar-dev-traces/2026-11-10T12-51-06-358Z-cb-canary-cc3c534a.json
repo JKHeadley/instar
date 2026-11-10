@@ -29,5 +29,10 @@
   "tier": 2,
   "tierReasoning": "A new read route and a CLAUDE.md row shipped to every agent (template + migration); observation only",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "observation only: the canary reads transcripts and reports; no self-triggered action"
+  }
 }
