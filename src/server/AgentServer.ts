@@ -279,6 +279,7 @@ import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
 import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvider.js';
 import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
@@ -2422,6 +2423,9 @@ export class AgentServer {
             validFrom: Date.now(),
           });
         });
+        // Slice 2: Codex rollouts and every funnel one-shot (bounded, non-blocking queue).
+        ledger.addCodexRoot(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), process.env.CODEX_HOME ? 'server-env' : 'default');
+        setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
         this.usageLedger = ledger;
         let ticks = 0;
         this.usageLedgerTimer = setInterval(() => {

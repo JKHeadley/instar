@@ -1167,6 +1167,27 @@ export interface IntelligenceProvider {
   evaluate(prompt: string, options?: IntelligenceOptions): Promise<string>;
 }
 
+/**
+ * Unified usage ledger (docs/specs/unified-usage-ledger.md, Slice 2): the split,
+ * disjoint token parts and the provider session id a one-shot returned, carried
+ * alongside the folded `inputTokens`/`outputTokens` so existing consumers are
+ * byte-identical. Every field is optional; null/absent means "not reported".
+ */
+export interface IntelligenceUsageDetail {
+  /** Provider session id: Claude `session_id`, Codex `thread_id`, Grok `sessionId`. */
+  sessionId?: string | null;
+  /** Fresh (uncached) input only. */
+  input?: number | null;
+  cacheRead?: number | null;
+  cacheWrite?: number | null;
+  /** Output including reasoning. */
+  output?: number | null;
+  /** Subset of output (display only). */
+  reasoning?: number | null;
+  reportedUsd?: number | null;
+  reportedBasis?: 'actual' | 'plan-rate' | null;
+}
+
 export interface IntelligenceOptions {
   /** Optional shared-queue cancellation signal for preemptible background work. */
   signal?: AbortSignal;
@@ -1312,7 +1333,7 @@ export interface IntelligenceOptions {
    * CircuitBreakingIntelligenceProvider sets it to feed per-feature token
    * counts into the metrics ledger (/metrics/features).
    */
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number; detail?: IntelligenceUsageDetail }) => void;
   /**
    * Observable Intelligence standard (docs/specs/observable-intelligence.md):
    * surface the resolved provider/model so the per-feature metrics funnel can

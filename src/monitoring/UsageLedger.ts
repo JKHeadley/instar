@@ -32,7 +32,8 @@ export type UsageFramework = 'claude-code' | 'codex-cli' | 'pi-cli' | 'grok-buil
 export type SessionKind = 'interactive' | 'job' | 'internal' | 'subagent';
 export type ScopeBasis = 'spawn-record' | 'cwd';
 /** counted: contributes to totals. held: dedupe pair, other side counted. copied-history: predates its file, unresolved. replay: re-read before a checkpoint, detail only. */
-export type RowStatus = 'counted' | 'held' | 'copied-history' | 'replay';
+/** paired: an invocation whose tokens moved to its settled file rows (its call and dollars still count). */
+export type RowStatus = 'counted' | 'held' | 'copied-history' | 'replay' | 'paired';
 
 export interface TokenParts {
   input: number | null;
@@ -77,6 +78,10 @@ export interface UsageLedgerOptions {
   rawRetentionMs?: number;
   /** Hour and session-day rollup retention (default 400 days). */
   rollupRetentionMs?: number;
+  /** Bounded invocation queue (spec default 10,000; oldest dropped when full). */
+  invocationQueueMax?: number;
+  /** Dedupe pair settle window (spec default 2 minutes). */
+  settleWindowMs?: number;
   now?: () => number;
   databaseFactory?: (p: string) => BetterSqliteDatabase;
 }
@@ -190,6 +195,22 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_rollup_hour_seq ON rollup_hour(change_seq)`,
   `CREATE INDEX IF NOT EXISTS idx_rollup_day_seq ON rollup_day(change_seq)`,
   `CREATE INDEX IF NOT EXISTS idx_rollup_session_day_seq ON rollup_session_day(change_seq)`,
+  `CREATE TABLE IF NOT EXISTS pairs (
+    correlation_key TEXT PRIMARY KEY,
+    inv_observation_id TEXT NOT NULL,
+    inv_row TEXT NOT NULL,
+    inv_start INTEGER NOT NULL,
+    inv_end INTEGER NOT NULL,
+    held TEXT NOT NULL DEFAULT '[]',
+    file_path TEXT,
+    last_file_at INTEGER,
+    counted_side TEXT NOT NULL DEFAULT 'invocation',
+    state TEXT NOT NULL DEFAULT 'open',
+    disputed INTEGER NOT NULL DEFAULT 0,
+    invocations INTEGER NOT NULL DEFAULT 1,
+    updated_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_pairs_state ON pairs(state)`,
 ];
 
 /** Claude encodes a project dir name by replacing every non-alphanumeric character with '-'. */
@@ -236,6 +257,10 @@ interface RowForRollup {
   parts: TokenParts;
   reportedUsd: number | null;
   reportedBasis: string | null;
+  /** 0 for rows whose call is already counted by their invocation (dedupe pairs); default 1. */
+  callsWeight?: 0 | 1;
+  /** Tokens only: no call count, no dollars (a settlement move between sides). */
+  tokensOnly?: boolean;
 }
 
 interface PendingDelta { key: Record<string, string | number>; sums: number[] }
@@ -251,10 +276,11 @@ class DeltaBatch {
       r.parts.input ?? 0, r.parts.cacheRead ?? 0, r.parts.cacheWrite ?? 0, r.parts.output ?? 0, r.parts.reasoning ?? 0,
       r.parts.input == null ? 1 : 0, r.parts.cacheRead == null ? 1 : 0, r.parts.cacheWrite == null ? 1 : 0,
       r.parts.output == null ? 1 : 0, r.parts.reasoning == null ? 1 : 0,
-      r.reportedBasis === 'actual' ? r.reportedUsd ?? 0 : 0,
-      r.reportedBasis === 'plan-rate' ? r.reportedUsd ?? 0 : 0,
-      1,
+      !r.tokensOnly && r.reportedBasis === 'actual' ? r.reportedUsd ?? 0 : 0,
+      !r.tokensOnly && r.reportedBasis === 'plan-rate' ? r.reportedUsd ?? 0 : 0,
+      r.tokensOnly ? 0 : (r.callsWeight ?? 1),
     ].map(v => v * sign);
+    if (r.tokensOnly) for (let i = 5; i < 10; i++) sums[i] = 0;
     const base = {
       machine: r.machine, framework: r.framework, model: r.model ?? NONE, session_kind: r.sessionKind,
       topic: r.topic ?? NONE, job: r.job ?? NONE, feature: r.feature ?? NONE,
@@ -283,6 +309,67 @@ class DeltaBatch {
   get empty(): boolean { return this.hour.size === 0; }
 }
 
+export interface InvocationInput {
+  feature: string;
+  framework: string | null;
+  model: string | null;
+  startedAt: number;
+  endedAt: number;
+  outcome: 'ok' | 'error';
+  usage: {
+    sessionId?: string | null; input?: number | null; cacheRead?: number | null; cacheWrite?: number | null;
+    output?: number | null; reasoning?: number | null; reportedUsd?: number | null; reportedBasis?: 'actual' | 'plan-rate' | null;
+  } | null;
+  jobSlug: string | null;
+  runId: string | null;
+}
+
+interface QueuedInvocation extends InvocationInput { callId: string }
+
+interface PairRow {
+  correlation_key: string;
+  inv_observation_id: string;
+  inv_row: string;
+  inv_start: number;
+  inv_end: number;
+  held: string;
+  file_path: string | null;
+  last_file_at: number | null;
+  counted_side: 'invocation' | 'file';
+  state: 'open' | 'settled' | 'disagreement' | 'ambiguous';
+  disputed: number;
+}
+
+interface CodexTotals { input: number; cached: number; output: number; reasoning: number }
+interface CodexCheckpointState {
+  sessionId: string | null;
+  cwd: string | null;
+  model: string | null;
+  last: CodexTotals | null;
+  baseline: CodexTotals | null;
+  resumed: boolean;
+}
+
+function codexTotals(u: Record<string, unknown>): CodexTotals {
+  const n = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? Math.floor(v) : 0);
+  return { input: n(u.input_tokens), cached: n(u.cached_input_tokens), output: n(u.output_tokens), reasoning: n(u.reasoning_output_tokens) };
+}
+
+function tokenTotal(p: TokenParts): number {
+  return (p.input ?? 0) + (p.cacheRead ?? 0) + (p.cacheWrite ?? 0) + (p.output ?? 0);
+}
+
+/** Map a provider's framework id to the ledger's framework vocabulary. */
+export function normalizeFramework(f: string | null | undefined): UsageFramework {
+  const v = (f ?? '').toLowerCase();
+  if (v.includes('claude') || v.includes('anthropic')) return 'claude-code';
+  if (v.includes('codex') || v.includes('openai')) return 'codex-cli';
+  if (v.includes('gemini')) return 'gemini-cli';
+  if (v.includes('grok')) return 'grok-build';
+  if (v === 'pi' || v.startsWith('pi-') || v.includes('pi-cli')) return 'pi-cli';
+  return 'api';
+}
+
 export class UsageLedger {
   private readonly db: BetterSqliteDatabase;
   private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes'>> & { otherAgentHomes: string[] };
@@ -300,6 +387,8 @@ export class UsageLedger {
       maxRawRows: 4_000_000,
       rawRetentionMs: 90 * DAY_MS,
       rollupRetentionMs: 400 * DAY_MS,
+      invocationQueueMax: 10_000,
+      settleWindowMs: 2 * 60_000,
       now: () => Date.now(),
       ...opts,
       otherAgentHomes: opts.otherAgentHomes ?? [],
@@ -315,6 +404,8 @@ export class UsageLedger {
     this.db.pragma('synchronous = NORMAL');
     registerSqliteHandle(() => { try { this.db.close(); } catch { /* already closed */ } });
     for (const ddl of SCHEMA) this.db.exec(ddl);
+    const cpCols = (this.db.prepare('PRAGMA table_info(checkpoints)').all() as { name: string }[]).map(c => c.name);
+    if (!cpCols.includes('extra')) this.db.exec('ALTER TABLE checkpoints ADD COLUMN extra TEXT');
     this.initMeta();
     this.upsertStmts = {
       hour: this.prepareUpsert('rollup_hour', HOUR_KEY),
@@ -493,8 +584,13 @@ export class UsageLedger {
    */
   scanTick(): ScanReport {
     const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
-    if (this.roots.length === 0) return report;
-    const queues = this.roots.map(r => ({ r, files: this.listRootFiles(r.root).filter(f => this.fileChanged(f)) }));
+    // Bindings from queued one-shots must exist before their transcripts are scanned.
+    try { this.flushInvocations(); } catch (err) { console.warn('[UsageLedger] invocation flush failed:', err); }
+    if (this.roots.length === 0 && this.codexRoots.length === 0) return report;
+    const queues = [
+      ...this.roots.map(r => ({ r, kind: 'claude' as const, files: this.listRootFiles(r.root).filter(f => this.fileChanged(f)) })),
+      ...this.codexRoots.map(r => ({ r, kind: 'codex' as const, files: this.listCodexFiles(r.root).filter(f => this.fileChanged(f)) })),
+    ];
     let budget = this.opts.filesPerTick;
     let progressed = true;
     while (budget > 0 && progressed) {
@@ -503,7 +599,7 @@ export class UsageLedger {
         const q = queues[(this.rootCursor + i) % queues.length];
         const f = q.files.shift();
         if (!f) continue;
-        const r = this.ingestClaudeFile(q.r.root, f);
+        const r = q.kind === 'codex' ? this.ingestCodexFile(q.r.root, f) : this.ingestClaudeFile(q.r.root, f);
         report.filesRead++;
         report.rowsInserted += r.inserted;
         report.rowsCounted += r.counted;
@@ -517,6 +613,7 @@ export class UsageLedger {
       this.coverage.get(q.r.root)!.filesPending = q.files.length;
       report.pending += q.files.length;
     }
+    try { this.settlePairs(); } catch (err) { console.warn('[UsageLedger] pair settlement failed:', err); }
     return report;
   }
 
@@ -569,7 +666,7 @@ export class UsageLedger {
 
     const memberCache = new Map<string, ScopeBasis | null>();
     const batch = new DeltaBatch();
-    let inserted = 0, counted = 0;
+    let inserted = 0, counted = 0, pairHeld = 0;
     const newOffset = startAt + lastNl + 1;
 
     const tx = this.db.transaction(() => {
@@ -616,14 +713,17 @@ export class UsageLedger {
         if (res.changes !== 1) continue;
         inserted++;
         if (status !== 'counted') continue;
-        counted++;
-        batch.add({
+        const row: RowForRollup = {
           ts, machine: this.opts.machineId, framework: 'claude-code', model, sessionKind,
           topic: binding?.topicId ?? null, job: binding?.jobSlug ?? null, run: binding?.runId ?? null, feature: null,
           sessionId, parts, reportedUsd: null, reportedBasis: null,
-        }, 1);
+        };
+        if (this.routeFileRowThroughPair(`claude-code:${sessionId}`, observationId, row, file)) { pairHeld++; continue; }
+        counted++;
+        batch.add(row, 1);
       }
       this.applyBatch(batch);
+      void pairHeld;
       this.metaSet('raw_rows', String(this.rawRowCount + inserted));
       this.db.prepare(`INSERT INTO checkpoints(path, root, inode, head_hash, birth_ms, offset, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, head_hash = excluded.head_hash,
@@ -670,6 +770,393 @@ export class UsageLedger {
       fs.readSync(fd, b, 0, end - start, start);
       return b;
     } finally { fs.closeSync(fd); }
+  }
+
+  // ── Slice 2: intelligence calls, dedupe pairs ───────────────────────
+
+  private readonly invocationQueue: QueuedInvocation[] = [];
+  private queueDropped = 0;
+
+  /**
+   * Bounded, non-blocking enqueue from the funnel (spec: Slice 2). Never throws:
+   * the caller is a live decision and recording must never affect it.
+   */
+  enqueueInvocation(rec: InvocationInput): void {
+    try {
+      if (this.closed) return;
+      if (this.invocationQueue.length >= this.opts.invocationQueueMax) {
+        this.invocationQueue.shift();
+        this.queueDropped++;
+      }
+      this.invocationQueue.push({ ...rec, callId: crypto.randomUUID() });
+    } catch { /* @silent-fallback-ok: an enqueue failure loses one usage row, never the call it describes */ }
+  }
+
+  get queuedInvocations(): number { return this.invocationQueue.length; }
+  get droppedInvocations(): number { return this.queueDropped; }
+
+  /** Flush queued invocations in one transaction: rows, bindings, pairs and rollup deltas together. */
+  flushInvocations(): number {
+    if (this.invocationQueue.length === 0) return 0;
+    const items = this.invocationQueue.splice(0, this.invocationQueue.length);
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
+      (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
+       parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+      VALUES (@observation_id, @correlation_key, 'invocation', @ts, 'intelligence-call', @framework, @model, @machine_id,
+       NULL, @session_id, 'internal', NULL, 'spawn-record', NULL, @job_slug, @run_id, @feature,
+       @tok_input, @tok_cache_read, @tok_cache_write, @tok_output, @tok_reasoning, 'counted', @reported_usd, @reported_basis, NULL, NULL)`);
+    let n = 0;
+    const tx = this.db.transaction(() => {
+      const batch = new DeltaBatch();
+      for (const it of items) {
+        const framework = normalizeFramework(it.framework);
+        const u = it.usage;
+        const parts: TokenParts = {
+          input: nonNegInt(u?.input), cacheRead: nonNegInt(u?.cacheRead), cacheWrite: nonNegInt(u?.cacheWrite),
+          output: nonNegInt(u?.output), reasoning: nonNegInt(u?.reasoning),
+        };
+        const sessionId = clip(u?.sessionId ?? null);
+        const correlationKey = sessionId ? `${framework}:${sessionId}` : null;
+        const observationId = UsageLedger.observationId('intelligence-call', it.callId);
+        const usd = typeof u?.reportedUsd === 'number' && Number.isFinite(u.reportedUsd) ? u.reportedUsd : null;
+        const basis = usd != null ? (u?.reportedBasis ?? null) : null;
+        const res = insert.run({
+          observation_id: observationId, correlation_key: correlationKey, ts: it.startedAt, framework,
+          model: clip(it.model), machine_id: this.opts.machineId, session_id: sessionId,
+          job_slug: clip(it.jobSlug), run_id: clip(it.runId), feature: clip(it.feature),
+          tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_cache_write: parts.cacheWrite,
+          tok_output: parts.output, tok_reasoning: parts.reasoning, reported_usd: usd, reported_basis: basis,
+        });
+        if (res.changes !== 1) continue;
+        n++;
+        if (!sessionId) this.bump('invocations_uncorrelated');
+        if (parts.input == null && parts.output == null) this.bump('invocations_no_counts');
+        const row: RowForRollup = {
+          ts: it.startedAt, machine: this.opts.machineId, framework, model: clip(it.model), sessionKind: 'internal',
+          topic: null, job: clip(it.jobSlug), run: clip(it.runId), feature: clip(it.feature),
+          sessionId, parts, reportedUsd: usd, reportedBasis: basis,
+        };
+        batch.add(row, 1);
+        if (sessionId) {
+          // The provider session this call ran in is this agent's own (a spawn record).
+          this.recordBindingInTx({
+            sessionId, framework, sessionKind: 'internal', cwd: null, topicId: null,
+            jobSlug: clip(it.jobSlug), runId: clip(it.runId), accountId: null, validFrom: it.startedAt,
+          });
+          this.openPair(correlationKey!, observationId, row, it.startedAt, it.endedAt, batch);
+        }
+      }
+      this.applyBatch(batch);
+      this.metaSet('raw_rows', String(this.rawRowCount + n));
+    });
+    tx();
+    return n;
+  }
+
+  private bump(key: string, by = 1): void {
+    this.metaSet(`cov:${key}`, String(Number(this.metaGet(`cov:${key}`) ?? '0') + by));
+  }
+
+  private counter(key: string): number { return Number(this.metaGet(`cov:${key}`) ?? '0'); }
+
+  private recordBindingInTx(b: Omit<SessionBinding, 'validTo' | 'machineId'>): void {
+    this.db.prepare(`INSERT OR IGNORE INTO session_bindings
+      (session_id, framework, session_kind, cwd, topic_id, job_slug, run_id, account_id, machine_id, valid_from, valid_to, change_seq)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`)
+      .run(b.sessionId, b.framework, b.sessionKind, b.cwd, b.topicId, b.jobSlug, b.runId, b.accountId, this.opts.machineId, b.validFrom, this.nextSeq());
+  }
+
+  /**
+   * Open (or join) the dedupe pair for an invocation. File rows already counted under
+   * this key are moved to the held side, so whichever arrives first the result is the same.
+   */
+  private openPair(key: string, invObs: string, inv: RowForRollup, start: number, end: number, batch: DeltaBatch): void {
+    const existing = this.db.prepare('SELECT * FROM pairs WHERE correlation_key = ?').get(key) as PairRow | undefined;
+    if (existing) {
+      // More than one invocation on one provider session (not expected): both stay counted.
+      this.db.prepare(`UPDATE pairs SET state = 'ambiguous', invocations = invocations + 1, updated_at = ? WHERE correlation_key = ?`)
+        .run(this.opts.now(), key);
+      return;
+    }
+    const counted = this.db.prepare(`SELECT * FROM usage_events WHERE correlation_key = ? AND status = 'counted' AND grain = 'request'`)
+      .all(key) as Record<string, any>[];
+    const held: RowForRollup[] = [];
+    let filePath: string | null = null;
+    let lastFileAt: number | null = null;
+    for (const r of counted) {
+      const row = UsageLedger.eventToRollupRow(r);
+      batch.add(row, -1);
+      held.push(UsageLedger.fillFromInvocation(row, inv));
+      filePath = r.source_path ?? filePath;
+      lastFileAt = Math.max(lastFileAt ?? 0, r.ts);
+    }
+    if (counted.length) {
+      this.db.prepare(`UPDATE usage_events SET status = 'held' WHERE correlation_key = ? AND status = 'counted' AND grain = 'request'`).run(key);
+    }
+    this.db.prepare(`INSERT INTO pairs (correlation_key, inv_observation_id, inv_row, inv_start, inv_end, held, file_path, last_file_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(key, invObs, JSON.stringify(inv), start, end, JSON.stringify(UsageLedger.compactHeld(held)), filePath, lastFileAt, this.opts.now());
+  }
+
+  /**
+   * A newly counted file row whose correlation key has an invocation pair: held while the
+   * invocation side is counted (returns true); counted as a token-only row when the pair
+   * settled on the file side (returns false after adjusting the row).
+   */
+  private routeFileRowThroughPair(key: string, obs: string, row: RowForRollup, file: string): boolean {
+    const pair = this.db.prepare('SELECT * FROM pairs WHERE correlation_key = ?').get(key) as PairRow | undefined;
+    if (!pair) return false;
+    const inv = JSON.parse(pair.inv_row) as RowForRollup;
+    const filled = UsageLedger.fillFromInvocation(row, inv);
+    Object.assign(row, filled);
+    if (pair.counted_side === 'file') {
+      row.callsWeight = 0;
+      return false;
+    }
+    const held = JSON.parse(pair.held) as RowForRollup[];
+    held.push(filled);
+    // A file row after a settlement that disagreed re-opens the comparison.
+    const state = pair.state === 'disagreement' ? 'open' : pair.state;
+    this.db.prepare(`UPDATE pairs SET held = ?, file_path = ?, last_file_at = ?, state = ?, updated_at = ? WHERE correlation_key = ?`)
+      .run(JSON.stringify(UsageLedger.compactHeld(held)), file, Math.max(pair.last_file_at ?? 0, row.ts), state, this.opts.now(), key);
+    this.db.prepare(`UPDATE usage_events SET status = 'held' WHERE observation_id = ?`).run(obs);
+    return true;
+  }
+
+  /**
+   * Settle open pairs (spec: Cross-source rule). A pair settles once its file is read to
+   * the end, past the invocation's end, and quiet for the settle window. Agreeing totals
+   * move the tokens to the file side (the invocation keeps its call and dollars);
+   * disagreeing totals leave the invocation counted and the excess shown as disputed.
+   */
+  settlePairs(): { settled: number; disagreed: number } {
+    const now = this.opts.now();
+    const out = { settled: 0, disagreed: 0 };
+    const open = this.db.prepare(`SELECT * FROM pairs WHERE state = 'open' AND counted_side = 'invocation'`).all() as PairRow[];
+    const tx = this.db.transaction(() => {
+      const batch = new DeltaBatch();
+      for (const p of open) {
+        const held = JSON.parse(p.held) as RowForRollup[];
+        if (held.length === 0 || !p.file_path) continue;
+        if (now - Math.max(p.inv_end, p.last_file_at ?? 0) < this.opts.settleWindowMs) continue;
+        if (this.fileChanged(p.file_path)) continue;
+        const inv = JSON.parse(p.inv_row) as RowForRollup;
+        const invTotal = tokenTotal(inv.parts);
+        const fileTotal = held.reduce((a, r) => a + tokenTotal(r.parts), 0);
+        if (Math.abs(fileTotal - invTotal) <= Math.max(2, invTotal * 0.005)) {
+          batch.add({ ...inv, tokensOnly: true }, -1);
+          for (const r of held) batch.add({ ...r, tokensOnly: true }, 1);
+          this.db.prepare(`UPDATE usage_events SET status = 'counted' WHERE correlation_key = ? AND status = 'held'`).run(p.correlation_key);
+          this.db.prepare(`UPDATE usage_events SET status = 'paired' WHERE observation_id = ?`).run(p.inv_observation_id);
+          this.db.prepare(`UPDATE pairs SET counted_side = 'file', state = 'settled', held = '[]', disputed = 0, updated_at = ? WHERE correlation_key = ?`)
+            .run(now, p.correlation_key);
+          out.settled++;
+        } else {
+          this.db.prepare(`UPDATE pairs SET state = 'disagreement', disputed = ?, updated_at = ? WHERE correlation_key = ?`)
+            .run(Math.max(0, fileTotal - invTotal), now, p.correlation_key);
+          out.disagreed++;
+        }
+      }
+      this.applyBatch(batch);
+    });
+    tx();
+    return out;
+  }
+
+  pairCounts(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const r of this.db.prepare('SELECT state, COUNT(*) AS n, COALESCE(SUM(disputed), 0) AS d FROM pairs GROUP BY state').all() as { state: string; n: number; d: number }[]) {
+      out[r.state] = r.n;
+      if (r.d) out.disputedTokens = (out.disputedTokens ?? 0) + r.d;
+    }
+    return out;
+  }
+
+  private static fillFromInvocation(row: RowForRollup, inv: RowForRollup): RowForRollup {
+    return {
+      ...row,
+      sessionKind: 'internal',
+      job: row.job ?? inv.job, run: row.run ?? inv.run, feature: row.feature ?? inv.feature, topic: row.topic ?? inv.topic,
+      callsWeight: 0, reportedUsd: null, reportedBasis: null,
+    };
+  }
+
+  /** Keep held aggregates small: one entry per rollup hour key. */
+  private static compactHeld(rows: RowForRollup[]): RowForRollup[] {
+    const m = new Map<string, RowForRollup>();
+    for (const r of rows) {
+      const k = [Math.floor(r.ts / HOUR_MS), r.framework, r.model, r.sessionKind, r.topic, r.job, r.run, r.feature, r.sessionId].join('\u0000');
+      const cur = m.get(k);
+      if (!cur) { m.set(k, { ...r, ts: Math.floor(r.ts / HOUR_MS) * HOUR_MS, parts: { ...r.parts } }); continue; }
+      for (const f of ['input', 'cacheRead', 'cacheWrite', 'output', 'reasoning'] as const) {
+        cur.parts[f] = cur.parts[f] == null && r.parts[f] == null ? null : (cur.parts[f] ?? 0) + (r.parts[f] ?? 0);
+      }
+    }
+    return [...m.values()];
+  }
+
+  private static eventToRollupRow(r: Record<string, any>): RowForRollup {
+    return {
+      ts: r.ts, machine: r.machine_id, framework: r.framework, model: r.model ?? null, sessionKind: r.session_kind,
+      topic: r.topic_id ?? null, job: r.job_slug ?? null, run: r.run_id ?? null, feature: r.feature ?? null,
+      sessionId: r.session_id ?? null,
+      parts: { input: r.tok_input, cacheRead: r.tok_cache_read, cacheWrite: r.tok_cache_write, output: r.tok_output, reasoning: r.tok_reasoning },
+      reportedUsd: r.reported_usd ?? null, reportedBasis: r.reported_basis ?? null,
+    };
+  }
+
+  // ── Slice 2: Codex rollouts ─────────────────────────────────────────
+
+  private readonly codexRoots: { root: string; origin: string }[] = [];
+
+  /** Register a Codex home (`$CODEX_HOME`, default `~/.codex`). Rollouts live under `sessions/`. */
+  addCodexRoot(codexHome: string, origin: string): void {
+    const root = path.resolve(codexHome);
+    if (this.codexRoots.some(r => r.root === root)) return;
+    this.codexRoots.push({ root, origin });
+    this.coverage.set(root, { root, origin: `codex:${origin}`, filesScanned: 0, filesSkippedDirs: 0, filesOutOfWindow: 0, filesTooDeep: 0, filesPending: 0 });
+  }
+
+  private listCodexFiles(root: string): string[] {
+    const cov = this.coverage.get(root)!;
+    const base = path.join(root, 'sessions');
+    const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
+    const out: string[] = [];
+    let outOfWindow = 0;
+    const walk = (dir: string, depth: number): void => {
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.isSymbolicLink()) continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory() && depth < 3) walk(p, depth + 1);
+        else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
+          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { continue; }
+          out.push(p);
+        }
+      }
+    };
+    walk(base, 0);
+    cov.filesOutOfWindow = outOfWindow;
+    return out.sort();
+  }
+
+  /**
+   * Ingest one Codex rollout from its checkpoint (spec: Slice 2). Per-request rows are
+   * the deltas of the cumulative `total_token_usage` between consecutive `token_count`
+   * events, skipping events whose total did not change. Input excludes cached input.
+   */
+  ingestCodexFile(root: string, file: string): { inserted: number; counted: number } {
+    let st: fs.Stats;
+    try {
+      st = fs.lstatSync(file);
+      if (st.isSymbolicLink()) return { inserted: 0, counted: 0 };
+    } catch { return { inserted: 0, counted: 0 }; }
+    const head = UsageLedger.readHead(file);
+    const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
+      { inode: number; head_hash: string; birth_ms: number; offset: number; extra: string | null } | undefined;
+    const same = !!cp && cp.inode === st.ino && cp.head_hash === head && st.size >= cp.offset;
+    const startAt = same ? cp!.offset : 0;
+    const birthMs = same ? cp!.birth_ms : (st.birthtimeMs > 0 ? Math.floor(st.birthtimeMs) : 0);
+    const state: CodexCheckpointState = same && cp!.extra ? JSON.parse(cp!.extra) : { sessionId: null, cwd: null, model: null, last: null, baseline: null, resumed: false };
+    if (st.size <= startAt) return { inserted: 0, counted: 0 };
+    const buf = UsageLedger.readFrom(file, startAt, st.size);
+    const lastNl = buf.lastIndexOf(0x0a);
+    if (lastNl < 0) return { inserted: 0, counted: 0 };
+    const text = buf.subarray(0, lastNl + 1).toString('utf8');
+    const insert = this.db.prepare(`INSERT OR IGNORE INTO usage_events
+      (observation_id, correlation_key, grain, ts, source, framework, model, machine_id, account_id, session_id, session_kind,
+       parent_session_id, scope_basis, topic_id, job_slug, run_id, feature, tok_input, tok_cache_read, tok_cache_write,
+       tok_output, tok_reasoning, status, reported_usd, reported_basis, source_path, source_pos)
+      VALUES (@observation_id, @correlation_key, 'request', @ts, 'codex-rollout', 'codex-cli', @model, @machine_id,
+       @account_id, @session_id, @session_kind, NULL, @scope_basis, @topic_id, @job_slug, @run_id, NULL,
+       @tok_input, @tok_cache_read, NULL, @tok_output, @tok_reasoning, 'counted', NULL, NULL, @source_path, @source_pos)`);
+    let inserted = 0, counted = 0;
+    const batch = new DeltaBatch();
+    let scope: ScopeBasis | null | undefined;
+    const tx = this.db.transaction(() => {
+      let pos = startAt;
+      for (const line of text.split('\n')) {
+        const linePos = pos;
+        pos += Buffer.byteLength(line, 'utf8') + 1;
+        if (!line.trim() || line[0] !== '{') continue;
+        let d: Record<string, any>;
+        try { d = JSON.parse(line); } catch { continue; }
+        const payload = d.payload && typeof d.payload === 'object' ? d.payload : null;
+        if (!payload) continue;
+        if (d.type === 'session_meta') {
+          state.sessionId = clip(payload.id) ?? state.sessionId;
+          state.cwd = clip(payload.cwd) ?? state.cwd;
+          state.resumed = Object.keys(payload).some(k => /fork|resum|parent/i.test(k) && payload[k]);
+          continue;
+        }
+        if (d.type === 'turn_context') { state.model = clip(payload.model) ?? state.model; continue; }
+        if (payload.type !== 'token_count' || !payload.info?.total_token_usage) continue;
+        const t = codexTotals(payload.info.total_token_usage);
+        if (!state.sessionId) continue;
+        if (!state.last) {
+          if (state.resumed) {
+            // A resumed or forked rollout starts from inherited usage: store it as the baseline.
+            state.baseline = t; state.last = t;
+            this.bump('codex_inherited_uncounted', t.input + t.output);
+            continue;
+          }
+          state.last = { input: 0, cached: 0, output: 0, reasoning: 0 };
+        }
+        const delta = { input: t.input - state.last.input, cached: t.cached - state.last.cached, output: t.output - state.last.output, reasoning: t.reasoning - state.last.reasoning };
+        if (delta.input === 0 && delta.cached === 0 && delta.output === 0) continue;
+        if (delta.input < 0 || delta.output < 0 || delta.cached < 0) { this.bump('codex_delta_mismatch'); state.last = t; continue; }
+        state.last = t;
+        if (scope === undefined) scope = this.membership(state.sessionId, state.cwd);
+        if (!scope) continue;
+        const ts = Date.parse(d.timestamp ?? '') || st.mtimeMs;
+        const binding = this.bindingAt(state.sessionId, ts);
+        const parts: TokenParts = { input: Math.max(0, delta.input - delta.cached), cacheRead: delta.cached, cacheWrite: null, output: delta.output, reasoning: delta.reasoning };
+        const obs = UsageLedger.observationId('codex-rollout', `${state.sessionId}:${linePos}`);
+        const sessionKind: SessionKind = binding?.sessionKind ?? 'interactive';
+        const res = insert.run({
+          observation_id: obs, correlation_key: `codex-cli:${state.sessionId}`, ts, model: state.model,
+          machine_id: this.opts.machineId, account_id: binding?.accountId ?? null, session_id: state.sessionId,
+          session_kind: sessionKind, scope_basis: scope, topic_id: binding?.topicId ?? null, job_slug: binding?.jobSlug ?? null,
+          run_id: binding?.runId ?? null, tok_input: parts.input, tok_cache_read: parts.cacheRead, tok_output: parts.output,
+          tok_reasoning: parts.reasoning, source_path: file, source_pos: linePos,
+        });
+        if (res.changes !== 1) continue;
+        inserted++;
+        if (birthMs > 0 && ts < birthMs - 1000) {
+          this.db.prepare(`UPDATE usage_events SET status = 'copied-history' WHERE observation_id = ?`).run(obs);
+          continue;
+        }
+        const row: RowForRollup = {
+          ts, machine: this.opts.machineId, framework: 'codex-cli', model: state.model, sessionKind,
+          topic: binding?.topicId ?? null, job: binding?.jobSlug ?? null, run: binding?.runId ?? null, feature: null,
+          sessionId: state.sessionId, parts, reportedUsd: null, reportedBasis: null,
+        };
+        if (this.routeFileRowThroughPair(`codex-cli:${state.sessionId}`, obs, row, file)) continue;
+        counted++;
+        batch.add(row, 1);
+      }
+      this.applyBatch(batch);
+      this.metaSet('raw_rows', String(this.rawRowCount + inserted));
+      this.db.prepare(`INSERT INTO checkpoints(path, root, inode, head_hash, birth_ms, offset, updated_at, extra)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(path) DO UPDATE SET inode = excluded.inode, head_hash = excluded.head_hash,
+        birth_ms = excluded.birth_ms, offset = excluded.offset, updated_at = excluded.updated_at, extra = excluded.extra`)
+        .run(file, root, st.ino, head, birthMs, startAt + lastNl + 1, this.opts.now(), JSON.stringify(state));
+    });
+    tx();
+    return { inserted, counted };
+  }
+
+  /** Coverage counters kept in meta (spec: /usage/coverage). */
+  coverageCounters(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const r of this.db.prepare(`SELECT key, value FROM meta WHERE key LIKE 'cov:%'`).all() as { key: string; value: string }[]) {
+      out[r.key.slice(4)] = Number(r.value);
+    }
+    out.invocations_dropped = this.queueDropped;
+    out.invocations_queued = this.invocationQueue.length;
+    return out;
   }
 
   // ── retention ───────────────────────────────────────────────────────
@@ -727,10 +1214,17 @@ export class UsageLedger {
 
   /** Recompute day totals straight from counted raw rows (the rollup consistency check). */
   totalsFromEvents(sinceMs: number): Pick<UsageTotals, 'calls' | 'input' | 'cacheRead' | 'cacheWrite' | 'output'> {
-    const r = this.db.prepare(`SELECT COUNT(*) AS calls, COALESCE(SUM(tok_input),0) AS i, COALESCE(SUM(tok_cache_read),0) AS cr,
+    const since = Math.floor(sinceMs / DAY_MS) * DAY_MS;
+    const r = this.db.prepare(`SELECT COALESCE(SUM(tok_input),0) AS i, COALESCE(SUM(tok_cache_read),0) AS cr,
       COALESCE(SUM(tok_cache_write),0) AS cw, COALESCE(SUM(tok_output),0) AS o
-      FROM usage_events WHERE status = 'counted' AND ts >= ?`).get(Math.floor(sinceMs / DAY_MS) * DAY_MS) as Record<string, number>;
-    return { calls: r.calls, input: r.i, cacheRead: r.cr, cacheWrite: r.cw, output: r.o };
+      FROM usage_events WHERE status = 'counted' AND ts >= ?`).get(since) as Record<string, number>;
+    // Calls: every invocation (its call stays counted whichever side holds the tokens),
+    // plus request rows that are not one side of a dedupe pair.
+    const c = this.db.prepare(`SELECT COUNT(*) AS n FROM usage_events e WHERE e.ts >= ? AND (
+        (e.grain = 'invocation' AND e.status IN ('counted', 'paired'))
+        OR (e.grain != 'invocation' AND e.status = 'counted'
+            AND (e.correlation_key IS NULL OR e.correlation_key NOT IN (SELECT correlation_key FROM pairs))))`).get(since) as { n: number };
+    return { calls: c.n, input: r.i, cacheRead: r.cr, cacheWrite: r.cw, output: r.o };
   }
 
   /** Row counts by status and scope basis — the coverage numbers behind the shares. */
