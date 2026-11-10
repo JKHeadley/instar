@@ -1397,6 +1397,25 @@
       "grandfathered": false
     },
     {
+      "category": "derived-usage-ledger",
+      "description": "Unified usage ledger SQLite (docs/specs/unified-usage-ledger.md): per-request token rows, session bindings, rollups and pooled peer rows, rebuilt from source transcripts plus the slim snapshot. The snapshot is the backed-up copy.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "n/a",
+      "transport": "none",
+      "paths": [
+        "server-data/usage-ledger.db",
+        "server-data/usage-ledger.snapshot.db"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "maxAgeMs": 7776000000,
+        "note": "raw rows 90 days or 4M-row ceiling; hour and session-day rollups 400 days; day rollups kept; bounded batches + incremental_vacuum"
+      }
+    },
+    {
       "category": "derived-token-ledger",
       "description": "Token ledger SQLite, rebuilt from Claude Code JSONL transcripts.",
       "scope": "derived-cache",
