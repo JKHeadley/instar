@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "slug": "cb-row-carrier",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T22:13:51.380Z",
+  "artifactPath": "upgrades/side-effects/cb-row-carrier.md",
+  "artifactSha256": "8278cdbc20087ef07ae68a24df0d3b71f34bccefcd012b730e49936344c9ddf5",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/DeliverMessageHandler.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/SessionRouter.ts",
+    "src/memory/TopicMemory.ts",
+    "src/memory/topicRowCarrier.ts",
+    "src/memory/topicRowWatermark.ts",
+    "tests/e2e/context-layer-kind-alive.test.ts",
+    "tests/e2e/topic-row-carrier-lifecycle.test.ts",
+    "tests/integration/topic-row-carrier-two-node.test.ts",
+    "tests/unit/topic-row-carrier.test.ts",
+    "upgrades/next/cb-row-carrier.md",
+    "upgrades/side-effects/cb-row-carrier.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Touches message delivery (deliverMessage forward and receive) behind a dark switch; Fable 5.2 second pass found two blockers, both fixed and re-tested",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "A new capability on an existing delivery path, not a fix to an agent-authored artifact; its self-triggered pulls are bounded per topic and stream with a cooldown and an attempt budget, and only read from peers"
+  }
+}
