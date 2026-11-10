@@ -27,3 +27,12 @@ A corrective constitutional revision and regenerated paired publication preserve
 ## Combined upstream refresh
 
 Upstream purchased-service and attribution articles are preserved. The combined Building family now has44articles; floor34/40 remains unchanged. New combined-family audit and report record independent semantic concurrence and the resolved attribution finding. Exact source quotes distinguish authorization to pursue work from still-pending final-head constitutional ratification. Earlier audit artifacts remain historical, not current combined attestations. No new runtime behavior.
+
+## Final-head independent second-pass review (2026-11-09)
+
+**Reviewer:** independent general-purpose reviewer subagent, fresh context, given the final head a4421f83 diff, the three side-effects artifacts, both ELI16 specs, the audit reports and docs/signal-vs-authority.md (2026-11-09 ~18:05 PST).
+
+**Concur.** The new paragraph sharpens the existing Observability article (STANDARDS-REGISTRY.md:590) with no duplicate article and no conflict with Observable Intelligence or the Bug-Fix Evidence Bar. It adds no new automated gate and no promotion authority (the only block is an unsupported improvement claim, through existing promotion owners), binds no runtime behavior, so existing agents need no migration. It is honest about open work (STD-SUBCOUNTDOWN-metrics-universality stays open). Area audits are consistent (Building 44 articles, floor 34/40 unchanged).
+
+Non-blocking follow-ups (after merge, so the approved constitutional text stays exactly as the operator reviewed it): (1) STANDARDS-REGISTRY.md:591 "final constitutional wording still requires independent operator ratification" becomes stale on merge; replace with a citation of the ratification. (2) docs/constitution-alignment-map.md:125 row 39 explanation sits in the Class column; move it to Difference. (3) improvement-evidence-history.md describes runtime work split to PRs 2853/2847; mark it historical, and fix run-together tokens in this artifact.
+
