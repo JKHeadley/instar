@@ -35,3 +35,5 @@ Also:
 ## What ships when
 
 Everything ships together in one pull request. There is no data migration. Undoing it is a revert.
+
+Transcript lookup follow-up: no reader-facing change.

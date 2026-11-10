@@ -89,3 +89,7 @@ Independent reviewer subagent, 2026-11-10. Concurred on the chrome patterns, sid
 Minor notes accepted as-is: an escalation's 2-minute reactive grace holds the monitor's tick (ticks never overlap, and this happens at most once per episode); a pane with an unclearable banner re-reads up to 128 KB of transcript per poll for that session only.
 
 Reviewer verdict after fixes: "Concur after fixes" (60/60 in the two changed suites). Its one remaining suggestion, also treating the "●" output marker that some terminals (Linux included) draw as model output, is applied.
+
+## Follow-up commit
+
+The shared limit-evidence lookup moved from a private SessionManager method to a module function over `listRunningSessions`, `configHomeForSession`, `setClaudeSessionId` and the project dir. The existing integration test calls `confirmSessionUsageLimit` on a narrow stand-in, and the private method broke it. No behavior change. `tests/integration/session-usage-limit-evidence.test.ts` now also covers `usageWallFromTranscript` (wall vs throttle, exact session only); 11/11 pass.

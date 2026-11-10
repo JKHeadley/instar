@@ -6568,7 +6568,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
   /** A helper's limit is never evidence that the session serving the topic is
    * unable to reply. Corroborate the exact main transcript and account home. */
   confirmSessionUsageLimit(tmuxSession: string): string | false {
-    const t = this.limitEvidenceTranscript(tmuxSession);
+    const t = limitEvidenceTranscript(this, this.config.projectDir, tmuxSession);
     if (!t) return false;
     return confirmSessionUsageLimit(t.path, t.claudeSessionId) ? t.claudeSessionId : false;
   }
@@ -6581,31 +6581,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * every time Claude Code changed its layout (fb-f8b946ae-597).
    */
   usageWallFromTranscript(tmuxSession: string): string | null {
-    const t = this.limitEvidenceTranscript(tmuxSession);
+    const t = limitEvidenceTranscript(this, this.config.projectDir, tmuxSession);
     if (!t) return null;
     return sessionUsageWallFromTranscript(t.path, t.claudeSessionId);
-  }
-
-  /** The exact claude-code session's transcript path + id, for limit evidence. */
-  private limitEvidenceTranscript(tmuxSession: string): { path: string; claudeSessionId: string } | null {
-    const session = this.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
-    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return null;
-    // defaultWhenAbsent: safe here because nothing is believed without the exact session's transcript row.
-    const configHome = this.configHomeForSession(tmuxSession, { defaultWhenUnset: true, defaultWhenAbsent: true });
-    if (!configHome) return null;
-    // No hook has reported the id yet when the very first turn was refused for usage (no tool, no
-    // Stop). Claude Code's own per-process record names it; binding it is what the next hook would do.
-    let claudeSessionId = session.claudeSessionId;
-    if (!claudeSessionId) {
-      claudeSessionId = claudeSessionIdFromPidFiles(configHome, tmuxSession) ?? undefined;
-      if (claudeSessionId) this.setClaudeSessionId(session.id, claudeSessionId);
-    }
-    if (!claudeSessionId) return null;
-    const transcriptPath = resolveFrameworkTranscriptPath({
-      framework: 'claude-code', sessionId: claudeSessionId,
-      projectDir: session.cwd ?? this.config.projectDir, configHome,
-    });
-    return transcriptPath ? { path: transcriptPath, claudeSessionId } : null;
   }
 
   /**
@@ -10384,4 +10362,34 @@ rm()  { "${shimRunner}" rm  "$@"; }
   private generateId(): string {
     return randomUUID();
   }
+}
+
+/**
+ * The exact claude-code session's transcript path + id, for limit evidence.
+ * A module function over the few SessionManager members it needs, so the
+ * evidence methods also work when called on a narrow stand-in.
+ */
+function limitEvidenceTranscript(
+  sm: Pick<SessionManager, 'listRunningSessions' | 'configHomeForSession'> & { setClaudeSessionId?: SessionManager['setClaudeSessionId'] },
+  projectDir: string,
+  tmuxSession: string,
+): { path: string; claudeSessionId: string } | null {
+  const session = sm.listRunningSessions().find(s => s.tmuxSession === tmuxSession);
+  if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return null;
+  // defaultWhenAbsent: safe here because nothing is believed without the exact session's transcript row.
+  const configHome = sm.configHomeForSession(tmuxSession, { defaultWhenUnset: true, defaultWhenAbsent: true });
+  if (!configHome) return null;
+  // No hook has reported the id yet when the very first turn was refused for usage (no tool, no
+  // Stop). Claude Code's own per-process record names it; binding it is what the next hook would do.
+  let claudeSessionId = session.claudeSessionId;
+  if (!claudeSessionId) {
+    claudeSessionId = claudeSessionIdFromPidFiles(configHome, tmuxSession) ?? undefined;
+    if (claudeSessionId) sm.setClaudeSessionId?.(session.id, claudeSessionId);
+  }
+  if (!claudeSessionId) return null;
+  const transcriptPath = resolveFrameworkTranscriptPath({
+    framework: 'claude-code', sessionId: claudeSessionId,
+    projectDir: session.cwd ?? projectDir, configHome,
+  });
+  return transcriptPath ? { path: transcriptPath, claudeSessionId } : null;
 }
