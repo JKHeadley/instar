@@ -88,13 +88,13 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'contextBudget',
     prefixes: ['/context-budget'],
-    description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a) — and the recorded results of the adapter verification suite (which engine capabilities the engine version on this machine really supports). Check this before saying compaction recovery works. GET /context-budget/layers shows the per-topic summary store and transcript archive on this machine (roots and modes, topics, bytes, replication outcomes; 503 while contextBudget.enabled is off).',
+    description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a) — and the recorded results of the adapter verification suite (which engine capabilities the engine version on this machine really supports). Check this before saying compaction recovery works. GET /context-budget/layers shows the per-topic summary store and transcript archive on this machine (roots and modes, topics, bytes, replication outcomes; 503 while contextBudget.enabled is off). GET /context-budget/delta-shadow is the per-prompt delta hook\'s shadow comparison (§7.7): prompts measured, median and p95 of full vs delta characters, items the delta would omit, candidate re-fetches (unknown with a reason whenever anything was omitted), and whether reduction is allowed here (contextBudget.deltaHook.enabled, refused unless the compaction canary reads healthy). GET /topic/:id/prompt-context is the per-prompt hook\'s single request (full output in shadow).',
     build: ({ ctx }) => {
       const c = ctx as { contextBudgetSentinel?: { heartbeatFresh?: () => boolean } | null; contextLayers?: unknown };
       const s = c.contextBudgetSentinel;
       const layers = !!c.contextLayers;
       if (!s?.heartbeatFresh && !layers) return { enabled: false };
-      const endpoints = [...(s?.heartbeatFresh ? ['GET /context-budget/sentinel'] : []), ...(layers ? ['GET /context-budget/layers'] : [])];
+      const endpoints = [...(s?.heartbeatFresh ? ['GET /context-budget/sentinel'] : []), ...(layers ? ['GET /context-budget/layers', 'GET /context-budget/delta-shadow'] : [])];
       return { enabled: true, ...(s?.heartbeatFresh ? { heartbeatFresh: s.heartbeatFresh() } : {}), layers, endpoints };
     },
   },
@@ -918,6 +918,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         ? [
             'GET /topic/search?q=...&topic=N&limit=20',
             'GET /topic/context/:topicId?recent=30',
+            'GET /topic/:topicId/prompt-context?session=<claudeSessionId> (the per-prompt hook\'s single request)',
             'GET /topic/context/:topicId?assembled=true&prompt=...',
             'GET /session/context/:topicId?prompt=...&job=...',
             'GET /topic/list',

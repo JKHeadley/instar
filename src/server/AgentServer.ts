@@ -153,7 +153,9 @@ import { IdentityManager as ThreadlineIdentityManager } from '../threadline/clie
 import { FileSeenNonceStore } from '../core/aspNonceStore.js';
 import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
-import { createTopicIntentRoutes } from './topicIntentRoutes.js';
+import { createTopicIntentRoutes, serveTopicIntentBriefing } from './topicIntentRoutes.js';
+import { createPromptContextRoutes } from './promptContextRoutes.js';
+import { SeedFetchLog } from '../monitoring/contextLayers/promptContext.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
@@ -6508,6 +6510,27 @@ export class AgentServer {
         stateDir: options.config.stateDir,
       }));
     }
+    // The per-prompt hook's single request and the delta shadow (context-budget
+    // §7.7, Phase 1 S15). Mounted BEFORE the main routes so its history-read
+    // observer (candidate re-fetches after an omission) sees /topic/context and
+    // /telegram/topics/:id/messages; it only observes and passes them through.
+    const promptSeedFetches = new SeedFetchLog();
+    const promptLayerFreshness = options.contextLayers && options.topicMemory
+      ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
+      : null;
+    this.app.use(createPromptContextRoutes({
+      stateDir: options.config.stateDir,
+      shadowOn: () => !!options.contextLayers,
+      deltaSwitchOn: () => options.liveConfig?.get?.<boolean>('contextBudget.deltaHook.enabled', false) === true,
+      canary: () => (options.contextBudgetSentinel ? { report: options.contextBudgetSentinel.status().canary } : undefined),
+      briefing: (topicId) => {
+        if (!options.topicIntentStore) return '';
+        // Not recorded as a seed fetch: only the briefing route's own fetches can be the seed's.
+        return serveTopicIntentBriefing(options.topicIntentStore, topicId, promptLayerFreshness);
+      },
+      messages: (topicId, limit) => (options.telegram ? options.telegram.getTopicHistory(topicId, limit) as unknown as Array<Record<string, unknown>> : null),
+      seedFetches: promptSeedFetches,
+    }));
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
     // routes. A missing ledger is reported in the response, not replaced with
@@ -7284,6 +7307,7 @@ export class AgentServer {
       layerFreshness: options.contextLayers && options.topicMemory
         ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
         : null,
+      onBriefingServed: (topicId: number, text: string) => promptSeedFetches.noteBriefing(topicId, text),
     });
     this.app.use(topicIntentRoutes);
 
