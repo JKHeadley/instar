@@ -49,7 +49,7 @@ describe('BackupManager — never-backup judgment-provenance segments', () => {
   });
 
   it('never snapshots fold records, sidecars or the fold lock (context-budget §9.3/§14)', () => {
-    expect(NEVER_BACKUP_PATH_SEGMENTS).toEqual(expect.arrayContaining(['fold-records', 'fold-leases']));
+    expect(NEVER_BACKUP_PATH_SEGMENTS).toEqual(expect.arrayContaining(['fold-records', 'fold-leases', 'context-archive']));
     const rec = path.join(stateDir, 'state', 'context-layers', '141133', 'fold-records');
     fs.mkdirSync(rec, { recursive: true });
     fs.writeFileSync(path.join(rec, 'f1.json'), '{"state":"locked"}');
