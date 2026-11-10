@@ -129,6 +129,18 @@
         ]
       }
     ],
+    "PreCompact": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/pre-compact-steer.sh\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostCompact": [
       {
         "matcher": "",
