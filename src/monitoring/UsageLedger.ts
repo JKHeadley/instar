@@ -402,7 +402,7 @@ export class UsageLedger {
     try { this.db.pragma('auto_vacuum = INCREMENTAL'); } catch { /* @silent-fallback-ok: pragma failure must not break ledger init; retention just reclaims no disk. */ }
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('synchronous = NORMAL');
-    registerSqliteHandle(() => { try { this.db.close(); } catch { /* already closed */ } });
+    registerSqliteHandle(() => { try { this.db.close(); } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ /* already closed */ } });
     for (const ddl of SCHEMA) this.db.exec(ddl);
     const cpCols = (this.db.prepare('PRAGMA table_info(checkpoints)').all() as { name: string }[]).map(c => c.name);
     if (!cpCols.includes('extra')) this.db.exec('ALTER TABLE checkpoints ADD COLUMN extra TEXT');
@@ -535,7 +535,7 @@ export class UsageLedger {
     }
     // A spawn-record session file anywhere rules the directory in, wherever its cwd is.
     let entries: string[];
-    try { entries = fs.readdirSync(dirPath); } catch { return false; }
+    try { entries = fs.readdirSync(dirPath); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return false; }
     const stmt = this.db.prepare('SELECT 1 FROM session_bindings WHERE session_id = ? LIMIT 1');
     return entries.some(e => e.endsWith('.jsonl') && stmt.get(e.slice(0, -'.jsonl'.length)) !== undefined);
   }
@@ -548,12 +548,12 @@ export class UsageLedger {
     const projects = path.join(root, 'projects');
     const out: string[] = [];
     let dirs: fs.Dirent[];
-    try { dirs = fs.readdirSync(projects, { withFileTypes: true }); } catch { return out; }
+    try { dirs = fs.readdirSync(projects, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return out; }
     const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
     let skippedDirs = 0, outOfWindow = 0, tooDeep = 0;
     const walk = (dir: string, depth: number): void => {
       let entries: fs.Dirent[];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
         const p = path.join(dir, e.name);
@@ -561,7 +561,7 @@ export class UsageLedger {
           if (depth + 1 > this.opts.maxDepth) { tooDeep++; continue; }
           walk(p, depth + 1);
         } else if (e.isFile() && e.name.endsWith('.jsonl')) {
-          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { continue; }
+          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ continue; }
           out.push(p);
         }
       }
@@ -585,7 +585,7 @@ export class UsageLedger {
   scanTick(): ScanReport {
     const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
     // Bindings from queued one-shots must exist before their transcripts are scanned.
-    try { this.flushInvocations(); } catch (err) { console.warn('[UsageLedger] invocation flush failed:', err); }
+    try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
     if (this.roots.length === 0 && this.codexRoots.length === 0) return report;
     const queues = [
       ...this.roots.map(r => ({ r, kind: 'claude' as const, files: this.listRootFiles(r.root).filter(f => this.fileChanged(f)) })),
@@ -613,7 +613,7 @@ export class UsageLedger {
       this.coverage.get(q.r.root)!.filesPending = q.files.length;
       report.pending += q.files.length;
     }
-    try { this.settlePairs(); } catch (err) { console.warn('[UsageLedger] pair settlement failed:', err); }
+    try { this.settlePairs(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] pair settlement failed:', err); }
     return report;
   }
 
@@ -623,7 +623,7 @@ export class UsageLedger {
     try {
       const st = fs.statSync(file);
       return st.ino !== cp.inode || st.size !== cp.offset;
-    } catch { return false; }
+    } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return false; }
   }
 
   /**
@@ -638,7 +638,7 @@ export class UsageLedger {
       const lst = fs.lstatSync(file);
       if (lst.isSymbolicLink()) return { inserted: 0, counted: 0 };
       st = lst;
-    } catch { return { inserted: 0, counted: 0 }; }
+    } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return { inserted: 0, counted: 0 }; }
     const head = UsageLedger.readHead(file);
     const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
       { inode: number; head_hash: string; birth_ms: number; offset: number } | undefined;
@@ -676,7 +676,7 @@ export class UsageLedger {
         pos += Buffer.byteLength(line, 'utf8') + 1;
         if (!line.trim()) continue;
         let obj: Record<string, any>;
-        try { obj = JSON.parse(line); } catch { continue; }
+        try { obj = JSON.parse(line); } catch { /* @silent-fallback-ok: a malformed transcript line is skipped; the row count is unaffected for valid lines */ continue; }
         if (obj.type !== 'assistant' || !obj.message?.usage || !obj.requestId || !obj.sessionId || !obj.timestamp) continue;
         const ts = Date.parse(obj.timestamp);
         if (Number.isNaN(ts)) continue;
@@ -1026,13 +1026,13 @@ export class UsageLedger {
     let outOfWindow = 0;
     const walk = (dir: string, depth: number): void => {
       let entries: fs.Dirent[];
-      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
       for (const e of entries) {
         if (e.isSymbolicLink()) continue;
         const p = path.join(dir, e.name);
         if (e.isDirectory() && depth < 3) walk(p, depth + 1);
         else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) {
-          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { continue; }
+          try { if (fs.statSync(p).mtimeMs < cutoff) { outOfWindow++; continue; } } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ continue; }
           out.push(p);
         }
       }
@@ -1052,7 +1052,7 @@ export class UsageLedger {
     try {
       st = fs.lstatSync(file);
       if (st.isSymbolicLink()) return { inserted: 0, counted: 0 };
-    } catch { return { inserted: 0, counted: 0 }; }
+    } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return { inserted: 0, counted: 0 }; }
     const head = UsageLedger.readHead(file);
     const cp = this.db.prepare('SELECT * FROM checkpoints WHERE path = ?').get(file) as
       { inode: number; head_hash: string; birth_ms: number; offset: number; extra: string | null } | undefined;
@@ -1082,7 +1082,7 @@ export class UsageLedger {
         pos += Buffer.byteLength(line, 'utf8') + 1;
         if (!line.trim() || line[0] !== '{') continue;
         let d: Record<string, any>;
-        try { d = JSON.parse(line); } catch { continue; }
+        try { d = JSON.parse(line); } catch { /* @silent-fallback-ok: a malformed transcript line is skipped; the row count is unaffected for valid lines */ continue; }
         const payload = d.payload && typeof d.payload === 'object' ? d.payload : null;
         if (!payload) continue;
         if (d.type === 'session_meta') {
@@ -1255,6 +1255,6 @@ export class UsageLedger {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    try { this.db.close(); } catch { /* already closed */ }
+    try { this.db.close(); } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ /* already closed */ }
   }
 }

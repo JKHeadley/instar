@@ -2432,13 +2432,13 @@ export class AgentServer {
           try {
             this.usageLedger?.scanTick();
             if (++ticks % 60 === 0) { this.usageLedger?.prune(); this.usageLedger?.dropMissingCheckpoints(); }
-          } catch (err) {
+          } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
             console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
           }
         }, 60_000);
         if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();
       }
-    } catch (err) {
+    } catch (err) { /* @silent-fallback-ok: a dev-gated observational store; the server runs fully without it. */
       console.warn('[instar] usage-ledger init failed (non-fatal):', err);
       this.usageLedger = null;
     }
@@ -9146,7 +9146,7 @@ export class AgentServer {
       this.revertDetector = null;
     }
     if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
-    if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* best-effort */ } this.usageLedger = null; }
+    if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {
       try {
