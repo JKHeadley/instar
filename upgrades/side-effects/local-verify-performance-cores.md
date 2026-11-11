@@ -67,3 +67,11 @@ Set `localVerify.performanceCores: false` and restart, or revert the PR. No data
 ## Class-Closure Declaration
 
 - `unbounded-self-action` — closure: **n/a**. This is not a new self-triggered action. It is the same single run-child start per verify that the queue already makes, routed through launchd instead of a direct spawn. No retry or loop is added; a failed start falls back once to the plain spawn.
+
+## Addendum: merge-wait diagnosis line in the agent reference
+
+`src/scaffold/templates.ts` gains one line in the Local Verify reference section. It tells agents that GitHub Actions runs are not on the instar merge path: the ruleset requires only `instar/local-verify` plus a code-owner review where CODEOWNERS applies. Before naming the cause of a merge wait, an agent reads `GET /local-verify` for the queue position, the run in progress, main health and recent restarts.
+
+This change is documentation only, with no runtime decision surface. It reaches existing agents because the reference files are regenerated from `generateClaudeMd()` on every update (claudeMdLayout).
+
+What prompted it: on 2026-11-10 a session told the operator that "GitHub's checks are backed up". The real hold was the local queue's main-suspect state and lanes timing out.

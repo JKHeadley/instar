@@ -10,7 +10,7 @@ Before this, the run was a child of the agent server. The server lives under a t
 - `localVerify.performanceCores: false` turns it off. Linux is unchanged.
 
 ## What to Tell Your User
-Changes waiting to merge are tested faster and stop timing out when the Mac is busy, so they reach you sooner. Nothing for you to do.
+Changes waiting to merge are tested faster and stop timing out when the Mac is busy, so they reach you sooner. When something is waiting to merge, I now explain the real cause from our own test queue instead of pointing at GitHub. Nothing for you to do.
 
 ## Summary of New Capabilities
 - On macOS, Local Verify runs on the performance cores (default on, with fallback to the previous spawn).

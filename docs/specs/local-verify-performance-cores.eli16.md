@@ -18,3 +18,5 @@ The rest of Local Verify does not change. The run still leads its own process gr
 **What you would notice:** verify runs finish in normal time even while the Studio is busy, and the queue stops stalling behind runs that time out. On Linux nothing changes. To turn it off on a machine, set `localVerify.performanceCores` to `false` in the config.
 
 **Rollback:** turn the setting off, or revert the change. No stored state depends on it.
+
+- Agents are now told where to look when a change is waiting to merge: our own test queue, not GitHub's run list. This stops reports that blame GitHub for a wait it did not cause.
