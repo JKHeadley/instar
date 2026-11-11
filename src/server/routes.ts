@@ -715,6 +715,7 @@ import {
 import {
   createLocalRouteTrustCounters,
   localRouteTrustLogLine,
+  localRouteTrustEvidence,
   resolveLocalRouteTrust,
   resolveLocalRouteTrustMode,
   statedLocalTrustLevel,
@@ -42407,15 +42408,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           }
           if (verdict) {
             localRouteTrustCounters.evaluated++;
-            // Per message, so one row per sender, operation and verdict per hour. A refusal of
-            // a registry-known same-machine agent is the failure this rollout watches for.
-            const localTrustEvidenceVerdict = verdict.allowed ? 'allowed' : trustMode.dryRun ? 'would-refuse' : 'refuse';
-            const localTrustEvidenceFailure = !verdict.allowed && verdict.identitySource === 'registry';
-            featureEvidence.recordAtMostEvery('threadline.localRouteTrust', `${verdict.fingerprint ?? 'no-fp'}|${verdict.identitySource}|${verdict.operation.slice(0, 48)}|${localTrustEvidenceVerdict}`, 60 * 60 * 1000, {
-              kind: localTrustEvidenceFailure ? 'error' : 'fired',
-              reason: localTrustEvidenceFailure ? `${localTrustEvidenceVerdict}-registered-sender` : localTrustEvidenceVerdict,
-              context: { level: verdict.level, operation: verdict.operation.slice(0, 48), identitySource: verdict.identitySource, fingerprint: verdict.fingerprint, dryRun: trustMode.dryRun },
-            });
+            // One row per verdict (bounded per sender + operation); every would-refuse
+            // keeps its sender and reason — the evidence the next rung's bar reads.
+            const ev = localRouteTrustEvidence(relayFromAgent, verdict, trustMode.dryRun);
+            featureEvidence.recordAtMostEvery('threadline.localRouteTrust', ev.key, ev.windowMs, ev.input);
             if (verdict.allowed) {
               localRouteTrustCounters.allowed++;
               // Enforcing: the router is told the resolved level instead of the
