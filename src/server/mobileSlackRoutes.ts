@@ -554,7 +554,7 @@ export interface SlackAdapterLike {
   getChannelMessages(channelId: string, limit?: number): Array<{ ts: string; user?: string; text: string; thread_ts?: string }>;
   getBotUserId?(): string | null;
   getLogPath(): string;
-  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }): void;
+  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }, opts?: { notify?: boolean }): void;
   sendToChannel(channelId: string, text: string, options?: { thread_ts?: string }): Promise<string>;
   /** Slack's v2 file upload (FileHandler.uploadFile), with the bot token the adapter already holds. */
   uploadFile?(channelId: string, filePath: string, title?: string, options?: { threadTs?: string; initialComment?: string; filename?: string }): Promise<void>;
