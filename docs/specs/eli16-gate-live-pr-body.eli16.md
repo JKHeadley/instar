@@ -20,7 +20,7 @@ The check now asks GitHub for the PR as it is right now (title, description, aut
 
 ## The safeguards
 
-The check never gets looser: it applies the same rule, just to the current text. If the live read fails, it behaves exactly as before. The token can only read.
+The check never gets looser: it applies the same rule, just to the current text. If the live read fails, it behaves exactly as before. The token can only read. The live read happens only inside a GitHub Actions run, so when someone checks a description on their own machine, the check still judges the text they gave it.
 
 ## What ships when
 

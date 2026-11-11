@@ -67,6 +67,12 @@ export async function resolvePrFields(opts = {}) {
   const repo = env.GITHUB_REPOSITORY;
   const number = env.PR_NUMBER;
   const token = env.GITHUB_TOKEN;
+  // Only inside a GitHub Actions run: a local caller (e.g. `instar dev:preflight
+  // --body <file>`) must judge the body it passed, even if its shell happens to
+  // carry PR_NUMBER / GITHUB_REPOSITORY / GITHUB_TOKEN.
+  if (env.GITHUB_ACTIONS !== 'true') {
+    return { pr: payload, source: 'payload', fallbackReason: 'not-in-github-actions' };
+  }
   if (!repo || !number || !/^\d+$/.test(String(number)) || typeof fetchImpl !== 'function') {
     return { pr: payload, source: 'payload', fallbackReason: 'missing-repo-number-or-fetch' };
   }

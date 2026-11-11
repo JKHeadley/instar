@@ -3,7 +3,7 @@
 **Version / slug:** `eli16-gate-live-pr-body`
 **Date:** `2026-11-11`
 **Author:** `Echo`
-**Second-pass reviewer:** `not required (CI check input source; no messaging, session, or agent-runtime gate)`
+**Second-pass reviewer:** `independent general-purpose subagent (fresh context, given the code)`
 
 ## Summary of the change
 
@@ -43,7 +43,7 @@ No new static heuristic at a competing-signals decision point. Live-over-snapsho
 
 ## 5. Interactions
 
-`tests/unit/pull-request-template-gates.test.ts` and `scripts/merge-runner` import `checkPrDescriptionEli16` / the script name; both unchanged. safe-merge's local floor (`runLocalBodyChecks`) does its own fresh read and is unaffected. The floor-drift canary pins the workflow path and context name `eli16`; neither changes.
+`scripts/safe-merge.mjs` imports only the pure `checkPrDescriptionEli16` (unchanged); `tests/unit/pull-request-template-gates.test.ts` does the same, and `tests/unit/merge-runner.test.ts` only names the script file. `src/commands/devPreflight.ts` runs the CLI with its own environment merged in; the live read happens only when `GITHUB_ACTIONS=true`, so a local `dev:preflight --body <file>` always judges the file it was given, even in a shell that carries PR_NUMBER/GITHUB_TOKEN (raised by the second-pass reviewer, fixed). safe-merge's local floor (`runLocalBodyChecks`) does its own fresh read and is unaffected. The floor-drift canary pins the workflow path and context name `eli16`; neither changes.
 
 ## 6. External surfaces
 
@@ -67,11 +67,13 @@ Safe to ship: same rule, fresher input, unchanged fallback.
 
 ## Second-pass review (if required)
 
-Not required.
+**Reviewer:** independent general-purpose subagent, fresh context, given the diff and the code (not this artifact's conclusion), 2026-11-11 01:12 PST.
+
+Concur with the review. Verified the API call, auth, `pull-requests: read`, fork-PR read-only tokens, re-runs getting a fresh token, digits-only PR number, top-level await inside the CLI `if`, that the fallback cannot loosen the gate, that no body or token is logged, and that both new tests fail on the old code. Two minor notes, both addressed: (1) `devPreflight.ts` merges the surrounding env, so a shell with PR_NUMBER/GITHUB_REPOSITORY/GITHUB_TOKEN would have judged the live PR instead of the local body file. Fixed by reading live only when `GITHUB_ACTIONS=true`, with a test. (2) §5 named a non-existent `scripts/merge-runner` and omitted devPreflight. Corrected.
 
 ## Evidence pointers
 
-`npx vitest run tests/unit/eli16-pr-description-check.test.ts` → 17/17 pass, including the CLI run against a local API server logging `source=api` and exiting 0 with a failing payload body.
+`npx vitest run tests/unit/eli16-pr-description-check.test.ts` → 17/17 pass (the not-in-Actions case is added to the fallback test), including the CLI run against a local API server logging `source=api` and exiting 0 with a failing payload body.
 
 ## Class-Closure Declaration (display-only mirror)
 

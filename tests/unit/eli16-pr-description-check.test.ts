@@ -85,7 +85,7 @@ describe('resolvePrFields — live PR over frozen payload', () => {
   const liveBody = `## ELI16 — plain words\n\n${longOverview}`;
   const baseEnv = {
     PR_BODY: staleBody, PR_TITLE: 'fix: old title', PR_AUTHOR_TYPE: 'User',
-    PR_NUMBER: '42', GITHUB_REPOSITORY: 'owner/repo', GITHUB_TOKEN: 't0ken',
+    PR_NUMBER: '42', GITHUB_REPOSITORY: 'owner/repo', GITHUB_TOKEN: 't0ken', GITHUB_ACTIONS: 'true',
   };
   const okFetch = (live: unknown) => async (url: string, init: any) => {
     expect(url).toBe('https://api.github.com/repos/owner/repo/pulls/42');
@@ -135,7 +135,7 @@ describe('resolvePrFields — live PR over frozen payload', () => {
   it('falls back to the payload without calling fetch when the PR number or repo is missing', async () => {
     let called = false;
     const f = (async () => { called = true; return { ok: true }; }) as any;
-    for (const env of [{ ...baseEnv, PR_NUMBER: undefined }, { ...baseEnv, GITHUB_REPOSITORY: '' }, { ...baseEnv, PR_NUMBER: '4;2' }]) {
+    for (const env of [{ ...baseEnv, PR_NUMBER: undefined }, { ...baseEnv, GITHUB_REPOSITORY: '' }, { ...baseEnv, PR_NUMBER: '4;2' }, { ...baseEnv, GITHUB_ACTIONS: undefined }]) {
       const r = await resolvePrFields({ env, fetchImpl: f });
       expect(r.source).toBe('payload');
     }
@@ -165,7 +165,7 @@ describe('eli16-pr-description-check CLI — end to end against a local API', ()
     try {
       const r = await run({
         PR_BODY: 'no overview here', PR_TITLE: 'fix: stale', PR_AUTHOR_TYPE: 'User',
-        PR_NUMBER: '7', GITHUB_REPOSITORY: 'owner/repo', GITHUB_TOKEN: 'x',
+        PR_NUMBER: '7', GITHUB_REPOSITORY: 'owner/repo', GITHUB_TOKEN: 'x', GITHUB_ACTIONS: 'true',
         GITHUB_API_URL: `http://127.0.0.1:${port}`,
       });
       expect(r.out).toContain('source=api');
@@ -178,7 +178,7 @@ describe('eli16-pr-description-check CLI — end to end against a local API', ()
   it('judges the payload and logs source=payload when the API is unreachable', async () => {
     const r = await run({
       PR_BODY: 'no overview here', PR_TITLE: 'fix: stale', PR_AUTHOR_TYPE: 'User',
-      PR_NUMBER: '7', GITHUB_REPOSITORY: 'owner/repo', GITHUB_API_URL: 'http://127.0.0.1:1',
+      PR_NUMBER: '7', GITHUB_REPOSITORY: 'owner/repo', GITHUB_ACTIONS: 'true', GITHUB_API_URL: 'http://127.0.0.1:1',
     });
     expect(r.out).toContain('source=payload');
     expect(r.code).toBe(1);
