@@ -51,6 +51,11 @@ const CLOCK_SKEW_MS = 15_000;
 const NEXT_BOUNDARY_MARGIN_MS = 5_000;
 /** The line Instar's session-start hook prints only on its post-compaction recovery path. */
 export const RECOVERY_MARKER = '=== IDENTITY RECOVERY (post-compaction) ===';
+
+/** Claude Code's wrapper for hook output over its size limit (only a preview reaches the model). */
+export function isTruncatedHookOutput(out: string): boolean {
+  return /^\s*<persisted-output>/.test(out);
+}
 /** A known transcript untouched this long stops being scanned. */
 const KNOWN_IDLE_MS = 24 * 60 * 60_000;
 const MAX_DETECTIONS = 500;
@@ -76,6 +81,8 @@ export interface CanaryDetection {
   at: number;
   trigger: string;
   recoveryBlock: boolean;
+  /** The recovery block was printed but Claude Code delivered only its preview (over the hook-output limit). */
+  recoveryTruncated?: boolean;
   postCompact: boolean;
   /** The matched PostCompact record's receivedAt (each record counts for one boundary). */
   postCompactAt?: number;
@@ -97,7 +104,7 @@ interface CanaryLedger {
   ledgerResetAt?: number;
 }
 
-export interface CanaryGroup { machine: string; engine: string; version: string; state: CanaryState; detected: number; complete: number; pending: number; synthetic: number }
+export interface CanaryGroup { machine: string; engine: string; version: string; state: CanaryState; detected: number; complete: number; pending: number; synthetic: number; /** Compactions whose recovery block was cut to a preview by the hook-output limit. */ truncated?: number }
 
 export interface CanaryReport { epochStartedAt: number; switchOn: boolean; groups: CanaryGroup[]; recent: CanaryDetection[]; ledgerResetAt: number | null; unreadableTranscripts: number }
 
@@ -226,12 +233,20 @@ export class CompactionCanary {
       // A RECOVERY block, not merely "a SessionStart:compact hook exited 0": Instar's own
       // session-start hook ran AND printed its post-compaction recovery marker (a hook that
       // fell back to the startup orientation, or another hook that succeeded, is not recovery).
-      const out = typeof a?.stdout === 'string' ? a.stdout : typeof a?.content === 'string' ? a.content : '';
+      // Judge what the MODEL received: `content` is the delivered text (Claude Code's
+      // `<persisted-output>` wrapper when the hook output was over its limit), while
+      // `stdout` is the raw output the hook printed. Fall back to stdout only when no
+      // content is recorded (older transcript shapes).
+      const out = typeof a?.content === 'string' && a.content !== '' ? a.content : typeof a?.stdout === 'string' ? a.stdout : '';
       if (e.type === 'attachment' && a && a.type === 'hook_success' && a.hookName === 'SessionStart:compact' && (a.exitCode === undefined || a.exitCode === 0)
         && typeof a.command === 'string' && a.command.includes('session-start.sh') && out.split(/\r?\n/).some((ln) => ln.trim() === RECOVERY_MARKER)) {
         const open = l.open[s.transcriptPath];
         const d = open ? l.detections.find((x) => x.boundaryUuid === open) : undefined;
-        if (d) { d.recoveryBlock = true; delete l.open[s.transcriptPath]; }
+        // A block Claude Code replaced with its "output too large" preview reached the
+        // model only as its first ~2,000 characters: printed, not delivered. It is a
+        // divergence, never a recovery (Phase 0 results check 4).
+        if (d && isTruncatedHookOutput(out)) { d.recoveryTruncated = true; delete l.open[s.transcriptPath]; }
+        else if (d) { d.recoveryBlock = true; delete l.open[s.transcriptPath]; }
       }
     }
   }
@@ -250,7 +265,8 @@ export class CompactionCanary {
     for (const [k, ds] of groups) {
       const [machine, engine, version] = k.split('\u0000');
       const complete = ds.filter((d) => d.recoveryBlock && d.postCompact);
-      const settled = ds.filter((d) => (d.recoveryBlock && d.postCompact) || now - d.at > CANARY_ARTIFACT_GRACE_MS);
+      // A truncated delivery is settled at once: it is a known divergence, not a pending one.
+      const settled = ds.filter((d) => (d.recoveryBlock && d.postCompact) || d.recoveryTruncated === true || now - d.at > CANARY_ARTIFACT_GRACE_MS);
       const pending = ds.length - settled.length;
       const synthetic = complete.filter((d) => d.synthetic).length;
       let state: CanaryState;
@@ -260,7 +276,7 @@ export class CompactionCanary {
       // "all with both artifacts": a compaction still pending its artifacts holds healthy back.
       else if (complete.length >= healthyMin && synthetic >= 1 && pending === 0) state = 'healthy';
       else state = 'accruing'; // every settled detection is complete, but not yet N of them or no synthetic positive
-      out.push({ machine, engine, version, state, detected: ds.length, complete: complete.length, pending, synthetic });
+      out.push({ machine, engine, version, state, detected: ds.length, complete: complete.length, pending, synthetic, truncated: ds.filter((d) => d.recoveryTruncated === true).length });
     }
     if (out.length === 0) out.push({ machine: this.o.machineId, engine: 'claude-code', version: 'unknown', state: switchOn ? 'uninitialized' : 'n/a', detected: 0, complete: 0, pending: 0, synthetic: 0 });
     return { epochStartedAt: l.epochStartedAt, switchOn, groups: out, recent: l.detections.slice(-20), ledgerResetAt: l.ledgerResetAt ?? null, unreadableTranscripts: this.lastSkipped };

@@ -111,7 +111,7 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
-import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
+import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -889,8 +889,34 @@ let _meshSelfId: string | null = null;
 let _cosRenewalHook: ((topicId: number, telegramUserId: number, messageId: string) => void) | null = null;
 /** Chief of Staff §6: the CoS conversation accepts input only from the owner principal. Set with the loop; null ⇒ no CoS topic yet. */
 let _cosOwnerOnlyTopicId: (() => number | null) | null = null;
-/** Per-sender time of the last "only the owner can talk here" line (one per day; §6). */
-const _cosDropNoticeAt = new Map<number, number>();
+/** Per-sender+verdict time of the last "this message was not delivered" line (one per hour; §6). */
+const _cosDropNoticeAt = new Map<string, number>();
+/**
+ * Chief of Staff live gate (src/core/chiefOfStaffOwner.ts rule 2): switched on AND a verified owner.
+ * One instance per process so the "switched on but no owner" notice is reported once per episode,
+ * whichever seam (topic, loop, protocol) reads it first.
+ */
+let _cosActiveGate: (() => boolean) | null = null;
+/** A held Chief of Staff topic is re-checked by one retry chain at a time. */
+let _cosTopicRetryPending = false;
+function chiefOfStaffActiveGate(
+  telegram: { getVerifiedOwner(): number | undefined; ownerSourcesReady(): boolean } | null | undefined,
+  live: { get<T>(key: string, fallback?: T): T | undefined },
+  cfg: InstarConfig,
+): () => boolean {
+  if (!_cosActiveGate) {
+    _cosActiveGate = makeChiefOfStaffGate({
+      switchedOn: () => resolveDevAgentGate(live.get<boolean | undefined>('chiefOfStaff.enabled', undefined), cfg),
+      owner: () => telegram?.getVerifiedOwner(),
+      ownerSourcesReady: () => telegram?.ownerSourcesReady() ?? true,
+      reportNoOwner: () => {
+        console.warn('[chief-of-staff] switched on but this agent has no verified owner — staying off until one is set');
+        DegradationReporter.getInstance().report({ ...CHIEF_OF_STAFF_NO_OWNER_NOTICE });
+      },
+    });
+  }
+  return _cosActiveGate;
+}
 /** Resource-aware placement: the pool registry, late-bound for consumers built before it (the scheduler). */
 let _resourcePoolRegistryRef: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | undefined;
 /** G3 lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3). "Do I hold the fenced
@@ -2868,6 +2894,10 @@ export function wireTelegramRouting(
   _spawningTopicsRegistryRef = spawningTopics; // F7: expose to the outer-scope verifier
 
   _memoryTelegramOwner = () => telegram.getOwnerUserId();
+  // The same verdict as the Chief of Staff gate below, for every "delivered" acknowledgement
+  // (standby proxy, the lifeline's "✓ Delivered"): a message the gate refuses is never called delivered.
+  telegram.isInboundRefused = (topicId, senderId) => !!_cosOwnerOnlyTopicId
+    && chiefOfStaffRefusesInbound({ topicId, cosTopicId: _cosOwnerOnlyTopicId(), senderId, owner: telegram.getVerifiedOwner() });
   telegram.onTopicMessage = async (msg: Message) => {
     const handler = async (msg: Message) => {
     const topicId = (msg.metadata?.messageThreadId as number) ?? null;
@@ -2882,17 +2912,19 @@ export function wireTelegramRouting(
     const telegramUserId = msg.metadata?.senderUnverified === true ? 0 : ((msg.metadata?.telegramUserId as number) ?? 0);
     // Chief of Staff §6: the CoS conversation is owner-only. Anything else (a member, a guest, a bot, a
     // relay, an unverified sender) is dropped here and logged — never routed to a session.
-    if (_cosOwnerOnlyTopicId && _cosOwnerOnlyTopicId() === topicId) {
-      // The owner id is raw config (may be a string): normalise exactly as every other owner-gated button does.
-      const owner = resolveApprovalOwner(telegram.getOwnerUserId(), [], []);
-      if (!owner || telegramUserId !== owner) {
-        console.warn(`[chief-of-staff] dropped a non-owner message in the Chief of Staff topic ${topicId} (sender ${telegramUserId || 'unverified'}, owner ${owner ?? 'unset'})`);
-        // One plain line per sender per day so the drop is never silent toward the person (§6); nothing about the projects.
-        const who = telegramUserId || 0; const nowMs = Date.now(); const last = _cosDropNoticeAt.get(who) ?? 0;
-        if (nowMs - last > 24 * 3_600_000) {
-          _cosDropNoticeAt.set(who, nowMs);
-          const line = !owner ? 'No owner is configured for this agent yet, so nothing said here can be acted on.' : telegramUserId ? 'Only the owner can talk to the Chief of Staff here.' : 'I could not verify who sent this, so it was not read.';
-          void withNotificationEnvelope(stampNotification(), async () => telegram.sendToTopic(topicId, line)).catch(() => { /* @silent-fallback-ok: the drop is already logged; the notice is a courtesy */ });
+    // The owner is the VERIFIED owner (configured id, else the one verified operator) — the same
+    // answer the standby proxy reads, so a refused message is never later called "delivered".
+    if (_cosOwnerOnlyTopicId) {
+      const owner = telegram.getVerifiedOwner();
+      const verdict = chiefOfStaffInboundVerdict({ topicId, cosTopicId: _cosOwnerOnlyTopicId(), senderId: telegramUserId, owner });
+      const line = chiefOfStaffRefusalLine(verdict);
+      if (line) {
+        console.warn(`[chief-of-staff] refused a message in the Chief of Staff topic ${topicId} (${verdict}; sender ${telegramUserId || 'unverified'}, owner ${owner ?? 'none'})`);
+        // One plain "not delivered" line per sender per hour so the refusal is never silent toward the person (§6); nothing about the projects.
+        const key = `${telegramUserId || 0}:${verdict}`; const nowMs = Date.now(); const last = _cosDropNoticeAt.get(key) ?? 0;
+        if (nowMs - last > 3_600_000) {
+          _cosDropNoticeAt.set(key, nowMs);
+          void withNotificationEnvelope(stampNotification(), async () => telegram.sendToTopic(topicId, line)).catch(() => { /* @silent-fallback-ok: the refusal is already logged; the notice is a courtesy */ });
         }
         return;
       }
@@ -2903,7 +2935,7 @@ export function wireTelegramRouting(
     // Chief of Staff §4: an owner message in the CoS conversation renews the operator check-in lease.
     // Principal = the configured owner id on the inbound event (never content, never a relay); the
     // record is signed by this machine so other machines can verify it on read.
-    if (_cosRenewalHook && telegramUserId && resolveApprovalOwner(telegram.getOwnerUserId(), [], []) === telegramUserId) {
+    if (_cosRenewalHook && telegramUserId && telegram.getVerifiedOwner() === telegramUserId) {
       try { _cosRenewalHook(topicId, telegramUserId, String(msg.metadata?.messageId ?? '')); } catch { /* @silent-fallback-ok: a failed renewal write leaves the lease as it was (paused is the safe side) */ }
     }
 
@@ -4219,6 +4251,7 @@ async function ensureChiefOfStaffTopicFor(
   state: StateManager,
   live: { get<T>(key: string, fallback?: T): T | undefined },
   cfg: InstarConfig,
+  attempt = 0,
 ): Promise<void> {
   const { ensureChiefOfStaffTopic } = await import('../messaging/ChiefOfStaffTopic.js');
   // The greeting goes out STAMPED (like the Attention intro): an unstamped send is held by the
@@ -4230,12 +4263,24 @@ async function ensureChiefOfStaffTopicFor(
     pinTopicMessage: (id: number, m: number) => telegram.pinTopicMessage(id, m),
     unpinTopicMessages: (id: number) => telegram.unpinTopicMessages(id),
   };
-  await ensureChiefOfStaffTopic(stamped, state, {
+  const outcome = await ensureChiefOfStaffTopic(stamped, state, {
     enabled: () => resolveDevAgentGate(live.get<boolean | undefined>('chiefOfStaff.enabled', undefined), cfg),
+    // Rule 2 (src/core/chiefOfStaffOwner.ts): switched on without a verified owner creates nothing.
+    ownerKnown: () => chiefOfStaffActiveGate(telegram, live, cfg)(),
     displayName: () => live.get<string | undefined>('chiefOfStaff.displayName', undefined),
     log: (l) => console.log(l),
     warn: (l) => console.warn(l),
   });
+  // Boot order: the "one verified operator" half of the owner is wired with the routes, after this
+  // first runs. A held result is re-checked a few times so an install whose owner is its established
+  // operator still gets its topic; with truly no owner it stays held (and was reported once).
+  // One retry chain at a time, whichever pass (boot or adoption) started it.
+  if (outcome.outcome === 'held-no-owner' && attempt < 3 && (attempt > 0 || !_cosTopicRetryPending)) {
+    _cosTopicRetryPending = true;
+    setTimeout(() => { void ensureChiefOfStaffTopicFor(telegram, state, live, cfg, attempt + 1).catch(() => { /* @silent-fallback-ok: the next boot or adoption pass retries */ }); }, 60_000).unref();
+  } else if (outcome.outcome !== 'held-no-owner' || attempt >= 3) {
+    _cosTopicRetryPending = false;
+  }
 }
 
 async function ensureAgentAttentionTopic(
@@ -18387,6 +18432,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           intelligence: sharedIntelligence,
           // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
           speakerElection,
+          // Same verdict as the inbound owner-only gate: a message it refused is never "delivered".
+          isInboundRefused: (topicId, platformUserId) => {
+            const sender = Number(platformUserId);
+            return telegram?.isInboundRefused?.(topicId, Number.isSafeInteger(sender) && sender > 0 ? sender : 0) === true;
+          },
           // Stand-down honesty: a frozen copy must not narrate "actively working"
           // about a conversation another machine is answering.
           standDown: {
@@ -29444,8 +29494,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // execution side so a holder on another machine can act here, and the stand-down read
           // the Reconciler / resume queue / heartbeat consult. Every seam is the real one.
           try {
-            const cosEnabled = () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('chiefOfStaff.enabled', undefined), config);
-            if (cosEnabled() && coherenceJournal && replicatedRecordEmitter && leaseCoordinatorRef) {
+            // Wiring follows the switch; acting follows the live gate, which also needs a verified owner
+            // (src/core/chiefOfStaffOwner.ts rule 2). The owner is read live because its "one verified
+            // operator" half is wired with the routes, after this block.
+            const cosSwitchedOn = () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('chiefOfStaff.enabled', undefined), config);
+            const cosEnabled = chiefOfStaffActiveGate(telegram, liveConfig, config);
+            if (cosSwitchedOn() && coherenceJournal && replicatedRecordEmitter && leaseCoordinatorRef) {
               const cosMod = await import('../core/ChiefOfStaffActionProtocol.js');
               const storeMod = await import('../core/ChiefOfStaffStore.js');
               const streamsMod = await import('../core/ReplicatedPeerStreamReader.js');
@@ -29655,7 +29709,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 statusUrl: () => `http://localhost:${config.port}/chief-of-staff`,
                 localHour: (ms) => { try { return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: (config as { timezone?: string }).timezone || undefined }).format(new Date(ms))) % 24; } catch { /* @silent-fallback-ok: an invalid timezone falls back to the machine's local hour */ return new Date(ms).getHours(); } },
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
-                ownerResolvable: () => resolveApprovalOwner(telegram?.getOwnerUserId(), [], []) !== undefined,
+                ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
                 rootConversationKey: () => { const t = _cosTopicId(); return t ? `telegram:${t}` : null; },
                 log: (m) => console.log(pc.dim(`  ${m}`)),
               });

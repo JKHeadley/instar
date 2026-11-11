@@ -8076,6 +8076,13 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     }
 
     try {
+      fs.writeFileSync(path.join(instarHooksDir, 'fit-recovery-output.mjs'), PostUpdateMigrator.getFitRecoveryOutput(), { mode: 0o755 });
+      result.upgraded.push('hooks/instar/fit-recovery-output.mjs');
+    } catch (err) {
+      result.errors.push(`fit-recovery-output.mjs: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    try {
       fs.writeFileSync(path.join(instarHooksDir, 'telegram-topic-context.sh'), this.getTelegramTopicContextHook(), { mode: 0o755 });
       result.upgraded.push('hooks/instar/telegram-topic-context.sh (per-message unanswered detection)');
     } catch (err) {
@@ -8419,7 +8426,7 @@ if [[ "$ACTIVE" != "true" ]]; then`;
     // List of known built-in hook filenames
     const builtinHooks = [
       'session-start.sh', 'dangerous-command-guard.sh', 'grounding-before-messaging.sh',
-      'compaction-recovery.sh', 'external-operation-gate.js', 'deferral-detector.js',
+      'compaction-recovery.sh', 'fit-recovery-output.mjs', 'external-operation-gate.js', 'deferral-detector.js',
       'self-stop-guard.js',
       'slopcheck-guard.js',
       'analysis-paralysis-guard.js',
@@ -16070,6 +16077,17 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
       patched = true;
       result.upgraded.push('CLAUDE.md: added the Context Budget user-corpus Registry-First row');
     }
+    // Context Budget delta hook (context-budget-layered-summaries §7.7, Phase 1
+    // S15): route "is the per-prompt delta safe / saving anything" to its shadow
+    // read surface. Idempotent: inserted once after the sentinel row, sniffed on the route.
+    if (!content.includes('/context-budget/delta-shadow') && content.includes('/context-budget/sentinel')) {
+      const row = `| Is the per-prompt delta saving anything? / would it drop something a session needs? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/delta-shadow\` — the delta hook's shadow comparison: full vs delta characters per prompt, omitted items, candidate re-fetches (\`unknown\` with its reason, never zero, when anything was omitted) and whether this machine may return the delta (\`contextBudget.deltaHook.enabled\`, refused unless the compaction canary reads healthy). 503 = \`contextBudget.enabled\` is off. NEVER claim the delta is safe from memory |`;
+      content = content.replace(/(\| Does compaction recovery work on this machine\?[^\n]*\n)/, `$1${row}\n`);
+      if (content.includes('/context-budget/delta-shadow')) {
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added the Context Budget delta-shadow Registry-First row');
+      }
+    }
 
     // Process Health (Dashboard Tab) — Agent Awareness backfill for the
     // Failure-Learning Loop's read surface. Fresh inits get this via
@@ -16545,6 +16563,18 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
 `;
       patched = true;
       result.upgraded.push('CLAUDE.md: added Throwaway test agents section');
+    }
+
+    // PR-link reviewer check (src/messaging/prLinkReviewRequest.ts, Echo Bugs 10000002537).
+    // OWN sniff key; the template emits the same section for new agents.
+    if (!content.includes('## PR links ask for the review on GitHub too')) {
+      content += '\n\n' + `## PR links ask for the review on GitHub too
+
+When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added PR links ask for the review section');
     }
 
     return { content, patched };
@@ -20094,12 +20124,33 @@ if [ "\$EVENT" = "compact" ]; then
     # binds the epoch to the boundary that follows its report.
     CB_SEED_OUT=\$(bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh")
     CB_SEED_RC=\$?
-    printf '%s\\n' "\$CB_SEED_OUT"
-    if [ "\$CB_SEED_RC" -eq 0 ] && [ -n "\$CB_SEED_OUT" ]; then
-      CB_STATE_ROOT="$INSTAR_DIR"
-      if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
-        CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
-      fi
+    CB_STATE_ROOT="$INSTAR_DIR"
+    if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+      CB_STATE_ROOT="\$INSTAR_AGENT_HOME/.instar"
+    fi
+    # Claude Code passes a hook's output to the model only up to 10,000
+    # characters (larger output arrives as a 2,000-character preview and a file
+    # path). Fit the block under that limit; the full text is saved privately and
+    # the session is told to Read it.
+    CB_SID=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json
+try:
+    s=str(json.load(sys.stdin).get('session_id') or '')
+except Exception:
+    s=''
+print(s if s and len(s)<=128 and all(c.isalnum() or c in '-_' for c in s) else 'unknown')" 2>/dev/null)
+    if [ "\$CB_SID" = "unknown" ] || [ -z "\$CB_SID" ]; then CB_SID="unknown-\$\$-\$(date +%s)"; fi
+    # CB_FIT_OK: the block the model will receive fits (fitted, or under the limit
+    # already). The seeded marker is written only then: an unfitted oversize block
+    # reaches the model as a 2 KB preview, so the server's recovery path must not stand down.
+    CB_FIT_OK=0
+    if [ -f "$INSTAR_DIR/hooks/instar/fit-recovery-output.mjs" ] && command -v node >/dev/null 2>&1 \\
+       && printf '%s\\n' "\$CB_SEED_OUT" | node "$INSTAR_DIR/hooks/instar/fit-recovery-output.mjs" 9000 "\$CB_STATE_ROOT/state/context-layers/_recovery/\${CB_SID}.txt"; then
+      CB_FIT_OK=1
+    else
+      printf '%s\\n' "\$CB_SEED_OUT"
+      if [ "\${#CB_SEED_OUT}" -le 9000 ]; then CB_FIT_OK=1; fi
+    fi
+    if [ "\$CB_SEED_RC" -eq 0 ] && [ -n "\$CB_SEED_OUT" ] && [ "\$CB_FIT_OK" -eq 1 ]; then
       printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json,os,time
 root=sys.argv[1]
 try:
@@ -21133,7 +21184,132 @@ fi
 # prefix so the agent always sees current wall-clock time. Addresses the
 # Claude Code "harness injects date, not time of day" blind spot that caused
 # agents to hallucinate clock times in long sessions.
+#
+# One request (context-budget-layered-summaries §7.7, Phase 1 S15): the topic
+# briefing and recent history come from GET /topic/N/prompt-context, which also
+# measures the per-prompt DELTA in shadow. While in shadow (the default) it
+# returns exactly what the two older calls returned. An older server (404/503,
+# or any answer that is not a prompt-context body) gets the two older calls.
+# While this session's fold marker exists, or a fold is open for the topic, the
+# hook prints nothing at all. On Claude Code the whole output is kept under
+# 9,000 characters: Claude Code passes a hook's output to the model whole only
+# below 10,000 (the briefing is shortened first, then the oldest messages go,
+# always keeping the newest ones and the unanswered-message block).
 
+HOOK_INPUT=\$(cat)
+HOOK_FRAMEWORK="\${INSTAR_FRAMEWORK:-claude-code}"
+[[ "\$HOOK_FRAMEWORK" =~ ^[a-z0-9-]{1,32}\$ ]] || HOOK_FRAMEWORK="claude-code"
+CB_INSTAR_SID=""
+[[ "\$INSTAR_SESSION_ID" =~ ^[A-Za-z0-9_-]{1,128}\$ ]] && CB_INSTAR_SID="\$INSTAR_SESSION_ID"
+
+# Fold suppression (§7.7): this session is inside a fold, so nothing is injected.
+# The marker lives in the AGENT HOME (a worktree session's project dir holds no state).
+CB_AGENT_HOME="\${INSTAR_AGENT_HOME:-\${CLAUDE_PROJECT_DIR:-.}}"
+if [ "\$HOOK_FRAMEWORK" = "claude-code" ] && [ -n "\$CB_INSTAR_SID" ] && [ -e "\$CB_AGENT_HOME/.instar/state/context-layers/_fold-markers/\$CB_INSTAR_SID.json" ]; then
+  exit 0
+fi
+
+# Parses a prompt-context body into shell assignments (shlex-quoted; eval-safe).
+CB_PC_PARSE=\$(cat <<'CB_PY'
+import sys, json, shlex
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(d, dict) or d.get('schema') != 'prompt-context/1':
+    sys.exit(0)
+mode = d.get('mode')
+b = d.get('briefing')
+msgs = d.get('messages')
+if mode not in ('full', 'delta', 'suppressed') or not isinstance(b, str) or not isinstance(msgs, list):
+    sys.exit(0)
+un = d.get('unanswered')
+un = un if isinstance(un, list) else []
+# PC_OK last: a parse cut short can never leave PC_OK set with the other values missing.
+pairs = [('PC_MODE', mode), ('TOPIC_BRIEFING', b), ('RECENT_MSGS', json.dumps({'messages': msgs})), ('CB_PC_UNANSWERED', json.dumps(un)), ('PC_OK', '1')]
+print(chr(10).join(k + '=' + shlex.quote(v) for k, v in pairs))
+CB_PY
+)
+
+# Fits the hook output under 9,000 characters (UTF-16 units, as Claude Code counts).
+# A message may span several lines: an entry starts at a "  [<time>] User:" or
+# "Agent:" line and owns the lines after it. Order: the briefing body down to
+# 3,000 characters, then the oldest messages (the newest 5 are kept), then the
+# briefing body entirely, then older messages down to the newest 1, then a hard cut.
+CB_FIT_PY=\$(cat <<'CB_PY'
+import sys, re
+LIMIT = 9000
+NL = chr(10)
+def size(t):
+    return len(t.encode('utf-16-le')) // 2
+text = sys.stdin.read()
+if size(text) <= LIMIT:
+    sys.stdout.write(text + NL)
+    sys.exit(0)
+lines = text.split(NL)
+ENTRY = re.compile(r'^  \\[[^\\]]*\\] (User|Agent): ')
+head = -1
+for i, ln in enumerate(lines):
+    if ln.startswith('TOPIC ') and ('RECENT HISTORY (auto-injected)' in ln or 'NEW MESSAGES SINCE YOUR LAST PROMPT' in ln):
+        head = i
+        break
+pre = lines if head < 0 else lines[:head + 1]
+post = []
+entries = []
+if head >= 0:
+    end = len(lines)
+    for i in range(head + 1, len(lines) - 1):
+        if lines[i] == '' and lines[i + 1] == '*** UNANSWERED MESSAGE(S) FROM USER ***':
+            end = i
+            break
+    for ln in lines[head + 1:end]:
+        if ENTRY.match(ln) or not entries:
+            entries.append([ln])
+        else:
+            entries[-1].append(ln)
+    post = lines[end:]
+b0 = -1
+b1 = -1
+for i, ln in enumerate(pre):
+    if b0 < 0 and ln.startswith('=== TOPIC ') and 'INTENT BRIEFING' in ln:
+        b0 = i
+    elif b0 >= 0 and ln == '=== END TOPIC INTENT BRIEFING ===':
+        b1 = i
+        break
+state = {'dropped': 0, 'cut': False}
+def render():
+    hist = [ln for e in entries for ln in e]
+    note = ['  (' + str(state['dropped']) + ' older message(s) left out to fit the hook output limit; they are still in the topic history)'] if state['dropped'] else []
+    p = pre
+    if state['cut'] and b0 >= 0:
+        p = pre[:b0 + 1] + body + ['  [briefing shortened to fit the hook output limit]'] + pre[b1:]
+    return NL.join(p + (note + hist + post if head >= 0 else []))
+body = pre[b0 + 1:b1] if b0 >= 0 and b1 > b0 else []
+def shorten_briefing(target):
+    while body and size(NL.join(body)) > target and size(render()) > LIMIT:
+        body.pop()
+        state['cut'] = True
+def drop_messages(keep):
+    while len(entries) > keep and size(render()) > LIMIT:
+        entries.pop(0)
+        state['dropped'] += 1
+if b0 >= 0 and b1 > b0:
+    shorten_briefing(3000)
+drop_messages(5)
+if b0 >= 0 and b1 > b0:
+    shorten_briefing(0)
+drop_messages(1)
+out = render()
+if size(out) > LIMIT:
+    keep = out[:LIMIT - 200]
+    while size(keep) > LIMIT - 200:
+        keep = keep[:-100]
+    out = keep + NL + '[context truncated to fit the hook output limit]'
+sys.stdout.write(out + NL)
+CB_PY
+)
+
+cb_main() {
 # Current wall-clock time — always emitted, BEFORE the [telegram:N] early-exit.
 NOW=\$(date +'%Y-%m-%d %H:%M:%S %z (%Z)' 2>/dev/null)
 if [ -n "\$NOW" ]; then
@@ -21145,7 +21321,7 @@ if [ -n "\$NOW" ]; then
 fi
 
 # Read the user prompt from stdin (Claude Code pipes JSON with { prompt: "..." })
-USER_PROMPT=\$(python3 -c "
+USER_PROMPT=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -21212,6 +21388,37 @@ if [ -f "\$INSTAR_DIR/scripts/emit-session-clock.sh" ]; then
   bash "\$INSTAR_DIR/scripts/emit-session-clock.sh" query "\$TOPIC_ID" "\$PORT" "\$AUTH_TOKEN" "\$AGENT_ID" 2>/dev/null
 fi
 
+# The Claude Code session id keys the per-prompt delta (§7.7); validated before it is sent.
+CB_SESSION_ID=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "
+import sys, json
+try:
+    s = str(json.load(sys.stdin).get('session_id') or '')
+except Exception:
+    s = ''
+print(s if s and len(s) <= 128 and s.isascii() and all(c.isalnum() or c in '-_' for c in s) else '')
+" 2>/dev/null)
+
+# One request: the briefing and the recent history together (§7.7).
+PC_OK=""
+PC_MODE="full"
+CB_PC_UNANSWERED="[]"
+if [ -n "\$AUTH_TOKEN" ]; then
+  PC_RESP=\$(curl -s --max-time 4 -w '\\n%{http_code}' \\
+    -H "Authorization: Bearer \${AUTH_TOKEN}" \\
+    -H "X-Instar-AgentId: \${AGENT_ID}" \\
+    "http://localhost:\${PORT}/topic/\${TOPIC_ID}/prompt-context?session=\${CB_SESSION_ID}&instarSession=\${CB_INSTAR_SID}&framework=\${HOOK_FRAMEWORK}" 2>/dev/null)
+  PC_CODE="\${PC_RESP##*\$'\\n'}"
+  PC_BODY="\${PC_RESP%\$'\\n'*}"
+  if [ "\$PC_CODE" = "200" ] && [ -n "\$PC_BODY" ]; then
+    eval "\$(printf '%s' "\$PC_BODY" | python3 -c "\$CB_PC_PARSE" 2>/dev/null)"
+  fi
+fi
+if [ "\$PC_OK" = "1" ] && [ "\$PC_MODE" = "suppressed" ]; then
+  exit 3
+fi
+
+if [ "\$PC_OK" != "1" ]; then
+# Older server: the two calls the hook always made.
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
@@ -21236,6 +21443,7 @@ else
   TOPIC_BRIEFING=\$(curl -sf --max-time 2 \\
     "http://localhost:\${PORT}/topic-intent/\${TOPIC_ID}/briefing" 2>/dev/null)
 fi
+fi
 
 if [ -n "\$TOPIC_BRIEFING" ]; then
   echo "\$TOPIC_BRIEFING"
@@ -21243,8 +21451,8 @@ if [ -n "\$TOPIC_BRIEFING" ]; then
 fi
 
 # Format and output context with unanswered message detection
-echo "\$RECENT_MSGS" | python3 -c "
-import sys, json
+echo "\$RECENT_MSGS" | CB_PC_MODE="\$PC_MODE" CB_PC_UNANSWERED="\$CB_PC_UNANSWERED" python3 -c "
+import sys, json, os
 def _localts(raw):
     try:
         from datetime import datetime
@@ -21254,10 +21462,16 @@ def _localts(raw):
 try:
     data = json.load(sys.stdin)
     msgs = data.get('messages', [])
-    if not msgs:
+    delta = os.environ.get('CB_PC_MODE') == 'delta'
+    if not msgs and not delta:
         sys.exit(0)
 
-    print('TOPIC \${TOPIC_ID} RECENT HISTORY (auto-injected):')
+    if not delta:
+        print('TOPIC \${TOPIC_ID} RECENT HISTORY (auto-injected):')
+    elif msgs:
+        print('TOPIC \${TOPIC_ID} NEW MESSAGES SINCE YOUR LAST PROMPT (auto-injected; earlier history is already in your context):')
+    else:
+        print('TOPIC \${TOPIC_ID}: no new messages since your last prompt (earlier history is already in your context).')
 
     for m in msgs:
         ts = _localts(m.get('timestamp', ''))
@@ -21279,6 +21493,12 @@ try:
             pending_user.append(m)
         else:
             pending_user = []
+    if delta:
+        # The delta holds only new messages; the trailing unanswered run comes from the full history.
+        try:
+            pending_user = [p for p in json.loads(os.environ.get('CB_PC_UNANSWERED') or '[]') if isinstance(p, dict)]
+        except Exception:
+            pending_user = []
 
     if pending_user:
         print()
@@ -21286,18 +21506,137 @@ try:
         for pm in pending_user:
             pm_text = pm.get('text', '')[:200]
             pm_ts = _localts(pm.get('timestamp', ''))
-            print(f'  [{pm_ts}] \\\\\\\"{pm_text}\\\\\\\"')
+            print(f'  [{pm_ts}] \\\\\\"{pm_text}\\\\\\"')
         print()
         print('You MUST address these messages substantively. Do NOT respond with just')
         print('a greeting or generic reply. Read the conversation history above and')
         print('respond to what the user actually said. If the current message is a')
-        print('follow-up like \\\\\\\"hello?\\\\\\\" or \\\\\\\"please respond\\\\\\\", address the EARLIER')
+        print('follow-up like \\\\\\"hello?\\\\\\" or \\\\\\"please respond\\\\\\", address the EARLIER')
         print('unanswered message — that is what the user is waiting for.')
 except Exception:
     pass
 " 2>/dev/null
 
 exit 0
+}
+
+CB_OUT=\$(cb_main)
+CB_RC=\$?
+# 3: the server says a fold is open for this topic, so nothing is injected at all.
+if [ "\$CB_RC" = "3" ]; then
+  exit 0
+fi
+# 4,500: a cheap pre-check that can never miss (one character is at most two UTF-16 units);
+# the fitter measures exactly and passes anything under the limit through unchanged.
+if [ "\$HOOK_FRAMEWORK" = "claude-code" ] && [ "\${#CB_OUT}" -gt 4500 ]; then
+  CB_FIT=\$(printf '%s' "\$CB_OUT" | python3 -c "\$CB_FIT_PY" 2>/dev/null)
+  if [ -n "\$CB_FIT" ]; then
+    printf '%s\\n' "\$CB_FIT"
+  else
+    printf '%s\\n' "\${CB_OUT:0:8800}"
+    echo "[context truncated to fit the hook output limit]"
+  fi
+elif [ -n "\$CB_OUT" ]; then
+  printf '%s\\n' "\$CB_OUT"
+fi
+exit 0
+`;
+  }
+
+  /**
+   * The recovery-output fitter (context-budget-layered-summaries §9.1, Phase 0
+   * results check 4): Claude Code hands the model a hook's stdout only up to
+   * 10,000 characters — anything larger arrives as a ~2,000-character preview
+   * plus a file path, so a 45 KB recovery block delivered only its first lines.
+   * This fits the block under the limit: the full text is saved privately
+   * (0600, under the never-served layer root), and what is printed keeps the
+   * recovery marker, the conversation context and Telegram session first, then
+   * a short identity and memory head, and ends by telling the session to Read
+   * the saved file. Under the limit, the block passes through unchanged.
+   * Usage: node fit-recovery-output.mjs <limitChars> <savePath>  (stdin = block)
+   */
+  static getFitRecoveryOutput(): string {
+    return String.raw`#!/usr/bin/env node
+// Fits the post-compaction recovery block under Claude Code's hook-output limit.
+// Generated by instar (PostUpdateMigrator.getFitRecoveryOutput) — always overwritten.
+import fs from 'node:fs';
+import path from 'node:path';
+const limit = Math.max(2000, Number(process.argv[2]) || 9000);
+const dest = process.argv[3] || '';
+let input = '';
+try { input = fs.readFileSync(0, 'utf-8'); } catch { input = ''; }
+if (input.length <= limit) { process.stdout.write(input); process.exit(0); }
+let saved = false;
+if (dest) {
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(dest + '.tmp', input, { mode: 0o600 });
+    fs.renameSync(dest + '.tmp', dest);
+    saved = true;
+    // Keep the folder small: drop saved blocks older than 7 days.
+    const dir = path.dirname(dest);
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
+      try { if (Date.now() - fs.statSync(p).mtimeMs > 7 * 86400000) fs.unlinkSync(p); } catch { /* best-effort */ }
+    }
+  } catch { saved = false; }
+}
+// Known sections, each bounded by its OWN end line (a message that quotes a diff
+// header such as '--- a/file' must never end the conversation section early).
+const SECTIONS = [
+  { key: 'conv', start: /^--- CONVERSATION CONTEXT/, end: /^--- END CONVERSATION CONTEXT ---/ },
+  { key: 'ident', start: /^--- Your Identity/, end: /^--- End Identity ---/ },
+  { key: 'mem', start: /^--- Your Memory/, end: /^--- End Memory ---/ },
+  { key: 'tg', start: /^--- TELEGRAM SESSION/, end: /^--- END TELEGRAM SESSION ---/ },
+];
+const lines = input.split('\n');
+const found = {};
+for (const sec of SECTIONS) {
+  const i = lines.findIndex((l) => sec.start.test(l));
+  if (i < 0) continue;
+  let j = lines.findIndex((l, k) => k > i && sec.end.test(l));
+  if (j < 0) j = lines.length - 1;
+  found[sec.key] = lines.slice(i, j + 1).join('\n');
+}
+const note = (n) => '\n[... ' + n + ' characters not shown here; they are in the saved file named below ...]';
+const head = (t, n) => (t.length <= n ? t : t.slice(0, Math.max(0, n - 90)) + note(t.length - Math.max(0, n - 90)));
+const headTail = (t, h, n) => {
+  if (t.length <= n) return t;
+  const keepTail = Math.max(0, n - h - 100);
+  return t.slice(0, h) + note(t.length - h - keepTail) + '\n' + t.slice(t.length - keepTail);
+};
+const MARKER = '=== IDENTITY RECOVERY (post-compaction) ===';
+const pointer = [
+  '',
+  '--- RECOVERY BLOCK CONDENSED ---',
+  'The full recovery block was ' + input.length + ' characters, over the size Claude Code passes to you, so it was condensed to what matters most.',
+  saved ? 'READ THE FULL BLOCK NOW with the Read tool before continuing: ' + dest : 'The full block could not be saved; read .instar/AGENT.md and .instar/MEMORY.md now with the Read tool.',
+  'It holds your whole identity (.instar/AGENT.md), your memory (.instar/MEMORY.md) and the context dispatch table.',
+  '--- END RECOVERY BLOCK CONDENSED ---',
+  '=== END IDENTITY RECOVERY ===',
+].join('\n');
+// The marker always first, so the canary and a 2 KB preview both still carry it.
+const parts = [MARKER];
+const fixed = [found.tg ? head(found.tg, 700) : '', found.ident ? head(found.ident, 1200) : '', found.mem ? head(found.mem, 600) : ''].filter(Boolean);
+const used = MARKER.length + fixed.reduce((a, t) => a + t.length + 1, 0) + pointer.length + 8;
+const convBudget = Math.max(600, limit - used);
+if (found.conv) parts.push(headTail(found.conv, 600, convBudget));
+else if (!found.ident && !found.mem) {
+  // An unrecognised block: keep its head (minus the marker if it led) within the budget.
+  const rest = input.startsWith(MARKER) ? input.slice(MARKER.length) : input;
+  parts.push(head(rest.trim(), convBudget));
+}
+parts.push(...fixed);
+let out = parts.join('\n') + '\n' + pointer + '\n';
+if (out.length > limit) {
+  // Shrink the conversation share, never the marker or the pointer.
+  const over = out.length - limit;
+  const i = found.conv ? 1 : -1;
+  if (i > 0) parts[i] = headTail(found.conv, 600, Math.max(400, convBudget - over - 120));
+  out = parts.join('\n') + '\n' + pointer + '\n';
+  if (out.length > limit) out = MARKER + '\n' + out.slice(MARKER.length + 1, limit - pointer.length - 2) + '\n' + pointer + '\n';
+}
+process.stdout.write(out);
 `;
   }
 

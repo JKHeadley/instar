@@ -3696,6 +3696,12 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /**
+   * PR links in outbound replies (src/messaging/prLinkReviewRequest.ts): when a reply links an open PR
+   * this agent authored, the reviewer is requested on GitHub and read back before the reply goes out.
+   * On by default. `reviewer` is a GitHub login; absent → the repository owner when that owner is a user.
+   */
+  prLinkReviewRequest?: { enabled?: boolean; reviewer?: string };
   /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
   memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
@@ -4973,6 +4979,30 @@ export interface InstarConfig {
    * (Codey) arms first per the maturation ladder.
    */
   outboundQueueExpiry?: { enabled?: boolean };
+  /**
+   * PR links request their reviewer (docs/specs/pr-link-requests-reviewer.md).
+   * Before an outbound message to a person is sent, every open pull request it
+   * links must have its reviewer requested (or already approved at the current
+   * head). `enabled` is OMITTED by default: live on a development agent, dark on
+   * the fleet (resolveDevAgentGate). Read live, no restart.
+   */
+  prLinkReviewer?: {
+    enabled?: boolean;
+    /** Default reviewer login for every repo. Absent = the repo owner. */
+    reviewer?: string;
+    /** Per-repo reviewer login, keyed "owner/repo" (case-insensitive). Beats `reviewer`. */
+    repoReviewers?: Record<string, string>;
+    /**
+     * Team mapping: the GitHub login of a person this agent talks to, keyed by
+     * their Telegram user id. When the message goes to a topic whose verified
+     * operator has a login here, that person is the reviewer.
+     */
+    githubLogins?: Record<string, string>;
+    /** Only these "owner/repo" names are checked. Absent = every repo the agent can request reviewers on. */
+    repos?: string[];
+    /** Total time budget for the GitHub calls of one message, in ms. Default 5000, clamped 1000-8000. */
+    timeoutMs?: number;
+  };
   /** Monitoring config */
   monitoring: MonitoringConfig;
   /**

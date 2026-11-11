@@ -45,6 +45,12 @@ export interface ChiefOfStaffTopicState {
 export interface EnsureChiefOfStaffTopicOptions {
   /** The dev-gated feature switch, read live. */
   enabled: () => boolean;
+  /**
+   * Whether a verified owner exists (src/core/chiefOfStaffOwner.ts rule 2). When it says no, a
+   * switched-on feature creates nothing and rolls nothing back: an existing topic stays as it is.
+   * Omitted ⇒ treated as known (callers that predate the rule).
+   */
+  ownerKnown?: () => boolean;
   /** `chiefOfStaff.displayName`, read live; empty ⇒ the default. */
   displayName: () => string | undefined;
   log?: (line: string) => void;
@@ -57,6 +63,7 @@ export type EnsureChiefOfStaffTopicOutcome =
   | { outcome: 'unpinned'; topicId: number }              // feature off, topic recorded: pin removed (rollback), topic kept
   | { outcome: 'kept-dark'; topicId: number }             // feature off, topic recorded and already unpinned
   | { outcome: 'standby-awaiting-adoption' }              // feature on, standby, nothing recorded yet
+  | { outcome: 'held-no-owner'; topicId: number | null }  // feature on but no verified owner: nothing created or changed
   | { outcome: 'created'; topicId: number; pinned: boolean }
   | { outcome: 'reused'; topicId: number; pinned: boolean }
   | { outcome: 'renamed'; topicId: number }
@@ -101,6 +108,13 @@ export async function ensureChiefOfStaffTopic(
     if (ok) { state.set(CHIEF_OF_STAFF_TOPIC_PINNED_STATE_KEY, false); log(`  Chief of Staff topic ${existing}: feature off — unpinned (topic kept)`); return { outcome: 'unpinned', topicId: existing }; }
     warn(`  Chief of Staff topic ${existing}: feature off but the pin could not be removed; will retry next boot`);
     return { outcome: 'kept-dark', topicId: existing };
+  }
+
+  let ownerKnown = true;
+  try { ownerKnown = opts.ownerKnown ? opts.ownerKnown() : true; } catch { /* @silent-fallback-ok: an unreadable owner is no owner — nothing is created on a doubt */ ownerKnown = false; }
+  if (!ownerKnown) {
+    warn('  Chief of Staff: switched on but this agent has no verified owner — not activating (no topic created)');
+    return { outcome: 'held-no-owner', topicId: existing };
   }
 
   const title = chiefOfStaffTopicTitle(opts.displayName());
