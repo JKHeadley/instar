@@ -28,12 +28,31 @@ describe('Chief of Staff surfaces — static wiring', () => {
     expect(TOPIC_STYLE.CHIEF.emoji).toBe('🧭');
   });
   it('non-owner input in the CoS topic is dropped before routing; owner taps renew and reach ownerTap', () => {
-    expect(server).toContain("console.warn(`[chief-of-staff] dropped a non-owner message in the Chief of Staff topic");
+    expect(server).toContain("console.warn(`[chief-of-staff] refused a message in the Chief of Staff topic");
+    expect(server).toContain('chiefOfStaffInboundVerdict({ topicId, cosTopicId: _cosOwnerOnlyTopicId(), senderId: telegramUserId, owner })');
     expect(server).toContain('_cosOwnerOnlyTopicId = _cosTopicId;');
     expect(server).toContain("telegram.onChiefOfStaffTap = async (tap) => {");
     expect(server).toContain("return loop.ownerTap(tap.data, 'owner-tap');");
     expect(server).toContain('sign: (c) => idMod.sign(c, localSigningKeyPem),');
-    expect(server).toContain('resolveApprovalOwner(telegram.getOwnerUserId(), [], [])'); // owner id normalised (config may hold a string)
+    // The VERIFIED owner (configured id, else the one verified operator) — Echo Bugs 10000002533.
+    expect(server).toContain('const owner = telegram.getVerifiedOwner();');
+    expect(server).toContain('telegram.getVerifiedOwner() === telegramUserId');
+    expect(server).not.toContain('resolveApprovalOwner(telegram.getOwnerUserId(), [], [])');
+  });
+  it('activation needs a verified owner and a refused message is never acknowledged (Echo Bugs 10000002533)', () => {
+    // The live gate (switch AND verified owner) drives the topic, the loop and the protocol.
+    expect(server).toContain('const cosEnabled = chiefOfStaffActiveGate(telegram, liveConfig, config);');
+    expect(server).toContain('ownerKnown: () => chiefOfStaffActiveGate(telegram, live, cfg)(),');
+    expect(server).toContain("owner: () => telegram?.getVerifiedOwner(),");
+    expect(server).toContain('DegradationReporter.getInstance().report({ ...CHIEF_OF_STAFF_NO_OWNER_NOTICE });');
+    expect(server).toContain('ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,');
+    // The standby proxy reads the same verdict as the inbound gate.
+    expect(server).toContain('isInboundRefused: (topicId, platformUserId) => {');
+    expect(server).toContain('return telegram?.isInboundRefused?.(topicId, Number.isSafeInteger(sender) && sender > 0 ? sender : 0) === true;');
+    expect(server).toContain('telegram.isInboundRefused = (topicId, senderId) => !!_cosOwnerOnlyTopicId');
+    expect(server).toContain('&& chiefOfStaffRefusesInbound({ topicId, cosTopicId: _cosOwnerOnlyTopicId(), senderId, owner: telegram.getVerifiedOwner() });');
+    // The lifeline forward route asks the same check and reports the refusal.
+    expect(read('src/server/routes.ts')).toContain("res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}) });");
   });
   it('the note carries its buttons through the topic or the owner DM, failing closed on an unreadable reader count', () => {
     expect(server).toContain('await telegram.sendOfferList(cosTopic, text, buttons)');
