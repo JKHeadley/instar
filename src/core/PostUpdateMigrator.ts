@@ -129,6 +129,8 @@ import {
   REMOTE_DESKTOP_MARKER,
   THREADLINE_PAIR_TOOL_BULLET,
   THREADLINE_PAIR_TOOL_MARKER,
+  SOMEONE_ELSES_WORK_TRAP,
+  SOMEONE_ELSES_WORK_TRAP_MARKER,
 } from '../scaffold/templates.js';
 import { generateClaudeMd } from '../scaffold/templates.js';
 import {
@@ -7637,6 +7639,16 @@ if [[ "$ACTIVE" != "true" ]]; then`;
       'CHECKBOX_TASK_LIST',
       'skills/autonomous/SKILL.md (found-problem triage + proportion line)',
     );
+    // CROSS_BOUNDARY_OWNER (topic 10000002523): "X will need Y in the app" /
+    // "outside this repository" is a deferral dressed as a scope fact. The skill
+    // now lists it in the Defer-to-Future-Self table and requires a route (pull
+    // the code or hand it to the named owner) plus a completion-bar item.
+    upgrade(
+      '.claude/skills/autonomous/SKILL.md',
+      'CROSS_BOUNDARY_OWNER',
+      'FRACTAL_8020_TRIAGE',
+      'skills/autonomous/SKILL.md (cross-boundary work needs an owner and a completion item)',
+    );
   }
 
   /**
@@ -9456,6 +9468,21 @@ setTimeout(() => process.exit(0), 2000);
   private patchClaudeMdContent(input: string, result: MigrationResult): { content: string; patched: boolean } {
     let content = input;
     let patched = false;
+    // Gravity well "Someone Else's Work" (topic 10000002523): a deferral dressed
+    // as a scope fact. Inserted after the "Ask Permission" trap when that
+    // paragraph is present, else appended to the end of the file.
+    // Idempotent by the marker sniff.
+    if (!content.includes(SOMEONE_ELSES_WORK_TRAP_MARKER)) {
+      const askPermission = /^\*\*"Ask Permission" Trap\*\*[^\n]*\n/m.exec(content);
+      if (askPermission) {
+        const at = askPermission.index + askPermission[0].length;
+        content = `${content.slice(0, at)}\n${SOMEONE_ELSES_WORK_TRAP}\n${content.slice(at)}`;
+      } else {
+        content += `\n\n${SOMEONE_ELSES_WORK_TRAP}\n`;
+      }
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the "Someone Else\'s Work" gravity well');
+    }
     if (!content.includes('### Quiet by Default notifications')) {
       content = content.replace(/^\*\*🩺 Agent Health lane[^\n]*\n/m, '');
       content += QUIET_NOTIFICATIONS_CLAUDEMD_SECTION;
@@ -21705,6 +21732,12 @@ echo "=== END IDENTITY RECOVERY ==="
 //      agent's to merge, full stop (instar-dev Phase 7 — Auto-merge on green).
 //      Like time/fatigue, NOT exempted by infrastructure-backing — having tracked
 //      the PR does not make handing its merge to the operator legitimate.
+//   6) An agent claiming work is needed SOMEWHERE ELSE — "will need a small
+//      button added to the app", "that is outside this repository", "recorded
+//      for the app's owner" — with no owner, no handoff and no completion-list
+//      item (incident 2026-11-10, topic 10000002523: a deferral dressed as a
+//      scope fact, so the later/follow-up patterns above never matched).
+//      Exempted only when the same message names a handoff or tracking.
 //
 // SIGNAL ONLY — this hook never blocks. The authority that can hold an
 // outbound message is MessagingToneGate (B17_FALSE_BLOCKER).
@@ -21858,6 +21891,28 @@ process.stdin.on('end', () => {
       { re: /(?:want me to|should i|shall i|ready to|ok to|okay to|good to|safe to|do you want me to|would you like me to) merge\\b/i, type: 'merge_permission_seeking' },
     ];
 
+    // Unowned cross-boundary work — "X will need Y" in another repo / the app /
+    // another owner, stated as a scope fact with no route (topic 10000002523).
+    // Pre-filter only: the meaning-level judgment is MessagingToneGate B17's
+    // UNOWNED-HANDOFF sub-clause.
+    const unownedHandoffPatterns = [
+      { re: /\\boutside (?:of )?(?:this|the|our|my) (?:repo(?:sitory)?|codebase|project)\\b/i, type: 'outside_this_repo' },
+      { re: /\\b(?:recorded|noted|left|flagged|parked) for (?:the )?(?:[\\w-]+'s )?(?:owner|maintainers?|other team|app team)\\b/i, type: 'recorded_for_owner' },
+      { re: /\\b(?:the )?(?:[\\w-]+'s )?(?:owner|maintainers?|other team|app team) (?:will|would|'ll) need to\\b/i, type: 'owner_will_need_to' },
+      { re: /\\b(?:will|would) (?:also )?need (?:[\\w-]+ ){0,6}(?:in|to|on|into) (?:the |a |another )?(?:app|ios app|android app|mobile app|other repo(?:sitory)?|[\\w-]+ repo(?:sitory)?)\\b/i, type: 'will_need_change_elsewhere' },
+      { re: /\\brequires? (?:a |some )?changes? (?:in|to) (?:the |a |another )?(?:app|ios app|android app|mobile app|other repo(?:sitory)?|[\\w-]+ repo(?:sitory)?)\\b/i, type: 'requires_change_elsewhere' },
+    ];
+    // A message that names the route (handed to a named session, a brief sent,
+    // delegated, a tracked commitment) is doing it right.
+    const handoffNamedPatterns = [
+      /\\b(?:handed|handing|hand) (?:it |this |that )?(?:off )?to\\b/i,
+      /\\bdelegat(?:ed|ing|e) (?:it |this |that )?to\\b/i,
+      /\\bbrief (?:sent|went|is (?:out|sent))\\b/i,
+      /\\b(?:sent|sending) (?:a |the )?(?:build )?brief\\b/i,
+      /\\bpull(?:ed|ing)? (?:the |its )?(?:code|repo(?:sitory)?) (?:to|onto|here)\\b/i,
+      /\\bon (?:the|my) (?:completion|task) list\\b/i,
+    ];
+
     // Anti-trigger: messages that DO back the deferral with infrastructure
     // get a pass — they are not orphan TODOs. The same message that mentions
     // /schedule, /commit-action, a cron expression, or a tracked deadline
@@ -21897,7 +21952,10 @@ process.stdin.on('end', () => {
     // regardless of whether the PR was tracked.
     const mergeDeferralMatches = mergeDeferralPatterns.filter(p => p.re.test(command));
 
-    const allMatches = [...inabilityMatches, ...orphanMatches, ...timeFatigueMatches, ...mergeDeferralMatches];
+    const handoffNamed = isInfrastructureBacked || handoffNamedPatterns.some(p => p.test(command));
+    const unownedHandoffMatches = handoffNamed ? [] : unownedHandoffPatterns.filter(p => p.re.test(command));
+
+    const allMatches = [...inabilityMatches, ...orphanMatches, ...timeFatigueMatches, ...mergeDeferralMatches, ...unownedHandoffMatches];
     if (allMatches.length === 0) process.exit(0);
 
     const checklist = [];
@@ -21959,6 +22017,21 @@ process.stdin.on('end', () => {
         '  4. The ONLY things that stop the merge: CI genuinely RED on this change (fix it + re-run), or it is SOMEONE ELSE\\'s PR (then asking is fine). An unrelated flake is re-run, not escalated.',
         '',
         'If it is your PR and green — do not ask, merge it.',
+      );
+    }
+
+    if (unownedHandoffMatches.length > 0) {
+      if (checklist.length > 0) checklist.push('');
+      checklist.push(
+        'UNOWNED CROSS-BOUNDARY WORK DETECTED — you are stating that work is needed somewhere else (another repo, the app, another owner) with no plan for it.',
+        '',
+        '"This will need Y" / "outside this repository" / "recorded for the owner" is a deferral dressed as a scope fact. Never just claim what will be needed. Before sending:',
+        '  1. Find the owner: your memory, the project map, a grep. Which session or repo holds that code?',
+        '  2. Pick a route NOW: pull the code to your machine and build it, OR hand it to the named owning session with a concrete handoff (a brief sent, a tracked commitment, how you will check it landed).',
+        '  3. Put it on your completion list (and the autonomous completion_condition), so the work cannot count as done without it.',
+        '  4. Say the route in this message: who builds it, how it gets there, how you will know.',
+        '',
+        'If no route exists after you tried, report it as a blocker with what you tried, not as a scope note.',
       );
     }
 
