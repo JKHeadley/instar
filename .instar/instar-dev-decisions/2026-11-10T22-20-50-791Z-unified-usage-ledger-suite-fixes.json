@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-10T22:20:50.791Z",
+  "slug": "unified-usage-ledger-suite-fixes",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/data/feature-ladders.json",
+      "src/monitoring/usageReadModel.ts",
+      "src/server/AgentServer.ts",
+      "src/server/usageRoutes.ts"
+    ],
+    "addedLines": 9,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -114,6 +114,8 @@ export class CodexUsageAccumulator {
   private lastProtocol: RawUsageFields | null = null;
   private threadSum: { input: number; cached: number; output: number } | null = null;
   private sawAnyLine = false;
+  /** Codex `thread_id` from `thread.started` (unified usage ledger correlation key). */
+  threadId: string | null = null;
   private oversizedDiscards = 0;
 
   /** Feed one complete line from the event stream. Malformed lines are skipped. */
@@ -123,7 +125,7 @@ export class CodexUsageAccumulator {
 
     // Pre-filter: only decides whether to ATTEMPT the parse (perf). It cannot
     // extract values — extraction below is strictly top-level JSON.parse.
-    if (!line.includes('token_count') && !line.includes('turn.completed')) return;
+    if (!line.includes('token_count') && !line.includes('turn.completed') && !line.includes('thread.started')) return;
 
     let parsed: unknown;
     try {
@@ -145,6 +147,11 @@ export class CodexUsageAccumulator {
         // Cumulative — last event wins within this shape.
         this.lastProtocol = extractUsageFields(totalUsage);
       }
+      return;
+    }
+
+    if (parsed.type === 'thread.started' && typeof parsed.thread_id === 'string' && parsed.thread_id.length <= 256) {
+      this.threadId = parsed.thread_id;
       return;
     }
 

@@ -794,6 +794,17 @@ export class CodexCliIntelligenceProvider implements IntelligenceProvider {
               inputTokens: usage.inputTokens,
               outputTokens: usage.outputTokens,
               cachedTokens: usage.cachedTokens,
+              // Unified usage ledger (Slice 2): Codex input_tokens includes cached input.
+              detail: {
+                sessionId: acc.threadId,
+                input: Math.max(0, usage.inputTokens - (usage.cachedTokens ?? 0)),
+                cacheRead: usage.cachedTokens ?? null,
+                cacheWrite: null,
+                output: usage.outputTokens,
+                reasoning: null,
+                reportedUsd: null,
+                reportedBasis: null,
+              },
             });
           } catch {
             /* @silent-fallback-ok: onUsage is pure observability */

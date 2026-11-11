@@ -55,13 +55,15 @@ describe('parseJsonResult', () => {
     // 10 + 100 + 1000 = 1110 input, 42 output
     // cachedTokens = cache_read_input_tokens ONLY (token-audit-completeness:
     // an informational SUBSET of inputTokens; cache creation stays plain input).
-    expect(onUsage).toHaveBeenCalledWith({ inputTokens: 1110, outputTokens: 42, cachedTokens: 1000 });
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ inputTokens: 1110, outputTokens: 42, cachedTokens: 1000 }));
+    // Unified usage ledger detail: the disjoint parts (fresh input only).
+    expect(onUsage.mock.calls[0][0].detail).toMatchObject({ input: 10, cacheRead: 1000, cacheWrite: 100, output: 42 });
   });
 
   it('treats missing usage sub-fields as 0', () => {
     const onUsage = vi.fn();
     parseJsonResult(jsonOut({ usage: { output_tokens: 7 } }), onUsage);
-    expect(onUsage).toHaveBeenCalledWith({ inputTokens: 0, outputTokens: 7, cachedTokens: 0 });
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ inputTokens: 0, outputTokens: 7, cachedTokens: 0 }));
   });
 
   it('does NOT fire onUsage when all token counts are zero/absent', () => {
@@ -89,7 +91,7 @@ describe('parseJsonResult', () => {
     const onUsage = vi.fn();
     const res = parseJsonResult(out, onUsage);
     expect(res).toBe(out);
-    expect(onUsage).toHaveBeenCalledWith({ inputTokens: 5, outputTokens: 1, cachedTokens: 0 });
+    expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ inputTokens: 5, outputTokens: 1, cachedTokens: 0 }));
   });
 
   it('never throws when onUsage is omitted', () => {

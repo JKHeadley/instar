@@ -280,6 +280,10 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { UsagePoolPuller } from '../monitoring/UsagePoolPuller.js';
+import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvider.js';
+import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
@@ -828,6 +832,10 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
+  private usageLedger: UsageLedger | null = null;
+  private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
+  private usageRouteDeps: import('./usageRoutes.js').UsageRouteDeps | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private undatedActionResurfacer: UndatedActionResurfacer | null = null;
   private blockerLifecycleService: BlockerLifecycleService | null = null;
@@ -2444,6 +2452,132 @@ export class AgentServer {
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);
       this.tokenLedger = null;
+    }
+
+    // ── Unified Usage Ledger (docs/specs/unified-usage-ledger.md) ─────
+    // Dev-gated (live on a development agent, dark on the fleet). Read-only against
+    // source transcripts; writes only server-data/usage-ledger.db (git-sync excluded).
+    // Separate from TokenLedger by design: nothing the old ledger, its routes or the
+    // burn alerts see changes.
+    try {
+      if (options.config.stateDir && resolveDevAgentGate(options.config.usage?.ledger?.enabled, options.config)) {
+        const projectDir = options.config.projectDir ?? process.cwd();
+        const homes = [...new Set([path.resolve(projectDir), path.resolve(process.cwd())])];
+        let otherHomes: string[] = [];
+        try {
+          const reg = JSON.parse(fs.readFileSync(agentRegistryPath(), 'utf-8')) as { agents?: Array<{ path?: string }> } | Array<{ path?: string }>;
+          const list = Array.isArray(reg) ? reg : reg.agents ?? [];
+          otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
+        } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
+        const ledger = new UsageLedger({
+          dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
+          machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+          agentId: options.config.projectName ?? path.basename(projectDir),
+          agentHomes: homes,
+          otherAgentHomes: otherHomes,
+        });
+        if (process.env.CLAUDE_CONFIG_DIR) ledger.addClaudeRoot(process.env.CLAUDE_CONFIG_DIR, 'server-env');
+        ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
+        const sm = options.sessionManager as SessionManager;
+        sm.setClaudeSessionBoundSink?.((session, claudeSessionId) => {
+          const configHome = typeof sm.configHomeForSession === 'function' ? sm.configHomeForSession(session.tmuxSession) : null;
+          if (configHome) ledger.addClaudeRoot(configHome, 'session');
+          ledger.recordBinding({
+            sessionId: claudeSessionId,
+            framework: 'claude-code',
+            sessionKind: session.jobSlug ? 'job' : 'interactive',
+            cwd: session.cwd ?? projectDir,
+            topicId: session.telegramTopicId != null ? String(session.telegramTopicId) : null,
+            jobSlug: session.jobSlug ?? null,
+            runId: session.jobSlug ? session.id : null,
+            accountId: session.subscriptionAccountId ?? null,
+            validFrom: Date.now(),
+          });
+        });
+        // Slice 2: Codex rollouts and every funnel one-shot (bounded, non-blocking queue).
+        ledger.addCodexRoot(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), process.env.CODEX_HOME ? 'server-env' : 'default');
+        setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
+        this.usageLedger = ledger;
+        // Slice 4: the backed-up snapshot. Imported only when the live database is empty;
+        // written hourly (never while empty) for BackupManager to copy.
+        const snapshotPath = path.join(options.config.stateDir, 'server-data', 'usage-ledger.snapshot.db');
+        try {
+          const livePeers = new Set((options.resolvePeerUrls?.() ?? []).map(p => p.machineId));
+          const imp = ledger.importSnapshotIfEmpty(snapshotPath, { isLivePoolMember: (id) => livePeers.has(id) });
+          if (imp.outcome !== 'none') console.log(`[instar] usage-ledger snapshot: ${imp.outcome}${imp.fromMachine ? ` (from ${imp.fromMachine})` : ''}`);
+        } catch (err) { /* @silent-fallback-ok: a snapshot that cannot be read leaves the live ledger to rebuild from source files; the outcome is in coverage */
+          console.warn('[instar] usage-ledger snapshot import failed (non-fatal):', err);
+        }
+        // Equivalent-cost prices come from the manifest that ships INSIDE the instar package
+        // (its scripts/ folder is published), not the agent's project dir — an agent install
+        // has no source checkout, so the project dir has no manifest. Canonical points only.
+        const usageThisDir = path.dirname(fileURLToPath(import.meta.url));
+        const usagePkgRoot = [path.resolve(usageThisDir, '..', '..'), path.resolve(usageThisDir, '..', '..', '..')]
+          .find(d => fs.existsSync(path.join(d, 'scripts', 'routing-prices.manifest.json'))) ?? projectDir;
+        const usagePrices = new RoutingPriceAuthority({ projectDir: usagePkgRoot, stateDir: options.config.stateDir });
+        const isUsageHolder = (): boolean => {
+          try { return options.coordinator?.enabled ? options.coordinator.getSyncStatus().holdsLease : true; } catch { return false; }
+        };
+        const peerTarget = (machineId: string) => (options.resolvePeerUrls?.() ?? []).find(p => p.machineId === machineId) ?? null;
+        const peerGet = async (machineId: string, route: string): Promise<{ status: number; body: unknown } | null> => {
+          const peer = peerTarget(machineId);
+          if (!peer) return null;
+          const r = await poolPeerFetch(options.recordRopeResult, peer, route, {
+            headers: { Authorization: `Bearer ${options.config.authToken}`, 'x-usage-proxied': '1' },
+            signal: AbortSignal.timeout(8_000),
+          });
+          return { status: r.status, body: await r.json().catch(() => null) };
+        };
+        this.usagePuller = new UsagePoolPuller({
+          ledger,
+          peers: () => (options.resolvePeerUrls?.() ?? []).map(p => ({ machineId: p.machineId })),
+          fetchPeer: async (machineId, route) => {
+            const r = await peerGet(machineId, route);
+            if (!r) throw new Error('no known address for that machine');
+            if (r.status !== 200) throw new Error(`the machine answered HTTP ${r.status}`);
+            return r.body;
+          },
+          isHolder: isUsageHolder,
+        });
+        this.usagePuller.start();
+        // First pull a minute after boot (not at boot): keeps startup light and gives
+        // the lease a moment to settle before the holder decides to pull.
+        const firstPull = setTimeout(() => { void this.usagePuller?.pullAll(); }, 60_000);
+        if (typeof firstPull.unref === 'function') firstPull.unref();
+        this.usageRouteDeps = {
+          ledger,
+          prices: usagePrices,
+          puller: this.usagePuller,
+          isHolder: isUsageHolder,
+          fromHolder: async (route) => {
+            const holder = options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : null;
+            if (!holder) return null;
+            return peerGet(holder, route).catch(() => null);
+          },
+          fromPeer: (machineId, route) => peerGet(machineId, route),
+          bearerOk: () => true,
+        } as import('./usageRoutes.js').UsageRouteDeps;
+        let ticks = 0;
+        this.usageLedgerTimer = setInterval(() => {
+          try {
+            const rep = this.usageLedger?.scanTick();
+            // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
+            if (rep) featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending } });
+            if (++ticks % 60 === 0) {
+              this.usageLedger?.prune();
+              this.usageLedger?.dropMissingCheckpoints();
+              this.usageLedger?.writeSnapshot(snapshotPath);
+            }
+          } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
+            console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+          }
+        }, 60_000);
+        if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();
+      }
+    } catch (err) { /* @silent-fallback-ok: a dev-gated observational store; the server runs fully without it. */
+      console.warn('[instar] usage-ledger init failed (non-fatal):', err);
+      this.usageLedger = null;
     }
 
     // Framework-Onboarding Mentor System issue ledger — read-only observability,
@@ -5856,6 +5990,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      usageRouteDeps: () => this.usageRouteDeps,
       // Zero-spend live codex quota (app-server) for GET /codex/usage. Wired
       // here — the composition root — so tests that build routes with a bare
       // ctx stay rollout-only and never spawn a real `codex` subprocess.
@@ -9217,6 +9352,9 @@ export class AgentServer {
       }
       this.revertDetector = null;
     }
+    if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
+    this.usagePuller?.stop(); this.usagePuller = null;
+    if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {
       try {

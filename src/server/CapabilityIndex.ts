@@ -480,6 +480,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'unifiedUsageLedger',
+    prefixes: ['/usage'],
+    description: 'Unified usage ledger (docs/specs/unified-usage-ledger.md) — one record of this agent\'s own token use per model request (Claude Code transcripts, Codex rollouts, every funnel one-shot; the same work seen twice is counted once), attributed to machine, engine, model, topic, job, run and feature, with list-equivalent API cost priced on read at the published price in force that UTC day (unpriced tokens shown as unpriced, never $0). Registry First: "where are my tokens going / what would this have cost at API prices / which topic or job costs most?" → GET /usage/summary (agent totals + per machine; not-reached and warming machines named), /usage/tree (agent → machine → engine/model → topic/job/feature → session), /usage/series (over time, split by model, framework or machine), /usage/top?dim=topic|job|session|feature, /usage/coverage (what is and is not measured: roots, unattributed/unpriced/null-token shares, dedupe pairs, snapshot, peer pulls). GET /usage/events?session= reads one session\'s raw rows on the machine that holds them. A standby proxies to the lease holder; GET /usage/rollup is the machine-to-machine replication page. GET /mobile/usage is the owner phone\'s trimmed view. Dev-gated (usage.ledger.enabled): 503 usage-ledger-off when dark. The older /tokens/* routes are unchanged.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /usage/summary', 'GET /usage/tree', 'GET /usage/series', 'GET /usage/top', 'GET /usage/coverage', 'GET /usage/events', 'GET /usage/rollup', 'GET /mobile/usage'],
+    }),
+  },
+  {
     key: 'mobilePlansPeopleScreens',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
