@@ -96,6 +96,7 @@ Round 2 concurred, with a minor note taken: an unreadable census at recheck time
 ## Evidence pointers
 
 - Live ledger on the Echo Studio (read-only, 2026-11-11 00:45 PST): `held_slugs` rows `health-check|independent-history-mismatch|2026-11-11T06:08:40Z` and `llm-decision-grading|…|2026-11-04T01:00:56Z`; attempts `health-check-mwbpoq21-6` (registered 06:01:56Z, no completion, outcome-unknown at 06:10:53Z) and `llm-decision-grading-mw1ethcv-5` (expired-unchecked, outcome-unknown, no completion); both runs still `pending` in `job-runs.jsonl`.
+- `tests/unit/job-cost-runner/JobScheduler-post-gate-definition.test.ts` planted a census-reason hold with no mismatching run behind it; the census now lifts such a hold, so that test uses a hold reason the census does not own (`write-failed:test-ledger`) to keep its intent (a held job runs as its session).
 - Tests: `tests/unit/job-supervision-store-interrupted-and-release.test.ts`, `tests/unit/job-cost-runner/JobScheduler-interrupted-script-run.test.ts`, `tests/integration/job-supervision-hold-routes.test.ts`, `tests/e2e/job-supervision-interrupted-run-lifecycle.test.ts`.
 
 ---
