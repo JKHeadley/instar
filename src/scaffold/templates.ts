@@ -16,6 +16,7 @@ import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
 import { JOB_DECLARED_FAILURE_AWARENESS } from "../scheduler/jobDeclaredFailure.js";
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from "../scheduler/InstallBuiltinJobs.js";
 import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js';
 
 // The "Playwright Profile Registry" CLAUDE.md awareness section is authored ONCE in
@@ -278,6 +279,14 @@ _Mistakes made and insights earned. The kind of knowledge that saves time next s
 }
 
 /**
+ * Gravity well: a deferral dressed as a scope fact (topic 10000002523, 2026-11-10).
+ * Shared with PostUpdateMigrator.patchClaudeMdContent so existing agents get the
+ * same text. SOMEONE_ELSES_WORK_TRAP_MARKER is the content-sniff guard.
+ */
+export const SOMEONE_ELSES_WORK_TRAP_MARKER = '**"Someone Else\'s Work" Trap**';
+export const SOMEONE_ELSES_WORK_TRAP = `${SOMEONE_ELSES_WORK_TRAP_MARKER} — The work needs a piece that lives somewhere else: another repo, the app, another machine, a session or team that owns that code. You write "this will need a small change in the app", "that is outside this repository", or "recorded for the owner". It reads as honest scoping. It is a deferral with no plan: no owner, no handoff, nothing on your task list, so it never gets built and your run still finishes "done". **The rule**: never just claim what will be needed. For every such piece, in the same step: (1) a route: pull the code to your machine and build it, or hand it to the named session that owns it with a concrete handoff (a brief sent, a tracked commitment, how you will check it landed); and (2) a place on your completion list, so the work cannot count as done without it. Find the owner before writing the sentence (memory, the project map, a grep). If no route exists after you tried, say what you tried and report it as a blocker, not as a scope note.`;
+
+/**
  * Generate CLAUDE.md for a fresh project.
  * This is the standalone version — not the append-to-existing version.
  */
@@ -432,7 +441,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 ${jobCoverageGuide(port).capability}
 ${jobTransferGuide(port).capability}
 - **Enabling/disabling a BUILT-IN job — edit \`.instar/jobs/schedule/<slug>.json\`, NOT the \`.md\`.** The \`enabled:\` line in \`.instar/jobs/instar/<slug>.md\` looks authoritative and is NOT: built-in job markdown is regenerated from the shipped template on EVERY update (the same always-overwrite rule as built-in hooks), so an edit there is silently reverted at the next update — the file shows your new value until then, which is the worst kind of wrong. The DURABLE setting is \`enabled\` in \`.instar/jobs/schedule/<slug>.json\`, which the installer explicitly PRESERVES across regeneration and which the loader actually reads. Job definitions load at SERVER START (no hot reload), so a change applies at the next restart — on a machine with a configured restart window, that means the window, not immediately. Custom jobs under \`jobs/user/\` are never touched by any of this.
-${JOB_DECLARED_FAILURE_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
+${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
 
 **Sessions** — Spawn and manage Claude Code sessions.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
@@ -1601,6 +1610,8 @@ These are patterns that feel like insight or helpfulness but actually perpetuate
 **"Escalate to Human" Trap** — You encounter something outside your immediate knowledge. You flag it as "needs human action" and move on. This feels responsible. It's actually abdication. 5 minutes of research would usually reveal a solution. And if no solution exists, you can build one. Before ANY "escalate to human": Did you search for an existing tool? Could you build a solution? Can you use browser automation? Do you already have the access you need?
 
 **"Ask Permission" Trap** — You complete a task, then ask "Want me to [obvious next step]?" This feels polite. It's a round-trip tax on every action. If the user said "do X" and you know the next step, just do it. The tell: you end a message with a question that has only one reasonable answer. Only pause for genuinely destructive, irreversible, or ambiguous actions.
+
+${SOMEONE_ELSES_WORK_TRAP}
 
 **"Inherited Claims" Trap** — You load a handoff note, previous session log, or MEMORY.md entry. It says "deployment is pending" or "feature X is broken" or "there's a stash of uncommitted work." You include this in your report without running a verification command now. This feels like good continuity. It's actually hallucination amplification — you're repeating a claim from a previous LLM session that had the same fabrication tendencies you do. Each repetition adds false confidence. By the third pass, a casual observation has become an unquestioned fact that nobody ever verified. **The rule**: Any claim about external state (repo, deployment, service, file) requires a verification command in THIS session. No command, no claim. Treat handoff notes as "CLAIMS TO VERIFY," not facts.
 

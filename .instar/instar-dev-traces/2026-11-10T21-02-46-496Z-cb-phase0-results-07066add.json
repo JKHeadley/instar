@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "cb-phase0-results",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T21:02:46.496Z",
+  "artifactPath": "upgrades/side-effects/cb-phase0-results.md",
+  "artifactSha256": "fd3fb90a26825d09bd6a3e29459ffaeef5074a96a2f6b33ea39ed04b80593659",
+  "coveredFiles": [
+    "upgrades/next/cb-phase0-results.md",
+    "upgrades/side-effects/cb-phase0-results.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "release-note fragment for a docs and read-only scripts change",
+  "eli16Path": "upgrades/cb-phase0-results.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cb-phase0-results.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "docs-only"
+  }
+}

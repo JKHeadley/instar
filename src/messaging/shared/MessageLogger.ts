@@ -35,6 +35,8 @@ export interface LogEntry {
   threadTs?: string;
   /** Structural message origin. Undefined only for legacy/non-migrated writers. */
   provenance?: MessageProvenance;
+  /** context-budget §8: set only on a row mirrored in from another agent (`relay`) or this agent's A2A traffic (`a2a`). */
+  rowOrigin?: 'relay' | 'a2a';
 }
 
 /** Legacy Telegram-specific log entry shape for backward compatibility */

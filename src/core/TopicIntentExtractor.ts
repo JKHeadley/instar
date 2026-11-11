@@ -47,6 +47,12 @@ export interface ExtractorInput {
   /** Existing refs on the topic, provided so the LLM can anchor signals. */
   existingRefs: EstablishedRef[];
   /**
+   * Update the awareness projection only; discard every evidence signal
+   * (context-budget §6.4 transcript-growth ticks: raw tool output must never
+   * create or reinforce a ref as if the agent had said it).
+   */
+  awarenessOnly?: boolean;
+  /**
    * Rolling conversational summary for the topic (from TopicMemory), giving the
    * extractor broader context to judge significance + horizon. Untrusted user
    * content — rendered inside a delimited data block, never as instructions.
@@ -151,7 +157,7 @@ export class TopicIntentExtractor {
     const createdRefs: Array<{ refId: string; kind: RefKind; text: string }> = [];
     let skipped = 0;
 
-    for (const p of proposals) {
+    for (const p of input.awarenessOnly ? [] : proposals) {
       const translated = this.translateProposal(p, effectiveInput);
       if (!translated) {
         skipped++;
