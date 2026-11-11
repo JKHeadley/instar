@@ -16055,10 +16055,17 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
     // "does compaction recovery work" to its read surface. Idempotent: inserted
     // once after the "What are we working on?" row, sniffed on the route.
     if (!content.includes('/context-budget/sentinel') && content.includes('| What are we working on?')) {
-      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off), plus any quarantined or unreadable context folds. \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
+      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus any quarantined or unreadable context folds. \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
       content = content.replace(/(\| What are we working on\?[^\n]*\n)/, `$1${row}\n`);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
+    }
+    // The canary's `counted` state (S16, §9.6 Codex adapter): refresh an existing
+    // row that predates it. Idempotent: sniffed on the old row's closing words.
+    if (content.includes('/context-budget/sentinel') && !content.includes('`counted` = an engine') && content.includes('`n/a` = recovery switched off), plus')) {
+      content = content.replace('`n/a` = recovery switched off), plus', '`n/a` = recovery switched off; `counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the Context Budget sentinel row names the canary\'s counted state');
     }
 
     // Process Health (Dashboard Tab) — Agent Awareness backfill for the
