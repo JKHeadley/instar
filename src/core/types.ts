@@ -1171,6 +1171,27 @@ export interface IntelligenceProvider {
   evaluate(prompt: string, options?: IntelligenceOptions): Promise<string>;
 }
 
+/**
+ * Unified usage ledger (docs/specs/unified-usage-ledger.md, Slice 2): the split,
+ * disjoint token parts and the provider session id a one-shot returned, carried
+ * alongside the folded `inputTokens`/`outputTokens` so existing consumers are
+ * byte-identical. Every field is optional; null/absent means "not reported".
+ */
+export interface IntelligenceUsageDetail {
+  /** Provider session id: Claude `session_id`, Codex `thread_id`, Grok `sessionId`. */
+  sessionId?: string | null;
+  /** Fresh (uncached) input only. */
+  input?: number | null;
+  cacheRead?: number | null;
+  cacheWrite?: number | null;
+  /** Output including reasoning. */
+  output?: number | null;
+  /** Subset of output (display only). */
+  reasoning?: number | null;
+  reportedUsd?: number | null;
+  reportedBasis?: 'actual' | 'plan-rate' | null;
+}
+
 export interface IntelligenceOptions {
   /** Optional shared-queue cancellation signal for preemptible background work. */
   signal?: AbortSignal;
@@ -1316,7 +1337,7 @@ export interface IntelligenceOptions {
    * CircuitBreakingIntelligenceProvider sets it to feed per-feature token
    * counts into the metrics ledger (/metrics/features).
    */
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number; detail?: IntelligenceUsageDetail }) => void;
   /**
    * Observable Intelligence standard (docs/specs/observable-intelligence.md):
    * surface the resolved provider/model so the per-feature metrics funnel can
@@ -2804,6 +2825,22 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** Storage prerequisite only; never enables the Conversations read/UI increment. */
+  conversationGraph?: {
+    /** Release switches: leave absent/off until increment-A acceptance. Storage
+     * enablement alone does not expose even an opt-in read API. */
+    readEnabled?: boolean;
+    correctionsEnabled?: boolean;
+    /** Machine ids to sign when the graph is first created. Absent means every paired machine. Has no effect afterwards. */
+    genesisMembers?: string[];
+    storage?: { enabled: boolean; /** Resource budget only; per-record/proof wire caps remain fixed. Default 32 MiB. */ stagingDiskQuotaBytes?: number };
+    agentId?: string;
+    membership?: import('./GraphMembershipTypes.js').GraphMembershipEpoch;
+    ownerPublicKey?: string;
+    /** SecretStore key names, never bearer values in project configuration. */
+    peerBearerSecret?: string;
+    witness?: { baseUrl: string; witnessId: string; publicKey: string; failureDomain: string; bearerSecret?: string; historicalPublicKeys?: Record<string,string> };
+  };
   /** Whether multi-machine is enabled */
   enabled: boolean;
   /** Private, approved user-job transfer. Dark until paired-machine proof. */
@@ -3675,6 +3712,12 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /**
+   * PR links in outbound replies (src/messaging/prLinkReviewRequest.ts): when a reply links an open PR
+   * this agent authored, the reviewer is requested on GitHub and read back before the reply goes out.
+   * On by default. `reviewer` is a GitHub login; absent → the repository owner when that owner is a user.
+   */
+  prLinkReviewRequest?: { enabled?: boolean; reviewer?: string };
   /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
   memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
@@ -4184,6 +4227,13 @@ export interface InstarConfig {
     notices?: {
       /** Default true: log would-raise, raise nothing. */
       dryRun?: boolean;
+    };
+  };
+  /** Unified usage ledger (docs/specs/unified-usage-ledger.md). */
+  usage?: {
+    ledger?: {
+      /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
+      enabled?: boolean;
     };
   };
   routingSpend?: {
@@ -4976,6 +5026,8 @@ export interface InstarConfig {
   authToken?: string;
   /** PIN for dashboard web access (simpler than authToken, used for mobile/remote login) */
   dashboardPin?: string;
+  /** Server-managed revocation generation, atomically coupled to each PIN write. */
+  dashboardPinGeneration?: string;
   /** Relationship tracking config */
   relationships?: RelationshipManagerConfig;
   /** Feedback loop config */

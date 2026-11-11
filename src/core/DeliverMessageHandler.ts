@@ -15,15 +15,18 @@
  * router advances the platform offset only on this ACK (exactly-once ingress).
  */
 
-import type { MeshCommand, MeshCommandHandler } from './MeshRpc.js';
+import type { MeshCommand, MeshCommandHandler, MeshEnvelope } from './MeshRpc.js';
 
 export interface DeliverMessageHandlerDeps {
   /** The owner's current ownership epoch for a session, or null if no record. */
   ownerEpochOf: (session: string) => number | null;
   /** Durably record a receipt (idempotency key = messageId). Returns true iff FIRST time. */
   recordReceipt: (messageId: string, session: string) => boolean;
+  /** Optional synchronous durable admission before the duplicate receipt. A
+   * failure propagates without recording receipt; no ACK may invent custody. */
+  beforeReceipt?: (command:Extract<MeshCommand,{type:'deliverMessage'}>,sender:string,envelope:MeshEnvelope)=>void;
   /** Optional hand-off to local processing (Track-H staged activation). Dark by default. */
-  onAccepted?: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => void;
+  onAccepted?: (command: Extract<MeshCommand, { type: 'deliverMessage' }>, sender: string, envelope: MeshEnvelope) => void;
   /**
    * Durable Inbound Message Queue §3.4 remote path: re-validate a CARRIED
    * senderEnvelope.userId against THIS machine's users registry before
@@ -123,7 +126,7 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
     }
   }
 
-  return (command: MeshCommand, sender?: string): DeliverMessageAck => {
+  return (command: MeshCommand, sender: string, meshEnvelope: MeshEnvelope): DeliverMessageAck => {
     if (command.type !== 'deliverMessage') {
       // Defensive — the dispatcher only routes deliverMessage here, but be total.
       return { messageId: 'unknown', accepted: 'queued' };
@@ -181,7 +184,7 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
       if (!ingested) return { messageId: command.messageId, accepted: 'not-yet' };
       const first = deps.recordReceipt(command.messageId, command.session);
       if (!first) return { messageId: command.messageId, accepted: 'duplicate' };
-      deps.onAccepted?.(command);
+      deps.onAccepted?.(command, sender, meshEnvelope);
       return { messageId: command.messageId, accepted: 'queued' };
     }
     // Answered as stale ownership on purpose: every router, on any build, already takes that
@@ -196,11 +199,12 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
     }
     // §14: the row lands before the receipt (a duplicate lands as a no-op, which also fills a row a crash lost).
     if (deps.landRow) {
-      try { deps.landRow(command, sender ?? ''); } catch { /* @silent-fallback-ok — the owner's watermark keeps the gap; the message is still received */ }
+      try { deps.landRow(command, sender); } catch { /* @silent-fallback-ok — the owner's watermark keeps the gap; the message is still received */ }
     }
+    deps.beforeReceipt?.(command,sender,meshEnvelope);
     const firstSeen = deps.recordReceipt(command.messageId, command.session);
     if (!firstSeen) return { messageId: command.messageId, accepted: 'duplicate' };
-    deps.onAccepted?.(command);
+    deps.onAccepted?.(command, sender, meshEnvelope);
     return { messageId: command.messageId, accepted: 'queued' };
   };
 }

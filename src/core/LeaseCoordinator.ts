@@ -1,3 +1,6 @@
+import {NativeDecommissionLeasePermit} from './NativeDecommissionLeasePermit.js';
+import {LocalLeaseStore} from './LocalLeaseStore.js';
+import {GitLeaseStore} from './GitLeaseStore.js';
 /**
  * LeaseCoordinator — drives the FencedLease over the durable (git) and fast
  * (tunnel) media, and owns the lifecycle of acquisition / renewal / fencing /
@@ -514,6 +517,12 @@ export class LeaseCoordinator {
     return this.d.tunnel?.higherEpochEvidence?.() ?? 0;
   }
 
+  /** No new native owner step can claim durable storage from an arbitrary
+   * injected callback or from LocalLeaseStore's in-memory cache. */
+  syncOwnerDecommissionDurably():string{
+    const store=this.d.store;if(!(store instanceof LocalLeaseStore)&&!(store instanceof GitLeaseStore))throw new Error('native-decommission-store-durability-unavailable');store.syncDurably();return store.durabilityPath;
+  }
+
   /** The current effective epoch (for stamping writes/sends). */
   currentEpoch(): number {
     return this.effectiveView().epoch;
@@ -999,6 +1008,15 @@ export class LeaseCoordinator {
    * A yield from any non-holder is refused, so a forged/misdirected yield cannot
    * trigger a takeover. On success: CAS to epoch+1, broadcast, emit the new epoch.
    */
+  /** Explicit owner decommission continuation. No liveness timeout, fabricated
+   * yield or synthetic lease is substituted for actual native administration. */
+  async acquireOnOwnerDecommission(permit:NativeDecommissionLeasePermit):Promise<boolean>{
+    if(!(permit instanceof NativeDecommissionLeasePermit))throw new Error('native-decommission-permit-required');permit.assertCurrent(this,this.selfMachineId);this.syncOwnerDecommissionDurably();if(this.d.isLeaseEligible&&!this.d.isLeaseEligible())return false;
+    const prior=permit.priorAcquisition(this),view=this.effectiveView();if(prior&&view.lease?.holder===this.selfMachineId&&view.epoch>=prior.epoch&&this.holdsLease()){this.syncOwnerDecommissionDurably();/* A real server takes a new epoch every boot. Keep the durable record on the epoch this machine actually holds, so an interrupted removal can finish. */if(view.epoch>prior.epoch)await permit.recordAcquisition(this,view.lease);return true;}if(this.higherEpochEvidence()>view.epoch)throw new Error('native-decommission-higher-native-evidence-unresolved');const base=permit.acquisitionBase(view.lease,view.epoch),candidate=this.fl.buildAcquisition(base,this.now(),this.nextNonce());permit.assertCurrent(this,this.selfMachineId);
+    const result=this.casWrite(candidate);if(!result.ok){this.emitEpoch(result.observed.epoch);return false;}this.syncOwnerDecommissionDurably();this.selfIssued=candidate;if(base.holder!==this.selfMachineId)this.peerTakeoverAuthorizedEpoch=candidate.epoch;this.suspended=false;this.suspendedByRenewal=null;
+    await this.broadcast(candidate);permit.assertCurrent(this,this.selfMachineId);this.syncOwnerDecommissionDurably();this.markRenewOk();this.emitEpoch(candidate.epoch);if(!this.holdsLease())return false;await permit.recordAcquisition(this,candidate);return true;
+  }
+
   async acquireOnConsent(yieldFromMachineId: string): Promise<boolean> {
     const view = this.effectiveView();
     const holder = view.lease?.holder ?? null;

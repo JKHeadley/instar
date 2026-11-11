@@ -18,7 +18,7 @@ describe('Session Pool activation wiring (§L4)', () => {
   const src = fs.readFileSync(SERVER, 'utf-8');
 
   const ownerAcceptedBlock = (): string => {
-    const idx = src.indexOf('onAccepted: (cmd) => {');
+    const idx = src.indexOf('onAccepted: (cmd, sender, originalEnvelope) => {');
     expect(idx).toBeGreaterThan(0);
     const end = src.indexOf('// ── WS1.2 owner-side drain runner', idx);
     expect(end).toBeGreaterThan(idx);

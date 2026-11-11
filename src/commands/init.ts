@@ -4628,6 +4628,8 @@ fi
 
   // Compaction recovery — shared from PostUpdateMigrator (single source of truth).
   fs.writeFileSync(path.join(hooksDir, 'compaction-recovery.sh'), migrator.getHookContent('compaction-recovery'), { mode: 0o755 });
+  // The recovery-output fitter the session-start hook pipes the block through (§9.1: hook output over 10,000 chars reaches the model only as a preview).
+  fs.writeFileSync(path.join(hooksDir, 'fit-recovery-output.mjs'), PostUpdateMigrator.getFitRecoveryOutput(), { mode: 0o755 });
 
 
   // Deferral detector, post-action reflection, external communication guard

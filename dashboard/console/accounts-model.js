@@ -57,20 +57,60 @@ export function cellState(row, episode, blocker, now = Date.now()) {
   return { state: 'unknown', label: String(row.status || 'unknown').replace(/-/g, ' ') };
 }
 
+const WINDOW_KEYS = [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']];
+
+/**
+ * Every usage window on a reading, in a fixed order (5-hour, weekly, Fable weekly), each with its own
+ * reset. A window shows only when the reading has it: the 5-hour limit applies to some accounts some of
+ * the time. A window whose reset time has passed rolled over after the reading: it is kept as `rolledOver`
+ * (its old share is no longer true) and never counts as the tightest.
+ */
+export function usageWindows(q, now = Date.now()) {
+  if (!q) return [];
+  const seen = new Set();
+  const out = [];
+  for (const [k, label] of WINDOW_KEYS) {
+    const w = q[k];
+    if (!w || seen.has(label)) continue;
+    const pct = Number(w.utilizationPct ?? w.usedPercent);
+    if (!Number.isFinite(pct)) continue;
+    seen.add(label);
+    const resetsAt = w.resetsAt || w.resetsAtIso || null;
+    const t = Date.parse(resetsAt);
+    out.push({ key: label === '5-hour' ? 'five-hour' : label === 'weekly' ? 'weekly' : 'fable', label, pct, resetsAt, rolledOver: Number.isFinite(t) && t <= now });
+  }
+  return out;
+}
+
 /** The tightest usage window on a reading: { pct, label, resetsAt, second }. */
-export function tightest(q) {
-  if (!q) return null;
-  const wins = [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']]
-    .map(([k, label]) => {
-      const w = q[k];
-      if (!w) return null;
-      const pct = Number(w.utilizationPct ?? w.usedPercent);
-      if (!Number.isFinite(pct)) return null;
-      return { pct, label, resetsAt: w.resetsAt || w.resetsAtIso || null };
-    }).filter(Boolean);
+export function tightest(q, now = Date.now()) {
+  const wins = usageWindows(q, now).filter((w) => !w.rolledOver).map(({ pct, label, resetsAt }) => ({ pct, label, resetsAt }));
   if (!wins.length) return null;
   wins.sort((a, b) => b.pct - a.pct);
   return { ...wins[0], second: wins[1] || null };
+}
+
+/** How long until a time, in words: "in 3h 10m", "in 25m"; null past a day or when not in the future. */
+export function untilWords(ts, now = Date.now()) {
+  const ms = Date.parse(ts) - now;
+  if (!Number.isFinite(ms) || ms <= 0 || ms >= 24 * 60 * 60 * 1000) return null;
+  const m = Math.max(1, Math.round(ms / 60000));
+  return m < 60 ? `in ${m}m` : `in ${Math.floor(m / 60)}h${m % 60 ? ` ${m % 60}m` : ''}`;
+}
+
+/** A window's row: what share is used, and which reset it is. */
+export function windowRow(w, now = Date.now()) {
+  if (w.rolledOver) return { ...w, name: w.label.charAt(0).toUpperCase() + w.label.slice(1), pctText: '—', reset: 'reset since the last reading', tone: null };
+  const when = resetWords(w.resetsAt, now);
+  const until = untilWords(w.resetsAt, now);
+  return {
+    ...w,
+    name: w.label.charAt(0).toUpperCase() + w.label.slice(1),
+    pctText: `${Math.round(w.pct)}%`,
+    reset: when ? `${when}${until ? ` (${until})` : ''}` : null,
+    // warning-path: row
+    tone: w.pct >= NEAR_OUT_PCT ? 'bad' : w.pct >= 75 ? 'attn' : null,
+  };
 }
 
 export function resetWords(ts, now = Date.now()) {
@@ -78,26 +118,19 @@ export function resetWords(ts, now = Date.now()) {
   if (!Number.isFinite(t) || t <= now) return null;
   const d = new Date(t);
   const sameDay = new Date(now).toDateString() === d.toDateString();
-  return `resets ${sameDay ? '' : d.toLocaleDateString([], { weekday: 'short' }) + ' '}${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+  // A weekday alone is ambiguous a week out ("Tue" read on a Tuesday), so past 6 days add the date.
+  const day = sameDay ? '' : t - now > 6 * 24 * 60 * 60 * 1000
+    ? d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' }) + ' '
+    : d.toLocaleDateString([], { weekday: 'short' }) + ' ';
+  return `resets ${day}${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
 }
 
 /** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
 export const NEAR_OUT_PCT = 90;
 
-/** Every usage window on a reading: [{ pct, resetsAt }]. */
-function windowsOf(q) {
-  if (!q) return [];
-  const seen = new Set();
-  const out = [];
-  for (const [k, label] of [['fiveHour', '5-hour'], ['sevenDay', 'weekly'], ['fable', 'Fable weekly'], ['primary', '5-hour'], ['secondary', 'weekly']]) {
-    const w = q[k];
-    if (!w || seen.has(label)) continue;
-    const pct = Number(w.utilizationPct ?? w.usedPercent);
-    if (!Number.isFinite(pct)) continue;
-    seen.add(label);
-    out.push({ pct, resetsAt: w.resetsAt || w.resetsAtIso || null });
-  }
-  return out;
+/** Every live usage window on a reading: [{ pct, resetsAt }]. */
+function windowsOf(q, now = Date.now()) {
+  return usageWindows(q, now).filter((w) => !w.rolledOver).map(({ pct, resetsAt }) => ({ pct, resetsAt }));
 }
 
 /**
@@ -137,7 +170,7 @@ export function accountNotices(accounts, { partial = false, now = Date.now() } =
   }
   const returnsAt = (a) => {
     let latest = 0;
-    for (const w of windowsOf(a.reading).filter((x) => x.pct >= NEAR_OUT_PCT)) {
+    for (const w of windowsOf(a.reading, now).filter((x) => x.pct >= NEAR_OUT_PCT)) {
       const t = Date.parse(w.resetsAt);
       if (!Number.isFinite(t) || t <= now) return null;
       latest = Math.max(latest, t);
@@ -189,15 +222,18 @@ export function buildAccountsPage(res, now = Date.now(), { episodes = [], blocke
     byId.set(r.id, g);
   }
   const accounts = [...byId.values()].map((g) => {
-    const t = tightest(g.reading);
+    const t = tightest(g.reading, now);
+    const windows = usageWindows(g.reading, now).map((w) => windowRow(w, now));
     const stale = g.readingAt && now - g.readingAt > READING_STALE_MS;
     return {
-      ...g, tight: t, stale,
+      ...g, tight: t, stale, windows,
       inUse: Boolean(inUse && inUse.activeAccountId === g.id),
       readingAge: g.readingAt ? ago(g.readingAt, now) : null,
       line: !t ? (g.framework === 'grok-build' ? "Usage isn't readable for this kind of account." : 'No reading yet.')
         : `${Math.round(t.pct)}% of ${t.label}${resetWords(t.resetsAt, now) ? ' · ' + resetWords(t.resetsAt, now) : ''}`,
       second: t && t.second ? `${t.second.label} ${Math.round(t.second.pct)}%` : null,
+      // One plain sentence per window, for the details sheet: "5-hour: 100% used, resets 5:59 PM (in 3m)".
+      windowsText: windows.map((w) => `${w.label}: ${w.rolledOver ? w.reset : `${w.pctText} used${w.reset ? `, ${w.reset}` : ''}`}`),
       // warning-path: row
       tone: t && t.pct >= 90 ? 'bad' : t && t.pct >= 75 ? 'attn' : null,
     };

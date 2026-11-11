@@ -1,3 +1,4 @@
+import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
 const stampNotification = notificationStamper('src/server/AgentServer.ts');
@@ -21,6 +22,8 @@ import { holdAllSetups } from '../recommended/setupState.js';
 import { currentAgentDisplay } from '../messaging/messageOrigin.js';
 import { resolveSessionPlatform } from './sessionPlatform.js';
 import express, { type Express, type Request, type Response } from 'express';
+import {createConversationGraphSurface,createConversationGraphOffRouter} from './ConversationGraphSurface.js';
+import {createConversationGraphDefaultSurface} from './ConversationGraphDefaultSurface.js';
 import { setMoveAftercare } from '../core/OverloadShedPlanner.js';
 import { setAutonomousRunProbe } from '../core/appConversationMove.js';
 import { getAspClassifierRef } from '../core/aspClassifierRef.js';
@@ -114,6 +117,9 @@ import { HttpParitySource } from '../feedback-factory/dryrun/HttpParitySource.js
 import { runDryRunCompare } from '../feedback-factory/dryrun/dryRunCompare.js';
 import { InMemoryImportTarget, runImport, type ImportRunResult } from '../feedback-factory/migration/importRunner.js';
 import { SecretStore } from '../core/SecretStore.js';
+import { ConversationGraphOwnerGrantStore } from './ConversationGraphOwnerGrant.js';
+import {readConversationGraphOwnerCredential,readConversationGraphOwnerPolicy,initializeConversationGraphOwnerPolicy} from '../core/ConversationGraphOwnerPolicy.js';
+import {LiveConfig} from '../config/LiveConfig.js';
 import crypto from 'node:crypto';
 import { secretKeyPaths } from '../core/SecretSync.js';
 import { fileURLToPath } from 'node:url';
@@ -153,7 +159,9 @@ import { IdentityManager as ThreadlineIdentityManager } from '../threadline/clie
 import { FileSeenNonceStore } from '../core/aspNonceStore.js';
 import { AspKeyDirectory } from '../core/AspKeyDirectory.js';
 import { TrustElevationSource } from '../remediation/TrustElevationSource.js';
-import { createTopicIntentRoutes } from './topicIntentRoutes.js';
+import { createTopicIntentRoutes, serveTopicIntentBriefing } from './topicIntentRoutes.js';
+import { createPromptContextRoutes } from './promptContextRoutes.js';
+import { SeedFetchLog } from '../monitoring/contextLayers/promptContext.js';
 import { FailureLedger } from '../monitoring/FailureLedger.js';
 import { FailureAttributionEngine } from '../monitoring/FailureAttributionEngine.js';
 import { CiFailurePoller } from '../monitoring/CiFailurePoller.js';
@@ -280,6 +288,10 @@ import { getOrCreateBootId } from './boot-id.js';
 import { DeliveryFailureSentinel } from '../monitoring/delivery-failure-sentinel.js';
 import os from 'node:os';
 import { TokenLedger } from '../monitoring/TokenLedger.js';
+import { UsageLedger } from '../monitoring/UsageLedger.js';
+import { UsagePoolPuller } from '../monitoring/UsagePoolPuller.js';
+import { setUsageInvocationSink } from '../core/CircuitBreakingIntelligenceProvider.js';
+import { agentRegistryPath } from '../core/AgentRegistryPaths.js';
 import { buildCodexLiveUsageReader } from '../providers/adapters/openai-codex/observability/codexLiveRateLimitReader.js';
 import { BurnAlertDelivery } from '../monitoring/BurnAlertDelivery.js';
 import { FeatureMetricsLedger } from '../monitoring/FeatureMetricsLedger.js';
@@ -476,6 +488,7 @@ export interface LiveTestRunnerWiring {
 }
 
 export class AgentServer {
+  private readonly graphSourceInventory=new GraphSourceInventoryBinding<import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,import('./ConversationGraphSourceInventoryRuntime.js').ConversationGraphSourceInventoryRuntime>();
   private app: Express;
   private server: Server | null = null;
   private wsManager: WebSocketManager | null = null;
@@ -500,19 +513,48 @@ export class AgentServer {
   private desktopAssertionReplay: DesktopAssertionReplayStore | null = null;
   private dashboardPinVersion: string | null = null;
 
-  private syncDashboardPinVersion(): void {
-    const version = createHash('sha256').update(this.config.dashboardPin ?? '').digest('hex');
+  private usesDurableGraphOwnerPolicy(): boolean {
+    return this.config.multiMachine?.conversationGraph?.readEnabled===true
+      || fs.existsSync(path.join(this.config.stateDir,'conversation-graph','owner-intent-policy.json'))
+      || fs.existsSync(path.join(this.config.stateDir,'conversation-graph-owner-policy-head.json'));
+  }
+
+  private syncDashboardPinVersion(): boolean {
+    let version=createHash('sha256').update(this.config.dashboardPin??'').digest('hex'),available=true;
+    if(this.usesDurableGraphOwnerPolicy()){
+      try{
+        const policy=readConversationGraphOwnerPolicy({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey});
+        this.config.dashboardPin=policy?.pin??readConversationGraphOwnerCredential({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey})??undefined;
+        this.config.dashboardPinGeneration=policy?.generation;
+        version=policy?createHash('sha256').update(JSON.stringify(policy)).digest('hex'):'graph-owner-policy-uninitialized';
+        available=policy!==null;
+      }catch{
+        this.dashboardOperatorSessions.clear();this.dashboardPinVersion=null;return false;
+      }
+    }
+    if (this.dashboardPinVersion !== version && fs.existsSync(path.join(this.config.stateDir, 'conversation-graph', 'owner-intent-policy.json'))) {
+      try {
+        new ConversationGraphOwnerGrantStore({stateDir:this.config.stateDir,
+          agentId:this.config.multiMachine?.conversationGraph?.agentId??this.config.projectName,
+          secrets:new SecretStore({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey}),
+          dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey})}).observePolicy();
+      } catch {
+        DegradationReporter.getInstance().report({feature:'Conversations.owner-policy',primary:'Advance durable owner policy generation',
+          fallback:'Leave queued promotion unavailable until policy is verified',reason:'owner-policy-generation-unavailable',
+          impact:'A queued edit may still require authorization recovery',internalOnly:true});
+      }
+    }
     if (this.dashboardPinVersion !== null && this.dashboardPinVersion !== version) {
       this.dashboardOperatorSessions.clear();
       // A new PIN ends every "a human is here" proof, the phone's desktop sessions included.
       this.phoneDesktopSessions.clear();
     }
     this.dashboardPinVersion = version;
+    return available;
   }
 
   private verifyDashboardOperatorSession(token: string | undefined): boolean {
-    this.syncDashboardPinVersion();
-    return this.dashboardOperatorSessions.verify(token);
+    return this.syncDashboardPinVersion()&&this.dashboardOperatorSessions.verify(token);
   }
 
   /**
@@ -828,6 +870,10 @@ export class AgentServer {
   private toneGate: import('../core/MessagingToneGate.js').MessagingToneGate | null = null;
   private threadlineMcpHttp: import('../threadline/ThreadlineMcpHttpService.js').ThreadlineMcpHttpService | null = null;
   private tokenLedger: TokenLedger | null = null;
+  private usageLedger: UsageLedger | null = null;
+  private usageLedgerTimer: ReturnType<typeof setInterval> | null = null;
+  private usagePuller: import('../monitoring/UsagePoolPuller.js').UsagePoolPuller | null = null;
+  private usageRouteDeps: import('./usageRoutes.js').UsageRouteDeps | null = null;
   private featureMetricsLedger: FeatureMetricsLedger | null = null;
   private undatedActionResurfacer: UndatedActionResurfacer | null = null;
   private blockerLifecycleService: BlockerLifecycleService | null = null;
@@ -1246,6 +1292,7 @@ export class AgentServer {
     contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel;
     /** Context budget layer store + archive (§9.7); absent when `contextBudget.enabled` is off. */
     contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers;
+    chunkBuilder?: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder;
     standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
@@ -1395,6 +1442,11 @@ export class AgentServer {
     spawnAdmission?: import('../core/SpawnAdmission.js').SpawnAdmission;
     /** Native app conversations: the bootstrap-wired service (server.ts). Absent ⇒ default-constructed when the gate is on. */
     appConversations?: AppConversationService;
+    conversationGraphReplicationRuntime?: import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime;
+    conversationGraphDefault?: import('./ConversationGraphDefault.js').ConversationGraphDefault;
+    conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime;
+    conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime;
+    getConversationGraphDelegation?: import('./ConversationGraphDelegationManager.js').ConversationGraphDelegationGetter;
     /** The read-marker store (mobile-unread-messages §3.3), built by server.ts on the replication path. */
     readMarkers?: ConversationReadMarkerStore | null;
     /** The machine's hybrid logical clock in ms, for a baseline that never runs behind a peer's time (§3.2). */
@@ -1765,6 +1817,7 @@ export class AgentServer {
     threadlineFlowBridge?: import('../tasks/ThreadlineFlowBridge.js').ThreadlineFlowBridge;
   }) {
     this.config = options.config;
+    this.syncDashboardPinVersion();
     this.subscriptionLoginLedger = options.subscriptionLoginLedger ?? null;
     this.subscriptionEmailBarrier = options.subscriptionEmailBarrier ?? null;
     this.meshBindActive = options.meshBindActive ?? false;
@@ -1811,6 +1864,18 @@ export class AgentServer {
     this.app.use('/mobile/media/uploads', express.raw({ type: 'application/octet-stream', limit: '1mb', verify: keepRawBody }));
     // A setup session's key: plain text, so a JSON slip can't put part of it in a parse-error log.
     this.app.post(/^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/key$/, express.text({ type: 'text/plain', limit: '8kb' }));
+    // Graph peer storage ingress has independent vault credentials and member
+    // signatures, admitted before reading a separately bounded transport body.
+    if (options.conversationGraphReplicationRuntime) this.app.use('/internal/conversation-graph',
+      options.conversationGraphReplicationRuntime.admissionGuard(), express.json({limit:'4mb'}), options.conversationGraphReplicationRuntime.router);
+    if(options.conversationGraphDefault){
+      const owned=options.conversationGraphDefault;
+      this.app.use('/internal/conversation-graph-bootstrap',owned.admissionGuard(),express.json({limit:'256kb'}));this.app.use(owned.router);
+      if(!options.conversationGraphReplicationRuntime)this.app.use('/internal/conversation-graph',(req,res,next)=>{
+        const runtime=owned.runtime;if(!runtime)return void res.status(503).json({code:'graph-peer-initialization-pending'});
+        runtime.admissionGuard()(req,res,()=>express.json({limit:'4mb'})(req,res,()=>runtime.router(req,res,next)));
+      });
+    }
     this.app.use(express.json({ limit: '12mb', verify: keepRawBody }));
     this.app.locals.stateDir = options.config.stateDir;
     this.app.use(duplicateResponseGuard);
@@ -1909,6 +1974,10 @@ export class AgentServer {
         res.status(403).json({ error: 'Open this dashboard through its HTTPS tunnel or from the machine itself.' });
         return;
       }
+      if(this.usesDurableGraphOwnerPolicy()){
+        try{configRef.dashboardPin=readConversationGraphOwnerCredential({stateDir:this.config.stateDir,forceFileKey:this.config.secrets?.forceFileKey})??undefined;}
+        catch{return void res.status(503).json({error:'PIN authentication is temporarily unavailable.'});}
+      }
       if (!configRef.dashboardPin || !configRef.authToken) {
         res.status(503).json({ error: 'PIN authentication not yet available. Try again shortly.' });
         return;
@@ -1959,6 +2028,16 @@ export class AgentServer {
         return;
       }
 
+      if(this.usesDurableGraphOwnerPolicy()){
+        try{
+          const policy=initializeConversationGraphOwnerPolicy({stateDir:this.config.stateDir,
+            liveConfig:options.liveConfig instanceof LiveConfig?options.liveConfig:new LiveConfig(this.config.stateDir),forceFileKey:this.config.secrets?.forceFileKey});
+          if(!policy||!timingSafeEqual(createHash('sha256').update(pin).digest(),createHash('sha256').update(policy.pin).digest())){
+            this.dashboardOperatorSessions.clear();return void res.status(403).json({error:'PIN authorization changed. Please unlock again.'});
+          }
+          configRef.dashboardPin=policy.pin;configRef.dashboardPinGeneration=policy.generation;
+        }catch{this.dashboardOperatorSessions.clear();return void res.status(503).json({error:'PIN authorization could not be saved. Please try again.'});}
+      }
       pinAttempts.delete(ip);
       this.pinAttemptStore?.recordSuccess(ip);
       globalPinAttempts = { count: 0, resetAt: now + WINDOW_MS };
@@ -1966,7 +2045,7 @@ export class AgentServer {
       // The ordinary API token is also available to agents, so it cannot prove
       // that a human unlocked the dashboard. Issue a separate short-lived proof
       // for explicitly operator-gated actions.
-      this.syncDashboardPinVersion();
+      if(!this.syncDashboardPinVersion())return void res.status(503).json({error:'PIN authorization is temporarily unavailable.'});
       const operatorSession = this.dashboardOperatorSessions.issue();
       res.json({
         token: configRef.authToken,
@@ -2444,6 +2523,132 @@ export class AgentServer {
     } catch (err) {
       console.warn('[instar] token-ledger init failed (non-fatal):', err);
       this.tokenLedger = null;
+    }
+
+    // ── Unified Usage Ledger (docs/specs/unified-usage-ledger.md) ─────
+    // Dev-gated (live on a development agent, dark on the fleet). Read-only against
+    // source transcripts; writes only server-data/usage-ledger.db (git-sync excluded).
+    // Separate from TokenLedger by design: nothing the old ledger, its routes or the
+    // burn alerts see changes.
+    try {
+      if (options.config.stateDir && resolveDevAgentGate(options.config.usage?.ledger?.enabled, options.config)) {
+        const projectDir = options.config.projectDir ?? process.cwd();
+        const homes = [...new Set([path.resolve(projectDir), path.resolve(process.cwd())])];
+        let otherHomes: string[] = [];
+        try {
+          const reg = JSON.parse(fs.readFileSync(agentRegistryPath(), 'utf-8')) as { agents?: Array<{ path?: string }> } | Array<{ path?: string }>;
+          const list = Array.isArray(reg) ? reg : reg.agents ?? [];
+          otherHomes = list.map(a => a.path).filter((p): p is string => typeof p === 'string' && !homes.includes(path.resolve(p)));
+        } catch { /* @silent-fallback-ok: no registry means no other agents to exclude; membership still requires a spawn record or a cwd under this agent's own home. */ }
+        const ledger = new UsageLedger({
+          dbPath: path.join(options.config.stateDir, 'server-data', 'usage-ledger.db'),
+          machineId: options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
+          agentId: options.config.projectName ?? path.basename(projectDir),
+          agentHomes: homes,
+          otherAgentHomes: otherHomes,
+        });
+        if (process.env.CLAUDE_CONFIG_DIR) ledger.addClaudeRoot(process.env.CLAUDE_CONFIG_DIR, 'server-env');
+        ledger.addClaudeRoot(path.join(os.homedir(), '.claude'), 'default');
+        const sm = options.sessionManager as SessionManager;
+        sm.setClaudeSessionBoundSink?.((session, claudeSessionId) => {
+          const configHome = typeof sm.configHomeForSession === 'function' ? sm.configHomeForSession(session.tmuxSession) : null;
+          if (configHome) ledger.addClaudeRoot(configHome, 'session');
+          ledger.recordBinding({
+            sessionId: claudeSessionId,
+            framework: 'claude-code',
+            sessionKind: session.jobSlug ? 'job' : 'interactive',
+            cwd: session.cwd ?? projectDir,
+            topicId: session.telegramTopicId != null ? String(session.telegramTopicId) : null,
+            jobSlug: session.jobSlug ?? null,
+            runId: session.jobSlug ? session.id : null,
+            accountId: session.subscriptionAccountId ?? null,
+            validFrom: Date.now(),
+          });
+        });
+        // Slice 2: Codex rollouts and every funnel one-shot (bounded, non-blocking queue).
+        ledger.addCodexRoot(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'), process.env.CODEX_HOME ? 'server-env' : 'default');
+        setUsageInvocationSink((rec) => ledger.enqueueInvocation(rec));
+        this.usageLedger = ledger;
+        // Slice 4: the backed-up snapshot. Imported only when the live database is empty;
+        // written hourly (never while empty) for BackupManager to copy.
+        const snapshotPath = path.join(options.config.stateDir, 'server-data', 'usage-ledger.snapshot.db');
+        try {
+          const livePeers = new Set((options.resolvePeerUrls?.() ?? []).map(p => p.machineId));
+          const imp = ledger.importSnapshotIfEmpty(snapshotPath, { isLivePoolMember: (id) => livePeers.has(id) });
+          if (imp.outcome !== 'none') console.log(`[instar] usage-ledger snapshot: ${imp.outcome}${imp.fromMachine ? ` (from ${imp.fromMachine})` : ''}`);
+        } catch (err) { /* @silent-fallback-ok: a snapshot that cannot be read leaves the live ledger to rebuild from source files; the outcome is in coverage */
+          console.warn('[instar] usage-ledger snapshot import failed (non-fatal):', err);
+        }
+        // Equivalent-cost prices come from the manifest that ships INSIDE the instar package
+        // (its scripts/ folder is published), not the agent's project dir — an agent install
+        // has no source checkout, so the project dir has no manifest. Canonical points only.
+        const usageThisDir = path.dirname(fileURLToPath(import.meta.url));
+        const usagePkgRoot = [path.resolve(usageThisDir, '..', '..'), path.resolve(usageThisDir, '..', '..', '..')]
+          .find(d => fs.existsSync(path.join(d, 'scripts', 'routing-prices.manifest.json'))) ?? projectDir;
+        const usagePrices = new RoutingPriceAuthority({ projectDir: usagePkgRoot, stateDir: options.config.stateDir });
+        const isUsageHolder = (): boolean => {
+          try { return options.coordinator?.enabled ? options.coordinator.getSyncStatus().holdsLease : true; } catch { return false; }
+        };
+        const peerTarget = (machineId: string) => (options.resolvePeerUrls?.() ?? []).find(p => p.machineId === machineId) ?? null;
+        const peerGet = async (machineId: string, route: string): Promise<{ status: number; body: unknown } | null> => {
+          const peer = peerTarget(machineId);
+          if (!peer) return null;
+          const r = await poolPeerFetch(options.recordRopeResult, peer, route, {
+            headers: { Authorization: `Bearer ${options.config.authToken}`, 'x-usage-proxied': '1' },
+            signal: AbortSignal.timeout(8_000),
+          });
+          return { status: r.status, body: await r.json().catch(() => null) };
+        };
+        this.usagePuller = new UsagePoolPuller({
+          ledger,
+          peers: () => (options.resolvePeerUrls?.() ?? []).map(p => ({ machineId: p.machineId })),
+          fetchPeer: async (machineId, route) => {
+            const r = await peerGet(machineId, route);
+            if (!r) throw new Error('no known address for that machine');
+            if (r.status !== 200) throw new Error(`the machine answered HTTP ${r.status}`);
+            return r.body;
+          },
+          isHolder: isUsageHolder,
+        });
+        this.usagePuller.start();
+        // First pull a minute after boot (not at boot): keeps startup light and gives
+        // the lease a moment to settle before the holder decides to pull.
+        const firstPull = setTimeout(() => { void this.usagePuller?.pullAll(); }, 60_000);
+        if (typeof firstPull.unref === 'function') firstPull.unref();
+        this.usageRouteDeps = {
+          ledger,
+          prices: usagePrices,
+          puller: this.usagePuller,
+          isHolder: isUsageHolder,
+          fromHolder: async (route) => {
+            const holder = options.coordinator?.enabled ? options.coordinator.getSyncStatus().leaseHolder ?? null : null;
+            if (!holder) return null;
+            return peerGet(holder, route).catch(() => null);
+          },
+          fromPeer: (machineId, route) => peerGet(machineId, route),
+          bearerOk: () => true,
+        } as import('./usageRoutes.js').UsageRouteDeps;
+        let ticks = 0;
+        this.usageLedgerTimer = setInterval(() => {
+          try {
+            const rep = this.usageLedger?.scanTick();
+            // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
+            if (rep) featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending } });
+            if (++ticks % 60 === 0) {
+              this.usageLedger?.prune();
+              this.usageLedger?.dropMissingCheckpoints();
+              this.usageLedger?.writeSnapshot(snapshotPath);
+            }
+          } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
+            console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+          }
+        }, 60_000);
+        if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();
+      }
+    } catch (err) { /* @silent-fallback-ok: a dev-gated observational store; the server runs fully without it. */
+      console.warn('[instar] usage-ledger init failed (non-fatal):', err);
+      this.usageLedger = null;
     }
 
     // Framework-Onboarding Mentor System issue ledger — read-only observability,
@@ -5739,11 +5944,15 @@ export class AgentServer {
       foldHolds: options.foldHolds ?? null,
       contextBudgetSentinel: options.contextBudgetSentinel ?? null,
       contextLayers: options.contextLayers ?? null,
+      chunkBuilder: options.chunkBuilder ?? null,
       standDownAudit: options.standDownAudit ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,
       subscriptionRelogin: options.subscriptionRelogin ?? null,
       verifyDashboardOperatorSession: (token: string | undefined) => this.verifyDashboardOperatorSession(token),
+      conversationGraphDelegationRuntime: options.conversationGraphDelegationRuntime,
+      conversationGraphDelegationRemoteRuntime: options.conversationGraphDelegationRemoteRuntime,
+      getConversationGraphDelegation: options.getConversationGraphDelegation,
       verifyDesktopOperatorSession: (token: string | undefined) => this.verifyDesktopOperatorSession(token),
       phoneDesktopSessions: this.phoneDesktopSessions,
       subscriptionIdentityOracle: options.subscriptionIdentityOracle,
@@ -5856,6 +6065,7 @@ export class AgentServer {
       projectDriftChecker: options.projectDriftChecker ?? null,
       machineHeartbeat: options.machineHeartbeat ?? null,
       tokenLedger: this.tokenLedger,
+      usageRouteDeps: () => this.usageRouteDeps,
       // Zero-spend live codex quota (app-server) for GET /codex/usage. Wired
       // here — the composition root — so tests that build routes with a bare
       // ctx stay rollout-only and never spawn a real `codex` subprocess.
@@ -6508,6 +6718,27 @@ export class AgentServer {
         stateDir: options.config.stateDir,
       }));
     }
+    // The per-prompt hook's single request and the delta shadow (context-budget
+    // §7.7, Phase 1 S15). Mounted BEFORE the main routes so its history-read
+    // observer (candidate re-fetches after an omission) sees /topic/context and
+    // /telegram/topics/:id/messages; it only observes and passes them through.
+    const promptSeedFetches = new SeedFetchLog();
+    const promptLayerFreshness = options.contextLayers && options.topicMemory
+      ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
+      : null;
+    this.app.use(createPromptContextRoutes({
+      stateDir: options.config.stateDir,
+      shadowOn: () => !!options.contextLayers,
+      deltaSwitchOn: () => options.liveConfig?.get?.<boolean>('contextBudget.deltaHook.enabled', false) === true,
+      canary: () => (options.contextBudgetSentinel ? { report: options.contextBudgetSentinel.status().canary } : undefined),
+      briefing: (topicId) => {
+        if (!options.topicIntentStore) return '';
+        // Not recorded as a seed fetch: only the briefing route's own fetches can be the seed's.
+        return serveTopicIntentBriefing(options.topicIntentStore, topicId, promptLayerFreshness);
+      },
+      messages: (topicId, limit) => (options.telegram ? options.telegram.getTopicHistory(topicId, limit) as unknown as Array<Record<string, unknown>> : null),
+      seedFetches: promptSeedFetches,
+    }));
     this.app.use(routes);
     // The cost surface reads the same live ledgers and scheduler as production
     // routes. A missing ledger is reported in the response, not replaced with
@@ -6872,6 +7103,7 @@ export class AgentServer {
         holdsLease: () => (options.coordinator?.enabled ? options.coordinator.holdsLease() : true),
       })
       : null;
+    let startOwnedGraphInventory:((runtime:import('./ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime,identity:import('../core/MachineIdentity.js').MachineIdentityManager)=>void)|null=null;
     // Unread (docs/specs/mobile-unread-messages.md): the service over the replicated marker store and the
     // three message sources the list already loads. Built only when server.ts built the store (native
     // chat on and the flag on); `enabled()` is read live so the flag can switch unread off alone.
@@ -6923,7 +7155,7 @@ export class AgentServer {
         }),
         originDisplay: () => currentAgentDisplay({ liveConfig: routeCtx.liveConfig, config: options.config as unknown as Record<string, unknown> }),
       }));
-      this.app.use(createMobileConversationRouter({
+      const conversationFlatDeps: import('./mobileConversationRoutes.js').MobileConversationRouteDeps = {
         unread: this.conversationUnread,
         slackConversations: slackBridge ? () => (slackOwnerUserId(options.config) ? slackListRows(slackBridge) : null) : undefined,
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
@@ -6946,7 +7178,17 @@ export class AgentServer {
           const last = options.telegram!.getTopicHistory(m.topicId, 1)[0];
           return { topicId: m.topicId, topicName: m.topicName, lastActivity: last?.timestamp ?? null, lastPreview: typeof last?.text === 'string' ? deviceTextForRow(last.text).slice(0, 140) : null };
         }) : undefined,
-      }));
+      };
+      this.app.use(createMobileConversationRouter(conversationFlatDeps));
+      if(routeCtx.conversationRegistry){
+        startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
+          // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
+          return new ConversationGraphSourceInventoryRuntime({flatDeps:{...conversationFlatDeps,machineId:()=>{const flat=conversationFlatDeps.machineId();return flat==='local'?identity.loadIdentity().machineId:flat;}},conversations:routeCtx.conversationRegistry!,runtime:active,identity,membership:()=>active.installedMembership,ownerPublicKey:active.ownerPublicKey,
+            telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??'')||null});
+        },()=>{/* @silent-fallback-ok: reported below; coverage stays partial and no certified rows are inferred */console.warn('Conversations source inventory is unavailable; no certified rows are inferred.');DegradationReporter.getInstance().report({feature:'Conversations.sourceInventory',primary:'Record which conversations this machine has',fallback:'Keep coverage marked partial',reason:'graph-source-inventory-unavailable',impact:'Conversations shows that some history could not be checked'});});};
+        const existing=options.conversationGraphReplicationRuntime??options.conversationGraphDefault?.runtime,identity=options.conversationGraphDefault?.identity??options.coordinator?.managers?.identityManager;
+        if(existing&&identity)startOwnedGraphInventory(existing,identity);
+      }
       // Pinned messages (docs/specs/conversation-pinned-messages.md): pins live in the app conversation
       // store; Telegram pins are also made in Telegram by the machine serving it, Slack pins in Slack.
       const pinTelegram = options.telegram ? {
@@ -7161,6 +7403,37 @@ export class AgentServer {
       }));
     }
 
+    // Explicit release switches only. Storage and catch-up do not opt an
+    // installation into exposing the graph; every enabled read still checks
+    // actual runtime readiness and current owner admission.
+    const graphSurfaceConfig=options.config.multiMachine?.conversationGraph;
+    let graphSurfaceMounted=false;
+    if(graphSurfaceConfig?.readEnabled===true&&options.conversationGraphReplicationRuntime&&options.coordinator?.managers?.identityManager){
+      graphSurfaceMounted=true;
+      this.app.use(createConversationGraphSurface({stateDir:options.config.stateDir,agentId:options.conversationGraphReplicationRuntime.agentId,
+        runtime:options.conversationGraphReplicationRuntime,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
+        identity:options.coordinator.managers.identityManager,scope:options.coherenceGate??null,
+        telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),
+        pairing:this.mobilePairing,verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
+        ...(options.config.authToken?{history:{selfMachineId:options.conversationGraphReplicationRuntime.machineId,
+          localBaseUrl:()=>`http://127.0.0.1:${options.config.port}`,peers:()=>options.resolvePeerUrls?.()??[],
+          authToken:()=>options.config.authToken!,agentId:options.conversationGraphReplicationRuntime.agentId,recordRopeResult:options.recordRopeResult}}:{})}));
+    }
+    else if(graphSurfaceConfig?.readEnabled===true&&!options.conversationGraphReplicationRuntime&&options.conversationGraphDefault){
+      graphSurfaceMounted=true;
+      const owned=options.conversationGraphDefault;
+      this.app.use(createConversationGraphDefaultSurface({manager:owned,stateDir:options.config.stateDir,readEnabled:true,correctionsEnabled:graphSurfaceConfig.correctionsEnabled,
+        scope:options.coherenceGate??null,telegramChatId:String((options.config.messaging.find(row=>row.type==='telegram'&&row.enabled)?.config as {chatId?:unknown}|undefined)?.chatId??''),pairing:this.mobilePairing,
+        verifyDashboardOwner:token=>this.verifyDashboardOperatorSession(token),dashboardPolicy:()=>readConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey}),initializeDashboardPolicy:()=>{if(options.liveConfig instanceof LiveConfig)initializeConversationGraphOwnerPolicy({stateDir:options.config.stateDir,forceFileKey:options.config.secrets?.forceFileKey,liveConfig:options.liveConfig});},forceFileKey:options.config.secrets?.forceFileKey,
+        onRuntime:runtime=>{if(this.mobilePairing&&this.appConversations){try{const ledger=this.appConversations.initializeNativeSigning(this.mobilePairing.devices);if(ledger)this.mobilePairing.keyLedger=ledger;}catch{console.warn('Phone signing is unavailable after local identity setup; existing authentication remains unchanged.');}}if(owned.identity)startOwnedGraphInventory?.(runtime,owned.identity);},
+        ...(options.config.authToken?{history:{selfMachineId:'pending-owned-runtime',localBaseUrl:()=>`http://127.0.0.1:${options.config.port}`,peers:()=>options.resolvePeerUrls?.()??[],authToken:()=>options.config.authToken!,agentId:owned.agentId,recordRopeResult:options.recordRopeResult}}:{})}));
+    }
+    // Configured off (or nothing to serve it): every graph route answers one
+    // 503 `conversation-graph-off` instead of Express's HTML "Cannot GET".
+    // Mounted at the end of route setup, just before the error handler, so it
+    // only ever answers a graph request nothing else handled.
+    const graphOff=!graphSurfaceMounted;
+
     // File viewer routes (after auth middleware)
     const fileRoutes = createFileRoutes({ config: options.config, liveConfig: options.liveConfig });
     this.app.use(fileRoutes);
@@ -7281,6 +7554,10 @@ export class AgentServer {
     const topicIntentRoutes = createTopicIntentRoutes({
       topicIntentStore: options.topicIntentStore ?? null,
       arcCheck: options.topicIntentArcCheck ?? null,
+      layerFreshness: options.contextLayers && options.topicMemory
+        ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
+        : null,
+      onBriefingServed: (topicId: number, text: string) => promptSeedFetches.noteBriefing(topicId, text),
     });
     this.app.use(topicIntentRoutes);
 
@@ -7318,6 +7595,10 @@ export class AgentServer {
       onInitiate: options.onHandoffInitiate ?? null,
       inProgress: options.handoffInProgress ?? null,
     }));
+
+    // Conversations off or unavailable: the graph fallback (see above). Last
+    // before the error handler, and it steps aside for anything added later.
+    if (graphOff) this.app.use(createConversationGraphOffRouter());
 
     // Error handler (must be last)
     this.app.use(errorHandler);
@@ -9015,6 +9296,7 @@ export class AgentServer {
    * Stop the HTTP server gracefully.
    * Closes keep-alive connections after a timeout to prevent hanging.
    */
+  async stopGraphSourceInventory():Promise<void>{await this.graphSourceInventory.close();}
   /** Attribution paper trail: built only when the dev-agent gate resolves it on. Null means every route 503s. */
   private createAttribution(options: ConstructorParameters<typeof AgentServer>[0], routeCtx: import('./routes.js').RouteContext): AttributionRuntime | null {
     const config = options.config;
@@ -9071,6 +9353,7 @@ export class AgentServer {
   }
 
   async stop(): Promise<void> {
+    await this.stopGraphSourceInventory();
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
@@ -9214,6 +9497,9 @@ export class AgentServer {
       }
       this.revertDetector = null;
     }
+    if (this.usageLedgerTimer) { clearInterval(this.usageLedgerTimer); this.usageLedgerTimer = null; }
+    this.usagePuller?.stop(); this.usagePuller = null;
+    if (this.usageLedger) { try { this.usageLedger.close(); } catch { /* @silent-fallback-ok: shutdown close is best-effort; WAL recovers on next open. */ } this.usageLedger = null; }
     // Stop the token-ledger poller and close its DB.
     if (this.tokenLedgerPoller) {
       try {

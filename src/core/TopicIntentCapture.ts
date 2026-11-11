@@ -196,6 +196,19 @@ export interface CaptureLoopDeps {
   shouldShed?: () => boolean;
   /** Per-topic extraction rate ceiling (defense beyond the pre-filter). */
   rateCeiling?: { maxPerWindow: number; windowMs: number };
+  /**
+   * Context-budget layer brakes (§6.4, decision 7): a per-topic and
+   * per-component daily token ceiling. Over a ceiling the turn is DEFERRED —
+   * counted (`budget_deferred`) and visible — never silently skipped.
+   */
+  layerBudget?: { admit(topicKey: string, tokens: number): { ok: true } | { ok: false; reason: string } };
+  /**
+   * Called after a capture that CHANGED the awareness projection (the layer
+   * projection hangs here). Never called when the extractor degraded, the
+   * awareness was invalid, or a stale completion was ignored — a layer must
+   * never be re-stamped fresh from an awareness that did not move.
+   */
+  onCaptured?: (topicId: number, entry: CaptureTurnEntry) => void;
   now?: () => number;
 }
 
@@ -205,6 +218,7 @@ export type CaptureStatus =
   | 'skipped-automation'
   | 'skipped-shed'
   | 'skipped-rate'
+  | 'deferred-budget'
   | 'no-topic'
   | 'degraded';
 
@@ -212,6 +226,8 @@ export interface CaptureOutcome {
   status: CaptureStatus;
   emitted?: number;
   createdRefs?: number;
+  /** True only when this capture changed the awareness projection. */
+  awarenessUpdated?: boolean;
 }
 
 function toIso(timestamp: string | number | undefined, now: () => number): string {
@@ -351,6 +367,16 @@ export async function captureTurn(
       existingAwareness: topicFile.awareness,
     };
 
+    // Layer brakes: estimate the prompt from its variable parts and reserve it.
+    if (deps.layerBudget) {
+      const est = Math.ceil(((entry.text ?? '').length + (rollingSummary ?? '').length + JSON.stringify(existingRefs).length + JSON.stringify(topicFile.awareness ?? {}).length) / 4) + 1_500;
+      const v = deps.layerBudget.admit(String(topicId), est);
+      if (!v.ok) {
+        deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, budget_deferred: 1 });
+        return { status: 'deferred-budget' };
+      }
+    }
+
     const result = await deps.extractor.ingest(input);
     deps.store.bumpCaptureCounters(
       topicId,
@@ -364,7 +390,10 @@ export async function captureTurn(
       at,
       result.createdRefs.map(r => r.kind),
     );
-    return { status: 'captured', emitted: result.emitted.length, createdRefs: result.createdRefs.length };
+    if (result.awarenessUpdated) {
+      try { deps.onCaptured?.(topicId, entry); } catch { /* @silent-fallback-ok — the projection hook never affects capture; it counts its own failures */ }
+    }
+    return { status: 'captured', emitted: result.emitted.length, createdRefs: result.createdRefs.length, awarenessUpdated: result.awarenessUpdated };
   } catch (err) {
     // Best-effort: a capture failure must NEVER surface on the message path.
     console.error(`[TopicIntentCapture] captureTurn failed (topic ${topicId ?? '?'}): ${err}`);
@@ -373,6 +402,46 @@ export async function captureTurn(
         deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, degraded_cap_or_error: 1 });
       }
     } catch { /* metering best-effort */ }
+    return { status: 'degraded' };
+  }
+}
+
+/**
+ * A transcript-growth tick (context-budget-layered-summaries §6.4): feed a
+ * bounded, already-scrubbed digest of recent tool activity to the extractor
+ * as an AGENT-side observation, so a tool-heavy session with no messages
+ * still refreshes the current-work level. Bypasses the message pre-filter
+ * (the digest is not a message) but honours the shed gate and the layer
+ * budget like a turn. Never throws.
+ */
+/** The message-id prefix of a tick's extractor input; an awareness level sourced from one is tool-derived. */
+export const TICK_MESSAGE_PREFIX = 'tick-';
+
+export async function captureTick(deps: CaptureLoopDeps, topicId: number, digestText: string): Promise<CaptureOutcome> {
+  const now = deps.now ?? (() => Date.now());
+  try {
+    if (deps.shouldShed?.()) {
+      deps.store.bumpCaptureCounters(topicId, { degraded_shed: 1 });
+      return { status: 'skipped-shed' };
+    }
+    const topicFile = deps.store.read(topicId);
+    const existingRefs = selectPromptRefs(deps.store.getRefsAtOrAbove(topicId, 'observation')).map(toEstablishedRef);
+    const at = new Date(now()).toISOString();
+    const input: ExtractorInput = {
+      topicId,
+      arcId: deps.store.arcIdFor(topicId),
+      message: { id: `${TICK_MESSAGE_PREFIX}${now()}`, text: digestText, fromUser: false, turn: topicFile.turn ?? 0, at },
+      existingRefs,
+      existingAwareness: topicFile.awareness,
+      // Raw tool output never creates or reinforces a ref (§6.4: awareness only).
+      awarenessOnly: true,
+    };
+    const result = await deps.extractor.ingest(input);
+    deps.store.bumpCaptureCounters(topicId, { layer_ticks: 1, extractions_attempted: 1, awareness_invalid: result.awarenessInvalid ? 1 : 0 }, at);
+    return { status: 'captured', emitted: 0, createdRefs: 0, awarenessUpdated: result.awarenessUpdated };
+  } catch (err) {
+    console.error(`[TopicIntentCapture] captureTick failed (topic ${topicId}): ${err}`);
+    try { deps.store.bumpCaptureCounters(topicId, { degraded_cap_or_error: 1 }); } catch { /* metering best-effort */ }
     return { status: 'degraded' };
   }
 }

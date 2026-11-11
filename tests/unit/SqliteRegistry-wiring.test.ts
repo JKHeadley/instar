@@ -19,14 +19,15 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import {
-  sqliteRegistrySize,
   closeAllSqlite,
+  sqliteRegistrySize,
   __resetSqliteRegistryForTests,
 } from '../../src/core/SqliteRegistry.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { StopGateDb } from '../../src/core/StopGateDb.js';
 import { PreferenceStore } from '../../src/providers/uxConfirm/PreferenceStore.js';
 import { SpawnLedger } from '../../src/threadline/SpawnLedger.js';
+import { witnessFixture } from './graph-witness-fixtures.js';
 import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
 import { RecoveryAdmission } from '../../src/recovery/RecoveryAdmission.js';
 
@@ -35,6 +36,7 @@ const SRC = path.join(REPO_ROOT, 'src');
 
 /** The 15 long-lived (process-lifetime) SQLite stores — the registry allowlist. */
 const LONG_LIVED_STORES = [
+  'src/core/GraphWitnessService.ts',
   'src/core/StopGateDb.ts',
   'src/core/FeatureRegistry.ts',
   'src/providers/uxConfirm/PreferenceStore.ts',
@@ -73,6 +75,10 @@ const LONG_LIVED_STORES = [
   // registers its handle in the constructor (registerSqliteHandle), process-
   // lifetime, closed once at shutdown like FeatureMetricsLedger beside it.
   'src/monitoring/ProviderCostReportStore.ts',
+  // Unified usage ledger (docs/specs/unified-usage-ledger.md): registers its handle in the
+  // constructor, process-lifetime. Its snapshot write and import open short-lived handles
+  // that close in finally.
+  'src/monitoring/UsageLedger.ts',
   // Correction-class review is durable process-lifetime state and registers
   // its handle in the constructor like the other monitoring stores above.
   'src/monitoring/ClassReviewStore.ts',
@@ -103,6 +109,7 @@ const LONG_LIVED_STORES = [
  * each documented as a transient (closes itself) or a non-owning helper.
  */
 const TRANSIENT_SKIP: Record<string, string> = {
+  'src/core/GraphCustodyRetiredRoles.ts': 'Opens a retired role database briefly to purge or verify it, then closes it in the same call.',
   'src/messaging/telegram-origin/OriginStoreBackend.ts': 'worker-owned outbox handle is owned and registered by PendingRelayStore; archive handles close in finally',
   'src/messaging/telegram-origin/OriginEvidenceSpool.ts': 'worker opens one evidence transaction and closes its handle in finally',
   'src/commands/server.ts': ':memory: probe testDb — closes itself immediately',
@@ -171,6 +178,13 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
   });
   afterEach(() => {
     try { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/SqliteRegistry-wiring.test.ts' }); } catch { /* ignore */ }
+  });
+
+  it('GraphWitnessService registers its real live handle, unregisters on close, and closes through process teardown',()=>{
+    const fixture=witnessFixture(tmp),service=fixture.open();expect(sqliteRegistrySize()).toBe(1);
+    expect(service.membershipProof(fixture.membership.agentId,1)).toEqual(fixture.membership);service.close();expect(sqliteRegistrySize()).toBe(0);
+    const reopened=fixture.open();expect(sqliteRegistrySize()).toBe(1);closeAllSqlite();expect(sqliteRegistrySize()).toBe(0);
+    expect(()=>reopened.membershipProof(fixture.membership.agentId,1)).toThrow();reopened.close();expect(sqliteRegistrySize()).toBe(0);
   });
 
   it('StopGateDb registers on construct', () => {

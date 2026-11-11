@@ -47,6 +47,9 @@ export interface BuildPerSlugManifestInput {
   perMachineIndependent?: boolean;
   /** Preserved across regeneration (operator may have disabled the default). */
   disabledAtBodyHash?: string;
+  /** The template's schedule when this manifest was written. A `schedule`
+   *  that differs from it is an operator edit the installer keeps. */
+  shippedSchedule?: string;
   /** Jev job-completion audit eligibility (jev-job-supervision spec). Carried
    *  here because the loader reads it from the MANIFEST — the built-in batch
    *  job's own `completionAudit: excluded` is inert without this. */
@@ -81,6 +84,7 @@ export function buildPerSlugManifest(input: BuildPerSlugManifestInput): PerSlugM
   if (input.mcpAccess !== undefined) m.mcpAccess = input.mcpAccess;
   if (input.perMachineIndependent !== undefined) m.perMachineIndependent = input.perMachineIndependent;
   if (input.disabledAtBodyHash !== undefined) m.disabledAtBodyHash = input.disabledAtBodyHash;
+  if (input.shippedSchedule !== undefined) m.shippedSchedule = input.shippedSchedule;
   if (input.completionAudit !== undefined) m.completionAudit = input.completionAudit;
   if (input.declaredEffects !== undefined) m.declaredEffects = input.declaredEffects;
   if (input.conditionalEffects !== undefined) m.conditionalEffects = input.conditionalEffects;

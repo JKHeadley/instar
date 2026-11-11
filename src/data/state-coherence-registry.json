@@ -611,14 +611,15 @@
     },
     {
       "category": "secret-vault",
-      "description": "Encrypted secret vault. The one category that truly replicates today (cross-machine secret sync, X25519-sealed push, receive-only default).",
+      "description": "Encrypted vault; eligible values use configured X25519-sealed secret sync. Machine identity recovery and reserved conversation_graph_ control, role, policy and rollback-marker namespaces remain machine-local and are refused by ordinary outbound and inbound sync. Graph owner recovery uses its separate verified recipient envelopes.",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "single-writer",
       "transport": "peer-http",
       "paths": [
         "config.secrets.enc",
-        "state/secrets.enc"
+        "state/secrets.enc",
+        "secrets/config.secrets.enc"
       ],
       "grandfathered": false
     },
@@ -1397,6 +1398,25 @@
       "grandfathered": false
     },
     {
+      "category": "derived-usage-ledger",
+      "description": "Unified usage ledger SQLite (docs/specs/unified-usage-ledger.md): per-request token rows, session bindings, rollups and pooled peer rows, rebuilt from source transcripts plus the slim snapshot. The snapshot is the backed-up copy.",
+      "scope": "derived-cache",
+      "freshness": "eventual",
+      "conflictShape": "n/a",
+      "transport": "none",
+      "paths": [
+        "server-data/usage-ledger.db",
+        "server-data/usage-ledger.snapshot.db"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "sqlite",
+        "access": "sqlite",
+        "maxAgeMs": 7776000000,
+        "note": "raw rows 90 days or 4M-row ceiling; hour and session-day rollups 400 days; day rollups kept; bounded batches + incremental_vacuum"
+      }
+    },
+    {
       "category": "derived-token-ledger",
       "description": "Token ledger SQLite, rebuilt from Claude Code JSONL transcripts.",
       "scope": "derived-cache",
@@ -1868,7 +1888,7 @@
     },
     {
       "category": "new-topic-default-profile",
-      "description": "Dashboard 'default for dashboard-created topics' record ({framework, model, updatedAt, updatedBy}), read only by this machine's POST /sessions/create (docs/specs/dashboard-door-model-controls.md §3.2). Machine-local in v1: migrating-to-unified via issue #2085 (expires 2027-03-25); the surface labels it replication:'local-only'.",
+      "description": "Dashboard 'default for dashboard-created topics' record ({framework, model, updatedAt, updatedBy}), read only by this machine's POST /sessions/create (docs/specs/dashboard-door-model-controls.md \u00a73.2). Machine-local in v1: migrating-to-unified via issue #2085 (expires 2027-03-25); the surface labels it replication:'local-only'.",
       "scope": "machine-local",
       "freshness": "real-time",
       "conflictShape": "single-writer",
@@ -1905,7 +1925,7 @@
     },
     {
       "category": "feedback-execute-scratch",
-      "description": "Feedback executor working state (docs/specs/feedback-triage-and-execution.md §4): per-attempt confinement settings files, canary nonces, parked secret-shaped change sets awaiting the operator's PIN-approved publication, live-proof result files, and a trash directory the executor empties after moving finished attempt clones out of the source tree. Written only by the drain's fenced canonical owner; the execution table itself lives inside the backed-up feedback-drain.db. Held change sets are never served over HTTP.",
+      "description": "Feedback executor working state (docs/specs/feedback-triage-and-execution.md \u00a74): per-attempt confinement settings files, canary nonces, parked secret-shaped change sets awaiting the operator's PIN-approved publication, live-proof result files, and a trash directory the executor empties after moving finished attempt clones out of the source tree. Written only by the drain's fenced canonical owner; the execution table itself lives inside the backed-up feedback-drain.db. Held change sets are never served over HTTP.",
       "scope": "machine-local",
       "freshness": "n/a",
       "conflictShape": "append-only",
@@ -1982,7 +2002,7 @@
     },
     {
       "category": "local-verify-journal",
-      "description": "local-verify completion journal: one line per verify record (repo, pr, head, base, lanes, outcome, flags, verifierVersion, policyHash), written ONLY by LocalVerifyService's completion path; the in-memory record index is rebuilt from it at boot. Plus the per-PR first-seen-closed times used for the 14-day retention. Machine-local: another machine's lease acquisition starts with an empty index and re-verifies (spec local-verify-merge-authority §2 step 6).",
+      "description": "local-verify completion journal: one line per verify record (repo, pr, head, base, lanes, outcome, flags, verifierVersion, policyHash), written ONLY by LocalVerifyService's completion path; the in-memory record index is rebuilt from it at boot. Plus the per-PR first-seen-closed times used for the 14-day retention. Machine-local: another machine's lease acquisition starts with an empty index and re-verifies (spec local-verify-merge-authority \u00a72 step 6).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "append-only",
@@ -2018,7 +2038,7 @@
     },
     {
       "category": "local-verify-main-health",
-      "description": "local-verify main-health watermark (healthy / main-suspect / main-red, the head that went red, the last green main head). A restriction only: it can make merge admission stricter, never looser. Read at boot and on lease acquisition; a missing or unreadable file, or another machine's, enters main-suspect (spec local-verify-merge-authority §2 Self-heal (c)).",
+      "description": "local-verify main-health watermark (healthy / main-suspect / main-red, the head that went red, the last green main head). A restriction only: it can make merge admission stricter, never looser. Read at boot and on lease acquisition; a missing or unreadable file, or another machine's, enters main-suspect (spec local-verify-merge-authority \u00a72 Self-heal (c)).",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -2066,7 +2086,7 @@
         "access": "streamed",
         "maxBytes": 5242880,
         "keepSegments": 10,
-        "note": "Rotates at 5 MB; 10 files kept (spec local-verify-merge-authority §2 step 8)."
+        "note": "Rotates at 5 MB; 10 files kept (spec local-verify-merge-authority \u00a72 step 8)."
       }
     },
     {
@@ -2196,7 +2216,7 @@
     },
     {
       "category": "app-conversations",
-      "description": "Native app conversation store (docs/specs/mobile-native-conversations.md §4.5): one append-only JSONL file per conversation (immutable events keyed by eventId, each with this machine's ingestSeq), the source of truth for a native conversation. Replicated to every machine through the appConversations replicated-store kind whenever native conversations are on. Also holds the per-request dispatch context files under state/app-dispatch/.",
+      "description": "Native app conversation store (docs/specs/mobile-native-conversations.md \u00a74.5): one append-only JSONL file per conversation (immutable events keyed by eventId, each with this machine's ingestSeq), the source of truth for a native conversation. Replicated to every machine through the appConversations replicated-store kind whenever native conversations are on. Also holds the per-request dispatch context files under state/app-dispatch/.",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -2212,6 +2232,25 @@
         "access": "sqlite",
         "complianceHold": true,
         "note": "Reads go through the SQLite index by byte offset, never a whole-file read. Kept until the operator deletes the conversation (a tombstone event); the file then moves to app-conversations/deleted/ and is kept, never destroyed by this feature. Size is reported in the authenticated /health (appConversations.bytes, .count). Dispatch context files are small per-message copies of recent history."
+      }
+    },
+    {
+      "category": "conversation-graph",
+      "description": "Opaque immutable graph cores, original authorization capsules, witnessed source custody and all-member final certificates. Only the verified certified union authorizes the hierarchy. Private application bodies and key envelopes are separate erasable sidecars; logical erasure preserves control identity while purging every matching private version. Header metadata is derived, never plaintext title storage. Source-owned held-import plans and signed per-row catalogs precede generic intents; they retain quarantined custody without a Source ACK or canonical publication until verified activation. Catalog-attributed private copies join the same all-version purge and cold integrity checks.",
+      "scope": "must-be-coherent",
+      "freshness": "eventual",
+      "conflictShape": "append-only",
+      "transport": "signed registered-peer source/certificate delivery and journal repair; verified owned-machine or optional external custody role",
+      "paths": [
+        "state/conversation-graph-source",
+        "conversation-graph/effort-headers.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Retain immutable opaque authority and negative erasure facts for recovery. Purge matching private bodies, original and rewrapped key envelopes on logical erasure; no blanket compliance hold on private content. Never expire witnessed Pending by a clock."
       }
     },
     {
@@ -2251,7 +2290,7 @@
     },
     {
       "category": "app-media",
-      "description": "Bytes behind app conversations (docs/specs/mobile-native-chat-media.md §4.1, §4.7): content-addressed blobs, blobs of deleted conversations, quarantined blobs, staged uploads, session copies and the agent outbox. Never in a journal or log. The events that name these files replicate through the appConversations kind; the bytes reach other machines by verified pull (the next increment).",
+      "description": "Bytes behind app conversations (docs/specs/mobile-native-chat-media.md \u00a74.1, \u00a74.7): content-addressed blobs, blobs of deleted conversations, quarantined blobs, staged uploads, session copies and the agent outbox. Never in a journal or log. The events that name these files replicate through the appConversations kind; the bytes reach other machines by verified pull (the next increment).",
       "scope": "machine-local",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -2291,7 +2330,7 @@
     },
     {
       "category": "app-session-registry",
-      "description": "Which session serves which native app conversation on this machine (local alias → tmux session name). Machine-local: a session runs on one machine.",
+      "description": "Which session serves which native app conversation on this machine (local alias \u2192 tmux session name). Machine-local: a session runs on one machine.",
       "scope": "machine-local",
       "freshness": "live",
       "conflictShape": "single-writer",
@@ -2309,7 +2348,7 @@
     },
     {
       "category": "mobile-device-key-ledger",
-      "description": "Device-key ledger (docs/specs/mobile-native-conversations.md §4.6): append-only, machine-signed activation and revocation rows for every paired phone key, keyed by the full key hash. It grants nothing (device authentication stays machine-bound); it lets a stored app message be re-checked later on any machine. Written ledger-first by the device registry's activation/revocation paths and by boot reconciliation; replicated through the mobileDeviceKeyLedger kind, a peer's row accepted only when it verifies under the pinned identity key of the machine it names.",
+      "description": "Device-key ledger (docs/specs/mobile-native-conversations.md \u00a74.6): append-only, machine-signed activation and revocation rows for every paired phone key, keyed by the full key hash. It grants nothing (device authentication stays machine-bound); it lets a stored app message be re-checked later on any machine. Written ledger-first by the device registry's activation/revocation paths and by boot reconciliation; replicated through the mobileDeviceKeyLedger kind, a peer's row accepted only when it verifies under the pinned identity key of the machine it names.",
       "scope": "must-be-coherent",
       "freshness": "eventual",
       "conflictShape": "append-only",
@@ -2482,7 +2521,7 @@
     },
     {
       "category": "feature-evidence-log",
-      "description": "Rich-context record of what each switched-off feature did on this machine, read by the maturation ladder (feature-maturation-ladder §4). Per-machine facts, read through each machine's route and the board's ladder owner.",
+      "description": "Rich-context record of what each switched-off feature did on this machine, read by the maturation ladder (feature-maturation-ladder \u00a74). Per-machine facts, read through each machine's route and the board's ladder owner.",
       "scope": "machine-local",
       "freshness": "n/a",
       "conflictShape": "append-only",
@@ -2498,7 +2537,7 @@
     },
     {
       "category": "maturation-advances-audit",
-      "description": "Audit of what the ladder raised, each observed rung change, and every move the review made, with evidence and old values (feature-maturation-ladder §8).",
+      "description": "Audit of what the ladder raised, each observed rung change, and every move the review made, with evidence and old values (feature-maturation-ladder \u00a78).",
       "scope": "machine-local",
       "freshness": "n/a",
       "conflictShape": "append-only",
@@ -2510,6 +2549,244 @@
       "retention": {
         "class": "size-bounded",
         "note": "Segment rotation at 10 MB, every segment archived: this is the record of what moved and why."
+      }
+    },
+    {
+      "category": "conversation-graph-intake",
+      "description": "Sealed sequence-free owner intents are local custody until signed forwarding and actual native-writer admission; frozen admitted reservations retain their exact original sequence through crash recovery. Neither is independent custody or shared commitment by itself.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-intake"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-transfer",
+      "description": "Bounded receiver-local transfer stages; owner activation and signed manifests determine custody, not presence of a staged file.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-transfer"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-source-observations",
+      "description": "Encrypted producer observation cache and monotonic opaque producer sequence counters; cached arrival never authorizes placement.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-source-observations",
+        "state/conversation-graph-source-observation-sequences"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-erasure",
+      "description": "Durable local deny fences and authenticated opaque fleet-erasure retry ingress. Local purge does not assert fleet or backup completion.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/local-erasure-intents",
+        "state/conversation-graph-erasure-ingress"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution and verified recovery govern retention, not TTL. Private sidecars are purged on matching local or signed logical erasure; opaque sequence, deny and recovery authority remains. Stages obey configured aggregate disk quota and protocol record caps; never discard an acknowledged custody copy merely for age."
+      }
+    },
+    {
+      "category": "conversation-graph-delegation-control",
+      "description": "Opaque signed local/remote delegation provenance, original parent-signed requests, target dispatch-admission receipts and prepared placement controls. These records retain no launch prompt, transcript, title, bind capability or content key; transport receipt/prepared-local is never witness Saved or canonical placement. Real persisted worker bootstrap and native witnessed certification are required before graph commitment.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "state/conversation-graph-delegation-sources",
+        "state/conversation-graph-delegation-prepared",
+        "state/conversation-graph-remote-delegation"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Retain opaque authorization and uncertain dispatch identity through semantic reconciliation; no TTL may discard an unresolved receipt. Replay enumerations have explicit file/count limits and refuse invalid or oversized controls. Immutable original authority remains for certified provenance; no private application payload is held here."
+      }
+    },
+    {
+      "category": "conversation-graph-bootstrap-publication",
+      "description": "Owner-admitted immutable genesis publication and all-installed signed pins; native lease serialization never substitutes for owner admission.",
+      "scope": "must-be-coherent",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "peer-http",
+      "paths": [
+        "conversation-graph/bootstrap/*/publication.json",
+        "conversation-graph/bootstrap/*/pin-*.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution, signed membership and verified erasure govern retention, not TTL. Opaque unresolved identities and monotonic fences are never discarded for age; private ciphertext and recoverable keys remain subject to logical purge. Resource ceilings refuse new admission rather than deleting acknowledged custody."
+      }
+    },
+    {
+      "category": "conversation-graph-owned-custody",
+      "description": "Designated owned-host custody database and one-shot creation/ready claims. Missing acknowledged data requires authenticated recovery, never blank replacement.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/custody.sqlite*",
+        "conversation-graph/bootstrap/*/database-*.json",
+        "conversation-graph/roles/*/custody.sqlite*",
+        "conversation-graph/roles/*/claim.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution, signed membership and verified erasure govern retention, not TTL. Opaque unresolved identities and monotonic fences are never discarded for age; private ciphertext and recoverable keys remain subject to logical purge. Resource ceilings refuse new admission rather than deleting acknowledged custody."
+      }
+    },
+    {
+      "category": "conversation-graph-owner-control-recovery",
+      "description": "Owner-signed, recipient-encrypted control-root recovery envelopes and actual installed-member durable self-decryption receipts. Custody role private keys and cloud credentials are never contained in this protocol.",
+      "scope": "must-be-coherent",
+      "freshness": "real-time",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": ["conversation-graph/owner-control-recovery/*/*.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "R", "access": "protocol-reader", "boundedBy": "replication-protocol",
+        "note": "Retain acknowledged recovery material through an authenticated successor ceremony; age never deletes the only surviving root envelope. Historical and offline backup copies remain separately inventoried debt. No plain root or role private key is ordinary replicated state."
+      }
+    },
+    {
+      "category": "conversation-graph-active-custody-authority",
+      "description": "Owner-signed negative hold intents, bounded final-stage revision chains, member holds, retirement proofs, verified activation rows and installed-member post-import durable activation pins. A newer local hold cannot be cleared by an older peer activation or a timeout; positive activation requires every installed member's exact ACT pin.",
+      "scope": "must-be-coherent",
+      "freshness": "real-time",
+      "conflictShape": "append-only",
+      "transport": "peer-http",
+      "paths": ["conversation-graph/active-custody/*/*.json", "conversation-graph/activation-pins/*/*.json", "conversation-graph/activation-pins/*/*.pending"],
+      "grandfathered": false,
+      "retention": {
+        "class": "R", "access": "protocol-reader", "boundedBy": "replication-protocol",
+        "note": "Monotonic negative authority and exact signed successor outcomes survive restart. Protocol bounds refuse further admission rather than dropping a durable hold; no TTL is recovery authority. This does not detect rollback of all authority and key copies together."
+      }
+    },
+    {
+      "category": "conversation-graph-local-capacity",
+      "description": "Machine-local signed hash-only logical Source capacity reservations under an explicit declared byte policy. No application body, envelope or key is stored; this is neither physical block allocation nor Source ACK authority.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/conversation-graph-capacity/*.json"],
+      "grandfathered": false,
+      "retention": {
+        "class": "R", "access": "protocol-reader", "boundedBy": "replication-protocol",
+        "note": "Retain original identity and conservative charges through interrupted publication. Unknown partial files are charged debt; no TTL or unproved refund. Tokens remain local to their actual machine/root/policy and must never be copied as peer admission credit."
+      }
+    },
+    {
+      "category": "conversation-graph-peer-frontier",
+      "description": "Machine-local durable negative observations from fresh, challenge-bound registered-peer graph heads and hashed erasure inventories. These can withhold stale private serving; they cannot grant a membership, owner action, activation or globally fresh state.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["conversation-graph/peer-frontier/*/*.json", "conversation-graph/peer-frontier/*/*.pending"],
+      "grandfathered": false,
+      "retention": {
+        "class": "R", "access": "protocol-reader", "boundedBy": "replication-protocol",
+        "note": "Known newer or negative authority is not cleared by age or restart. Positive freshness is not restored from these files: cold startup verifies real authority and available signed peer heads. An acknowledged offline snapshot is distinct from current global state. Full local authority/key rollback with no reachable current authority remains an explicit recovery limit."
+      }
+    },
+    {
+      "category": "conversation-graph-native-tail-floor",
+      "description": "Durable observed native-epoch admission floor preceding signed closed-tail acknowledgements. This negative graph fence does not elect a native writer or allocate Source sequence numbers.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["state/conversation-graph-native-tail/floor.json", "state/conversation-graph-native-tail/floor-*.pending"],
+      "grandfathered": false,
+      "retention": {
+        "class": "R", "access": "protocol-reader", "boundedBy": "replication-protocol",
+        "note": "One canonical monotonic floor per agent. Interrupted scratch publications are unacknowledged recovery evidence, never positive authority; this entry does not assert one total inode across failed writes. Failed durability produces no closure receipt or stale-writer permission."
+      }
+    },
+    {
+      "category": "conversation-graph-owner-intent-grants",
+      "description": "Opaque request-scoped owner grants and authenticated monotonic policy generations. No PIN, browser token, title, or deterministic private-body hash is retained.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": [
+        "conversation-graph/owner-intent-grants",
+        "conversation-graph/owner-intent-policy.json",
+        "conversation-graph-owner-policy-head.json"
+      ],
+      "grandfathered": false,
+      "retention": {
+        "class": "R",
+        "access": "protocol-reader",
+        "boundedBy": "replication-protocol",
+        "note": "Semantic resolution, signed membership and verified erasure govern retention, not TTL. Opaque unresolved identities and monotonic fences are never discarded for age; private ciphertext and recoverable keys remain subject to logical purge. Resource ceilings refuse new admission rather than deleting acknowledged custody."
+      }
+    }
+    ,{
+      "category": "conversation-graph-member-loss-administration",
+      "description": "Machine-local encrypted action-scoped owner confirmation, signed durable native revocation/floor evidence and public-only loss-role creation/ready records. Historical proofs alone never authorize a new removal.",
+      "scope": "machine-local",
+      "freshness": "real-time",
+      "conflictShape": "single-writer",
+      "transport": "none",
+      "paths": ["conversation-graph/member-loss-actions/*/*.json", "conversation-graph/member-loss-actions/*/*.pending", "conversation-graph/member-loss-native/*/*.json", "conversation-graph/member-loss-native/*/*.pending", "conversation-graph/member-loss-pins/*/*.json", "conversation-graph/member-loss-pins/*/*.pending", "conversation-graph/member-loss-owned/*/*.json", "conversation-graph/member-loss-owned/*/*.pending"],
+      "grandfathered": false,
+      "retention": {
+        "class": "R", "access": "protocol-reader", "boundedBy": "replication-protocol",
+        "note": "Retain unresolved operation scope and monotonic revocation evidence through verified recovery, never expire them into permission. Encrypted action records contain no PIN/session token/private key; their reserved local vault key is excluded from generic secret sync. They are recovery evidence, not a substitute for fresh owner authentication. Backup copies and full authority rollback remain explicit privacy limits."
       }
     }
   ]

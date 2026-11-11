@@ -77,14 +77,17 @@ describe('job-cost production lifecycle', () => {
     }
   });
 
-  it('keeps later conversions on sessions while an audited first-wave script runs with zero sessions', async () => {
+  it('keeps later conversions on sessions while audited no-model scripts (grading, health-check) run with zero sessions', async () => {
     const projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'instar-job-script-e2e-'));
     const stateDir = path.join(projectDir, '.instar');
     fs.mkdirSync(stateDir, { recursive: true });
     const endpoint = http.createServer((req, res) => {
       if (req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: 'ok' }));
+        // The authenticated branch: the health-check script refuses an answer without `sessions`.
+        res.end(JSON.stringify(req.headers.authorization === `Bearer ${token}`
+          ? { status: 'ok', sessions: { current: 1, max: 5 }, degradations: 0 }
+          : { status: 'ok' }));
         return;
       }
       if (req.url !== '/decision-quality/grade-pass' || req.headers.authorization !== `Bearer ${token}`) {
@@ -124,14 +127,27 @@ describe('job-cost production lifecycle', () => {
       expect(await scriptScheduler.triggerJob('script-job-supervisor', 'fleet-e2e')).toBe('skipped');
       expect(sessions._spawnCount).toBe(0);
       expect(scriptScheduler.getRunHistory().query({ slug: 'script-job-supervisor', limit: 1 }).runs).toEqual([]);
-      scriptScheduler.setConfigReader(() => ({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } }));
+      // Fleet (no development-agent flag): health-check keeps its session even with nothing excluded.
+      scriptScheduler.setConfigReader(() => ({ jobs: { scriptRunners: { disabledSlugs: [] } } }));
       expect(scriptScheduler.scriptRunnersActiveFor('health-check')).toBe(false);
+      scriptScheduler.setConfigReader(() => ({ developmentAgent: true, jobs: { scriptRunners: { enabled: true, disabledSlugs: [] } } }));
       expect(scriptScheduler.scriptRunnersActiveFor('correction-class-review-backstop')).toBe(false);
+      expect(scriptScheduler.scriptRunnersActiveFor('feedback-factory-process')).toBe(false);
       expect(scriptScheduler.scriptRunnersActiveFor('script-job-supervisor')).toBe(false);
       expect(scriptScheduler.scriptRunnersActiveFor('llm-decision-grading')).toBe(true);
       expect(await scriptScheduler.triggerJob('script-job-supervisor', 'dev-e2e')).toBe('skipped');
+      // CMT-1586: once config stops excluding it, health-check runs as its shipped script — no session.
+      expect(scriptScheduler.scriptRunnersActiveFor('health-check')).toBe(true);
       expect(await scriptScheduler.triggerJob('health-check', 'e2e')).toBe('triggered');
-      expect(sessions._spawnCount).toBe(1);
+      const healthDeadline = Date.now() + 10_000;
+      while (state.getJobState('health-check')?.lastResult === 'pending' && Date.now() < healthDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      const healthState = state.getJobState('health-check');
+      expect(healthState?.lastResult, healthState?.lastError).toBe('success');
+      expect(sessions._spawnCount).toBe(0);
+      expect(scriptScheduler.getRunHistory().query({ slug: 'health-check', limit: 1 }).runs[0])
+        .toMatchObject({ runner: 'script', result: 'success', tokens: 0 });
       expect(await scriptScheduler.triggerJob('llm-decision-grading', 'e2e')).toBe('triggered');
       const deadline = Date.now() + 10_000;
       while (state.getJobState('llm-decision-grading')?.lastResult === 'pending' && Date.now() < deadline) {
@@ -139,12 +155,16 @@ describe('job-cost production lifecycle', () => {
       }
       const gradingState = state.getJobState('llm-decision-grading');
       expect(gradingState?.lastResult, gradingState?.lastError).toBe('success');
-      expect(sessions._spawnCount).toBe(1);
+      expect(sessions._spawnCount).toBe(0);
       expect(scriptScheduler.getRunHistory().query({ slug: 'llm-decision-grading', limit: 1 }).runs[0])
         .toMatchObject({ runner: 'script', result: 'success', tokens: 0 });
       expect(scriptScheduler.getJobSupervisionStore().findByRunId(
         scriptScheduler.getRunHistory().query({ slug: 'llm-decision-grading', limit: 1 }).runs[0].runId,
       )).toMatchObject({ status: 'unchecked', reason: 'triage-dark', evidenceSufficient: true });
+      // Listing health-check again is the live rollback to today's session path.
+      scriptScheduler.setConfigReader(() => ({ developmentAgent: true, jobs: { scriptRunners: { disabledSlugs: ['health-check'] } } }));
+      expect(await scriptScheduler.triggerJob('health-check', 'e2e-rollback')).toBe('triggered');
+      expect(sessions._spawnCount).toBe(1);
     } finally {
       scriptScheduler?.stop();
       if (endpoint.listening) await new Promise<void>(resolve => endpoint.close(() => resolve()));

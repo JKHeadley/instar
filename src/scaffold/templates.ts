@@ -12,10 +12,12 @@ import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
  */
 
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
+import { conversationsAwareness } from '../messaging/shared/conversationGraphChat.js';
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
 import { JOB_DECLARED_FAILURE_AWARENESS } from "../scheduler/jobDeclaredFailure.js";
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from "../scheduler/InstallBuiltinJobs.js";
 import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js';
 
 // The "Playwright Profile Registry" CLAUDE.md awareness section is authored ONCE in
@@ -23,7 +25,7 @@ import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js'
 // existing-agent migration there) so the two can never drift. Imported as a runtime
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
-import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_TOOL_LIMITS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, ACTING_AS_OPERATOR_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, DISK_STEWARD_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_TOOL_LIMITS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, ACTING_AS_OPERATOR_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, DISK_STEWARD_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION, USAGE_LEDGER_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { ATTRIBUTION_CLAUDEMD_SECTION, SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { QUIET_NOTIFICATIONS_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { RECOMMENDED_SERVICES_CLAUDEMD_SECTION, EMAIL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
@@ -278,6 +280,14 @@ _Mistakes made and insights earned. The kind of knowledge that saves time next s
 }
 
 /**
+ * Gravity well: a deferral dressed as a scope fact (topic 10000002523, 2026-11-10).
+ * Shared with PostUpdateMigrator.patchClaudeMdContent so existing agents get the
+ * same text. SOMEONE_ELSES_WORK_TRAP_MARKER is the content-sniff guard.
+ */
+export const SOMEONE_ELSES_WORK_TRAP_MARKER = '**"Someone Else\'s Work" Trap**';
+export const SOMEONE_ELSES_WORK_TRAP = `${SOMEONE_ELSES_WORK_TRAP_MARKER} — The work needs a piece that lives somewhere else: another repo, the app, another machine, a session or team that owns that code. You write "this will need a small change in the app", "that is outside this repository", or "recorded for the owner". It reads as honest scoping. It is a deferral with no plan: no owner, no handoff, nothing on your task list, so it never gets built and your run still finishes "done". **The rule**: never just claim what will be needed. For every such piece, in the same step: (1) a route: pull the code to your machine and build it, or hand it to the named session that owns it with a concrete handoff (a brief sent, a tracked commitment, how you will check it landed); and (2) a place on your completion list, so the work cannot count as done without it. Find the owner before writing the sentence (memory, the project map, a grep). If no route exists after you tried, say what you tried and report it as a blocker, not as a scope note.`;
+
+/**
  * Generate CLAUDE.md for a fresh project.
  * This is the standalone version — not the append-to-existing version.
  */
@@ -432,7 +442,7 @@ This routes feedback to the Instar maintainers automatically. Valid types: \`bug
 ${jobCoverageGuide(port).capability}
 ${jobTransferGuide(port).capability}
 - **Enabling/disabling a BUILT-IN job — edit \`.instar/jobs/schedule/<slug>.json\`, NOT the \`.md\`.** The \`enabled:\` line in \`.instar/jobs/instar/<slug>.md\` looks authoritative and is NOT: built-in job markdown is regenerated from the shipped template on EVERY update (the same always-overwrite rule as built-in hooks), so an edit there is silently reverted at the next update — the file shows your new value until then, which is the worst kind of wrong. The DURABLE setting is \`enabled\` in \`.instar/jobs/schedule/<slug>.json\`, which the installer explicitly PRESERVES across regeneration and which the loader actually reads. Job definitions load at SERVER START (no hot reload), so a change applies at the next restart — on a machine with a configured restart window, that means the window, not immediately. Custom jobs under \`jobs/user/\` are never touched by any of this.
-${JOB_DECLARED_FAILURE_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
+${JOB_DECLARED_FAILURE_AWARENESS}${BUILTIN_SCHEDULE_EDIT_AWARENESS}- **Role-guard-at-spawn (WS4.3, ships DARK behind \`multiMachine.seamlessness.ws43RoleGuard\`):** a job marked \`"writesState": true\` in \`.instar/jobs.json\` is STATE-WRITING — it mutates shared/replicated state only the lease-holder may touch. When the flag is on and this machine is a read-only standby (does NOT hold the lease), the scheduler REFUSES to spawn that job at the spawn boundary (recorded as a \`role-guard\` skip) and raises ONE deduped attention item ("Job X could not run on this machine"). This closes the TOCTOU window where a machine awake at boot demotes mid-run while its cron tasks keep firing. The writable owner's own scheduler runs the job, so the refusal re-routes by construction. When the flag is off, or on a single-machine agent (always the lease-holder), the guard is a strict no-op. If the user asks "why didn't job X run on machine Y?" → check the \`role-guard\` skip ledger + the attention item; Y is a read-only standby for that work.
 
 **Sessions** — Spawn and manage Claude Code sessions.
 - List: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/sessions\`
@@ -1077,6 +1087,7 @@ ${LEASE_MEDIUM_CLAUDEMD_SECTION(port)}
 ${WRITE_ADMISSION_CLAUDEMD_SECTION(port)}
 ${DOORWAY_REGISTRY_CLAUDEMD_SECTION(port)}
 ${ROUTING_SPEND_CLAUDEMD_SECTION(port)}
+${USAGE_LEDGER_CLAUDEMD_SECTION(port)}
 ${MATURATION_BOARD_CLAUDEMD_SECTION(port)}
 ${QUALITY_HISTORY_CLAUDEMD_SECTION(port)}
 ${MATURATION_LADDER_CLAUDEMD_SECTION(port)}
@@ -1353,6 +1364,7 @@ I maintain registries that are the source of truth for specific categories. Thes
 | What does the Chief of Staff need from me? / which projects are stalled, parked or waiting? / is it paused? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/chief-of-staff\` (503 = not enabled on this agent) — the lease, one row per bound project, and \`/chief-of-staff/projects/KEY\` for the cited evidence; NEVER answer this from memory |
 | What are we working on? / status of a project or initiative? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/initiatives\` + \`/projects\` (and \`/initiatives/digest\` for what needs a decision) — NEVER answer this from memory |
 | Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off), plus any quarantined or unreadable context folds. \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |
+| Is the per-prompt delta saving anything? / would it drop something a session needs? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/delta-shadow\` — the delta hook's shadow comparison: full vs delta characters per prompt, omitted items, candidate re-fetches (\`unknown\` with its reason, never zero, when anything was omitted) and whether this machine may return the delta (\`contextBudget.deltaHook.enabled\`, refused unless the compaction canary reads healthy). 503 = \`contextBudget.enabled\` is off. NEVER claim the delta is safe from memory |
 | Why do features keep breaking? / our failure rate by build skill? / are our process fixes working? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/failures/analysis\` + \`/failures\` (Failure-Learning Loop — instar dev-process forensics) — NEVER answer this from memory |
 | What preferences have I learned about this user? / what gets injected at session start? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/preferences/session-context\` (Correction & Preference Learning Sentinel — signal-only; 503 when disabled) |
 | What have I learned to do? / my learned skills and proposals / "you keep doing X" | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/skills/learned\` (Skill Learning Sentinel — proposals first, then learned skills with their accepted/corrected/unknown counts; 503 \`skill-learning-disabled\` when off; \`/skills/learned/NAME\` for one) |
@@ -1600,6 +1612,8 @@ These are patterns that feel like insight or helpfulness but actually perpetuate
 **"Escalate to Human" Trap** — You encounter something outside your immediate knowledge. You flag it as "needs human action" and move on. This feels responsible. It's actually abdication. 5 minutes of research would usually reveal a solution. And if no solution exists, you can build one. Before ANY "escalate to human": Did you search for an existing tool? Could you build a solution? Can you use browser automation? Do you already have the access you need?
 
 **"Ask Permission" Trap** — You complete a task, then ask "Want me to [obvious next step]?" This feels polite. It's a round-trip tax on every action. If the user said "do X" and you know the next step, just do it. The tell: you end a message with a question that has only one reasonable answer. Only pause for genuinely destructive, irreversible, or ambiguous actions.
+
+${SOMEONE_ELSES_WORK_TRAP}
 
 **"Inherited Claims" Trap** — You load a handoff note, previous session log, or MEMORY.md entry. It says "deployment is pending" or "feature X is broken" or "there's a stash of uncommitted work." You include this in your report without running a verification command now. This feels like good continuity. It's actually hallucination amplification — you're repeating a claim from a previous LLM session that had the same fabrication tendencies you do. Each repetition adds false confidence. By the third pass, a casual observation has become an unquestioned fact that nobody ever verified. **The rule**: Any claim about external state (repo, deployment, service, file) requires a verification command in THIS session. No command, no claim. Treat handoff notes as "CLAIMS TO VERIFY," not facts.
 
@@ -1946,6 +1960,11 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
 - **The move (operator-proven on ai-guy 2026-10-13, codey + inspec 2026-10-14):** rename the project directory in place onto the same disk outside the protected folder, leave a symlink at the old path, update the launchd plist program path + WorkingDirectory, reload, verify the port answers and the log shows a clean boot. Runbook: \`docs/runbooks/move-agent-out-of-documents.md\`.
 - **When to use** (PROACTIVE — these are the triggers): the user asks "why did all my agents die at the same second?" / "why did I get a TCC-protected path notice?" / "is my agent in a safe folder?" → read the boot line, \`GET /guards\`, or the attention item, and point at the runbook. When helping place ANY new project, state directory, vault, database, log or worktree on a Mac, keep it out of those four folders.
 
+## PR links ask for the review on GitHub too
+
+When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.
+
 ## Throwaway test agents (they cannot become permanent jobs on your login)
 
 An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folders\` and the like) or with a sandboxed \`HOME\` is a throwaway. On 2026-10-21 one such release-check agent installed itself into the operator's real launchd and ran scheduled jobs on the operator's Claude subscription for five days. Now, enforced in code:
@@ -2010,6 +2029,7 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
 
   // message-origin-all-platforms: every agent (app and Slack record origin without Telegram).
   content += '\n' + messageOriginAllPlatformsAwareness(port);
+  content += '\n' + conversationsAwareness();
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);

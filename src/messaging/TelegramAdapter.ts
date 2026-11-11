@@ -38,6 +38,7 @@ import type { MessageProvenance } from './shared/MessageProvenance.js';
 import { SessionChannelRegistry } from './shared/SessionChannelRegistry.js';
 import { StallDetector, type StallEvent } from './shared/StallDetector.js';
 import { CommandRouter } from './shared/CommandRouter.js';
+import { conversationsPointer } from './shared/conversationGraphChat.js';
 import { AuthGate } from './shared/AuthGate.js';
 import { MessagingEventBus } from './shared/MessagingEventBus.js';
 import { CallbackRegistry, isAllowedButtonKey } from '../core/CallbackRegistry.js';
@@ -270,7 +271,7 @@ interface TelegramUpdate {
     // is_bot:false). `sender_chat` is present for group bot-as-channel relays.
     from: { id: number; first_name: string; username?: string; is_bot?: boolean };
     sender_chat?: { id: number; type?: string; username?: string };
-    chat: { id: number };
+    chat: { id: number; type?: string };
     message_thread_id?: number;
     text?: string;
     date: number;
@@ -637,6 +638,9 @@ export class TelegramAdapter implements MessagingAdapter {
 
   private config: TelegramConfig;
   private handler: ((message: Message) => Promise<void>) | null = null;
+  private conversationsUrl: () => string | null = () => null;
+
+  setConversationsUrlProvider(provider: () => string | null): void { this.conversationsUrl = provider; }
   private polling = false;
 
   /** True when this adapter is actively polling for messages (false in send-only mode). */
@@ -1181,6 +1185,13 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
   public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
+  /**
+   * True when the inbound gate will refuse this message (it never reaches a session — today the Chief
+   * of Staff owner-only rule). Set by the server; every "delivered" acknowledgement asks it first, so a
+   * refused message is never reported as delivered (Echo Bugs 10000002533). senderId 0 = unverified.
+   */
+  isInboundRefused: ((topicId: number, senderId: number) => boolean) | null = null;
+
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §3): an owner tap on a `cos:` button; set by the server with the loop. */
   onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string }) => Promise<'ok' | 'ignored'>) | null = null;
   /** Callback to inject text input into a tmux session. Wired by server.ts. */
@@ -1339,6 +1350,11 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   private registerSharedCommands(): void {
     if (!this.sharedCommandRouter) return;
+
+    this.sharedCommandRouter.register('conversations', async (ctx) => {
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(Number(ctx.channelId), conversationsPointer(this.conversationsUrl())));
+      return true;
+    }, { description: 'Open your private Conversations view', platforms: ['telegram'] });
 
     // Attention topic interceptor
     this.sharedCommandRouter.addInterceptor(async (ctx) => {
@@ -2339,6 +2355,20 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   setCallbackApproverResolver(resolve: () => number | undefined): void {
     this.callbackApproverResolver = resolve;
+  }
+
+  /**
+   * The VERIFIED owner: the configured owner id, else the one verified operator (the same answer
+   * authority-bearing buttons use). Undefined means no owner is known — never "anybody".
+   * Chief of Staff reads this for its owner-only rule (src/core/chiefOfStaffOwner.ts).
+   */
+  getVerifiedOwner(): number | undefined {
+    return this.getCallbackApprover();
+  }
+
+  /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
+  ownerSourcesReady(): boolean {
+    return this.getConfiguredApprover() !== undefined || this.callbackApproverResolver !== null;
   }
 
   /** The configured owner, normalized the way pairing reads it: config is raw JSON, so an id may be a string. */
@@ -4036,7 +4066,16 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Process Telegram commands. Returns true if the message was a command.
    */
-  public async handleCommand(text: string, topicId: number, userId: number): Promise<boolean> {
+  public async handleCommand(text: string, topicId: number, userId: number, source?: { privateChatId: number }): Promise<boolean> {
+    const command = text.trim().toLowerCase();
+    if (source && (command === '/conversations' || command.startsWith('/conversations '))) {
+      // This coordinate comes only from authenticated Telegram ingress. Never
+      // answer a private request in the configured forum group by topic alias.
+      if (!Number.isSafeInteger(source.privateChatId) || source.privateChatId <= 0
+          || source.privateChatId !== userId || !this.isAuthorized(userId)) return true;
+      await this.apiCall('sendMessage', { chat_id: source.privateChatId, text: conversationsPointer(this.conversationsUrl()) });
+      return true;
+    }
     // Phase 1a: Delegate to shared CommandRouter when flag is enabled
     if (this.sharedCommandRouter) {
       return this.sharedCommandRouter.route(
@@ -4048,6 +4087,13 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     const cmd = text.trim().toLowerCase();
+
+    // This explicit command never reads owner hierarchy content or dispatches
+    // to a model session. Forum groups/unknown audiences get the same pointer.
+    if (cmd === '/conversations' || cmd.startsWith('/conversations ')) {
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, conversationsPointer(this.conversationsUrl())));
+      return true;
+    }
 
     // Attention topic commands — intercept before general commands
     if (this.isAttentionTopic(topicId)) {
@@ -4516,7 +4562,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * strictly before `beforeMs`, oldest first. Reads the log directly (the tail
    * cache only holds recent entries); bounded by the log's rotation cap.
    */
-  getTopicHistoryBefore(topicId: number, beforeMs: number, limit: number = 20): LogEntry[] {
+  getTopicHistoryBefore(topicId: number, beforeMs: number, limit: number = 20, beforeMessageId?: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
     const matching: LogEntry[] = [];
     // Read backwards in 1 MB chunks and stop once the page is full: the log can
@@ -4550,7 +4596,8 @@ export class TelegramAdapter implements MessagingAdapter {
             const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
             if (entryTopicId !== topicId) continue;
             const at = Date.parse(String(entry.timestamp));
-            if (Number.isFinite(at) && at < beforeMs) matching.unshift(entry);
+            if (Number.isFinite(at) && (at < beforeMs || (at === beforeMs && beforeMessageId !== undefined
+                && Number.isSafeInteger(entry.messageId) && entry.messageId < beforeMessageId))) matching.unshift(entry);
           } catch { /* @silent-fallback-ok: a malformed log line is skipped; the page is built from the lines that parse */ }
         }
       }
@@ -6248,7 +6295,8 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Check for commands first
     if (text.startsWith('/')) {
-      const handled = await this.handleCommand(text, numericTopicId, msg.from.id);
+      const handled = await this.handleCommand(text, numericTopicId, msg.from.id,
+        msg.chat.type === 'private' ? { privateChatId: msg.chat.id } : undefined);
       if (handled) return;
     }
 
@@ -6809,9 +6857,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // Owner-only, checked HERE against the explicit owner principal; anyone else gets "owner only" and
     // nothing runs. The handler (the loop's ownerTap) decides what the tap means and answers plainly.
     if (query.data.startsWith('cos:')) {
-      const owner = this.getConfiguredApprover(); // normalised: config may hold the id as a string
+      const owner = this.getVerifiedOwner(); // configured owner, else the one verified operator (chiefOfStaffOwner.ts rule 1)
       if (!owner || query.from.id !== owner) {
-        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: 'Only the owner can tap this.' }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the refusal already held */ });
+        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: owner ? 'Only the owner can tap this.' : 'No verified owner is set for this agent, so this cannot be tapped yet.' }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the refusal already held */ });
         return;
       }
       let answer = 'Not available right now.';

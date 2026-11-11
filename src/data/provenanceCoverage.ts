@@ -540,6 +540,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Input-coherence verdict over an inbound prompt and recent topic context; provenance stores only bounded identities and shape.',
   },
   {
+    decisionPoint: 'context-layer-chunk',
+    component: 'ContextLayerChunk',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Chunk and range summaries of an archived transcript span (context-budget §6.5). Derived layers for later lookup only; they decide nothing. A strict validator refuses malformed or unfaithfully quoted output, and the Phase 2 fold probes grade summaries against the raw span.',
+  },
+  {
     decisionPoint: 'session-activity-digest',
     component: 'SessionActivitySentinel',
     status: 'pending:backlog:decision-quality-enrolment',

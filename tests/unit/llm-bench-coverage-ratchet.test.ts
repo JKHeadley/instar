@@ -30,6 +30,9 @@ const PENDING_BASELINE = [
   'AttributionJudge', 'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
   'PreCompactionFlush', 'RelationshipManager',
+  // context-budget-layered-summaries §6.5 (Phase 1 S8, 2026-11-10): chunk/C2 summaries over an archived span;
+  // graded by the Phase 2 fold probes until a bench task lands.
+  'ContextLayerChunk',
   'SelfKnowledgeTree', 'GoalPriorityExtractor',
   'StandardsConformanceReviewer',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',

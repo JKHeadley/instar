@@ -6,7 +6,7 @@
  * when the archive is over its size limit; then frees down to 80% of the
  * limit, per topic in proportion, oldest-superseded-first, and never a span
  * the topic's current phase points at (H2's `spanIds` and every open chunk's
- * `spanIds`). An evicted span keeps its index row marked evicted, so a chunk
+ * `spanIds`, and every pending chunk's span, not yet summarized). An evicted span keeps its index row marked evicted, so a chunk
  * that points at it reads `raw-evicted`, never unknown. Every doubt skips.
  */
 import fs from 'node:fs';
@@ -31,7 +31,8 @@ export function currentPhaseSpans(store: LayerStore, topicKey: string): Set<stri
   const out = new Set<string>();
   const add = (v: unknown) => { if (Array.isArray(v)) for (const s of v) if (typeof s === 'string') out.add(s); };
   for (const r of h2) add(r.spanIds);
-  for (const c of chunks) if (c.status === 'open' || c.status === 'current-phase') add(c.spanIds);
+  // A `pending` chunk's span is the only copy its summary can be built from (context-budget §6.5, §9.5): protected until it closes.
+  for (const c of chunks) if (c.status === 'open' || c.status === 'current-phase' || c.status === 'pending') add(c.spanIds);
   return out;
 }
 

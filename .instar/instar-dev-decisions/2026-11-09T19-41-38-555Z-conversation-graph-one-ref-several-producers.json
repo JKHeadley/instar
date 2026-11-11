@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-09T19:41:38.555Z",
+  "slug": "conversation-graph-one-ref-several-producers",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 37,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphSourceCoverage.ts",
+      "src/core/ConversationGraphSourceInventory.ts"
+    ],
+    "addedLines": 31,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

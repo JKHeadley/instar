@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-real-machine-fixes",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T14:40:39.286Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-real-machine-fixes.md",
+  "artifactSha256": "10fb2eda8f098630a8e2ebed4fdbbae270c2eb1fd8225fb12580e8b0d429b757",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-07T12-35-57-111Z-conversation-graph-real-machine-fixes-a03c4264.json",
+    ".instar/instar-dev-traces/2026-11-07T12-36-28-993Z-conversation-graph-real-machine-fixes-41eba3a8.json",
+    "src/core/GraphWitnessRecoveryCoordinator.ts",
+    "src/server/ConversationGraphMemberLossSurface.ts",
+    "upgrades/side-effects/conversation-graph-real-machine-fixes.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Comments only; no new trigger."
+  }
+}

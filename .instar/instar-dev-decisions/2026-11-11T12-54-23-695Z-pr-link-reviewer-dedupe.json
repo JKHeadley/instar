@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-11T12:54:23.695Z",
+  "slug": "pr-link-reviewer-dedupe",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 489,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/pr-reviewer-request.d.mts",
+      "scripts/pr-reviewer-request.mjs",
+      "src/core/devGatedFeatures.ts",
+      "src/core/types.ts",
+      "src/data/feature-ladders.json",
+      "src/server/routes.ts",
+      "src/core/PrLinkReviewerCheck.ts"
+    ],
+    "addedLines": 6,
+    "deletedLines": 483
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

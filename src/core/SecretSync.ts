@@ -33,14 +33,32 @@ import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
  * the same credential/channel it is meant to survive.
  */
 export const LOCAL_ONLY_SECRET_PREFIXES = ['machineIdentityRecovery'] as const;
+/** Reserved graph control material uses a dedicated, recipient-verified
+ * recovery/bootstrap protocol. Ordinary vault provisioning must never copy a
+ * custody role private key, owner root, local grant key or rollback marker. */
+export const GRAPH_LOCAL_SECRET_KEY_PREFIX = 'conversation_graph_';
 
 function isLocalOnlySecretPath(keyPath: string): boolean {
-  return LOCAL_ONLY_SECRET_PREFIXES.some((prefix) => (
+  return keyPath.split('.').some(segment => segment.startsWith(GRAPH_LOCAL_SECRET_KEY_PREFIX))
+    || LOCAL_ONLY_SECRET_PREFIXES.some((prefix) => (
     keyPath === prefix
     || keyPath.startsWith(`${prefix}.`)
     || keyPath.endsWith(`.${prefix}`)
     || keyPath.includes(`.${prefix}.`)
   ));
+}
+
+function firstLocalOnlySecretPath(secrets: Secrets, prefix = ''): string | null {
+  for (const [key, value] of Object.entries(secrets)) {
+    const keyPath = prefix ? `${prefix}.${key}` : key;
+    // Check containers too: an empty object must not overwrite a local root.
+    if (isLocalOnlySecretPath(keyPath)) return keyPath;
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const child = firstLocalOnlySecretPath(value as Secrets, keyPath);
+      if (child) return child;
+    }
+  }
+  return null;
 }
 
 /**
@@ -220,7 +238,7 @@ export class SecretShareHandler {
     }
     const payload = JSON.parse(command.encrypted) as EncryptedSecretPayload;
     const secrets = decryptFromSync(payload, this.deps.ownEncryptionPrivateKey());
-    const forbidden = secretKeyPaths(secrets).find(isLocalOnlySecretPath);
+    const forbidden = firstLocalOnlySecretPath(secrets);
     if (forbidden) {
       throw new Error(`SecretShareHandler refuses machine-local secret namespace: ${forbidden}`);
     }

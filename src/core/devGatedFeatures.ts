@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'usageLedger',
+    configPath: 'usage.ledger.enabled',
+    description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
+  },
+  {
     name: 'contextBudgetLayers',
     configPath: 'contextBudget.enabled',
     description: 'Context budget layers (docs/specs/context-budget-layered-summaries.md Phase 1): the per-topic layer store and transcript archive, and the layer writers built on them; omitted ⇒ live on a development agent, dark on the fleet.',
