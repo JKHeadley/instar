@@ -983,12 +983,6 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     description: 'Face ID-confirmed permission writes from the owner\'s phone (docs/specs/mobile-native-permissions.md): approve or decline a waiting authorization request held on this machine, and turn a feature switch on or off, each with a fresh presence-key signature over a single-use challenge bound to the device, Host and exact action (POST /mobile/permissions/challenge, /requests/:id/approve|decline, /features/:id).',
     justification: 'No authority beyond the PIN-confirmed console: the action runs the console\'s own approve, deny and operator-switch code; the bearer is refused; it needs an active owner phone, a configured dashboard PIN, local TLS or loopback, the phone\'s Secure Enclave presence key and a 60-second single-use challenge naming the exact action (an approve also names the proposal\'s hash). Every write and refusal is audited. Switching it off stops the writes at once (re-checked live); the read-only lists stay. Dark on the fleet until the development-agent live proof passes.',
   },
-  {
-    name: 'prLinkReviewer',
-    configPath: 'prLinkReviewer.enabled',
-    description: 'PR links request their reviewer (docs/specs/pr-link-requests-reviewer.md): before an outbound message to a person is sent, every open pull request it links gets its reviewer (the mapped recipient, the configured login, else the repo owner; never the author) requested on GitHub unless already requested or approved at the current head; a conversational reply whose request fails is held with a plain reason.',
-    justification: 'The only external write is GitHub\'s idempotent requested_reviewers POST on a pull request the agent\'s own token can already write to; merged, closed, unseen and non-PR links pass untouched. Every GitHub call for one message shares one bounded budget (default 5s, max 8s, under the 15s relay timeout); automated sends, health alerts, Agent Updates notices and reply redrives are never held; a defect in the check fails open. Read live: enabled:false turns it off at the next send.',
-  },
 ];
 
 /**

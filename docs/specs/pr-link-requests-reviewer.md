@@ -11,7 +11,7 @@ parent-principle: "The User Experience Is the Product — Reachability, Responsi
 
 # PR links request their reviewer
 
-- **ladder:** prLinkReviewer
+> **Superseded (2026-11-11, Echo Bugs 10000002553).** This send-time check (`src/core/PrLinkReviewerCheck.ts`, PR 3061) duplicated `src/messaging/prLinkReviewRequest.ts` (PR 3063), so two code paths could request the same reviewer for one link. The 3061 path, its `prLinkReviewer` config, dev gate and ladder were removed. The one reviewer-request path for PR links is `prLinkReviewRequest` (on by default). `scripts/pr-reviewer-request.mjs` keeps only the helpers `scripts/safe-merge.mjs` uses. Kept for history.
 
 ## Why this exists
 
