@@ -182,8 +182,20 @@ describe('links, location and words', () => {
     expect(m.canSend(page)).toBe(true);
     expect(m.unsentMine(page).map((c) => c.key)).toEqual(['c']);
     expect(m.canSend({ ...page, primary: { sendPath: null, primaryRow: 'A:1' } })).toBe(false);
+    // The conversation was removed (bug 3): Send is off even with a stale send path.
+    expect(m.canSend({ ...page, primary: { ref: null, removed: true, sendPath: '/mobile/chat/7', primaryRow: 'A:1' } })).toBe(false);
+    expect(m.primaryRemoved({ primary: { ref: null, removed: true } })).toBe(true);
+    expect(m.primaryRemoved({ primary: { ref: 'app:x', sendPath: '/mobile/chat/app/x' } })).toBe(false);
     expect(m.openWords(m.openCount(page))).toBe('3 open comments');
     expect(m.openWords(1)).toBe('1 open comment');
+  });
+
+  it('labels a computer write "from Mia\u2019s computer", and nothing for a phone (bug 2)', () => {
+    expect(m.originLabel({ originClient: 'browser', authorName: 'Mia' }, false)).toBe('from Mia\u2019s computer');
+    expect(m.originLabel({ originClient: 'browser', authorName: 'You' }, true)).toBe('from your computer');
+    expect(m.originLabel({ originClient: 'phone', authorName: 'Mia' }, false)).toBeNull();
+    expect(m.originLabel({ originClient: null, authorName: 'Owner' }, false)).toBeNull();
+    expect(m.originLabel({ authorName: 'Mia' }, false)).toBeNull();
   });
 
   it('says versions and anchor notes in words', () => {

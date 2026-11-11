@@ -202,14 +202,15 @@ import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, reso
 import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
 import { createDocumentPageRoutes } from './documentPageRoutes.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
-import { checkRowOrigin, type DeviceKeyLookup } from '../documents/originCheck.js';
+import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink } from './documentLinkRoutes.js';
 import { setDocumentScopedSend } from './mobilePairingRoutes.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
 import { DocumentService } from '../documents/service.js';
-import { standingCheck, teamView, type TeamDeps } from '../documents/teamAdapter.js';
+import { standingCheck, teamStateAt, teamView, type TeamDeps } from '../documents/teamAdapter.js';
+import { tierOfRole } from '../permissions/TeamAccess.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
@@ -9654,7 +9655,7 @@ export class AgentServer {
       standing: standingCheck(deps, (docId) => store?.rowsOf(docId) ?? []),
       // Every person or owner row is re-checked against its device's own signature (§3.6), using the
       // replicated device-key ledger and team bindings, so it holds on every machine.
-      origin: (row, used) => checkRowOrigin(row, (deviceId, keyHash) => this.documentDeviceKey(deviceId, keyHash), used, (docId, hash) => {
+      origin: (row, used) => checkRowOrigin(row, (deviceId, keyHash, at) => this.documentDeviceKey(deviceId, keyHash, at), used, (docId, hash) => {
         const b = store?.getBlob(docId, hash);
         if (!b) return null;
         try { const v = JSON.parse(b.text) as unknown; return Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null; } catch { return null; } // @silent-fallback-ok — an unreadable list keeps the row hidden
@@ -9692,14 +9693,20 @@ export class AgentServer {
     const t = scopedSendTarget(body.text, routePath);
     if (!t) return false;
     const facts = docs.service.facts(t.docId);
-    if (!facts || facts.primary !== t.conversation) return false;
+    if (!facts || facts.primary !== t.conversation || this.documentConversationRemoved(facts.primary)) return false;
     // Exactly the template the server would write: this document's real title, a real version,
     // this agent's own document link, and a count no larger than the person's open comments. All
     // read as this person (a shared document is not readable by an owner-reach caller).
     const standing = this.mobilePairing?.teamStanding(device.userId);
     if (!standing) return false;
     const principal = { kind: 'person' as const, personKey: device.userId, tier: standing.tier, client: 'browser' as const };
-    const caller = { principal, actor: { type: 'machine' as const }, access: {}, reader: { kind: 'person' as const, personKey: device.userId, grants: [] } };
+    // Read with this person's real standing on the conversation, exactly as the page reads for them
+    // (their own conversation, else their grant rows on it); with no grants the read sees nothing.
+    const k = device.userId;
+    const reader = this.documentTeamDeps().ownsConversation(k, facts.primary)
+      ? { kind: 'own-conversation' as const, personKey: k }
+      : { kind: 'person' as const, personKey: k, grants: this.documentPersonGrants(k, facts.primary) };
+    const caller = { principal, actor: { type: 'machine' as const }, access: {}, reader };
     // The same origin the server writes into document links (the pairing origin, else the configured named tunnel).
     const origin = this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((this.config as { tunnel?: { type?: string; hostname?: string } } | undefined)?.tunnel) ?? null;
     const m = /^I left (\d{1,4}) comments? on "([\s\S]*)" \(version (\d{1,6})\): (\S+)$/.exec(String(body.text));
@@ -9712,6 +9719,25 @@ export class AgentServer {
     const expected = `I left ${n} ${n === 1 ? 'comment' : 'comments'} on "${read.title ?? ''}" (version ${m[3]}): ${origin}/docs/${t.docId}`;
     if (String(body.text) !== expected || !labels.has(m[3]) || n < 1 || n > mine) return false;
     return docs.service.can(t.docId, caller, 'send');
+  }
+
+  /** A person's reader grant rows on a conversation (the page routes' `grantsOf`). */
+  private documentPersonGrants(personKey: string, ref: string): Array<{ stream: string; seq: number; grantRowKey: string }> {
+    const log = this.mobilePairing?.teamLog();
+    if (!log) return [];
+    const teamRef = ref.startsWith('app:') ? ref.slice(4) : ref;
+    return log.readerGrantsOf(personKey, teamRef).map((g) => ({ stream: g.stream, seq: g.seq, grantRowKey: `${g.stream}#${g.seq}` }));
+  }
+
+  /**
+   * Was a document's primary conversation removed (§3.7, §10: Send disabled with its reason)? Only
+   * an app conversation this machine holds as deleted counts; one not arrived yet, or a Telegram
+   * topic, is never reported removed.
+   */
+  private documentConversationRemoved(ref: string): boolean {
+    if (!ref.startsWith('app:')) return false;
+    const c = this.appConversations?.store.getConversation(ref.slice(4));
+    return !!c && !!c.tombstoned;
   }
 
   /**
@@ -9745,7 +9771,49 @@ export class AgentServer {
     return best;
   }
 
-  private documentDeviceKey(deviceId: string, keyHash: string): ReturnType<DeviceKeyLookup> {
+  /**
+   * A device key for re-checking a document row. Live standing first; a device revoked since then
+   * still stands for a row accepted under a team-log position where it stood, when a later team row
+   * (the person's removal, or the computer's `browser-unbind`) witnesses the revocation (§3.4,
+   * originCheck.ts `deviceStoodAt`). Without `at` (page reads and writes) only live standing counts.
+   */
+  private documentDeviceKey(deviceId: string, keyHash: string, at?: { access: Record<string, number>; personKey: string | null }): ReturnType<DeviceKeyLookup> {
+    const live = this.documentDeviceKeyNow(deviceId, keyHash);
+    if (live.status !== 'revoked' || !at?.personKey) return live;
+    return this.documentDeviceKeyAt(deviceId, keyHash, at.access, at.personKey) ?? live;
+  }
+
+  /** The device as it stood under the team-log prefix a row's `access` names, or null (refused as revoked). */
+  private documentDeviceKeyAt(deviceId: string, keyHash: string, access: Record<string, number>, personKey: string): ReturnType<DeviceKeyLookup> | null {
+    const svc = this.mobilePairing;
+    const log = svc?.teamLog();
+    if (!svc || !log) return null;
+    const deps = this.documentTeamDeps();
+    const rows = deps.rows();
+    if (!rows) return null;
+    const prefix = teamStateAt(rows, access, deps.verify);
+    if (prefix === 'pending') return { status: 'unknown' };
+    const local = svc.devices.get(deviceId);
+    const localKey = local ? deviceKeyOf(local) : undefined;
+    const act = this.documentLedgerActivation(deviceId, keyHash);
+    const publicKey = localKey && deviceKeyHashOf(localKey) === keyHash ? localKey : act && act.keyHash === keyHash ? act.publicKey : null;
+    if (!publicKey) return null;
+    const link = prefix.browserLinks.get(keyHash);
+    const client: 'phone' | 'browser' = link || (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
+    const stood = deviceStoodAt(prefix, log.state(), { keyHash, deviceId, personKey, client }, (l) => {
+      // The phone's signature over the link, checked as of the link (expiry was decided by the
+      // machine that accepted the row; a revoked linking phone is ordered by the team rows above).
+      const phone = this.documentLedgerActivation(l.linkedByDeviceId, l.linkedByKeyHash);
+      return verifyBrowserLink(l, phone, phone ? prefix.bindings.get(phone.keyHash) ?? null : null, false, Date.parse(l.linkedAt));
+    });
+    if (!stood) return null;
+    const role = prefix.people.get(personKey)?.role;
+    const guest = !!role && tierOfRole(role as never) === 'guest';
+    const mayWrite = !guest && link?.scope !== 'documents-read';
+    return { status: 'ok', publicKey, role: 'person', personKey, client, mayWrite };
+  }
+
+  private documentDeviceKeyNow(deviceId: string, keyHash: string): ReturnType<DeviceKeyLookup> {
     const svc = this.mobilePairing;
     if (!svc) return { status: 'unknown' };
     if (svc.keyLedger?.isRevoked(keyHash, deviceId)) return { status: 'revoked' };
@@ -9793,12 +9861,8 @@ export class AgentServer {
       service: () => this.openDocuments(stateDir)?.service ?? null,
       store: () => this.openDocuments(stateDir)?.store ?? null,
       teamVector: () => this.mobilePairing?.teamLog()?.vector() ?? {},
-      grantsOf: (personKey: string, ref: string) => {
-        const log = this.mobilePairing?.teamLog();
-        if (!log) return [];
-        const teamRef = ref.startsWith('app:') ? ref.slice(4) : ref;
-        return log.readerGrantsOf(personKey, teamRef).map((g) => ({ stream: g.stream, seq: g.seq, grantRowKey: `${g.stream}#${g.seq}` }));
-      },
+      grantsOf: (personKey: string, ref: string) => this.documentPersonGrants(personKey, ref),
+      conversationRemoved: (ref: string) => this.documentConversationRemoved(ref),
       sessionAccessFor: (ref: string) => {
         const log = this.mobilePairing?.teamLog();
         return log ? log.sessionAccessFor(ref.startsWith('app:') ? ref.slice(4) : ref) : null;
@@ -9809,7 +9873,13 @@ export class AgentServer {
         return typeof id === 'number' && id > 0 ? `telegram:${id}` : null;
       },
       deviceApprovedVia: (deviceId: string) => this.mobilePairing?.devices.get(deviceId)?.approvedVia ?? null,
-      linkOrigin: () => this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel) ?? null,
+      linkOrigin: () => this.mobilePairing?.pairingOrigin()?.origin
+        ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel)
+        // Test-only (documents.loopbackOrigin): a development agent with no tunnel links to its own loopback address.
+        ?? ((): string | null => {
+          const c = options.config as unknown as { documents?: { loopbackOrigin?: unknown }; port?: unknown };
+          return c.documents?.loopbackOrigin === true && typeof c.port === 'number' ? `http://127.0.0.1:${c.port}` : null;
+        })(),
       notifyDocumentAnswer: (docId: string, commentKey: string) => {
         this.mobilePairing?.push?.onHubPost({ kind: 'document', itemId: docId, commentKey, dedupeKey: `doc-answer:${docId}:${commentKey}:${Math.floor(Date.now() / 65_536)}` });
       },

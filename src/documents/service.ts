@@ -42,6 +42,9 @@ export interface Limits { titleChars: number; commentBytes: number }
 export { commentKeysHashOf } from './originCheck.js';
 import { commentKeysHashOf } from './originCheck.js';
 
+/** The device a person's comment or reply was written from: `phone` (the app) or `browser` (a linked computer). */
+export type OriginClient = 'phone' | 'browser' | null;
+
 export class DocumentService {
   constructor(private readonly store: DocumentStore, private readonly team: TeamView, private readonly limits: Limits = { titleChars: WRITE_DEFAULTS.titleChars, commentBytes: WRITE_DEFAULTS.commentBytes }) {}
 
@@ -95,18 +98,25 @@ export class DocumentService {
   /** Comments with quotes, re-anchored onto the latest version, for the agent and the page. */
   comments(docId: string, caller: Caller, status: 'open' | 'resolved' | 'all' = 'open'): Array<{
     key: string; author: string; quote: string | null; body: string | null; anchorState: 'ok' | 'edited' | 'orphaned'; start?: number; end?: number;
-    resolved: boolean; replies: Array<{ author: string; body: string | null; at: string | null }>; onVersion: string; at: string | null; edited: boolean;
+    resolved: boolean; replies: Array<{ author: string; body: string | null; at: string | null; originClient: OriginClient }>; onVersion: string; at: string | null; edited: boolean;
+    originClient: OriginClient;
   }> {
     const r = this.read(docId, caller);
     const latest = r.version;
     const latestText = latest && r.markdown !== null ? projectText(r.markdown, latest.projectionVersion).text : null;
     const times = new Map<string, string>();
-    for (const row of this.store.rowsOf(docId)) times.set(rowKeyOf(row), row.receivedAt);
+    // Which kind of device a person's row came from (§3.6: computer writes are labelled "from Mara's
+    // computer"); null for the owner, the agent and machines, whose rows don't record it.
+    const clients = new Map<string, OriginClient>();
+    for (const row of this.store.rowsOf(docId)) {
+      times.set(rowKeyOf(row), row.receivedAt);
+      if (row.actor.type === 'person') clients.set(rowKeyOf(row), row.actor.client);
+    }
     const out = [];
     for (const c of r.state.comments.values()) {
       if (status === 'open' && c.resolved) continue;
       if (status === 'resolved' && !c.resolved) continue;
-      out.push({ ...this.placeComment(docId, r.state, c, latest, latestText), key: c.key, author: c.author, body: this.textOf(docId, c.revisions[c.revisions.length - 1].bodyHash), resolved: c.resolved, replies: c.replies.map((x) => ({ author: x.author, body: this.textOf(docId, x.bodyHash), at: times.get(x.rowKey) ?? null })), onVersion: c.onVersion, at: times.get(c.revisions[0].rowKey) ?? null, edited: c.revisions.length > 1 });
+      out.push({ ...this.placeComment(docId, r.state, c, latest, latestText), key: c.key, author: c.author, body: this.textOf(docId, c.revisions[c.revisions.length - 1].bodyHash), resolved: c.resolved, replies: c.replies.map((x) => ({ author: x.author, body: this.textOf(docId, x.bodyHash), at: times.get(x.rowKey) ?? null, originClient: clients.get(x.rowKey) ?? null })), onVersion: c.onVersion, at: times.get(c.revisions[0].rowKey) ?? null, edited: c.revisions.length > 1, originClient: clients.get(c.revisions[0].rowKey) ?? null });
     }
     return out;
   }

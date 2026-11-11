@@ -22,7 +22,8 @@ import crypto from 'node:crypto';
 import { canonicalJson } from './chain.js';
 import { docpageSignatureValid, type DocpageOp } from './docpageAuth.js';
 import { canonicalString, isStrictLowSDer, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
-import type { DocRow } from './rows.js';
+import type { DocRow, Vector } from './rows.js';
+import type { TeamAccessState } from '../core/TeamAccessLog.js';
 
 export type OriginVerdict = 'ok' | 'denied' | 'pending';
 
@@ -30,7 +31,7 @@ export type OriginVerdict = 'ok' | 'denied' | 'pending';
  * The device behind a key hash. `role` comes only from records that say so (a replicated team
  * binding, or this machine's own device record); `unknown` while neither has arrived.
  */
-export type DeviceKeyLookup = (deviceId: string, keyHash: string) =>
+export type DeviceKeyLookup = (deviceId: string, keyHash: string, at?: { access: Vector; personKey: string | null }) =>
   | { status: 'ok'; publicKey: string; role: 'owner' | 'person' | 'unknown'; personKey: string | null; client: 'phone' | 'browser'; mayWrite: boolean }
   | { status: 'unknown' }
   | { status: 'revoked' };
@@ -58,6 +59,35 @@ function rowMatchesPayload(row: DocRow, p: Record<string, unknown>): boolean {
   }
 }
 
+/**
+ * Did a person's device stand when its row was accepted, although it is revoked now? (§3.4:
+ * "Revocation is effective from the revoke row onward; rows accepted before it stand".)
+ *
+ * The order comes from the team log, never from a time a row claims: `at` is the team state folded
+ * from exactly the prefix the row's own `access` vector names (stamped and signed by the accepting
+ * machine), and `now` is this machine's current team state. The device stood when, in `at`, the
+ * person is present and the key is bound to them (for a linked computer: its `browser-bind` is in
+ * force, names this device, and was signed by a phone key also bound to them in `at`). Its
+ * revocation must also be witnessed by a team row outside that prefix: the person's removal, or
+ * the computer's `browser-unbind`. A revocation recorded only in the device-key ledger has no
+ * team-log position, so it can't be ordered against the row and the row stays refused. A row
+ * accepted after the revoke row carries an `access` that includes it, so `at` already shows the
+ * device gone and the row is refused on every machine.
+ */
+export function deviceStoodAt(
+  at: TeamAccessState, now: TeamAccessState,
+  d: { keyHash: string; deviceId: string; personKey: string; client: 'phone' | 'browser' },
+  linkSigned: (link: NonNullable<ReturnType<TeamAccessState['browserLinks']['get']>>) => boolean,
+): boolean {
+  if (!at.on || !at.people.has(d.personKey) || at.bindings.get(d.keyHash) !== d.personKey) return false;
+  const removedSince = !now.people.has(d.personKey);
+  if (d.client === 'phone') return !at.browserLinks.has(d.keyHash) && removedSince;
+  const link = at.browserLinks.get(d.keyHash);
+  if (!link || link.unbound || link.deviceId !== d.deviceId || link.boundTo !== d.personKey) return false;
+  if (at.bindings.get(link.linkedByKeyHash) !== d.personKey || !linkSigned(link)) return false;
+  return removedSince || !!now.browserLinks.get(d.keyHash)?.unbound;
+}
+
 /** sha256(canonicalJson(sorted comment keys)): what a signed Send names (app contract item 2). */
 export function commentKeysHashOf(keys: string[]): string {
   return crypto.createHash('sha256').update(canonicalJson([...keys].sort()), 'utf8').digest('hex');
@@ -73,7 +103,9 @@ export function checkRowOrigin(row: DocRow, devices: DeviceKeyLookup, usedReques
   const so = a.signedOrigin;
   if (!so || so.deviceId !== a.deviceId || !so.sig || !so.requestId) return 'denied';
   if (usedRequestIds.has(`${so.deviceId}|${so.requestId}`)) return 'denied';
-  const d = devices(so.deviceId, so.keyHash);
+  // `at`: the team-log position the row was accepted under, so a device revoked by a later team row
+  // still stands for the rows its origin accepted before that row (deviceStoodAt).
+  const d = devices(so.deviceId, so.keyHash, { access: row.access, personKey: a.type === 'person' ? a.personKey : null });
   if (d.status === 'unknown') return 'pending';
   if (d.status === 'revoked' || !d.mayWrite) return 'denied';
   // The device belongs to the row's author; a role not known here yet waits for its binding.

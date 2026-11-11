@@ -398,6 +398,11 @@ Attention items (conversation removed, owner proposals) go through the lease hol
 - **Shared origin**: `/docs/<id>` is served on the same tunnel origin as the console, which stores the owner's browser key. The page inherits the origin's trust: the console on the same origin runs `unsafe-inline` and a CDN and shares storage with it, so a console compromise is a page compromise, exactly as it already is for everything else on that origin. The page adds no new risk to it because no document content is ever interpreted as markup or script (DOM built from tokens, Trusted Types, `script-src 'self'` serving only instar's own files), and page drafts in `localStorage` hold only the person's own unsent text. A separate hostname would need a second tunnel route per agent and wasn't worth the operational cost; if the page ever needs to render untrusted markup, it moves to its own hostname first.
 - **Monotonic access**: each origin's `access` vector must never go backwards along its chain, so a row can't be backdated to before a revoke that origin had already seen.
 - **Stated limit** (same as team spec §3.2): an owner-reach session on the machine could edit files directly or read the machine's key. Member writes carry the phone's signature (§3.6) and their composer is native, so neither can be forged; machine-signed rows (agent rows, disclosures, device marks) could be, by such a session. Replication restores deleted rows from peers on multi-machine agents; nothing detects a deletion on a one-machine agent.
+- **What a person's signature does and does not prove (honest threat model, added 2026-11-10 after the operator's app-dependency question and a Fable 5.2 review).** The goal is that the agent can't write a comment as a person or approve access for one. What the design actually delivers, per signer:
+  - **Phone (native app):** strongest. The app's code is not served by the agent, and its key is in the Secure Enclave. Its weak point is enrollment: an app paired by a confirmation code that passes through the agent's own Telegram bot could, in principle, be a software key the agent paired itself (no Apple App Attest check today).
+  - **Computer browser (WebCrypto key):** the key can't be exported, but any script on the origin can use it, and the agent's machine serves that script. While a linked tab is open, a session able to change the served page could sign comments silently.
+  - **Approval through the owner's Telegram chat:** the agent runs the bot that receives the tap, so a session that deliberately forged an update or edited the device registry could approve a key. On one machine, nothing but the agent's own guards stops that; on several machines, a peer still checks the phone's signature on every replicated binding.
+  So the honest claim is "the agent would have to deliberately forge state, and a forgery is visible in the signed logs", not "the agent cannot". Passkeys (one person gesture per signature, page script can't fake it) and chained enrollment (a new device admitted only by a signed record from a device the person already has) are the planned way to strengthen this and to remove the app dependency for members; see §14.
 
 ## 9. Agent awareness and migration parity
 
@@ -477,7 +482,7 @@ Every step lands behind the same dark gate, so a partial landing is inert on the
 
 ## 14. Open questions
 
-*(none)*
+- **App dependency (operator, 2026-11-10 17:54 PST, topic 141469):** members and guests can only comment from a computer by linking it with the iOS app, which ties a core Instar feature to an Apple-distributed binary and leaves out Android and computer-only people. Proposed (Fable 5.2 review plus Echo): passkeys as the standard person signer in any browser (also a second way to sign the existing link request), the app kept as the strongest optional signer, and chained enrollment. Removing Telegram as an approval authority and App Attest on app pairing are platform-wide and would be a separate project. **Waiting on the operator's decision.**
 
 ## 15. Rollback
 

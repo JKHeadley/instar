@@ -32,6 +32,8 @@ import { blobHash } from '../../src/documents/blobs.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { permissionPresenceMessage } from '../../src/server/mobilePermissionsRoutes.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
+import { MemoryPrivacy } from '../../src/users/MemoryPrivacy.js';
+import { commentKeysHashOf } from '../../src/documents/originCheck.js';
 
 const HOST = 'echo-doclink-e2e.example.dev';
 const servers: AgentServer[] = [];
@@ -45,7 +47,7 @@ type Dev = ReturnType<typeof makeDevice>;
 let clock = Date.now();
 const rid = () => `${Date.now()}-${crypto.randomUUID()}`;
 
-async function boot() {
+async function boot(opts: { privacy?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), 'doclink-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -58,7 +60,10 @@ async function boot() {
     mobilePairing: { multiRoute: { enabled: false } }, tunnel: { enabled: true, type: 'named', token: 'x', hostname: HOST },
     sessions: { claudePath: '/usr/bin/echo', maxSessions: 1, defaultMaxDurationMinutes: 30, protectedSessions: [], monitorIntervalMs: 5_000 },
     scheduler: { enabled: false, jobsFile: '', maxParallelJobs: 1 }, messaging: [], updates: {}, threadline: { ownerName: 'Ann' },
+    ...(opts.privacy ? { memoryPrivacy: { enabled: true } } : {}),
   } as unknown as InstarConfig;
+  // Confined session tokens (a session serving one conversation), as the live proof issues them.
+  const memoryPrivacy = opts.privacy ? new MemoryPrivacy({ stateDir, instarRoot: path.join(dir, 'instar-root'), agentId: 'doclink-e2e', config: () => ({ enabled: true }), users: () => [], reachable: () => ({}) }) : undefined;
   const sessionManager = createMockSessionManager() as any;
   sessionManager.on = () => undefined;
   const spawned: string[] = [];
@@ -67,7 +72,7 @@ async function boot() {
   sessionManager.memoryPrivacyStatus = () => ({ enabled: true, sandboxReady: true, multiPerson: false, ownerUserId: null, blocker: null, fix: null });
   sessionManager.applyConversationChange = async (_ref: string, change: () => unknown) => change();
   const tunnel = { lifecycleState: { lastState: 'active', activeProvider: 'cloudflare-named' }, url: `https://${HOST}`, on: () => undefined } as any;
-  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, meshSelfId: 'm_e2e' } as never);
+  const server = new AgentServer({ config, sessionManager, state: new StateManager(stateDir), initiativeTracker: new InitiativeTracker(stateDir), tunnel, meshSelfId: 'm_e2e', ...(memoryPrivacy ? { memoryPrivacy } : {}) } as never);
   servers.push(server);
   const app = server.getApp();
   const dms: string[] = [];
@@ -78,16 +83,16 @@ async function boot() {
   }) as unknown as typeof fetch;
   server.mobilePairing!.deps.ownerDM = async (text) => { dms.push(text); return 1; };
   server.mobilePairing!.deps.telegramOwnerPresent = () => true;
-  return { server, app, config, dms, spawned };
+  return { server, app, config, dms, spawned, memoryPrivacy };
 }
 
 /** A device-signed (instar-device-v1) client for a phone or a linked computer. */
 function client(app: Parameters<typeof request>[0], deviceId: string, dev: Dev) {
-  return (method: 'GET' | 'POST', p: string, body?: unknown) => {
+  return (method: 'GET' | 'POST' | 'DELETE', p: string, body?: unknown) => {
     const raw = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
     const time = String(++clock);
     const sig = dev.sign(canonicalString(deviceId, HOST, method, p, time, raw));
-    const q = method === 'GET' ? request(app).get(p) : request(app).post(p).set('Content-Type', 'application/json');
+    const q = method === 'GET' ? request(app).get(p) : (method === 'DELETE' ? request(app).delete(p) : request(app).post(p)).set('Content-Type', 'application/json');
     // As through the tunnel: TLS ends at cloudflared on this machine.
     q.set('Host', HOST).set('X-Forwarded-Proto', 'https').set('X-Instar-Device', deviceId).set('X-Instar-Device-Time', time).set('X-Instar-Device-Sig', sig);
     return raw ? q.send(raw.toString()) : q;
@@ -116,11 +121,18 @@ function docpage(app: Parameters<typeof request>[0], deviceId: string, dev: Dev)
       const payload = { docId, commentId: crypto.randomUUID(), onVersion: page.version.id, start: para.start, end: para.start + 4, bodyHash: blobHash(salt, text) };
       return request(app).post(`/docs/${docId}/w/comment`).set(headers(docId, 'comment', payload)).set('Content-Type', 'application/json').send({ blobs: [{ salt, text }] });
     },
+    /** The signed `send` row for this person's open comments, as the page writes it after the message. */
+    send(docId: string, page: { primary: { primaryRow: string | null }; comments: Array<{ key: string; mine: boolean; resolved: boolean }> }) {
+      const batchId = rid();
+      const keys = page.comments.filter((c) => c.mine && !c.resolved).map((c) => c.key);
+      const payload = { docId, batchId, commentKeysHash: commentKeysHashOf(keys), primaryRow: page.primary.primaryRow, messageRequestId: batchId };
+      return request(app).post(`/docs/${docId}/w/send`).set(headers(docId, 'send', payload)).set('Content-Type', 'application/json').send({});
+    },
   };
 }
 
-async function world() {
-  const b = await boot();
+async function world(opts: { privacy?: boolean } = {}) {
+  const b = await boot(opts);
   const { server, app, dms } = b;
   const auth = (q: request.Test) => q.set('Authorization', 'Bearer e2e-token').set('X-Instar-AgentId', 'doclink-e2e');
   // The owner's phone.
@@ -223,6 +235,84 @@ describe('a linked computer — privilege boundaries on a real server', () => {
     // Exactly the template, into this document's own conversation: allowed.
     const ok = await call('POST', `/mobile/chat/app/${shared}`, { text: `I left 1 comment on "Plan" (version 1): ${origin}/docs/${docId}`, requestId: rid() });
     expect(ok.status, JSON.stringify(ok.body)).toBe(200);
+  });
+
+  it('a member computer can Send for a document its conversation\'s own session wrote (read with the person\'s grant rows)', async () => {
+    // Regression (live proof, bug 1): the scoped-send check read the document with no grant rows, so a
+    // document written by the shared conversation's own session showed no title and no versions to
+    // it, the template never matched, and every Send from a linked computer was 403 browser-scope.
+    const w = await world({ privacy: true });
+    const { app, mia, shared, memoryPrivacy } = w;
+    const place = `app:${shared}`;
+    const tok = memoryPrivacy!.issueSessionToken('e2e-shared-session', { kind: 'place', placeKey: place }, place);
+    const d = await request(app).post('/docs').set('Authorization', `Bearer ${tok}`).send({ title: 'Room plan', markdown: '# Room\n\nA passage to comment on here.\n' });
+    expect(d.status, JSON.stringify(d.body)).toBe(201);
+    const docId = d.body.id as string;
+    const { comp, id } = await w.linkComputer(mia);
+    const page = docpage(app, id, comp);
+    const cookie = await page.open(docId);
+    const data = (await page.pageData(docId, cookie!)).body;
+    expect(data.title).toBe('Room plan');
+    expect((await page.comment(docId, data)).status).toBe(201);
+    const call = client(app, id, comp);
+    const sent = await call('POST', `/mobile/chat/app/${shared}`, { text: `I left 1 comment on "Room plan" (version 1): https://${HOST}/docs/${docId}`, requestId: rid() });
+    expect(sent.status, JSON.stringify(sent.body)).toBe(200);
+    // Still exactly the template: a wrong title is refused.
+    expect((await call('POST', `/mobile/chat/app/${shared}`, { text: `I left 1 comment on "Other" (version 1): https://${HOST}/docs/${docId}`, requestId: rid() })).status).toBe(403);
+  });
+
+  it('a removed primary conversation: page data reports it missing, Send is off and refused by the server', async () => {
+    // Regression (live proof, bug 3): after the owner deleted the conversation, page data still named
+    // it, so the page never showed the removed state and Send stayed enabled.
+    const w = await world({ privacy: true });
+    const { app, mia, owner, memoryPrivacy } = w;
+    const conv = await owner('POST', '/mobile/conversations', { title: 'Temp room', requestId: rid() });
+    const key = conv.body.conversationKey as string;
+    expect((await owner('POST', '/mobile/team/grants', { events: [{ type: 'grant', personKey: 'mia', ref: key, access: 'use' }] })).status).toBe(200);
+    const tok = memoryPrivacy!.issueSessionToken('e2e-temp-session', { kind: 'place', placeKey: `app:${key}` }, `app:${key}`);
+    const d = await request(app).post('/docs').set('Authorization', `Bearer ${tok}`).send({ title: 'Temp doc', markdown: '# Temp\n\nA passage to comment on here.\n' });
+    expect(d.status, JSON.stringify(d.body)).toBe(201);
+    const docId = d.body.id as string;
+    const { comp, id } = await w.linkComputer(mia);
+    const page = docpage(app, id, comp);
+    const cookie = await page.open(docId);
+    const before = (await page.pageData(docId, cookie!)).body;
+    expect(before.primary).toMatchObject({ ref: `app:${key}`, sendPath: `/mobile/chat/app/${key}` });
+    expect(before.primary.removed).toBeUndefined();
+    expect((await page.comment(docId, before)).status).toBe(201);
+    const del = await owner('DELETE', `/mobile/conversations/${key}`, { requestId: rid() });
+    expect(del.status, JSON.stringify(del.body)).toBe(200);
+    const after = (await page.pageData(docId, cookie!)).body;
+    expect(after.primary).toMatchObject({ ref: null, removed: true, removedRef: `app:${key}`, sendPath: null, name: null });
+    expect(after.me.canSend).toBe(false);
+    const s = await page.send(docId, after);
+    expect(s.status, JSON.stringify(s.body)).toBe(409);
+    expect(s.body.error).toBe('conversation-removed');
+    const call = client(app, id, comp);
+    expect((await call('POST', `/mobile/chat/app/${key}`, { text: `I left 1 comment on "Temp doc" (version 1): https://${HOST}/docs/${docId}`, requestId: rid() })).status).toBeGreaterThanOrEqual(400);
+  });
+
+  it('a forgotten computer\'s earlier rows still verify against the team position they were accepted at; a row stamped after the forget does not', async () => {
+    // Regression (live proof, bug 4): a peer pulling after the revocation refused, with reason
+    // `origin`, every row the computer wrote while it was linked, so machines diverged.
+    const w = await world();
+    const { app, docId, mia, server } = w;
+    const { comp, id } = await w.linkComputer(mia);
+    const page = docpage(app, id, comp);
+    const cookie = await page.open(docId);
+    expect((await page.comment(docId, (await page.pageData(docId, cookie!)).body)).status).toBe(201);
+    const store = (server as any).documents.store;
+    const originCheck = (row: unknown) => store.opts.origin(row, new Set());
+    const row = store.rowsOf(docId).find((r: { actor: { type: string; deviceId?: string } }) => r.actor.type === 'person' && r.actor.deviceId === id);
+    expect(row).toBeTruthy();
+    expect(originCheck(row)).toBe('ok');
+    expect((await mia.call('POST', `/mobile/browsers/${id}/forget`, {})).status).toBe(200);
+    expect(await page.open(docId)).toBeNull();
+    // As a peer that pulls after the forget re-checks it: accepted, at the position in its `access`.
+    expect(originCheck(row)).toBe('ok');
+    // The same signed write stamped at a team position that includes the forget: refused.
+    const later = { ...row, access: server.mobilePairing!.teamLog()!.vector() };
+    expect(originCheck(later)).toBe('denied');
   });
 
   it('a guest computer reads but never writes; an owner phone cannot link', async () => {

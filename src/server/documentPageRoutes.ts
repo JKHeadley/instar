@@ -58,6 +58,8 @@ export interface DocPageDeps extends DocumentRouteDeps {
   /** Words for who can see a conversation ("Only you", "Everyone in Instar Docs", …). */
   audienceWords?: (ref: string, viewerIsOwner: boolean) => string;
   conversationName?: (ref: string) => string | null;
+  /** Was this primary conversation removed? (§3.7: the page says so and Send is disabled with that reason) */
+  conversationRemoved?: (ref: string) => boolean;
   /** The owner's active phone behind this device-signed request: its presence (Face ID) key and signed Host. */
   ownerPresence?: (req: Request, deviceId: string) => { presenceKey: string; host: string } | null;
   agentName?: () => string;
@@ -339,17 +341,19 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
       const comments = svc.comments(id, c, 'all').map((x) => ({ ...x, sent: sent.has(x.key), mine: x.author === (c.principal.kind === 'person' ? c.principal.personKey : 'owner'), authorName: nameOf(x.author), replies: x.replies.map((rp) => ({ ...rp, authorName: nameOf(rp.author) })) }));
       const me = c.principal.kind === 'person' ? c.principal.personKey : 'owner';
       const primary = d.state.primary;
-      const sendPath = primary?.startsWith('telegram:') ? `/mobile/chat/${primary.slice(9)}` : primary?.startsWith('app:') ? `/mobile/chat/app/${primary.slice(4)}` : null;
+      // A removed conversation is reported as missing: no name, no send path, Send off (§3.7).
+      const removed = !!primary && !!deps.conversationRemoved?.(primary);
+      const sendPath = removed ? null : primary?.startsWith('telegram:') ? `/mobile/chat/${primary.slice(9)}` : primary?.startsWith('app:') ? `/mobile/chat/app/${primary.slice(4)}` : null;
       res.json({
         id, title: d.title,
-        primary: { ref: primary, name: primary ? deps.conversationName?.(primary) ?? null : null, sendPath, primaryRow: d.state.primaryRowKey },
+        primary: { ref: removed ? null : primary, ...(removed ? { removed: true, removedRef: primary } : {}), name: primary && !removed ? deps.conversationName?.(primary) ?? null : null, sendPath, primaryRow: d.state.primaryRowKey },
         agentName: deps.agentName?.() ?? 'Echo',
         audience: primary ? deps.audienceWords?.(primary, c.principal.kind === 'owner-device') ?? null : null,
         version: d.version ? { id: d.version.versionId, label: d.version.label, latest: latest?.versionId === d.version.versionId } : null,
         versions: d.state.versionOrder.map((v) => d.state.versions.get(v)!).filter((v) => !v.pruned).map((v) => ({ id: v.versionId, label: v.label })),
         concurrentEdits: d.heads.length > 1,
         blocks, comments,
-        me: { key: me, canComment: svc.can(id, c, 'comment'), canSend: svc.can(id, c, 'send') },
+        me: { key: me, canComment: svc.can(id, c, 'comment'), canSend: !removed && svc.can(id, c, 'send') },
       });
     } catch (err) { fail(res, err); }
   });
@@ -391,7 +395,11 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
         case 'resolve': case 'reopen': svc.resolve(id, c, p.commentKey, v.op === 'resolve'); res.json({ ok: true }); return;
         case 'edit': svc.editComment(id, c, p.commentKey, text, { bodyBlobs: blobs, bodyHash: p.bodyHash }); res.json({ ok: true }); return;
         case 'reanchor': svc.reanchorComment(id, c, p.commentKey, { onVersion: p.onVersion, start: Number(p.start), end: Number(p.end) }); res.json({ ok: true }); return;
-        case 'send': res.status(201).json(svc.recordSend(id, c, { batchId: p.batchId, messageRequestId: p.messageRequestId, primaryRow: p.primaryRow, commentKeysHash: p.commentKeysHash })); return;
+        case 'send': {
+          const f = svc.facts(id);
+          if (f && deps.conversationRemoved?.(f.primary)) { res.status(409).json({ error: 'conversation-removed', detail: 'This document\'s conversation was removed' }); return; }
+          res.status(201).json(svc.recordSend(id, c, { batchId: p.batchId, messageRequestId: p.messageRequestId, primaryRow: p.primaryRow, commentKeysHash: p.commentKeysHash })); return;
+        }
         default: res.status(404).json({ error: 'unknown-document' });
       }
     } catch (err) { fail(res, err); }

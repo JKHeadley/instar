@@ -240,9 +240,22 @@ export function sendMessage({ count, title, label, origin, id }) {
   return `I left ${count} ${count === 1 ? 'comment' : 'comments'} on "${title}" (version ${label}): ${origin}/docs/${id}`;
 }
 
+/** The document's conversation was removed (§3.7): the page says so and Send is off with that reason. */
+export const primaryRemoved = (page) => Boolean(page && (!page.primary || page.primary.removed === true || page.primary.ref === null));
+
+/**
+ * Where a comment or reply was written from, in words (§3.6a: computer writes are always labelled
+ * "from Mara's computer"). Null for phone writes and rows that don't record their device.
+ */
+export function originLabel(item, mine) {
+  if (!item || item.originClient !== 'browser') return null;
+  if (mine) return 'from your computer';
+  return item.authorName && item.authorName !== 'You' ? `from ${item.authorName}’s computer` : 'from their computer';
+}
+
 /** Send is possible: allowed, a conversation to send into, and something unsent of mine. */
 export function canSend(page) {
-  return Boolean(page && page.me && page.me.canSend && page.primary && page.primary.sendPath && page.primary.primaryRow && page.version && unsentMine(page).length > 0);
+  return Boolean(page && page.me && page.me.canSend && !primaryRemoved(page) && page.primary.sendPath && page.primary.primaryRow && page.version && unsentMine(page).length > 0);
 }
 
 /** Plain words for a failed request. Never the raw code. */

@@ -488,7 +488,7 @@ function renderHeader(page) {
     if (page.versions.length > 1) meta.appendChild(button(state.compareOpen ? 'Hide changes' : 'Compare', () => { state.compareOpen = !state.compareOpen; render(); }, 'btn small', { 'aria-expanded': String(state.compareOpen) }));
   }
   const lines = [];
-  if (page.primary && page.primary.ref) lines.push(el('p', { cls: 'discussed', text: `Discussed in: ${page.primary.name || 'a conversation'}` }));
+  if (!M.primaryRemoved(page)) lines.push(el('p', { cls: 'discussed', text: `Discussed in: ${page.primary.name || 'a conversation'}` }));
   else lines.push(el('p', { cls: 'discussed warn', text: 'This document\'s conversation was removed' }));
   if (page.audience) lines.push(el('p', { cls: 'audience', text: page.audience }));
   if (page.concurrentEdits) lines.push(el('p', { cls: 'note', text: 'Two versions were written at the same time; showing the newest.' }));
@@ -587,6 +587,12 @@ function renderThreads(aside, page) {
   }
 }
 
+/** "from Mia's computer" after the author's name, for writes signed by a linked computer (§3.6a). */
+function originSpan(item, mine) {
+  const words = M.originLabel(item, mine);
+  return words ? el('span', { cls: 'origin', text: ` · ${words}` }) : null;
+}
+
 function threadCard(c, { inSheet = false } = {}) {
   const page = state.page;
   const card = el('article', { cls: `thread${c.resolved ? ' is-resolved' : ''}`, attrs: { 'data-key': inSheet ? null : c.key, tabindex: '-1', 'aria-label': `Comment by ${c.authorName || nameOf(c.author)}` } });
@@ -598,12 +604,12 @@ function threadCard(c, { inSheet = false } = {}) {
   if (c.mine && c.sent) badges.push(`Sent to ${page.agentName}`);
   else if (c.mine && !c.resolved && !c.sent) badges.push('Not sent yet');
   card.appendChild(el('div', { cls: 'entry' }, [
-    el('p', { cls: 'who' }, [el('span', { cls: 'name', text: (page.me && c.author === page.me.key) ? 'You' : (c.authorName || nameOf(c.author)) }), c.time ? el('span', { cls: 'time', text: ` · ${c.time}` }) : null]),
+    el('p', { cls: 'who' }, [el('span', { cls: 'name', text: (page.me && c.author === page.me.key) ? 'You' : (c.authorName || nameOf(c.author)) }), originSpan(c, page.me && c.author === page.me.key), c.time ? el('span', { cls: 'time', text: ` · ${c.time}` }) : null]),
     el('p', { cls: 'body', text: c.body === null || c.body === undefined ? '(This comment\'s text was removed.)' : c.body }),
   ]));
   for (const r of c.replies || []) {
     card.appendChild(el('div', { cls: 'entry reply' }, [
-      el('p', { cls: 'who' }, [el('span', { cls: 'name', text: nameOf(r.author) }), r.time ? el('span', { cls: 'time', text: ` · ${r.time}` }) : null]),
+      el('p', { cls: 'who' }, [el('span', { cls: 'name', text: nameOf(r.author) }), originSpan(r, page.me && r.author === page.me.key), r.time ? el('span', { cls: 'time', text: ` · ${r.time}` }) : null]),
       el('p', { cls: 'body', text: r.body === null || r.body === undefined ? '(This reply\'s text was removed.)' : r.body }),
     ]));
   }
@@ -777,7 +783,7 @@ function renderBar(page) {
   const send = button(label, () => sendComments(send), 'btn primary');
   const ok = canWrite() && M.canSend(page);
   send.disabled = !ok;
-  if (!page.primary || !page.primary.sendPath) send.title = 'This document\'s conversation was removed';
+  if (M.primaryRemoved(page) || !page.primary.sendPath) send.title = 'This document\'s conversation was removed';
   else if (!ok && M.unsentMine(page).length === 0) send.title = 'Nothing new to send';
   bar.appendChild(send);
   return bar;

@@ -102,6 +102,13 @@ describe('Instar Documents — feature is alive', () => {
     expect(r.body.error).toBe('documents-need-a-named-tunnel');
   });
 
+  it('with the test-only loopback switch and no tunnel, a create links to the agent\'s own loopback address', async () => {
+    const { app } = await boot({ developmentAgent: true, port: 4987, documents: { loopbackOrigin: true } });
+    const r = await request(app).post('/docs').set(auth()).send({ title: 'x', markdown: 'y', primary: 'telegram:7' });
+    expect(r.status).toBe(201);
+    expect(JSON.stringify(r.body)).toContain('http://127.0.0.1:4987/docs/');
+  });
+
   it('is dark on a fleet config: 503 documents-off', async () => {
     const { app } = await boot({});
     const r = await request(app).post('/docs').set(auth()).send({ title: 'x', markdown: 'y' });

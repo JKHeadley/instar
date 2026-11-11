@@ -69,6 +69,22 @@ describe('DocumentService', () => {
     expect(list[0]).toMatchObject({ key, quote: 'three steps', body: 'Why three?', anchorState: 'ok' });
   });
 
+  it('says which device each person comment and reply came from (originClient), for the page and the agent (bug 2)', () => {
+    const { svc } = setup();
+    const { id, versionId } = svc.create(sharedAgent, { title: 'Plan', markdown: MD, primary: SHARED });
+    const text = projectText(MD).text;
+    const start = text.indexOf('three steps');
+    const maraComputer: Caller = { ...mara, principal: { ...mara.principal, client: 'browser' } as Caller['principal'], actor: { ...(mara.actor as object), client: 'browser' } as Caller['actor'] };
+    const { key: fromComputer } = svc.comment(id, maraComputer, { onVersion: versionId, start, end: start + 5, body: 'From my laptop' });
+    const { key: fromPhone } = svc.comment(id, mara, { onVersion: versionId, start, end: start + 5, body: 'From my phone' });
+    svc.reply(id, maraComputer, fromPhone, 'Reply from the laptop');
+    svc.reply(id, sharedAgent, fromPhone, 'Agent reply');
+    const byKey = Object.fromEntries(svc.comments(id, sharedAgent).map((c) => [c.key, c]));
+    expect(byKey[fromComputer].originClient).toBe('browser');
+    expect(byKey[fromPhone].originClient).toBe('phone');
+    expect(byKey[fromPhone].replies.map((r) => r.originClient)).toEqual(['browser', null]);
+  });
+
   it('refuses a comment whose passage is not in the version', () => {
     const { svc } = setup();
     const { id, versionId } = svc.create(sharedAgent, { title: 'Shared', markdown: MD, primary: SHARED });

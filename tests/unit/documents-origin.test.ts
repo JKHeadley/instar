@@ -2,7 +2,8 @@
 import crypto from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { docpageString } from '../../src/documents/docpageAuth.js';
-import { checkRowOrigin, commentKeysHashOf, type DeviceKeyLookup } from '../../src/documents/originCheck.js';
+import { checkRowOrigin, commentKeysHashOf, deviceStoodAt, type DeviceKeyLookup } from '../../src/documents/originCheck.js';
+import { emptyState, type TeamAccessState } from '../../src/core/TeamAccessLog.js';
 import { canonicalString } from '../../src/core/MobileDeviceKeys.js';
 import { deviceKeyHashOf } from '../../src/core/AppRecordSignatures.js';
 import type { DocRow } from '../../src/documents/rows.js';
@@ -121,5 +122,58 @@ describe('document row origins', () => {
 
   it('agent and machine rows need no device signature', () => {
     expect(checkRowOrigin({ docId: DOC, eventKind: 'reply', actor: { type: 'agent', placeKey: 'telegram:topic:7' } } as unknown as DocRow, devices, new Set())).toBe('ok');
+  });
+});
+
+describe('a device revoked after its rows were accepted (bug 4: machines diverged)', () => {
+  /** A team state: Mara present (unless removed), her phone bound, and optionally her linked computer. */
+  function team(o: { present?: boolean; link?: 'bound' | 'unbound' | 'none'; linkDevice?: string } = {}): TeamAccessState {
+    const s = emptyState();
+    s.on = true;
+    if (o.present !== false) s.people.set('mara', { personKey: 'mara', name: 'Mara', role: 'member', links: {} });
+    s.bindings.set('phone-kh', 'mara');
+    if ((o.link ?? 'none') !== 'none') {
+      const link = { type: 'browser-bind', keyHash: 'comp-kh', deviceId: o.linkDevice ?? 'comp-1', boundTo: 'mara', linkedByDeviceId: 'mara-phone', linkedByKeyHash: 'phone-kh', linkedAt: '2026-11-01T00:00:00.000Z', expiresAt: '2026-12-01T00:00:00.000Z', scope: 'documents', signed: { host: 'h', timeMs: '1', sig: 's', bodyB64: 'e30' } } as never;
+      s.browserLinks.set('comp-kh', o.link === 'unbound' ? { ...(link as object), unbound: true } as never : link);
+      if (o.link === 'bound') s.bindings.set('comp-kh', 'mara');
+    }
+    return s;
+  }
+  const signed = () => true;
+  const comp = { keyHash: 'comp-kh', deviceId: 'comp-1', personKey: 'mara', client: 'browser' as const };
+  const phone = { keyHash: 'phone-kh', deviceId: 'mara-phone', personKey: 'mara', client: 'phone' as const };
+
+  it('a forgotten computer stands for rows accepted before its unbind row, never after it', () => {
+    expect(deviceStoodAt(team({ link: 'bound' }), team({ link: 'unbound' }), comp, signed)).toBe(true);
+    // The row's own team position already includes the unbind: refused.
+    expect(deviceStoodAt(team({ link: 'unbound' }), team({ link: 'unbound' }), comp, signed)).toBe(false);
+  });
+
+  it('a removed person\'s phone and computer stand for rows accepted before the removal, never after it', () => {
+    expect(deviceStoodAt(team(), team({ present: false }), phone, signed)).toBe(true);
+    expect(deviceStoodAt(team({ link: 'bound' }), team({ present: false, link: 'bound' }), comp, signed)).toBe(true);
+    expect(deviceStoodAt(team({ present: false }), team({ present: false }), phone, signed)).toBe(false);
+  });
+
+  it('a revocation with no team row (ledger only) cannot be ordered against the row: refused', () => {
+    expect(deviceStoodAt(team(), team(), phone, signed)).toBe(false);
+    expect(deviceStoodAt(team({ link: 'bound' }), team({ link: 'bound' }), comp, signed)).toBe(false);
+  });
+
+  it('the link must be in force at that position, name this device, and carry the phone\'s signature', () => {
+    expect(deviceStoodAt(team({ link: 'bound' }), team({ link: 'unbound' }), comp, () => false)).toBe(false);
+    expect(deviceStoodAt(team({ link: 'bound', linkDevice: 'comp-2' }), team({ link: 'unbound' }), comp, signed)).toBe(false);
+    expect(deviceStoodAt(team({ link: 'none' }), team({ link: 'unbound' }), comp, signed)).toBe(false);
+    // A computer key is never taken for a phone.
+    expect(deviceStoodAt(team({ link: 'bound' }), team({ present: false }), { ...comp, client: 'phone' }, signed)).toBe(false);
+  });
+
+  it('the device lookup is asked at the row\'s own team position and author', () => {
+    const seen: unknown[] = [];
+    const lookup: DeviceKeyLookup = (id, kh, at) => { seen.push(at); return devices(id, kh); };
+    const row = maraComment();
+    (row as unknown as { access: Record<string, number> }).access = { 'm_a/1': 4 };
+    expect(checkRowOrigin(row, lookup, new Set())).toBe('ok');
+    expect(seen).toEqual([{ access: { 'm_a/1': 4 }, personKey: 'mara' }]);
   });
 });
