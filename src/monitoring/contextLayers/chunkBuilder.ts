@@ -48,8 +48,8 @@ import { estimateTokens, type TopicLayerBudget } from './layerCadence.js';
 import { archiveEntriesFromTranscriptLine, sampleSpan, spanEntriesFromArchive, type SampleOptions, type SpanArchiveInput, type SampledEntry } from './spanSampler.js';
 
 export const CHUNK_COMPONENT = 'ContextLayerChunk';
-export const CHUNK_TRIGGERS = ['post-compact', 'span-close', 'watermark', 'retry'] as const;
-export type ChunkTrigger = typeof CHUNK_TRIGGERS[number];
+export const CHUNK_BUILD_CAUSES = ['post-compact', 'span-close', 'watermark', 'retry'] as const;
+export type ChunkTrigger = typeof CHUNK_BUILD_CAUSES[number];
 /** At most this many transcript entries per build; the rest waits for the next trigger (never skipped). */
 export const DEFAULT_MAX_SPAN_ENTRIES = 4_000;
 /** §6 row C2: a range closes at ~20 chunks or ~8K chunk tokens. */
@@ -57,7 +57,7 @@ export const DEFAULT_C2_THRESHOLDS = { chunks: 20, tokens: 8_000 };
 /** C2 input cap (chunks per range). */
 export const C2_MAX_CHUNKS = 40;
 /** Pending chunks retried per trigger, and the attempt ceiling after which a gap waits for an operator-visible look. */
-export const RETRIES_PER_TRIGGER = 2;
+export const RETRIES_PER_PASS = 2;
 export const MAX_ATTEMPTS = 6;
 const RESPONSE_RESERVE_TOKENS = 1_200;
 const WATERMARK_KEY = 'chunks';
@@ -512,7 +512,7 @@ export class ChunkBuilder {
   }
 
   async retryPending(topicKey: string): Promise<void> {
-    const pending = this.chunks(topicKey).filter((r) => r.status === 'pending' && Number(r.data.attempts ?? 0) < MAX_ATTEMPTS).slice(0, RETRIES_PER_TRIGGER);
+    const pending = this.chunks(topicKey).filter((r) => r.status === 'pending' && Number(r.data.attempts ?? 0) < MAX_ATTEMPTS).slice(0, RETRIES_PER_PASS);
     for (const p of pending) await this.summarize(topicKey, String(p.entryKey));
   }
 

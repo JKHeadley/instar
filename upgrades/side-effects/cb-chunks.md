@@ -146,3 +146,7 @@ Recorded, not fixed <!-- tracked: CMT-1536 -->:
 ## Class-Closure Declaration (display-only mirror)
 
 Not a defect fix. Class `n/a`, closure `n/a`.
+
+## Amendment (CI)
+
+The keyword-intent ratchet flagged the name CHUNK_TRIGGERS. It is a closed enum of build events, not a phrase list matched against user text. Renamed to CHUNK_BUILD_CAUSES, and RETRIES_PER_TRIGGER to RETRIES_PER_PASS; there is no behaviour change. The two chunk routes are now documented in the memory feature page, which restores route docs coverage to its 55% floor. The neighbour unit run passed: 1,194 files, 21,495 tests.
