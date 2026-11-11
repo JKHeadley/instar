@@ -74,6 +74,10 @@ const LONG_LIVED_STORES = [
   // registers its handle in the constructor (registerSqliteHandle), process-
   // lifetime, closed once at shutdown like FeatureMetricsLedger beside it.
   'src/monitoring/ProviderCostReportStore.ts',
+  // Unified usage ledger (docs/specs/unified-usage-ledger.md): registers its handle in the
+  // constructor, process-lifetime. Its snapshot write and import open short-lived handles
+  // that close in finally.
+  'src/monitoring/UsageLedger.ts',
   // Correction-class review is durable process-lifetime state and registers
   // its handle in the constructor like the other monitoring stores above.
   'src/monitoring/ClassReviewStore.ts',

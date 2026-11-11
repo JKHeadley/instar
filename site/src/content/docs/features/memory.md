@@ -100,6 +100,17 @@ curl -H "Authorization: Bearer $AUTH" localhost:4040/context-budget/sentinel
 # roots and permissions, topics, bytes, and replication outcomes.
 # Returns 503 while contextBudget.enabled is off (it is on for development agents only).
 curl -H "Authorization: Bearer $AUTH" localhost:4040/context-budget/layers
+
+# The chapter summaries ("chunks") of a conversation's older, compressed detail,
+# newest first and paginated, then one chunk in full by its number.
+# Both return 503 while the layers are off.
+curl -H "Authorization: Bearer $AUTH" "localhost:4040/topic/141133/chunks?limit=10"
+curl -H "Authorization: Bearer $AUTH" localhost:4040/topic/141133/chunks/3
 ```
+
+| Route | What it returns |
+|---|---|
+| `GET /topic/:id/chunks` | One page of a topic's chunk summaries, newest first, with their message ranges and status (`pending`, `built`, `failed`). |
+| `GET /topic/:id/chunks/:k` | One chunk: its summary, the message range it covers, what the sampler left out, and its author and as-of time. |
 
 Everything written to the summary store is scrubbed of secrets first, and the operator's own words are never copied into it: the store only keeps a pointer to the original message and a fingerprint of it.

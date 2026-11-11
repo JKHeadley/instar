@@ -3379,6 +3379,16 @@ rm()  { "${shimRunner}" rm  "$@"; }
     session.claudeSessionId = claudeSessionId;
     this.state.saveSession(session);
     this.originLifecycle?.bindNative(instarSessionId, claudeSessionId);
+    // Unified usage ledger: every new Claude session id opens a binding (spawn record +
+    // attribution). Observational only; a sink failure never affects the session.
+    try { this.claudeSessionBoundSink?.(session, claudeSessionId); } catch (err) { console.warn('[SessionManager] usage binding sink failed:', err); }
+  }
+
+  private claudeSessionBoundSink: ((session: Session, claudeSessionId: string) => void) | null = null;
+
+  /** Register the observer told about each new Claude session id (unified usage ledger). */
+  setClaudeSessionBoundSink(sink: ((session: Session, claudeSessionId: string) => void) | null): void {
+    this.claudeSessionBoundSink = sink;
   }
 
   /**

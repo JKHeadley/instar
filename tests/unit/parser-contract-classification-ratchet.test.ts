@@ -121,6 +121,7 @@ const ARGUED_FALSE_BASELINE = [
   'Usher',
   'TopicIntentExtractor',
   'PreCompactionFlush',
+  'ContextLayerChunk',
   'TreeSynthesis',
   'LLMConflictResolver',
   'openConversationBrief',

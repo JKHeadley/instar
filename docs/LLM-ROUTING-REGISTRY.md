@@ -200,6 +200,7 @@ Legend: **OC(tier)** = off-Claude via `codex-cli→pi-cli→gemini-cli→claude-
 | **Usher** | src/core/Usher.ts:96 | route a turn to topics | A | **codex-cli (override)** | ✅ overridden off-Claude in Echo (would be ⚠ by default) |
 | **TopicIntentExtractor** | src/core/TopicIntentExtractor.ts:284 | extract topic intent | A | **codex-cli (override)** | ✅ overridden (default would be ⚠) |
 | **PreCompactionFlush** ⚠ | src/core/PreCompactionFlush.ts:162 | extract durable facts pre-compaction | D | **AD(default) → Claude** | ❌ not in map |
+| ContextLayerChunk | src/monitoring/contextLayers/chunkBuilder.ts | chunk (C) and range (C2) summaries of an archived transcript span (context-budget §6.5) | D | reflector (fast), queued background lane | ✅ in map (reflector); bench pending |
 | **SessionSummarySentinel** ⚠ | src/messaging/SessionSummarySentinel.ts:181 | summarize tmux → task/phase | D | **AD(fast) → Claude** | ❌ not in map |
 | **openConversationBrief** ⚠ | src/threadline/openConversationBrief.ts:265 | A2A conversation brief | D | **AD(fast) → Claude** | ❌ not in map |
 | **TreeSynthesis** ⚠ | src/knowledge/TreeSynthesis.ts:63 | synthesize fragments → answer | D | **AD(fast) → Claude** | ❌ not in map |

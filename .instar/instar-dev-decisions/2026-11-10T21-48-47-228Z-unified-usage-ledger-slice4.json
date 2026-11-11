@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-10T21:48:47.228Z",
+  "slug": "unified-usage-ledger-slice4",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 8,
+  "loc": 1090,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/UsageLedger.ts",
+      "src/monitoring/UsagePoolPuller.ts",
+      "src/monitoring/usageReadModel.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/routes.ts",
+      "src/server/usageRoutes.ts"
+    ],
+    "addedLines": 1089,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -1701,6 +1701,19 @@ An hourly ledger that pairs ARRIVALS with COMPLETIONS for every work queue: feed
  * content-sniff marker used by migrateClaudeMd (Migration Parity). Read-only; the money
  * controls (caps adjust, go-live, gate) are Increment B and NOT surfaced as capabilities.
  */
+export const USAGE_LEDGER_CLAUDEMD_MARKER = 'Unified usage ledger — where are my tokens going';
+/** CLAUDE.md awareness for the unified usage ledger (docs/specs/unified-usage-ledger.md). Marker: USAGE_LEDGER_CLAUDEMD_MARKER. */
+export function USAGE_LEDGER_CLAUDEMD_SECTION(port: number): string {
+  return `\n### ${USAGE_LEDGER_CLAUDEMD_MARKER}? (\`GET /usage/summary\`, \`/usage/tree\`, \`/usage/top\`)
+
+One record of my own token use, one row per model request: Claude Code transcripts (my sessions wherever they run, including subagents), Codex rollouts, and every one-off internal call; the same work seen twice is counted once. Each row carries machine, engine, model, conversation, job, run and check, and the cost it would have had at the provider's published API list price on that day (priced when read; tokens with no published price are shown as unpriced, never $0). Dev-gated (\`usage.ledger.enabled\`): routes answer 503 \`usage-ledger-off\` when dark. The older \`/tokens/*\` routes are unchanged.
+- Registry First — "where are my tokens going / what would this cost at API prices / which conversation or job costs most?": \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/usage/summary?grain=day"\` (agent totals plus each machine; machines that did not answer are named in \`notReached\`/\`warming\`, never counted as zero), \`/usage/top?dim=topic|job|session|feature\`, \`/usage/series?grain=hour|day&split=model|framework|machine\`, \`/usage/tree?by=machine,framework,model\` (add \`parent=machine:ID\` to go deeper; \`by=session\` only under a parent).
+- What is and is not measured: \`/usage/coverage\` — roots read, unattributed and unpriced shares, requests that reported no counts, dedupe disagreements, dropped calls, snapshot status, and each machine's last pull. Read it before quoting a total as complete.
+- One session's requests: \`/usage/events?session=ID\` (read on the machine that holds them).
+- The console shows all of this on "What thinking costs" → Token usage; the owner's phone reads \`GET /mobile/usage\`. Point the user there rather than pasting JSON.
+`;
+}
+
 export function ROUTING_SPEND_CLAUDEMD_SECTION(port: number): string {
   return `\n### Routing Spend view — what am I spending on routing? (\`GET /routing-spend/summary\`, \`GET /routing-spend/caps\`)
 
@@ -2570,6 +2583,10 @@ const SKILL_STAMP_KEY = 'x-instar-stamp';
 const SKILL_FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 const SKILL_STAMP_LINE_RE = /^x-instar-stamp:\s*([a-f0-9]{64})\s*$/m;
 
+/** Unified usage ledger: the live database (with WAL/SHM) and its snapshot never ride git sync. */
+export const USAGE_LEDGER_GITIGNORE_PROJECT: readonly string[] = Object.freeze(['.instar/server-data/usage-ledger*']);
+export const USAGE_LEDGER_GITIGNORE_STATE: readonly string[] = Object.freeze(['server-data/usage-ledger*']);
+
 /** Agent-home `.gitignore` entries (decision 3): the derived cache and the legacy flat telemetry file. */
 export const SKILL_LEARNING_GITIGNORE_PROJECT: readonly string[] = Object.freeze([
   '.instar/state/skill-learning.db*',
@@ -3130,6 +3147,7 @@ export class PostUpdateMigrator {
     this.migrateHookTelemetryGitignore(result);
     this.migrateDeviceLimitProvenanceGitignore(result);
     this.migrateSkillLearningGitignore(result);
+    this.migrateUsageLedgerGitignore(result);
     this.migrateSubscriptionPoolToMachineLocal(result);
     this.migrateHonestProgressMessagingDefaults(result);
     this.migrateAutonomousHeartbeatDefaults(result);
@@ -3928,6 +3946,18 @@ export class PostUpdateMigrator {
   // Fresh installs get both via MachineIdentity GITIGNORE_ENTRIES; existing agents
   // only here (the judgment-provenance precedent: existing files only, idempotent).
   // A legacy file git already tracks stays tracked — this never runs `git rm`.
+  /** Unified usage ledger (docs/specs/unified-usage-ledger.md): keep its databases out of git, where an ignore file exists. Idempotent. */
+  private migrateUsageLedgerGitignore(result: MigrationResult): void {
+    const projectGitignore = path.join(this.config.projectDir, '.gitignore');
+    if (fs.existsSync(projectGitignore)) {
+      for (const entry of USAGE_LEDGER_GITIGNORE_PROJECT) this.addGitignoreEntry(projectGitignore, entry, result, 'project .gitignore');
+    }
+    const instarGitignore = path.join(this.config.stateDir, '.gitignore');
+    if (fs.existsSync(instarGitignore)) {
+      for (const entry of USAGE_LEDGER_GITIGNORE_STATE) this.addGitignoreEntry(instarGitignore, entry, result, '.instar/.gitignore');
+    }
+  }
+
   private migrateSkillLearningGitignore(result: MigrationResult): void {
     const projectGitignore = path.join(this.config.projectDir, '.gitignore');
     if (fs.existsSync(projectGitignore)) {
@@ -11182,6 +11212,12 @@ setTimeout(() => process.exit(0), 2000);
       content += ROUTING_SPEND_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Routing Spend view section');
+    }
+    // Unified usage ledger (docs/specs/unified-usage-ledger.md) — Agent Awareness + Migration Parity.
+    if (!content.includes(USAGE_LEDGER_CLAUDEMD_MARKER)) {
+      content += USAGE_LEDGER_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the unified usage ledger section');
     }
 
     // Routing Spend MONEY layer (Increment B) — Agent Awareness + Migration Parity:

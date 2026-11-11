@@ -159,7 +159,8 @@ exit 0
     expect(argv).not.toContain('the json prompt');
     expect(fs.readFileSync(stdinFile(), 'utf-8')).toBe('the json prompt');
     // Per-call usage parsed from the event stream, cachedTokens included.
-    expect(usages).toEqual([{ inputTokens: 42, outputTokens: 7, cachedTokens: 12 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 42, outputTokens: 7, cachedTokens: 12 }]);
   });
 
   it('result comes from the FILE only — never stdout events', async () => {
@@ -415,7 +416,8 @@ exit 0
     expect(result).toBe('LINGER-OK');
     expect(elapsed).toBeLessThan(3000); // did NOT wait out the 30s linger
     // Usage from turn.completed was parsed and reported (success carries usage).
-    expect(usages).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
+    // The unified usage ledger's `detail` is additive; the folded fields are unchanged.
+    expect(usages.map(({ detail: _d, ...u }) => u)).toEqual([{ inputTokens: 120, outputTokens: 8, cachedTokens: 90 }]);
   }, 15000);
 
   it('records a SUCCESS (unclassified) row WITH usage through the funnel — not an error', async () => {
