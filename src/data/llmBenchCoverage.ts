@@ -141,6 +141,8 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   PipeSessionSpawner: { pending: 'wave-3' },
   CartographerSweep: { pending: 'wave-3' },
   PreCompactionFlush: { pending: 'wave-3' },
+  // context-budget-layered-summaries §6.5 (Phase 1 S8): chunk/C2 summaries; graded by the Phase 2 fold probes (§10) until a bench task lands. <!-- tracked: CMT-1536 -->
+  ContextLayerChunk: { pending: 'wave-3' },
   TreeSynthesis: { pending: 'wave-3' },
   LLMConflictResolver: { pending: 'wave-3' },
   openConversationBrief: { pending: 'wave-3' },
@@ -249,6 +251,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   Usher: true,
   TopicIntentExtractor: true,
   PreCompactionFlush: true,
+  ContextLayerChunk: true,
   TreeSynthesis: true,
   LLMConflictResolver: true, // divergent multi-machine state = untrusted peer data
   openConversationBrief: true,
@@ -444,6 +447,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   Usher: false, // routes a turn to candidate topics
   TopicIntentExtractor: false, // extracts topic intent from a turn
   PreCompactionFlush: false, // extracts durable facts before compaction
+  ContextLayerChunk: false, // summarizes an archived span of agent work; judges no claim
   TreeSynthesis: false, // synthesizes knowledge fragments → answer
   LLMConflictResolver: false, // resolves divergent multi-machine state
   openConversationBrief: false, // generates an A2A conversation brief
@@ -643,6 +647,10 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   PreCompactionFlush: {
     false:
       'extracts durable facts before compaction as free-text content — no closed taught output vocabulary a parser gates on',
+  },
+  ContextLayerChunk: {
+    false:
+      'summarizes an archived transcript span into free-text fields (attempted, outcome, artifacts, open threads) — a shape check, no closed taught verdict vocabulary a parser gates on',
   },
   TreeSynthesis: {
     false:
@@ -915,6 +923,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   Usher: exposed(EXPOSED_USER), // routes an inbound turn
   TopicIntentExtractor: exposed(EXPOSED_USER),
   PreCompactionFlush: exposed(EXPOSED_MODEL_TOOL), // durable facts from a transcript
+  ContextLayerChunk: exposed(EXPOSED_ALL), // a transcript span: operator turns, agent prose and tool output
   TreeSynthesis: exposed(EXPOSED_TOOL),
   LLMConflictResolver: exposed(EXPOSED_TOOL), // divergent peer state = untrusted peer data
   openConversationBrief: exposed(EXPOSED_TOOL), // A2A peer content

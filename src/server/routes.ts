@@ -2,6 +2,7 @@ import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
+import { listChunks, readChunk, isSafeChunkTopic, isSafeChunkKey } from '../monitoring/contextLayers/chunkLookup.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -1293,6 +1294,8 @@ export interface RouteContext {
   /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel, or null when it is off. */
   contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null;
   contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null;
+  /** context-budget-layered-summaries §6.5/§9.5: chunk (C) and range (C2) builds; null when the layers are off. */
+  chunkBuilder?: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -7012,8 +7015,44 @@ export function createRoutes(ctx: RouteContext): Router {
       summary: typeof body.compact_summary === 'string' ? body.compact_summary : '',
       receivedAt: Date.now(),
     }, liveSecrets);
+    // §9.5: archive the pre-compaction span and enqueue exactly one chunk
+    // build through the 6.5 sampler. Conditioned on the layers AND on
+    // `contextBudget.compactionRecovery.enabled` on this machine (§9.1: off ⇒
+    // today's path, the record stays observability only). The transcript path
+    // is resolved and the build runs AFTER the response: never slows the hook.
+    let chunk: 'enqueued' | 'off' | 'no-transcript-session' = 'off';
+    const recoveryOn = (ctx.liveConfig?.get<boolean | undefined>('contextBudget.compactionRecovery.enabled', undefined)
+      ?? (ctx.config as { contextBudget?: { compactionRecovery?: { enabled?: boolean } } }).contextBudget?.compactionRecovery?.enabled) !== false;
+    const chunkBuilder = ctx.chunkBuilder;
+    if (result.recorded && ctx.contextLayers && chunkBuilder && recoveryOn) {
+      // The hook's own session id names the transcript that just compacted (the stored one can be stale after a resume).
+      const engineSessionId = claudeSessionId || session.claudeSessionId || '';
+      const framework = session.framework ?? 'claude-code';
+      if (!engineSessionId || framework !== 'claude-code') {
+        chunk = 'no-transcript-session';
+      } else {
+        chunk = 'enqueued';
+        setImmediate(() => {
+          try {
+            const sm = ctx.sessionManager as unknown as { configHomeForSession?: (t: string, o?: { defaultWhenUnset?: boolean }) => string | undefined };
+            const configHome = typeof sm.configHomeForSession === 'function' ? sm.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true }) : undefined;
+            const transcriptPath = resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: engineSessionId, projectDir: (session as { cwd?: string }).cwd ?? ctx.config.projectDir, ...(configHome ? { configHome } : {}) });
+            if (!transcriptPath) return;
+            chunkBuilder.enqueue({ topicKey, transcriptPath, sessionKey: engineSessionId, trigger: 'post-compact', upTo: 'last-compact-boundary', sessionId: instarSessionId });
+          } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'contextBudget.layers.chunks',
+              primary: 'A compaction archives the pre-compaction span and queues its chunk summary',
+              fallback: 'No chunk queued for this compaction; the next trigger reads from the same watermark',
+              reason: `Resolving the transcript failed: ${err instanceof Error ? err.message : String(err)}`,
+              impact: 'The conversation\'s summary of that span is delayed until the next compaction; nothing is lost.',
+            });
+          }
+        });
+      }
+    }
     res.status(200).json(result.recorded
-      ? { recorded: true, topicKey, trigger: result.record.trigger, summaryChars: result.record.summaryChars, redactionKinds: result.record.redactionKinds }
+      ? { recorded: true, topicKey, trigger: result.record.trigger, summaryChars: result.record.summaryChars, redactionKinds: result.record.redactionKinds, chunk }
       : { recorded: false, reason: result.reason });
   });
 
@@ -8920,7 +8959,37 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
       return;
     }
-    res.json(ctx.contextLayers.status());
+    res.json({ ...ctx.contextLayers.status(), chunks: ctx.chunkBuilder?.status() ?? null });
+  });
+  // context-budget-layered-summaries §7.6: chunk (C) and range (C2) records of
+  // one conversation, with sizes, status and each span's archive state.
+  // Bearer-only (memory-session tokens are refused: not on the session guard's
+  // allowlist), bounded, paginated; 503 while the layers are off.
+  router.get('/topic/:id/chunks', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const topicKey = String(req.params.id);
+    if (!isSafeChunkTopic(topicKey)) { res.status(400).json({ error: 'invalid topic id' }); return; }
+    const kindQ = typeof req.query.kind === 'string' ? req.query.kind : 'all';
+    if (!['all', 'chunk', 'c2'].includes(kindQ)) { res.status(400).json({ error: 'kind must be all, chunk or c2' }); return; }
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset !== undefined ? Number(req.query.offset) : undefined;
+    if ((limit !== undefined && !Number.isFinite(limit)) || (offset !== undefined && !Number.isFinite(offset))) { res.status(400).json({ error: 'limit and offset must be numbers' }); return; }
+    res.json(listChunks(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, { limit, offset, kind: kindQ as 'all' | 'chunk' | 'c2' }));
+  });
+  router.get('/topic/:id/chunks/:k', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const topicKey = String(req.params.id);
+    const key = String(req.params.k);
+    if (!isSafeChunkTopic(topicKey) || !isSafeChunkKey(key)) { res.status(400).json({ error: 'invalid topic id or chunk key' }); return; }
+    const r = readChunk(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, key);
+    if (!r) { res.status(404).json({ error: 'no such chunk' }); return; }
+    res.json(r);
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
