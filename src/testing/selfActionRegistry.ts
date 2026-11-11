@@ -1630,6 +1630,79 @@ const contextBudgetAdapterSuite: SelfActionController = {
   },
 };
 
+/**
+ * context-budget-orphan-carrier-clear — the ContextBudgetSentinel's hold-health
+ * ladder (context-budget-layered-summaries §10, §17): one SelfHealGate episode
+ * per (carrier kind, topic, fold) whose hold or marker outlived its record past
+ * the grace period. At most 3 attempts inside a 30-minute wall clock, then
+ * exhausted (one Attention item) and RETAINED for 7 days, so the same leftover
+ * never re-opens a ladder within the horizon. Pressure model: a release that
+ * never takes (the file reappears every time), ticked every 5 minutes for 2 days.
+ */
+const contextBudgetOrphanCarrierClear: SelfActionController = {
+  id: 'context-budget-orphan-carrier-clear',
+  actionVerb: 'converge-orphan-carrier',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (pool-shared sync SelfHealGate ladder per orphan hold/marker: <=3 attempts / 30 min, exhausted episodes retained 7 days)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 2 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetOrphanCarrierClear.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WALL_CLOCK_MS = 30 * 60_000; const MAX_ATTEMPTS = 3;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-orphan') as { attempts: number; startedAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, startedAt: f.clock.nowMs(), exhausted: false };
+      if (st.exhausted) { f.durableState.set('cb-orphan', st); return; }
+      if (st.attempts >= MAX_ATTEMPTS || f.clock.nowMs() - st.startedAt >= WALL_CLOCK_MS) { f.durableState.set('cb-orphan', { ...st, exhausted: true }); return; }
+      sink.emit({ verb: 'converge-orphan-carrier', target: 'fold-hold:141133:f1' });
+      f.durableState.set('cb-orphan', { ...st, attempts: st.attempts + 1 });
+    } };
+  },
+};
+
+/**
+ * context-budget-layer-rebuild-request — the ContextBudgetSentinel's layer
+ * freshness row (context-budget-layered-summaries §6, §17): a topic whose H1 is
+ * over target gets at most 3 rebuild requests per stale episode, 30 minutes
+ * apart, through the capture loop's re-projection seam (deterministic, no model
+ * call); the episode is durable and ends only on a fresh reading. The bound is
+ * per episode FILE: a corrupt or unreadable episodes file (never self-induced)
+ * is audited and restarts the episodes once. This is §7.8's bounded "ask", not a
+ * heal ladder, so it carries its own durable counters rather than a SelfHealGate
+ * episode. Pressure model: a layer that never catches up, ticked every 5
+ * minutes for 2 days.
+ */
+const contextBudgetLayerRebuildRequest: SelfActionController = {
+  id: 'context-budget-layer-rebuild-request',
+  actionVerb: 'retry-layer-rebuild',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (checkFreshness: <=3 rebuild requests per durable stale episode, 30 min apart; one notice per episode)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 2 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetLayerRebuildRequest.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const SPACING_MS = 30 * 60_000; const MAX = 3;
+    return { tick() {
+      sink.considered += 1;
+      const ep = (f.durableState.get('cb-layer-stale') as { requests: number; lastAt: number } | undefined) ?? { requests: 0, lastAt: -Infinity };
+      if (ep.requests >= MAX || f.clock.nowMs() - ep.lastAt < SPACING_MS) return; // the stale episode never ends under pressure
+      f.durableState.set('cb-layer-stale', { requests: ep.requests + 1, lastAt: f.clock.nowMs() });
+      sink.emit({ verb: 'retry-layer-rebuild', target: 'topic:141133' });
+    } };
+  },
+};
+
 const feedbackTriageSelfHealProbe: SelfActionController = {
   id: 'feedback-triage-self-heal-probe',
   actionVerb: 'retry-authority-probe',
@@ -5347,6 +5420,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageSelfHealProbe,
   contextBudgetQuarantineReconcile,
   contextBudgetAdapterSuite,
+  contextBudgetOrphanCarrierClear,
+  contextBudgetLayerRebuildRequest,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,

@@ -12,7 +12,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import type { Session } from '../core/types.js';
-import type { ContextBudgetSentinelDeps, FoldCandidate } from './ContextBudgetSentinel.js';
+import type { ContextBudgetSentinelDeps, FoldCandidate, HoldCarrierEntry, HoldCarrierSource } from './ContextBudgetSentinel.js';
+import { MALFORMED_HOLD_FOLD, type FoldHoldStore } from './FoldHoldStore.js';
+import { foldMarkerCarrier, listFoldMarkers, removeFoldMarkers, TORN_MARKER_KEY } from './foldMarker.js';
 import type { CanarySession } from './compactionCanary.js';
 
 /**
@@ -202,4 +204,52 @@ export function productionAdapterSuite(o: {
       child.on('exit', (code) => { clearTimeout(kill); if (code === 0) resolve(); else reject(new Error(`adapter suite exited ${code}: ${(out.trim() || err.trim()).slice(0, 300)}`)); });
     }),
   };
+}
+
+/** This machine's live topic sessions, as fold topic keys (the freshness and eligible-without-fold population). */
+export function productionLiveTopics(o: { sessions: SentinelSessionSource }): () => string[] {
+  return () => [...new Set(o.sessions.listRunningSessions()
+    .filter((s) => typeof s.telegramTopicId === 'number' && Number.isSafeInteger(s.telegramTopicId) && s.telegramTopicId > 0)
+    .map((s) => String(s.telegramTopicId)))];
+}
+
+/**
+ * The hold-health row's carriers (§10, §17): the egress fold hold (the SAME
+ * FoldHoldStore instance the outbound chokepoints read, so a release also
+ * drops its in-memory known hold) and the per-session fold markers, one entry
+ * per (topic, fold) with the YOUNGEST marker's write time. Unattributable
+ * files (a malformed hold, a torn marker) are listed with an unknown age:
+ * the sentinel reports them and leaves them to the boot sweep.
+ */
+export function productionHoldCarriers(o: { stateDir: string; holds: FoldHoldStore | null }): HoldCarrierSource[] {
+  const out: HoldCarrierSource[] = [];
+  const holds = o.holds;
+  if (holds) {
+    out.push({
+      kind: 'fold-hold',
+      list: (): HoldCarrierEntry[] => [
+        ...holds.list().map((h) => ({ topicKey: h.topicKey, foldId: h.foldId, writtenAt: h.writtenAt })),
+        ...holds.malformed().map((topicKey) => ({ topicKey, foldId: MALFORMED_HOLD_FOLD, writtenAt: null })),
+      ],
+      release: (topicKey, foldId) => holds.release(topicKey, foldId),
+    });
+  }
+  out.push({
+    kind: 'fold-marker',
+    list: (): HoldCarrierEntry[] => {
+      const byFold = new Map<string, HoldCarrierEntry>();
+      for (const m of listFoldMarkers(o.stateDir)) {
+        const k = `${m.topicKey}/${m.foldId}`;
+        const prev = byFold.get(k);
+        const at = Number.isFinite(m.writtenAt) ? m.writtenAt : null;
+        // The youngest marker sets the age (a re-stamped marker restarts the grace); an unknown age wins.
+        const writtenAt = !prev ? at : prev.writtenAt === null || at === null ? null : Math.max(prev.writtenAt, at);
+        byFold.set(k, { topicKey: m.topicKey, foldId: m.foldId, writtenAt });
+      }
+      const torn = foldMarkerCarrier(o.stateDir).list().some((e) => e.topicKey === TORN_MARKER_KEY);
+      return [...byFold.values(), ...(torn ? [{ topicKey: TORN_MARKER_KEY, foldId: TORN_MARKER_KEY, writtenAt: null }] : [])];
+    },
+    release: (topicKey, foldId) => removeFoldMarkers(o.stateDir, topicKey, foldId),
+  });
+  return out;
 }

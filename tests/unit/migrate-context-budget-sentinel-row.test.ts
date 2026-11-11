@@ -40,6 +40,24 @@ describe('Context Budget sentinel Registry-First row', () => {
     expect(r.upgraded).toContain('CLAUDE.md: added the Context Budget sentinel Registry-First row');
   });
 
+  it('existing agents with the older row: extended in place with the §17 rows, once', () => {
+    fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), TABLE);
+    migrator().migrateClaudeMd(result());
+    const p = path.join(tmp, 'CLAUDE.md');
+    // Simulate an agent migrated before the rows existed.
+    const older = fs.readFileSync(p, 'utf8').replace(/plus any quarantined or unreadable context folds, [^`]*`layerFreshness`[^\n]*?exists\)\. `503`/, 'plus any quarantined or unreadable context folds. `503`');
+    expect(older).not.toContain('eligibleWithoutFold');
+    fs.writeFileSync(p, older);
+    const r = result();
+    migrator().migrateClaudeMd(r);
+    migrator().migrateClaudeMd(result());
+    const out = fs.readFileSync(p, 'utf8');
+    expect(out.match(/eligibleWithoutFold/g)?.length).toBe(1);
+    expect(out).toContain('`layerFreshness`');
+    expect(out).toContain('`holdHealth`');
+    expect(r.upgraded).toContain('CLAUDE.md: extended the Context Budget sentinel row with its freshness, hold-health and no-fold rows');
+  });
+
   it('existing agents with the pre-S16 row: refreshed once to name the canary\'s counted state', () => {
     const old = TABLE.replace('| Who do I work with?', '| Does compaction recovery work on this machine? / is a context fold stuck? | `curl http://localhost:4242/context-budget/sentinel` — (`uninitialized` = none seen; `n/a` = recovery switched off), plus any quarantined or unreadable context folds. |\n| Who do I work with?');
     fs.writeFileSync(path.join(tmp, 'CLAUDE.md'), old);
@@ -59,5 +77,6 @@ describe('Context Budget sentinel Registry-First row', () => {
     const md = generateClaudeMd('test', 'Echo', 4242, false);
     expect(md).toContain('http://localhost:4242/context-budget/sentinel');
     expect(md.match(/\/context-budget\/sentinel/g)?.length).toBe(1);
+    expect(md).toContain('`eligibleWithoutFold`');
   });
 });

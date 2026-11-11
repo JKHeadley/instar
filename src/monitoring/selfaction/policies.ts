@@ -142,6 +142,23 @@ export const GOVERNOR_DEFAULT_POLICIES: readonly ControllerPolicy[] = [
     ...COMMON,
   },
   {
+    // ContextBudgetSentinel hold health (context-budget-layered-summaries §10, §17): clears a
+    // fold hold or marker that outlived its fold record. SelfHealGate consumer, pool-shared
+    // (only the topic's owner acts); the durable episode store owns the 3-attempt ladder per
+    // (kind, topic, fold) and the week-long retention of an exhausted one. Relief: an orphan
+    // hold mutes a conversation, so a governor failure must not block its release.
+    controllerId: 'context-budget-orphan-carrier-clear',
+    actionVerb: 'converge-orphan-carrier',
+    direction: 'relief',
+    resource: 'pool-shared',
+    failDirection: 'open-audited',
+    perTargetCountCeiling: 3,
+    totalCountCeiling: 48,
+    windowMs: 24 * 60 * 60_000,
+    rateBucket: { ratePerWindow: 48, windowMs: 24 * 60 * 60_000, refill: 'window' },
+    ...COMMON,
+  },
+  {
     // Swap-thrash bound (~72/day incident). 8 / 45 min dwell; staleTtl 60s.
     controllerId: 'proactive-swap-monitor',
     actionVerb: 'account-swap',
