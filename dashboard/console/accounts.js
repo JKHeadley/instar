@@ -66,13 +66,22 @@ export async function renderAccounts(main, ctx) {
     el('div', { class: 'list-head' }, el('h2', { class: 'eyebrow', text: name }), el('span', { class: 'list-count', text: String(accts.length) })),
     el('div', { class: 'list-rows' }, accts.map((a) => {
       const pct = a.tight ? Math.round(a.tight.pct) : null;
-      const bar = el('span', { class: `acct-bar${a.tone ? ' ' + a.tone : ''}` }, el('span'));
-      if (pct !== null) bar.firstChild.style.width = `${Math.min(100, Math.max(2, pct))}%`;
+      // One labelled line per limit that applies (5-hour only when the account has one), each with
+      // its own bar and its own reset, so a full 5-hour window never reads as the weekly one.
+      const wins = a.windows && a.windows.length ? el('span', { class: 'acct-wins' }, a.windows.map((w) => {
+        const bar = el('span', { class: `acct-bar${w.tone ? ' ' + w.tone : ''}` }, el('span'));
+        bar.firstChild.style.width = w.rolledOver ? '0%' : `${Math.min(100, Math.max(2, Math.round(w.pct)))}%`;
+        return el('span', { class: `acct-win${w.rolledOver ? ' rolled' : ''}`, 'data-window': w.key },
+          el('span', { class: 'acct-win-label', text: w.name }),
+          bar,
+          el('span', { class: `acct-win-pct${w.tone ? ' ' + w.tone : ''}`, text: w.pctText }),
+          el('span', { class: 'acct-win-reset', text: w.reset || '' }));
+      })) : null;
       const row = el('button', { class: 'acct-row', type: 'button', 'data-focus-key': `a:${a.id}` },
         el('span', { class: 'acct-name' }, document.createTextNode(a.name), a.inUse ? el('span', { class: 'acct-tag', text: 'in use here' }) : null),
         el('span', { class: `acct-pct${a.tone ? ' ' + a.tone : ''}`, text: pct === null ? '—' : `${pct}%` }),
-        bar,
-        el('span', { class: 'acct-line', text: [a.line, a.second, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }),
+        wins,
+        !wins || a.stale ? el('span', { class: 'acct-line', text: [!wins ? a.line : null, a.stale ? `reading from ${a.readingAge}` : null].filter(Boolean).join(' · ') }) : null,
         el('span', { class: 'chips' }, a.cells.map((c) => el('span', { class: `mchip ${c.state}`, text: c.machine }))));
       row.addEventListener('click', () => openAccount(a, refresh));
       return row;
@@ -104,7 +113,7 @@ function openAccount(a, refresh) {
   const lines = [
     { label: 'Kind', text: frameworkName(a.framework) },
     a.email ? { label: 'Email', text: a.email } : null,
-    { label: 'Usage', text: a.tight ? [a.line, a.second].filter(Boolean).join('; ') : a.line },
+    { label: 'Usage', text: a.windowsText && a.windowsText.length ? a.windowsText.join('; ') : a.line },
     { label: 'Reading', text: a.readingAge ? `from ${a.readingAge}` : 'none yet' },
   ].filter(Boolean);
   const machines = el('div', { class: 'rows' }, a.cells.map((c) => {
