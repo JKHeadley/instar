@@ -1958,6 +1958,11 @@ On macOS, \`~/Documents\`, \`~/Desktop\`, \`~/Downloads\` and iCloud Drive are T
 - **The move (operator-proven on ai-guy 2026-10-13, codey + inspec 2026-10-14):** rename the project directory in place onto the same disk outside the protected folder, leave a symlink at the old path, update the launchd plist program path + WorkingDirectory, reload, verify the port answers and the log shows a clean boot. Runbook: \`docs/runbooks/move-agent-out-of-documents.md\`.
 - **When to use** (PROACTIVE — these are the triggers): the user asks "why did all my agents die at the same second?" / "why did I get a TCC-protected path notice?" / "is my agent in a safe folder?" → read the boot line, \`GET /guards\`, or the attention item, and point at the runbook. When helping place ANY new project, state directory, vault, database, log or worktree on a Mac, keep it out of those four folders.
 
+## PR links ask for the review on GitHub too
+
+When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.
+
 ## Throwaway test agents (they cannot become permanent jobs on your login)
 
 An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folders\` and the like) or with a sandboxed \`HOME\` is a throwaway. On 2026-10-21 one such release-check agent installed itself into the operator's real launchd and ran scheduled jobs on the operator's Claude subscription for five days. Now, enforced in code:
