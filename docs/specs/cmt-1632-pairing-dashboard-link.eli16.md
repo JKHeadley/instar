@@ -14,9 +14,9 @@ Justin pasted a pairing invite into Telegram for his agent Cora. Cora could not 
 
 ## What's new
 
-1. **The four lines carry a direct link** to the Other agents page whenever the address is known. The invite paste line also says exactly what to tap there: Connect another agent, then paste under "I was sent one".
+1. **The four lines carry a direct link** to the Other agents page whenever the address is known. For an invite the agent could not take, the link opens the page with the paste box ("Connect another agent", under "I was sent one") already open, so the owner lands right where they need to paste. The flag that opens the box is removed from the address once used, so a refresh does not reopen it.
 2. **No address, no made-up link.** If the tunnel is still starting, or the address cannot be read, the line names the page in plain words instead.
-3. **The invite is never put in the link.** An invite contains a one-time secret, and links end up in logs and browser history, so the page opens empty and the owner pastes the invite there.
+3. **The invite is never put in the link.** An invite contains a one-time secret, and links end up in logs and browser history, so the box opens empty and the owner pastes the invite into it.
 4. **Not shown to strangers.** If someone who is known not to be the owner pastes an invite or taps a button, the refusal does not include the dashboard address.
 5. **Short answers stay short.** Telegram refuses a button-tap answer longer than 200 characters, which would leave the owner with nothing. The tap answers use a shorter wording, or plain words, when the link would not fit.
 6. **The Telegram connection's own backup line** (used when pairing is not wired or fails) gets the same link.

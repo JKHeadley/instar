@@ -356,13 +356,13 @@ describe('invite pairing — Telegram routes', () => {
       await forward(app, INVITE, { secret: secret(), from: OWNER });
       const text = fx.sent.at(-1)!.text;
       expect(text).toContain(NO_OWNER_REFUSAL);
-      expect(text).toContain('https://cora-test.example.com/dashboard/console/#/people/agents');
+      expect(text).toContain('https://cora-test.example.com/dashboard/console/#/people/agents?connect=paste');
       expect(text).not.toContain('tlinv1:');
     });
     it('no tunnel at all: the link is the only address this agent has (localhost on its port)', async () => {
       const app = boot({ ...dev, port: 4987 }, { owner: undefined, tunnel: null });
       await forward(app, INVITE, { secret: secret(), from: OWNER });
-      expect(fx.sent.at(-1)!.text).toContain('http://localhost:4987/dashboard/console/#/people/agents');
+      expect(fx.sent.at(-1)!.text).toContain('http://localhost:4987/dashboard/console/#/people/agents?connect=paste');
     });
     it('tunnel configured but not up yet: plain words naming the page, no made-up URL', async () => {
       const app = boot(dev, { owner: undefined, tunnel: { url: null } });

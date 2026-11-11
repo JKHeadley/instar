@@ -27,7 +27,7 @@ import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKind
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { resolveApprovalOwner, agentsPageUrl, pasteInviteHint, dashboardHint } from '../threadline/PairingInviteTelegram.js';
+import { resolveApprovalOwner, agentsPageUrl, pasteInviteHint, dashboardHint, AGENTS_PASTE_ROUTE } from '../threadline/PairingInviteTelegram.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
@@ -70,7 +70,7 @@ import {
 } from '../core/AttentionLifecycle.js';
 /** The reply to an invite this chat cannot take, with the direct dashboard link when one is known (CMT-1632). */
 export function pairingDashboardFallback(publicOrigin: string | null): string {
-  return `I got a pairing invite, but I can't take it from this chat. ${pasteInviteHint(agentsPageUrl(publicOrigin))}`;
+  return `I got a pairing invite, but I can't take it from this chat. ${pasteInviteHint(agentsPageUrl(publicOrigin, AGENTS_PASTE_ROUTE))}`;
 }
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {

@@ -472,3 +472,20 @@ export function bindResultWords(status, data) {
   if (status === 503) return { ok: false, text: 'The Telegram hub is not available on this agent, so conversations can’t be tied to a topic from here.' };
   return { ok: false, text: `${(data && data.error) || `The server answered ${status}`}. Nothing has changed.` };
 }
+
+/**
+ * The agent's "paste the invite on the dashboard" link (src/threadline/PairingInviteTelegram.ts,
+ * CMT-1632) lands on `#/people/agents?connect=paste`. True once when the address asks for the
+ * paste box; the ask is removed from the address (replaceState, so no navigation and no reopen
+ * on refresh). Other query keys (for example phone=1) are kept. The invite is never in the link.
+ */
+export function takePasteRequest(loc, hist) {
+  const [route, query = ''] = String((loc && loc.hash) || '').split('?');
+  let params;
+  try { params = new URLSearchParams(query); } catch { return false; }
+  if (params.get('connect') !== 'paste') return false;
+  params.delete('connect');
+  const rest = params.toString();
+  try { hist.replaceState(null, '', `${loc.pathname || ''}${loc.search || ''}${route}${rest ? `?${rest}` : ''}`); } catch { /* @silent-fallback-ok: the box still opens; a refresh may open it again */ }
+  return true;
+}

@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-11T23:11:32.563Z",
+  "slug": "cmt-1632-pairing-dashboard-link",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 2,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/threadline/PairingInviteTelegram.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: only the wording of existing replies to an operator paste or tap changes, and a dashboard flag opens an existing sheet once; no new send, retry or spawn"
+  },
+  "verdict": "blocked"
+}

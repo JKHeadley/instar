@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "cmt-1632-pairing-dashboard-link",
+  "sessionId": "99adafd5-0a1d-41f4-9d19-ed5ffcf50352",
+  "timestamp": "2026-11-11T23:10:39.707Z",
+  "artifactPath": "upgrades/side-effects/cmt-1632-pairing-dashboard-link.md",
+  "artifactSha256": "e18cb99ad9a07be147a9ffb32b4b42e7671b81b31846b2bd9759addf4e593279",
+  "coveredFiles": [
+    "dashboard/console/agents-model.js",
+    "dashboard/console/agents.js",
+    "docs/specs/cmt-1632-pairing-dashboard-link.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/threadline/PairingInviteTelegram.ts",
+    "tests/integration/pairing-invite-telegram-routes.test.ts",
+    "tests/unit/console-agents.test.ts",
+    "tests/unit/threadline/PairingInviteTelegram-dashboard-link.test.ts",
+    "upgrades/next/cmt-1632-pairing-dashboard-link.md",
+    "upgrades/side-effects/cmt-1632-pairing-dashboard-link.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Message wording plus a link on existing pairing replies, and a dashboard hash flag that only opens an existing sheet; no decision logic changed; a revert fully undoes it.",
+  "eli16Path": "docs/specs/cmt-1632-pairing-dashboard-link.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cmt-1632-pairing-dashboard-link.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: only the wording of existing replies to an operator paste or tap changes, and a dashboard flag opens an existing sheet once; no new send, retry or spawn"
+  }
+}

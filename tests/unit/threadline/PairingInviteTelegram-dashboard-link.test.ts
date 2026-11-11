@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import {
-  PairingInviteTelegram, CALLBACK_PREFIX, NO_OWNER_REFUSAL, NOT_OWNER_REFUSAL, agentsPageUrl, dashboardHint, pasteInviteHint,
+  PairingInviteTelegram, CALLBACK_PREFIX, NO_OWNER_REFUSAL, NOT_OWNER_REFUSAL, agentsPageUrl, dashboardHint, pasteInviteHint, AGENTS_PASTE_ROUTE,
 } from '../../../src/threadline/PairingInviteTelegram.js';
 import { pairingDashboardFallback } from '../../../src/messaging/TelegramAdapter.js';
 import { createInvite, inviteMessage, findInviteToken } from '../../../src/threadline/PairingInvite.js';
@@ -15,6 +15,7 @@ import { createInvite, inviteMessage, findInviteToken } from '../../../src/threa
 const OWNER = 4242;
 const ORIGIN = 'https://cora.example.com';
 const LINK = 'https://cora.example.com/dashboard/console/#/people/agents';
+const PASTE_LINK = 'https://cora.example.com/dashboard/console/#/people/agents?connect=paste';
 const INVITE = inviteMessage(createInvite({ identityPubHex: crypto.randomBytes(32).toString('hex'), owner: 'Justin', agent: 'Scout' }));
 const IID = 'ab'.repeat(16);
 
@@ -58,19 +59,34 @@ describe('agentsPageUrl / hints', () => {
     expect(dashboardHint(LINK)).toContain(LINK);
     expect(dashboardHint(null)).not.toMatch(/https?:/);
     expect(dashboardHint(null)).toContain('Other agents page');
-    expect(pasteInviteHint(LINK)).toMatch(/I was sent one.*https:\/\/cora\.example\.com/);
+    expect(agentsPageUrl(ORIGIN, AGENTS_PASTE_ROUTE)).toBe(PASTE_LINK);
+    // With the link the box is already open, so the line does not walk the owner through taps.
+    expect(pasteInviteHint(PASTE_LINK)).toContain(PASTE_LINK);
+    expect(pasteInviteHint(PASTE_LINK)).not.toMatch(/tap Connect another agent/);
+    expect(pasteInviteHint(null)).toMatch(/tap Connect another agent.*I was sent one/);
     expect(pasteInviteHint(null)).not.toMatch(/https?:/);
+  });
+  it('no invite text ever reaches a built URL, whatever the origin input carries', () => {
+    const token = findInviteToken(INVITE)!;
+    for (const origin of [`${ORIGIN}/${token}`, `${ORIGIN}/?invite=${encodeURIComponent(INVITE)}`, `${ORIGIN}/#${token}`, `${ORIGIN}/x?a=${token}#tlinv1:abc.def`]) {
+      for (const route of [undefined, AGENTS_PASTE_ROUTE] as const) {
+        const url = agentsPageUrl(origin, route)!;
+        expect(url).not.toContain('tlinv1');
+        expect(url).not.toContain(token.slice(7, 30));
+      }
+    }
   });
 });
 
 describe('site 1: a forwarded invite this chat cannot take', () => {
-  it('no owner named (Cora, 2026-11-11): the refusal links the page and says where to paste', async () => {
+  it('no owner named (Cora, 2026-11-11): the refusal links straight to the open paste box, never with the invite', async () => {
     const { tg, sent } = setup({ owner: undefined });
     await tg.onForwardedInvite({ text: INVITE, topicId: 9, fromUserId: OWNER, verified: true });
     expect(sent[0].text).toContain(NO_OWNER_REFUSAL);
-    expect(sent[0].text).toContain(LINK);
-    expect(sent[0].text).toContain('I was sent one');
+    expect(sent[0].text).toContain(PASTE_LINK);
+    expect(sent[0].text).toMatch(/Paste the invite in the box this link opens/);
     expect(sent[0].text).not.toContain(findInviteToken(INVITE)!);
+    expect(sent[0].text).not.toContain('tlinv1');
   });
   it('no address known: plain words, no URL', async () => {
     const { tg, sent } = setup({ owner: undefined, origin: null });
@@ -148,7 +164,7 @@ describe('site 4: a finish prompt while Telegram approval is off', () => {
 
 describe('TelegramAdapter fallback (no pairing handler, or the handler failed)', () => {
   it('carries the link when the public address is known, plain words when not', () => {
-    expect(pairingDashboardFallback(ORIGIN)).toContain(LINK);
+    expect(pairingDashboardFallback(ORIGIN)).toContain(PASTE_LINK);
     expect(pairingDashboardFallback(null)).toContain('Other agents page');
     expect(pairingDashboardFallback(null)).not.toMatch(/https?:/);
   });

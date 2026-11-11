@@ -12,7 +12,7 @@
 // in-process), so that control is left out and said so.
 
 import {
-  buildAgentsPage, threadModel, inviteResultWords, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime,
+  buildAgentsPage, threadModel, inviteResultWords, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime, takePasteRequest,
 } from './agents-model.js';
 import { el, setKids, pageHead, section, sheet, closeSheet, story, details, note, cantTell, askPin, firstPaint, markNeed, askLink } from './ui.js';
 import { legacyHref } from './nav-model.js';
@@ -84,6 +84,9 @@ export async function renderAgents(main, ctx) {
     page.pairing.state === 'elsewhere' ? note(page.pairing.holder ? `Pairing runs on ${page.pairing.holder.name}; open the console there to connect another agent.` : 'Pairing runs on another of my machines; connect another agent from there.') : el('div', { class: 'page-primary' }, connect),
     footLink(),
   ));
+  // The agent's "paste the invite on the dashboard" link lands here with ?connect=paste: open the
+  // paste box once (the ask is then dropped from the address). The invite itself is never in the link.
+  if (page.pairing.state !== 'elsewhere' && takePasteRequest(location, history)) openConnect(deps, { focusPaste: true });
 }
 
 function footLink() {
@@ -182,7 +185,7 @@ function waitingCard(w, deps) {
 }
 
 // ── Connect another agent (make an invite / I was sent one) ──────────────────
-function openConnect(deps) {
+function openConnect(deps, opts = {}) {
   const known = uniqueNamedChoices(deps.page.pairing.knownPeers);
   const who = el('select', { class: 'reason-input select-input', 'aria-label': 'Who is it for?' }, el('option', { value: '', text: 'Someone new' }), known.map((p) => el('option', { value: p.fp, text: verifiedDisplayName(p.name, p.fp) || 'Agent name unavailable' })));
   let ttl = 60;
@@ -219,6 +222,7 @@ function openConnect(deps) {
     block('Make an invite', el('label', { class: 'limit-field' }, el('span', { text: 'Who is it for?' }), who), el('label', { class: 'limit-field' }, el('span', { text: 'Valid for' }), chips), make, status, out),
     block('I was sent one', paste, el('div', { class: 'sheet-actions' }, check), checkStatus),
     note('A person carries the invite, outside the agent network. It is never posted anywhere public and never turned into a link.'));
+  if (opts.focusPaste) setTimeout(() => { try { paste.focus(); paste.scrollIntoView?.({ block: 'center' }); } catch { /* @silent-fallback-ok: focus is a convenience */ } }, 0);
 }
 
 function openInvite(i, deps) {

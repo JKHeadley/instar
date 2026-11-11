@@ -10,7 +10,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import {
   sourceState, relayModel, pairingModel, relayHolder, peerWords, connectedWords, conversationRows, buildAgents, waitingCards, buildAgentsPage,
-  threadModel, symmetryWords, inviteResultWords, inviteSentence, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime, pairingWord, shortFp,
+  threadModel, symmetryWords, inviteResultWords, inviteSentence, pinResultWords, bearerResultWords, enableWords, bindRequest, bindResultWords, localTime, pairingWord, shortFp, takePasteRequest,
 } from '../../dashboard/console/agents-model.js';
 import { NATIVE_PAGES, tabHref, GROUPS } from '../../dashboard/console/nav-model.js';
 
@@ -388,5 +388,43 @@ describe('the page in a DOM', () => {
     expect(posted[0].body).toEqual({ pin: '135790' });
     expect(doc.querySelector('.pin-input')).toBeNull();
     expect(card.querySelector('.action-status')!.textContent).toBe('Finishing. Checking we can talk…');
+  });
+});
+
+// CMT-1632: the agent's link opens the paste box itself; the ask leaves the address once used.
+describe('the ?connect=paste opener', () => {
+  const at = (hash: string) => {
+    const calls: string[] = [];
+    return { loc: { hash, pathname: '/dashboard/console/', search: '' }, hist: { replaceState: (_s: unknown, _t: string, url: string) => { calls.push(url); } }, calls };
+  };
+  it('asks once: true, and the flag is dropped from the address with replaceState', () => {
+    const { loc, hist, calls } = at('#/people/agents?connect=paste');
+    expect(takePasteRequest(loc, hist)).toBe(true);
+    expect(calls).toEqual(['/dashboard/console/#/people/agents']);
+  });
+  it('keeps any other query key (phone mode)', () => {
+    const { loc, hist, calls } = at('#/people/agents?phone=1&connect=paste');
+    expect(takePasteRequest(loc, hist)).toBe(true);
+    expect(calls).toEqual(['/dashboard/console/#/people/agents?phone=1']);
+  });
+  it('no flag, another value, or no hash: false and the address is untouched', () => {
+    for (const h of ['#/people/agents', '#/people/agents?connect=make', '', '#/people/agents?connect=paste2']) {
+      const { loc, hist, calls } = at(h);
+      expect(takePasteRequest(loc, hist)).toBe(false);
+      expect(calls).toEqual([]);
+    }
+  });
+  it('a replaceState that throws still opens the box', () => {
+    const loc = { hash: '#/people/agents?connect=paste', pathname: '/dashboard/console/', search: '' };
+    expect(takePasteRequest(loc, { replaceState: () => { throw new Error('blocked'); } })).toBe(true);
+  });
+  it('the link the agent sends lands on this opener and carries no invite', async () => {
+    const { agentsPageUrl, AGENTS_PASTE_ROUTE } = await import('../../src/threadline/PairingInviteTelegram.js');
+    const url = new URL(agentsPageUrl('https://cora.example.com', AGENTS_PASTE_ROUTE)!);
+    expect(url.pathname).toBe('/dashboard/console/');
+    const { loc, hist, calls } = at(url.hash);
+    expect(takePasteRequest(loc, hist)).toBe(true);
+    expect(calls).toEqual(['/dashboard/console/#/people/agents']);
+    expect(url.href).not.toContain('tlinv1');
   });
 });

@@ -138,6 +138,8 @@ export interface InviteCallback {
 
 /** The console route of the dashboard page where pairing is done by hand ("Other agents", under People). */
 export const AGENTS_PAGE_ROUTE = '#/people/agents';
+/** The same page with its paste box already open ("Connect another agent", "I was sent one"). Never carries the invite. */
+export const AGENTS_PASTE_ROUTE = '#/people/agents?connect=paste';
 /** Telegram's limit for a button-tap answer (an alert). Longer text is refused by Telegram. */
 const TAP_ANSWER_MAX = 200;
 
@@ -146,12 +148,12 @@ const TAP_ANSWER_MAX = 200;
  * usable http(s) address. Only the origin is kept: no path, query, credentials or fragment from
  * the input reaches the link. The invite itself is a secret and is never put in a link.
  */
-export function agentsPageUrl(origin: string | null | undefined): string | null {
+export function agentsPageUrl(origin: string | null | undefined, route: typeof AGENTS_PAGE_ROUTE | typeof AGENTS_PASTE_ROUTE = AGENTS_PAGE_ROUTE): string | null {
   if (typeof origin !== 'string' || !origin.trim()) return null;
   let u: URL;
   try { u = new URL(origin.trim()); } catch { return null; } // @silent-fallback-ok — no link is the honest answer
   if ((u.protocol !== 'https:' && u.protocol !== 'http:') || u.username || u.password) return null;
-  return consolePageUrl(u.origin, AGENTS_PAGE_ROUTE);
+  return consolePageUrl(u.origin, route);
 }
 
 /** "Do this on the dashboard" with the direct link when one is known, else the page in plain words. */
@@ -161,10 +163,14 @@ export function dashboardHint(url: string | null | undefined): string {
     : 'Do this on the dashboard\'s Other agents page (under People) with your PIN.';
 }
 
-/** Where to paste an invite this chat could not take, with the direct link when one is known. */
+/**
+ * Where to paste an invite this chat could not take. With a link (`AGENTS_PASTE_ROUTE`) the page
+ * opens with the paste box ready, so the line only says to paste; without one it names the steps.
+ */
 export function pasteInviteHint(url: string | null | undefined): string {
-  const steps = 'To pair, open the dashboard\'s Other agents page, tap Connect another agent, paste the invite under "I was sent one" and approve with your PIN';
-  return url ? `${steps}: ${url}` : `${steps}. The page is under People.`;
+  return url
+    ? `Paste the invite in the box this link opens on your dashboard, then approve with your PIN: ${url}`
+    : 'To pair, open the dashboard\'s Other agents page (under People), tap Connect another agent, paste the invite under "I was sent one" and approve with your PIN.';
 }
 export const NOT_OWNER_REFUSAL = 'Only the agent\'s owner can do this.';
 export const NO_OWNER_REFUSAL = 'I can\'t approve this here because this agent hasn\'t been told who its owner is.';
@@ -289,13 +295,13 @@ export class PairingInviteTelegram {
    * agent names no owner: a refusal posted for someone who is known NOT to be the owner gets the
    * plain words (they cannot use the PIN page, and the address is not theirs to have). Never throws.
    */
-  private dashboardLink(fromUserId?: unknown): string | null {
+  private dashboardLink(fromUserId?: unknown, route: typeof AGENTS_PAGE_ROUTE | typeof AGENTS_PASTE_ROUTE = AGENTS_PAGE_ROUTE): string | null {
     try {
       if (fromUserId !== undefined) {
         const owner = this.deps.ownerUserId();
         if (owner !== undefined && Number(fromUserId) !== owner) return null;
       }
-      return agentsPageUrl(this.deps.dashboardOrigin?.() ?? null) ?? null;
+      return agentsPageUrl(this.deps.dashboardOrigin?.() ?? null, route) ?? null;
     } catch { return null; } // @silent-fallback-ok — the plain-words line still names the page
   }
 
@@ -347,7 +353,7 @@ export class PairingInviteTelegram {
   async onForwardedInvite(m: ForwardedInvite): Promise<void> {
     const refusal = this.operatorTap(m.fromUserId, m.chatId, m.verified);
     if (refusal) {
-      await this.deps.send(m.topicId, `I got a pairing invite, but I can't take it from here. ${refusal} ${pasteInviteHint(this.dashboardLink(m.fromUserId))}`);
+      await this.deps.send(m.topicId, `I got a pairing invite, but I can't take it from here. ${refusal} ${pasteInviteHint(this.dashboardLink(m.fromUserId, AGENTS_PASTE_ROUTE))}`);
       return;
     }
     const r = await this.deps.flow.receiveInvite(m.text);
