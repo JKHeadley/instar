@@ -8,7 +8,7 @@
 
 ## Summary of the change
 
-The required docs-coverage gate (`node scripts/docs-coverage.mjs --check`) was red on main `59aedce47` (1.3.1735). About 99 new modules — mostly the Conversations graph from PR 3013 — shipped with no docs, which pulled class coverage under its floor.
+The advisory Actions docs-coverage check (`node scripts/docs-coverage.mjs --check`) was red on main `59aedce47` (1.3.1735). About 99 new modules — mostly the Conversations graph from PR 3013 — shipped with no docs, which pulled class coverage under its floor.
 
 This change adds two developer architecture pages:
 
@@ -74,7 +74,7 @@ No migration is needed: no installed-agent files, hooks, config defaults, skills
 
 ## ELI16
 
-Instar has an automatic checker that counts how many of its code modules are explained somewhere in the documentation website. If too few are explained, the checker fails, and that blocks changes from being merged. A big feature called the Conversations graph recently landed. It adds about a hundred new modules. They store how conversations relate to each other, keep encrypted copies among the enrolled graph members, and handle what happens when a machine is lost or someone asks for content to be deleted. None of those modules had docs yet, so the share of explained modules fell from about 55% to 50%, and the checker went red for everyone.
+Instar has an automatic checker that counts how many of its code modules are explained somewhere in the documentation website. If too few are explained, this advisory online check fails. The project uses a separate required verification step for merge approval. A big feature called the Conversations graph recently landed. It adds about a hundred new modules. They store how conversations relate to each other, keep encrypted copies among the enrolled graph members, and handle what happens when a machine is lost or someone asks for content to be deleted. None of those modules had docs yet, so the share of explained modules fell from about 55% to 50%, and the checker went red for everyone.
 
 This repair does not lower the bar, add exceptions, or change how the checker counts. It adds two real pages that a developer can read to understand that code. The first explains how a conversation record is written, checked by a "witness", copied among graph members, and moved when the set of machines changes. The second explains recovery after a crash, removing a machine that is gone for good, getting the owner back in control, and deleting captured content. Both pages are taken from the code's own comments, and they also say what the code does not guarantee. The checker passes with the same rules as before, because the modules are now actually explained.
 
@@ -84,7 +84,7 @@ Undocumented class entries outside this area are left as they were. That include
 
 ## Conclusion
 
-A Tier 1 docs-only repair that turns the required docs-coverage gate green under unchanged rules. No runtime behavior changes.
+A Tier 1 docs-only repair that turns the advisory docs-coverage check green under unchanged rules. No runtime behavior changes.
 
 ## Second-pass review (if required)
 
@@ -98,3 +98,7 @@ Fresh native Opus 5.5 review concurred. It independently checked about 25 specif
 - Not done yet at this checkpoint: write-trace, commit, and the full hosted CI run. No Vitest or full suite was run; none is needed for docs-only changes, and none is claimed.
 
 Root follow-up before independent review: corrected the custody introduction to enrolled graph members (not every installed machine); corrected the ELI16 in the same way; added the two manual sidebar links. Site build and independent review remain pending.
+
+## Merge-policy clarification
+
+Root verified the live main rules after the initial review: the required test status is `instar/local-verify`, together with applicable code-owner review. Actions Docs Coverage is advisory. Calling it a required merge gate in the original checkpoint was incorrect. This documentation improvement is separate maintenance and must not hold Threadline history PR #3078 after that PR passes its actual required verification. Source pages, sidebar and coverage floors are unchanged by this clarification.

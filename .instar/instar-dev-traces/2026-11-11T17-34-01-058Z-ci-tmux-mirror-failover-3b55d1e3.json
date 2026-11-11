@@ -1,0 +1,26 @@
+{
+  "version": 3,
+  "slug": "ci-tmux-mirror-failover",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T17:34:01.058Z",
+  "artifactPath": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "artifactSha256": "baef87aeebc2247a2b2a0bf9b8a2c0eb7c0978c4e33abd5bbfca8c4f3dcc1b67",
+  "coveredFiles": [
+    "upgrades/side-effects/ci-tmux-mirror-failover.md",
+    "upgrades/side-effects/docs-coverage-conversations.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Metadata-only merge of the reviewed documentation parent plus a factual merge-policy clarification, independently checked against live repository rules. All site pages, sidebar and executable CI script are unchanged from reviewed candidates. Required Local Verify and applicable code-owner conditions are preserved; advisory Actions errors do not block the separate Threadline repair.",
+  "eli16Path": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

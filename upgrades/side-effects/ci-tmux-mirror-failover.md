@@ -32,7 +32,7 @@ The failure is in runner preparation, and the fix is in the script that prepares
 
 ## 4. Signal vs authority compliance
 
-The setup step cannot green a PR. Required GitHub checks and Local Verify still decide merge.
+The setup step cannot green a PR. Merge protection is unchanged: live main requires `instar/local-verify` and applicable code-owner review; Actions jobs are advisory. The evidence requested below for this CI candidate is distinct from the repository merge rules.
 
 ## 5. Interactions
 
@@ -60,3 +60,7 @@ Revert the one script hunk. No state or data.
 ## Second-pass review
 
 Fresh native Opus 5.5 independent reviewer concurred as a candidate after reading the script diff, notes, three actual failure logs and workflow callers; it independently ran bash syntax validation, not Vitest or hosted CI. The root independently ran the three existing targeted unit tests. The reviewer disclosed that it did not fetch the runner-image source; root verified that primary source separately. The failover mechanism remains an inference until observed on a stalled mirror. Acceptance requires every hosted unit shard plus integration and E2E to reach and pass their suites on the final combined tree. If the mirror is healthy, a green run proves no regression rather than exercised failover. No main first-contact review cap or gate authority was reset.
+
+## Merge-policy clarification
+
+Root verified live main rules after the initial checkpoint. Advisory Actions failures must not hold Threadline PR #3078 once its actual required Local Verify and code-owner conditions pass. This CI maintenance change is separate from the documentation improvement; its PR is stacked on the reviewed documentation parent and will target main after that parent lands. The script remains byte-for-byte the independently reviewed candidate.
