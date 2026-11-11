@@ -26,7 +26,7 @@ export function buildSyncPage(store: DocumentStore, have: Record<string, number>
   const purged = store.docIds().filter((d) => store.isPurged(d));
   const pruned: Record<string, string[]> = {};
   for (const d of store.docIds()) {
-    const ids = [...new Set(store.rowsOf(d).flatMap((r) => (r.eventKind === 'prune' ? r.versionIds : [])))];
+    const ids = [...new Set(store.allRowsOf(d).flatMap((r) => (r.eventKind === 'prune' ? r.versionIds : [])))];
     if (ids.length) pruned[d] = ids;
   }
   // Rows and the blobs they name travel together under ONE budget: a row is added only with all of
@@ -106,12 +106,12 @@ export function applySyncPage(store: DocumentStore, input: unknown): ApplyResult
 }
 
 function rowNamesBlob(store: DocumentStore, docId: string, hash: string): boolean {
-  return store.rowsOf(docId).some((r) => blobHashesOf(r).includes(hash));
+  return store.allRowsOf(docId).some((r) => blobHashesOf(r).includes(hash));
 }
 
 function chunkVersion(store: DocumentStore, docId: string, hash: string): string | null {
   // A blob shared by a pruned and a kept version is kept: name a kept version if there is one.
-  const versions = store.rowsOf(docId).filter((r) => r.eventKind === 'version-chunk' && r.payloadHash === hash).map((r) => (r as { versionId: string }).versionId);
+  const versions = store.allRowsOf(docId).filter((r) => r.eventKind === 'version-chunk' && r.payloadHash === hash).map((r) => (r as { versionId: string }).versionId);
   if (versions.length === 0) return null;
   return versions.find((v) => !store.isPruned(docId, v)) ?? versions[0];
 }

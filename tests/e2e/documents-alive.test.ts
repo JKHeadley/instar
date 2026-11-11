@@ -55,9 +55,10 @@ const auth = () => ({ Authorization: `Bearer ${AUTH}` });
 
 describe('Instar Documents — feature is alive', () => {
   it('serves on a development agent through the production init path', async () => {
-    const { app, stateDir } = await boot({ developmentAgent: true });
+    const { app, stateDir } = await boot({ developmentAgent: true, tunnel: { enabled: false, type: 'named', hostname: 'docs-e2e.example.dev' } });
     const created = await request(app).post('/docs').set(auth()).send({ title: 'Plan', markdown: '# Plan\n\nWe ship in steps.\n', primary: 'telegram:7' });
     expect(created.status).toBe(201);
+    expect(created.body.url).toBe(`https://docs-e2e.example.dev/docs/${created.body.id}`);
     const id = created.body.id as string;
     const read = await request(app).get(`/docs/${id}/data`).set(auth());
     expect(read.status).toBe(200);
@@ -69,6 +70,29 @@ describe('Instar Documents — feature is alive', () => {
     // The real store wrote signed rows to disk under the documents directory.
     expect(fs.readdirSync(path.join(stateDir, 'documents', 'rows')).length).toBe(1);
     expect((await request(app).get('/docs/health').set(auth())).body).toMatchObject({ ok: true, pending: 0 });
+    // The document page (§3.6) is mounted on the real server: the shell and its script load with no
+    // bearer token and a strict CSP, and its data needs the page's own read pass.
+    const shell = await request(app).get(`/docs/${id}`);
+    expect(shell.status).toBe(200);
+    expect(shell.headers['content-security-policy']).toContain("script-src 'self'");
+    expect(shell.text).not.toContain('We ship in steps');
+    const js = await request(app).get('/docs/_assets/doc-page.js');
+    expect(js.status).toBe(200);
+    expect(js.headers['content-type']).toContain('javascript');
+    expect((await request(app).get(`/docs/${id}/page-data`)).status).toBe(401);
+    // Writes need a device signature: a bare request is refused, never 500.
+    expect((await request(app).post(`/docs/${id}/w/comment`).set('X-Instar-Request', '1').send({})).status).toBe(401);
+    // The link graph answers from the document.
+    const graph = await request(app).get(`/docs/graph?from=doc:${id}`).set(auth());
+    expect(graph.status).toBe(200);
+    expect(graph.body.edges).toContainEqual({ from: `doc:${id}`, to: 'telegram:7', kind: 'primary' });
+  });
+
+  it('without a permanent address, a create says so instead of handing out a link nobody can open', async () => {
+    const { app } = await boot({ developmentAgent: true });
+    const r = await request(app).post('/docs').set(auth()).send({ title: 'x', markdown: 'y', primary: 'telegram:7' });
+    expect(r.status).toBe(409);
+    expect(r.body.error).toBe('documents-need-a-named-tunnel');
   });
 
   it('is dark on a fleet config: 503 documents-off', async () => {
@@ -77,5 +101,6 @@ describe('Instar Documents — feature is alive', () => {
     expect(r.status).toBe(503);
     expect(r.body.error).toBe('documents-off');
     expect((await request(app).get('/docs/health').set(auth())).status).toBe(503);
+    expect((await request(app).get('/docs/_assets/doc-page.js')).status).toBe(503);
   });
 });

@@ -562,9 +562,17 @@ export class MobilePairingService {
     const log = this.teamLog();
     if (!log || log.healthState() !== 'ok') return;
     for (const d of this.devices.list()) {
-      if (d.role !== 'team' || d.status !== 'active' || !d.publicKey || !d.userId) continue;
-      const keyHash = deviceKeyHashOf(d.publicKey);
-      if (log.state().bindings.get(keyHash) !== d.userId) log.appendMachineEvents([{ type: 'phone-bind', keyHash, deviceId: d.id, boundTo: d.userId }]);
+      if (d.status !== 'active') continue;
+      const key = deviceKeyOf(d);
+      if (!key) continue;
+      const keyHash = deviceKeyHashOf(key);
+      // Team devices are bound to their person. The owner's devices are bound too, so every machine
+      // can tell whose signature a document row carries (instar-document-viewer §3.6): phones as
+      // 'owner' (as a team request already binds them), browsers as 'owner-browser', which never
+      // counts as the owner in this log.
+      const boundTo = d.role === 'team' ? d.userId : (d.role ?? 'owner') === 'owner' ? (isBrowserDevice(d) ? 'owner-browser' : 'owner') : null;
+      if (!boundTo || (d.role === 'team' && isBrowserDevice(d))) continue;
+      if (log.state().bindings.get(keyHash) !== boundTo) log.appendMachineEvents([{ type: 'phone-bind', keyHash, deviceId: d.id, boundTo }]);
     }
   }
 
@@ -927,6 +935,8 @@ export class MobilePairingService {
 
   /** After any activation of a browser record: its code, nonces and dashboard code are gone; others stay code-only. */
   afterActivation(deviceId: string): void {
+    // Bind the newly active device so every machine knows whose it is (documents §3.6).
+    try { this.bindTeamPhones(); } catch { /* @silent-fallback-ok — bound again at the next boot or confirm */ }
     this.confirm.drop(deviceId);
     this.dropDashboardCode(deviceId);
     for (const [n, id] of this.declineNonces) if (id === deviceId) this.declineNonces.delete(n);
@@ -1623,7 +1633,8 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       svc.dropDashboardCode(d.id);
       svc.noteActivated(d.id);
       for (const [n, id] of svc.declineNonces) if (id === d.id) svc.declineNonces.delete(n);
-      try { if (d.role === 'team') svc.bindTeamPhones(); } catch (err) { deps.reportDegradation?.('TeamAccess.bind', err); } // @silent-fallback-ok — reported; bound at the next boot
+      // Every confirmed phone is bound (team phones to their person, the owner's to 'owner') so other machines know whose it is.
+      try { svc.bindTeamPhones(); } catch (err) { deps.reportDegradation?.('TeamAccess.bind', err); } // @silent-fallback-ok — reported; bound at the next boot
       featureEvidence.record('mobilePairing', { kind: 'fired', reason: 'confirmed', context: { deviceId: d.id, approvedVia, role: d.role ?? 'owner' } });
       res.json({ status: 'active' });
       return;
@@ -1772,16 +1783,20 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     if (notifyTimes.length >= 120) { svc.push.noteRefused(); res.status(429).json({ error: 'too-many-requests' }); return; }
     notifyTimes.push(t);
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const kind = b.kind === 'notice' ? 'notice' : b.kind === 'item' ? 'item' : b.kind === 'reply' ? 'reply' : null;
+    const kind = b.kind === 'notice' ? 'notice' : b.kind === 'item' ? 'item' : b.kind === 'reply' ? 'reply' : b.kind === 'document' ? 'document' : null;
     const dedupeKey = typeof b.dedupeKey === 'string' ? b.dedupeKey.slice(0, 200) : '';
     const sourceMachine = typeof b.sourceMachine === 'string' ? b.sourceMachine.slice(0, 80) : '';
     if (!kind || !dedupeKey || !sourceMachine) { res.status(400).json({ error: 'bad-trigger' }); return; }
     // A reply trigger (mobile-native-conversations §4.7) names its app conversation by strict UUID only.
     const conversationKey = kind === 'reply' && typeof b.conversationKey === 'string' && new RegExp(`^${APP_CONVERSATION_KEY_PATTERN}$`).test(b.conversationKey) ? b.conversationKey : null;
     if (kind === 'reply' && !conversationKey) { res.status(400).json({ error: 'bad-trigger' }); return; }
+    // A document trigger names the document by strict UUID and the answered comment (instar-document-viewer, app contract 6).
+    const docOk = kind !== 'document' || (typeof b.itemId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(b.itemId) && typeof b.commentKey === 'string' && b.commentKey.length <= 200);
+    if (!docOk) { res.status(400).json({ error: 'bad-trigger' }); return; }
     const trig: PushTrigger = {
       kind, dedupeKey, sourceMachine,
       ...(kind === 'item' && typeof b.itemId === 'string' ? { itemId: b.itemId.slice(0, 120) } : {}),
+      ...(kind === 'document' ? { itemId: b.itemId as string, commentKey: b.commentKey as string } : {}),
       ...(conversationKey ? { conversationKey } : {}),
       ...(conversationKey && typeof b.messageId === 'string' && /^[a-z0-9._:-]{1,128}$/.test(b.messageId) ? { messageId: b.messageId } : {}),
       ...(typeof b.priority === 'string' ? { priority: b.priority.slice(0, 20) } : {}),
@@ -2226,6 +2241,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   // documents router applies its own per-document access (mayDoDocument) on top.
   ['GET', /^\/mobile\/docs$/, 'guest'],
   ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, 'guest'],
+  ['POST', /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, 'guest'],
+  ['GET', /^\/docs\/[0-9a-f-]{36}\/data$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
@@ -2293,6 +2310,13 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     // Instar Documents phone reads (instar-document-viewer §4.2). Read-only; per-document access is the documents router's.
     { method: 'GET', re: /^\/mobile\/docs$/, statuses: active, body: 'none' },
     { method: 'GET', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, statuses: active, body: 'none' },
+    // A single-use 60-second code that opens one document's page in the app (§3.6). Mints no write.
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, statuses: active, body: 'json', ownBucket: 30, bucket: 'doc-open' },
+    // The app cuts a comment's quote from the text it fetched itself, never from the page (§3.6).
+    { method: 'GET', re: /^\/docs\/[0-9a-f-]{36}\/data$/, statuses: active, body: 'none' },
+    // Moving a document to another conversation (§4.2): owner phone, Face ID-signed challenge.
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.

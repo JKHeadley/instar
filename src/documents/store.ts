@@ -34,6 +34,23 @@ export interface StoreHealth {
   rows: number;
 }
 
+/**
+ * A device-signed row's event id is derived from the device and its request id (§3.6), so the same
+ * signed request names the same event on every machine; other rows get a fresh uuid.
+ */
+function requestKeyOf(r: DocRow): string | null {
+  const a = r.actor;
+  return (a.type === 'person' || a.type === 'owner-phone') && a.signedOrigin?.requestId ? `${a.signedOrigin.deviceId}|${a.signedOrigin.requestId}` : null;
+}
+
+function eventIdFor(actor: DocRow['actor']): string {
+  if ((actor.type === 'person' || actor.type === 'owner-phone') && actor.signedOrigin?.requestId) {
+    const h = crypto.createHash('sha256').update(`${actor.signedOrigin.deviceId}|${actor.signedOrigin.requestId}`).digest('hex');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-8${h.slice(17, 20)}-${h.slice(20, 32)}`;
+  }
+  return crypto.randomUUID();
+}
+
 export type IngestResult = 'applied' | 'duplicate' | 'pending' | { ignored: string };
 
 export class DocumentStore {
@@ -44,6 +61,13 @@ export class DocumentStore {
   private readonly pendingFile: string;
   private readonly purgedFile: string;
   private readonly prunedFile: string;
+  /**
+   * Rows whose chain position is proven but whose device origin is not verifiable here yet (the
+   * device key or its binding has not arrived), or was found wrong later. Kept in the chain so later
+   * rows of the same machine still apply, but left out of every read (`rowsOf`). Value: why.
+   */
+  private hidden = new Map<string, 'origin-pending' | 'origin-denied' | 'standing'>();
+  private readonly hiddenFile: string;
   private readonly refusedFile: string;
   /** Hash per held row key, to tell a duplicate from a fork. */
   private hashes = new Map<string, string>();
@@ -62,6 +86,8 @@ export class DocumentStore {
     keyLookup: MachineKeyLookup;
     standing: StandingCheck;
     incarnation?: string;
+    /** Re-checks the device signature behind a person or owner row (originCheck.ts). Production always sets it. */
+    origin?: (row: DocRow, usedRequestIds: ReadonlySet<string>) => 'ok' | 'denied' | 'pending';
   }) {
     this.dir = path.join(stateDir, 'documents');
     this.rowsDir = path.join(this.dir, 'rows');
@@ -69,6 +95,7 @@ export class DocumentStore {
     this.pendingFile = path.join(this.dir, 'pending.jsonl');
     this.purgedFile = path.join(this.dir, 'purged.json');
     this.prunedFile = path.join(this.dir, 'pruned.json');
+    this.hiddenFile = path.join(this.dir, 'hidden.json');
     this.refusedFile = path.join(this.dir, 'refused.jsonl');
     fs.mkdirSync(this.rowsDir, { recursive: true, mode: 0o700 });
     this.blobs = new BlobStore(path.join(this.dir, 'blobs'));
@@ -95,6 +122,11 @@ export class DocumentStore {
       if (!head || m.seq > head.seq) this.heads.set(m.s, { seq: m.seq, hash: m.hash });
     }
     for (const row of readJsonl<DocRow>(this.pendingFile)) if (!this.held.has(rowKeyOf(row))) this.pending.set(rowKeyOf(row), row);
+    for (const [k, why] of Object.entries(readJson<Record<string, 'origin-pending' | 'origin-denied' | 'standing'>>(this.hiddenFile) ?? {})) this.hidden.set(k, why);
+  }
+
+  private writeHidden(): void {
+    SafeFsExecutor.atomicWriteJsonSync(this.hiddenFile, Object.fromEntries(this.hidden), { operation: 'documents.hidden', mode: 0o600 });
   }
 
   private remember(row: DocRow): void {
@@ -113,7 +145,25 @@ export class DocumentStore {
 
   // ── Reads ───────────────────────────────────────────────────────────────────────────
 
-  rowsOf(docId: string): DocRow[] { return [...(this.byDoc.get(docId) ?? [])]; }
+  /** Every held row of a document, readable or not (chain members): for export, restore and sync. */
+  allRowsOf(docId: string): DocRow[] { return [...(this.byDoc.get(docId) ?? [])]; }
+
+  rowsOf(docId: string): DocRow[] {
+    const visible = (this.byDoc.get(docId) ?? []).filter((r) => !this.hidden.has(rowKeyOf(r)));
+    // One row per signed device request: the lowest row key wins on every machine (§3.6 replay).
+    const winner = new Map<string, string>();
+    for (const r of visible) {
+      const rq = requestKeyOf(r);
+      if (!rq) continue;
+      const k = rowKeyOf(r);
+      const w = winner.get(rq);
+      if (w === undefined || k < w) winner.set(rq, k);
+    }
+    return winner.size === 0 ? visible : visible.filter((r) => { const rq = requestKeyOf(r); return !rq || winner.get(rq) === rowKeyOf(r); });
+  }
+
+  /** Rows held but not readable here yet (origin not verifiable) or refused after the fact, with why. */
+  hiddenRows(): Array<{ key: string; why: string }> { return [...this.hidden].map(([key, why]) => ({ key, why })); }
   docIds(): string[] { return [...this.byDoc.keys()]; }
   isPurged(docId: string): boolean { return this.purged.has(docId); }
   isPruned(docId: string, versionId: string): boolean { return this.pruned.get(docId)?.has(versionId) ?? false; }
@@ -160,10 +210,11 @@ export class DocumentStore {
     const s = `${origin}/${this.incarnation}`;
     const head = this.heads.get(s);
     const docDeps: Record<string, number> = {};
-    for (const r of this.byDoc.get(docId) ?? []) docDeps[streamOf(r)] = Math.max(docDeps[streamOf(r)] ?? 0, r.seq);
+    // What this writer has seen: the readable rows (a hidden row is not part of any disclosure, §3.2).
+    for (const r of this.rowsOf(docId)) docDeps[streamOf(r)] = Math.max(docDeps[streamOf(r)] ?? 0, r.seq);
     const unsigned = {
       formatVersion: 1, docId, origin, incarnation: this.incarnation, seq: (head?.seq ?? 0) + 1, prevHash: head?.hash ?? null,
-      eventId: crypto.randomUUID(), receivedAt: new Date().toISOString(),
+      eventId: eventIdFor(header.actor), receivedAt: new Date().toISOString(),
       actor: header.actor, access: header.access, ...(header.sessionAccess ? { sessionAccess: header.sessionAccess } : {}),
       docDeps, primaryRow: header.primaryRow, ...body,
     } as UnsignedDocRow;
@@ -194,6 +245,20 @@ export class DocumentStore {
     // From here the row's chain position is proven: a refusal keeps its place (content discarded).
     if (this.purged.has(row.docId) && row.eventKind !== 'purge') return this.refuse(row, 'document-purged');
     if (row.eventKind === 'created' && (this.byDoc.get(row.docId) ?? []).some((r) => r.eventKind === 'created')) return this.refuse(row, 'second-created');
+    if (this.opts.origin) {
+      // A request id already used is not refused by arrival order: both rows are kept and every
+      // machine reads only the lowest row key for that device request (rowsOf), so all agree.
+      const o = this.opts.origin(row, new Set());
+      if (o === 'denied') return this.refuse(row, 'origin');
+      if (o === 'pending') {
+        // Keep its chain place so this machine's later rows still apply; hide it until it verifies.
+        this.persist(row);
+        this.hidden.set(k, 'origin-pending');
+        this.writeHidden();
+        this.pending.delete(k);
+        return 'pending';
+      }
+    }
     const standing = this.opts.standing(row);
     if (standing === 'denied') return this.refuse(row, 'standing');
     if (standing === 'pending') return this.hold(row);
@@ -203,9 +268,10 @@ export class DocumentStore {
     return 'applied';
   }
 
+
   /** Re-check every pending row (call when the team log advances or new rows arrive). */
   recheckPending(): number {
-    let applied = 0;
+    let applied = this.recheckHidden();
     let again = true;
     while (again) {
       again = false;
@@ -218,6 +284,35 @@ export class DocumentStore {
     }
     this.writePending();
     return applied;
+  }
+
+  /** Re-check rows hidden for an origin that was not verifiable yet. Returns how many became readable. */
+  private recheckHidden(): number {
+    if (!this.opts.origin) return 0;
+    let shown = 0;
+    let changed = false;
+    for (const [k, why] of [...this.hidden]) {
+      if (why !== 'origin-pending') continue;
+      const row = this.findRow(k);
+      if (!row) continue;
+      const o = this.opts.origin(row, new Set());
+      if (o === 'pending') continue;
+      changed = true;
+      if (o === 'denied') { this.hidden.set(k, 'origin-denied'); this.ignore('origin'); continue; }
+      const standing = this.opts.standing(row);
+      if (standing === 'pending') continue;
+      if (standing === 'denied') { this.hidden.set(k, 'standing'); this.ignore('standing'); continue; }
+      this.hidden.delete(k);
+      this.afterApply(row);
+      shown++;
+    }
+    if (changed) this.writeHidden();
+    return shown;
+  }
+
+  private findRow(key: string): DocRow | null {
+    for (const rows of this.byDoc.values()) for (const r of rows) if (rowKeyOf(r) === key) return r;
+    return null;
   }
 
   /** Store a blob for a document, refusing purged documents and pruned versions' chunks. */
@@ -330,7 +425,7 @@ export function updateExport(store: DocumentStore, stateDir: string): { rows: nu
     }
     const target = path.join(exportRows, `${key}.jsonl`);
     const have = new Set(readJsonl<DocRow>(target).map(rowKeyOf));
-    for (const r of store.rowsOf(docId)) {
+    for (const r of store.allRowsOf(docId)) {
       if (have.has(rowKeyOf(r))) continue;
       appendLineSync(target, JSON.stringify(r));
       rowsAdded++;
@@ -371,7 +466,7 @@ export function mergeRestore(store: DocumentStore, stateDir: string): { rows: nu
   for (const docId of store.docIds()) {
     const dir = path.join(exportDir, 'blobs', docKeyOf(docId));
     const chunkVersions = new Map<string, Set<string>>();
-    for (const r of store.rowsOf(docId)) {
+    for (const r of store.allRowsOf(docId)) {
       if (r.eventKind !== 'version-chunk') continue;
       const set = chunkVersions.get(r.payloadHash) ?? new Set<string>();
       set.add(r.versionId);

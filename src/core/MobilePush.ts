@@ -27,8 +27,10 @@ const BUNDLE_ID = 'io.sagemindai.instar';
 
 export interface PushTrigger {
   /** `reply`: an agent reply appended to a native app conversation (mobile-native-conversations §4.7). */
-  kind: 'item' | 'notice' | 'reply';
+  kind: 'item' | 'notice' | 'reply' | 'document';
   itemId?: string;
+  /** For `document` (instar-document-viewer, app contract item 6): the comment answered. `itemId` is the docId. */
+  commentKey?: string;
   /** For `reply`: the app conversation's UUID, so the phone can open it. Never the reply's text. */
   conversationKey?: string;
   /** For `reply`: the reply's message id, so the phone can ask for its preview (chat-media §4.11). */
@@ -88,6 +90,8 @@ export interface MobilePushDeps {
    * Absent ⇒ every phone, as before.
    */
   mayNotify?: (deviceId: string, conversationKey: string, messageId?: string) => boolean;
+  /** A `document` push goes only to the phones of the person whose comment was answered (fail closed when unset). */
+  mayNotifyDocument?: (deviceId: string, docId: string, commentKey: string) => boolean;
   /** Whether a phone gets anything but reply pushes. A team phone does not (team-roles-and-access §3.7). */
   receivesNotices?: (deviceId: string) => boolean;
   /** Is this phone's person still here? A held aggregate is dropped if not. */
@@ -203,11 +207,15 @@ export class MobilePushService {
         try { may = this.deps.mayNotify(d.id, t.conversationKey, t.messageId); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
         if (!may) continue;
       }
-      if (t.kind !== 'reply' && this.deps.receivesNotices && !this.deps.receivesNotices(d.id)) continue;
+      if (t.kind === 'document') {
+        let may = false;
+        try { may = !!(t.itemId && t.commentKey && this.deps.mayNotifyDocument?.(d.id, t.itemId, t.commentKey)); } catch { may = false; } // @silent-fallback-ok — fail closed: an unanswerable check sends nothing to that phone
+        if (!may) continue;
+      } else if (t.kind !== 'reply' && this.deps.receivesNotices && !this.deps.receivesNotices(d.id)) continue;
       const ds = this.dev(st, d.id);
       prune(ds, t0);
       if (!ds.pending && this.dueFor(ds, urgent) <= t0) {
-        await this.send(d.id, { kind: t.kind, itemId: t.kind === 'item' ? t.itemId : undefined, conversationKey: t.kind === 'reply' ? t.conversationKey : undefined, messageId: t.kind === 'reply' ? t.messageId : undefined, ...(t.kind === 'notice' && t.subject ? { subject: t.subject } : {}), machine: t.sourceMachine, count: 1 }, urgent && this.throttled(ds));
+        await this.send(d.id, { kind: t.kind, itemId: t.kind === 'item' || t.kind === 'document' ? t.itemId : undefined, ...(t.kind === 'document' ? { commentKey: t.commentKey } : {}), conversationKey: t.kind === 'reply' ? t.conversationKey : undefined, messageId: t.kind === 'reply' ? t.messageId : undefined, ...(t.kind === 'notice' && t.subject ? { subject: t.subject } : {}), machine: t.sourceMachine, count: 1 }, urgent && this.throttled(ds));
       } else {
         ds.pending = { count: (ds.pending?.count ?? 0) + 1, hasUrgent: (ds.pending?.hasUrgent ?? false) || urgent };
         ds.dueAt = this.dueFor(ds, ds.pending.hasUrgent);
@@ -357,16 +365,19 @@ function prune(ds: DeviceState, t0: number): void {
   if (ds.backoffUntil && ds.backoffUntil <= t0) ds.backoffUntil = null;
 }
 
-export interface PushPayloadInput { kind: 'item' | 'notice' | 'reply' | 'aggregate'; subject?: PushSubject; itemId?: string; conversationKey?: string; messageId?: string; machine?: string; count: number; /** The app-conversation unread total for this phone (mobile-unread-messages §3.6). */ badge?: number }
+export interface PushPayloadInput { kind: 'item' | 'notice' | 'reply' | 'document' | 'aggregate'; subject?: PushSubject; itemId?: string; commentKey?: string; conversationKey?: string; messageId?: string; machine?: string; count: number; /** The app-conversation unread total for this phone (mobile-unread-messages §3.6). */ badge?: number }
 
 export function buildPayload(agentName: string, agentId: string, deviceId: string, p: PushPayloadInput): Record<string, unknown> {
   const body = p.kind === 'aggregate' ? `${p.count} more ${p.count === 1 ? 'thing needs' : 'things need'} you`
     : p.kind === 'reply' ? 'New reply'
+    : p.kind === 'document' ? 'New answers to your comments'
     : p.kind === 'notice' && p.subject && SUBJECT_TEXT[p.subject] ? SUBJECT_TEXT[p.subject] : 'Something needs you';
   const instar: Record<string, unknown> = { kind: p.kind, agentId, deviceId, count: p.count };
   // The app opens the waiting approval when this is tapped.
   if (p.kind === 'notice' && p.subject && SUBJECT_TEXT[p.subject]) instar.subject = p.subject;
   if (p.kind === 'item' && p.itemId) { instar.itemId = p.itemId; instar.machine = p.machine; }
+  // The document and comment to open; never the answer's text or the title (the phone fetches them).
+  if (p.kind === 'document' && p.itemId) { instar.itemId = p.itemId; instar.machine = p.machine; if (p.commentKey && p.commentKey.length <= 200) instar.commentKey = p.commentKey; }
   // The conversation to open; never the reply's text (the phone fetches it itself).
   if (p.kind === 'reply' && p.conversationKey) {
     instar.conversationKey = p.conversationKey;

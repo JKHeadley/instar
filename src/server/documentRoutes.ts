@@ -7,6 +7,8 @@
  * bearer), applies `mayDoDocument` through the service, and answers `404 unknown-document` for
  * anything the caller may not see, so nobody can probe.
  */
+import { projectText } from '../documents/projection.js';
+import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { Router, type Request, type Response } from 'express';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import type { ResolvedPerson } from '../core/MobilePeople.js';
@@ -44,6 +46,10 @@ export interface DocumentRouteDeps {
   deviceApprovedVia: (deviceId: string) => string | null;
   /** What a session in this conversation knew of the team log (§3.4 sessionAccess); null = current vector. */
   sessionAccessFor?: (ref: ConversationRef) => Vector | null;
+  /** Tell the comment's author's phones there is an answer (push kind `document`, app contract 6). */
+  notifyDocumentAnswer?: (docId: string, commentKey: string) => void;
+  /** The permanent origin people open documents on (a named tunnel), or null when there is none. Absent: not checked. */
+  linkOrigin?: () => string | null;
 }
 
 /** The conversation a session's place key belongs to, when it is one conversation (§3.3). */
@@ -103,6 +109,9 @@ function readerFor(caller: Caller, primary: ConversationRef | null, deps: Docume
 
 function fail(res: Response, err: unknown): void {
   if (err instanceof DocError) { res.status(err.status).json({ error: err.code, ...(err.message !== err.code ? { detail: err.message } : {}) }); return; }
+  // A row the store refused (its origin, chain or standing) is a refusal, not a server fault.
+  if (err instanceof Error && err.message.startsWith('row not applied')) { featureEvidence.record('documents', { kind: 'error', reason: 'write refused by the store' }); res.status(409).json({ error: 'write-refused' }); return; }
+  featureEvidence.record('documents', { kind: 'error', reason: 'server error' });
   res.status(500).json({ error: 'documents-error' });
 }
 
@@ -110,6 +119,7 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
   const router = Router();
 
   const ready = (req: Request, res: Response): { svc: DocumentService; caller: Caller } | null => {
+    if (req.method === 'POST') res.once('finish', () => { if (res.statusCode >= 200 && res.statusCode < 300 && isDocumentsEnabled(deps.config())) featureEvidence.record('documents', { kind: 'fired', reason: `agent ${req.path.replace(/[0-9a-f-]{36}/g, ':id')}` }); });
     if (!isDocumentsEnabled(deps.config())) { res.status(503).json({ error: 'documents-off' }); return null; }
     const svc = deps.service();
     if (!svc) { res.status(503).json({ error: 'documents-unavailable', detail: 'Documents need this machine to have an identity.' }); return null; }
@@ -137,11 +147,16 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
       if (!isConversationRef(body.primary)) { res.status(400).json({ error: 'bad-primary' }); return; }
       primary = body.primary;
     } else if (r.caller.principal.kind === 'agent' && !r.caller.principal.ownerReach) {
-      res.status(400).json({ error: 'primary-required', detail: 'Name the conversation this session belongs to.' }); return;
+      // A session's documents default to its own conversation (§3.9).
+      primary = conversationOfPlace(r.caller.principal.placeKey);
+      if (!primary) { res.status(400).json({ error: 'primary-required', detail: 'Name the conversation this session belongs to.' }); return; }
     } else {
       primary = deps.ownerConversation();
     }
     if (!primary) { res.status(409).json({ error: 'documents-need-a-conversation', detail: 'Documents need the Instar app or Telegram. Share this as a read-only page instead.' }); return; }
+    // People open documents through a permanent address; without one, share a read-only page instead (§3.9).
+    const origin = deps.linkOrigin ? deps.linkOrigin() : undefined;
+    if (origin === null) { res.status(409).json({ error: 'documents-need-a-named-tunnel', detail: 'Documents need a permanent address for this agent (a named tunnel). Share this as a read-only page instead.' }); return; }
     try {
       const derived = typeof body.derivedFrom === 'string' && isUuid(body.derivedFrom.replace(/^doc:/, '')) ? body.derivedFrom.replace(/^doc:/, '') : null;
       if (derived) {
@@ -150,14 +165,17 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
         primary = src.state.primary;
       }
       const out = r.svc.create(r.caller, { title: body.title, markdown: body.markdown, primary: primary!, createdFrom: derived ? (`doc:${derived}` as NodeRef) : primary! });
-      res.status(201).json({ id: out.id, versionId: out.versionId, url: `/docs/${out.id}` });
+      res.status(201).json({ id: out.id, versionId: out.versionId, url: `${origin ?? ''}/docs/${out.id}` });
     } catch (err) { fail(res, err); }
   });
 
   router.get('/docs', (req, res) => {
     const r = ready(req, res); if (!r) return;
     const conversation = typeof req.query.conversation === 'string' ? req.query.conversation : null;
-    if (!conversation || !isConversationRef(conversation)) { res.status(400).json({ error: 'conversation-required' }); return; }
+    const q = typeof req.query.q === 'string' ? req.query.q.slice(0, 100) : undefined;
+    // No conversation: every document this caller may see (the console's list, a title search).
+    if (!conversation) { try { res.json({ documents: r.svc.listAll(r.caller, q) }); } catch (err) { fail(res, err); } return; }
+    if (!isConversationRef(conversation)) { res.status(400).json({ error: 'conversation-required' }); return; }
     try { res.json({ documents: r.svc.listForConversation(conversation, r.caller) }); } catch (err) { fail(res, err); }
   });
 
@@ -190,6 +208,8 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
       res.json({
         id, title: d.title, primary: d.state.primary, markdown: d.markdown,
         version: d.version ? { id: d.version.versionId, label: d.version.label, projectionVersion: d.version.projectionVersion } : null,
+        // The plain-text projection comment offsets index into (§3.5): the app cuts quotes from it.
+        projection: d.version && d.markdown !== null ? projectText(d.markdown, d.version.projectionVersion).text : null,
         concurrentEdits: d.heads.length > 1,
       });
     } catch (err) {
@@ -245,7 +265,77 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
     if (!isUuid(id) || typeof body.body !== 'string') { res.status(400).json({ error: 'body-required' }); return; }
     // Only the agent replies through this route; people reply through the page's signed routes.
     if (r.caller.principal.kind !== 'agent' && r.caller.principal.kind !== 'bearer') { res.status(404).json({ error: 'unknown-document' }); return; }
-    try { res.status(201).json(r.svc.reply(id, forDoc(r.svc, r.caller, id), req.params.key, body.body)); } catch (err) { fail(res, err); }
+    try {
+      const out = r.svc.reply(id, forDoc(r.svc, r.caller, id), req.params.key, body.body);
+      res.status(201).json(out);
+      // The push goes only to the comment author's phones that may read the document (fail closed).
+      try { deps.notifyDocumentAnswer?.(id, req.params.key); } catch { /* @silent-fallback-ok — a missed push never undoes the reply; the page shows it */ }
+    } catch (err) { fail(res, err); }
+  });
+
+  // The link graph (§3.7): never passes through, counts or names a node the caller can't see.
+  router.get('/docs/graph', (req, res) => {
+    const r = ready(req, res); if (!r) return;
+    const from = String(req.query.from ?? '');
+    const depth = req.query.depth === '2' ? 2 : 1;
+    if (!isNodeRef(from)) { res.status(400).json({ error: 'bad-ref' }); return; }
+    const visible = (ref: string): boolean => {
+      if (r.caller.principal.kind === 'agent' && !r.caller.principal.ownerReach && !ref.startsWith('doc:')) return conversationOfPlace(r.caller.principal.placeKey) === ref;
+      return linkTargetVisible(r.svc, r.caller, ref as NodeRef, deps);
+    };
+    if (!visible(from)) { res.status(404).json({ error: 'unknown-document' }); return; }
+    const nodes = new Map<string, { ref: string; title?: string | null }>();
+    const edges: Array<{ from: string; to: string; kind: string; reason?: string }> = [];
+    const seenEdge = new Set<string>();
+    const addEdge = (a: string, b: string, kind: string, reason?: string | null): void => {
+      const k = `${a}|${b}|${kind}`;
+      if (seenEdge.has(k)) return;
+      seenEdge.add(k);
+      edges.push({ from: a, to: b, kind, ...(reason ? { reason } : {}) });
+    };
+    const docNode = (id: string) => {
+      try { return r.svc.read(id, forDoc(r.svc, r.caller, id)); } catch { return null; } // @silent-fallback-ok — an unreadable document is not in the graph
+    };
+    const expand = (ref: string): string[] => {
+      const next: string[] = [];
+      if (ref.startsWith('doc:')) {
+        const d = docNode(ref.slice(4));
+        if (!d) return next;
+        nodes.set(ref, { ref, title: d.title });
+        if (d.state.primary && visible(d.state.primary)) { addEdge(ref, d.state.primary, 'primary'); next.push(d.state.primary); }
+        for (const l of d.state.links.values()) {
+          if (!visible(l.to)) continue;
+          addEdge(ref, l.to, l.kind, r.svc.linkReason(ref.slice(4), l.reasonHash));
+          next.push(l.to);
+        }
+        return next;
+      }
+      nodes.set(ref, { ref });
+      // Documents that live in, or point at, this node.
+      for (const id of r.svc.allDocIds()) {
+        const f = r.svc.facts(id);
+        if (!f) continue;
+        const d = docNode(id);
+        if (!d) continue;
+        const dref = `doc:${id}`;
+        if (d.state.primary === ref) { addEdge(dref, ref, 'primary'); next.push(dref); }
+        for (const l of d.state.links.values()) if (l.to === ref) { addEdge(dref, ref, l.kind, r.svc.linkReason(id, l.reasonHash)); next.push(dref); }
+      }
+      return next;
+    };
+    let frontier = [from];
+    const done = new Set<string>();
+    for (let level = 0; level <= depth && frontier.length; level++) {
+      const nextFrontier: string[] = [];
+      for (const ref of frontier) {
+        if (done.has(ref)) continue;
+        done.add(ref);
+        if (level < depth) nextFrontier.push(...expand(ref));
+        else if (!nodes.has(ref)) nodes.set(ref, ref.startsWith('doc:') ? { ref, title: docNode(ref.slice(4))?.title ?? null } : { ref });
+      }
+      frontier = nextFrontier;
+    }
+    res.json({ from, depth, nodes: [...nodes.values()], edges: edges.filter((e) => nodes.has(e.from) && nodes.has(e.to)) });
   });
 
   router.get('/docs/:id/links', (req, res) => {
@@ -291,11 +381,13 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
       const c = forDoc(r.svc, r.caller, id);
       const d = r.svc.read(id, c);
       const open = [...d.state.comments.values()].filter((x) => !x.resolved);
-      const mine = c.principal.kind === 'person' ? open.filter((x) => x.author === (c.principal as { personKey: string }).personKey).length : open.filter((x) => x.author === 'owner').length;
+      const me = c.principal.kind === 'person' ? (c.principal as { personKey: string }).personKey : 'owner';
+      const myOpen = open.filter((x) => x.author === me).map((x) => x.key).sort();
+      const mine = myOpen.length;
       const heads: Record<string, number> = {};
       const store = deps.store();
       for (const row of store?.rowsOf(id) ?? []) heads[`${row.origin}/${row.incarnation}`] = Math.max(heads[`${row.origin}/${row.incarnation}`] ?? 0, row.seq);
-      res.json({ id, title: d.title, version: d.version?.label ?? null, openComments: open.length, myOpenComments: mine, primary: { ref: d.state.primary }, heads });
+      res.json({ id, title: d.title, version: d.version?.label ?? null, versionId: d.version?.versionId ?? null, openComments: open.length, myOpenComments: mine, myOpenCommentKeys: myOpen, primary: { ref: d.state.primary, primaryRow: d.state.primaryRowKey }, heads });
     } catch (err) { fail(res, err); }
   });
 

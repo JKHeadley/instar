@@ -145,3 +145,43 @@ describe('DocumentStore after review', () => {
     expect(() => A.s.append(DOC, created, { actor: agent, access: {}, primaryRow: null })).toThrow(/second-created/);
   });
 });
+
+describe('DocumentStore — device origins (§3.6)', () => {
+  const person = (requestId: string): Actor => ({ type: 'person', personKey: 'mara', deviceId: 'mp', client: 'phone', signedOrigin: { keyHash: 'k', deviceId: 'mp', domain: 'instar-docpage-v1', payloadB64: 'e30', host: 'h', timeMs: '1', sig: 's', requestId } });
+  const resolve = { eventKind: 'resolve' as const, commentKey: `mara:${'1'.repeat(8)}-1111-4111-8111-111111111111` };
+
+  it('a row whose device is not known yet keeps its place, stays unread, and later rows still apply', () => {
+    const k = keys();
+    let known = false;
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-')); tmp.push(dirA);
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'docs-')); tmp.push(dirB);
+    const A = new DocumentStore(dirA, { signer: k.signer('A'), keyLookup: k.lookup, standing: () => 'ok' });
+    const B = new DocumentStore(dirB, { signer: k.signer('B'), keyLookup: k.lookup, standing: () => 'ok', origin: (r) => (r.actor.type === 'person' ? (known ? 'ok' : 'pending') : 'ok') });
+    const r1 = A.append(DOC, created, { actor: agent, access: {}, primaryRow: null });
+    const pk = rowKeyOf(r1);
+    const r2 = A.append(DOC, resolve, { actor: person(`${Date.now()}-${crypto.randomUUID()}`), access: {}, primaryRow: pk });
+    const r3 = A.append(DOC, { eventKind: 'title', titleHash: H('t2') }, { actor: agent, access: {}, primaryRow: pk });
+    for (const r of [r1, r2, r3]) B.ingest(r);
+    expect(B.rowsOf(DOC).map((r) => r.seq)).toEqual([1, 3]);
+    known = true;
+    B.recheckPending();
+    expect(B.rowsOf(DOC).map((r) => r.seq)).toEqual([1, 2, 3]);
+  });
+
+  it('two rows from one signed request: every machine reads the same one (lowest row key)', () => {
+    const k = keys();
+    const A = store('A', k); const B = store('B', k); const C = store('C', k);
+    const r1 = A.s.append(DOC, created, { actor: agent, access: {}, primaryRow: null });
+    const pk = rowKeyOf(r1);
+    for (const x of [B.s, C.s]) x.ingest(r1);
+    const rq = `${Date.now()}-${crypto.randomUUID()}`;
+    const a2 = A.s.append(DOC, resolve, { actor: person(rq), access: {}, primaryRow: pk });
+    const b2 = B.s.append(DOC, resolve, { actor: person(rq), access: {}, primaryRow: pk });
+    expect(a2.eventId).toBe(b2.eventId);
+    A.s.ingest(b2); B.s.ingest(a2); C.s.ingest(b2); C.s.ingest(a2);
+    const keyOf = (x: DocumentStore) => x.rowsOf(DOC).filter((r) => r.eventKind === 'resolve').map(rowKeyOf);
+    expect(keyOf(A.s)).toEqual(keyOf(B.s));
+    expect(keyOf(C.s)).toEqual(keyOf(A.s));
+    expect(keyOf(A.s)).toHaveLength(1);
+  });
+});

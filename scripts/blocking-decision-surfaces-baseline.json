@@ -112,7 +112,7 @@
     },
     {
       "path": "src/templates/hooks/session-start.sh",
-      "sha256": "985941e22ff1b68fdaab400c96e55320d8ed345a1ed154cac178d032076031bc",
+      "sha256": "be5b96657dd11cc7e2ecf1c5ee48b8358336f386bcd2afbbb6f56f8579a63e14",
       "reason": "injects startup context; exits open when config/port/health are unavailable"
     },
     {

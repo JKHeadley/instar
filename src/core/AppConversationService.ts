@@ -58,6 +58,11 @@ export interface AppConversationServiceDeps {
   /** The session pool (app-conversations-in-the-pool). Absent, or `active()` false: the lease holder serves every conversation, as before. */
   pool?: () => AppPoolHandle | null;
   ownerName: () => string;
+  /**
+   * The conversation's documents block (instar-document-viewer §3.7), or null. Called on each
+   * dispatch; returns lines only when the list changed since the last time it was sent here.
+   */
+  documentNotes?: (conversationKey: string) => string[] | null;
   dispatch: () => AppInboundDispatch | null;
   /** Stop / pause the session serving an app conversation (by tmux name). */
   killSession?: (tmuxSession: string) => boolean;

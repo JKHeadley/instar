@@ -37,6 +37,7 @@ import { paceCard } from './pace.js';
 import { takeTicket, signInAtBoot } from './ticket-model.js';
 import { createLifecycle, splitHash } from './page-lifecycle.js';
 import { renderChats } from './chats.js';
+import { renderDocuments } from './documents.js';
 import { sheetIsOpen, closeSheet, unlockCheck, machineIssue, MACHINES_PAGE, newArrival, refreshHeld, setKids } from './ui.js';
 
 const TOKEN_KEY = 'instar_token';      // shared with the legacy dashboard
@@ -707,6 +708,7 @@ const NATIVE = {
   'work/ideas': renderIdeas,
   'work/sessions': renderSessions,
   'work/chats': renderChats,
+  'work/documents': renderDocuments,
   'capacity/machines': renderMachines,
   'capacity/health': renderHealth,
   'capacity/accounts': renderAccounts,

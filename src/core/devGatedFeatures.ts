@@ -909,7 +909,7 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     name: 'documents',
     configPath: 'documents.enabled',
     description: 'Instar Documents (docs/specs/instar-document-viewer.md): commentable, team-private documents that live in a conversation (POST /docs, GET /docs/:id/data, comments, versions, compare, links, phone reads); omitted ⇒ live on a development agent, dark on the fleet.',
-    justification: 'Every read and write goes through the deterministic access rule (a document is visible to exactly its conversation\'s audience; the agent can never share, move or speak as a person), rows are machine-signed and replicated by version-vector pull, and nothing outbound is sent by the feature itself. Off answers 503 and changes nothing else; stored documents stay on disk untouched.',
+    justification: 'Every read and write goes through the deterministic access rule (a document is visible to exactly its conversation\'s audience; the agent can never share, move or speak as a person), rows are machine-signed and replicated by version-vector pull, every person write is signed by that person\'s own device and re-checked on every machine, and the only outbound effect is a fixed-wording push to the commenter\'s own phones. Off answers 503 and changes nothing else; stored documents stay on disk untouched.',
   },
   {
     name: 'maturationBoard',

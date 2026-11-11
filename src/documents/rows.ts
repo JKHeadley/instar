@@ -60,6 +60,8 @@ export interface SignedOrigin {
   host: string;
   timeMs: string;
   sig: string;
+  /** The device-minted request id (docpage), or the single-use Face ID challenge (a move's device-signed request). */
+  requestId?: string;
 }
 
 export interface MachineSig { machineId: string; signerKeyHash: string; sig: string }
@@ -168,6 +170,7 @@ function validSignedOrigin(o: unknown): boolean {
   const x = o as Record<string, unknown>;
   return typeof x.keyHash === 'string' && typeof x.deviceId === 'string'
     && (x.domain === 'instar-device-v1' || x.domain === 'instar-docpage-v1')
+    && (x.requestId === undefined || (typeof x.requestId === 'string' && x.requestId.length <= 128))
     && typeof x.payloadB64 === 'string' && x.payloadB64.length <= 2048
     && typeof x.host === 'string' && typeof x.timeMs === 'string' && typeof x.sig === 'string';
 }

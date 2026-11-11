@@ -7,6 +7,7 @@
  * (device signature, session token, bearer, cookie) and the team view, and pass them in.
  */
 import crypto from 'node:crypto';
+import { canonicalJson } from './chain.js';
 import { mayDoDocument, type DocFacts, type DocOp, type Principal, type TeamView } from './access.js';
 import { reanchor, makeQuote, verifyQuote, type Anchor, type Quote } from './anchor.js';
 import { blobHash, listHash, newSalt, textToBlobs, type Blob } from './blobs.js';
@@ -37,6 +38,9 @@ export interface Caller {
 }
 
 export interface Limits { titleChars: number; commentBytes: number }
+
+export { commentKeysHashOf } from './originCheck.js';
+import { commentKeysHashOf } from './originCheck.js';
 
 export class DocumentService {
   constructor(private readonly store: DocumentStore, private readonly team: TeamView, private readonly limits: Limits = { titleChars: WRITE_DEFAULTS.titleChars, commentBytes: WRITE_DEFAULTS.commentBytes }) {}
@@ -91,16 +95,18 @@ export class DocumentService {
   /** Comments with quotes, re-anchored onto the latest version, for the agent and the page. */
   comments(docId: string, caller: Caller, status: 'open' | 'resolved' | 'all' = 'open'): Array<{
     key: string; author: string; quote: string | null; body: string | null; anchorState: 'ok' | 'edited' | 'orphaned'; start?: number; end?: number;
-    resolved: boolean; replies: Array<{ author: string; body: string | null }>; onVersion: string;
+    resolved: boolean; replies: Array<{ author: string; body: string | null; at: string | null }>; onVersion: string; at: string | null; edited: boolean;
   }> {
     const r = this.read(docId, caller);
     const latest = r.version;
     const latestText = latest && r.markdown !== null ? projectText(r.markdown, latest.projectionVersion).text : null;
+    const times = new Map<string, string>();
+    for (const row of this.store.rowsOf(docId)) times.set(rowKeyOf(row), row.receivedAt);
     const out = [];
     for (const c of r.state.comments.values()) {
       if (status === 'open' && c.resolved) continue;
       if (status === 'resolved' && !c.resolved) continue;
-      out.push({ ...this.placeComment(docId, r.state, c, latest, latestText), key: c.key, author: c.author, body: this.textOf(docId, c.revisions[c.revisions.length - 1].bodyHash), resolved: c.resolved, replies: c.replies.map((x) => ({ author: x.author, body: this.textOf(docId, x.bodyHash) })), onVersion: c.onVersion });
+      out.push({ ...this.placeComment(docId, r.state, c, latest, latestText), key: c.key, author: c.author, body: this.textOf(docId, c.revisions[c.revisions.length - 1].bodyHash), resolved: c.resolved, replies: c.replies.map((x) => ({ author: x.author, body: this.textOf(docId, x.bodyHash), at: times.get(x.rowKey) ?? null })), onVersion: c.onVersion, at: times.get(c.revisions[0].rowKey) ?? null, edited: c.revisions.length > 1 });
     }
     return out;
   }
@@ -127,6 +133,12 @@ export class DocumentService {
     const ta = this.versionText(docId, a); const tb = this.versionText(docId, b);
     if (ta === null || tb === null) throw new DocError(409, 'version-text-unavailable', 'This version\'s text was removed or is still arriving.');
     return diffWords(projectText(ta, a.projectionVersion).text, projectText(tb, b.projectionVersion).text);
+  }
+
+  /** May this caller do this op on this document? (for the page's buttons; never a substitute for the check) */
+  can(docId: string, caller: Caller, op: DocOp): boolean {
+    const f = this.facts(docId);
+    return !!f && mayDoDocument(caller.principal, f, op, this.team).ok;
   }
 
   // ── Writing ─────────────────────────────────────────────────────────────────────────
@@ -182,7 +194,7 @@ export class DocumentService {
   }
 
   /** Comment on a passage. The quote is cut from the version's projection, never sent by the page (§3.5). */
-  comment(docId: string, caller: Caller, input: { commentId?: string; onVersion: string; start: number; end: number; body: string }): { key: string } {
+  comment(docId: string, caller: Caller, input: { commentId?: string; onVersion: string; start: number; end: number; body: string; bodyBlobs?: Blob[]; bodyHash?: string }): { key: string } {
     this.require(docId, caller, 'comment');
     this.checkBody(input.body);
     const s = this.ownerState(docId);
@@ -195,22 +207,26 @@ export class DocumentService {
     const placed = verifyQuote(text, quote, input.start, input.end);
     if (!placed) throw new DocError(422, 'quote-not-in-document');
     const commentId = input.commentId && isUuid(input.commentId) ? input.commentId : crypto.randomUUID();
+    // A retry of the same comment (same id, same author) is idempotent (§3.6: flaky connections retry).
+    const existingKey = commentKeyOf(this.authorKey(caller), commentId);
+    if (s.comments.has(existingKey)) return { key: existingKey };
     const anchorHash = this.putText(docId, JSON.stringify(quote));
     const header = this.header(caller, s.primaryRowKey);
     this.store.append(docId, {
-      eventKind: 'comment', commentId, onVersion: input.onVersion, bodyHash: this.putText(docId, input.body),
+      eventKind: 'comment', commentId, onVersion: input.onVersion, bodyHash: this.bodyHashFor(docId, input.body, input.bodyBlobs, input.bodyHash),
       anchor: { anchorHash, start: placed.start, end: placed.end, blockHint: '' },
     }, header);
     return { key: commentKeyOf(this.authorKey(caller), commentId) };
   }
 
-  reply(docId: string, caller: Caller, commentKey: string, body: string): { replyId: string } {
+  reply(docId: string, caller: Caller, commentKey: string, body: string, signed?: { replyId: string; bodyBlobs: Blob[]; bodyHash: string }): { replyId: string } {
     this.require(docId, caller, 'reply');
     this.checkBody(body);
     const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
     if (!s.comments.has(commentKey)) throw new DocError(404, 'unknown-comment');
-    const replyId = crypto.randomUUID();
-    this.store.append(docId, { eventKind: 'reply', commentKey, replyId, bodyHash: this.putText(docId, body) }, this.header(caller, this.ownerState(docId).primaryRowKey));
+    const replyId = signed?.replyId && isUuid(signed.replyId) ? signed.replyId : crypto.randomUUID();
+    if (s.comments.get(commentKey)!.replies.some((x) => x.replyId === replyId)) return { replyId };
+    this.store.append(docId, { eventKind: 'reply', commentKey, replyId, bodyHash: this.bodyHashFor(docId, body, signed?.bodyBlobs, signed?.bodyHash) }, this.header(caller, this.ownerState(docId).primaryRowKey));
     return { replyId };
   }
 
@@ -224,19 +240,81 @@ export class DocumentService {
   }
 
   /** Record which comments a Send message covered (§3.8; the message itself goes through chat). */
-  recordSend(docId: string, caller: Caller, input: { batchId: string; messageRequestId: string }): { covered: string[] } {
+  recordSend(docId: string, caller: Caller, input: { batchId: string; messageRequestId: string; primaryRow?: string; commentKeysHash?: string }): { covered: string[] } {
     this.require(docId, caller, 'send');
     const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
+    // The document moved between the message and this row (§3.8): the comments stay unsent.
+    if (input.primaryRow && input.primaryRow !== s.primaryRowKey) throw new DocError(409, 'document-moved');
     const author = this.authorKey(caller);
+    // A retried Send (same batch) is idempotent.
+    if (s.sends.some((x) => x.batchId === input.batchId && x.author === author)) return { covered: [] };
     const covered = [...s.comments.values()].filter((c) => c.author === author && !c.resolved).map((c) => `${c.key}@${c.revisions[c.revisions.length - 1].rowKey}`);
+    // A signed Send names the comments the person saw unsent: sha256(canonicalJson(sorted keys)).
+    if (input.commentKeysHash !== undefined && input.commentKeysHash !== commentKeysHashOf(covered.map((k) => k.slice(0, k.lastIndexOf('@'))))) throw new DocError(409, 'comments-changed');
     this.store.append(docId, { eventKind: 'send', batchId: input.batchId, coveredHash: this.putList(docId, covered), primaryRow: s.primaryRowKey!, messageRequestId: input.messageRequestId }, this.header(caller, s.primaryRowKey));
     return { covered };
+  }
+
+  /**
+   * Move the document to another conversation (§3.2, §4.2): the owner's phone, Face ID-confirmed by
+   * the route. `docDepsSigned` is exactly the history the owner saw and agreed to disclose; every
+   * row it names must already be held here, and it must cover every row held now (a row written
+   * after the owner looked would otherwise be disclosed without being seen: 409 document-changed).
+   * Once shared, a document never moves back into an owner-only conversation.
+   */
+  setPrimary(docId: string, caller: Caller, primary: ConversationRef, docDepsSigned: Record<string, number>): void {
+    const f = this.require(docId, caller, 'move');
+    if (!isConversationRef(primary)) throw new DocError(400, 'bad-primary');
+    if (primary === f.primary) return;
+    if (f.everShared && this.team.ownerOnly(primary)) throw new DocError(409, 'once-shared-stays-shared');
+    const held: Record<string, number> = {};
+    for (const r of this.store.rowsOf(docId)) { const k = `${r.origin}/${r.incarnation}`; held[k] = Math.max(held[k] ?? 0, r.seq); }
+    for (const [k, seq] of Object.entries(docDepsSigned)) if (!Number.isSafeInteger(seq) || seq < 1 || (held[k] ?? 0) < seq) throw new DocError(409, 'document-not-here-yet');
+    for (const [k, seq] of Object.entries(held)) if ((docDepsSigned[k] ?? 0) < seq) throw new DocError(409, 'document-changed');
+    const s = this.ownerState(docId);
+    this.store.append(docId, { eventKind: 'primary-set', primary, docDepsSigned }, this.header(caller, s.primaryRowKey));
+  }
+
+  /** Comment keys whose current revision a Send by this caller already covered (the "sent" badge, §3.8). */
+  sentKeys(docId: string, caller: Caller): Set<string> {
+    const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
+    const author = this.authorKey(caller);
+    const covered = new Set<string>();
+    for (const send of s.sends) {
+      if (send.author !== author) continue;
+      try { for (const k of JSON.parse(this.textOf(docId, send.coveredHash) ?? '[]') as string[]) covered.add(k); } catch { /* @silent-fallback-ok — an unreadable list covers nothing; the comments show unsent */ }
+    }
+    const out = new Set<string>();
+    for (const c of s.comments.values()) if (covered.has(`${c.key}@${c.revisions[c.revisions.length - 1].rowKey}`)) out.add(c.key);
+    return out;
   }
 
   link(docId: string, caller: Caller, input: { to: NodeRef; kind: LinkKind; reason?: string }, targetVisible: (to: NodeRef) => boolean): void {
     this.require(docId, caller, 'link');
     if (!isNodeRef(input.to) || !targetVisible(input.to)) throw notFound();
     this.store.append(docId, { eventKind: 'link', to: input.to, kind: input.kind, ...(input.reason ? { reasonHash: this.putText(docId, input.reason.slice(0, WRITE_DEFAULTS.reasonChars)) } : {}) }, this.header(caller, this.ownerState(docId).primaryRowKey));
+  }
+
+  /** A link's reason text (shown only when both ends are visible; the route decides that). */
+  linkReason(docId: string, reasonHash: string | undefined): string | null { return reasonHash ? this.textOf(docId, reasonHash) : null; }
+
+  /** Every document id this machine holds (the graph walks them; visibility is checked per node). */
+  allDocIds(): string[] { return [...this.store.docIds()]; }
+
+  /** Every document the caller may see at least the metadata of, newest activity first; `q` filters readable titles. */
+  listAll(caller: Caller, q?: string): Array<{ id: string; title: string | null; primary: ConversationRef; version: number | null; openComments: number }> {
+    const out: Array<{ id: string; title: string | null; primary: ConversationRef; version: number | null; openComments: number; last: string }> = [];
+    const needle = q?.trim().toLowerCase() || null;
+    for (const id of this.store.docIds()) {
+      const f = this.facts(id);
+      if (!f || f.tombstoned || f.purged) continue;
+      if (!mayDoDocument(caller.principal, f, 'read-metadata', this.team).ok) continue;
+      const m = this.metadata(id, caller);
+      if (needle && !(m.title ?? '').toLowerCase().includes(needle)) continue;
+      const rows = this.store.rowsOf(id);
+      out.push({ id, title: m.title, primary: f.primary, version: m.version, openComments: m.openComments, last: rows.length ? rows[rows.length - 1].receivedAt : '' });
+    }
+    return out.sort((a, b) => b.last.localeCompare(a.last)).slice(0, 200).map(({ last: _l, ...x }) => x);
   }
 
   /** Documents whose primary is this conversation, filtered to what the caller may see (§3.7). */
@@ -252,7 +330,56 @@ export class DocumentService {
     return out.sort((a, b) => b.openComments - a.openComments);
   }
 
+  /** Edit one's own comment (a new revision; the old one stays in history). */
+  editComment(docId: string, caller: Caller, commentKey: string, body: string, signed?: { bodyBlobs: Blob[]; bodyHash: string }): void {
+    this.require(docId, caller, 'comment');
+    this.checkBody(body);
+    const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
+    const c = s.comments.get(commentKey);
+    if (!c || c.author !== this.authorKey(caller)) throw new DocError(404, 'unknown-comment');
+    this.store.append(docId, { eventKind: 'comment-edit', commentKey, bodyHash: this.bodyHashFor(docId, body, signed?.bodyBlobs, signed?.bodyHash) }, this.header(caller, s.primaryRowKey));
+  }
+
+  /** Re-attach one's own orphaned or moved comment to a new passage (§3.5). */
+  reanchorComment(docId: string, caller: Caller, commentKey: string, input: { onVersion: string; start: number; end: number }): void {
+    this.require(docId, caller, 'comment');
+    const s = this.ownerState(docId);
+    const mine = foldDocument(docId, this.store.rowsOf(docId), caller.reader).comments.get(commentKey);
+    if (!mine || mine.author !== this.authorKey(caller)) throw new DocError(404, 'unknown-comment');
+    const v = s.versions.get(input.onVersion);
+    const md = v ? this.versionText(docId, v) : null;
+    if (!v || md === null) throw new DocError(404, 'unknown-version');
+    const text = projectText(md, v.projectionVersion).text;
+    if (!(input.start >= 0 && input.end > input.start && input.end <= text.length)) throw new DocError(422, 'quote-not-in-document');
+    const quote = makeQuote(text, input.start, input.end);
+    const anchorHash = this.putText(docId, JSON.stringify(quote));
+    this.store.append(docId, { eventKind: 'comment-reanchor', commentKey, onVersion: input.onVersion, anchor: { anchorHash, start: input.start, end: input.end, blockHint: '' } }, this.header(caller, s.primaryRowKey));
+  }
+
+  /** The text of a version for the page's render tree (only what the caller may read). */
+  versionMarkdown(docId: string, caller: Caller, versionId: string): { markdown: string; projectionVersion: number } | null {
+    const r = this.read(docId, caller, versionId);
+    return r.version && r.markdown !== null ? { markdown: r.markdown, projectionVersion: r.version.projectionVersion } : null;
+  }
+
   // ── Helpers ─────────────────────────────────────────────────────────────────────────
+
+  /**
+   * The body's hash. Signed page writes supply their own salted blobs (the phone signed their hash,
+   * §3.6): verify they hold exactly this text and hash to the signed value, then store them as given.
+   */
+  private bodyHashFor(docId: string, body: string, blobs?: Blob[], signedHash?: string): string {
+    if (!blobs || signedHash === undefined) return this.putText(docId, body);
+    // A signed body is one blob (about 45,000 characters): the row then carries exactly the hash the
+    // person signed. Longer text from the page is refused in words rather than split under a new hash.
+    if (blobs.length !== 1) throw new DocError(400, 'comment-too-long', 'This comment is too long for one piece. Split it into two.');
+    const b = blobs[0];
+    if (b.text !== body) throw new DocError(400, 'body-blobs-mismatch');
+    if (blobHash(b.salt, b.text) !== signedHash) throw new DocError(400, 'body-hash-mismatch');
+    if (!this.store.putBlob(docId, b)) throw new DocError(400, 'body-blob-refused');
+    return signedHash;
+  }
+
 
   private header(caller: Caller, primaryRow: string | null) {
     return { actor: caller.actor, access: caller.access, primaryRow, ...(caller.sessionAccess ? { sessionAccess: caller.sessionAccess } : {}) };
@@ -288,6 +415,7 @@ export class DocumentService {
   }
 
   private putList(docId: string, items: string[]): string { return this.putText(docId, JSON.stringify(items)); }
+
 
   private textOf(docId: string, hash: string | null | undefined): string | null {
     if (!hash) return null;

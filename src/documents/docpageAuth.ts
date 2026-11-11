@@ -57,6 +57,20 @@ export type DocpageVerdict =
  * replicated binding. `isOwnHost` is this machine's own-names check. `seen` records used request ids.
  */
 export function verifyDocpage(req: DocpageRequest, devicePublicKey: string, isOwnHost: (host: string) => boolean, seen: { has(id: string): boolean; add(id: string): void }, now: number = Date.now()): DocpageVerdict {
+  const base = docpageSignatureValid(req, devicePublicKey, { now, isOwnHost });
+  if (!base.ok) return base;
+  const replayKey = `${req.deviceId}|${req.requestId}`;
+  if (seen.has(replayKey)) return { ok: false, reason: 'replay' };
+  seen.add(replayKey);
+  return base;
+}
+
+/**
+ * The signature, shape, document and request-id checks alone. A receiving machine re-checks a
+ * replicated person row with this (no clock window and no own-host check: the row may be days old
+ * and was signed for the machine that took it; replay is checked against the document's own rows).
+ */
+export function docpageSignatureValid(req: DocpageRequest, devicePublicKey: string, live?: { now: number; isOwnHost: (host: string) => boolean }): DocpageVerdict {
   if (!(DOCPAGE_OPS as readonly string[]).includes(req.op)) return { ok: false, reason: 'bad-op' };
   const op = req.op as DocpageOp;
   if (!req.payload || typeof req.payload !== 'object' || Array.isArray(req.payload)) return { ok: false, reason: 'bad-payload' };
@@ -65,10 +79,16 @@ export function verifyDocpage(req: DocpageRequest, devicePublicKey: string, isOw
   const want = [...PAYLOAD_FIELDS[op]].sort();
   if (keys.length !== want.length || keys.some((k, i) => k !== want[i])) return { ok: false, reason: 'bad-payload' };
   if (payload.docId !== req.docId) return { ok: false, reason: 'doc-mismatch' };
+  if (!payloadValuesValid(payload)) return { ok: false, reason: 'bad-payload' };
   if (!/^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(req.requestId)) return { ok: false, reason: 'bad-request-id' };
-  const t = Number(req.timeMs);
-  if (!Number.isFinite(t) || Math.abs(now - t) > DEVICE_TIME_WINDOW_MS) return { ok: false, reason: 'stale' };
-  if (!isOwnHost(req.host)) return { ok: false, reason: 'host-not-own' };
+  if (live) {
+    const t = Number(req.timeMs);
+    if (!Number.isFinite(t) || Math.abs(live.now - t) > DEVICE_TIME_WINDOW_MS) return { ok: false, reason: 'stale' };
+    if (!live.isOwnHost(req.host)) return { ok: false, reason: 'host-not-own' };
+    // The request id carries its own time; it too must be inside the window, so replay memory
+    // (pruned by that time) can never forget an id that would still be accepted.
+    if (Math.abs(live.now - Number(req.requestId.slice(0, 13))) > DEVICE_TIME_WINDOW_MS) return { ok: false, reason: 'stale' };
+  }
   const key = parseDevicePublicKey(devicePublicKey);
   if (!key) return { ok: false, reason: 'bad-key' };
   let sig: Buffer;
@@ -78,8 +98,25 @@ export function verifyDocpage(req: DocpageRequest, devicePublicKey: string, isOw
   let valid = false;
   try { valid = crypto.verify('sha256', Buffer.from(message), { key, dsaEncoding: 'der' }, sig); } catch { valid = false; } // @silent-fallback-ok — a malformed signature is invalid
   if (!valid) return { ok: false, reason: 'bad-signature' };
-  const replayKey = `${req.deviceId}|${req.requestId}`;
-  if (seen.has(replayKey)) return { ok: false, reason: 'replay' };
-  seen.add(replayKey);
   return { ok: true, op, payload };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const HEX64 = /^[0-9a-f]{64}$/;
+const STAMPED_ID = /^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+/** Every field's value has its one allowed shape, so the row built from it is exactly what was signed. */
+function payloadValuesValid(p: Record<string, unknown>): boolean {
+  for (const [k, v] of Object.entries(p)) {
+    switch (k) {
+      case 'docId': case 'commentId': case 'replyId': case 'onVersion': if (typeof v !== 'string' || !UUID_RE.test(v)) return false; break;
+      case 'start': case 'end': if (!Number.isSafeInteger(v) || (v as number) < 0) return false; break;
+      case 'bodyHash': case 'commentKeysHash': if (typeof v !== 'string' || !HEX64.test(v)) return false; break;
+      case 'commentKey': if (typeof v !== 'string' || v.length > 200 || !/^[A-Za-z0-9._:-]{1,160}:[0-9a-f-]{36}$/.test(v)) return false; break;
+      case 'batchId': case 'messageRequestId': if (typeof v !== 'string' || !STAMPED_ID.test(v)) return false; break;
+      case 'primaryRow': if (typeof v !== 'string' || v.length === 0 || v.length > 200) return false; break;
+      default: return false;
+    }
+  }
+  if (typeof p.start === 'number' && typeof p.end === 'number' && p.end <= p.start) return false;
+  return true;
 }

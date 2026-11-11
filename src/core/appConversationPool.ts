@@ -504,6 +504,10 @@ export async function dispatchStoredAppMessage(s: AppConversationService, input:
     sessionText = [...lines, ...(event.text ? [event.text] : [])].join('\n');
   }
   const pending = s.pendingContext(key);
+  // This conversation's documents, when their list changed since it was last sent (§3.7).
+  let docNotes: string[] = [];
+  try { docNotes = s.deps.documentNotes?.(key) ?? []; } catch { docNotes = []; } // @silent-fallback-ok — a missed documents note never blocks a message
+  const notes = [...docNotes, ...pending.lines];
   const originVerdict = s.verify(event);
   // 💻 for a browser key, from the signed ledger activation row (dashboard-conversations-browser-device §4.3, §4.7).
   const originClient = s.originClient(event, originVerdict);
@@ -511,7 +515,7 @@ export async function dispatchStoredAppMessage(s: AppConversationService, input:
     conversationKey: key, alias: input.alias, title: input.title, text: sessionText, messageId: event.messageId,
     ownerName: input.ownerName, memoryPersonId: input.memoryPersonId, originVerdict,
     ...(originClient ? { originClient } : {}),
-    ...(pending.lines.length > 0 ? { notes: pending.lines } : {}),
+    ...(notes.length > 0 ? { notes } : {}),
   });
   if (outcome === 'delivered') pending.ack();
   return { outcome, originVerdict };

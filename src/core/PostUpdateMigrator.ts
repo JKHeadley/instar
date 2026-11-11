@@ -1213,6 +1213,24 @@ A durable map from each of my **doorways** (the ways I reach LLMs — Claude Cod
 }
 
 /**
+ * CLAUDE.md awareness block for Instar Documents (docs/specs/instar-document-viewer.md).
+ * Unique content-sniff marker: `Commentable documents on the dashboard document page`.
+ */
+export function DOCUMENTS_CLAUDEMD_SECTION(port: number): string {
+  return `\n### Commentable documents on the dashboard document page (\`/docs\`)
+
+When I write something longer than a chat message (a plan, a report, a draft), I make it a **document**: people select any passage on their phone or computer and comment on it, I reply under each comment and write a new version, and they compare versions. Dev-gated (\`documents.enabled\`): live on a development agent, \`503 documents-off\` on the fleet.
+- Every document has a **primary conversation** (where Send lands and where I discuss it). Its audience is exactly that conversation's audience: private by default, shared only when the owner moves it into a shared conversation from their phone with Face ID. I can never share, move, or write as a person.
+- Create: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/docs -d '{"title":"Plan","markdown":"# Plan\\n..."}'\` → \`{ id, url }\` (a session's own conversation is the default primary). Share the \`url\`; the app opens it.
+- Read the comments ("read the comments", "what did they say on the plan?"): \`GET /docs/:id/comments?status=open\` (each comment with its quote, anchor state, thread and author). No document named → \`GET /docs?conversation=<ref>\`.
+- Answer: \`POST /docs/:id/comments/:commentKey/replies {"body":"..."}\` (the commenter's phone is notified), then \`POST /docs/:id/versions {"markdown":"...","note":"...","addresses":["<commentKey>"]}\`, then one message in the conversation with \`GET /docs/:id/compare?from=&to=\`'s link.
+- Related content (a knowledge graph you can walk): \`GET /docs/:id/links\`, \`POST /docs/:id/links {"to":"doc:<id>|telegram:<id>|app:<uuid>|project:<id>|initiative:<id>|spec:<path>","kind":"discusses|derived-from|supersedes|references|about-project"}\`, \`GET /docs/graph?from=<ref>&depth=1|2\` (never shows what the caller can't see).
+- A session gets its conversation's documents at start (the DOCUMENTS block); \`GET /docs/session-context\` re-reads it. Health and sync: \`GET /docs/health\`.
+- **When to use** (PROACTIVE): anything longer than a screen that someone should review → a document, not a long chat message. "Read the comments" → the comments route, reply under each, revise, send the compare link once. Never paste document text into another conversation (it may be private to this one).
+`;
+}
+
+/**
  * CLAUDE.md awareness block for the Maturation Board (docs/specs/maturation-board.md).
  * Unique content-sniff marker: `Maturation Board — where is every maturing feature`.
  * Read-only and advisory; dev-gated (live on a development agent, 503 on the fleet).
@@ -10532,6 +10550,13 @@ setTimeout(() => process.exit(0), 2000);
     // Awareness Standard + Migration Parity: existing agents learn the read-only spend/caps
     // surfaces + the Spend tab via this appended section. Same text as generateClaudeMd.
     // Content-sniff on the unique heading keeps it idempotent.
+    // Instar Documents (docs/specs/instar-document-viewer.md) — Agent Awareness + Migration Parity.
+    if (!content.includes('Commentable documents on the dashboard document page')) {
+      content += DOCUMENTS_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Instar Documents section');
+    }
+
     // Maturation Board (docs/specs/maturation-board.md) — Agent Awareness + Migration Parity.
     if (!content.includes('Maturation Board — where is every maturing feature')) {
       content += MATURATION_BOARD_CLAUDEMD_SECTION(port);
@@ -20281,6 +20306,29 @@ except Exception:
       echo "\$WS_ART_BLOCK"
       echo ""
     fi
+  fi
+fi
+
+# INSTAR DOCUMENTS (instar-document-viewer §3.7): this conversation's documents, once at start.
+# A session token (mps_) gets its own conversation's list; a 503 (switched off) prints nothing.
+DOCS_CONFIG_FILE="\$INSTAR_DIR/config.json"
+if [ -n "\$INSTAR_AGENT_HOME" ] && [ -f "\$INSTAR_AGENT_HOME/.instar/config.json" ]; then DOCS_CONFIG_FILE="\$INSTAR_AGENT_HOME/.instar/config.json"; fi
+DOCS_PORT=\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "\$DOCS_CONFIG_FILE" 2>/dev/null | head -1 | grep -oE '[0-9]+' | head -1)
+DOCS_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+if [ -n "\$DOCS_PORT" ] && [ -n "\$DOCS_TOKEN" ]; then
+  DOCS_QUERY=""
+  if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then DOCS_QUERY="?conversation=telegram:\${INSTAR_TELEGRAM_TOPIC}"; fi
+  DOCS_CTX=\$(curl -s --max-time 3 -H "Authorization: Bearer \${DOCS_TOKEN}" "http://localhost:\${DOCS_PORT}/docs/session-context\${DOCS_QUERY}" 2>/dev/null)
+  DOCS_TEXT=\$(printf '%s' "\$DOCS_CTX" | python3 -c "import sys,json
+try:
+    print((json.load(sys.stdin).get('text') or '').strip())
+except Exception:
+    pass" 2>/dev/null)
+  if [ -n "\$DOCS_TEXT" ]; then
+    echo ""
+    echo "--- DOCUMENTS ---"
+    echo "\$DOCS_TEXT"
+    echo "--- END DOCUMENTS ---"
   fi
 fi
 

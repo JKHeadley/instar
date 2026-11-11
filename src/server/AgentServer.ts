@@ -199,7 +199,11 @@ import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } 
 import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
-import { createDocumentRoutes, isDocumentsEnabled } from './documentRoutes.js';
+import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
+import { createDocumentPageRoutes } from './documentPageRoutes.js';
+import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
+import { checkRowOrigin, type DeviceKeyLookup } from '../documents/originCheck.js';
+import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
 import { DocumentService } from '../documents/service.js';
@@ -232,7 +236,7 @@ import { poolPeerFetch } from './poolPeerFetch.js';
 import { AttributionRuntime, type AttributionConfig } from '../core/attribution/attributionRuntime.js';
 import { AppConversationService, VOICE_TRANSCRIBE_PROVIDER_TIMEOUT_MS } from '../core/AppConversationService.js';
 import { transcribeAudioFile, configuredVoiceProvider, resolveTranscriptionProvider } from '../core/VoiceTranscription.js';
-import { identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
+import { deviceKeyHashOf, identityKeyLookup, loadMachineSigner } from '../core/AppRecordSignatures.js';
 import { MobileDeviceKeyLedger } from '../core/MobileDeviceKeyLedger.js';
 import { stopAutonomousTopic } from '../core/AutonomousSessions.js';
 import { createAppFollowUpInjector, createAppInboundDispatch, type AppInboundDispatch } from '../core/appInboundDispatch.js';
@@ -322,7 +326,7 @@ import { TelegramSpendTopicChannel, spendAlertDeliveryId } from '../core/Telegra
 import { SpendAlertEmitters } from '../core/SpendAlertEmitters.js';
 import { isRegistryEntryActive, MachineIdentityManager, sign as signMachinePayload, verify as verifyMachinePayload } from '../core/MachineIdentity.js';
 import { DesktopDelegatedSessionStore } from '../core/DesktopDelegatedSessionStore.js';
-import { activeOwnerPhone } from './mobileConsoleTicket.js';
+import { activeOwnerPhone, signedHost } from './mobileConsoleTicket.js';
 import { isOwnerPresenceEnabled } from './mobileOwnerPresenceRoutes.js';
 import { PhoneDesktopSessionStore } from './PhoneDesktopSessionStore.js';
 import { DesktopAssertionReplayStore } from '../core/DesktopAssertionReplayStore.js';
@@ -1060,6 +1064,7 @@ export class AgentServer {
   /** Instar Documents (docs/specs/instar-document-viewer.md): opened on first use while the switch is on. */
   private documents: { store: DocumentStore; service: DocumentService } | null = null;
   private documentPuller: DocumentPuller | null = null;
+  private documentRecheckTimer: ReturnType<typeof setInterval> | null = null;
   private documentPullTimer: NodeJS.Timeout | null = null;
   private maturationLadderOn: (() => boolean) | null = null;
   private featureEvidenceLog: FeatureEvidenceLog | null = null;
@@ -2100,6 +2105,7 @@ export class AgentServer {
         enabled: () => isMobilePushEnabled(this.config),
         // People and roles: a reply push goes only to phones that may use that conversation.
         mayNotify: (deviceId, conversationKey, messageId) => mp.deviceMayUseConversation(deviceId, conversationKey) && mp.deviceMayReadMessage(deviceId, conversationKey, messageId),
+        mayNotifyDocument: (deviceId, docId, commentKey) => this.documentPushAllowed(deviceId, docId, commentKey),
         receivesNotices: (deviceId) => mp.devices.get(deviceId)?.role !== 'team',
         // Unread (mobile-unread-messages §3.6): the phone's app-conversation unread as the badge; app conversations only.
         badgeFor: (deviceId, conversationKey, messageId) => {
@@ -6352,6 +6358,7 @@ export class AgentServer {
           svc = new AppConversationService({
             signer, keyLookup, keyLedger,
             confineStranded: () => { throw new Error('pairing-not-ready'); },
+            documentNotes: (key: string) => this.documentNotesFor(`app:${key}`),
             stateDir: options.config.stateDir,
             machineId: () => options.meshSelfId ?? options.coordinator?.identity?.machineId ?? 'local',
             // Refusals name the machine ("Mac Studio is nearly out of disk space"), never "this machine".
@@ -6895,6 +6902,8 @@ export class AgentServer {
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
     // Instar Documents (docs/specs/instar-document-viewer.md): dev-gated, 503 `documents-off` when off.
     this.app.use(createDocumentRoutes(this.documentRouteDeps(options)));
+    // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
+    this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
     // Sync documents between machines whether or not phones are paired (owner-only documents replicate too).
     this.startDocumentPuller(options);
     this.app.use(createMaturationLadderRoutes({
@@ -9127,6 +9136,7 @@ export class AgentServer {
   async stop(): Promise<void> {
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
     if (this.documentPullTimer) clearInterval(this.documentPullTimer);
+    if (this.documentRecheckTimer) { clearInterval(this.documentRecheckTimer); this.documentRecheckTimer = null; }
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
@@ -9625,10 +9635,70 @@ export class AgentServer {
     store = new DocumentStore(stateDir, {
       signer, keyLookup: identityKeyLookup(stateDir),
       standing: standingCheck(deps, (docId) => store?.rowsOf(docId) ?? []),
+      // Every person or owner row is re-checked against its device's own signature (§3.6), using the
+      // replicated device-key ledger and team bindings, so it holds on every machine.
+      origin: (row, used) => checkRowOrigin(row, (deviceId, keyHash) => this.documentDeviceKey(deviceId, keyHash), used, (docId, hash) => {
+        const b = store?.getBlob(docId, hash);
+        if (!b) return null;
+        try { const v = JSON.parse(b.text) as unknown; return Array.isArray(v) && v.every((x) => typeof x === 'string') ? v as string[] : null; } catch { return null; } // @silent-fallback-ok — an unreadable list keeps the row hidden
+      }),
     });
     this.documents = { store, service: new DocumentService(store, teamView(deps)) };
+    // Rows waiting for a device binding or a team row are re-checked on a timer, so this works on a
+    // one-machine agent too (the puller re-checks after each page on a pool).
+    if (!this.documentRecheckTimer) {
+      this.documentRecheckTimer = setInterval(() => {
+        // Bind any newly active device (whatever path approved it), then re-check waiting rows.
+        try { this.mobilePairing?.bindTeamPhones(); } catch { /* @silent-fallback-ok — bound on the next tick */ }
+        try { this.documents?.store.recheckPending(); } catch { /* @silent-fallback-ok — retried next tick; GET /docs/health shows what is waiting */ }
+      }, 60_000);
+      this.documentRecheckTimer.unref();
+    }
     return this.documents;
   }
+
+  /** A device key for re-checking a document row: the replicated ledger first, then the local registry. */
+  /** A device's activation from the replicated key ledger: the one for this key, else its newest live key. */
+  private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; client?: 'browser' } | null {
+    const ledger = this.mobilePairing?.keyLedger;
+    if (!ledger) return null;
+    let best: { keyHash: string; publicKey: string; approvedVia: string; activatedAt: string; client?: 'browser' } | null = null;
+    for (const r of ledger.rows()) {
+      if (r.type !== 'activation' || r.deviceId !== deviceId) continue;
+      if (keyHash ? r.keyHash !== keyHash : ledger.isRevoked(r.keyHash, deviceId)) continue;
+      if (!best || r.activatedAt > best.activatedAt) best = r;
+    }
+    return best;
+  }
+
+  private documentDeviceKey(deviceId: string, keyHash: string): ReturnType<DeviceKeyLookup> {
+    const svc = this.mobilePairing;
+    if (!svc) return { status: 'unknown' };
+    if (svc.keyLedger?.isRevoked(keyHash, deviceId)) return { status: 'revoked' };
+    const local = svc.devices.get(deviceId);
+    const localKey = local ? deviceKeyOf(local) : undefined;
+    const act = this.documentLedgerActivation(deviceId, keyHash);
+    const publicKey = localKey && deviceKeyHashOf(localKey) === keyHash ? localKey : act && act.keyHash === keyHash ? act.publicKey : null;
+    if (!publicKey) return { status: 'unknown' };
+    if (local && local.status === 'revoked') return { status: 'revoked' };
+    const client: 'phone' | 'browser' = (local ? isBrowserDevice(local) : act?.client === 'browser') ? 'browser' : 'phone';
+    const approvedVia = local?.approvedVia ?? act?.approvedVia ?? null;
+    // Whose device: this machine's own record, else the replicated team binding (owner phones are
+    // bound to 'owner' there too). Never inferred from a missing binding: unknown waits for it.
+    const person = local ? svc.personOfDevice(local) : null;
+    const bound = svc.teamLog()?.state().bindings.get(keyHash) ?? null;
+    let role: 'owner' | 'person' | 'unknown' = 'unknown';
+    let personKey: string | null = null;
+    if (person && person.ok && person.role === 'owner') role = 'owner';
+    else if (person && person.ok && person.role === 'team' && person.userId) { role = 'person'; personKey = person.userId; }
+    else if (bound === 'owner' || bound === 'owner-browser') role = 'owner';
+    else if (bound) { role = 'person'; personKey = bound; }
+    // A browser approved only with the dashboard PIN can read but never write (§3.6); a guest's linked browser reads only.
+    const scope = (local as { scope?: string } | undefined)?.scope;
+    const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read';
+    return { status: 'ok', publicKey, role, personKey, client, mayWrite };
+  }
+
 
   private documentRouteDeps(options: { config: { stateDir: string }; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
     const stateDir = options.config.stateDir;
@@ -9654,6 +9724,119 @@ export class AgentServer {
         return typeof id === 'number' && id > 0 ? `telegram:${id}` : null;
       },
       deviceApprovedVia: (deviceId: string) => this.mobilePairing?.devices.get(deviceId)?.approvedVia ?? null,
+      linkOrigin: () => this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel) ?? null,
+      notifyDocumentAnswer: (docId: string, commentKey: string) => {
+        this.mobilePairing?.push?.onHubPost({ kind: 'document', itemId: docId, commentKey, dedupeKey: `doc-answer:${docId}:${commentKey}:${Math.floor(Date.now() / 65_536)}` });
+      },
+    };
+  }
+
+  /** Last documents block sent per conversation, so it is re-sent only when the list changes (§3.7). */
+  private documentNotesSent = new Map<string, string>();
+  private documentNotesFor(ref: string): string[] | null {
+    if (!isDocumentsEnabled(this.config)) return null;
+    const docs = this.documents;
+    if (!docs) return null;
+    // Exactly what this conversation's own (confined) session may see of its documents.
+    const place = { principal: { kind: 'agent' as const, placeKey: ref, ownerReach: false }, actor: { type: 'agent' as const, placeKey: ref }, access: {}, reader: { kind: 'place' as const } };
+    const { text } = renderSessionContext(ref, docs.service.listForConversation(ref as never, place));
+    const last = this.documentNotesSent.get(ref) ?? '';
+    if (text === last) return null;
+    this.documentNotesSent.set(ref, text);
+    return text ? text.split('\n') : null;
+  }
+
+  /** May this phone get a push about an answer to this comment? Only its author's phones that can read the document. */
+  private documentPushAllowed(deviceId: string, docId: string, commentKey: string): boolean {
+    const svc = this.mobilePairing;
+    const docs = this.documents;
+    const d = svc?.devices.get(deviceId);
+    if (!svc || !docs || !d) return false;
+    const person = svc.personOfDevice(d);
+    if (!person.ok) return false;
+    const authorKey = person.role === 'owner' ? 'owner' : person.userId;
+    if (!authorKey || !commentKey.startsWith(`${authorKey}:`)) return false;
+    const facts = docs.service.facts(docId);
+    if (!facts) return false;
+    const principal = person.role === 'owner'
+      ? { kind: 'owner-device' as const, client: 'phone' as const, approvedVia: d.approvedVia ?? 'phone' }
+      : person.role === 'team' && person.tier ? { kind: 'person' as const, personKey: person.userId!, tier: person.tier, client: 'phone' as const } : null;
+    if (!principal) return false;
+    const reader = principal.kind === 'owner-device' ? { kind: 'owner' as const } : { kind: 'person' as const, personKey: principal.personKey, grants: [] };
+    return docs.service.can(docId, { principal, actor: { type: 'machine' }, access: {}, reader }, 'read');
+  }
+
+  /** The page's deps: devices from the pairing registry, this machine's own names, its stable link origin. */
+  private documentPageDeps(options: { config: InstarConfig; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
+    return {
+      ...this.documentRouteDeps(options),
+      device: (deviceId: string) => {
+        const svc = this.mobilePairing;
+        if (!svc) return null;
+        const d = svc.devices.get(deviceId);
+        if (d) {
+          if (d.status !== 'active') return null;
+          const key = deviceKeyOf(d) ?? null;
+          if (key && svc.keyLedger?.isRevoked(deviceKeyHashOf(key), d.id)) return null;
+          const p = svc.personOfDevice(d);
+          const person = p.ok ? { role: p.role, userId: p.userId, name: p.name, tier: p.tier } : null;
+          return { person: person as never, client: isBrowserDevice(d) ? 'browser' as const : 'phone' as const, publicKey: key, approvedVia: d.approvedVia ?? null };
+        }
+        // A device paired on another machine: its replicated ledger activation and team binding (§3.6:
+        // reads and writes work on any awake machine, nothing needs re-approval after a lease move).
+        const act = this.documentLedgerActivation(deviceId);
+        if (!act) return null;
+        const k = this.documentDeviceKey(deviceId, act.keyHash);
+        if (k.status !== 'ok' || k.role === 'unknown') return null;
+        const standing = k.role === 'person' && k.personKey ? svc.teamStanding(k.personKey) : null;
+        if (k.role === 'person' && !standing) return null;
+        const person = k.role === 'owner'
+          ? { ok: true, role: 'owner', userId: null, name: 'Owner', telegramUserId: null }
+          : { ok: true, role: 'team', userId: k.personKey, name: standing!.name, telegramUserId: null, tier: standing!.tier };
+        return { person: person as never, client: k.client, publicKey: k.publicKey, approvedVia: act.approvedVia ?? null };
+      },
+      isOwnHost: (host: string) => {
+        const svc = this.mobilePairing;
+        if (!svc) return false;
+        if (svc.ownNames?.accepts(host)) return true;
+        const o = svc.pairingOrigin();
+        return !!o && o.host.toLowerCase() === host.toLowerCase();
+      },
+      stableOrigin: () => this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((options.config as { tunnel?: { type?: string; hostname?: string } }).tunnel) ?? null,
+      ownerPresence: (req: import('express').Request, deviceId: string) => {
+        const svc = this.mobilePairing;
+        if (!svc || !activeOwnerPhone(svc, deviceId)) return null;
+        const key = svc.devices.get(deviceId)?.presenceKey;
+        return key ? { presenceKey: key, host: signedHost(req, svc, deviceId) } : null;
+      },
+      assetsDir: path.join(this.resolveDashboardDir(), 'docs'),
+      personName: (personKey: string) => this.mobilePairing?.teamLog()?.state().people.get(personKey)?.name ?? null,
+      agentName: () => options.config.projectName ? options.config.projectName.charAt(0).toUpperCase() + options.config.projectName.slice(1) : 'your agent',
+      conversationName: (ref: string) => {
+        if (ref.startsWith('telegram:')) return this.telegramAdapter?.getTopicName(Number(ref.slice(9))) ?? null;
+        if (ref.startsWith('app:')) return this.appConversations?.store.getConversation(ref.slice(4))?.title ?? null;
+        return null;
+      },
+      // Who can see it, in words, from the conversation's real readers (§3.6), with Telegram's own boundary.
+      audienceWords: (ref: string, viewerIsOwner: boolean) => {
+        const log = this.mobilePairing?.teamLog();
+        const teamRef = ref.startsWith('app:') ? ref.slice(4) : ref;
+        const tg = ref.startsWith('telegram:') ? '; anyone else in your Telegram group can also see messages about it' : '';
+        // Others never learn who else has access (team policy: "Only the owner can see that").
+        if (!viewerIsOwner) {
+          const name = ref.startsWith('telegram:') ? this.telegramAdapter?.getTopicName(Number(ref.slice(9))) : this.appConversations?.store.getConversation(teamRef)?.title;
+          return name ? `Everyone in "${name}"` : 'Everyone in this conversation';
+        }
+        const keys = new Set<string>();
+        if (log) {
+          for (const [k] of log.state().people) if (log.readerGrantsOf(k, teamRef).length > 0) keys.add(k);
+          const owner = log.state().owned.get(teamRef);
+          if (owner) keys.add(owner);
+        }
+        const names = [...keys].map((k) => log?.state().people.get(k)?.name ?? k);
+        const base = names.length === 0 ? 'Only you' : names.length === 1 ? `You and ${names[0]}` : `You, ${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+        return base + tg;
+      },
     };
   }
 
