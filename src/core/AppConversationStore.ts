@@ -465,6 +465,7 @@ export class AppConversationStore {
   private readonly now: () => number;
   private readonly reported = new Set<string>();
   private onLocalAppend: ((event: AppEvent) => void) | undefined;
+  private readonly appendListeners = new Set<(event: AppEvent, how: { replicated: boolean }) => void>();
   private stamps: AccessStamps | null = null;
 
   constructor(private readonly opts: AppConversationStoreOptions) {
@@ -479,6 +480,24 @@ export class AppConversationStore {
   }
 
   setReplicationHook(hook: ((event: AppEvent) => void) | undefined): void { this.onLocalAppend = hook; }
+
+  /**
+   * Observe every event that newly COMMITTED here, local or replicated (never a de-duplicated
+   * replay). Separate from the single replication hook, so an observer can never displace it.
+   * A listener's failure is contained: the commit already landed. Returns an unsubscribe.
+   */
+  addAppendListener(fn: (event: AppEvent, how: { replicated: boolean }) => void): () => void {
+    this.appendListeners.add(fn);
+    return () => { this.appendListeners.delete(fn); };
+  }
+
+  private notifyAppended(event: AppEvent, replicated: boolean): void {
+    for (const fn of this.appendListeners) {
+      try { fn(event, { replicated }); } catch (err) {
+        this.reportOnce('append-listener', `an observer of new conversation events failed (${err instanceof Error ? err.message : String(err)}); the event itself was stored`);
+      }
+    }
+  }
 
   // ── Index lifecycle ───────────────────────────────────────────────────────────────────
 
@@ -619,6 +638,7 @@ export class AppConversationStore {
     const event = stamp ? { ...input, accessStamp: stamp } as AppEvent : input;
     const r = this.write(event);
     if (r.appended) { try { this.onLocalAppend?.(event); } catch { /* @silent-fallback-ok — replication emit is best-effort, the local commit already landed */ } }
+    if (r.appended) this.notifyAppended(event, false);
     return r;
   }
 
@@ -628,6 +648,7 @@ export class AppConversationStore {
     if (!ev) return null;
     const r = this.write(ev);
     if (r.appended && (ev.kind === 'message' || ev.kind === 'media-message') && ev.accessStamp) this.stamps?.saw(ev.accessStamp);
+    if (r.appended) this.notifyAppended(ev, true);
     return r;
   }
 

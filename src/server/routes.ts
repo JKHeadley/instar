@@ -19758,6 +19758,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       manifest.origin = 'user';
       manifest.manifestVersion = nextVersion;
       manifest.forkedAt = new Date().toISOString();
+      // Built-in only (InstallBuiltinJobs schedule-edit tracking); a user job owns its schedule outright.
+      delete manifest.shippedSchedule;
       fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
 
@@ -22826,7 +22828,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Keep the agent's reply in slack-messages.jsonl (Slack never echoes the bot's own messages
       // back), so the Instar app's Slack history shows both sides (mobile-native-conversations §4.9).
       try {
-        ctx.slack.logMessage?.({ messageId: String(ts), channelId, threadTs: typeof thread_ts === 'string' ? thread_ts : null, text, fromUser: false });
+        // `notify: false`: this route notifies onMessageLogged itself just below (one notification per reply).
+        ctx.slack.logMessage?.({ messageId: String(ts), channelId, threadTs: typeof thread_ts === 'string' ? thread_ts : null, text, fromUser: false }, { notify: false });
       } catch { /* @silent-fallback-ok — the reply was sent; only its log copy is missing */ }
 
       // Notify onMessageLogged that the agent responded (so PresenceProxy cancels standby)

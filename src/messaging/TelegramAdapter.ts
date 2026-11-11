@@ -347,6 +347,12 @@ interface LogEntry {
   senderPerson?: { machineId: string; userId: string };
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
+  /**
+   * Set only on a row that reached this topic through another agent (context-budget §8):
+   * `relay` (a Threadline relay message mirrored in), `a2a` (this agent's own A2A traffic
+   * mirrored in). Such rows are labelled and carry no operator authority.
+   */
+  rowOrigin?: 'relay' | 'a2a';
   /** Joined at read time from the ASP classification authority. */
   authorship?: MessageAuthorship;
   /** The signing agent's id — present only when `authorship` is `agent-verified`. */
@@ -855,7 +861,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // Message log callback — fires on every message logged (inbound and outbound).
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
-  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; teamPhone?: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance }) => void) | null = null;
+  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; teamPhone?: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance; rowOrigin?: 'relay' | 'a2a' }) => void) | null = null;
 
   /**
    * Scope-accretion ratification observer (spec autonomous-scope-accretion-
@@ -1880,6 +1886,8 @@ export class TelegramAdapter implements MessagingAdapter {
       kindMetadata?: Record<string, unknown>;
       /** Conversational agent reply vs server-generated outbound traffic. */
       provenance?: Exclude<MessageProvenance, 'user'>;
+      /** The row's agent origin (context-budget §8), stamped on the logged row of a mirrored A2A message. */
+      rowOrigin?: 'relay' | 'a2a';
       /** a2a-single-agent-identity §4.1 — the caller SKIPPED its local outbound
        *  gate because `willRelay()` said the lease holder would gate instead.
        *  If the send would now proceed LOCALLY (the lease settled here, or the
@@ -2068,6 +2076,7 @@ export class TelegramAdapter implements MessagingAdapter {
       timestamp: new Date().toISOString(),
       sessionName: this.topicToSession.get(topicId) ?? null,
       provenance: options?.provenance ?? 'automation',
+      ...(options?.rowOrigin ? { rowOrigin: options.rowOrigin } : {}),
     });
 
     // Clear stall tracking for this topic (agent responded)
@@ -4633,6 +4642,7 @@ export class TelegramAdapter implements MessagingAdapter {
         forwarded: entry.forwarded,
         ...(entry.via ? { via: entry.via, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
         provenance: entry.provenance,
+        ...(entry.rowOrigin ? { rowOrigin: entry.rowOrigin } : {}),
       });
       if (!persisted) return;
       this.rememberLoggedEntry(entry, dedupeKey);

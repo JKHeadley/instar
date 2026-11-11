@@ -129,6 +129,29 @@ export type SlackInboundMediaHook = (info: SlackInboundMedia) => Promise<void> |
 /** Longest the inbound media copy is waited on before delivery stops caring about it. */
 const INBOUND_MEDIA_WAIT_MS = 30_000;
 
+const SLACK_MESSAGE_TS_RE = /^\d{1,12}\.\d{1,6}$/;
+
+/**
+ * The log id of a standalone file share (context-budget §14: deterministic on every machine).
+ * Prefers the share's real message ts in this channel (files.info `shares.public|private`),
+ * then the event's `event_ts`, then `file-<fileId>`. Never a clock read.
+ */
+export function fileShareLogId(fileInfo: Record<string, unknown> | undefined, channelId: string, event: Record<string, unknown>, fileId: string): string {
+  const shares = (fileInfo?.shares ?? null) as Record<string, unknown> | null;
+  for (const scope of ['public', 'private'] as const) {
+    const byChannel = shares && typeof shares[scope] === 'object' ? (shares[scope] as Record<string, unknown>)[channelId] : undefined;
+    if (Array.isArray(byChannel)) {
+      for (const sh of byChannel) {
+        const ts = (sh as { ts?: unknown } | null)?.ts;
+        if (typeof ts === 'string' && SLACK_MESSAGE_TS_RE.test(ts)) return ts;
+      }
+    }
+  }
+  const eventTs = event.event_ts;
+  if (typeof eventTs === 'string' && SLACK_MESSAGE_TS_RE.test(eventTs)) return eventTs;
+  return `file-${fileId}`;
+}
+
 function finiteNonNegative(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
 }
@@ -2031,9 +2054,11 @@ export class SlackAdapter implements MessagingAdapter {
       this.noteNameLookupFailure('user', userId, err);
     }
 
-    // Log inbound file
+    // Log inbound file under the share's real message ts when Slack gave one (files.info
+    // `shares`), else the event's own `event_ts`, else the file id: all fixed by Slack, so the
+    // TopicMemory row key (context-budget §14) is the same on every machine. Never Date.now().
     const logEntry: LogEntry = {
-      messageId: ts,
+      messageId: fileShareLogId(fileInfo, channelId, event, fileId),
       channelId,
       text: cleanText,
       fromUser: true,
@@ -2141,7 +2166,7 @@ export class SlackAdapter implements MessagingAdapter {
    * sent from the Instar app (mobile-native-conversations §4.9; it carries the app store's
    * `eventId`). Without these rows the app's Slack history would show only one side.
    */
-  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }): void {
+  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }, opts: { notify?: boolean } = {}): void {
     const row: LogEntry = {
       messageId: entry.messageId, channelId: entry.channelId, text: entry.text, fromUser: entry.fromUser,
       timestamp: new Date().toISOString(), sessionName: null, platform: 'slack',
@@ -2152,6 +2177,14 @@ export class SlackAdapter implements MessagingAdapter {
       ...(entry.deviceId ? { deviceId: entry.deviceId } : {}),
     };
     this.logger.append(row);
+    // The same seam every logged Slack row reaches (TopicMemory rows, presence, learning), so an
+    // operator message sent from the Instar app is a row too (context-budget §14). A caller that
+    // already notifies for this row itself passes `notify: false` (the agent-reply route does).
+    if (opts.notify !== false) {
+      try { this.onMessageLogged?.(row); } catch (err) {
+        console.error(`[slack] onMessageLogged failed for a logged row: ${(err as Error).message}`);
+      }
+    }
   }
 
   /** The path of slack-messages.jsonl (bounded tail reads by the app's history route). */
