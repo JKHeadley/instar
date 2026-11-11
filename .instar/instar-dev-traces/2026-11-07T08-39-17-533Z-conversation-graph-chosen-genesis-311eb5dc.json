@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-chosen-genesis",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T08:39:17.533Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-chosen-genesis.md",
+  "artifactSha256": "af6c44bd5fae61bc14b190edeeb763e1cd9f91104c3ca350d94e1be6a794222a",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/GraphCustodyJoinIntent.ts",
+    "src/core/OwnedGraphCustody.ts",
+    "src/core/types.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "tests/helpers/graph-default-planned-transition.ts",
+    "tests/integration/graph-default-peers.test.ts",
+    "tests/unit/graph-custody-join-intent.test.ts",
+    "upgrades/side-effects/conversation-graph-chosen-genesis.eli16.md",
+    "upgrades/side-effects/conversation-graph-chosen-genesis.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

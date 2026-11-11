@@ -205,6 +205,8 @@ export const PR_LINK_REPLY_ROUTES: Array<{ path: string; maxLength: number }> = 
   { path: '/slack/reply/:channelId', maxLength: 16_000 },
   { path: '/slack/session-reply', maxLength: 16_000 },
   { path: '/app/session-reply', maxLength: 16_000 },
+  { path: '/whatsapp/send/:jid', maxLength: 40_000 },
+  { path: '/telegram/post-update', maxLength: 4096 },
 ];
 
 /**

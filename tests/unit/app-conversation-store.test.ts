@@ -34,6 +34,23 @@ const dl = (id: string, state: 'delivered' | 'refused' | 'intercepted' | 'unknow
 const fileOf = (dir: string) => path.join(dir, 'app-conversations', `${crypto.createHash('sha256').update(`app:${KEY}`).digest('hex')}.jsonl`);
 
 describe('AppConversationStore', () => {
+  it('captures a bounded content-free registration frontier including tombstones', () => {
+    const { store } = mk();
+    expect(store.inventoryFrontier()).toEqual({ keys: [], overflow: false, eventWatermark: 0, liveCount: 0 });
+    store.append(created('Private title'));
+    store.append({ ...created('Other private title', 1, 'm1', 'cr-2'), conversationKey: 'other-key' });
+    store.append({ eventId: 'tb-frontier', kind: 'tombstone', conversationKey: KEY, at: at(2), machineId: 'm1' });
+    const frontier = store.inventoryFrontier();
+    expect(frontier.keys).toHaveLength(2);
+    expect(frontier.keys).toContainEqual({ conversationKey: KEY, tombstoned: true });
+    expect(frontier.liveCount).toBe(1);
+    expect(frontier.eventWatermark).toBe(3);
+    expect(frontier.overflow).toBe(false);
+    expect(store.inventoryFrontier(1).overflow).toBe(true);
+    expect(store.inventoryFrontier(1).keys).toHaveLength(1);
+    expect(JSON.stringify(frontier)).not.toContain('Private title');
+  });
+
   it('appends committed lines with a per-file ingestSeq and de-duplicates by eventId', () => {
     const { dir, store } = mk();
     expect(store.append(created()).appended).toBe(true);
