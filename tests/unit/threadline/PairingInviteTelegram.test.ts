@@ -58,7 +58,8 @@ describe('PairingInviteTelegram', () => {
 
   it('the owner, verified, enforcing: opens an Approve/Decline prompt in the same topic', async () => {
     const { tg, sent, calls } = setup();
-    await tg.onForwardedInvite(okForward);
+    // Waiting on Approve/Decline is neither refused nor connected (the lifeline may acknowledge it).
+    expect(await tg.onForwardedInvite(okForward)).toEqual({ outcome: 'awaiting-approval', refused: false });
     expect(calls).toEqual(['receive']);
     expect(sent[0].topicId).toBe(9);
     expect(sent[0].text).toContain('calls itself "Scout"');
@@ -72,7 +73,7 @@ describe('PairingInviteTelegram', () => {
     ['no sender id (an unverified forward had it removed)', { fromUserId: undefined }],
   ])('a forwarded invite opens NO prompt when %s, and points at the dashboard', async (_n, over) => {
     const { tg, sent, calls } = setup();
-    await tg.onForwardedInvite({ ...okForward, ...over } as never);
+    expect(await tg.onForwardedInvite({ ...okForward, ...over } as never)).toEqual({ outcome: 'refused', refused: true });
     expect(calls).toEqual([]);
     expect(sent[0].buttons).toBeUndefined();
     expect(sent[0].text).toMatch(/dashboard/);
@@ -80,14 +81,14 @@ describe('PairingInviteTelegram', () => {
 
   it('observe mode: Telegram approval is off', async () => {
     const { tg, sent, calls } = setup({ enforcing: false });
-    await tg.onForwardedInvite(okForward);
+    expect(await tg.onForwardedInvite(okForward)).toEqual({ outcome: 'refused', refused: true });
     expect(calls).toEqual([]);
     expect(sent[0].text).toMatch(/dashboard/);
   });
 
   it('an unusable invite is reported, with no buttons', async () => {
     const { tg, sent } = setup();
-    await tg.onForwardedInvite({ ...okForward, text: 'tlinv1:AAAA.BBBB' });
+    expect(await tg.onForwardedInvite({ ...okForward, text: 'tlinv1:AAAA.BBBB' })).toEqual({ outcome: 'invalid', refused: true });
     expect(sent[0].text).toContain("can't use that pairing invite");
     expect(sent[0].buttons).toBeUndefined();
   });
@@ -171,18 +172,23 @@ describe('PairingInviteTelegram', () => {
     expect(sent.map((s) => s.text).join('\n')).toMatch(/two agents used the same pairing invite[\s\S]*already been used/);
   });
 
-  it('says "no owner set" (not "only the owner") when the agent has no owner it can name', async () => {
+  it('says it cannot tell who approves connections for it (not "only the approver") when it can name nobody', async () => {
     const { tg, sent, calls } = setup({ owner: () => undefined });
-    await tg.onForwardedInvite(okForward);
+    expect(await tg.onForwardedInvite(okForward)).toEqual({ outcome: 'refused', refused: true });
     expect(calls).toEqual([]);
+    // The approver is THIS agent's human, never the owner the invite claims ("Justin" here),
+    // and the line does not claim the setting is missing (it may be ambiguous or invalid).
+    expect(sent[0].text).toMatch(/approve new connections for me/);
+    expect(sent[0].text).not.toMatch(/Justin|its owner|hasn't been told/);
     expect(sent[0].text).toContain(NO_OWNER_REFUSAL);
     expect(sent[0].text).not.toContain(NOT_OWNER_REFUSAL);
     expect(sent[0].text).toMatch(/dashboard/);
   });
 
-  it('a genuine non-owner still hears "Only the agent\'s owner can do this."', async () => {
+  it('a genuine non-approver hears that only the person who approves connections for this agent can do it', async () => {
     const { tg, sent } = setup();
-    await tg.onForwardedInvite({ ...okForward, fromUserId: 1 });
+    expect(await tg.onForwardedInvite({ ...okForward, fromUserId: 1 })).toEqual({ outcome: 'refused', refused: true });
+    expect(sent[0].text).not.toContain(String(OWNER));
     expect(sent[0].text).toContain(NOT_OWNER_REFUSAL);
     expect(sent[0].text).not.toContain(NO_OWNER_REFUSAL);
   });

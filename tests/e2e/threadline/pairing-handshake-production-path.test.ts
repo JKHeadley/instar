@@ -252,6 +252,31 @@ describe('pairing handshake — production path', () => {
     }
   }, 120_000);
 
+  // fb-9566b1d3-f4d (topic 9210): the forward route turns this result into the lifeline's `refused`
+  // flag. On the real engine, a valid invite waits on Approve (never refused, never "connected"),
+  // and one the engine cannot use is refused; neither changes who may approve.
+  it('the forwarded-invite result mirrors the real engine: waiting on Approve is not refused; an unusable invite is', async () => {
+    const A = await bootSide('rx-inviter', 4111);
+    const B = await bootSide('rx-receiver', 4112);
+    const made = await call(A, 'POST', '/threadline/pairing/invites', {});
+    expect(made.status, JSON.stringify(made.body)).toBe(200);
+    const message = made.body.message as string;
+
+    // Shaped like an invite (so the route consumes it) but not one the engine can decode.
+    const bad = await B.tg.onForwardedInvite({ text: 'Fwd: tlinv1:AAAA.BBBB', topicId: 61, fromUserId: OWNER, verified: true });
+    expect(bad).toEqual({ outcome: 'invalid', refused: true });
+    expect(B.posted.at(-1)?.buttons).toBeUndefined();
+
+    const good = await B.tg.onForwardedInvite({ text: `Fwd: ${message}`, topicId: 60, fromUserId: OWNER, verified: true });
+    expect(good).toEqual({ outcome: 'awaiting-approval', refused: false });
+    expect(button(B, 'Approve').topicId).toBe(60);
+    expect(texts(B).some((t) => t.startsWith('Connected'))).toBe(false);
+
+    const stranger = await B.tg.onForwardedInvite({ text: `Fwd: ${message}`, topicId: 60, fromUserId: OWNER + 1, verified: true });
+    expect(stranger).toEqual({ outcome: 'refused', refused: true });
+    expect(B.posted.at(-1)?.text).toMatch(/Only the person who approves new connections for me can do this\./);
+  });
+
   it('Approve → an immediate "finishing" message → Finish → both sides "Connected ✓" only after the hello', async () => {
     const A = await bootSide('pp', 4091);
     const B = await bootSide('echo', 4092);
