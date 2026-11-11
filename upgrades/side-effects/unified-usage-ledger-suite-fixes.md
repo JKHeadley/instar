@@ -63,3 +63,7 @@ Safe.
 ## Evidence pointers
 
 - The four suites and the two e2e files pass after the fix; the full integration suite (803 files, 6,716 tests) passes; `npx tsc --noEmit` exit 0; desktop failures reproduced on a clean `origin/main` checkout.
+
+## Addendum: merge-conflict resolution with origin/main (2026-11-10)
+
+Local Verify reported `error:conflict` before running tests: `origin/main` gained a `contextBudgetLayers` dev-gated entry (src/core/devGatedFeatures.ts) and a `contextBudget.layers` ladder row (src/data/feature-ladders.json), at the same insertion points as this branch's `usageLedger` entry and `usage.ledger` row. The resolution keeps both entries in each file unchanged. Nothing else in either feature changes. The ladder JSON parses, `npx tsc --noEmit` is clean, and all 52 lint steps pass on the merge commit. Rollback cost: none beyond reverting the merge.
