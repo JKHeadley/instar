@@ -27,6 +27,11 @@ export interface FoldBootDeps {
   inboundQueueLive: () => boolean;
   /** Does TopicMemory hold rows for the topic? */
   topicRowsPresent: (topicKey: string) => boolean;
+  /**
+   * Does the topic's channel have a row writer that is on (§14)? The server passes the
+   * TopicRowWriter's answer. Absent ⇒ only Telegram topics (positive numeric keys).
+   */
+  hasRowSource?: (topicId: number) => boolean;
   /** The ContextBudgetSentinel's heartbeat; absent until that slice ships (⇒ no fold begins). */
   sentinelHeartbeatFresh?: () => boolean;
   /** Is the replicated layer kind registered on this build (the §14 skew rule)? Absent ⇒ false. */
@@ -43,8 +48,14 @@ export function buildFoldCoordinator(d: FoldBootDeps): { coordinator: FoldCoordi
       return hosts(topicKey) > 0;
     },
     sentinelHeartbeatFresh: () => d.sentinelHeartbeatFresh?.() ?? false,
-    // Phase 1 adds the channel-neutral row writer; today only Telegram topics (numeric keys) have rows.
-    hasRowSource: (topicKey) => /^\d+$/.test(topicKey),
+    // The channel-neutral row writer (§14) answers per channel; a key that is not a
+    // topic id has no row source.
+    hasRowSource: (topicKey) => {
+      if (!/^-?\d+$/.test(topicKey)) return false;
+      const id = Number(topicKey);
+      if (!Number.isSafeInteger(id)) return false;
+      return d.hasRowSource ? d.hasRowSource(id) : id > 0;
+    },
     exactlyOneLiveSession: (topicKey) => hosts(topicKey) === 1,
     inboundQueueLive: () => d.inboundQueueLive(),
     layerKindPresent: () => d.layerKindPresent?.() ?? false,

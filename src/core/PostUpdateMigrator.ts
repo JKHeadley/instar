@@ -57,6 +57,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
@@ -11496,6 +11497,17 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: documented declared job failure ($INSTAR_JOB_FAILURE_FILE)');
     }
 
+    // Built-in schedule edits survive updates (CMT-1586). Content-sniffed on `shippedSchedule`.
+    if (content.includes('**Job Scheduler**') && !content.includes('shippedSchedule')) {
+      const failureAnchor = JOB_DECLARED_FAILURE_AWARENESS;
+      const idx = content.indexOf(failureAnchor);
+      content = idx !== -1
+        ? content.slice(0, idx + failureAnchor.length) + BUILTIN_SCHEDULE_EDIT_AWARENESS + content.slice(idx + failureAnchor.length)
+        : content + '\n' + BUILTIN_SCHEDULE_EDIT_AWARENESS;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented durable built-in job schedule edits');
+    }
+
     const coverageGuidance = applyJobMeshGuide(content, jobCoverageGuide(port));
     if (coverageGuidance !== content) {
       content = coverageGuidance;
@@ -17034,6 +17046,7 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
+        ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
       ] as const) {
         if (claudeMd.includes(marker) && !appended.includes(marker)) {
           appended = appended.trimEnd() + '\n\n' + render();

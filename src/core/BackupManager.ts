@@ -19,6 +19,7 @@ import crypto from 'node:crypto';
 import type { BackupSnapshot, BackupConfig } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import { mergeDefaults } from './mergeDefaults.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
 
 const SNAPSHOT_ID_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{6}Z(-\d+)?$/;
 const BLOCKED_FILES = new Set(['config.json', 'secrets', 'machine']);
@@ -131,6 +132,24 @@ export const REMEDIATION_EXCLUDED_PATH_PREFIXES: readonly string[] = Object.free
 ]);
 
 /**
+ * `contextBudget.enabled` from `<stateDir>/config.json`, resolved through the
+ * development-agent gate (omitted ⇒ live on a development agent, dark on the
+ * fleet); false when unreadable.
+ */
+export function readContextLayersSwitch(stateDir: string): boolean {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { developmentAgent?: boolean; contextBudget?: { enabled?: unknown } };
+    const explicit = cfg?.contextBudget?.enabled;
+    return resolveDevAgentGate(typeof explicit === 'boolean' ? explicit : undefined, cfg);
+  } catch {
+    return false; // @silent-fallback-ok — no readable config: the layers are treated as off and stay out of the backup
+  }
+}
+
+/** Default entries gated by `contextBudget.enabled` (context-budget-layered-summaries §9.7). */
+export const CONTEXT_LAYER_BACKUP_ENTRIES: readonly string[] = Object.freeze(['state/context-layers/', 'topic-memory.db*']);
+
+/**
  * Path segments that are NEVER included in a backup snapshot, UNCONDITIONALLY
  * (no feature-flag gate): judgment-call provenance rows are machine-local
  * decision context (0700/0600, gitignored, never HTTP-served) — a backup that
@@ -156,6 +175,12 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   // The retrieval archive and engine checkpoints (§9.7: the archive root is a sibling of
   // the layers root precisely so it can be excluded; checkpoints are unscrubbed).
   'context-archive',
+  // Fold holds and in-flight fold carriers (§7.8, §9.3): a restored hold or
+  // marker would mute or re-seed a conversation for a fold that already ended.
+  'fold-hold.json',
+  '_fold-markers',
+  '_clear-seed',
+  '_seeded',
 ]);
 
 /**
@@ -225,6 +250,16 @@ const DEFAULT_CONFIG: BackupConfig = {
     'state/skill-learning.db*',
     // Read markers (mobile-unread-messages §3.3): what each person has read, replicated; small.
     'state/conversation-read-markers.json',
+    // Context budget layer store (context-budget-layered-summaries §9.7). A
+    // directory entry: a glob with a wildcard in a middle segment is skipped.
+    // Fold records, holds and markers inside it are never-backup segments
+    // (above), so a restore never resurrects a fold in flight. Gated by
+    // `contextBudget.enabled` at snapshot time (resolveIncludedFiles()).
+    'state/context-layers/',
+    // The Anchor, ledger and U are row references into TopicMemory, so its
+    // database (with the WAL set) joins the backup with the layer store.
+    // Same gate.
+    'topic-memory.db*',
   ],
 };
 
@@ -278,6 +313,7 @@ export class BackupManager {
    * `isIntegratedBeingEnabled`. See spec §A35 + §A50.
    */
   private readonly isRemediationEnabled?: () => boolean;
+  private readonly isContextLayersEnabled?: () => boolean;
   private lastAutoSnapshot: number = 0;
 
   constructor(
@@ -286,7 +322,12 @@ export class BackupManager {
     isSessionActive?: () => boolean,
     isIntegratedBeingEnabled?: () => boolean,
     isRemediationEnabled?: () => boolean,
+    isContextLayersEnabled?: () => boolean,
   ) {
+    // Default gate: read the switch from the agent's own config at snapshot
+    // time, so every construction site (CLI, routes, the drain cadence) honours
+    // it without threading a callback through each one.
+    this.isContextLayersEnabled = isContextLayersEnabled ?? (() => readContextLayersSwitch(stateDir));
     this.stateDir = path.resolve(stateDir);
     this.backupsDir = path.resolve(stateDir, 'backups');
     // `includeFiles` is UNIONED with defaults, not replaced. Users and
@@ -318,12 +359,16 @@ export class BackupManager {
     // F-7 / A35: when remediation is ENABLED, the per-machine
     // remediation runtime paths get actively excluded. When remediation
     // is off, the exclusion is a no-op (no such files exist anyway).
+    const contextLayersOn = this.isContextLayersEnabled ? this.isContextLayersEnabled() : false;
     const remediationExclusionActive = this.isRemediationEnabled
       ? this.isRemediationEnabled()
       : false;
     for (const entry of this.config.includeFiles) {
       // Gate: exclude the shared-state pattern when feature is disabled.
       if (sharedStateGateOff && entry.startsWith('shared-state.jsonl')) continue;
+      // Gate: the layer store and the TopicMemory rows it references join the
+      // backup only while the layers are on (§9.7 "joins the backup with this feature").
+      if (!contextLayersOn && CONTEXT_LAYER_BACKUP_ENTRIES.includes(entry)) continue;
       // UNCONDITIONAL never-backup segments (spec §3.5) — no flag gates this.
       if (path.normalize(entry).split(/[\\/]/).some((seg) => NEVER_BACKUP_PATH_SEGMENTS.includes(seg))) {
         continue;

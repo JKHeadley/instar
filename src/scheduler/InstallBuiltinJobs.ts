@@ -33,6 +33,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
+import { Cron } from 'croner';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { buildPerSlugManifest, coerceDurationMinutes, coerceBool } from './buildPerSlugManifest.js';
 import { validateManifest } from './AgentMdJobLoader.js';
@@ -56,6 +57,14 @@ export interface InstallReport {
   retired: string[];        // slugs removed from templates (now retired)
   errors: Array<{ slug?: string; reason: string }>;
 }
+
+/** Job Scheduler awareness bullet (CLAUDE.md template + migration). Marker: `shippedSchedule`. */
+export const BUILTIN_SCHEDULE_EDIT_AWARENESS =
+  '- **Changing a BUILT-IN job\'s schedule — edit `schedule` in `.instar/jobs/schedule/<slug>.json`.** ' +
+  'Updates keep it: each install records the shipped value as `shippedSchedule`, and a `schedule` that differs ' +
+  'from it is treated as yours. Set it back to the shipped value to follow future defaults again. A manifest ' +
+  'written before an update that adds `shippedSchedule` takes the shipped value once, so re-apply an earlier ' +
+  'edit after that update. Applies at the next server restart.\n';
 
 const PORT_SENTINEL = '4042';
 
@@ -107,6 +116,16 @@ function installBuiltinScripts(templatesDir: string, installedDir: string, repor
     }
   }
   return shipped;
+}
+
+function isValidCron(expr: string): boolean {
+  try {
+    new Cron(expr, { paused: true }).stop();
+    return true;
+  } catch {
+    // @silent-fallback-ok — the caller reports the reset in InstallReport.errors.
+    return false;
+  }
 }
 
 export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallReport {
@@ -183,6 +202,8 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
     const manifestPath = path.join(scheduleDir, `${slug}.json`);
     let existingEnabled: boolean | undefined;
     let existingDisabledAtBodyHash: string | undefined;
+    let existingSchedule: string | undefined;
+    let existingShippedSchedule: string | undefined;
     if (fs.existsSync(manifestPath)) {
       try {
         const existing = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
@@ -190,6 +211,8 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
         if (typeof existing.disabledAtBodyHash === 'string') {
           existingDisabledAtBodyHash = existing.disabledAtBodyHash;
         }
+        if (typeof existing.schedule === 'string') existingSchedule = existing.schedule;
+        if (typeof existing.shippedSchedule === 'string') existingShippedSchedule = existing.shippedSchedule;
       } catch {
         // malformed; we'll overwrite with a fresh one
       }
@@ -243,10 +266,28 @@ export function installBuiltinJobs(opts: InstallBuiltinJobsOptions): InstallRepo
     // expectedDurationMinutes, model + pass-throughs are carried here (their
     // omission is the bug this fixes). The typed return means a dropped required
     // field is a compile error.
+    // An operator's schedule edit survives updates (CMT-1586, fb-d075a5c4-c4c).
+    // `shippedSchedule` records the template's schedule at each write, so a
+    // saved `schedule` that differs from it was changed on this agent and is
+    // kept; one that still matches follows a new shipped default. A manifest
+    // written before this field existed cannot be told apart and takes the
+    // shipped value once (today's behaviour), after which edits are kept.
+    const shippedSchedule = String(frontmatter.schedule ?? '');
+    let schedule = shippedSchedule;
+    if (existingSchedule !== undefined && existingShippedSchedule !== undefined
+      && existingSchedule.trim() && existingSchedule !== existingShippedSchedule) {
+      if (isValidCron(existingSchedule)) {
+        schedule = existingSchedule;
+      } else {
+        report.errors.push({ slug, reason: `saved schedule ${JSON.stringify(existingSchedule)} is not a valid cron expression; reset to the shipped ${JSON.stringify(shippedSchedule)}` });
+      }
+    }
+
     const manifest = buildPerSlugManifest({
       slug,
       origin: 'instar',
-      schedule: String(frontmatter.schedule ?? ''),
+      schedule,
+      shippedSchedule,
       priority: frontmatter.priority as JobPriority,
       expectedDurationMinutes: durationMinutes,
       enabled: existingEnabled !== undefined ? existingEnabled : frontmatter.enabled !== 'false',

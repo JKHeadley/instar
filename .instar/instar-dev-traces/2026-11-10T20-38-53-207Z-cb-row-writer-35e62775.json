@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "cb-row-writer",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T20:38:53.207Z",
+  "artifactPath": "upgrades/side-effects/cb-row-writer.md",
+  "artifactSha256": "f9d6ed47654682d59a904875bf3560d1393cba495ca0e0947944f75b06204573",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/memory/TopicMemory.ts",
+    "src/memory/topicRowWriter.ts",
+    "src/messaging/slack/SlackAdapter.ts",
+    "src/server/mobileSlackRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/topic-row-writer-lifecycle.test.ts",
+    "tests/integration/topic-row-writer-channels.test.ts",
+    "tests/unit/topic-row-writer.test.ts",
+    "upgrades/next/cb-row-writer.md",
+    "upgrades/side-effects/cb-row-writer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fixes from the Fable 5.2 second pass on the S2 row writer: deterministic Slack non-ts keys, logMessage notifies the row seam, hasRowSource needs an open TopicMemory, a bounded app-row reconcile; no block/allow surface.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event-driven actions, not a self-triggered loop: the row writer reports a refusal at most once per message it was handed, and the app-row reconcile is a single bounded pass run at boot and on an off-to-on switch transition; nothing retries, re-drives or re-fires on its own"
+  }
+}

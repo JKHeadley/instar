@@ -88,11 +88,14 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'contextBudget',
     prefixes: ['/context-budget'],
-    description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a) — and the recorded results of the adapter verification suite (which engine capabilities the engine version on this machine really supports). Check this before saying compaction recovery works.',
+    description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a) — and the recorded results of the adapter verification suite (which engine capabilities the engine version on this machine really supports). Check this before saying compaction recovery works. GET /context-budget/layers shows the per-topic summary store and transcript archive on this machine (roots and modes, topics, bytes, replication outcomes; 503 while contextBudget.enabled is off).',
     build: ({ ctx }) => {
-      const s = (ctx as { contextBudgetSentinel?: { heartbeatFresh?: () => boolean } | null }).contextBudgetSentinel;
-      if (!s?.heartbeatFresh) return { enabled: false };
-      return { enabled: true, heartbeatFresh: s.heartbeatFresh(), endpoints: ['GET /context-budget/sentinel'] };
+      const c = ctx as { contextBudgetSentinel?: { heartbeatFresh?: () => boolean } | null; contextLayers?: unknown };
+      const s = c.contextBudgetSentinel;
+      const layers = !!c.contextLayers;
+      if (!s?.heartbeatFresh && !layers) return { enabled: false };
+      const endpoints = [...(s?.heartbeatFresh ? ['GET /context-budget/sentinel'] : []), ...(layers ? ['GET /context-budget/layers'] : [])];
+      return { enabled: true, ...(s?.heartbeatFresh ? { heartbeatFresh: s.heartbeatFresh() } : {}), layers, endpoints };
     },
   },
   {
