@@ -58,6 +58,7 @@ import { latestPerName, runTimeMs } from './latest-run-per-check.mjs';
 import { MERGE_FLOOR_MODES, selectMergeFloor, isMergeEligible, extractRulesetReviewPolicy, reviewPrecheckPasses, parseCodeowners, codeOwnedFiles, codeOwnerApprovedAtHead } from './local-verify-floor.mjs';
 import { isTracePath } from './lib/instar-dev-trace.mjs';
 import { pairingRefusal } from './check-constitution-pairing.mjs';
+import { resolveReviewerLogins, confirmedRequested } from './pr-reviewer-request.mjs';
 
 export { extractRulesetReviewPolicy };
 
@@ -809,8 +810,7 @@ function resolveReviewers(repo, args, view) {
       if (owner) logins = [owner];
     } catch { /* fall through — no default reviewer resolvable */ }
   }
-  const author = view?.author?.login;
-  return logins.filter(l => l && l !== author);
+  return resolveReviewerLogins({ explicit: logins, author: view?.author?.login });
 }
 
 /** Request review from `logins` on the PR. Idempotent at GitHub (re-requesting is a no-op). Never throws. */
@@ -820,13 +820,7 @@ function requestReviewers(repo, pr, logins) {
   for (const l of logins) args.push('-f', `reviewers[]=${l}`);
   const r = gh(args, { allowFail: true });
   if (r.status !== 0) return { requested: [], error: (r.stderr || '').slice(0, 200) };
-  try {
-    const body = JSON.parse(r.stdout);
-    const now = (body?.requested_reviewers ?? []).map(u => u?.login).filter(Boolean);
-    return { requested: logins.filter(l => now.includes(l)), error: null };
-  } catch {
-    return { requested: logins, error: null };
-  }
+  return { requested: confirmedRequested(r.stdout, logins), error: null };
 }
 
 /**
