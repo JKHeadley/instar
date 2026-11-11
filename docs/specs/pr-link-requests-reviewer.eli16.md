@@ -1,5 +1,7 @@
 # PR links request their reviewer — Plain-English Overview
 
+> **Superseded 2026-11-11:** this check was removed because it duplicated the PR-link reviewer request in `src/messaging/prLinkReviewRequest.ts`. That one is the only send-time path now.
+
 > The one-line version: before the agent sends a person a link to a pull request, it makes sure that person (or the repo owner) is already asked to review it on GitHub, so the link always lands on a review that is waiting for them.
 
 ## The problem in one breath
