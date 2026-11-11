@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-11T00:55:01.900Z",
+  "slug": "someone-elses-work-gravity-well",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 5,
+  "loc": 176,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MessagingToneGate.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/unowned-handoff.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 173,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

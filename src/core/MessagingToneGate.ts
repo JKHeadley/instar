@@ -77,6 +77,15 @@ const SURFACE_REFERRAL_RULE = `An additional rule applies to this message; it ma
 const B17_REACH_SUBCLAUSE = `An additional sub-clause of B17_FALSE_BLOCKER applies to this message (cite B17_FALSE_BLOCKER when it fires):
 - REACH sub-clause (the access-blind false blocker — judge by MEANING): the agent often asks the operator to LOOK AT, CHECK, or DO something — "I need your eye on it", "can you check the dashboard", "only your browser can see that", "message me in Slack so the conversation shows up" — when its OWN access already covers it. When the candidate hands the operator such an errand AND that reach PLAINLY covers it, the "account / access grant only the user can make" carve-out does NOT rescue it, and the ask IS a B17 false blocker. Reach covers an errand when: (a) it is a READ of the DATA the dashboard or app serves — lists, names, message history, status (the agent's own key reads that data, so "only your screen / your browser can see that list" is false); or (b) it needs a signed-in account the AGENT REACH lists — including the OPERATOR's own account — and the errand is only to LOOK, to CHECK, or to send a clearly marked TEST message to the agent itself (for example in its own test channel), marked "[Sent by <agent> on <operator>'s behalf, test]". Any OTHER send through the operator's account is covered ONLY when a STANDING AUTHORIZATION section shows a present grant that plausibly covers that send. Reach does NOT cover, and the ask MUST pass: a genuine taste / judgment / "does this feel right to you" question; a check of how something LOOKS, RENDERS, ARRIVES or BEHAVES on the operator's own device or screen (a push notification arriving, a badge on their phone, the native app's behaviour) — the agent's key reads data, not their device; a check on a device or account the reach does not list; a secret, 2FA code or CAPTCHA; an approval or decision ask (judge those by the existing carve-outs, not by reach); anything the operator explicitly asked to do themselves; or an operator-account action that is not a look, a check or a marked test (a purchase, a setting change, a real message to anyone in the operator's name) absent a covering grant. Suggest the agent do the errand through the listed reach and report what it found, marking any message it sent as the operator. UNDER-FIRE BIAS (decisive): when you are UNSURE whether the listed reach covers this exact errand, do NOT fire.`;
 
+/**
+ * The B17 UNOWNED-HANDOFF sub-clause, added to the prompt only when the
+ * unowned-handoff signal fired (like the REACH sub-clause), so the pinned
+ * static template and every other review stay byte-identical. Echo Bugs topic
+ * 10000002523.
+ */
+export const B17_UNOWNED_HANDOFF_SUBCLAUSE = `An additional sub-clause of B17_FALSE_BLOCKER applies to this message (cite B17_FALSE_BLOCKER when it fires):
+- UNOWNED-HANDOFF sub-clause (the deferral dressed as a scope fact — judge by MEANING): the agent states that a piece of the work it is doing is NEEDED somewhere else — another repo, the app, another machine, another team, session or "owner" — as if that settles it: "opening documents will need a small button added to the app", "that part is outside this repository, recorded for the app's owner", "the owner will need to add X", "requires a change in the other repo". No person is named as required, so it does not read as a hand-back, but it IS one: the work has no route, so it silently drops while the agent's own work reports "done". Fire B17 when ALL hold: (1) the message, as the agent's OWN progress / plan / completion report, says work NEEDED for the goal it is doing lies outside what it is building; (2) it names NO route for that work — neither that the agent will pull the code and build it, nor a SPECIFIC owner (a named session, agent, person or team) it has handed it to or is handing it to with a concrete handoff (a brief sent, a tracked commitment / action id, a scheduled check); and (3) none of B17's legitimate clauses applies. PASS (do not fire) when: a route is named, even briefly ("handed to echo-instar-app with a brief", "pulling the app repo here to build it", "tracked as CMT-123, I check it at 15:00"); the outside item is NOT needed for the goal (an unrelated idea, something the operator explicitly dropped); the text is instructions to the user about their own steps ("you will need to sign in to the app first"); the message is a genuine question to the operator about WHO should own it; or it reports a blocker naming what the agent tried. Suggest the agent find the owner (memory, project map, grep), pick a route now — pull the code and build it, or hand it to the named owning session — put it on its completion list, and say that route in the message. UNDER-FIRE BIAS (decisive): when unsure whether the outside work is needed for the goal or whether a route is named, do NOT fire.`;
+
 /** B23's rule, added to the prompt only when the signal is present. Cite it like any other rule. */
 const UNSOURCED_ATTRIBUTION_RULE = `An additional rule applies to this message; it may be cited like the others:
 - **B23_UNSOURCED_ATTRIBUTION** — JUDGE BY MEANING. Two conditions, decided separately. CREDITING: the candidate credits a person with a statement, rule or standing instruction that is not visible in the recent conversation and is not sourced by a resolved marker. Decide this condition only when the signal says status=resolved and conversationContext=true; otherwise it is unmeasured and does not fire. REFUSAL: the candidate refuses or blocks something because of an unsourced rule, whether or not it names a person ("that's a standing rule, so no", "we agreed", "policy"), and does not say the rule is the agent's own. Decide this condition always; it needs neither the conversation nor the markers. Do NOT apply B23 to the agent's own conclusions, to quotes of public text, to reporting that someone sent a message without saying what it meant, to a recap of the recent conversation, or to a line that plainly says it has no source. The suggestion names the two honest ways through: quote the exact words with a [source: ...] marker, or say the rule is the agent's own.`;
@@ -950,6 +959,16 @@ export interface ToneReviewSignals {
     phrase?: string;
   };
   /**
+   * Unowned-handoff detector signal (src/core/unowned-handoff.ts, topic 10000002523).
+   * SIGNAL ONLY — flags "X will need Y in the app / another repo / the owner"
+   * shapes. When present, the B17 UNOWNED-HANDOFF sub-clause is added to the
+   * prompt and the gate judges by meaning. Fail toward sending.
+   */
+  unownedHandoff?: {
+    flagged: boolean;
+    phrase?: string;
+  };
+  /**
    * Internal-ID leak detector signal (C1+C2 §4.3, B-IDLEAK; src/core/internal-id-leak.ts).
    * SIGNAL ONLY, jargon-class — flags raw internal plumbing tokens (CMT-\d+,
    * dryRun, sentinel/gate names, endpoints) in unsolicited agent-initiated text.
@@ -1495,7 +1514,8 @@ export class MessagingToneGate {
     // one case the B17 reach sub-clause judges, and it keeps every other review
     // byte-identical to before.
     const agentReachSection =
-      signals?.operatorErrand?.errand === true && agentReach ? this.renderAgentReach(agentReach) : '';
+      (signals?.operatorErrand?.errand === true && agentReach ? this.renderAgentReach(agentReach) : '') +
+      (signals?.unownedHandoff?.flagged === true ? `\n=== B17 UNOWNED-HANDOFF ===\n${B17_UNOWNED_HANDOFF_SUBCLAUSE}\n` : '');
     // §Design 8 (CMT-1793): B1–B7 artifacts are detected DETERMINISTICALLY here
     // and supplied to the prompt as a bounded signal list — the prompt judges
     // them IN CONTEXT (no in-prompt literal-matching). Rendered in its OWN
@@ -1540,7 +1560,7 @@ export class MessagingToneGate {
   }
 
   private renderSignals(signals?: ToneReviewSignals): string {
-    if (!signals || (!signals.surfaceReferral && !signals.attributionSources && !signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak && !signals.operatorErrand?.errand)) {
+    if (!signals || (!signals.surfaceReferral && !signals.attributionSources && !signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak && !signals.operatorErrand?.errand && !signals.unownedHandoff?.flagged)) {
       return '\n=== UPSTREAM SIGNALS ===\n(no signals reported)\n';
     }
     const lines: string[] = ['', '=== UPSTREAM SIGNALS ==='];
@@ -1615,6 +1635,12 @@ export class MessagingToneGate {
       // combines it with the AGENT REACH section.
       lines.push(
         `- operator-errand detector (signal-only, corroborates the B17 reach sub-clause): errand=true${signals.operatorErrand.phrase ? ` phrase: ${JSON.stringify(signals.operatorErrand.phrase.slice(0, 60))}` : ''}`,
+      );
+    }
+    if (signals.unownedHandoff && signals.unownedHandoff.flagged) {
+      // SIGNAL ONLY (B17 UNOWNED-HANDOFF). The phrase is an inert quoted token.
+      lines.push(
+        `- unowned-handoff detector (signal-only, corroborates the B17 UNOWNED-HANDOFF sub-clause): flagged=true${signals.unownedHandoff.phrase ? ` phrase: ${JSON.stringify(signals.unownedHandoff.phrase.slice(0, 60))}` : ''}`,
       );
     }
     if (signals.internalIdLeak && signals.internalIdLeak.leaked) {

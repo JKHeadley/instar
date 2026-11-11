@@ -7394,6 +7394,9 @@ export class AgentServer {
     const topicIntentRoutes = createTopicIntentRoutes({
       topicIntentStore: options.topicIntentStore ?? null,
       arcCheck: options.topicIntentArcCheck ?? null,
+      layerFreshness: options.contextLayers && options.topicMemory
+        ? (topicId: number) => options.contextLayers!.h1Freshness(topicId, options.topicMemory!)
+        : null,
     });
     this.app.use(topicIntentRoutes);
 

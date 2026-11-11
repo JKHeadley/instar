@@ -770,6 +770,7 @@ import { detectParkedOnUser } from '../core/parked-on-user.js';
 import { detectSurfaceReferral } from '../core/operatorSurfaceReferral.js';
 import { detectAskWhenAuthorized } from '../core/ask-when-authorized.js';
 import { detectOperatorErrand } from '../core/operator-errand.js';
+import { detectUnownedHandoff } from '../core/unowned-handoff.js';
 import { buildAgentReach } from '../core/agent-reach.js';
 import { detectInternalIdLeak } from '../core/internal-id-leak.js';
 import type { MessageKind } from '../core/MessagingToneGate.js';
@@ -4646,6 +4647,19 @@ export function createRoutes(ctx: RouteContext): Router {
         }
       } catch {
         // @silent-fallback-ok — detector/registry errors never override the authority; skip the signal.
+      }
+
+      // B17 UNOWNED-HANDOFF (Echo Bugs topic 10000002523): "X will need Y in the app /
+      // another repo / the owner" with no route. SIGNAL ONLY — when it fires the gate
+      // gets the sub-clause and judges by meaning. Replies only (progress and
+      // completion reports). Fail-OPEN: a detector throw skips the signal.
+      try {
+        if (kindForSignals === 'reply') {
+          const handoff = detectUnownedHandoff(text);
+          if (handoff.flagged) signals.unownedHandoff = { flagged: true, phrase: handoff.phrase };
+        }
+      } catch {
+        // @silent-fallback-ok — detector errors never override the authority; skip the signal.
       }
 
       // ── Standing-authorization CONTEXT for B17 (BIAS-TO-ACTION-SPEC D3/D4/D7/D8) ──

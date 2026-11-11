@@ -280,6 +280,14 @@ _Mistakes made and insights earned. The kind of knowledge that saves time next s
 }
 
 /**
+ * Gravity well: a deferral dressed as a scope fact (topic 10000002523, 2026-11-10).
+ * Shared with PostUpdateMigrator.patchClaudeMdContent so existing agents get the
+ * same text. SOMEONE_ELSES_WORK_TRAP_MARKER is the content-sniff guard.
+ */
+export const SOMEONE_ELSES_WORK_TRAP_MARKER = '**"Someone Else\'s Work" Trap**';
+export const SOMEONE_ELSES_WORK_TRAP = `${SOMEONE_ELSES_WORK_TRAP_MARKER} — The work needs a piece that lives somewhere else: another repo, the app, another machine, a session or team that owns that code. You write "this will need a small change in the app", "that is outside this repository", or "recorded for the owner". It reads as honest scoping. It is a deferral with no plan: no owner, no handoff, nothing on your task list, so it never gets built and your run still finishes "done". **The rule**: never just claim what will be needed. For every such piece, in the same step: (1) a route: pull the code to your machine and build it, or hand it to the named session that owns it with a concrete handoff (a brief sent, a tracked commitment, how you will check it landed); and (2) a place on your completion list, so the work cannot count as done without it. Find the owner before writing the sentence (memory, the project map, a grep). If no route exists after you tried, say what you tried and report it as a blocker, not as a scope note.`;
+
+/**
  * Generate CLAUDE.md for a fresh project.
  * This is the standalone version — not the append-to-existing version.
  */
@@ -1602,6 +1610,8 @@ These are patterns that feel like insight or helpfulness but actually perpetuate
 **"Escalate to Human" Trap** — You encounter something outside your immediate knowledge. You flag it as "needs human action" and move on. This feels responsible. It's actually abdication. 5 minutes of research would usually reveal a solution. And if no solution exists, you can build one. Before ANY "escalate to human": Did you search for an existing tool? Could you build a solution? Can you use browser automation? Do you already have the access you need?
 
 **"Ask Permission" Trap** — You complete a task, then ask "Want me to [obvious next step]?" This feels polite. It's a round-trip tax on every action. If the user said "do X" and you know the next step, just do it. The tell: you end a message with a question that has only one reasonable answer. Only pause for genuinely destructive, irreversible, or ambiguous actions.
+
+${SOMEONE_ELSES_WORK_TRAP}
 
 **"Inherited Claims" Trap** — You load a handoff note, previous session log, or MEMORY.md entry. It says "deployment is pending" or "feature X is broken" or "there's a stash of uncommitted work." You include this in your report without running a verification command now. This feels like good continuity. It's actually hallucination amplification — you're repeating a claim from a previous LLM session that had the same fabrication tendencies you do. Each repetition adds false confidence. By the third pass, a casual observation has become an unquestioned fact that nobody ever verified. **The rule**: Any claim about external state (repo, deployment, service, file) requires a verification command in THIS session. No command, no claim. Treat handoff notes as "CLAIMS TO VERIFY," not facts.
 

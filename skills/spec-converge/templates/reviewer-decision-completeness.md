@@ -96,6 +96,19 @@ Specifically check:
    genuine user decision (not a design question the author should answer)? An
    author-answerable question parked on the user is a deferral, not a decision.
 
+<!-- CROSS_BOUNDARY_OWNER -->
+7. **Cross-boundary work with no route** — judge by MEANING: any place the spec says
+   the goal NEEDS work outside what this spec builds — another repo, the app, another
+   machine, another session, team or "owner" ("X will need a small button added to the
+   app", "outside this repository, recorded for the app's owner", "the owner will need
+   to…"). Each such piece must name (a) who builds it — this run after pulling the code,
+   or a SPECIFIC owning session / agent / person — (b) the handoff (a brief sent, a
+   tracked commitment, how the builder checks it landed) and (c) where it sits in the
+   run's completion condition. A claim of what is needed with none of these is a
+   deferral dressed as a scope fact: a **DESIGN finding that blocks convergence**, even
+   when it sits under `## Open questions`. Resolution: name the route and add it to the
+   completion condition, or bring the work into this spec.
+
 Produce a SHORT report (under 400 words):
 
 - **Verdict: CLEAN, MINOR ISSUES, or SERIOUS ISSUES**
