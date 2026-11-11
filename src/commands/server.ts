@@ -368,10 +368,10 @@ import { resolveThreadlineMcpEntry } from '../threadline/mcpEntry.js';
 import { ThreadResumeMap } from '../threadline/ThreadResumeMap.js';
 import { ConversationStore } from '../threadline/ConversationStore.js';
 import { ThreadLog } from '../threadline/ThreadLog.js';
-import { ThreadMessageRecorder } from '../threadline/recordThreadMessage.js';
+import { classifyRelayIngress, recordGatePassedIngress } from '../threadline/relayIngressHistory.js';
+import { createThreadMessageRecorder } from '../threadline/createThreadMessageRecorder.js';
 import { recordInboundAck } from '../threadline/recordInboundAck.js';
 import { isAutoAckInbound, autoAckRecognition, looksLikeAutoAckText, createAckRateLimiter, runRelayAckStage, createRelayAckSettler, describeUndeliveredRouterResult } from '../threadline/autoAck.js';
-import { parseKindedAck } from '../threadline/requiredAck.js';
 import { type LiveInjectOutcome } from '../threadline/TopicLinkageHandler.js';
 import type { InjectionConfirmation } from '../core/SessionManager.js';
 
@@ -20310,23 +20310,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Late-bound: the trust manager the homebase backfill needs is built further down
     // (Threadline bootstrap). Until then a contact is simply a no-op.
     let _peerHomebaseBackfill: import('../threadline/peerHomebaseBackfill.js').PeerHomebaseBackfill | null = null;
-    const threadMessageRecorder = new ThreadMessageRecorder({
+    // One production composition (createThreadMessageRecorder): real log + store,
+    // the MessageStore as the resolvable over-cap body backing, and the peer-contact
+    // hook. The relay-ingress E2E calls the same function.
+    const threadMessageRecorder = createThreadMessageRecorder({
+      config,
       threadLog,
       conversationStore,
+      messageStore,
       attention: telegram ?? null,
-      logDir: path.join(config.stateDir, 'logs'),
-      headCacheCoalesceMs: _canonHist.headCacheCoalesceMs,
-      appendFailureAlertThreshold: _canonHist.appendFailureAlertThreshold,
-      inlineMaxBytes: _canonHist.inlineMaxBytes,
+      onContact: (peer) => _peerHomebaseBackfill?.onContact(peer),
     });
-    {
-      const { attachPeerContactHook } = await import('../threadline/peerHomebaseBackfill.js');
-      attachPeerContactHook(threadMessageRecorder, (peer) => _peerHomebaseBackfill?.onContact(peer));
-    }
-    // SA5/E1: close-only canonical-log retention — a non-pinned conversation
-    // transitioning INTO resolved/failed deletes its log (via SafeFsExecutor inside
-    // ThreadLog.deleteThread); a COLD archive/LRU eviction never fires this seam.
-    conversationStore.setLogRetentionSeam((threadId) => threadLog.deleteThread(threadId));
+    // SA5/E1: close-only canonical retention (log + that thread's body partition)
+    // is installed by createThreadMessageRecorder (installCanonicalRetentionSeam);
+    // a COLD archive/LRU eviction never fires the seam.
     const warrantsReplyGate = new WarrantsReplyGate({ intelligence: sharedIntelligence });
     // CMT-509 §2: surface PARENTLESS Threadline conversations into a single
     // dedicated topic so a peer reaching out cold is visible (not an invisible
@@ -21911,7 +21908,7 @@ export async function startServer(options: StartOptions): Promise<void> {
 
         const { runRelayInboundWithLedger } = await import('../threadline/inboundIdLedgerWiring.js');
         const { InboundMessageGate: InboundGateStatics } = await import('../threadline/InboundMessageGate.js');
-        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string; notice?: string }) => {
+        threadlineRelayClient.on('gate-passed', async (decision: { message?: { from: string; content: unknown; threadId?: string; messageId?: string; timestamp?: string; timestampSynthesized?: true }; trustLevel?: string; reason?: string; notice?: string }) => {
           // Inbound-id ledger (docs/specs/a2a-inbound-id-ledger.md §1) — THE
           // COMMIT POINT: runRelayInboundWithLedger commits as the first statement
           // after the null-check and the probe exclusion, BEFORE every side effect
@@ -21934,7 +21931,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         });
 
         async function handleGatePassedRelayMessage(
-          decision: { message: { from: string; content: unknown; threadId?: string; messageId?: string }; trustLevel?: string; reason?: string },
+          decision: { message: { from: string; content: unknown; threadId?: string; messageId?: string; timestamp?: string; timestampSynthesized?: true }; trustLevel?: string; reason?: string },
           ledgerTicket: import('../threadline/InboundIdLedger.js').AdmissionTicket | null,
           ledgerNotice: string | null,
         ): Promise<void> {
@@ -21949,22 +21946,20 @@ export async function startServer(options: StartOptions): Promise<void> {
           // The relay-authenticated sender; a probe never opens a place.
           const memoryPeerFingerprint = decision.reason === 'probe' ? undefined : senderFingerprint;
 
-          // Extract text content
-          let textContent: string;
-          if (typeof msg.content === 'string') { textContent = msg.content; }
-          else if (typeof msg.content === 'object' && msg.content !== null) {
-            const c = msg.content as Record<string, unknown>;
-            textContent = String(c.content ?? c.text ?? JSON.stringify(msg.content));
-          } else { textContent = JSON.stringify(msg.content); }
-
-          // Check if this message resolves a pending waitForReply request.
-          // Skip auto-ack messages (they're from us, not a real reply).
-          // PR-3: Waiters are now keyed by threadId (unique per conversation)
-          // rather than sender fingerprint or agent name. Fall back to the
-          // legacy fingerprint/name lookup only if no threadId is present,
-          // for compatibility with older senders.
-          const msgType = typeof msg.content === 'object' && msg.content !== null ? (msg.content as Record<string, unknown>).type : undefined;
-          const isAutoAck = isAutoAckInbound({ type: msgType, text: textContent });
+          // Extract text content + ack classification — ONE shared classification
+          // (classifyRelayIngress) used by the history step, the waiter and the ack
+          // stage below, so the history exclusion cannot drift from what the ack stage consumes.
+          // Waiter note: skip auto-ack messages (they're from us, not a real reply).
+          // PR-3: Waiters are keyed by threadId (unique per conversation).
+          const relayIngress = classifyRelayIngress(msg);
+          const { textContent, msgType, isAutoAck } = relayIngress;
+          // Canonical history (Robustness Phase 2 D-B, the relay-socket inbound leg):
+          // record this ALREADY-AUTHORIZED inbound through the one recordThreadMessage
+          // funnel BEFORE the waiter and every routing branch, and only for messages
+          // the ack stage below does not consume (kinded acks / auto-acks) and never
+          // for probes. Observer only: never throws, never gates delivery, and a row
+          // is history — not proof the message was read or delivered.
+          recordGatePassedIngress(threadMessageRecorder, decision, relayIngress, msg.threadId ?? getSyntheticThreadId(senderFingerprint));
           // Waiters are keyed by thread id only (PR-3); the old by-name fallback could never
           // match one, so it is gone (memory-privacy-agent-places §3).
           const waiter = msg.threadId ? threadlineReplyWaiters.get(msg.threadId) : undefined;
@@ -22012,7 +22007,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           const relayAckInput = {
             isAutoAck, trustLevel, msgType, senderFingerprint, threadId: msg.threadId, ticket: ledgerTicket,
-            kindedAck: parseKindedAck(msg.content),
+            kindedAck: relayIngress.kindedAck,
             deferSend: true,
           };
           const relayAck = createRelayAckSettler(relayAckDeps, relayAckInput);

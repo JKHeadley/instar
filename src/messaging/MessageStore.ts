@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type {
   IMessageStore,
   MessageEnvelope,
@@ -70,8 +71,82 @@ export class MessageStore implements IMessageStore {
       const data = fs.readFileSync(filePath, 'utf-8');
       return JSON.parse(data) as MessageEnvelope;
     } catch {
+      // A canonical-history body record (ThreadLog `textRef: {kind:'store'}`) lives
+      // in `bodies/`, outside the delivery store; resolve it on the same read path so
+      // existing consumers (ThreadlineReapRecovery) can follow the reference.
+      return MessageStore.isThreadBodyStoreId(messageId) ? this.getThreadBodySync(messageId) : null;
+    }
+  }
+
+  // ── Canonical-history body backing (ThreadLog large-body textRef) ───────────
+  //
+  // Over-cap Threadline bodies are referenced from the canonical per-thread log by
+  // a store id. These records are written to `bodies/`, NOT `store/`, so they never
+  // enter the delivery indexes, the retry scan, or inbox/outbox queries: they are
+  // history text backing, not a delivery claim. Synchronous because the recorder
+  // funnel returns synchronously (off the send critical path). Plain appendFile /
+  // rename semantics — no fsync, so no crash/power-loss durability is claimed.
+
+  /**
+   * Store ids are recorder-minted `tlbody-<sha256(threadId)>-<namespaced body
+   * digest>` (both full 64-hex) — never a raw wire value. The first part names
+   * the thread's body partition `bodies/<sha256(threadId)>/`, so close-only
+   * retention removes exactly one thread's bodies without scanning or indexing.
+   */
+  static isThreadBodyStoreId(id: string): boolean {
+    return /^tlbody-[0-9a-f]{64}-[0-9a-f]{64}$/.test(id);
+  }
+
+  /** The per-thread body partition key: full SHA-256 of the thread id. */
+  static threadBodyPartition(threadId: string): string {
+    return createHash('sha256').update(threadId).digest('hex');
+  }
+
+  private threadBodyPath(storeId: string): string {
+    return path.join(this.basePath, 'bodies', storeId.slice(7, 71), `${storeId}.json`);
+  }
+
+  /**
+   * Persist one body record under `bodies/<thread partition>/{storeId}.json`.
+   * Idempotent: an existing record is kept (the id is content-namespaced, so an
+   * existing file holds the same content). Throws on an invalid id, an id whose
+   * partition does not match the envelope's thread, or a write failure.
+   */
+  saveThreadBodySync(storeId: string, envelope: MessageEnvelope): void {
+    if (!MessageStore.isThreadBodyStoreId(storeId)) throw new Error(`invalid thread body store id: ${storeId}`);
+    const threadId = envelope.message.threadId;
+    if (typeof threadId !== 'string' || storeId.slice(7, 71) !== MessageStore.threadBodyPartition(threadId)) {
+      throw new Error(`thread body store id ${storeId} does not belong to the envelope's thread`);
+    }
+    const filePath = this.threadBodyPath(storeId);
+    if (fs.existsSync(filePath)) return;
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    fs.writeFileSync(tmpPath, JSON.stringify(envelope));
+    fs.renameSync(tmpPath, filePath);
+  }
+
+  /** Read one body record, or null when absent/corrupt/invalid id. */
+  getThreadBodySync(storeId: string): MessageEnvelope | null {
+    if (!MessageStore.isThreadBodyStoreId(storeId)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(this.threadBodyPath(storeId), 'utf-8')) as MessageEnvelope;
+    } catch {
       return null;
     }
+  }
+
+  /**
+   * Close-only retention: remove ONE thread's body partition (every body record
+   * the recorder wrote for that thread, including one whose log append later
+   * failed). Touches exactly `bodies/<sha256(threadId)>/` via SafeFsExecutor —
+   * never another thread, never the delivery store. Driven only by the
+   * ConversationStore terminal-close seam; cold archive/LRU never calls it.
+   */
+  deleteThreadBodiesSync(threadId: string): void {
+    const dir = path.join(this.basePath, 'bodies', MessageStore.threadBodyPartition(threadId));
+    if (!fs.existsSync(dir)) return;
+    SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'MessageStore.deleteThreadBodiesSync' });
   }
 
   async updateDelivery(messageId: string, delivery: DeliveryState): Promise<void> {

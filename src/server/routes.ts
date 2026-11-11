@@ -42773,7 +42773,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           message: {
             id: e.messageId,
             from: { agent: e.direction === 'outbound' ? ctx.config.projectName : (e.peerFingerprint ?? e.author?.agentFingerprint ?? 'peer') },
-            body: e.textRef.kind === 'inline' ? e.textRef.text : '',
+            // An over-cap body resolves through the recorder's verified backing.
+            body: e.textRef.kind === 'inline' ? e.textRef.text : (ctx.threadMessageRecorder?.resolveText(e) ?? ''),
             createdAt: e.createdAt,
             threadId,
           },
@@ -42854,7 +42855,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         direction: e.direction,
         contentDigest: e.contentDigest,
         backfilled: e.backfilled ?? false,
-        body: e.textRef.kind === 'inline' ? e.textRef.text : null,
+        body: e.textRef.kind === 'inline' ? e.textRef.text : (ctx.threadMessageRecorder?.resolveText(e) ?? null),
+        ...(e.createdAtSource ? { createdAtSource: e.createdAtSource } : {}),
         createdAt: e.createdAt,
         at: e.at,
         peerFingerprint: e.peerFingerprint,

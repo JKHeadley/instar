@@ -731,6 +731,9 @@ export async function bootstrapThreadline(
         // key reads as an operation name downstream.
         content: { content: textContent, ...(msgType !== undefined ? { type: msgType } : {}), ...(resend ? { resend: true } : {}), ...(ack ? { ack } : {}), ...(ackKinds !== undefined ? { ackKinds } : {}) },
         timestamp: String(envelope.timestamp ?? new Date().toISOString()),
+        // The fill-in above is this end's receive time, not a sender stamp: mark it so
+        // canonical history records it with receive-time provenance (relayIngressHistory).
+        ...(envelope.timestamp === undefined || envelope.timestamp === null ? { timestampSynthesized: true as const } : {}),
         envelope: envelope as never,
       };
 
