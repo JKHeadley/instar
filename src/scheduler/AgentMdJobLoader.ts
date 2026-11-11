@@ -195,6 +195,9 @@ export interface PerSlugManifest {
   /** SHA of the body at the time an operator disabled the default — preserved
    *  across regeneration so a re-enabled default re-syncs intentionally. */
   disabledAtBodyHash?: string;
+  /** Built-in only: the shipped schedule at the last install. A different
+   *  `schedule` is an operator edit kept across updates (InstallBuiltinJobs). */
+  shippedSchedule?: string;
   /** Jev job-completion audit eligibility (spec: jev-job-supervision.md). */
   completionAudit?: 'excluded' | 'eligible' | 'priority';
   /** Repo-relative expected outputs — jailed at load (no absolute, no '..'). */

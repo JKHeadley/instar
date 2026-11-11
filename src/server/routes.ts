@@ -19720,6 +19720,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       manifest.origin = 'user';
       manifest.manifestVersion = nextVersion;
       manifest.forkedAt = new Date().toISOString();
+      // Built-in only (InstallBuiltinJobs schedule-edit tracking); a user job owns its schedule outright.
+      delete manifest.shippedSchedule;
       fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
       fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n', 'utf-8');
 
