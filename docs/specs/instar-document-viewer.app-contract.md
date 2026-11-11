@@ -9,7 +9,7 @@ Answers to DOCS-APP-ACK questions 1–6. These are binding for both the server (
    instar-docpage-v1\n{deviceId}\n{host lowercased}\n{docId}\n{op}\n{requestId}\n{timeMs}\n{sha256hex(canonicalPayload)}
    ```
    - `op` ∈ `comment | reply | resolve | reopen | edit | reanchor | send | open`.
-   - `canonicalPayload` = JSON with keys sorted, no whitespace, of the op's fields (spec §3.6): `comment {docId, commentId, onVersion, start, end, bodyHash}`, `reply {docId, commentKey, replyId, bodyHash}`, `resolve|reopen {docId, commentKey}`, `edit {docId, commentKey, bodyHash}`, `reanchor {docId, commentKey, onVersion, start, end}`, `send {docId, batchId, commentKeysHash, primaryRow, messageRequestId}`, `open {docId}`.
+   - `canonicalPayload` = JSON with keys sorted, no whitespace, of the op's fields (spec §3.6): `comment {docId, commentId, onVersion, start, end, bodyHash}` (`onVersion` is the version's id, the `versionId` from the summary or page data, not its label), `reply {docId, commentKey, replyId, bodyHash}`, `resolve|reopen {docId, commentKey}`, `edit {docId, commentKey, bodyHash}`, `reanchor {docId, commentKey, onVersion, start, end}`, `send {docId, batchId, commentKeysHash, primaryRow, messageRequestId}`, `open {docId}`.
    - Hashes: the app mints a random 16-byte hex `salt` per text, computes `sha256hex(salt + "\0" + text)` (UTF-8), and sends `{salt, text}` blobs in the request body next to the signed payload. The server recomputes and refuses a mismatch.
    - `start`/`end` are offsets in the version's plain-text projection (the page reports them). The server cuts the quote itself from that version, so the app never sends quote text.
    - `requestId` = `<13-digit ms>-<uuid v4>`, unique per device; used once.

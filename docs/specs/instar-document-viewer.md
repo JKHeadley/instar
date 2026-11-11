@@ -17,7 +17,7 @@ review-report: "docs/specs/reports/instar-document-viewer-convergence.md"
 cross-model-review: "codex-cli:gpt-6-astra"
 clean-door-anthropic-review: "claude-code:claude-fable-5-2"
 single-run-completable: true
-frontloaded-decisions: 13
+frontloaded-decisions: 14
 cheap-to-change-tags: 0
 contested-then-cleared: 2
 ---
@@ -402,7 +402,7 @@ Attention items (conversation removed, owner proposals) go through the lease hol
   - **Phone (native app):** strongest. The app's code is not served by the agent, and its key is in the Secure Enclave. Its weak point is enrollment: an app paired by a confirmation code that passes through the agent's own Telegram bot could, in principle, be a software key the agent paired itself (no Apple App Attest check today).
   - **Computer browser (WebCrypto key):** the key can't be exported, but any script on the origin can use it, and the agent's machine serves that script. While a linked tab is open, a session able to change the served page could sign comments silently.
   - **Approval through the owner's Telegram chat:** the agent runs the bot that receives the tap, so a session that deliberately forged an update or edited the device registry could approve a key. On one machine, nothing but the agent's own guards stops that; on several machines, a peer still checks the phone's signature on every replicated binding.
-  So the honest claim is "the agent would have to deliberately forge state, and a forgery is visible in the signed logs", not "the agent cannot". Passkeys (one person gesture per signature, page script can't fake it) and chained enrollment (a new device admitted only by a signed record from a device the person already has) are the planned way to strengthen this and to remove the app dependency for members; see §14.
+  So the honest claim is "the agent would have to deliberately forge state, and a forgery is visible in the signed logs", not "the agent cannot". Passkeys (one person gesture per signature, page script can't fake it) and chained enrollment (a new device admitted only by a signed record from a device the person already has) are the planned way to strengthen this and to remove the app dependency for members: a separate project (§13 decision 14).
 
 ## 9. Agent awareness and migration parity
 
@@ -462,13 +462,14 @@ Every step lands behind the same dark gate, so a partial landing is inert on the
 4. "Whole team" creates (or reuses) a conversation granted to every current team person; people added later get access when the owner adds them to that conversation, as with any shared conversation.
 5. Moving and sharing need the owner's phone; the dashboard and the agent can't.
 6. The agent doesn't resolve comments by default.
-7. No new npm dependencies; Bitap and Myers are in-repo.
+7. No new npm runtime dependencies (jsQR is a dev-only test dependency for the QR round trip); Bitap and Myers are in-repo.
 8. Send arrives as an inbound message from the person through the conversation's real inbound path.
 9. People reach documents through their own devices only: the app (phone-signed open) or a browser linked to them (§3.6a); there are no shareable links that carry access.
 10. Ships dark: live on development agents, off on the fleet. This agent (Echo) turns it on for the fleet in run 2 (§4.5), after the §10 proof passes in the browser and in the app on Justin's phone, and after the app build is available through the channel fleet owners get builds from: TestFlight's external testing group, submitted by `echo-instar-app` with `scripts/ship.sh` (part of run 2's completion bar). External testing needs Apple's beta review, an outside wait of usually a day; run 2's commitment re-surfaces until it clears. A member with an older app simply doesn't see documents (the app shows a feature only when its route answers, §4.1), and a document link in chat opens a page saying "Update the Instar app to open this document" when there is no page session. Recorded as a commitment in topic 141469 with the proof artifact attached.
 11. Telegram topics and app conversations are the supported primary conversations; a Slack-started document lives in the owner's own app conversation with a link to the Slack thread.
 12. Storage units are format constants (versioned with the row format, §6), not behaviour limits: content blobs ≤ 48 KiB serialized and rows ≤ 4 KiB, chosen so a 4 MiB sync page carries many rows and every row is cheap to verify. Floor: every page carries at least one row, sizes are measured on the serialized bytes, and anything bigger is split across blobs (lists of comment keys in `send`, `addressed` and a version's addresses live in a blob, so no row grows with them). There is no cap on how many versions or comments a document has.
 13. legacy `msp` phones get no documents.
+14. **Passkeys are a separate project; documents stay dark until they ship.** The operator raised that members can only comment from a computer through the iOS app (2026-11-10 17:54 PST). A passkey design (any browser, chained enrollment) went through 6 review rounds with GPT-6 Astra and Fable 5.2 and did not settle (six open security findings), so the operator chose to split it into its own project (2026-11-10 21:34 PST, topic 141469: "Split into their own project"). This spec ships as designed, live on development agents only; documents are not turned on for the fleet until the passkeys project ships, so no released version requires the app to comment. The removal of Telegram as an approval authority and App Attest are a further platform project (CMT-008).
 
 ## 13a. Alternatives considered
 
@@ -482,7 +483,7 @@ Every step lands behind the same dark gate, so a partial landing is inert on the
 
 ## 14. Open questions
 
-- **App dependency (operator, 2026-11-10 17:54 PST, topic 141469):** members and guests can only comment from a computer by linking it with the iOS app, which ties a core Instar feature to an Apple-distributed binary and leaves out Android and computer-only people. Proposed (Fable 5.2 review plus Echo): passkeys as the standard person signer in any browser (also a second way to sign the existing link request), the app kept as the strongest optional signer, and chained enrollment. Removing Telegram as an approval authority and App Attest on app pairing are platform-wide and would be a separate project. **Waiting on the operator's decision.**
+*(none)*
 
 ## 15. Rollback
 
