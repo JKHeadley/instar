@@ -71,7 +71,7 @@ import {
 const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {
-  onForwardedInvite(m: { text: string; topicId: number; fromUserId: number; chatId?: string; verified: boolean }): Promise<void>;
+  onForwardedInvite(m: { text: string; topicId: number; fromUserId: number; chatId?: string; verified: boolean }): Promise<void | { refused: boolean }>; // what it decided; only the lifeline forward route reads it, polling ignores it
   onCallback(c: { callbackQueryId: string; data: string; fromUserId: number; chatId?: string; verified: boolean }): Promise<boolean>;
 }
 

@@ -120,6 +120,15 @@ export interface ForwardedInvite {
   verified: boolean;
 }
 
+/**
+ * What `onForwardedInvite` did, mirroring its existing decisions. `refused` is true whenever the
+ * invite was turned away (the operator check refused it, or the invite was unusable); a valid
+ * invite now waiting on Approve/Decline is never refused (and not yet connected).
+ */
+export type ForwardedInviteResult =
+  | { outcome: 'awaiting-approval'; refused: false }
+  | { outcome: 'refused' | 'invalid'; refused: true };
+
 export interface InviteCallback {
   callbackQueryId: string | number;
   data: string;
@@ -129,8 +138,13 @@ export interface InviteCallback {
 }
 
 const DASHBOARD_HINT = 'Open the Threadline tab on the dashboard to do this with your PIN.';
-export const NOT_OWNER_REFUSAL = 'Only the agent\'s owner can do this.';
-export const NO_OWNER_REFUSAL = 'I can\'t approve this here because this agent hasn\'t been told who its owner is.';
+/**
+ * "Owner" here is the HUMAN who may approve connections for THIS (receiving) agent, never the
+ * owner an invite claims for the other agent. Neither line names anyone, and the no-owner line
+ * does not claim the setting is missing: it can also be ambiguous or invalid (`resolveApprovalOwner`).
+ */
+export const NOT_OWNER_REFUSAL = 'Only the person who approves new connections for me can do this.';
+export const NO_OWNER_REFUSAL = 'I can\'t tell who is allowed to approve new connections for me, so I can\'t approve this here.';
 /** Offered next to an invite the agent posted, when Telegram approval is on (spec §11.6). */
 export const OWN_AGENT_PROMPT = 'If this invite is for another of your own agents, tap below. When that agent accepts, I\'ll finish the pairing by myself, so the only tap left is Approve on your other agent. Only tap it if you will forward the invite to your own agent.';
 export const OWN_AGENT_BUTTON = 'It\'s one of my agents';
@@ -281,17 +295,17 @@ export class PairingInviteTelegram {
     return out;
   }
 
-  /** The forward route found an invite in a message. Always consumes it. */
-  async onForwardedInvite(m: ForwardedInvite): Promise<void> {
+  /** The forward route found an invite in a message. Always consumes it; says what it decided. */
+  async onForwardedInvite(m: ForwardedInvite): Promise<ForwardedInviteResult> {
     const refusal = this.operatorTap(m.fromUserId, m.chatId, m.verified);
     if (refusal) {
       await this.deps.send(m.topicId, `I got a pairing invite, but I can't take it from here. ${refusal} ${DASHBOARD_HINT} Paste the invite there.`);
-      return;
+      return { outcome: 'refused', refused: true };
     }
     const r = await this.deps.flow.receiveInvite(m.text);
     if (!r.ok) {
       await this.deps.send(m.topicId, `I can't use that pairing invite: ${r.reason}.`);
-      return;
+      return { outcome: 'invalid', refused: true };
     }
     const agent = String(r.claimedAgent ?? ''), owner = String(r.claimedOwner ?? '');
     const exp = this.deps.flow.listPendingAccepts?.().find((x) => x.iid === String(r.iid))?.exp ?? '';
@@ -303,6 +317,7 @@ export class PairingInviteTelegram {
         + `Only approve if you know who sent you this. Check code (optional, to read to them): ${r.checkCode}`,
       [{ text: 'Approve', data: t.approve }, { text: 'Decline', data: t.decline }],
     );
+    return { outcome: 'awaiting-approval', refused: false };
   }
 
   /** A button tap. Returns false when the data is not ours (the caller handles it). */
