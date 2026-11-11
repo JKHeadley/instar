@@ -1,3 +1,4 @@
+import {syncNativeLeaseFile} from './NativeLeaseDurability.js';
 /**
  * LocalLeaseStore — a git-less LeaseStore for LeaseCoordinator.
  *
@@ -81,6 +82,9 @@ export class LocalLeaseStore implements LeaseStore {
     }
   }
 
+  /** Explicit native-owner administration only; verifies disk, not cache. */
+  syncDurably(expected:LeaseRecord|null=this.read().lease):void{syncNativeLeaseFile(this.d.filePath,expected,document=>(document as {lease?:LeaseRecord}).lease??null);}
+  get durabilityPath():string{return this.d.filePath;}
   hasNoSharedMedium(): boolean {
     return true;
   }

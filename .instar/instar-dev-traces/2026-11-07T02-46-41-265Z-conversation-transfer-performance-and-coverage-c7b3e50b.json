@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "slug": "conversation-transfer-performance-and-coverage",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T02:46:41.265Z",
+  "artifactPath": "upgrades/side-effects/conversation-transfer-performance-and-coverage.md",
+  "artifactSha256": "5edec2f4bb5aba6efbbd5bbaced7f2ef9097a41608f1d27b20163e6a7430a143",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/ConversationGraphSourceSweep.ts",
+    "src/core/GraphMemberLossNegativeTransfer.ts",
+    "src/core/GraphSourceStatusPoll.ts",
+    "src/server/AgentServer.ts",
+    "src/server/ConversationGraphDefault.ts",
+    "src/server/ConversationGraphSourceInventoryRuntime.ts",
+    "src/testing/selfActionRegistry.ts",
+    "tests/unit/SqliteRegistry-wiring.test.ts",
+    "upgrades/side-effects/conversation-effort-sheet-refresh.md",
+    "upgrades/side-effects/conversation-transfer-performance-and-coverage.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Convergence registration and test-suite findings for the Conversations branch; feature stays off by default.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "Checkpoint publish settles to an hourly heartbeat and the status poll stops at 120 seconds, both driven through their real decision functions under sustained pressure."
+    }
+  }
+}

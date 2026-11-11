@@ -2825,6 +2825,22 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** Storage prerequisite only; never enables the Conversations read/UI increment. */
+  conversationGraph?: {
+    /** Release switches: leave absent/off until increment-A acceptance. Storage
+     * enablement alone does not expose even an opt-in read API. */
+    readEnabled?: boolean;
+    correctionsEnabled?: boolean;
+    /** Machine ids to sign when the graph is first created. Absent means every paired machine. Has no effect afterwards. */
+    genesisMembers?: string[];
+    storage?: { enabled: boolean; /** Resource budget only; per-record/proof wire caps remain fixed. Default 32 MiB. */ stagingDiskQuotaBytes?: number };
+    agentId?: string;
+    membership?: import('./GraphMembershipTypes.js').GraphMembershipEpoch;
+    ownerPublicKey?: string;
+    /** SecretStore key names, never bearer values in project configuration. */
+    peerBearerSecret?: string;
+    witness?: { baseUrl: string; witnessId: string; publicKey: string; failureDomain: string; bearerSecret?: string; historicalPublicKeys?: Record<string,string> };
+  };
   /** Whether multi-machine is enabled */
   enabled: boolean;
   /** Private, approved user-job transfer. Dark until paired-machine proof. */
@@ -5010,6 +5026,8 @@ export interface InstarConfig {
   authToken?: string;
   /** PIN for dashboard web access (simpler than authToken, used for mobile/remote login) */
   dashboardPin?: string;
+  /** Server-managed revocation generation, atomically coupled to each PIN write. */
+  dashboardPinGeneration?: string;
   /** Relationship tracking config */
   relationships?: RelationshipManagerConfig;
   /** Feedback loop config */

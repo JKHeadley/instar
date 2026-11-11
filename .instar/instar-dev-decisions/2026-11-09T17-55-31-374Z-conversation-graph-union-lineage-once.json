@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-09T17:55:31.374Z",
+  "slug": "conversation-graph-union-lineage-once",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 19,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphReplication.ts",
+      "src/core/GraphCustodyProfileAuthority.ts",
+      "src/server/conversationGraphChangeRoutes.ts"
+    ],
+    "addedLines": 15,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
