@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "cb-adapter-suite",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T14:21:43.246Z",
+  "artifactPath": "upgrades/side-effects/cb-adapter-suite.md",
+  "artifactSha256": "9fc80a3fd5847f1d20090931390c20d374f65ca6c04187a5e12313565edbd7d3",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/monitoring/contextBudgetSentinelBoot.ts",
+    "tests/e2e/adapter-suite-lifecycle.test.ts",
+    "tests/fixtures/fake-claude-headless.mjs",
+    "upgrades/side-effects/cb-adapter-suite.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Follow-up to the task-11 slice: the suite spawn passes the configured Claude key through the shared helper, with an e2e assertion",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "the suite trigger is registered in selfActionRegistry: at most 3 attempts per engine version with a 24h floor, one run at a time; this change only alters the spawned env"
+    }
+  }
+}

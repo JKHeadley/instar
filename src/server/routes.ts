@@ -1,5 +1,7 @@
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
+import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
+import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -237,10 +239,11 @@ import {
   validateSubscriptionReloginOperatorInput,
   writeSubscriptionReloginRestartRequest,
   subscriptionReloginFinishRestartDigest,
+  appendSubscriptionReloginIssueAudit,
 } from '../core/SubscriptionReloginOperatorConfig.js';
 import { evaluateConfigureRequest } from '../core/SubscriptionReloginRemoteConfigure.js';
 import { acceptDeliveredMandate } from '../coordination/AccountFollowMeMandateBridge.js';
-import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION } from '../coordination/AccountFollowMeMandateDelivery.js';
+import { readConfigureBounds, SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
@@ -1291,6 +1294,7 @@ export interface RouteContext {
   foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null;
   /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel, or null when it is off. */
   contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null;
+  contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -1339,6 +1343,8 @@ export interface RouteContext {
   enrollmentWizard: import('../core/EnrollmentWizard.js').EnrollmentWizard | null;
   /** Deterministic test seam after plain enrollment completion owns its id. */
   enrollmentCompleteInFlightHook?: (id: string) => void | Promise<void>;
+  /** Test seam: shorten the post-submit completion watch (poll interval, bound, grace). */
+  followMeCompletionWatcherTiming?: { pollMs?: number; timeoutMs?: number; windowClosedGraceMs?: number };
   /** WS5.2 R12 — Account Follow-Me revocation data-plane executor. Constructed in the server with
    *  REAL deps (cooperative local wipe + durable pending store + attention emit). Null when the
    *  server wiring did not construct it (e.g. lightweight test harnesses). The `/mandate/:id/revoke`
@@ -6984,9 +6990,7 @@ export function createRoutes(ctx: RouteContext): Router {
     // §9.7 live-value pass: the auth token, the PIN, the lifeline ingress
     // secret and every string in the secret store (shape patterns miss a
     // `KEY=value` dump of a real value). Each source is best-effort.
-    const liveSecrets: string[] = [ctx.config.authToken, ctx.config.dashboardPin].filter((v): v is string => typeof v === 'string');
-    try { const l = readLifelineIngressSecret(ctx.config.stateDir); if (l) liveSecrets.push(l); } catch { /* @silent-fallback-ok — no lifeline secret on this machine */ }
-    try { collectStringLeaves(new SecretStore({ stateDir: ctx.config.stateDir, forceFileKey: ctx.config.secrets?.forceFileKey }).read(), liveSecrets); } catch { /* @silent-fallback-ok — no readable secret store; shape scrub still runs */ }
+    const liveSecrets = collectAgentLiveSecrets({ stateDir: ctx.config.stateDir, authToken: ctx.config.authToken, dashboardPin: ctx.config.dashboardPin, forceFileKey: ctx.config.secrets?.forceFileKey });
     const result = recordPostCompact(ctx.config.stateDir, {
       topicKey,
       instarSessionId,
@@ -8894,6 +8898,16 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.contextBudgetSentinel.status());
+  });
+  // context-budget-layered-summaries §9.7: the layer store and transcript
+  // archive on this machine — roots and their modes, topic count, bytes, and
+  // what replication did with each write. Read-only; 503 when the layers are off.
+  router.get('/context-budget/layers', (_req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    res.json(ctx.contextLayers.status());
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -15663,6 +15677,14 @@ export function createRoutes(ctx: RouteContext): Router {
     if (!Array.isArray(b.authorities) || b.authorities.length === 0
       || b.authorities.some((a: any) => typeof a?.action !== 'string' || !a.action || typeof a?.bounds !== 'object' || a.bounds === null)) {
       res.status(400).json({ error: 'authorities must be a non-empty array of { action, bounds, requiresCondition? }' });
+      return;
+    }
+    // The repair-setting configure action and its operator-unlock author are reserved for
+    // POST /subscription-relogin/configure-pool, which issues them only after verifying a recent
+    // dashboard PIN unlock (spec one-tap-unattended-repair, Amendment 2026-11-10).
+    if (b.authorities.some((a: any) => a.action === SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION)
+      || b.author === SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR) {
+      res.status(400).json({ error: 'the repair-setting configure permission is issued only by the Accounts page' });
       return;
     }
     if (typeof b.expiresAt !== 'string' || isNaN(Date.parse(b.expiresAt)) || Date.parse(b.expiresAt) <= Date.now()) {
@@ -39038,7 +39060,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
    *  mandate from another machine). Synchronous from the on-disk read to the write, so no other
    *  write through this process can interleave (§3 steps 2–6). */
   const applyConfigureHere = (args: { action: 'configure' | 'finish-restart'; rawConfig?: unknown; expectedRevision: string;
-    remote: boolean; provenance: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigProvenance;
+    remote: boolean; operatorUnlockCarried?: boolean;
+    provenance: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigProvenance;
     consume?: () => boolean }): { status: number; body: Record<string, unknown> } => {
     let current: import('../core/SubscriptionReloginOperatorConfig.js').SubscriptionReloginConfigView;
     try { current = describeSubscriptionReloginConfig(readOnDiskSubscriptionReloginBlock(ctx.config.stateDir)); }
@@ -39052,7 +39075,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return { status: 202, body: { ok: true, changed: false, restartRequested: true, revision: current.revision } };
     }
     const evaluation = evaluateConfigureRequest({ current, rawConfig: args.rawConfig, expectedRevision: args.expectedRevision,
-      verifiedPoolEmails: reloginVerifiedPoolEmails(), remote: args.remote });
+      verifiedPoolEmails: reloginVerifiedPoolEmails(), remote: args.remote, operatorUnlockCarried: args.operatorUnlockCarried });
     if (!evaluation.ok) return { status: evaluation.status, body: { error: evaluation.error, ...(evaluation.detail ? { detail: evaluation.detail } : {}) } };
     if (args.consume && !args.consume()) return { status: 403, body: { error: 'not-authorized' } };
     if (evaluation.alreadyApplied) {
@@ -39101,6 +39124,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     });
     const peers = new Map((ctx.resolvePeerUrls?.() ?? []).map((p) => [p.machineId, p]));
     const results: ConfigureTargetResult[] = [];
+    const issuedMandates = new Map<string, string>();
     const startedAt = Date.now();
     const PEER_DEADLINE_MS = 75_000;
 
@@ -39126,11 +39150,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         const mandate = ctx.coordination.store.issue({
           scope: 'subscription-relogin',
           agents: [resolveAgentFingerprint(ctx), resolveAgentFingerprint(ctx)],
-          authorities: [{ action: SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION, bounds: { targetMachineId: machineId, configDigest } }],
+          // operatorUnlock: this route only runs after verifying a recent dashboard PIN unlock; the
+          // claim rides in the signed bounds and is the authority the target needs to RAISE a
+          // machine to "without asking" (operator rule 2026-11-10: any dashboard, any machine).
+          authorities: [{ action: SUBSCRIPTION_RELOGIN_CONFIGURE_ACTION,
+            bounds: { targetMachineId: machineId, configDigest, operatorUnlock: SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } }],
           // The mandate records what was verified (a recent dashboard PIN unlock), never a guessed name.
-          author: 'dashboard-pin-operator', expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
+          author: SUBSCRIPTION_RELOGIN_OPERATOR_AUTHOR, expiresAt: new Date(Date.now() + 15 * 60_000).toISOString(),
         });
         mandateId = mandate.id;
+        issuedMandates.set(machineId, mandate.id);
         const outcome = await ctx.deliverMandateToMachine({ targetMachineId: machineId, portable: ctx.packageMandateForDelivery(mandate) });
         if (!outcome.ok) {
           const reason = outcome.reason ?? '';
@@ -39173,6 +39202,11 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     for (const machineId of pending) results.push({ machineId, ok: false, error: 'outcome-unknown' });
     pending.clear();
     queue.length = 0;
+    // The fronting machine's half of the audit: every peer target this unlocked tap addressed.
+    for (const r of results) {
+      appendSubscriptionReloginIssueAudit(ctx.config.stateDir, { targetMachineId: r.machineId, action, mode,
+        mandateId: issuedMandates.get(r.machineId), ok: r.ok, error: r.error });
+    }
 
     // This machine last (its own restart can then never cut off the fan-out or the response).
     const selfTarget = targets.find((t) => t.machineId === selfId);
@@ -39216,7 +39250,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (digest !== bounds.configDigest) { res.status(403).json({ error: 'config-mismatch' }); return; }
     const result = applyConfigureHere({ action, rawConfig: body.config, expectedRevision, remote: true,
-      provenance: { via: 'mandate', mandateId, deliveredBy: record.deliveredBy },
+      operatorUnlockCarried: bounds.operatorUnlockCarried,
+      provenance: { via: 'mandate', mandateId, deliveredBy: record.deliveredBy,
+        ...(bounds.operatorUnlockCarried ? { operatorUnlock: SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } : {}) },
       consume: () => !!store.consume(mandateId) });
     res.status(result.status).json(result.body);
   });
@@ -40837,6 +40873,46 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   const followMeSubmitInFlight = new Set<string>();
   const plainCompleteInFlight = new Set<string>();
 
+  // After a delivered code, the server — not a five-minute background tick and not a
+  // hand-run complete — drives the sign-in to a terminal state the page can poll
+  // (operator report 2026-11-10, topic 33890: "code sent; finishing sign-in" sat forever
+  // while the login had in fact finished). Machine-local: the pane and slot live here;
+  // the fronting dashboard reads it through GET /subscription-pool/follow-me/completion.
+  let followMeCompletionWatcher: FollowMeCompletionWatcher | null = null;
+  const getFollowMeCompletionWatcher = (): FollowMeCompletionWatcher | null => {
+    if (!ctx.enrollmentWizard || !ctx.subscriptionPool) return null;
+    followMeCompletionWatcher ??= new FollowMeCompletionWatcher({
+      wizard: ctx.enrollmentWizard,
+      paneAlive: (id) => {
+        const login = ctx.enrollmentWizard?.getById(id);
+        return login ? enrollPaneAlive(login) : null;
+      },
+      onValidated: (login, email) => { upsertValidatedAccount(login, email); },
+      afterValidated: (login) => reverifyCompletedEnrollment(login),
+      targetMachineNickname: 'this machine',
+      ...(ctx.followMeCompletionWatcherTiming ?? {}),
+      logger: { log: (m) => console.log(m), warn: (m) => console.warn(m) },
+    });
+    return followMeCompletionWatcher;
+  };
+  /** The completion state for one login: the live watch, else what the durable record says. */
+  const followMeCompletionState = (id: string): FollowMeCompletionSnapshot | { id: string; state: 'waiting-for-code' | 'unknown'; message: string } => {
+    const watched = followMeCompletionWatcher?.get(id);
+    if (watched) return watched;
+    const login = ctx.enrollmentWizard?.getById(id);
+    if (login?.status === 'completed') {
+      const email = ctx.subscriptionPool?.get(id)?.email;
+      return { id, state: 'done', startedAt: login.updatedAt, deadlineAt: login.updatedAt, finishedAt: login.updatedAt,
+        ...(email ? { email } : {}), message: email ? `Signed in as ${email}.` : 'Signed in.' };
+    }
+    if (login?.status === 'abandoned') {
+      return { id, state: 'failed', startedAt: login.updatedAt, deadlineAt: login.updatedAt, finishedAt: login.updatedAt,
+        reason: 'cancelled', message: 'This sign-in was cancelled.' };
+    }
+    if (login) return { id, state: 'waiting-for-code', message: 'Waiting for the sign-in code.' };
+    return { id, state: 'unknown', message: 'This sign-in is not known on this machine.' };
+  };
+
   /** Shared lifecycle core; route-specific gates and in-flight locks stay at call sites. */
   const cancelEnrollment = (
     id: string,
@@ -41029,7 +41105,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     }
     if (outcome === 'pending') {
       logOutcome('submitted');
-      res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in' });
+      const watcher = getFollowMeCompletionWatcher();
+      const completion = watcher ? watcher.watch(id) : null;
+      res.json({ enabled: true, outcome: 'submitted', message: 'code sent; finishing sign-in', ...(completion ? { completion } : {}) });
       return;
     }
     const result = await ctx.enrollmentWizard.completeFollowMe(id, 'this machine');
@@ -41050,6 +41128,61 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       error: 'that sign-in has expired — start a fresh sign-in from this account’s grid cell' });
     } finally {
       followMeSubmitInFlight.delete(id);
+    }
+  });
+
+  // TARGET-LOCAL completion read for a submitted follow-me code: finishing → done | failed.
+  router.get('/subscription-pool/follow-me/enroll/:id/completion', (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    if (!ctx.enrollmentWizard) {
+      res.status(503).json({ error: 'enrollment wizard not configured' });
+      return;
+    }
+    res.json({ enabled: true, completion: followMeCompletionState(req.params.id) });
+  });
+
+  // FRONTING RELAY for the completion read: the operator's single dashboard polls this; it
+  // reads the machine doing the login (self → local; peer → that peer's local route).
+  router.get('/subscription-pool/follow-me/completion', async (req, res) => {
+    const afmCfg = (ctx.config as unknown as { multiMachine?: { accountFollowMe?: { enabled?: boolean } } }).multiMachine?.accountFollowMe;
+    if (!resolveDevAgentGate(afmCfg?.enabled, ctx.config)) {
+      res.status(503).json({ error: 'account follow-me not enabled' });
+      return;
+    }
+    const id = typeof req.query.id === 'string' ? req.query.id : '';
+    const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    const selfId = ctx.meshSelfId ?? (ctx.config as { machineId?: string }).machineId ?? 'local';
+    if (!machineId || machineId === selfId) {
+      if (!ctx.enrollmentWizard) {
+        res.status(503).json({ error: 'enrollment wizard not configured' });
+        return;
+      }
+      res.json({ enabled: true, completion: followMeCompletionState(id) });
+      return;
+    }
+    const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
+    if (!peer) {
+      res.status(502).json({ error: `target machine ${machineId} is not reachable right now — try again in a moment` });
+      return;
+    }
+    try {
+      const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, peer, `/subscription-pool/follow-me/enroll/${encodeURIComponent(id)}/completion`, {
+        headers: { Authorization: `Bearer ${ctx.config.authToken}` },
+        signal: AbortSignal.timeout(FOLLOWME_SIMPLE_RELAY_FETCH_MS),
+      });
+      const body = await r.json().catch(() => ({}));
+      res.status(r.status).json(body);
+    } catch {
+      // @silent-fallback-ok — a dark peer is a classified 502 the page shows and retries.
+      res.status(502).json({ error: 'could not reach the machine doing the login — still checking' });
     }
   });
 
@@ -48039,9 +48172,3 @@ function pruneUnforkBackups(backupsDir: string, safeSlug: string): void {
   }
 }
 
-/** Push every string leaf of a nested secrets object (depth-bounded). */
-function collectStringLeaves(v: unknown, out: string[], depth = 0): void {
-  if (depth > 8 || v == null) return;
-  if (typeof v === 'string') { out.push(v); return; }
-  if (typeof v === 'object') for (const x of Object.values(v as Record<string, unknown>)) collectStringLeaves(x, out, depth + 1);
-}

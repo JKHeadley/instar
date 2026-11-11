@@ -1598,6 +1598,38 @@ const contextBudgetQuarantineReconcile: SelfActionController = {
   },
 };
 
+/**
+ * context-budget-adapter-suite — the sentinel's adapter verification suite
+ * trigger (context-budget-layered-summaries §9.6): one suite run (a spawned
+ * process, ~7 engine calls) per engine version with no recorded result, the
+ * attempt recorded BEFORE the run, retried at most once per 24 h and given up after 3. Pressure
+ * model: a version whose run always fails, ticked every 5 minutes for 3 days.
+ */
+const contextBudgetAdapterSuite: SelfActionController = {
+  id: 'context-budget-adapter-suite',
+  actionVerb: 'retry-adapter-suite',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (maybeRunAdapterSuite: one run per unrecorded engine version, durable attempt stamp, 24 h retry floor, 3 attempts then give up, one at a time)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 3 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetAdapterSuite.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const RETRY_MS = 24 * 60 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-adapter-suite') as { count: number; lastAt: number } | undefined) ?? { count: 0, lastAt: -Infinity };
+      if (st.count >= 3 || f.clock.nowMs() - st.lastAt < RETRY_MS) return; // gives up after 3 attempts per version
+      f.durableState.set('cb-adapter-suite', { count: st.count + 1, lastAt: f.clock.nowMs() });
+      sink.emit({ verb: 'retry-adapter-suite', target: 'claude-code@failing-version' });
+    } };
+  },
+};
+
 const feedbackTriageSelfHealProbe: SelfActionController = {
   id: 'feedback-triage-self-heal-probe',
   actionVerb: 'retry-authority-probe',
@@ -5314,6 +5346,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,
   contextBudgetQuarantineReconcile,
+  contextBudgetAdapterSuite,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,

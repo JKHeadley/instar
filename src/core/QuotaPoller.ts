@@ -219,7 +219,7 @@ const CLI_SIGNED_OUT_MIN_GAP_MS = 5 * 60_000;
 
 /** Outcome of a single usage read (internal). */
 type UsageRead =
-  | { authFailed: false; body: Record<string, unknown> | null }
+  | { authFailed: false; body: Record<string, unknown> | null; status?: number }
   | { authFailed: true };
 
 export interface BurnRate {
@@ -676,7 +676,7 @@ export class QuotaPoller {
         return { authFailed: false, body: (await res.json()) as Record<string, unknown> };
       }
       if (res.status === 401 || res.status === 403) return { authFailed: true };
-      return { authFailed: false, body: null }; // 5xx etc. → no snapshot, not auth
+      return { authFailed: false, body: null, status: res.status }; // 5xx etc. → no snapshot, not auth
     } catch {
       // @silent-fallback-ok: network failure → no snapshot this cycle (retry next)
       return null;
@@ -909,6 +909,10 @@ export class QuotaPoller {
 
     if (!body) { // a non-auth error status: no login signal this poll
       this.loginChecks.set(slotAccount.id, 'unavailable');
+      // Said once per cycle, never silent: an account that keeps answering this way looked
+      // simply "never read" (2026-11-10, gearfinity3d answered 429 on a stale credential).
+      const status = !read.authFailed ? read.status : undefined;
+      this.logger.warn(`[QuotaPoller] account ${account.id} usage read answered ${status ?? 'an error'} — no reading this cycle`);
       return null;
     }
 

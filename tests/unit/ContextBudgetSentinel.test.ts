@@ -354,6 +354,53 @@ describe('ContextBudgetSentinel', () => {
     expect(broken.status().lastError).toMatch(/^canary/);
   });
 
+  describe('adapter verification suite trigger (§9.6)', () => {
+    const result = (version: string) => ({ schema: 'adapter-suite/1' as const, engine: 'claude-code' as const, version, machine: 'm', ranAt: now, durationMs: 1,
+      capabilities: { toolPolicy: { state: 'supported' as const, evidence: 'refused' } } as never, inconclusive: false, errors: [] as string[] });
+
+    it('runs once for an unrecorded version, never twice at once, then not again once recorded', async () => {
+      const { writeSuiteResult } = await import('../../src/monitoring/adapterVerificationSuite.js');
+      let finish!: () => void;
+      const run = vi.fn(() => new Promise<void>((r) => { finish = () => { writeSuiteResult(stateDir, result('2.1.322')); r(); }; }));
+      const s = make({ adapterSuite: { currentVersion: () => '2.1.322', run } });
+      await s.tick(); await s.tick();
+      expect(run).toHaveBeenCalledTimes(1);
+      expect(s.status().adapterSuite.running).toBe(true);
+      finish(); await new Promise((r) => setTimeout(r, 5));
+      advance(25 * 60 * 60_000); await s.tick();
+      expect(run).toHaveBeenCalledTimes(1); // recorded for this version
+      expect(s.status().adapterSuite).toMatchObject({ running: false, results: [{ version: '2.1.322' }] });
+    });
+
+    it('a failed run is retried only after the backoff, durably (a restart does not reset it)', async () => {
+      const run = vi.fn(async () => { throw new Error('engine down'); });
+      await make({ adapterSuite: { currentVersion: () => '2.1.323', run } }).tick();
+      await new Promise((r) => setTimeout(r, 5));
+      advance(60_000); await make({ adapterSuite: { currentVersion: () => '2.1.323', run } }).tick(); // a NEW instance
+      expect(run).toHaveBeenCalledTimes(1);
+      advance(24 * 60 * 60_000); await make({ adapterSuite: { currentVersion: () => '2.1.323', run } }).tick();
+      expect(run).toHaveBeenCalledTimes(2);
+    });
+
+    it('gives up after 3 failed attempts for a version, and the status says so', async () => {
+      const run = vi.fn(async () => { throw new Error('engine down'); });
+      for (let i = 0; i < 5; i++) { await make({ adapterSuite: { currentVersion: () => '2.1.324', run } }).tick(); await new Promise((r) => setTimeout(r, 2)); advance(25 * 60 * 60_000); }
+      expect(run).toHaveBeenCalledTimes(3);
+      expect(make({ adapterSuite: { currentVersion: () => '2.1.324', run } }).status().adapterSuite).toMatchObject({ gaveUp: ['2.1.324'], attempts: { '2.1.324': { count: 3 } } });
+    });
+
+    it('a new engine version triggers a run; an unknown version never does', async () => {
+      const { writeSuiteResult } = await import('../../src/monitoring/adapterVerificationSuite.js');
+      writeSuiteResult(stateDir, result('2.1.322'));
+      const run = vi.fn(async () => {});
+      let v: string | null = null;
+      const s = make({ adapterSuite: { currentVersion: () => v, run } });
+      await s.tick(); expect(run).not.toHaveBeenCalled();
+      v = '2.1.322'; await s.tick(); expect(run).not.toHaveBeenCalled();
+      v = '2.1.330'; await s.tick(); expect(run).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('runs the checkpoint grace pass each tick', async () => {
     const dir = path.join(stateDir, 'state', 'context-archive', T, 'checkpoints');
     fs.mkdirSync(dir, { recursive: true });

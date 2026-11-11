@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK } from '../coordination/AccountFollowMeMandateDelivery.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
 import type { InstarConfig } from './types.js';
 
@@ -151,6 +152,8 @@ export interface SubscriptionReloginConfigProvenance {
   via: 'local-session' | 'configure-pool-self' | 'mandate';
   mandateId?: string;
   deliveredBy?: string;
+  /** The signed PIN-unlock claim a remote mandate carried (spec amendment "any dashboard"). */
+  operatorUnlock?: string;
 }
 
 export const SUBSCRIPTION_RELOGIN_RESTART_REQUESTED_BY = 'subscription-relogin-operator-config';
@@ -240,6 +243,8 @@ export function applySubscriptionReloginOperatorConfig(input: {
     via: provenance.via,
     ...(provenance.mandateId ? { mandateId: provenance.mandateId } : {}),
     ...(provenance.deliveredBy ? { deliveredBy: provenance.deliveredBy } : {}),
+    ...(provenance.operatorUnlock ? { operatorUnlock: provenance.operatorUnlock } : {}),
+    previousMode: describeSubscriptionReloginConfig(existing).mode,
     generation,
     enabled: next.enabled,
     mode: next.mode,
@@ -251,6 +256,32 @@ export function applySubscriptionReloginOperatorConfig(input: {
 
   const restartRequested = writeSubscriptionReloginRestartRequest(input.stateDir, now, pid);
   return { config: next, changed: true, restartRequested, generation };
+}
+
+/**
+ * The fronting machine's half of the audit (spec amendment "any dashboard"): one line per peer
+ * target a PIN-unlocked dashboard tap issued a configure mandate for, with the target's answer.
+ * Best effort: an audit write failure never changes the tap's outcome.
+ */
+export function appendSubscriptionReloginIssueAudit(stateDir: string, entry: {
+  targetMachineId: string; action: string; mode?: string; mandateId?: string; ok: boolean; error?: string; now?: Date;
+}): void {
+  try {
+    const auditPath = path.join(stateDir, 'logs', 'subscription-relogin-config.jsonl');
+    fs.mkdirSync(path.dirname(auditPath), { recursive: true });
+    fs.appendFileSync(auditPath, `${JSON.stringify({
+      at: (entry.now ?? new Date()).toISOString(),
+      action: 'operator-configure-issued',
+      via: 'configure-pool',
+      operatorUnlock: SUBSCRIPTION_RELOGIN_OPERATOR_UNLOCK,
+      targetMachineId: entry.targetMachineId,
+      requested: entry.action,
+      ...(entry.mode ? { mode: entry.mode } : {}),
+      ...(entry.mandateId ? { mandateId: entry.mandateId } : {}),
+      ok: entry.ok,
+      ...(entry.error ? { error: entry.error } : {}),
+    })}\n`, { mode: 0o600 });
+  } catch { /* audit is best effort; the target's own audit line is the authoritative record */ }
 }
 
 /** The digest a restart-only ("Finish restarting") mandate binds (spec §6). */

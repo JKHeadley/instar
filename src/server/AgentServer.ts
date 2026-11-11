@@ -1280,6 +1280,8 @@ export class AgentServer {
     foldHolds?: import('../monitoring/FoldHoldStore.js').FoldHoldStore;
     /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel (null ⇒ GET /context-budget/sentinel is 503). */
     contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel;
+    /** Context budget layer store + archive (§9.7); absent when `contextBudget.enabled` is off. */
+    contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers;
     standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit;
     subscriptionPool?: import('../core/SubscriptionPool.js').SubscriptionPool;
     subscriptionLoginLedger?: import('../core/SubscriptionLoginLedger.js').SubscriptionLoginLedger | null;
@@ -5804,6 +5806,7 @@ export class AgentServer {
       standDownRegistry: options.standDownRegistry ?? null,
       foldHolds: options.foldHolds ?? null,
       contextBudgetSentinel: options.contextBudgetSentinel ?? null,
+      contextLayers: options.contextLayers ?? null,
       standDownAudit: options.standDownAudit ?? null,
       subscriptionPool: options.subscriptionPool ?? null,
       subscriptionLoginLedger: options.subscriptionLoginLedger ?? null,

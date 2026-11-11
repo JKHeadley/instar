@@ -44,6 +44,12 @@ export interface DevGatedFeature {
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
   {
+    name: 'contextBudgetLayers',
+    configPath: 'contextBudget.enabled',
+    description: 'Context budget layers (docs/specs/context-budget-layered-summaries.md Phase 1): the per-topic layer store and transcript archive, and the layer writers built on them; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Writes only scrubbed derived summaries and row references under the agent\'s own 0700 state directory, never served and never git-synced; folds stay behind contextBudget.fold.enabled, so no session is shrunk, held or killed by this switch. Every LLM call runs on the background lane under a per-topic budget. Setting enabled:false stops every writer at the next read; the stored records are inert.',
+  },
+  {
     name: 'chiefOfStaff',
     configPath: 'chiefOfStaff.enabled',
     description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',

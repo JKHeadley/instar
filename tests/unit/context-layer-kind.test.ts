@@ -161,16 +161,21 @@ describe('context layer kind — wiring', () => {
     expect(() => reg.register({ ...CONTEXT_LAYER_KIND_REGISTRATION, store: 'other' })).toThrow();
   });
 
-  it('DARK: no runtime call site emits to the kind yet', () => {
+  it('DARK: the layer store is the only runtime emitter, and only through the stateSync-gated emitter', () => {
     const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap((d) => {
       const p = path.join(dir, d.name);
       return d.isDirectory() ? walk(p) : p.endsWith('.ts') ? [p] : [];
     });
     const offenders = walk(path.join(ROOT, 'src')).filter((f) => {
       if (f.endsWith('contextLayerKind.ts')) return false;
+      // Phase 1 S1: the layer store offers each record to the ReplicatedRecordEmitter,
+      // which emits only while multiMachine.stateSync.contextLayers is on.
+      if (f.endsWith(path.join('contextLayers', 'contextLayersBoot.ts'))) return false;
       const s = fs.readFileSync(f, 'utf-8');
       return /emit\w*\(\s*CONTEXT_LAYER_(STORE_KEY|RECORD_KIND)/.test(s) || /emitReplicatedRecord\w*\(\s*['"]context-layer-record['"]/.test(s) || /buildContextLayerPut\(/.test(s);
     });
     expect(offenders).toEqual([]);
+    const boot = fs.readFileSync(path.join(ROOT, 'src/monitoring/contextLayers/contextLayersBoot.ts'), 'utf-8');
+    expect(boot).toContain('emitter.emit(CONTEXT_LAYER_STORE_KEY');
   });
 });

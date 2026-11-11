@@ -64,7 +64,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { credentialSlotKey, claudeCredentialService, expandHome, type ClaudeOauth } from './OAuthRefresher.js';
+import { credentialSlotKey, claudeCredentialService, claudeKeychainAccount, readClaudeKeychainItem, expandHome, type ClaudeOauth } from './OAuthRefresher.js';
 import type { CredentialWriteFunnel } from './CredentialWriteFunnel.js';
 import type { CredentialLocationLedger } from './CredentialLocationLedger.js';
 import { redactToken } from '../monitoring/CredentialProvider.js';
@@ -99,32 +99,17 @@ export interface KeychainCredentialExec {
 /** Default macOS keychain exec — async `execFile`, 10s timeout. Non-darwin: a per-service file. */
 export const defaultKeychainExec: KeychainCredentialExec = {
   readService(service: string): Promise<string | null> {
-    return new Promise((resolve) => {
-      try {
-        execFile(
-          'security',
-          ['find-generic-password', '-s', service, '-w'],
-          { timeout: SECURITY_CALL_TIMEOUT_MS, maxBuffer: 1024 * 1024 },
-          (err, stdout) => {
-            if (err) {
-              resolve(null); // @silent-fallback-ok: no keychain entry (or timeout) → treated as absent; the caller's CAS/precondition decides, never a guess
-              return;
-            }
-            const raw = (stdout ?? '').toString().trim();
-            resolve(raw || null);
-          },
-        );
-      } catch {
-        resolve(null); // @silent-fallback-ok: spawn failed → absent; never throws into the swap loop
-      }
-    });
+    // Same item the Claude CLI reads (its keychain account first): a service can hold a stale
+    // second item under another account attribute, and a bare `-s` read returns whichever is
+    // listed first. Never throws; null = absent → the caller's CAS/precondition decides.
+    return readClaudeKeychainItem(service, SECURITY_CALL_TIMEOUT_MS);
   },
   writeService(service: string, rawJson: string): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
         execFile(
           'security',
-          ['add-generic-password', '-U', '-a', process.env.USER ?? 'instar', '-s', service, '-w', rawJson],
+          ['add-generic-password', '-U', '-a', claudeKeychainAccount(), '-s', service, '-w', rawJson],
           { timeout: SECURITY_CALL_TIMEOUT_MS },
           (err) => (err ? reject(err) : resolve()),
         );

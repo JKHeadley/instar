@@ -1260,6 +1260,7 @@ const URLS = {
   pending: '/subscription-pool/pending-logins?scope=pool',
   inUse: '/subscription-pool/in-use',
   submitCode: '/subscription-pool/follow-me/submit-code', // POST — paste-back the sign-in code (ws52-code-paste-back)
+  completion: '/subscription-pool/follow-me/completion', // GET — after a sent code: finishing → done | failed
   scan: '/subscription-pool/follow-me/scan', // POST — follow-me consent offers (one-tap card)
   issue: '/mandate/issue-for-machine',       // POST (PIN-gated) — Approve issues the mandate
   // account-machine-matrix: pool-scope accounts feed the grid (the SAME read the accounts list
@@ -1644,9 +1645,32 @@ export function createController(opts) {
             setRowStatus(row, `✓ Done — ${r.json.email ? r.json.email + ' is' : 'this account is'} set up on this machine.`);
             rerenderMatrixFromCache();
           } else if (r.ok && r.json && r.json.outcome === 'submitted') {
-            setRowStatus(row, 'Code sent — finishing sign-in…');
-            if (input) input.value = '';
-            row.removeAttribute('data-interaction-open');
+            // The form goes away while the machine finishes: no input, no button, one clear line.
+            if (input) { input.value = ''; input.remove(); }
+            btn.remove();
+            row.setAttribute('class', 'sub-pending sub-pending-finishing');
+            row.setAttribute('aria-busy', 'true');
+            row.setAttribute('data-interaction-open', 'finishing');
+            setRowStatus(row, '⟳ Finishing the sign-in… this usually takes under a minute and updates by itself.');
+            followCompletion(machineId, id, (c) => {
+              row.removeAttribute('data-interaction-open');
+              row.removeAttribute('aria-busy');
+              settleCompletion(c, { accountId: id, machineId }, {
+                done: (email) => {
+                  row.setAttribute('class', 'sub-pending sub-pending-done');
+                  setRowStatus(row, `✓ Done — ${email ? email + ' is' : 'this account is'} set up on this machine.`);
+                },
+                held: (body) => {
+                  row.setAttribute('class', 'sub-pending sub-pending-failed');
+                  setRowStatus(row, `✗ ${heldExplanation(body.expected, body.got, body.reason)}`);
+                },
+                failed: (words) => {
+                  row.setAttribute('class', 'sub-pending sub-pending-failed');
+                  setRowStatus(row, `✗ ${words} Start a fresh sign-in from its grid cell.`);
+                },
+              });
+              rerenderMatrixFromCache();
+            });
           } else if (r.ok && r.json && r.json.outcome === 'held') {
             if (input) input.value = '';
             row.removeAttribute('data-interaction-open');
@@ -1684,6 +1708,55 @@ export function createController(opts) {
         }
       })();
     });
+  }
+
+  // After a sent code the SERVER finishes the sign-in (operator report 2026-11-10, topic 33890:
+  // a faint "Code sent — finishing sign-in…" under a still-live form looked stalled). The page
+  // follows it to one terminal answer: done, or failed with a reason.
+  const COMPLETION_POLL_MS = 2_000;
+  const COMPLETION_GIVE_UP_MS = 4 * 60_000;
+  function followCompletion(machineId, id, onTerminal) {
+    const started = now();
+    const q = `?machineId=${encodeURIComponent(machineId || '')}&id=${encodeURIComponent(id || '')}`;
+    const step = async () => {
+      let c = null;
+      try {
+        const resp = await fetchImpl(URLS.completion + q, {});
+        if (resp && resp.ok) { const j = await resp.json(); c = j && j.completion; }
+      } catch (e) { /* unreachable this time — keep asking until the bound */ }
+      // waiting-for-code / unknown: no live watch on that machine (it restarted mid-finish) —
+      // not final; its background check can still complete it. Keep asking until the bound.
+      if (c && (c.state === 'done' || c.state === 'failed')) { onTerminal(c); return; }
+      if (now() - started > COMPLETION_GIVE_UP_MS) { onTerminal({ state: 'failed', reason: 'no-answer' }); return; }
+      schedule(step, COMPLETION_POLL_MS);
+    };
+    schedule(step, COMPLETION_POLL_MS);
+  }
+  function completionFailureWords(c) {
+    const words = {
+      'window-closed': 'The sign-in window closed before the sign-in finished.',
+      'timed-out': 'The sign-in did not finish in time. If it finishes later, the account shows as signed in by itself.',
+      cancelled: 'This sign-in was cancelled.',
+      gone: 'This sign-in is no longer open.',
+      'could-not-save': 'The sign-in finished, but the account could not be saved.',
+      'no-answer': 'No answer came back in time. If the sign-in finishes later, the account shows as signed in by itself.',
+    };
+    if (c && c.state === 'failed' && words[c.reason]) return words[c.reason];
+    return (c && c.message) || 'The sign-in did not finish.';
+  }
+  /** Terminal handling shared by the matrix cell and the pending row. */
+  function settleCompletion(c, ids, view) {
+    if (c.state === 'done') {
+      recordSubmitOutcome('validated', ids, { email: c.email || null });
+      view.done(c.email || null);
+    } else if (c.state === 'failed' && c.reason === 'wrong-account') {
+      const body = { expected: c.expected || null, got: c.got || null, reason: c.heldReason || 'email-mismatch' };
+      recordSubmitOutcome('held', ids, body);
+      view.held(body);
+    } else {
+      recordSubmitOutcome('broken', ids, null);
+      view.failed(completionFailureWords(c));
+    }
   }
 
   function setRowStatus(row, text) {
@@ -1924,8 +1997,16 @@ export function createController(opts) {
           recordSubmitOutcome('validated', { accountId, machineId }, r.json);
           renderCellDone(cell, r.json.email || null, accountId);
         } else if (r.ok && r.json && r.json.outcome === 'submitted') {
-          setCellStatus(cell, 'Code sent — finishing sign-in…');
-          cell.removeAttribute('data-interaction-open');
+          // The form goes away while the machine finishes; the cell answers once, terminally.
+          renderCellFinishing(cell);
+          followCompletion(machineId, loginId, (c) => {
+            cell.removeAttribute('data-interaction-open');
+            settleCompletion(c, { accountId, machineId }, {
+              done: (email) => renderCellDone(cell, email, accountId),
+              held: (body) => renderCellHeld(cell, accountId, machineId, body),
+              failed: (words) => renderCellFailed(cell, accountId, machineId, words),
+            });
+          });
         } else if (r.ok && r.json && r.json.outcome === 'held') {
           // TERMINAL REFUSAL (D3): the identity gate held the enrollment — name BOTH
           // accounts in plain language; the wrong account was NOT enrolled.
@@ -1962,15 +2043,41 @@ export function createController(opts) {
   // The in-cell terminal SUCCESS presentation (D4): unmistakable, named, highlighted.
   function renderCellDone(cell, email, accountId) {
     cell.replaceChildren();
+    cell.removeAttribute('aria-busy');
     cell.setAttribute('class', 'sub-matrix-cell sub-matrix-just-verified sub-matrix-done');
     cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '✓ All set'));
     cell.appendChild(el(doc, 'div', 'sub-matrix-done-detail',
       verifiedDisplayName(email, accountId) ? `${sanitizeForDisplay(email, 'label')} is signed in on this machine.` : 'The account is signed in on this machine.'));
   }
 
+  // In progress after a sent code: the inputs and buttons are gone, one prominent line.
+  function renderCellFinishing(cell) {
+    cell.replaceChildren();
+    cell.setAttribute('class', 'sub-matrix-cell sub-matrix-finishing');
+    cell.setAttribute('aria-busy', 'true');
+    cell.setAttribute('data-interaction-open', 'finishing');
+    cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '⟳ Finishing sign-in…'));
+    cell.appendChild(el(doc, 'div', 'sub-matrix-done-detail', 'This usually takes under a minute. It updates by itself.'));
+  }
+
+  // The sign-in did not finish after the code: the reason + one Retry.
+  function renderCellFailed(cell, accountId, machineId, words) {
+    cell.replaceChildren();
+    cell.removeAttribute('aria-busy');
+    cell.setAttribute('class', 'sub-matrix-cell sub-matrix-held');
+    cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', '✗ Not finished'));
+    cell.appendChild(el(doc, 'div', 'sub-matrix-held-detail', words));
+    const btn = el(doc, 'button', 'sub-matrix-setup', 'Retry');
+    btn.setAttribute('data-matrix-setup', '1');
+    btn.setAttribute('data-account-id', sanitizeForDisplay(accountId, 'label'));
+    btn.setAttribute('data-machine-id', sanitizeForDisplay(machineId, 'label'));
+    cell.appendChild(btn);
+  }
+
   // The in-cell terminal HELD presentation (D3): both accounts named + a working Retry.
   function renderCellHeld(cell, accountId, machineId, body) {
     cell.replaceChildren();
+    cell.removeAttribute('aria-busy');
     cell.setAttribute('class', 'sub-matrix-cell sub-matrix-held');
     cell.appendChild(el(doc, 'div', 'sub-matrix-glyph', `${MATRIX_CELL_GLYPH.held} ${MATRIX_CELL_WORD.held}`));
     cell.appendChild(el(doc, 'div', 'sub-matrix-held-detail',

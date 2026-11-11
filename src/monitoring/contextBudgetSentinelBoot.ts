@@ -4,7 +4,9 @@
  * sentinel through the same closures: the topic's live sessions as candidates,
  * their transcripts, a THREE-STATE tmux probe, and the kill.
  */
-import { spawnSync } from 'node:child_process';
+import { execFile, spawn, spawnSync } from 'node:child_process';
+import { applyClaudeChildAuth } from '../core/claudeChildAuth.js';
+import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import type { Session } from '../core/types.js';
@@ -74,4 +76,46 @@ export function productionCanarySessions(o: { sessions: SentinelSessionSource; p
       return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: 'claude-code' };
     })
     .filter((x) => x.transcriptPath !== '');
+}
+
+/**
+ * The adapter verification suite's production trigger (§9.6): the retained
+ * engine binary's version (cached for an hour), and a run in its OWN process
+ * (`adapterSuiteCli.js` beside this module) so the suite's ~30 s of engine
+ * calls never block the server; killed after 10 minutes.
+ */
+export function productionAdapterSuite(o: {
+  stateDir: string; machine: string; claudePath: string; now?: () => number;
+  /** The command that runs the suite entry (default: this Node with the compiled `adapterSuiteCli.js` beside this module). */
+  cli?: string[];
+}): NonNullable<ContextBudgetSentinelDeps['adapterSuite']> {
+  const now = o.now ?? Date.now;
+  // Refreshed asynchronously (never blocks the server's event loop); null until the first answer.
+  let cached: { at: number; version: string | null } | null = null;
+  let probing = false;
+  const refresh = () => {
+    if (probing) return;
+    probing = true;
+    execFile(o.claudePath, ['--version'], { timeout: 10_000, encoding: 'utf-8' }, (err, stdout) => {
+      probing = false;
+      cached = { at: now(), version: err ? null : (/(\d+\.\d+\.\d+)/.exec(stdout ?? '') ?? [])[1] ?? null };
+    });
+  };
+  return {
+    currentVersion: () => {
+      if (!cached || now() - cached.at >= 60 * 60_000) refresh();
+      return cached?.version ?? null;
+    },
+    run: () => new Promise<void>((resolve, reject) => {
+      const cmd = o.cli ?? [process.execPath, fileURLToPath(new URL('./adapterSuiteCli.js', import.meta.url))];
+      // Its own process GROUP (detached), so the 10-minute kill also ends the engine calls under it.
+      const child = spawn(cmd[0], [...cmd.slice(1), o.stateDir, o.machine, o.claudePath], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: applyClaudeChildAuth({ ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' }) });
+      let out = ''; let err = '';
+      child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
+      child.stderr.on('data', (b: Buffer) => { err = (err + b.toString()).slice(-2_000); });
+      const kill = setTimeout(() => { try { if (child.pid) process.kill(-child.pid, 'SIGKILL'); } catch { /* @silent-fallback-ok — already gone */ } }, 10 * 60_000); kill.unref?.();
+      child.on('error', (e) => { clearTimeout(kill); reject(e); });
+      child.on('exit', (code) => { clearTimeout(kill); if (code === 0) resolve(); else reject(new Error(`adapter suite exited ${code}: ${(out.trim() || err.trim()).slice(0, 300)}`)); });
+    }),
+  };
 }
