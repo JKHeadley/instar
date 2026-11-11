@@ -136,7 +136,8 @@ describe('U with referent stubs — alive on the production init path', () => {
     expect(src).toContain('bindingFingerprint: () => _memoryPrivacyWired.operatorBindingFingerprint(),');
     expect(src).toContain('...(layerWiring ? layerWiring.captureDeps : {}),');
     const wiring = fs.readFileSync(path.join(ROOT, 'src/monitoring/contextLayers/layerCaptureWiring.ts'), 'utf-8');
-    expect(wiring).toContain('captureDeps: { layerBudget: o.layers.budget, onCaptured, ...(userCorpus ? { userCorpus } : {}) },');
+    // The capture deps carry U alongside whatever other slices add (S13's onLayerOutcome, …).
+    expect(wiring).toMatch(/captureDeps: \{ layerBudget: o\.layers\.budget, onCaptured, \.\.\.\(userCorpus \? \{ userCorpus \} : \{\}\)[^}]*\},/);
     const routes = fs.readFileSync(path.join(ROOT, 'src/server/routes.ts'), 'utf-8');
     expect(routes).toContain("router.get('/topic/:id/user-corpus',");
     const capture = fs.readFileSync(path.join(ROOT, 'src/core/TopicIntentCapture.ts'), 'utf-8');
