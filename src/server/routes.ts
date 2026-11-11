@@ -30283,9 +30283,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
 
       try {
+        // Asked BEFORE routing, with the same cleaned sender the handler sees: a message the inbound
+        // gate refuses (Chief of Staff owner-only rule) is still handed over, so the gate logs it and
+        // tells the sender it was not delivered, but the lifeline is told `refused` and must not send
+        // "✓ Delivered" for it (Echo Bugs 10000002533).
+        let refused = false;
+        try { refused = ctx.telegram.isInboundRefused?.(Number(topicId), typeof fromUserId === 'number' && Number.isSafeInteger(fromUserId) && fromUserId > 0 ? fromUserId : 0) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the reply as before; the gate itself still decides */ refused = false; }
         const delivered = ctx.telegram.onTopicMessage(message) as unknown;
         if (trust) await delivered;
-        res.json({ ok: true, forwarded: true });
+        res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}) });
       } catch (err) {
         DegradationReporter.getInstance().report({
           feature: 'routes.onTopicMessage',

@@ -63,6 +63,12 @@ export interface PresenceProxyConfig {
   confirmSessionUsageLimit?: (sessionName: string) => boolean | string;
   sendMessage: (topicId: number, text: string, metadata?: ProxyMetadata) => Promise<void>;
   getAuthorizedUserIds: () => number[];
+  /**
+   * True when the inbound gate refused this user message (it never reached the session — e.g. the
+   * Chief of Staff conversation's owner-only rule). A refused message gets no standby watch, so it
+   * is never told it "has been delivered to the session". Echo Bugs topic 10000002533.
+   */
+  isInboundRefused?: (topicId: number, platformUserId: string | undefined) => boolean;
   getProcessTree: (sessionName: string) => ProcessInfo[];
   /** Check if agent sent any message to this topic after the given timestamp. Prevents race conditions. */
   hasAgentRespondedSince?: (topicId: number, sinceMs: number) => boolean;
@@ -925,6 +931,14 @@ export class PresenceProxy {
   // ─── Core Logic ─────────────────────────────────────────────────────────
 
   private handleUserMessage(topicId: number, event: MessageLoggedEvent): void {
+    // A message the inbound gate refused never reached the session: no watch, so no "delivered" claim.
+    // Any watch already running for an earlier accepted message is left exactly as it was.
+    let refused = false;
+    try { refused = this.config.isInboundRefused?.(topicId, event.platformUserId) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the normal watch in place; the gate itself still refused or accepted the message */ refused = false; }
+    if (refused) {
+      console.log(`[PresenceProxy] No standby for topic ${topicId} — the inbound gate refused this message, so it was not delivered.`);
+      return;
+    }
     const sessionName = this.config.getSessionForTopic(topicId);
     if (!sessionName) return;
 
