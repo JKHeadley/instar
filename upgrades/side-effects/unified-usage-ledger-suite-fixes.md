@@ -14,6 +14,8 @@ The full unit suite on the merged head (3,502 files) found four failures caused 
 
 - The e2e suite (4,046 tests) found that the holder's first usage pull ran at boot, adding a `/usage/rollup` request to peers that `mobile-remote-media-alive` and `mobile-slack-holder-proxy-alive` count exactly. The first pull now runs one minute after boot on an unref'd timer (then every 5 minutes as before); a boot pull was never needed, and this keeps startup lighter.
 
+- `SqliteRegistry-wiring.test.ts` requires every file that opens a SQLite handle to be catalogued; `UsageLedger.ts` (which registers its handle in the constructor since Slice 1) is now listed as a long-lived store. Found by Local Verify on 6504931c7; it was in the local full-suite failure list but cut off by a truncated listing.
+
 Remaining full-suite failures (48 tests in `MacDesktopHostCapture`, `MacDesktopHostIdentity`, `desktop-displays`) fail identically on `origin/main` on this machine (checked in a clean checkout); they are environmental and unrelated.
 
 ## Decision-point inventory
