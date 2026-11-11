@@ -14,6 +14,7 @@ import { telegramFetch } from '../../src/messaging/telegram-egress.js';
 import { OriginAuthorCall, deterministicAutomationAuthor } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
 import { createA2ACheckInScheduler } from '../../src/threadline/A2ACheckInScheduler.js';
 import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { wireDigest } from '../../src/messaging/telegram-origin/CanonicalOrigin.js';
 import { PendingRelayStore } from '../../src/messaging/pending-relay-store.js';
 import { OriginBrowserExecutor } from '../../src/messaging/telegram-origin/OriginBrowserExecutor.js';
 import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
@@ -136,7 +137,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
         const row = await getOperation(id);
         if (!row) return row;
         const envelope = JSON.parse(row.record.envelopeJson);
-        return { ...row, record: { ...row.record, envelopeJson: JSON.stringify({ ...envelope, executionOwnerMachineId: 'mini' }) },
+        // A consistent envelope (its digest recomputed): the owner-read resolver ignores an envelope whose digest does not match.
+        const envelopeJson = JSON.stringify({ ...envelope, executionOwnerMachineId: 'mini' });
+        return { ...row, record: { ...row.record, envelopeJson, envelopeDigest: wireDigest(envelopeJson) },
           operation: { ...row.operation!, state: 'known-failed' }, children: row.children.map(c => ({ ...c, state: 'known-failed' })),
           attempts: row.attempts.map(a => ({ ...a, outcome: 'known-failed', receiptJson: null })) };
       });

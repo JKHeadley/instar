@@ -7,6 +7,7 @@ import { renderOriginSetupGreeting } from '../messaging/telegram-origin/OriginSe
 import { OriginSendPolicyRefusal } from '../messaging/telegram-origin/OriginSendPolicy.js';
 import { originToolGuardDigest } from '../messaging/telegram-origin/OriginToolGuard.js';
 import { classifyOperationOutcome } from '../messaging/telegram-origin/OriginOperationOutcome.js';
+import { readOperationOutcome } from '../messaging/telegram-origin/OriginOwnerRead.js';
 
 export function sendOriginHoldResponse(res: Response, error: TelegramOriginHoldError): void {
   if (error instanceof OriginSendPolicyRefusal) {
@@ -179,26 +180,22 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
     if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId, outcome: 'unknown', safeToResend: false }); return; }
     let captured: import('../messaging/telegram-origin/OriginUnrecordedReceipts.js').UnrecordedReceiptEntry[] = [];
     try { captured = runtime.unrecordedReceipts?.forOperation(operationId) ?? []; } catch { /* @silent-fallback-ok — the fallback file is unreadable; the store answers alone and the verdict degrades to unknown, never to not-delivered */ }
-    let audit: import('../messaging/telegram-origin/StoreTypes.js').OriginAuditRecord | null;
-    try { audit = await runtime.store.getOperation(operationId); }
-    catch {
+    // native-conversation-base §3b — answer locally when the local row is enough,
+    // otherwise ask the execution owner (and the author) over the signed
+    // `receipt` verb, inside one 4 s deadline. Absence is never non-delivery.
+    try {
+      const answer = await readOperationOutcome({ selfMachineId: runtime.options.identity.originMachineId,
+        getOperation: id => runtime.store.getOperation(id),
+        unrecorded: id => id === operationId ? captured : runtime.unrecordedReceipts?.forOperation(id) ?? [],
+        reader: runtime.ownerReader }, operationId);
+      res.status(answer.status).json(answer.body);
+    } catch {
       // @silent-fallback-ok — not silent: answers 503 origin-store-unavailable (or delivered from the fallback record)
       const verdict = classifyOperationOutcome(operationId, null, captured);
       if (verdict.outcome === 'delivered') { res.json({ ...verdict, storeAvailable: false }); return; }
       res.status(503).json(storageErrorResponse({ error: 'origin-store-unavailable', operationId, outcome: 'unknown', safeToResend: false,
         detail: 'The delivery record cannot be read right now. Do not resend; ask again in a minute.' }, req.app.locals.stateDir));
-      return;
     }
-    const verdict = classifyOperationOutcome(operationId, audit, captured);
-    let executionOwnerMachineId: string | null = null;
-    try { executionOwnerMachineId = (JSON.parse(audit?.record.envelopeJson ?? 'null') as { executionOwnerMachineId?: string } | null)?.executionOwnerMachineId ?? null; } catch { /* @silent-fallback-ok — an unreadable envelope only loses the remote-owner hint; the verdict still answers */ }
-    const remote = executionOwnerMachineId && executionOwnerMachineId !== runtime.options.identity.originMachineId ? executionOwnerMachineId : null;
-    // A send executed on another machine: this machine's record cannot prove it
-    // never arrived (the owner may have delivered it), so never say "resend".
-    const answer = remote && verdict.outcome === 'not-delivered'
-      ? { ...verdict, outcome: 'unknown' as const, safeToResend: false, detail: 'The send ran on another machine; this machine cannot confirm it never arrived. Do not resend.' }
-      : verdict;
-    res.status(!audit && !captured.length ? 404 : 200).json({ ...answer, ...(remote ? { executionOwnerMachineId: remote } : {}) });
   });
   router.get('/telegram/origins/:originId', async (req, res) => {
     if (!operator(req, res)) return;

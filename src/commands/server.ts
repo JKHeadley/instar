@@ -29881,6 +29881,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (!url) return { ok: false };
                 return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
               } };
+            // native-conversation-base §3b — the outcome route asks the execution
+            // owner over the SAME signed peer sender the receipt peer uses. The
+            // switches are read live on each ask; off makes answers more cautious only.
+            {
+              const { OriginOwnerReader } = await import('../messaging/telegram-origin/OriginOwnerRead.js');
+              const { originOwnerReadConfig, originForwardToHolderEnabled } = await import('../messaging/telegram-origin/OriginConfig.js');
+              const ownerReadOrigin = (): unknown => {
+                const messaging = liveConfig.get('messaging', config.messaging) as Array<{ type?: string; config?: { messageOrigin?: unknown } }> | undefined;
+                return (Array.isArray(messaging) ? messaging.find(m => m?.type === 'telegram') : undefined)?.config?.messageOrigin;
+              };
+              const receiptPeer = originReceiptPeer;
+              originRuntime.ownerReader = new OriginOwnerReader({ selfMachineId: meshSelfId, transport: { send: receiptPeer.send },
+                leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
+                enabled: () => {
+                  const origin = ownerReadOrigin();
+                  let forward = true;
+                  try { forward = originForwardToHolderEnabled(origin); } catch { forward = true; } // @silent-fallback-ok — matches the forward switch's own reading: unreadable keeps it on
+                  return forward && originOwnerReadConfig(origin).enabled;
+                },
+                budgetMs: () => originOwnerReadConfig(ownerReadOrigin()).budgetMs,
+                cacheEntries: () => originOwnerReadConfig(ownerReadOrigin()).cacheEntries });
+            }
             originRuntime.poolAudit = new OriginPoolAudit({
               operatorScopeRequired: true,
               shardIds: () => [meshSelfId, ...meshIdMgr.getActiveMachines().map(m => m.machineId).filter(id => id !== meshSelfId)],
