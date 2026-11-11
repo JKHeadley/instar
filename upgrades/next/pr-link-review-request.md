@@ -1,7 +1,7 @@
 <!-- bump: patch -->
 ## What Changed
 
-A pull request link the agent sends now asks for the review on GitHub too. Before a reply goes out on Telegram, Slack or the app, every github.com pull request link in it is checked. For an open PR that the agent's own GitHub account opened, the reviewer (the configured `prLinkReviewRequest.reviewer`, else the repository owner when the owner is a person) is requested if not already, and the request is read back from GitHub before the reply is sent. If it cannot be confirmed, the reply still goes out with one plain line saying so.
+A pull request link the agent sends now asks for the review on GitHub too. Before a reply goes out on Telegram, Slack or the app, every github.com pull request link in it is checked. For an open PR that the agent's own GitHub account opened, the reviewer (the configured `prLinkReviewRequest.reviewer`, else the repository owner when the owner is a person) is requested if not already, and the request is read back from GitHub before the reply is sent. If the request on one of the agent's own PRs cannot be confirmed, the reply still goes out with one plain line saying so. A PR link that cannot be read at all (it may be someone else's) is only logged, never annotated.
 
 This closes a gap from Echo Bugs topic 10000002537: the operator approved PR #3046, a later push dismissed that approval, and GitHub does not put the request back, so the next "please approve" link pointed at a PR that did not ask him for anything. `safe-merge` already requested the review on its own path; hand-written replies did not.
 

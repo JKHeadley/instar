@@ -4,7 +4,7 @@
 
 **What changes.** The server now looks at every reply I send on Telegram, Slack or the app, before it leaves. If the reply contains a link to an open pull request that my own GitHub account opened, the server asks GitHub to add the reviewer (Justin, the repository owner, unless a different reviewer is set in config), then reads the PR's reviewer list back to confirm he is on it. Only then does the message go out. If GitHub refuses or does not answer within 10 seconds, the message still goes out, with one extra plain line saying the review request could not be confirmed. A message is never held or lost because of GitHub.
 
-**What it leaves alone.** Links to closed or merged PRs, PRs other people opened, and PRs Justin already approved at the current commit are not touched, so he is not re-pinged for nothing. Messages without PR links never call GitHub.
+**What it leaves alone.** Links to closed or merged PRs, PRs other people opened, and PRs Justin already approved at the current commit are not touched, so he is not re-pinged for nothing. Messages without PR links never call GitHub. If GitHub cannot be reached at all, a PR link is left as it is (it may not even be one of mine), and the problem is only logged.
 
 **Safeguards.** It cannot block a message. It only adds a note, and only when it fits the platform's length limit. It can be turned off with `prLinkReviewRequest.enabled: false`. Undoing it is a plain code revert; it stores nothing.
 

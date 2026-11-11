@@ -18,8 +18,9 @@
  * agent's GitHub identity authored, the reviewer (the configured
  * `prLinkReviewRequest.reviewer`, else the repository owner when that owner is a
  * user) is requested if not already, and the request is then read back from
- * `GET /pulls/N/requested_reviewers`. When it cannot be confirmed, one plain
- * line saying so is appended to the message, so the operator is never told
+ * `GET /pulls/N/requested_reviewers`. When it cannot be confirmed for a PR known
+ * to be the agent's own, one plain line saying so is appended to the message
+ * (a PR that cannot even be read is only logged — it may be someone else's), so the operator is never told
  * "please approve" with a link that silently does not ask him.
  *
  * Never blocks a reply: GitHub being down must not cost the operator a message
@@ -59,7 +60,9 @@ export function extractPrLinks(text: string): PrRef[] {
 export type PrLinkOutcome =
   | 'already-requested' | 'requested' | 'failed'
   | 'skipped-not-open' | 'skipped-not-agent-pr' | 'skipped-no-reviewer'
-  | 'skipped-reviewer-is-author' | 'skipped-approved-at-head';
+  | 'skipped-reviewer-is-author' | 'skipped-approved-at-head'
+  /** The PR could not be read, so whether it is the agent's own is unknown: logged, no note (a link to someone else's PR must not gain one). */
+  | 'unreadable';
 
 export interface PrLinkResult { pr: PrRef; outcome: PrLinkOutcome; reviewer: string | null; reason?: string }
 
@@ -83,7 +86,7 @@ const lower = (s: string | null | undefined) => (s ?? '').toLowerCase();
 
 // RULE 3: EXEMPT — parses structured GitHub REST JSON from `gh api`, not agent/provider state detection.
 function parse<T>(stdout: string): T | null {
-  try { return JSON.parse(stdout) as T; } catch { return null; } // @silent-fallback-ok: unparseable gh output reads as an unconfirmed request (the message says so)
+  try { return JSON.parse(stdout) as T; } catch { return null; } // @silent-fallback-ok: unparseable gh output reads as unreadable/unconfirmed and is logged by the middleware
 }
 
 function shortReason(stderr: string): string {
@@ -99,13 +102,13 @@ async function requestedLogins(gh: AuthenticatedGhExec, ref: PrRef): Promise<str
 }
 
 /** Make sure the reviewer is requested on one PR link, then read it back. Never throws. */
-export async function ensureReviewerOnPr(ref: PrRef, deps: EnsureDeps): Promise<PrLinkResult> {
+export async function ensureReviewerOnPr(ref: PrRef, deps: EnsureDeps, progress: { agentPr: boolean } = { agentPr: false }): Promise<PrLinkResult> {
   const base = `repos/${ref.owner}/${ref.repo}/pulls/${ref.number}`;
   try {
     const viewRes = await deps.gh(['api', base]);
-    if (viewRes.code !== 0) return { pr: ref, outcome: 'failed', reviewer: null, reason: `could not read the PR (${shortReason(viewRes.stderr)})` };
+    if (viewRes.code !== 0) return { pr: ref, outcome: 'unreadable', reviewer: null, reason: `could not read the PR (${shortReason(viewRes.stderr)})` };
     const view = parse<PullView>(viewRes.stdout);
-    if (!view) return { pr: ref, outcome: 'failed', reviewer: null, reason: 'could not read the PR' };
+    if (!view) return { pr: ref, outcome: 'unreadable', reviewer: null, reason: 'could not read the PR' };
     if (view.state !== 'open') return { pr: ref, outcome: 'skipped-not-open', reviewer: null };
 
     const self = await deps.selfLogin();
@@ -117,6 +120,7 @@ export async function ensureReviewerOnPr(ref: PrRef, deps: EnsureDeps): Promise<
     const reviewer = configured ?? (owner?.type === 'User' && owner.login ? owner.login : null);
     if (!reviewer) return { pr: ref, outcome: 'skipped-no-reviewer', reviewer: null };
     if (lower(reviewer) === lower(author)) return { pr: ref, outcome: 'skipped-reviewer-is-author', reviewer };
+    progress.agentPr = true;
 
     if ((view.requested_reviewers ?? []).some(u => lower(u.login) === lower(reviewer))) {
       return { pr: ref, outcome: 'already-requested', reviewer };
@@ -138,7 +142,7 @@ export async function ensureReviewerOnPr(ref: PrRef, deps: EnsureDeps): Promise<
     const reason = post.code !== 0 ? `GitHub refused the request (${shortReason(post.stderr)})` : 'the request did not show up on the PR';
     return { pr: ref, outcome: 'failed', reviewer, reason };
   } catch (err) {
-    return { pr: ref, outcome: 'failed', reviewer: null, reason: err instanceof Error ? err.message.slice(0, 120) : 'unexpected error' };
+    return { pr: ref, outcome: progress.agentPr ? 'failed' : 'unreadable', reviewer: null, reason: err instanceof Error ? err.message.slice(0, 120) : 'unexpected error' };
   }
 }
 
@@ -162,12 +166,13 @@ export async function applyPrLinkReviewRequests(text: string, deps: EnsureDeps &
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<'timeout'>(resolve => { timer = setTimeout(() => resolve('timeout'), budget); });
   const done: Array<PrLinkResult | undefined> = refs.map(() => undefined);
-  const work = Promise.all(refs.map((ref, i) => ensureReviewerOnPr(ref, deps).then(r => { done[i] = r; })));
+  const progress = refs.map(() => ({ agentPr: false }));
+  const work = Promise.all(refs.map((ref, i) => ensureReviewerOnPr(ref, deps, progress[i]).then(r => { done[i] = r; })));
   const raced = await Promise.race([work.then(() => 'done' as const), timeout]);
   if (timer) clearTimeout(timer);
   const timedOut = raced === 'timeout';
   const results: PrLinkResult[] = refs.map((pr, i) => done[i]
-    ?? { pr, outcome: 'failed' as const, reviewer: deps.reviewer ?? null, reason: 'GitHub did not answer in time' });
+    ?? { pr, outcome: progress[i].agentPr ? 'failed' as const : 'unreadable' as const, reviewer: deps.reviewer ?? null, reason: 'GitHub did not answer in time' });
   const note = unconfirmedNote(results);
   if (!note) return { text, results, timedOut };
   const withNote = `${text}\n\n${note}`;

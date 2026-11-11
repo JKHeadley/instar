@@ -105,19 +105,29 @@ describe('applyPrLinkReviewRequests', () => {
     expect(out.results[0].outcome).toBe('requested');
   });
 
-  it('appends a plain note when the request cannot be confirmed, within the length limit only', async () => {
-    const out = await applyPrLinkReviewRequests(LINK, { gh: fakeGitHub({ viewFails: true }).gh, selfLogin: self, maxLength: 4096 });
+  it('appends a plain note when the request on the agent PR cannot be confirmed, within the length limit only', async () => {
+    const out = await applyPrLinkReviewRequests(LINK, { gh: fakeGitHub({ postFails: true }).gh, selfLogin: self, maxLength: 4096 });
     expect(out.text.startsWith(LINK)).toBe(true);
-    expect(out.text).toMatch(/Note: I could not confirm you as a reviewer on PR #3046/);
-    const tight = await applyPrLinkReviewRequests(LINK, { gh: fakeGitHub({ viewFails: true }).gh, selfLogin: self, maxLength: LINK.length + 10 });
+    expect(out.text).toMatch(/Note: I could not confirm JKHeadley as a reviewer on PR #3046/);
+    const tight = await applyPrLinkReviewRequests(LINK, { gh: fakeGitHub({ postFails: true }).gh, selfLogin: self, maxLength: LINK.length + 10 });
     expect(tight.text).toBe(LINK);
   });
 
-  it('a slow GitHub ends in a note, not a held reply', async () => {
+  it('a PR that cannot be read is unreadable (maybe not ours): logged, text unchanged', async () => {
+    const out = await applyPrLinkReviewRequests(LINK, { gh: fakeGitHub({ viewFails: true }).gh, selfLogin: self, maxLength: 4096 });
+    expect(out.results[0].outcome).toBe('unreadable');
+    expect(out.text).toBe(LINK);
+  });
+
+  it('a slow GitHub never holds the reply; a note only once the PR is known to be ours', async () => {
     const hang: AuthenticatedGhExec = () => new Promise(() => undefined);
-    const out = await applyPrLinkReviewRequests(LINK, { gh: hang, selfLogin: self, maxLength: 4096, budgetMs: 20, reviewer: 'JKHeadley' });
-    expect(out.timedOut).toBe(true);
-    expect(out.text).toMatch(/could not confirm JKHeadley as a reviewer on PR #3046 \(GitHub did not answer in time\)/);
+    const unknown = await applyPrLinkReviewRequests(LINK, { gh: hang, selfLogin: self, maxLength: 4096, budgetMs: 20, reviewer: 'JKHeadley' });
+    expect(unknown.timedOut).toBe(true);
+    expect(unknown.text).toBe(LINK);
+    const g = fakeGitHub();
+    const hangOnPost: AuthenticatedGhExec = (args) => (args[1] === '-X' ? new Promise(() => undefined) : g.gh(args));
+    const known = await applyPrLinkReviewRequests(LINK, { gh: hangOnPost, selfLogin: self, maxLength: 4096, budgetMs: 50, reviewer: 'JKHeadley' });
+    expect(known.text).toMatch(/could not confirm JKHeadley as a reviewer on PR #3046 \(GitHub did not answer in time\)/);
   });
 });
 
