@@ -104,3 +104,10 @@ Round 2 concurred, with a minor note taken: an unreadable census at recheck time
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — this is a runtime ledger-logic defect. The census release is a self-triggered action; its convergence: it runs once per server process at the first script admission (control-loop edge: process start), releases at most one row per held slug (steady-state bound: number of held slugs), and only when the same check that wrote the hold now passes, so it cannot oscillate (settling brake: a still-mismatched slug is re-held, never released).
+
+## Local Verify follow-up (2026-11-11)
+
+Local Verify on f3f9fcce flagged two repository conventions, no behavior failure:
+- `POST /jobs/:slug/supervision-hold/release` is now declared in `WriteDomainRegistry` as `cluster-shared` (the serving scheduler is its single writer; a read-only standby already gets 409), like the other `/jobs/:slug/*` writes.
+- The two route catch blocks now return `operatorError(err, stateDir)` instead of the raw exception text.
+No change to what the routes do or decide.

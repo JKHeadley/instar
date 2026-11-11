@@ -20080,7 +20080,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       const store = ctx.scheduler.getJobSupervisionStore();
       res.json({ slug, hold: store.heldSlugs().find(h => h.slug === slug) ?? null, releases: store.holdReleases(slug, 20) });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 
@@ -20109,7 +20109,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       }
       res.status(503).json({ error: 'census-unavailable', slug, detail: 'Run history could not be read completely.' });
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
     }
   });
 

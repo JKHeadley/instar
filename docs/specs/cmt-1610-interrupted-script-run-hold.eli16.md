@@ -24,6 +24,7 @@ Echo's health check had just been switched to its free plain script. Thirty minu
 - Only this machine's own runs are settled. A run another machine recorded is left alone.
 - A run young enough that it could still be running in an old server that has not quite shut down is left alone until that time has passed, then checked again.
 - A hold for any other reason (for example a disk write that failed) is never lifted automatically.
+- Only the machine running the schedule can release a hold, and if a release fails the reply gives a plain error instead of internal details.
 
 ## What you need to decide
 
