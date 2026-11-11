@@ -564,6 +564,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/override', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/unfork', domain: 'cluster-shared' });
+  // CMT-1610: releasing a script-route supervision hold writes the scheduler's
+  // supervision ledger. Only the serving scheduler answers (a read-only standby
+  // gets 409), so the lease holder is its single writer.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/supervision-hold/release', domain: 'cluster-shared' });
   // Portable export consent and bundle replay accounting belong to the source
   // machine, which may be a standby. Their state is excluded from git-sync.
   const portableSourceStory: ConvergenceStory = {

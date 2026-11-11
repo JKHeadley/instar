@@ -81,8 +81,9 @@ describe('compaction canary — alive on the production path', () => {
 
   it('WIRED: server.ts gives the sentinel its canary and passes the sentinel to AgentServer', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
-    expect(src).toContain('instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId })');
-    expect(src).toContain('sessions: productionCanarySessions({ sessions: sessionManager, projectDir: config.projectDir })');
+    expect(src).toContain("instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() })");
+    expect(src).toContain('sessions: productionCanarySessions({');
+    expect(src).toContain('sessions: sessionManager, projectDir: config.projectDir,');
     expect(src).toContain("switchOn: () => liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false");
     expect(src).toContain('contextBudgetSentinel: _contextBudgetSentinel ?? undefined');
   });

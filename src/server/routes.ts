@@ -20253,6 +20253,51 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Clears stale pending/failure state for a job. Useful when a session dies
   // without reporting back, leaving lastResult stuck on 'pending' forever.
 
+  // Script-route supervision holds (CMT-1610): read the hold + its release
+  // audit trail, and release a hold with a recorded reason. A release is
+  // refused while the run-history census still finds an unsettled run.
+  router.get('/jobs/:slug/supervision-hold', (req, res) => {
+    const { slug } = req.params;
+    if (!/^[a-z0-9-]+$/.test(slug)) { res.status(400).json({ error: 'Invalid job slug' }); return; }
+    if (!ctx.scheduler) { res.status(503).json({ error: 'Scheduler not running' }); return; }
+    if (ctx.scheduler.isReadOnlyStandby()) { res.status(409).json({ error: 'read-only-standby' }); return; }
+    try {
+      const store = ctx.scheduler.getJobSupervisionStore();
+      res.json({ slug, hold: store.heldSlugs().find(h => h.slug === slug) ?? null, releases: store.holdReleases(slug, 20) });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
+  router.post('/jobs/:slug/supervision-hold/release', (req, res) => {
+    const { slug } = req.params;
+    if (!/^[a-z0-9-]+$/.test(slug)) { res.status(400).json({ error: 'Invalid job slug' }); return; }
+    if (!ctx.scheduler) { res.status(503).json({ error: 'Scheduler not running' }); return; }
+    if (ctx.scheduler.isReadOnlyStandby()) { res.status(409).json({ error: 'read-only-standby' }); return; }
+    const body = (req.body ?? {}) as { reason?: unknown };
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    if (!reason || reason.length > 500) {
+      res.status(400).json({ error: 'reason is required (1-500 characters): say why the hold\'s cause is settled' });
+      return;
+    }
+    // The caller holds the agent's bearer token; the record names that
+    // principal and never a self-declared label.
+    const by = 'agent';
+    try {
+      const out = ctx.scheduler.releaseSupervisionHold(slug, { by, reason });
+      if (out.status === 'released') { res.json({ released: true, slug, hold: out.hold, releasedBy: by }); return; }
+      if (out.status === 'not-held') { res.status(404).json({ error: 'not-held', slug }); return; }
+      if (out.status === 'cause-unsettled') {
+        res.status(409).json({ error: 'cause-unsettled', slug, runIds: out.runIds,
+          detail: 'These runs still disagree between the run history and the supervision journal.' });
+        return;
+      }
+      res.status(503).json({ error: 'census-unavailable', slug, detail: 'Run history could not be read completely.' });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
   router.post('/jobs/:slug/reset-state', (req, res) => {
     const { slug } = req.params;
 

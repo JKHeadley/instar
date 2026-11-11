@@ -170,7 +170,7 @@ export class TopicMemory {
   /** Stats from the most recent importFromJsonl() / rebuild() call */
   private _lastImportStats: { imported: number; malformed: number; missingFields: number } | null = null;
   /** insertKeyedMessage's statements, prepared once per open handle. */
-  private keyedStmts: { db: Database; byKey: import('better-sqlite3').Statement; byChannel: import('better-sqlite3').Statement; adopt: import('better-sqlite3').Statement } | null = null;
+  private keyedStmts: { db: Database; byKey: import('better-sqlite3').Statement; byChannel: import('better-sqlite3').Statement; adopt: import('better-sqlite3').Statement; fillOrigin: import('better-sqlite3').Statement } | null = null;
 
   constructor(stateDir: string) {
     this.stateDir = stateDir;
@@ -517,6 +517,7 @@ export class TopicMemory {
         byKey: db.prepare('SELECT id, channel_message_id AS cmid FROM messages WHERE topic_id = ? AND message_id = ?'),
         byChannel: db.prepare('SELECT id, message_id AS mid FROM messages WHERE topic_id = ? AND channel_message_id = ?'),
         adopt: db.prepare('UPDATE messages SET channel_message_id = ?, origin = COALESCE(origin, ?) WHERE id = ?'),
+        fillOrigin: db.prepare('UPDATE messages SET origin = ? WHERE id = ? AND origin IS NULL'),
       };
     }
     const st = this.keyedStmts;
@@ -524,7 +525,13 @@ export class TopicMemory {
       const byKey = st.byKey.get(msg.topicId, msg.messageId) as { id: number; cmid: string | null } | undefined;
       const byChannel = st.byChannel.get(msg.topicId, msg.channelMessageId) as { id: number; mid: number } | undefined;
       if (byKey) {
-        if (byKey.cmid === msg.channelMessageId) return { outcome: 'duplicate' };
+        if (byKey.cmid === msg.channelMessageId) {
+          // A replay that knows the row came from another agent (§8) labels an unlabelled copy:
+          // the relay-path carrier brings the label from the machine that sent it. A label only
+          // narrows authority, and an existing label is never changed.
+          if (msg.origin) st.fillOrigin.run(msg.origin, byKey.id);
+          return { outcome: 'duplicate' };
+        }
         if (byKey.cmid !== null) return { outcome: 'collision', existingChannelMessageId: byKey.cmid };
         if (byChannel) return { outcome: 'key-mismatch', existingMessageId: byChannel.mid };
         st.adopt.run(msg.channelMessageId, msg.origin ?? null, byKey.id);
@@ -586,6 +593,54 @@ export class TopicMemory {
       ORDER BY timestamp DESC, id DESC
       LIMIT ?
     `).all(topicId, limit).reverse().map(mapRow) as TopicMessage[];
+  }
+
+  /**
+   * One row by the channel's own message id (context-budget §14 row carrier):
+   * the sender reads the exact row it stored before carrying it to the owner.
+   * Null when TopicMemory is closed or the row is absent.
+   */
+  getMessageByChannelId(topicId: number, channelMessageId: string): TopicMessage | null {
+    if (!this.db) return null;
+    const row = this.db.prepare(`
+      SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName,
+             sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
+      FROM messages
+      WHERE topic_id = ? AND channel_message_id = ?
+      LIMIT 1
+    `).get(topicId, channelMessageId);
+    return row ? mapRow(row) : null;
+  }
+
+  /**
+   * Which of these integer keys does the topic hold (context-budget §14)? The
+   * fold precondition reads it to confirm the carried rows are really present,
+   * not only acknowledged.
+   */
+  presentMessageKeys(topicId: number, messageIds: number[]): Set<number> {
+    return this.presentBy('message_id', topicId, messageIds) as Set<number>;
+  }
+
+  /** Which of these channel message ids does the topic hold (context-budget §14)? */
+  presentChannelIds(topicId: number, channelMessageIds: string[]): Set<string> {
+    return this.presentBy('channel_message_id', topicId, channelMessageIds) as Set<string>;
+  }
+
+  /** One IN query per chunk of 200 (bounded parameter count), not one read per id. */
+  private presentBy(column: 'message_id' | 'channel_message_id', topicId: number, values: Array<number | string>): Set<number | string> {
+    const out = new Set<number | string>();
+    if (!this.db || values.length === 0) return out;
+    const unique = [...new Set(values)];
+    for (let i = 0; i < unique.length; i += 200) {
+      const chunk = unique.slice(i, i + 200);
+      const rows = this.db.prepare(`SELECT ${column} AS v FROM messages WHERE topic_id = ? AND ${column} IN (${chunk.map(() => '?').join(',')})`)
+        .all(topicId, ...chunk) as Array<{ v: number | string }>;
+      for (const r of rows) out.add(r.v);
+    }
+    return out;
   }
 
   /**

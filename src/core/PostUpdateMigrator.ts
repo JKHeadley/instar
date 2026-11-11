@@ -560,6 +560,8 @@ When active, an exact certified routine shape may be closed by a fixed rule. Jev
 
 For the llm-decision-grading job, a server receipt confirms that the grading endpoint ran. A separate idle effect proof can grade a routine Jev verdict correct only when strict before/after reads show no decision rows at any grading point, including behind each cursor. A nonempty or unreadable workset remains outcome-unknown. This narrow proof does not enable Jev rollout by itself.
 
+**Held script routes:** a job whose script route is held runs as a session instead (the prior runner). A script run cut off by a server restart or crash is recorded as a failed, interrupted run and does not hold the job. A hold the restart check wrote is lifted by that same check once its cause is settled. Read a hold and its release history with GET http://localhost:${port}/jobs/SLUG/supervision-hold; release one with POST /jobs/SLUG/supervision-hold/release and a \`{"reason":"..."}\` body. A release is recorded and is refused (409 \`cause-unsettled\`) while a run still disagrees between the run history and the supervision record.
+
 **When to use:** "Did every script result get checked?" or "Why did this job stay open?" → read GET /jobs/triage and its supervision block. The scope=pool query shows partial-pool failures explicitly. Never infer full coverage from a missing peer or an empty model log.
 `;
 }
@@ -10083,6 +10085,17 @@ setTimeout(() => process.exit(0), 2000);
         result.upgraded.push('CLAUDE.md: added grading-job idle proof guidance');
       }
     }
+    const heldRouteAwareness = '**Held script routes:**';
+    if (content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER) && !content.includes(heldRouteAwareness)) {
+      const marker = '**When to use:** "Did every script result get checked?"';
+      const paragraph = JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port)
+        .split('\n').find(line => line.startsWith(heldRouteAwareness));
+      if (paragraph && content.includes(marker)) {
+        content = content.replace(marker, `${paragraph}\n\n${marker}`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added held script route guidance');
+      }
+    }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
     const currentTriageLine = '- **After both code gates open**, every trustworthy script result gets a decision record. Exact certified routine shapes may use a fixed rule; Jev judges the rest. Only during a Jev outage may benchmarked Haiku or Luna replace Jev for those judgment results. An uncertain answer keeps the result open and requests isolated diagnosis. Until benchmark and outcome-audit coverage is verified, the model path stays inactive. Active scripts still get a daily must-fail canary.';
     if (content.includes(oldTriageLine)) {
@@ -16070,10 +16083,17 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
     // "does compaction recovery work" to its read surface. Idempotent: inserted
     // once after the "What are we working on?" row, sniffed on the route.
     if (!content.includes('/context-budget/sentinel') && content.includes('| What are we working on?')) {
-      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
+      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
       content = content.replace(/(\| What are we working on\?[^\n]*\n)/, `$1${row}\n`);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
+    }
+    // The canary's `counted` state (S16, §9.6 Codex adapter): refresh an existing
+    // row that predates it. Idempotent: sniffed on the old row's closing words.
+    if (content.includes('/context-budget/sentinel') && !content.includes('`counted` = an engine') && content.includes('`n/a` = recovery switched off), plus')) {
+      content = content.replace('`n/a` = recovery switched off), plus', '`n/a` = recovery switched off; `counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the Context Budget sentinel row names the canary\'s counted state');
     }
     // The sentinel's §17 rows (Phase 1 S12) joined its status: an existing row is
     // extended in place. Idempotent: sniffed on the new field name.
