@@ -444,6 +444,13 @@ describe('GraphProjection (filter first)', () => {
     expect(hidden.item(E)?.metadata).toEqual({});
   });
 
+  it('an untitled conversation shows its topic number, not a bare "Conversation", and search finds it', () => {
+    const p = new GraphProjection({ graph, conversations: [...conversations, conv(tg(141868), '', null)], effortTitle: titles, mayView: () => true });
+    expect(p.item(tg(141868))?.title).toBe('Topic 141868');
+    expect(p.list('all', 'topic 141868').map(nodeKey)).toEqual([nodeKey(tg(141868))]);
+    expect(p.item(tg(100))?.title).toBe('Front door');
+  });
+
   it('All lists every authorized node, assigned workers included (defect 4)', () => {
     const all = make(() => true).list('all', null).map(nodeKey);
     for (const r of [E, S, tg(100), tg(101), tg(102), tg(200), tg(300)]) expect(all).toContain(nodeKey(r));

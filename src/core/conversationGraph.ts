@@ -55,6 +55,14 @@ export type AppRef = { kind: 'conversation'; platform: 'app'; conversationKey: s
 export type ConversationRef = TelegramRef | SlackRef | AppRef;
 export type NodeRef = EffortRef | ConversationRef;
 
+/** The name a conversation with no title shows: the same "Topic N" the chat list
+ * uses for a Telegram topic, so an untitled row is never just "Conversation". */
+export function untitledConversationName(ref: ConversationRef): string {
+  if (ref.platform === 'telegram') return `Topic ${ref.topicId}`;
+  if (ref.platform === 'slack') return ref.threadTs ? 'Slack thread' : 'Slack channel';
+  return 'App conversation';
+}
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const TG_CHAT_RE = /^-?[1-9][0-9]{0,19}$/;
 const SLACK_CHANNEL_RE = /^[CDG][A-Z0-9]{2,30}$/;
@@ -662,7 +670,7 @@ export class GraphProjection {
       const k = nodeKey(ref);
       this.visible.set(k, ref);
       this.conv.set(k, c);
-      this.titles.set(k, c.title);
+      this.titles.set(k, c.title.trim() || untitledConversationName(ref));
     }
     for (const raw of input.unavailableConversations ?? []) {
       const ref = validateNodeRef(raw);
