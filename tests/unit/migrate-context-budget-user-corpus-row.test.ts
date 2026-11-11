@@ -37,7 +37,12 @@ describe('Context Budget user-corpus Registry-First row', () => {
     const lines = out.split('\n');
     const at = lines.findIndex((l) => l.startsWith('| Does compaction recovery work on this machine?'));
     expect(at).toBeGreaterThan(-1);
-    expect(lines[at + 1]).toContain('http://localhost:4242/topic/N/user-corpus');
+    // Other Context Budget rows (e.g. the delta-shadow row) also insert right after the
+    // sentinel row, so the U row sits inside that contiguous Context Budget block — never
+    // before the sentinel and never past an unrelated row.
+    const u = lines.findIndex((l) => l.includes('http://localhost:4242/topic/N/user-corpus'));
+    expect(u).toBeGreaterThan(at);
+    for (const l of lines.slice(at + 1, u)) expect(l).toContain('/context-budget/');
     expect(r.upgraded).toContain('CLAUDE.md: added the Context Budget user-corpus Registry-First row');
   });
 
