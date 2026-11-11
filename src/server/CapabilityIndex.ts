@@ -286,6 +286,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'documents',
+    prefixes: ['/docs'],
+    description: 'Instar Documents (docs/specs/instar-document-viewer.md) — commentable documents that live in a conversation: create (POST /docs), read (GET /docs/:id/data), list a conversation\'s documents (GET /docs?conversation=…), read the comments with their quotes (GET /docs/:id/comments), reply under one (POST /docs/:id/comments/:key/replies), revise (POST /docs/:id/versions), compare versions, links between documents and conversations, and the session-start list (GET /docs/session-context). A document is visible to exactly its conversation\'s audience. Dev-gated (documents.enabled); 503 documents-off when dark.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /docs', 'GET /docs', 'GET /docs/:id/data', 'GET /docs/:id/versions', 'POST /docs/:id/versions', 'GET /docs/:id/compare', 'GET /docs/:id/comments', 'POST /docs/:id/comments/:key/replies', 'GET /docs/:id/links', 'POST /docs/:id/links', 'GET /docs/session-context', 'GET /docs/health', 'GET /mobile/docs', 'GET /mobile/docs/:id/summary'],
+    }),
+  },
+  {
     key: 'maturationLadder',
     prefixes: ['/maturation'],
     description: 'Maturation ladder (docs/specs/feature-maturation-ladder.md) — every switched-off feature with its rung, next rung and numbers now vs target. Numbers raise a feature to the recurring review, whose model decides; POST /maturation/moves applies that decision behind floors that can only refuse.',

@@ -906,6 +906,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Measures and raises only: it reads logs off the event loop, adds in-memory subjects to the existing scorer, and records commitments with no beacon. It never moves a feature by itself; POST /maturation/moves applies only a decision the review model made, behind floors that can only refuse. No LLM spend, no outbound messages. Raising needs maturation.ladder.reviewTopic, unset by default.',
   },
   {
+    name: 'documents',
+    configPath: 'documents.enabled',
+    description: 'Instar Documents (docs/specs/instar-document-viewer.md): commentable, team-private documents that live in a conversation (POST /docs, GET /docs/:id/data, comments, versions, compare, links, phone reads); omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Every read and write goes through the deterministic access rule (a document is visible to exactly its conversation\'s audience; the agent can never share, move or speak as a person), rows are machine-signed and replicated by version-vector pull, and nothing outbound is sent by the feature itself. Off answers 503 and changes nothing else; stored documents stay on disk untouched.',
+  },
+  {
     name: 'maturationBoard',
     configPath: 'maturationBoard.enabled',
     description: 'Read-only maturation board: every maturing feature with its review verdict, live owner facts, follow-ups and recorded dates (GET /maturation/board, /dashboard/maturation/).',

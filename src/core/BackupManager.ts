@@ -50,6 +50,12 @@ const BLOCKED_PATH_PREFIXES = new Set([
   'state/team-access-last-good/',
   '.instar/state/team-access/',
   '.instar/state/team-access-last-good/',
+  // Instar Documents (instar-document-viewer §3.4): snapshots would copy every version synchronously and a
+  // restore could bring purged text back or undo a move. The document export plus POST /docs/restore is the way back.
+  'documents/',
+  '.instar/documents/',
+  'backups/documents/',
+  '.instar/backups/documents/',
   '.instar/state/playwright-profiles/',
   '.instar/state/xdrive/',
   // includeFiles entries resolve RELATIVE TO stateDir (sourcePath = path.join(stateDir,

@@ -64,6 +64,12 @@ export const MEMORY_SESSION_ROUTES: readonly Rule[] = [
   // Asking the owner for something: the requester comes from the session, and it gives nothing by itself.
   // A peer place must not put a request in front of the owner that reads as a person's.
   { method: 'POST', pattern: /^\/team\/proposals$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  // Instar Documents (instar-document-viewer §3.3): the documents router checks, per request, that the
+  // document's conversation is this session's own place (route-level, because this guard is a pure path
+  // check). A peer agent's place never reaches documents.
+  { method: 'GET', pattern: /^\/docs(\/[^/]+(\/(data|versions|compare|comments|links))?)?$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'GET', pattern: /^\/docs\/session-context$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
+  { method: 'POST', pattern: /^\/docs(\/[0-9a-f-]{36}\/(versions|links|comments\/[^/]+\/replies))?$/, limit: 'any', denyPlacePrefix: PEER_PLACE_PREFIX },
 ];
 
 const REPLY_ROUTE = /^\/(?:(telegram|slack|imessage)\/reply\/[^/]+|(whatsapp)\/send\/[^/]+|(slack|app|threadline)\/session-reply)$/;
@@ -75,7 +81,8 @@ export function memoryReplyChannel(method: string, path: string): string | null 
   return m ? (m[1] ?? m[2] ?? m[3]) : null;
 }
 
-function placeMatches(expected: string, own: string | null): boolean {
+/** Is a session whose place is `own` the session for the conversation `expected`? Shared by documents (§3.3). */
+export function placeMatches(expected: string, own: string | null): boolean {
   if (!own) return false;
   if (!expected.startsWith('telegram:')) return expected === own;
   // A topic shared with a team has its own place, and its session is held to that topic.

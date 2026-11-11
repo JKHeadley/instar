@@ -40,8 +40,8 @@ export interface TeamView {
   personMay(personKey: string, ref: ConversationRef, op: 'read' | 'send'): boolean;
   /** True when the conversation's audience is the owner alone (an owner-reach place). */
   ownerOnly(ref: ConversationRef): boolean;
-  /** The place a session for this conversation resolves to (`placeOf`, §3.3). */
-  placeOf(ref: ConversationRef): string;
+  /** Is a session with this place key the session for this conversation? (memorySessionGuard's rule, §3.3) */
+  sessionInPlace(placeKey: string, ref: ConversationRef): boolean;
   /** The team log's own refusal (gap, hold, privacy off): non-owners wait (§3.2 freshness). */
   teamRefusal(): string | null;
   /** Would a send by this person reach an owner-reach session (`sendReachesOwner`)? */
@@ -86,7 +86,7 @@ export function mayDoDocument(p: Principal, doc: DocFacts, op: DocOp, team: Team
         return ownerOnly && !doc.everShared ? yes : no('owner-reach-metadata-only');
       }
       // A confined session works only in documents whose primary is its own place: nothing else, not even metadata.
-      if (p.kind === 'agent' && team.placeOf(doc.primary) === p.placeKey) return yes;
+      if (p.kind === 'agent' && team.sessionInPlace(p.placeKey, doc.primary)) return yes;
       return no('other-place');
     }
     case 'person': {

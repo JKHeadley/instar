@@ -706,6 +706,15 @@ export class TeamAccessLog {
   /** Conversations whose sessions have not yet been ended after a change. Retried at each exchange. */
   pendingEnds(): string[] { return [...this.frozenAccess().keys()]; }
 
+  /**
+   * What an agent session in this conversation knew of the log (Instar Documents §3.4 `sessionAccess`):
+   * the frozen vector while its session has not yet ended after a change, else the current log.
+   */
+  sessionAccessFor(ref: string): Record<string, number> { return { ...(this.frozenAccess().get(ref) ?? this.vector()) }; }
+
+  /** The signed facts that open this conversation to this person (Instar Documents' 2b reader). */
+  readerGrantsOf(personKey: string, ref: string): ReaderGrant[] { return this.readerGrants(personKey, ref); }
+
   /** The conversation's sessions have ended, so new replies know the current log. */
   releaseAccess(ref: string): void { if (this.frozenAccess().delete(ref)) this.saveFrozen(); }
 

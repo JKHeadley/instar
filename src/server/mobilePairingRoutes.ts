@@ -2222,6 +2222,10 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  // Instar Documents (instar-document-viewer §4.2): the document list and summary are guest reads; the
+  // documents router applies its own per-document access (mayDoDocument) on top.
+  ['GET', /^\/mobile\/docs$/, 'guest'],
+  ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
@@ -2286,6 +2290,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
+    // Instar Documents phone reads (instar-document-viewer §4.2). Read-only; per-document access is the documents router's.
+    { method: 'GET', re: /^\/mobile\/docs$/, statuses: active, body: 'none' },
+    { method: 'GET', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, statuses: active, body: 'none' },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.

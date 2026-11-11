@@ -182,7 +182,7 @@ describe('visibility', () => {
 describe('access', () => {
   const team = (over: Partial<TeamView> = {}): TeamView => ({
     personMay: (k, _ref, op) => k === 'mara' || (k === 'gus' && op === 'read'),
-    ownerOnly: () => false, placeOf: (ref) => `place:${ref}`, teamRefusal: () => null, sendReachesOwner: () => false, ...over,
+    ownerOnly: () => false, sessionInPlace: (k, ref) => k === `place:${ref}`, teamRefusal: () => null, sendReachesOwner: () => false, ...over,
   });
   const doc: DocFacts = { primary: 'telegram:500', ownerPerson: 'owner', everShared: true, tombstoned: false, purged: false };
   const may = (p: Principal, op: Parameters<typeof mayDoDocument>[2], t = team(), d = doc) => mayDoDocument(p, d, op, t).ok;
@@ -246,12 +246,23 @@ describe('review fixes', () => {
     expect(seen.has(rowKeyOf(move))).toBe(true);
   });
   it('treats a PIN-approved owner browser as a PIN session, and lets a confined session reply', () => {
-    const t: TeamView = { personMay: () => true, ownerOnly: () => false, placeOf: (r) => `place:${r}`, teamRefusal: () => null, sendReachesOwner: () => false };
+    const t: TeamView = { personMay: () => true, ownerOnly: () => false, sessionInPlace: (k, r) => k === `place:${r}`, teamRefusal: () => null, sendReachesOwner: () => false };
     const d: DocFacts = { primary: 'telegram:500', ownerPerson: 'owner', everShared: true, tombstoned: false, purged: false };
     expect(mayDoDocument({ kind: 'owner-device', client: 'browser', approvedVia: 'dashboard-pin' }, d, 'read', t).ok).toBe(false);
     expect(mayDoDocument({ kind: 'owner-device', client: 'browser', approvedVia: 'dashboard-pin' }, d, 'read-metadata', t).ok).toBe(true);
     expect(mayDoDocument({ kind: 'agent', placeKey: 'place:telegram:500', ownerReach: false }, d, 'reply', t).ok).toBe(true);
     expect(mayDoDocument({ kind: 'agent', placeKey: 'place:telegram:9', ownerReach: false }, d, 'read-metadata', t).ok).toBe(false);
     expect(mayDoDocument({ kind: 'owner-device', client: 'browser', approvedVia: 'telegram-dm' }, d, 'tombstone', t).ok).toBe(false);
+  });
+});
+
+describe('document place rule (review of step B)', () => {
+  it('a Telegram group session reaches unshared topics only; a shared topic is its own place', async () => {
+    const { teamView } = await import('../../src/documents/teamAdapter.js');
+    const v = teamView({ rows: () => [], verify: () => 'verified', personMay: () => false, isConfined: (r) => r === 'telegram:500', teamOn: () => true, teamRefusal: () => null, ownsConversation: () => false, ownerOnly: () => false });
+    expect(v.sessionInPlace('telegram:group', 'telegram:500')).toBe(false);
+    expect(v.sessionInPlace('telegram:topic:500', 'telegram:500')).toBe(true);
+    expect(v.sessionInPlace('telegram:group', 'telegram:9')).toBe(true);
+    expect(v.sessionInPlace('telegram:topic:500', 'telegram:9')).toBe(false);
   });
 });

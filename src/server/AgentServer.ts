@@ -199,6 +199,11 @@ import { MaturationLadderService, readShippedRegistry, type MetricsSummaryRow } 
 import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../monitoring/FeatureEvidenceLog.js';
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
+import { createDocumentRoutes, isDocumentsEnabled } from './documentRoutes.js';
+import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
+import { DocumentStore } from '../documents/store.js';
+import { DocumentService } from '../documents/service.js';
+import { standingCheck, teamView, type TeamDeps } from '../documents/teamAdapter.js';
 import { createQueuePaceRoutes } from './queuePaceRoutes.js';
 import { createSkillLearningRoutes } from './skillLearningRoutes.js';
 import type { SkillLearningSentinelLike } from '../monitoring/skillLearning/types.js';
@@ -601,6 +606,37 @@ export class AgentServer {
     if (running && !changed) return { changed: false, restarting: false };
     if (!this.requestSupervisedRestart(`${setting} turned on for the whole agent`, `team-switch-${setting}`)) throw new Error('team-switch-restart-unavailable');
     return { changed, restarting: true };
+  }
+
+  /**
+   * Instar Documents sync (instar-document-viewer §5.1): pull pages of rows and blobs from every peer
+   * every PULL_INTERVAL_MS. Independent of team access, so owner-only documents replicate too.
+   */
+  private startDocumentPuller(options: Parameters<AgentServer['startTeamPuller']>[0]): void {
+    if (this.documentPuller) return;
+    const self = options.coordinator?.identity?.machineId;
+    if (!self || !options.resolvePeerUrls) return;
+    const call = async (peer: { machineId: string; url: string; kind: PeerEndpointKind }, route: string, body: unknown): Promise<globalThis.Response> => {
+      const key = options.coordinator!.managers!.identityManager!.loadSigningKey();
+      return poolPeerFetch(options.recordRopeResult, peer, route, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', ...signRequest(self, key, body) },
+        body: JSON.stringify(body), signal: AbortSignal.timeout(15_000),
+      });
+    };
+    this.documentPuller = new DocumentPuller(
+      () => (isDocumentsEnabled(options.config) ? this.openDocuments(options.config.stateDir)?.store ?? null : null),
+      () => (options.resolvePeerUrls?.() ?? []).map((peer) => ({
+        machineId: peer.machineId,
+        fetchPage: async (have: Record<string, number>) => {
+          const r = await call(peer, '/api/documents/rows', { have });
+          if (!r.ok) throw new Error(`documents-rows-${r.status}`);
+          return await r.json();
+        },
+      })),
+    );
+    if (!(options.mobileRoutes?.start ?? !process.env.VITEST)) return;
+    this.documentPullTimer = setInterval(() => { void this.documentPuller?.tick(); }, PULL_INTERVAL_MS);
+    this.documentPullTimer.unref();
   }
 
   /** The regular exchange of access rows. Silent with no peers, so a one-machine agent sees nothing. */
@@ -1021,6 +1057,10 @@ export class AgentServer {
   /** The analyst's dark-flag registry, hoisted for the read-only maturation board (null when the analyst is off). */
   private darkFlagRegistry: DarkFlagMaturationRegistry | null = null;
   private maturationLadder: MaturationLadderService | null = null;
+  /** Instar Documents (docs/specs/instar-document-viewer.md): opened on first use while the switch is on. */
+  private documents: { store: DocumentStore; service: DocumentService } | null = null;
+  private documentPuller: DocumentPuller | null = null;
+  private documentPullTimer: NodeJS.Timeout | null = null;
   private maturationLadderOn: (() => boolean) | null = null;
   private featureEvidenceLog: FeatureEvidenceLog | null = null;
   private growthDigestPublisher: GrowthDigestPublisher | null = null;
@@ -2318,6 +2358,17 @@ export class AgentServer {
         this.mobilePairing?.teamPuller?.noteInbound(senderId, true);
         if (added > 0) await this.afterTeamRows(touched);
         return { added, refused };
+      };
+      // Instar Documents (instar-document-viewer §5.1): pages of rows and blobs, verified by the receiver.
+      machineRouteContext.documentsPage = (have) => {
+        if (!isDocumentsEnabled(options.config)) return { rows: [], blobs: [], purged: [], pruned: {}, vector: {} };
+        const docs = this.openDocuments(options.config.stateDir);
+        return docs ? buildSyncPage(docs.store, have) : { rows: [], blobs: [], purged: [], pruned: {}, vector: {} };
+      };
+      machineRouteContext.documentsPush = (page) => {
+        const docs = isDocumentsEnabled(options.config) ? this.openDocuments(options.config.stateDir) : null;
+        if (!docs) throw new Error('documents-unavailable');
+        return applySyncPage(docs.store, page);
       };
       this.machineRouteContext = machineRouteContext;
       const machineRoutes = createMachineRoutes(machineRouteContext);
@@ -6276,6 +6327,7 @@ export class AgentServer {
       if (signer) {
         this.mobilePairing.keyLedger = new MobileDeviceKeyLedger({ stateDir: options.config.stateDir, signer, keyLookup: identityKeyLookup(options.config.stateDir) });
         this.startTeamPuller(options);
+        this.startDocumentPuller(options);
         options.sessionManager.refuseConfinedSpawns?.();
       }
     }
@@ -6346,6 +6398,7 @@ export class AgentServer {
         const keyLedger = svc.deps.keyLedger ?? null;
         this.mobilePairing.keyLedger = keyLedger;
         this.startTeamPuller(options);
+        this.startDocumentPuller(options);
         const teamSvc = this.mobilePairing;
         // The registry, not the dialable list: a peer with no usable address still counts.
         const severalMachines = (): boolean => {
@@ -6840,6 +6893,10 @@ export class AgentServer {
     // Maturation board (docs/specs/maturation-board.md): read-only, dev-gated; 503 when off.
     this.startMaturationLadder(options, routeCtx);
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
+    // Instar Documents (docs/specs/instar-document-viewer.md): dev-gated, 503 `documents-off` when off.
+    this.app.use(createDocumentRoutes(this.documentRouteDeps(options)));
+    // Sync documents between machines whether or not phones are paired (owner-only documents replicate too).
+    this.startDocumentPuller(options);
     this.app.use(createMaturationLadderRoutes({
       enabled: () => (this.maturationLadderOn ? this.maturationLadderOn() : isMaturationLadderEnabled(options.config)),
       ladder: () => this.maturationLadder,
@@ -9069,6 +9126,7 @@ export class AgentServer {
 
   async stop(): Promise<void> {
     if (this.teamPullTimer) clearInterval(this.teamPullTimer);
+    if (this.documentPullTimer) clearInterval(this.documentPullTimer);
     this.attribution?.stop();
     this.routeContext?.jobCoverageStop?.();
     this.mobilePairing?.push?.stop();
@@ -9516,6 +9574,87 @@ export class AgentServer {
     } catch (error) { /* @silent-fallback-ok: logged; the routes answer 503 and nothing else depends on this */
       console.warn(`[ecosystem-ideas] not started: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+
+  /** The team facts documents read, from the pairing service's live team log (or "no team" without it). */
+  private documentTeamDeps(): TeamDeps {
+    const teamRef = (ref: string): string => (ref.startsWith('app:') ? ref.slice(4) : ref);
+    const svc = () => this.mobilePairing;
+    return {
+      rows: () => svc()?.teamLog()?.allRows() ?? null,
+      verify: (row) => {
+        const log = svc()?.teamLog();
+        return log ? (log.allRows().includes(row) ? 'verified' : 'unknown') : 'unknown';
+      },
+      personMay: (personKey, ref, op) => {
+        const p = svc();
+        if (!p) return false;
+        const standing = p.teamStanding(personKey);
+        if (!standing) return false;
+        return p.mayUse({ ok: true, role: 'team', userId: personKey, name: standing.name, telegramUserId: null, tier: standing.tier }, ref, op);
+      },
+      isConfined: (ref) => svc()?.teamLog()?.isConfined(teamRef(ref)) ?? false,
+      teamOn: () => svc()?.teamOn() ?? false,
+      teamRefusal: () => svc()?.teamRefusal() ?? null,
+      ownsConversation: (personKey, ref) => {
+        const p = svc();
+        if (!p) return false;
+        if (p.teamLog()?.ownerOf(teamRef(ref)) === personKey) return true;
+        const own = p.appConversationOwner?.(teamRef(ref));
+        return !!own && own.userId === personKey;
+      },
+      ownerOnly: (ref) => {
+        const p = svc();
+        if (!p || !p.teamOn()) return true;
+        const log = p.teamLog();
+        if (!log) return true;
+        if (log.ownerOf(teamRef(ref))) return false;
+        if (log.isConfined(teamRef(ref))) return false;
+        const own = p.appConversationOwner?.(teamRef(ref));
+        return !own;
+      },
+    };
+  }
+
+  private openDocuments(stateDir: string): { store: DocumentStore; service: DocumentService } | null {
+    if (this.documents) return this.documents;
+    const signer = loadMachineSigner(stateDir);
+    if (!signer) return null;
+    const deps = this.documentTeamDeps();
+    let store: DocumentStore | null = null;
+    store = new DocumentStore(stateDir, {
+      signer, keyLookup: identityKeyLookup(stateDir),
+      standing: standingCheck(deps, (docId) => store?.rowsOf(docId) ?? []),
+    });
+    this.documents = { store, service: new DocumentService(store, teamView(deps)) };
+    return this.documents;
+  }
+
+  private documentRouteDeps(options: { config: { stateDir: string }; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
+    const stateDir = options.config.stateDir;
+    const deps = this.documentTeamDeps();
+    return {
+      config: () => options.config,
+      service: () => this.openDocuments(stateDir)?.service ?? null,
+      store: () => this.openDocuments(stateDir)?.store ?? null,
+      teamVector: () => this.mobilePairing?.teamLog()?.vector() ?? {},
+      grantsOf: (personKey: string, ref: string) => {
+        const log = this.mobilePairing?.teamLog();
+        if (!log) return [];
+        const teamRef = ref.startsWith('app:') ? ref.slice(4) : ref;
+        return log.readerGrantsOf(personKey, teamRef).map((g) => ({ stream: g.stream, seq: g.seq, grantRowKey: `${g.stream}#${g.seq}` }));
+      },
+      sessionAccessFor: (ref: string) => {
+        const log = this.mobilePairing?.teamLog();
+        return log ? log.sessionAccessFor(ref.startsWith('app:') ? ref.slice(4) : ref) : null;
+      },
+      ownsConversation: deps.ownsConversation,
+      ownerConversation: () => {
+        const id = options.telegram?.getLifelineTopicId?.();
+        return typeof id === 'number' && id > 0 ? `telegram:${id}` : null;
+      },
+      deviceApprovedVia: (deviceId: string) => this.mobilePairing?.devices.get(deviceId)?.approvedVia ?? null,
+    };
   }
 
   /** The measured path to default-on (docs/specs/feature-maturation-ladder.md). Dev-gated; never moves a feature. */

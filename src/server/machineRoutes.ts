@@ -81,6 +81,10 @@ export interface MachineRouteContext {
   teamSwitchOn?: (setting: TeamSwitchSetting, senderId: string, requestedBy: string | null) => Promise<{ changed: boolean; restarting: boolean }> | { changed: boolean; restarting: boolean };
   /** A peer sent rows this machine lacks. */
   teamAccessPush?: (rows: unknown[], senderId: string) => Promise<{ added: number; refused: number }>;
+  /** Instar Documents (instar-document-viewer §5.1): a page of rows and blobs beyond a peer's vector. */
+  documentsPage?: (have: Record<string, number>, senderId: string) => unknown;
+  /** A machine that can't be dialled sends its document rows and blobs out here. */
+  documentsPush?: (page: unknown, senderId: string) => { applied: number; pending: number; ignored: number; blobs: number };
   /** Machine identity manager */
   identityManager: MachineIdentityManager;
   /** Heartbeat manager for coordination */
@@ -256,6 +260,22 @@ export function createMachineRoutes(ctx: MachineRouteContext): Router {
     if (!Array.isArray(rows) || rows.length > 500) { res.status(400).json({ error: 'bad-rows' }); return; }
     try { res.json(await ctx.teamAccessPush(rows, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId)); }
     catch { res.status(500).json({ error: 'team-access-push-failed' }); } // @silent-fallback-ok — the sender keeps the rows and retries
+  });
+
+  // Instar Documents (instar-document-viewer §5.1): rows verify themselves on arrival.
+  router.post('/api/documents/rows', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.documentsPage) { res.status(503).json({ error: 'documents-unavailable' }); return; }
+    const have: Record<string, number> = {};
+    const body = req.body as { have?: unknown } | undefined;
+    if (body?.have && typeof body.have === 'object') for (const [k, v] of Object.entries(body.have)) if (typeof v === 'number' && k.length <= 200) have[k] = v;
+    res.json(ctx.documentsPage(have, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId));
+  });
+  router.post('/api/documents/push', authMiddleware, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!ctx.documentsPush) { res.status(503).json({ error: 'documents-unavailable' }); return; }
+    try { res.json(ctx.documentsPush(req.body, (req as typeof req & { machineAuth: MachineAuthContext }).machineAuth.machineId)); }
+    catch { res.status(500).json({ error: 'documents-push-failed' }); } // @silent-fallback-ok — the sender keeps its rows and pushes again
   });
 
   // The owner turned a team setting on for the whole agent; the machine that took the tap asks each peer here.
