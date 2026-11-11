@@ -1,0 +1,29 @@
+{
+  "ts": "2026-11-11T09:10:39.752Z",
+  "slug": "cmt-1610-interrupted-script-run-hold",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": true,
+  "files": 4,
+  "loc": 324,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/JobSupervisionStore.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 312,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
