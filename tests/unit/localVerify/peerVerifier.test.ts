@@ -11,13 +11,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { LocalVerifyService, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
+import { LocalVerifyService, STRAINED_PEER_PREFERENCE_MS, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { PEER_RESTART_HOLD_MS } from '../../../src/core/PlannedRestartVerifyGuard.js';
 import { computePolicyHash } from '../../../src/localVerify/policy.js';
 import type { LocalVerifyRecord } from '../../../src/localVerify/record.js';
 import type { VerifyRunResult } from '../../../src/localVerify/orchestrator.js';
 import {
-  PEER_LIMITS, importRefusal, noteFailure, parsePeerRunRequest, parsePeers, peerHealthy,
+  PEER_LIMITS, importRefusal, noteFailure, parsePeerRunRequest, parsePeers, peerHealthy, remoteLeaseDecision,
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type RemoteMarker,
 } from '../../../src/localVerify/peer.js';
 
@@ -104,6 +104,26 @@ describe('importRefusal', () => {
     for (const [rec, m, c, want] of cases) {
       expect(importRefusal(rec, marker(m ?? {}), { ...ctx, ...(c ?? {}) })).toMatch(new RegExp(`^${want}`));
     }
+  });
+});
+
+describe('remoteLeaseDecision (CMT-1605)', () => {
+  const ctx = { selfMachineId: 'coord', now: 1000, maxRunMs: PEER_LIMITS.maxRunMs };
+  it('keeps at the same epoch, carries at exactly the next, abandons a jump or a step back', () => {
+    expect(remoteLeaseDecision(7, 0, { holds: true, epoch: 7, holder: 'coord' }, ctx)).toBe('keep');
+    expect(remoteLeaseDecision(7, 0, { holds: true, epoch: 8, holder: 'coord' }, ctx)).toBe('carry');
+    expect(remoteLeaseDecision(7, 0, { holds: true, epoch: 9, holder: 'coord' }, ctx)).toBe('abandon');
+    expect(remoteLeaseDecision(7, 0, { holds: true, epoch: 6, holder: 'coord' }, ctx)).toBe('abandon');
+  });
+  it('a null epoch never carries', () => {
+    expect(remoteLeaseDecision(null, 0, { holds: true, epoch: null, holder: 'coord' }, ctx)).toBe('keep');
+    expect(remoteLeaseDecision(null, 0, { holds: true, epoch: 1, holder: 'coord' }, ctx)).toBe('abandon');
+  });
+  it('not held: waits unless another machine holds it or the run bound passed', () => {
+    expect(remoteLeaseDecision(7, 0, { holds: false, epoch: 7, holder: 'coord' }, ctx)).toBe('wait');
+    expect(remoteLeaseDecision(7, 0, { holds: false, epoch: null, holder: null }, ctx)).toBe('wait');
+    expect(remoteLeaseDecision(7, 0, { holds: false, epoch: 8, holder: 'peer1' }, ctx)).toBe('abandon');
+    expect(remoteLeaseDecision(7, 0, { holds: false, epoch: 7, holder: null }, { ...ctx, now: PEER_LIMITS.maxRunMs + 1 })).toBe('abandon');
   });
 });
 
@@ -223,13 +243,15 @@ function coordinator(opts: { epoch?: number; holds?: boolean } = {}) {
   const peer = fakePeer();
   let epoch = opts.epoch ?? 7;
   let holds = opts.holds ?? true;
+  let fit: ((id: string) => { eligible: boolean; reason: string; score: number | null }) | null = null;
   h.svc.setPeerWiring({
     peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }],
     client: peer.client,
     lease: { holdsLease: () => holds, leaseEpoch: () => epoch, holderMachineId: () => 'coord' },
+    peerFit: (id) => (fit ? fit(id) : { eligible: true, reason: 'fits', score: 0.1 }),
   });
   peer.watchQueue(() => h.queueFile());
-  return { ...h, peer, setEpoch: (e: number) => { epoch = e; }, setHolds: (v: boolean) => { holds = v; } };
+  return { ...h, peer, setEpoch: (e: number) => { epoch = e; }, setHolds: (v: boolean) => { holds = v; }, setFit: (f: typeof fit) => { fit = f; } };
 }
 
 // ── coordinator ────────────────────────────────────────────────────────
@@ -286,6 +308,61 @@ describe('coordinator — dispatch', () => {
     expect(c.peer.runs()).toHaveLength(0);
     expect(c.svc.snapshot().queue).toEqual([]);
     expect(c.priorities.at(-1)).toBe(false);
+  });
+
+  // CMT-1605: a busy coordinator leaves queued PRs for a free peer instead of starting them itself.
+  describe('while this machine is too busy for heavy work', () => {
+    const busySelf = (id: string) => (id === 'coord' ? { eligible: false, reason: 'machine-busy', score: 2.4 } : { eligible: true, reason: 'fits', score: 0.2 });
+
+    it('the first queued PR goes to the free peer, not to the local slot', async () => {
+      const c = coordinator();
+      c.setFit(busySelf);
+      await c.svc.request(1);
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(0);
+      expect(c.peer.runs().map((r) => r.pr)).toEqual([1]);
+    });
+
+    it('when the peer is already busy, the next PR still runs here', async () => {
+      const c = coordinator();
+      c.setFit(busySelf);
+      await c.svc.request(1);
+      await c.runTimers();
+      await c.svc.request(2);
+      await c.runTimers();
+      expect(c.peer.runs().map((r) => r.pr)).toEqual([1]);
+      expect(c.spawned).toHaveLength(1);
+    });
+
+    it('a main verify is never deferred', async () => {
+      const c = coordinator();
+      c.setFit(busySelf);
+      c.svc.noteMainHead(sha('d'));
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+      expect(c.peer.runs()).toHaveLength(0);
+    });
+
+    it('the preference is bounded: a PR the peer never takes starts here after the window', async () => {
+      const c = coordinator();
+      c.setFit(busySelf);
+      c.peer.setStatus(null); // the peer cannot be read, so dispatch never sends
+      await c.svc.request(1);
+      await c.svc.tick();
+      expect(c.spawned).toHaveLength(0);
+      c.advance(STRAINED_PEER_PREFERENCE_MS + 1);
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+    });
+
+    it('a machine with headroom keeps the local-first order', async () => {
+      const c = coordinator();
+      await c.svc.request(1);
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+      expect(c.peer.runs()).toHaveLength(0);
+    });
   });
 
   it('a reserved entry is never started locally, even when the local slot frees', async () => {
@@ -528,9 +605,9 @@ describe('coordinator — results', () => {
     expect(c.peer.calls.some((x) => x.kind === 'cancel')).toBe(true);
   });
 
-  it('a lease epoch change abandons the attempt and imports nothing', async () => {
+  it('a lease epoch jump (another machine held it since) abandons the attempt and imports nothing', async () => {
     const { c, req } = await dispatched();
-    c.setEpoch(8);
+    c.setEpoch(9);
     c.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
     await c.svc.tick();
     expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
@@ -544,13 +621,13 @@ describe('coordinator — results', () => {
     const peer2 = fakePeer();
     peer2.setResult(() => ({ state: 'done', record: peerRecord(req) }));
     let holds = false;
-    h2.svc.setPeerWiring({ peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }], client: peer2.client, lease: { holdsLease: () => holds, leaseEpoch: () => (holds ? 10 : null), holderMachineId: () => (holds ? 'coord' : null) } });
+    h2.svc.setPeerWiring({ peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }], client: peer2.client, lease: { holdsLease: () => holds, leaseEpoch: () => (holds ? 8 : null), holderMachineId: () => (holds ? 'coord' : null) } });
     await h2.svc.boot();
     await h2.svc.tick(); // lease not back yet: the attempt waits instead of being abandoned
     expect(h2.svc.snapshot().queue.find((x) => x.pr === 2)?.remote?.attemptId).toBe(req.attemptId);
     expect(peer2.calls.some((x) => x.kind === 'cancel')).toBe(false);
     holds = true;
-    h2.svc.onLeaseAcquired({ foreignHolder: false, epoch: 10 });
+    h2.svc.onLeaseAcquired({ foreignHolder: false, epoch: 8 });
     h2.advance(PEER_LIMITS.pollMs + 1);
     await h2.svc.tick();
     expect(h2.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1', outcome: 'success' });
@@ -577,6 +654,63 @@ describe('coordinator — results', () => {
     await h2.svc.tick();
     expect(h2.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
     expect(peer2.calls.some((x) => x.kind === 'cancel' && x.arg === req.attemptId)).toBe(true);
+  });
+
+  // CMT-1605: only the very next epoch proves nobody else held the lease; `foreignHolder` is in-memory.
+  it('a same-machine re-acquisition with an epoch gap is not adopted: the attempt is abandoned', async () => {
+    const { c, req } = await dispatched();
+    c.setEpoch(10);
+    c.svc.onLeaseAcquired({ foreignHolder: false, epoch: 10 });
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
+    c.advance(PEER_LIMITS.pollMs + 1);
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
+  });
+
+  it('the poll itself carries the attempt when this machine holds exactly the next epoch', async () => {
+    const { c, req } = await dispatched();
+    c.setEpoch(8); // no onLeaseAcquired: the reconciler has not reported it yet
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1' });
+    expect(c.peer.calls.some((x) => x.kind === 'cancel')).toBe(false);
+  });
+
+  it('two carries in a row are one continuous hold', async () => {
+    const { c, req } = await dispatched();
+    c.setEpoch(8);
+    await c.svc.tick(); // still running: carried to 8
+    expect(c.queueFile().entries.find((e) => e.pr === 2)?.remote).toMatchObject({ adoptedEpoch: 8 });
+    c.setEpoch(9);
+    c.advance(PEER_LIMITS.pollMs);
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1' });
+  });
+
+  it('a lease lapse without a restart waits instead of abandoning, then carries', async () => {
+    const { c, req } = await dispatched();
+    c.advance(30 * 60_000); // long after boot: no boot grace involved
+    c.setHolds(false);
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeTruthy();
+    expect(c.peer.calls.some((x) => x.kind === 'cancel' || x.kind === 'result')).toBe(false);
+    c.setHolds(true); c.setEpoch(8);
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1' });
+  });
+
+  it('a wait for the lease is bounded by the run bound', async () => {
+    const { c } = await dispatched();
+    c.setHolds(false);
+    await c.svc.tick();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeTruthy();
+    c.advance(PEER_LIMITS.maxRunMs + 1);
+    await c.svc.tick();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
   });
 
   it('a run past the run bound is abandoned', async () => {
@@ -668,7 +802,7 @@ describe('coordinator — heartbeat for a planned restart', () => {
       const { c, read } = await dispatched();
       await c.svc.tick();
       expect(read()).not.toBeNull();
-      if (change === 'epoch') c.setEpoch(8); else c.setHolds(false);
+      if (change === 'epoch') c.setEpoch(9); else c.setHolds(false);
       await c.svc.tick();
       expect(read()).toBeNull();
     }
@@ -874,7 +1008,7 @@ describe('coordinator — heartbeat for a planned restart', () => {
     const a = await dispatched();
     a.requestRestart();
     await a.c.svc.tick();
-    a.c.setEpoch(8);
+    a.c.setEpoch(9);
     await a.c.svc.tick();
     expect(a.audits().filter((e) => e.event === 'restart-peer-hold-ended').map((e) => e.reason)).toEqual(['abandoned']);
 

@@ -64,7 +64,7 @@ import type { RestartHold } from '../core/UpdateGate.js';
 import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
 import { PREFLIGHT_LIMITS } from './preflight.js';
 import {
-  PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
+  PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy, remoteLeaseDecision,
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
 } from './peer.js';
 
@@ -72,6 +72,13 @@ import {
 export interface PeerFit { eligible: boolean; reason: string; score: number | null }
 /** A peer skipped for the same reason is audited at most this often. */
 export const PEER_SKIP_AUDIT_MS = 10 * 60_000;
+/**
+ * CMT-1605: while this machine is too busy for heavy work, a queued PR verify waits this long
+ * at most for an idle peer to take it before it starts here anyway (never starved).
+ */
+export const STRAINED_PEER_PREFERENCE_MS = 10 * 60_000;
+/** Marks an entry whose strained-peer window is spent (it is never deferred again). */
+const STRAIN_DEFERRAL_SPENT = -1;
 
 /** Repeat-flake escalation (one tracked item per file, re-raised when the flake keeps recurring). */
 export const FLAKY_REPEAT = Object.freeze({ count: 3, windowMs: 7 * 24 * 60 * 60_000, keep: 20 });
@@ -537,8 +544,6 @@ export function remoteEpoch(m: RemoteMarker): number | null {
   return m.adoptedEpoch ?? m.leaseEpoch;
 }
 
-/** How long after boot a restored remote attempt waits for this machine to take the lease back before it is abandoned. */
-export const REMOTE_ADOPT_GRACE_MS = 10 * 60_000;
 
 function isRemoteMarker(v: unknown): v is RemoteMarker {
   if (!v || typeof v !== 'object') return false;
@@ -663,8 +668,6 @@ export class LocalVerifyService {
   /** Late-bound rule (b) source (the AutoUpdater is wired after the service is built). */
   setUpdatePendingProvider(fn: (() => UpdatePendingState | null) | null): void { this.updateProvider = fn; }
   private readonly now: () => number;
-  /** When this service was built (a server boot): the grace for restored remote attempts runs from here. */
-  private readonly bootedAt: number;
   private readonly policyHash: string;
   private readonly queue: QueueEntry[] = [];
   private inFlight: InFlight | null = null;
@@ -729,6 +732,10 @@ export class LocalVerifyService {
   private readonly remotePolledAt = new Map<string, number>();
   /** Coordinator: last SUCCESSFUL peer contact per attempt, seeded at accept. `remotePolledAt` records tries, not successes. */
   private readonly remoteLastOkAt = new Map<string, number>();
+  /** Coordinator: reservations whose lease wait was audited (once per attempt per wait). */
+  private readonly remoteLeaseWaitAudited = new Set<string>();
+  /** Coordinator: PR entries (pr:head) held back for a free peer while this machine is busy, and since when. */
+  private readonly strainDeferredSince = new Map<string, number>();
   /** Starts true so a heartbeat left by an earlier process is removed once, then idle ticks do no file I/O. */
   private peerHoldCount = 0;
   private peerHoldFilePresent = true;
@@ -770,7 +777,6 @@ export class LocalVerifyService {
     this.cfg = cfg;
     this.seams = seams;
     this.now = seams.now ?? (() => Date.now());
-    this.bootedAt = this.now();
     this.policyHash = cfg.policyHash ?? computePolicyHash();
     try { this.preflightReplays = new PreflightReplayStore(path.join(cfg.stateDir, 'state')); }
     catch (e) {
@@ -1187,6 +1193,11 @@ export class LocalVerifyService {
       for (const e of this.queue) {
         const m = e.remote;
         if (!m || remoteEpoch(m) === opts.epoch) continue;
+        // Only the very next epoch proves no other machine held the lease in between (CMT-1605):
+        // `foreignHolder` is in-memory and always reads false after a restart. A gap is left to
+        // the poll, which abandons it.
+        const cur = remoteEpoch(m);
+        if (typeof cur !== 'number' || opts.epoch !== cur + 1) continue;
         m.adoptedEpoch = opts.epoch;
         adopted++;
         this.audit({ event: 'peer-attempt-adopted', pr: e.pr, peer: m.machineId, attemptId: m.attemptId, fromEpoch: m.leaseEpoch, epoch: opts.epoch });
@@ -2036,6 +2047,13 @@ export class LocalVerifyService {
     }
   }
 
+  /** Coordinator: a reservation waits for this machine to hold the lease again (audited once per wait). */
+  private noteRemoteLeaseWait(m: RemoteMarker): void {
+    if (this.remoteLeaseWaitAudited.has(m.attemptId)) return;
+    this.remoteLeaseWaitAudited.add(m.attemptId);
+    this.audit({ event: 'peer-attempt-lease-wait', peer: m.machineId, attemptId: m.attemptId, epoch: remoteEpoch(m) });
+  }
+
   /** Coordinator: drop a reservation. `count` = the attempt was spent; `failure` = it counts toward the peer's breaker. */
   private abandonRemote(entry: QueueEntry, reason: string, o: { failure: boolean; cancel: boolean }): void {
     const m = entry.remote;
@@ -2043,6 +2061,7 @@ export class LocalVerifyService {
     entry.remote = undefined;
     this.remotePolledAt.delete(m.attemptId);
     this.remoteLastOkAt.delete(m.attemptId);
+    this.remoteLeaseWaitAudited.delete(m.attemptId);
     this.endPeerHold(m.attemptId, 'abandoned');
     this.audit({ event: 'peer-attempt-abandoned', pr: entry.pr, peer: m.machineId, attemptId: m.attemptId, reason });
     this.writePeerHold(); // this attempt must stop holding a restart now, not on the next tick
@@ -2069,10 +2088,19 @@ export class LocalVerifyService {
         if (!m) continue;
         const now = this.now();
         const lease = this.leaseState();
-        if (!lease.holds && (lease.holder === null || lease.holder === this.cfg.machineId) && now - this.bootedAt < REMOTE_ADOPT_GRACE_MS) {
-          continue; // just restarted: wait for this machine to take the lease back and adopt the attempt (onLeaseAcquired)
+        // CMT-1605: wait (never import, never cancel) while this machine does not hold the lease and no
+        // other machine does; carry the attempt when this machine holds exactly the next epoch.
+        const leaseDecision = remoteLeaseDecision(remoteEpoch(m), m.sentAt, lease, { selfMachineId: this.cfg.machineId, now, maxRunMs: PEER_LIMITS.maxRunMs });
+        if (leaseDecision === 'wait') { this.noteRemoteLeaseWait(m); continue; }
+        if (leaseDecision === 'abandon') { this.abandonRemote(entry, 'lease-changed', { failure: false, cancel: true }); continue; }
+        if (leaseDecision === 'carry' && typeof lease.epoch === 'number') {
+          const from = remoteEpoch(m);
+          m.adoptedEpoch = lease.epoch;
+          this.remoteLeaseWaitAudited.delete(m.attemptId);
+          this.audit({ event: 'peer-attempt-adopted', pr: entry.pr, peer: m.machineId, attemptId: m.attemptId, fromEpoch: from, epoch: lease.epoch, via: 'poll' });
+          this.persistQueue();
+          this.writePeerHold();
         }
-        if (!lease.holds || lease.epoch !== remoteEpoch(m)) { this.abandonRemote(entry, 'lease-changed', { failure: false, cancel: true }); continue; }
         const peer = this.configuredPeers().find((p) => p.machineId === m.machineId);
         if (!peer || !this.peerClient) { this.abandonRemote(entry, 'peer-not-configured', { failure: false, cancel: false }); continue; }
         if (now - (this.remotePolledAt.get(m.attemptId) ?? 0) < PEER_LIMITS.pollMs) continue;
@@ -2537,6 +2565,7 @@ export class LocalVerifyService {
       this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });
       return;
     }
+    if (this.deferLocalStartToPeer(next)) return;
     if (next.kind !== 'main' && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
       // The verify tests the merge with TODAY's base: re-read it right before the start, and
       // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
@@ -2547,6 +2576,49 @@ export class LocalVerifyService {
     const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
     this.lastStartWasMain = entry.kind === 'main';
     this.start(entry);
+  }
+
+  /**
+   * CMT-1605: when THIS machine is too busy for heavy work (the same fit the pool uses for a
+   * peer) and a healthy peer is free for this entry, leave the entry for the peer's dispatch
+   * instead of starting it here. Bounded per entry by STRAINED_PEER_PREFERENCE_MS, and never
+   * for a `main` verify (those always run here). A signal-driven preference, never a block.
+   */
+  private deferLocalStartToPeer(next: QueueEntry): boolean {
+    const key = `${next.pr}:${next.headSha}`;
+    const fitFn = this.peerFitFn;
+    if (next.kind === 'main' || !fitFn || !this.peerClient || this.cfg.peerOnly) return false;
+    let selfFit: PeerFit | null = null;
+    try { selfFit = fitFn(this.cfg.machineId); } catch { selfFit = null; } // @silent-fallback-ok: an unreadable own fit keeps today's local-first start
+    if (!selfFit || selfFit.reason !== 'machine-busy') return false;
+    const since = this.strainDeferredSince.get(key);
+    if (since === STRAIN_DEFERRAL_SPENT) return false; // this entry already waited its window: it runs here
+    const lease = this.leaseState();
+    const hold = this.holdDecision();
+    const held = new Set(hold.active ? hold.heldPrs.map((x) => x.pr) : []);
+    if (!lease.holds || !this.dispatchable(next, held)) return false;
+    const now = this.now();
+    const freePeer = this.fitPeers(this.configuredPeers()).find((peer) => {
+      const h = this.peerHealth.get(peer.machineId);
+      if (h && !peerHealthy(h, now)) return false;
+      if (this.queue.some((e) => e.remote?.machineId === peer.machineId)) return false;
+      const st = h?.status;
+      // Unknown or stale status: the dispatch reads it fresh; a known-busy or skewed peer is not free.
+      if (!st || now - (h?.statusAt ?? 0) >= 2 * PEER_LIMITS.statusMs) return true;
+      return !st.inFlight && !st.slotBusy && st.verifierVersion === this.cfg.verifierVersion && st.policyHash === this.policyHash;
+    });
+    if (!freePeer) return false;
+    if (since === undefined) {
+      if (this.strainDeferredSince.size >= 200) this.strainDeferredSince.delete(this.strainDeferredSince.keys().next().value as string);
+      this.strainDeferredSince.set(key, now);
+      this.audit({ event: 'local-start-deferred-to-peer', pr: next.pr, headSha: next.headSha, peer: freePeer.machineId, selfLoadPerCore: selfFit.score });
+    } else if (now - since > STRAINED_PEER_PREFERENCE_MS) {
+      this.strainDeferredSince.set(key, STRAIN_DEFERRAL_SPENT);
+      this.audit({ event: 'local-start-deferral-expired', pr: next.pr, headSha: next.headSha, waitedMs: now - since });
+      return false;
+    }
+    this.scheduleDispatch();
+    return true;
   }
 
   private reconcileSuitePriority(): void {
