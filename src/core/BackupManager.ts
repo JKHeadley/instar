@@ -181,6 +181,8 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   '_fold-markers',
   '_clear-seed',
   '_seeded',
+  // Saved full recovery blocks (context-budget §9.1): per-session, transient.
+  '_recovery',
 ]);
 
 /**
