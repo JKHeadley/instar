@@ -93,6 +93,8 @@ import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
+import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
+import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
@@ -250,6 +252,8 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
+import { PrLinkReviewerCheck, prLinkHoldMessage, isPermanentPrLinkFailure } from '../core/PrLinkReviewerCheck.js';
+import { createGitHubTokenResolver } from '../core/githubRuntime.js';
 import { getJevCorrectionShadow } from '../core/JevCorrectionShadow.js';
 import { getJevCirclesShadow } from '../core/JevCirclesShadow.js';
 import { getMachineLoadAssessor } from '../core/MachineLoadAssessor.js';
@@ -1211,6 +1215,8 @@ export interface RouteContext {
   /** Desktop-only sessions the owner's phone mints with Face ID. */
   phoneDesktopSessions?: import('./PhoneDesktopSessionStore.js').PhoneDesktopSessionStore;
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
+  /** Test seam: the gh runner for the PR-link reviewer check (default: the authenticated gh for this agent). */
+  prLinkReviewGh?: import('../core/githubRuntime.js').AuthenticatedGhExec;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
   identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -1227,6 +1233,8 @@ export interface RouteContext {
    *  contract — spec outbound-jargon-filepath-gap §5) read through this.
    *  Null on older callers/tests → consumers fall back to code defaults. */
   liveConfig?: { get<T>(path: string, def: T): T; set?(path: string, value: unknown): void } | null;
+  /** TEST seam for the PR-link reviewer request (docs/specs/pr-link-requests-reviewer.md); production builds its own. */
+  prLinkReviewerCheck?: import('../core/PrLinkReviewerCheck.js').PrLinkReviewerCheck | null;
   /** Validates an X-Instar-DeliveryId against an ACTUAL PendingRelayStore
    *  row — the §2.1 redrive exemption for the kindless-job-send breadcrumb
    *  (a fabricated header must not buy the exemption). Wired by AgentServer
@@ -2974,6 +2982,29 @@ export function createRoutes(ctx: RouteContext): Router {
   };
 
   const router = Router();
+  // A PR link sent to the operator is a review request on GitHub too (Echo Bugs 10000002537).
+  // Mounted FIRST so the origin send-policy binds the final text (an unconfirmed request appends a note).
+  {
+    let prLinkGh: import('../core/githubRuntime.js').AuthenticatedGhExec | null = ctx.prLinkReviewGh ?? null;
+    const ghFor = () => {
+      if (!prLinkGh && ctx.config.stateDir) prLinkGh = createAuthenticatedGhExec({ stateDir: ctx.config.stateDir });
+      return prLinkGh;
+    };
+    let selfLogin: (() => Promise<string | null>) | null = null;
+    const prLinkDeps = {
+      enabled: () => (ctx.config as { prLinkReviewRequest?: { enabled?: boolean } }).prLinkReviewRequest?.enabled !== false,
+      reviewer: () => (ctx.config as { prLinkReviewRequest?: { reviewer?: string } }).prLinkReviewRequest?.reviewer ?? null,
+      gh: ghFor,
+      selfLogin: async () => {
+        const gh = ghFor();
+        if (!gh) return null;
+        selfLogin ??= createSelfLoginReader(gh);
+        return selfLogin();
+      },
+      log: (line: string) => console.log(line),
+    };
+    for (const route of PR_LINK_REPLY_ROUTES) router.use(route.path, prLinkReviewMiddleware(prLinkDeps, route.maxLength));
+  }
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOriginDisplayPreferences(router, ctx);
@@ -4429,7 +4460,7 @@ export function createRoutes(ctx: RouteContext): Router {
     return true;
   }
 
-  async function evaluateOutbound(
+  async function evaluateOutboundCore(
     text: string,
     channel: string,
     options: {
@@ -5174,6 +5205,111 @@ export function createRoutes(ctx: RouteContext): Router {
       // Fail-open — any error short of a clean block lets the message through.
     }
     return { ok: true };
+  }
+
+  // ── PR links request their reviewer (docs/specs/pr-link-requests-reviewer.md) ──
+  // Operator directive (Justin, 2026-11-10): "every time you send me a link [to a
+  // pull request], I actually am a requested reviewer." Runs AFTER every other
+  // outbound check approves, so a message held for any other reason never
+  // triggers a GitHub call, and on the machine that executes the send (a pool
+  // standby relays to the lease holder, whose receive path re-enters here).
+  // Test seam: ctx.prLinkReviewerCheck; production builds one over the agent's
+  // explicit GitHub identity (GITHUB_TOKEN, then vault — never the gh keychain).
+  const prLinkReviewerCheck: PrLinkReviewerCheck =
+    ctx.prLinkReviewerCheck ??
+    new PrLinkReviewerCheck({ resolveToken: createGitHubTokenResolver({ stateDir: ctx.config.stateDir }) });
+
+  async function checkPrLinkReviewers(
+    text: string,
+    channel: string,
+    options: Parameters<typeof evaluateOutboundCore>[2],
+  ): Promise<OutboundEvaluation> {
+    try {
+      const cfg = ctx.config.prLinkReviewer;
+      const live = <T,>(key: string, fallback: T): T => (ctx.liveConfig ? ctx.liveConfig.get<T>(`prLinkReviewer.${key}`, fallback) : fallback);
+      // Dev-gated: omitted ⇒ live on a development agent, dark on the fleet. Read live.
+      if (!resolveDevAgentGate(live<boolean | undefined>('enabled', cfg?.enabled), ctx.config)) return { ok: true };
+      if (!PrLinkReviewerCheck.hasPullRequestLink(text)) return { ok: true };
+
+      const strMap = (v: unknown): Record<string, string> => {
+        const out: Record<string, string> = {};
+        if (v && typeof v === 'object' && !Array.isArray(v)) {
+          for (const [k, val] of Object.entries(v as Record<string, unknown>)) if (typeof val === 'string') out[k.toLowerCase()] = val;
+        }
+        return out;
+      };
+      const defaultReviewer = live<string | undefined>('reviewer', cfg?.reviewer);
+      const repoReviewers = strMap(live<unknown>('repoReviewers', cfg?.repoReviewers));
+      const githubLogins = strMap(live<unknown>('githubLogins', cfg?.githubLogins));
+      const repos = live<unknown>('repos', cfg?.repos);
+      // Team: when the message goes to a topic whose VERIFIED operator has a
+      // GitHub login mapped, that person is the reviewer. Otherwise the
+      // per-repo / default reviewer, then the repo owner.
+      let recipientLogin: string | undefined;
+      if (channel === 'telegram' && typeof options.topicId === 'number' && ctx.topicOperatorStore) {
+        const uid = ctx.topicOperatorStore.asVerifiedOperator(options.topicId)?.uid;
+        if (uid !== undefined && uid !== null) recipientLogin = githubLogins[String(uid).toLowerCase()];
+      }
+      const result = await prLinkReviewerCheck.check(text, {
+        reviewerFor: (fullName) => [recipientLogin, repoReviewers[fullName.toLowerCase()], typeof defaultReviewer === 'string' ? defaultReviewer : undefined],
+        repos: Array.isArray(repos) ? repos.filter((r): r is string => typeof r === 'string') : undefined,
+        timeoutMs: live<number | undefined>('timeoutMs', cfg?.timeoutMs),
+      });
+      for (const o of result.outcomes) {
+        if (o.status === 'requested') {
+          featureEvidence.record('prLinkReviewer', { kind: 'fired', reason: 'review requested at send time', context: { pr: o.pr, reviewer: o.reviewer, channel } });
+        }
+      }
+      if (result.ok || !result.failure) return { ok: true };
+      const failure = result.failure;
+      // The hold is for a sender that can react (a conversational reply that
+      // carries the acknowledge path). An automated or health send, or a
+      // sentinel redrive nobody can react to, or an availability-first channel
+      // (failClosedOnBudgetTimeout:false — the Agent Updates ship/restart
+      // notices), is recorded and still delivered: a GitHub outage must never
+      // silence a health alert or a "back up" notice.
+      const canReact = options.liveArtefactSignals === true && options.noReactionPossible !== true
+        && options.failClosedOnBudgetTimeout !== false && (options.messageKind ?? 'reply') === 'reply';
+      featureEvidence.record('prLinkReviewer', {
+        kind: canReact ? 'held' : 'error',
+        reason: `review request failed: ${failure.reason}`,
+        context: { pr: failure.pr, reviewer: failure.reviewer ?? null, channel, held: canReact },
+      });
+      if (!canReact) {
+        console.warn(`[pr-link-reviewer] could not request a reviewer on ${failure.pr} (${failure.reason}); delivered anyway (sender cannot react)`);
+        return { ok: true };
+      }
+      return {
+        ok: false,
+        status: 422,
+        reason: 'pr-link-reviewer',
+        body: {
+          error: prLinkHoldMessage(failure),
+          blockedBy: 'pr-link-reviewer',
+          notSent: true,
+          pr: failure.pr,
+          ...(failure.reviewer ? { reviewer: failure.reviewer } : {}),
+          failReason: failure.reason,
+          retryable: !isPermanentPrLinkFailure(failure.reason),
+        },
+      };
+    } catch (err) {
+      // A defect in the check itself must never hold a message (only a failed
+      // GitHub request does). Recorded so the ladder sees it.
+      featureEvidence.record('prLinkReviewer', { kind: 'error', reason: 'check threw', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
+      return { ok: true };
+    }
+  }
+
+  /** The shared outbound evaluator: every check, then the PR-link reviewer request. */
+  async function evaluateOutbound(
+    text: string,
+    channel: string,
+    options: Parameters<typeof evaluateOutboundCore>[2],
+  ): Promise<OutboundEvaluation> {
+    const decision = await evaluateOutboundCore(text, channel, options);
+    if (!decision.ok) return decision;
+    return checkPrLinkReviewers(text, channel, options);
   }
 
   /**
@@ -30147,9 +30283,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
 
       try {
+        // Asked BEFORE routing, with the same cleaned sender the handler sees: a message the inbound
+        // gate refuses (Chief of Staff owner-only rule) is still handed over, so the gate logs it and
+        // tells the sender it was not delivered, but the lifeline is told `refused` and must not send
+        // "✓ Delivered" for it (Echo Bugs 10000002533).
+        let refused = false;
+        try { refused = ctx.telegram.isInboundRefused?.(Number(topicId), typeof fromUserId === 'number' && Number.isSafeInteger(fromUserId) && fromUserId > 0 ? fromUserId : 0) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the reply as before; the gate itself still decides */ refused = false; }
         const delivered = ctx.telegram.onTopicMessage(message) as unknown;
         if (trust) await delivered;
-        res.json({ ok: true, forwarded: true });
+        res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}) });
       } catch (err) {
         DegradationReporter.getInstance().report({
           feature: 'routes.onTopicMessage',

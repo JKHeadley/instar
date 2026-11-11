@@ -61,7 +61,7 @@ describe('compaction canary — alive on the production path', () => {
     fs.appendFileSync(transcript, [
       JSON.stringify({ parentUuid: null, isSidechain: false, type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', level: 'info', compactMetadata: { trigger: 'auto', preTokens: 968913, postTokens: 34011 }, uuid: 'b1', timestamp: new Date(at).toISOString(), sessionId: SID, version: '2.1.321' }),
       // The attachment exactly as Claude Code 2.1.321 writes it for Instar's session-start hook.
-      JSON.stringify({ type: 'attachment', attachment: { type: 'hook_success', hookName: 'SessionStart:compact', hookEvent: 'SessionStart', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"', stdout: '=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.', content: '<persisted-output>', exitCode: 0 }, uuid: 'h1', sessionId: SID }),
+      JSON.stringify({ type: 'attachment', attachment: { type: 'hook_success', hookName: 'SessionStart:compact', hookEvent: 'SessionStart', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"', stdout: '=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.', content: '=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.', exitCode: 0 }, uuid: 'h1', sessionId: SID }),
       '',
     ].join('\n'));
     recordPostCompact(stateDir, { topicKey: '141133', instarSessionId: 'inst1', claudeSessionId: SID, trigger: 'auto', summary: 'summary', receivedAt: at + 500 });
