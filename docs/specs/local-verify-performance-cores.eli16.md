@@ -20,3 +20,5 @@ The rest of Local Verify does not change. The run still leads its own process gr
 **Rollback:** turn the setting off, or revert the change. No stored state depends on it.
 
 - Agents are now told where to look when a change is waiting to merge: our own test queue, not GitHub's run list. This stops reports that blame GitHub for a wait it did not cause.
+
+- When the Studio restarts, test runs the M5 is doing for it are now kept and their results counted, instead of being thrown away.

@@ -20,6 +20,12 @@ export interface RemoteMarker {
   leaseEpoch: number | null;
   sentAt: number;
   state: 'sending' | 'accepted';
+  /**
+   * The lease epoch under which this coordinator now owns the attempt, when it was taken over across this
+   * machine's own lease re-acquisition (a server restart with no other holder in between). Absent: `leaseEpoch`.
+   * The peer's signed record still carries the dispatch epoch (`leaseEpoch`), which the import compares against.
+   */
+  adoptedEpoch?: number;
   /** Immutable snapshot of what was dispatched: every later check compares against this. */
   dispatched: DispatchedInputs;
 }

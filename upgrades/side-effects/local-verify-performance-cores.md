@@ -75,3 +75,27 @@ Set `localVerify.performanceCores: false` and restart, or revert the PR. No data
 This change is documentation only, with no runtime decision surface. It reaches existing agents because the reference files are regenerated from `generateClaudeMd()` on every update (claudeMdLayout).
 
 What prompted it: on 2026-11-10 a session told the operator that "GitHub's checks are backed up". The real hold was the local queue's main-suspect state and lanes timing out.
+
+## Addendum: keep the peer's work across this machine's own restart
+
+`src/localVerify/LocalVerifyService.ts` and `src/localVerify/peer.ts` change how a remote verify attempt survives a coordinator restart.
+
+Before: a remote (peer) verify attempt was abandoned and cancelled whenever the coordinator's lease epoch changed. A coordinator server restart always changes the epoch. So every Studio restart threw away the M5's in-flight run. On the night of 2026-11-10, 12 of 30 accepted M5 attempts ended that way.
+
+Now:
+- **Same-machine re-acquisition:** when `onLeaseAcquired` reports no foreign holder in between (`foreignHolder: false`), each restored remote attempt is adopted under the new epoch (`adoptedEpoch`, persisted) and audited as `peer-attempt-adopted`.
+- **Waiting for the lease after a restart:** for up to 10 min after boot (`REMOTE_ADOPT_GRACE_MS`), a restored attempt waits for this machine to take the lease back instead of being abandoned. It waits only while the lease is unheld or held by this machine. If another machine holds the lease, the attempt is abandoned at once, as before.
+- **Import check:** the import still requires the peer's signed record to carry the dispatch epoch, `ctx.leaseEpoch` = the marker's dispatch epoch when adopted. Every other import check is unchanged: attempt id, coordinator, head, base, verifier version and policy hash.
+
+1. Over-block: none added.
+2. Under-block: a foreign holder that took and released the lease while this machine was down is caught by `foreignHolder: true`, the same signal main-health uses. An unreadable lease reads as not held; the attempt then waits out the grace and is abandoned.
+3. Abstraction: the decision sits in the coordinator's poll and lease hook, where the epoch fence already lived.
+4. Signal vs authority: the fence keeps its authority. Only the same-machine case is relaxed, and it is audited.
+5. Interactions:
+   - The restart-hold heartbeat and `remoteEpochCurrent` use the same adopted epoch.
+   - Main-health epoch-gap handling is unchanged: a same-machine epoch gap of 3 sets main-suspect but does not discard peer work.
+6. External surfaces: a new audit event, `peer-attempt-adopted`.
+7. Multi-machine: this exists precisely so the M5's work counts across Studio restarts.
+8. Rollback: revert. Persisted markers with `adoptedEpoch` are ignored by older code, which then abandons them as before.
+
+Tests: `tests/unit/localVerify/peerVerifier.test.ts` adds 3 cases (adopt after a same-machine restart and import; a foreign holder still abandons; another holder after a restart abandons at once). All 77 pass.
