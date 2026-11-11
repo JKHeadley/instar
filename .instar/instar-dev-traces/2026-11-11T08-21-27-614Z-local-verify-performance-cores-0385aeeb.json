@@ -18,5 +18,10 @@
   "eli16Path": "docs/specs/local-verify-performance-cores.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/local-verify-performance-cores.md",
   "secondPass": "not-required",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no new self-triggered action: the existing peer poll keeps (adopts) an attempt across a same-machine lease re-acquisition instead of cancelling it; bounded by the existing 10-minute grace and per-entry attempt limit"
+  }
 }
