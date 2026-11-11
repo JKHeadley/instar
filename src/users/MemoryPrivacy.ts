@@ -193,6 +193,16 @@ export class MemoryPrivacy {
     if (group) this.confirmExistingGroup(group);
   }
 
+  /**
+   * A fingerprint of who counts as the operator (the baseline's operator keys,
+   * the owner, and the configured Telegram owner `isOwnerSender` compares with), so a reader that labelled rows earlier can tell the
+   * binding has changed and relabel (context-budget §8, U). Identity only.
+   */
+  operatorBindingFingerprint(): string {
+    const keys = [...this.state.operatorKeys].sort().join('\n');
+    return createHash('sha256').update(`${this.state.baselineDone ? 1 : 0}\n${this.ownerUserId() ?? ''}\n${this.deps.reachable().telegramOwnerId ?? ''}\n${keys}`).digest('hex');
+  }
+
   /** True when this sender is the operator recorded at baseline. */
   isOperator(senderKey: string | null): boolean {
     if (senderKey === null) return false;

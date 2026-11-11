@@ -695,6 +695,76 @@ export class TopicMemory {
   }
 
   /**
+   * The sender rows the protected user corpus is built from
+   * (context-budget-layered-summaries §8: U is sourced by SENDER ROW, never by
+   * transcript role). Every `from_user=1` row plus every row that arrived
+   * through another agent (`origin` set), in insertion order, after the
+   * given SQLite row id. `complete:false` means the hard bound was hit and
+   * the caller must read again from the last `rowId` it got. `messageId`
+   * reads only that message's row (the current turn's, listed ahead of a
+   * backfill). `maxRowId` is the topic's highest row id, so a caller can tell
+   * a rebuilt database (its watermark above every row).
+   */
+  getUserCorpusRows(topicId: number, opts: { afterRowId?: number; limit?: number; messageId?: number } = {}): { rows: Array<{ rowId: number; message: TopicMessage }>; complete: boolean; maxRowId: number } {
+    if (!this.db) return { rows: [], complete: false, maxRowId: 0 };
+    const bounded = Math.max(1, Math.min(Math.floor(opts.limit ?? 2_000), 10_000));
+    const maxRowId = Number((this.db.prepare('SELECT COALESCE(MAX(id), 0) AS id FROM messages WHERE topic_id = ?').get(topicId) as { id: number } | undefined)?.id ?? 0);
+    const byMessage = opts.messageId !== undefined && Number.isSafeInteger(opts.messageId);
+    const raw = this.db.prepare(`
+      SELECT id AS rowId, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName,
+             sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
+      FROM messages
+      WHERE topic_id = ? AND id > ? AND (from_user = 1 OR origin IS NOT NULL)${byMessage ? ' AND message_id = ?' : ''}
+      ORDER BY id ASC
+      LIMIT ?
+    `).all(...[topicId, byMessage ? 0 : (opts.afterRowId ?? 0), ...(byMessage ? [opts.messageId] : []), bounded + 1]) as Array<Record<string, unknown>>;
+    const rows = raw.slice(0, bounded).map((r) => {
+      const { rowId, ...rest } = r;
+      return { rowId: Number(rowId), message: mapRow(rest) };
+    });
+    return { rows, complete: raw.length <= bounded, maxRowId };
+  }
+
+  /**
+   * True when `earlierMessageId` names a row of this topic inserted before the
+   * row `laterMessageId` names; null when either row is not in TopicMemory
+   * (the referent-stub validator reads null as "does not name a preceding message").
+   */
+  messagePrecedes(topicId: number, earlierMessageId: number, laterMessageId: number): boolean | null {
+    if (!this.db) return null;
+    const q = this.db.prepare('SELECT MAX(id) AS id FROM messages WHERE topic_id = ? AND message_id = ?');
+    const a = (q.get(topicId, earlierMessageId) as { id: number | null } | undefined)?.id;
+    const b = (q.get(topicId, laterMessageId) as { id: number | null } | undefined)?.id;
+    if (a === null || a === undefined || b === null || b === undefined) return null;
+    return a < b;
+  }
+
+  /**
+   * The agent's own messages immediately preceding a row, oldest first
+   * (the referent candidates a stub may name). Empty when the row is unknown.
+   */
+  getAgentMessagesBefore(topicId: number, messageId: number, limit: number = 3): TopicMessage[] {
+    if (!this.db) return [];
+    const at = this.db.prepare('SELECT MAX(id) AS id FROM messages WHERE topic_id = ? AND message_id = ?').get(topicId, messageId) as { id: number | null } | undefined;
+    if (!at || at.id === null || at.id === undefined) return [];
+    const bounded = Math.max(1, Math.min(Math.floor(limit), 20));
+    return (this.db.prepare(`
+      SELECT message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser,
+             timestamp, session_name AS sessionName,
+             sender_name AS senderName, sender_username AS senderUsername, telegram_user_id AS telegramUserId,
+             user_id AS userId, privacy_scope AS privacyScope, forwarded,
+             channel_message_id AS channelMessageId, origin
+      FROM messages
+      WHERE topic_id = ? AND id < ? AND from_user = 0 AND origin IS NULL
+      ORDER BY id DESC
+      LIMIT ?
+    `).all(topicId, at.id, bounded) as unknown[]).reverse().map(mapRow);
+  }
+
+  /**
    * Get all messages by a specific user across all topics.
    * Used by /mydata export (GDPR Article 15).
    */

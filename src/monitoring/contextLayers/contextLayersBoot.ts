@@ -21,6 +21,7 @@ import { featureEvidence } from '../FeatureEvidenceLog.js';
 import { TopicLayerBudget, type LayerBudgetStatus } from './layerCadence.js';
 import type { LayerTicker, LayerTickerStatus } from './layerTicker.js';
 import { layerFreshness } from './layerProjection.js';
+import type { UserCorpus } from './userCorpus.js';
 
 /** The feature id the maturation ladder reads (src/data/feature-ladders.json). */
 export const CONTEXT_LAYERS_FEATURE_ID = 'contextBudget.layers';
@@ -32,6 +33,10 @@ export interface ContextLayers {
   budget: TopicLayerBudget;
   /** Attach the transcript-growth ticker once the capture pipeline exists (its status joins ours). */
   attachTicker(t: LayerTicker): void;
+  /** Attach U once the capture pipeline builds it (the route reads its counters). */
+  attachUserCorpus(u: UserCorpus): void;
+  /** U on this machine, or null when capture is not wired here. */
+  userCorpus(): UserCorpus | null;
   /** The agent's live secret values (cached), for scrubbing anything bound for an LLM. */
   liveSecrets(): readonly string[];
   /** The current-work layer's freshness against TopicMemory; `unknown` when no H1 record exists yet. */
@@ -49,6 +54,7 @@ export interface ContextLayersStatus {
   replication: Record<ReplicationOutcome, number>;
   budget: LayerBudgetStatus;
   ticker: LayerTickerStatus | null;
+  userCorpus: ReturnType<UserCorpus['status']> | null;
 }
 
 /** The minimal emitter seam (ReplicatedRecordEmitter.emit). */
@@ -106,6 +112,7 @@ export function buildContextLayers(deps: {
   const archive = new TranscriptArchive({ stateDir: deps.stateDir, liveSecrets });
   const budget = new TopicLayerBudget();
   let ticker: LayerTicker | null = null;
+  let userCorpus: UserCorpus | null = null;
   // Both roots exist, permissioned, from boot: the e2e "alive" check and the
   // never-served / never-backed-up rules have something real to act on.
   for (const root of [contextLayersRoot(deps.stateDir), contextArchiveRoot(deps.stateDir)]) {
@@ -117,6 +124,8 @@ export function buildContextLayers(deps: {
     archive,
     budget,
     attachTicker(t) { ticker = t; },
+    attachUserCorpus(u) { userCorpus = u; },
+    userCorpus: () => userCorpus,
     liveSecrets,
     h1Freshness(topicId, topicMemory) {
       const rec = store.read(String(topicId), 'h1', 'current');
@@ -141,6 +150,7 @@ export function buildContextLayers(deps: {
         replication: { ...counts },
         budget: budget.status(),
         ticker: ticker ? ticker.status() : null,
+        userCorpus: userCorpus ? userCorpus.status() : null,
       };
     },
   };

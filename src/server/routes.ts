@@ -2,6 +2,7 @@ import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
+import { userCorpusView } from '../monitoring/contextLayers/userCorpus.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -8904,6 +8905,32 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     res.json(ctx.contextLayers.status());
+  });
+  // context-budget-layered-summaries §6 row U, §8: the protected user corpus
+  // for one topic — sizes (tokens and messages) per label, the protected
+  // class, pasted-artifact flags and referent-stub coverage. Labels and sizes
+  // only: the operator's words are never served here (owner-only rendering
+  // arrives with the standing packet). Bearer only; 503 when the layers are off.
+  router.get('/topic/:id/user-corpus', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const raw = String(req.params.id ?? '');
+    if (!/^-?\d{1,15}$/.test(raw)) {
+      res.status(400).json({ error: 'topic id must be an integer' });
+      return;
+    }
+    const uc = ctx.contextLayers.userCorpus();
+    const q = Number.parseInt(String(req.query.limit ?? ''), 10);
+    const limit = Number.isFinite(q) ? Math.max(0, Math.min(q, 500)) : 50;
+    const view = userCorpusView(ctx.contextLayers.store, raw, limit);
+    res.json({
+      topicId: Number(raw),
+      ...view.measure,
+      entries: view.entries,
+      builder: uc ? { wired: true, ...uc.status(), topicBackfilling: uc.backfilling(Number(raw)) } : { wired: false },
+    });
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
