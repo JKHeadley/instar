@@ -1018,6 +1018,8 @@ let _contextBudgetSentinel: import('../monitoring/ContextBudgetSentinel.js').Con
 let _contextLayers: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null = null;
 let _layerTicker: { stop(): void } | null = null;
 let _chunkBuilder: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder | null = null;
+/** The ContextBudgetSentinel's layer-rebuild seam (§17 stale layers), bound once the capture loop is wired (it is built after the sentinel). */
+let _layerReproject: ((topicId: number) => import('../monitoring/ContextBudgetSentinel.js').LayerRebuildOutcome) | null = null;
 /** context-budget-layered-summaries §10: the egress fold hold, checked at the shared outbound chokepoints. */
 let _foldHolds: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null = null;
 /** True while the listener daemon owns inbound relay handling (no capability then). */
@@ -13421,14 +13423,33 @@ export async function startServer(options: StartOptions): Promise<void> {
       // never by the dev-agent default. Dark ⇒ no heartbeat ⇒ no fold can begin.
       if (liveConfig.get<boolean>('contextBudget.sentinel.enabled', false) === true) {
         const { ContextBudgetSentinel } = await import('../monitoring/ContextBudgetSentinel.js');
-        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite } = await import('../monitoring/contextBudgetSentinelBoot.js');
+        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, productionLiveTopics, productionHoldCarriers } = await import('../monitoring/contextBudgetSentinelBoot.js');
         const { CompactionCanary } = await import('../monitoring/compactionCanary.js');
         const { FoldRecordStore } = await import('../monitoring/FoldCoordinator.js');
         const { governor: sentinelGovernor, consumeAdmissionToken: sentinelConsume } = await import('../monitoring/selfaction/governor.js');
         const sentinelHandle = sentinelGovernor.for('context-budget-quarantine-reconcile');
         const poolLiveNow = () => { const p = livePool(); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; };
         const sessionDeps = productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath });
+        // The §17 rows (Phase 1 S12). Freshness needs the layers (off ⇒ `unavailable: layers-off`)
+        // and reads TopicMemory lazily; its rebuild request goes through the capture loop's
+        // re-projection seam once that is wired (until then each request counts as `unavailable`).
+        // Hold health clears an orphan hold or marker loudly under its own governor handle.
+        const sentinelOrphanHandle = sentinelGovernor.for('context-budget-orphan-carrier-clear');
+        const sentinelLayers = _contextLayers;
+        const sentinelRows = {
+          liveTopics: productionLiveTopics({ sessions: sessionManager }),
+          layers: sentinelLayers ? {
+            h1: (t: string) => (topicMemory ? sentinelLayers.h1Freshness(Number(t), topicMemory) : { line: 'topic memory unavailable', stale: 'unknown' as const }),
+            requestRebuild: (t: string) => (_layerReproject ? _layerReproject(Number(t)) : 'unavailable' as const),
+          } : null,
+          holdHealth: {
+            carriers: productionHoldCarriers({ stateDir: config.stateDir, holds: _foldHolds }),
+            admit: (target: Parameters<typeof sentinelOrphanHandle.admit>[0], opts: Parameters<typeof sentinelOrphanHandle.admit>[1]) => sentinelOrphanHandle.admit(target, opts),
+            degradation: (r: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => DegradationReporter.getInstance().report(r),
+          },
+        };
         _contextBudgetSentinel = new ContextBudgetSentinel({
+          ...sentinelRows,
           stateDir: config.stateDir,
           machineId: built.holderId,
           coordinator: built.coordinator,
@@ -18847,6 +18868,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             };
             if (layerWiring) {
+              _layerReproject = (topicId) => layerWiring.reproject(topicId);
               _layerTicker = layerWiring.startTicker({
                 extractor: captureExtractor, store: topicIntentStore, topicMemory,
                 shouldShed: () => { const r = quotaTracker?.getRecommendation(); return r === 'critical' || r === 'stop'; },

@@ -143,7 +143,11 @@ export class FoldRecordStore {
     if (!SAFE_ID.test(topicKey) || !SAFE_ID.test(foldId)) return { kind: 'absent' };
     const rec = this.get(topicKey, foldId);
     if (rec) return { kind: 'ok', record: rec };
-    return fs.existsSync(this.fileFor(topicKey, foldId)) ? { kind: 'torn' } : { kind: 'absent' };
+    // Only a definite "no such file" is absent. A stat that fails any other way (a permission
+    // error, a parent that is not a directory) is an unknown, read as torn: nothing is released on it.
+    try { fs.statSync(this.fileFor(topicKey, foldId)); return { kind: 'torn' }; } catch (err) {
+      return (err as NodeJS.ErrnoException).code === 'ENOENT' ? { kind: 'absent' } : { kind: 'torn' }; // @silent-fallback-ok — typed: absent only on ENOENT, otherwise torn (containment kept)
+    }
   }
 
   /** Every record file on a topic that exists but cannot be read. */
