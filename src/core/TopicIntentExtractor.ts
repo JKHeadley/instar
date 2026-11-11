@@ -473,6 +473,8 @@ export type ExtractDegradeReason = 'no-intelligence' | 'error';
 export function createLlmExtractFn(
   intelligence?: IntelligenceProvider,
   onDegrade?: (reason: ExtractDegradeReason, topicId: number) => void,
+  /** Measurement only (context budget §11): the provider-reported token usage of each call, with its input. */
+  onUsage?: (input: ExtractorInput, usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
 ): ExtractFn {
   return async (input: ExtractorInput): Promise<SignalProposal[] | ExtractorAnalysis> => {
     if (!intelligence) {
@@ -491,6 +493,7 @@ export function createLlmExtractFn(
         // budget rather than inheriting the provider's 30s wall.
         timeoutMs: 60_000,
         attribution: { component: 'TopicIntentExtractor' },
+        ...(onUsage ? { onUsage: (u: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => { try { onUsage(input, u); } catch { /* @silent-fallback-ok — a measurement observer never affects extraction */ } } } : {}),
         // LLM-Decision Quality Meter §5.1.4/§5.6 enrollment. Observability ONLY:
         // the settlement seam consumes this block and records on its own path —
         // it never reaches the model and never alters the extraction. A

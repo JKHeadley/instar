@@ -22,6 +22,7 @@ import { TopicLayerBudget, type LayerBudgetStatus } from './layerCadence.js';
 import type { LayerTicker, LayerTickerStatus } from './layerTicker.js';
 import { layerFreshness } from './layerProjection.js';
 import type { UserCorpus } from './userCorpus.js';
+import { LayerSpendLog, layerSpendFile } from './layerSpendLog.js';
 
 /** The feature id the maturation ladder reads (src/data/feature-ladders.json). */
 export const CONTEXT_LAYERS_FEATURE_ID = 'contextBudget.layers';
@@ -31,6 +32,8 @@ export interface ContextLayers {
   archive: TranscriptArchive;
   /** The layer brakes (§6.4): per-topic and component daily token ceilings, shared by turns and ticks. */
   budget: TopicLayerBudget;
+  /** LayerUpdate attempts, calls and provider-reported tokens per day by trigger (§11). */
+  spend: LayerSpendLog;
   /** Attach the transcript-growth ticker once the capture pipeline exists (its status joins ours). */
   attachTicker(t: LayerTicker): void;
   /** Attach U once the capture pipeline builds it (the route reads its counters). */
@@ -111,6 +114,7 @@ export function buildContextLayers(deps: {
   });
   const archive = new TranscriptArchive({ stateDir: deps.stateDir, liveSecrets });
   const budget = new TopicLayerBudget();
+  const spend = new LayerSpendLog({ file: layerSpendFile(deps.stateDir) });
   let ticker: LayerTicker | null = null;
   let userCorpus: UserCorpus | null = null;
   // Both roots exist, permissioned, from boot: the e2e "alive" check and the
@@ -123,6 +127,7 @@ export function buildContextLayers(deps: {
     store,
     archive,
     budget,
+    spend,
     attachTicker(t) { ticker = t; },
     attachUserCorpus(u) { userCorpus = u; },
     userCorpus: () => userCorpus,

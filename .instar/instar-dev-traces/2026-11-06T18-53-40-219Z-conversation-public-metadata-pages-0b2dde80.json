@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "conversation-public-metadata-pages",
+  "sessionId": "2d8d0f62-5a3f-4117-8339-f2b74ea236d1",
+  "timestamp": "2026-11-06T18:53:40.219Z",
+  "artifactPath": "upgrades/side-effects/conversation-public-metadata-pages.md",
+  "artifactSha256": "052961fbd158581a748ef01a0c4be9ece8401f40bccc8d51fc0a9bc815a2bb19",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/GraphPublicMetadataPages.ts",
+    "tests/unit/graph-public-metadata-pages.test.ts",
+    "upgrades/conversation-public-metadata-pages.eli16.md",
+    "upgrades/side-effects/conversation-public-metadata-pages.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Additive durable DATA storage under the approved Conversations scope; independent path and durability review, no runtime authority or activation.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

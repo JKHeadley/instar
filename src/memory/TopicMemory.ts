@@ -765,6 +765,20 @@ export class TopicMemory {
   }
 
   /**
+   * The size of a topic's operator corpus (context budget §8/§11 "U size"):
+   * the operator-typed rows (`from_user = 1`), their total characters, and how
+   * many of them are forwarded (kept and labelled, no authority). `null` when
+   * the database is not open.
+   */
+  operatorCorpusSize(topicId: number): { messages: number; chars: number; forwarded: number } | null {
+    if (!this.db) return null;
+    const row = this.db.prepare(
+      'SELECT COUNT(*) AS messages, COALESCE(SUM(LENGTH(text)), 0) AS chars, COALESCE(SUM(CASE WHEN forwarded = 1 THEN 1 ELSE 0 END), 0) AS forwarded FROM messages WHERE topic_id = ? AND from_user = 1',
+    ).get(topicId) as { messages: number; chars: number; forwarded: number } | undefined;
+    return { messages: Number(row?.messages) || 0, chars: Number(row?.chars) || 0, forwarded: Number(row?.forwarded) || 0 };
+  }
+
+  /**
    * Get all messages by a specific user across all topics.
    * Used by /mydata export (GDPR Article 15).
    */

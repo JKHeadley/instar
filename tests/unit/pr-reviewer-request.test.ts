@@ -1,50 +1,17 @@
 /**
- * The shared reviewer logic used by safe-merge (merge-refusal time) and the
- * send-time PR-link check. Spec: docs/specs/pr-link-requests-reviewer.md.
+ * Reviewer helpers used by safe-merge at merge-refusal time, plus the guard that
+ * keeps ONE send-time reviewer-request path (src/messaging/prLinkReviewRequest.ts).
+ * Echo Bugs 10000002553: PRs 3061 and 3063 both requested the reviewer for PR
+ * links at send time; 3061's path was removed.
  */
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
-  extractPullRequestLinks,
   resolveReviewerLogins,
   requestedReviewerLogins,
   confirmedRequested,
-  toReviewLike,
-  MAX_PR_LINKS_PER_MESSAGE,
 } from '../../scripts/pr-reviewer-request.mjs';
-
-describe('extractPullRequestLinks', () => {
-  it('finds a pull-request link with or without scheme', () => {
-    expect(extractPullRequestLinks('see https://github.com/JKHeadley/instar/pull/3050 please')).toEqual([
-      { owner: 'JKHeadley', repo: 'instar', number: 3050, fullName: 'JKHeadley/instar' },
-    ]);
-    expect(extractPullRequestLinks('github.com/a/b/pull/7')[0]).toMatchObject({ owner: 'a', repo: 'b', number: 7 });
-  });
-
-  it('treats sub-pages and anchors as the same PR, and de-duplicates case-insensitively', () => {
-    const links = extractPullRequestLinks(
-      'https://github.com/JKHeadley/instar/pull/12/files and https://github.com/jkheadley/INSTAR/pull/12#discussion_r1 and https://github.com/JKHeadley/instar/pull/13',
-    );
-    expect(links.map((l) => l.number)).toEqual([12, 13]);
-  });
-
-  it('ignores issues, bare #refs, other hosts and non-numeric pulls', () => {
-    expect(extractPullRequestLinks('https://github.com/a/b/issues/5 #12 https://gitlab.com/a/b/pull/3 https://github.com/a/b/pulls')).toEqual([]);
-  });
-
-  it('does not truncate a longer number into a shorter PR', () => {
-    expect(extractPullRequestLinks('https://github.com/a/b/pull/1234')[0].number).toBe(1234);
-  });
-
-  it('caps the number of PRs checked per message', () => {
-    const text = Array.from({ length: 9 }, (_, i) => `https://github.com/a/b/pull/${i + 1}`).join(' ');
-    expect(extractPullRequestLinks(text)).toHaveLength(MAX_PR_LINKS_PER_MESSAGE);
-  });
-
-  it('returns nothing for non-strings', () => {
-    expect(extractPullRequestLinks(undefined)).toEqual([]);
-    expect(extractPullRequestLinks(42)).toEqual([]);
-  });
-});
 
 describe('resolveReviewerLogins', () => {
   it('defaults to the repo owner', () => {
@@ -79,11 +46,30 @@ describe('requested reviewer parsing', () => {
   });
 });
 
-describe('toReviewLike', () => {
-  it('maps REST reviews to the approvedAtHead shape', () => {
-    expect(toReviewLike([{ user: { login: 'a' }, state: 'APPROVED', commit_id: 'abc', submitted_at: '2026-11-10T00:00:00Z' }])).toEqual([
-      { login: 'a', state: 'APPROVED', commitId: 'abc', submittedAt: '2026-11-10T00:00:00Z' },
-    ]);
-    expect(toReviewLike(null)).toEqual([]);
+describe('one reviewer-request path', () => {
+  const root = path.resolve(__dirname, '../..');
+  function filesUnder(dir: string): string[] {
+    const out: string[] = [];
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, e.name);
+      if (e.isDirectory()) out.push(...filesUnder(p));
+      else if (/\.(ts|mjs|js)$/.test(e.name)) out.push(p);
+    }
+    return out;
+  }
+  it('only prLinkReviewRequest.ts (send time) and safe-merge.mjs (merge time) POST requested_reviewers', () => {
+    const posting = [...filesUnder(path.join(root, 'src')), ...filesUnder(path.join(root, 'scripts'))]
+      .filter((f) => {
+        const s = fs.readFileSync(f, 'utf8');
+        return s.includes('requested_reviewers') && /['"]POST['"]/.test(s);
+      })
+      .map((f) => path.relative(root, f).split(path.sep).join('/'))
+      .sort();
+    expect(posting).toEqual(['scripts/safe-merge.mjs', 'src/messaging/prLinkReviewRequest.ts']);
+  });
+  it('the removed duplicate send-time check is gone', () => {
+    expect(fs.existsSync(path.join(root, 'src/core/PrLinkReviewerCheck.ts'))).toBe(false);
+    const routes = fs.readFileSync(path.join(root, 'src/server/routes.ts'), 'utf8');
+    expect(routes).not.toMatch(/PrLinkReviewerCheck|checkPrLinkReviewers/);
   });
 });

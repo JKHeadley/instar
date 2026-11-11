@@ -2271,6 +2271,16 @@ export function teamConversationTarget(method: string, pathNorm: string): { ref:
 export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
   const active: ReadonlySet<DeviceStatus> = new Set(['active']);
   const rules: DeviceRule[] = [
+    // Conversations v3 owner hierarchy. Admission still requires a live device
+    // signature; the mounted graph source separately enforces increment A.
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/roots$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/nodes\/[a-z0-9_-]{1,2048}\/destinations$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/(pending|changes\/[a-z0-9_.:%-]{8,480})$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 30, bucket: 'conversation-graph-reads' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/forget-header\/(discover|ensure)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'GET', re: /^\/mobile\/conversation-graph\/erasures\/[A-Za-z0-9_-]{8,160}$/, statuses: active, ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/(changes|preview|undo|forget-header)$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
+    { method: 'POST', re: /^\/mobile\/conversation-graph\/changes\/(?:(graph-event|header-op)(:|%3a)[a-z0-9_-]{8,80}|queued(:|%3a)owner-change(:|%3a)[a-f0-9]{64})\/cancel$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 20, bucket: 'conversation-graph-changes' },
     { method: 'GET', re: /^\/health$/, statuses: active },
     { method: 'GET', re: /^\/attention$/, statuses: active },
     { method: 'GET', re: /^\/sessions$/, statuses: active },
@@ -2591,7 +2601,12 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!person || !person.ok) {
       if (!rule.unassignedOk) return refuse(403, 'person-unknown');
     } else {
-      if (rule.ownerOnly && person.role !== 'owner') return refuse(403, 'owner-phone-required');
+      if (rule.ownerOnly && person.role !== 'owner') {
+        if (pathNorm.startsWith('/mobile/conversation-graph/')) {
+          res.status(403).json({ code: 'hierarchy-owner-only' }); return 'refused';
+        }
+        return refuse(403, 'owner-phone-required');
+      }
       if (person.role === 'team') {
         if (!person.tier || !tierAtLeast(person.tier, rule.tier ?? 'owner')) return refuse(403, 'tier-required');
         const stop = svc.teamRefusal();

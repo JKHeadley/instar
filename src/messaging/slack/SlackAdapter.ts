@@ -35,6 +35,7 @@ import { FileHandler, type SlackUploadOptions } from './FileHandler.js';
 import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import { verifiedChannelIdentity } from '../shared/channelIdentity.js';
+import { conversationsPointer } from '../shared/conversationGraphChat.js';
 import type { SlackChannelKind, SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId } from './sanitize.js';
 import { applySlackFormatter, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
@@ -175,6 +176,9 @@ export interface SlackResumeGuards {
 }
 
 export class SlackAdapter implements MessagingAdapter {
+  private conversationsUrl: () => string | null = () => null;
+
+  setConversationsUrlProvider(provider: () => string | null): void { this.conversationsUrl = provider; }
   readonly platform = 'slack';
 
   // Config
@@ -1576,13 +1580,14 @@ export class SlackAdapter implements MessagingAdapter {
 
     // In mention-only mode, skip messages that don't @mention the bot (except DMs and commands)
     const isDM = channelId.startsWith('D');
+    const isConversationsRequest = /^[/!]conversations(?:\s|$)/i.test(text.trim());
 
     // Slack org permission gate (Slice 0 observe-only → Phase 1 enforce).
     // Observe-only (default): log the verdict for FP-rate measurement; never block.
     // Enforce (opt-in, dark): on a non-allow verdict, send the conversational reply
     // and stop processing — the gate refused / asked to clarify / requires step-up.
     if (this.permissionObserver) {
-      const directed = isDM || this._isBotMentioned(text);
+      const directed = isDM || this._isBotMentioned(text) || isConversationsRequest;
       const pInput = { slackUserId: userId, displayName: userId, text, directed, channel: channelId };
       if (this.permissionObserver.enforcing) {
         const verdict = await this.permissionObserver.observe(pInput);
@@ -1600,7 +1605,7 @@ export class SlackAdapter implements MessagingAdapter {
       }
     }
 
-    if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
+    if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text) && !isConversationsRequest) {
       // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) ──────────
       // This opt-in gate returns exactly one closed action: speak processes the
       // message downstream, react makes one fixed eyes-reaction attempt and returns,
@@ -1649,9 +1654,10 @@ export class SlackAdapter implements MessagingAdapter {
 
     // Handle commands (Slack intercepts / prefix, so we use ! prefix)
     // Supports both !command and /command (in case Slack delivers it)
-    if (text.startsWith('!') || text.startsWith('/')) {
-      const normalizedText = text.startsWith('!') ? '/' + text.slice(1) : text;
-      const handled = await this._handleSlashCommand(normalizedText, channelId, ts);
+    const commandText = isConversationsRequest ? text.trim() : text;
+    if (commandText.startsWith('!') || commandText.startsWith('/')) {
+      const normalizedText = commandText.startsWith('!') ? '/' + commandText.slice(1) : commandText;
+      const handled = await this._handleSlashCommand(normalizedText, channelId, ts, threadTs);
       if (handled) return;
     }
 
@@ -2339,12 +2345,19 @@ export class SlackAdapter implements MessagingAdapter {
   // ── Slash Commands (Telegram parity) ──
 
   /** Handle slash commands from Slack messages. Returns true if handled. */
-  private async _handleSlashCommand(text: string, channelId: string, ts: string): Promise<boolean> {
+  private async _handleSlashCommand(text: string, channelId: string, ts: string, threadTs?: string): Promise<boolean> {
     const parts = text.trim().split(/\s+/);
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1).join(' ');
 
     switch (cmd) {
+      case '/conversations': {
+        // A neutral, authenticated-app pointer is safe in public/private
+        // channels, DMs, guest-visible and retained-history destinations alike.
+        // No graph service read and no owner detail enters a model session.
+        await this.sendToChannel(channelId, conversationsPointer(this.conversationsUrl()), { thread_ts: threadTs || ts });
+        return true;
+      }
       case '/sessions': {
         // List running sessions
         const sessions = this.getChannelRegistry();
@@ -2485,6 +2498,7 @@ export class SlackAdapter implements MessagingAdapter {
         await this.sendToChannel(channelId,
           `Available commands (use \`!\` prefix in Slack):\n` +
           `• \`!sessions\` — List running sessions\n` +
+          `• \`!conversations\` — Open your private Conversations view\n` +
           `• \`!new [name]\` — Create a new session channel\n` +
           `• \`!claim <session>\` — Link a session to this channel\n` +
           `• \`!unlink\` — Unlink session from this channel\n` +

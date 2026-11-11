@@ -4,6 +4,7 @@ import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
 import { listChunks, readChunk, isSafeChunkTopic, isSafeChunkKey } from '../monitoring/contextLayers/chunkLookup.js';
 import { userCorpusView } from '../monitoring/contextLayers/userCorpus.js';
+import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -253,8 +254,6 @@ import { describeTopicPlacement } from '../core/TopicPlacementDescription.js';
 import { buildRelocationNicknameSet } from '../core/RelocationNicknameSet.js';
 import { resolveSelfNickname } from '../core/SelfNicknameResolver.js';
 import { resolveDevAgentGate } from '../core/devAgentGate.js';
-import { PrLinkReviewerCheck, prLinkHoldMessage, isPermanentPrLinkFailure } from '../core/PrLinkReviewerCheck.js';
-import { createGitHubTokenResolver } from '../core/githubRuntime.js';
 import { getJevCorrectionShadow } from '../core/JevCorrectionShadow.js';
 import { getJevCirclesShadow } from '../core/JevCirclesShadow.js';
 import { getMachineLoadAssessor } from '../core/MachineLoadAssessor.js';
@@ -1170,6 +1169,10 @@ export interface MobileInboundTrust {
 }
 
 export interface RouteContext {
+  /** Actual signed post-spawn capture; absent until graph storage is configured. */
+  conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime | null;
+  conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime | null;
+  getConversationGraphDelegation?: import('./ConversationGraphDelegationManager.js').ConversationGraphDelegationGetter;
   /** Attribution paper trail; absent/null when dark. docs/specs/attribution-paper-trail.md */
   attribution?: import('../core/attribution/attributionRuntime.js').AttributionRuntime | null;
   /** Stops the lease coverage peer poller when AgentServer shuts down. */
@@ -1234,8 +1237,6 @@ export interface RouteContext {
    *  contract — spec outbound-jargon-filepath-gap §5) read through this.
    *  Null on older callers/tests → consumers fall back to code defaults. */
   liveConfig?: { get<T>(path: string, def: T): T; set?(path: string, value: unknown): void } | null;
-  /** TEST seam for the PR-link reviewer request (docs/specs/pr-link-requests-reviewer.md); production builds its own. */
-  prLinkReviewerCheck?: import('../core/PrLinkReviewerCheck.js').PrLinkReviewerCheck | null;
   /** Validates an X-Instar-DeliveryId against an ACTUAL PendingRelayStore
    *  row — the §2.1 redrive exemption for the kindless-job-send breadcrumb
    *  (a fabricated header must not buy the exemption). Wired by AgentServer
@@ -4461,7 +4462,7 @@ export function createRoutes(ctx: RouteContext): Router {
     return true;
   }
 
-  async function evaluateOutboundCore(
+  async function evaluateOutbound(
     text: string,
     channel: string,
     options: {
@@ -5206,111 +5207,6 @@ export function createRoutes(ctx: RouteContext): Router {
       // Fail-open — any error short of a clean block lets the message through.
     }
     return { ok: true };
-  }
-
-  // ── PR links request their reviewer (docs/specs/pr-link-requests-reviewer.md) ──
-  // Operator directive (Justin, 2026-11-10): "every time you send me a link [to a
-  // pull request], I actually am a requested reviewer." Runs AFTER every other
-  // outbound check approves, so a message held for any other reason never
-  // triggers a GitHub call, and on the machine that executes the send (a pool
-  // standby relays to the lease holder, whose receive path re-enters here).
-  // Test seam: ctx.prLinkReviewerCheck; production builds one over the agent's
-  // explicit GitHub identity (GITHUB_TOKEN, then vault — never the gh keychain).
-  const prLinkReviewerCheck: PrLinkReviewerCheck =
-    ctx.prLinkReviewerCheck ??
-    new PrLinkReviewerCheck({ resolveToken: createGitHubTokenResolver({ stateDir: ctx.config.stateDir }) });
-
-  async function checkPrLinkReviewers(
-    text: string,
-    channel: string,
-    options: Parameters<typeof evaluateOutboundCore>[2],
-  ): Promise<OutboundEvaluation> {
-    try {
-      const cfg = ctx.config.prLinkReviewer;
-      const live = <T,>(key: string, fallback: T): T => (ctx.liveConfig ? ctx.liveConfig.get<T>(`prLinkReviewer.${key}`, fallback) : fallback);
-      // Dev-gated: omitted ⇒ live on a development agent, dark on the fleet. Read live.
-      if (!resolveDevAgentGate(live<boolean | undefined>('enabled', cfg?.enabled), ctx.config)) return { ok: true };
-      if (!PrLinkReviewerCheck.hasPullRequestLink(text)) return { ok: true };
-
-      const strMap = (v: unknown): Record<string, string> => {
-        const out: Record<string, string> = {};
-        if (v && typeof v === 'object' && !Array.isArray(v)) {
-          for (const [k, val] of Object.entries(v as Record<string, unknown>)) if (typeof val === 'string') out[k.toLowerCase()] = val;
-        }
-        return out;
-      };
-      const defaultReviewer = live<string | undefined>('reviewer', cfg?.reviewer);
-      const repoReviewers = strMap(live<unknown>('repoReviewers', cfg?.repoReviewers));
-      const githubLogins = strMap(live<unknown>('githubLogins', cfg?.githubLogins));
-      const repos = live<unknown>('repos', cfg?.repos);
-      // Team: when the message goes to a topic whose VERIFIED operator has a
-      // GitHub login mapped, that person is the reviewer. Otherwise the
-      // per-repo / default reviewer, then the repo owner.
-      let recipientLogin: string | undefined;
-      if (channel === 'telegram' && typeof options.topicId === 'number' && ctx.topicOperatorStore) {
-        const uid = ctx.topicOperatorStore.asVerifiedOperator(options.topicId)?.uid;
-        if (uid !== undefined && uid !== null) recipientLogin = githubLogins[String(uid).toLowerCase()];
-      }
-      const result = await prLinkReviewerCheck.check(text, {
-        reviewerFor: (fullName) => [recipientLogin, repoReviewers[fullName.toLowerCase()], typeof defaultReviewer === 'string' ? defaultReviewer : undefined],
-        repos: Array.isArray(repos) ? repos.filter((r): r is string => typeof r === 'string') : undefined,
-        timeoutMs: live<number | undefined>('timeoutMs', cfg?.timeoutMs),
-      });
-      for (const o of result.outcomes) {
-        if (o.status === 'requested') {
-          featureEvidence.record('prLinkReviewer', { kind: 'fired', reason: 'review requested at send time', context: { pr: o.pr, reviewer: o.reviewer, channel } });
-        }
-      }
-      if (result.ok || !result.failure) return { ok: true };
-      const failure = result.failure;
-      // The hold is for a sender that can react (a conversational reply that
-      // carries the acknowledge path). An automated or health send, or a
-      // sentinel redrive nobody can react to, or an availability-first channel
-      // (failClosedOnBudgetTimeout:false — the Agent Updates ship/restart
-      // notices), is recorded and still delivered: a GitHub outage must never
-      // silence a health alert or a "back up" notice.
-      const canReact = options.liveArtefactSignals === true && options.noReactionPossible !== true
-        && options.failClosedOnBudgetTimeout !== false && (options.messageKind ?? 'reply') === 'reply';
-      featureEvidence.record('prLinkReviewer', {
-        kind: canReact ? 'held' : 'error',
-        reason: `review request failed: ${failure.reason}`,
-        context: { pr: failure.pr, reviewer: failure.reviewer ?? null, channel, held: canReact },
-      });
-      if (!canReact) {
-        console.warn(`[pr-link-reviewer] could not request a reviewer on ${failure.pr} (${failure.reason}); delivered anyway (sender cannot react)`);
-        return { ok: true };
-      }
-      return {
-        ok: false,
-        status: 422,
-        reason: 'pr-link-reviewer',
-        body: {
-          error: prLinkHoldMessage(failure),
-          blockedBy: 'pr-link-reviewer',
-          notSent: true,
-          pr: failure.pr,
-          ...(failure.reviewer ? { reviewer: failure.reviewer } : {}),
-          failReason: failure.reason,
-          retryable: !isPermanentPrLinkFailure(failure.reason),
-        },
-      };
-    } catch (err) {
-      // A defect in the check itself must never hold a message (only a failed
-      // GitHub request does). Recorded so the ladder sees it.
-      featureEvidence.record('prLinkReviewer', { kind: 'error', reason: 'check threw', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
-      return { ok: true };
-    }
-  }
-
-  /** The shared outbound evaluator: every check, then the PR-link reviewer request. */
-  async function evaluateOutbound(
-    text: string,
-    channel: string,
-    options: Parameters<typeof evaluateOutboundCore>[2],
-  ): Promise<OutboundEvaluation> {
-    const decision = await evaluateOutboundCore(text, channel, options);
-    if (!decision.ok) return decision;
-    return checkPrLinkReviewers(text, channel, options);
   }
 
   /**
@@ -9153,6 +9049,39 @@ export function createRoutes(ctx: RouteContext): Router {
       entries: view.entries,
       builder: uc ? { wired: true, ...uc.status(), topicBackfilling: uc.backfilling(Number(raw)) } : { wired: false },
     });
+  });
+  // context-budget-layered-summaries §11: the measurement backend — cost-weighted
+  // tokens per request per session and topic, live context size, rework (pending
+  // while the ledger poller lags), extractor spend per day by trigger, LayerUpdate
+  // spend against its reserve, U size, archive/layer bytes, G/C growth for the
+  // live-set budget. Read-only, bounded; 503 when the layers are off.
+  const contextBudgetMetricsMemo = new Map<string, { at: number; layers: unknown; body: ReturnType<typeof computeContextBudgetMetrics> }>();
+  router.get('/context-budget/metrics', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const parsed = parseMetricsQuery({ topic: req.query.topic, sinceHours: req.query.sinceHours });
+    if (!parsed.ok) { res.status(400).json({ error: parsed.error }); return; }
+    try {
+      // The computation is synchronous (SQLite reads, directory stats): one result
+      // per query shape is reused for 30 s so a polling card cannot stack it.
+      const memoKey = `${parsed.query.topicId ?? '*'}:${parsed.query.sinceHours ?? ''}`;
+      const hit = contextBudgetMetricsMemo.get(memoKey);
+      if (hit && Date.now() - hit.at < 30_000 && hit.layers === ctx.contextLayers) { res.json({ ...hit.body, cachedForMs: Date.now() - hit.at }); return; }
+      const body = computeContextBudgetMetrics({
+        layers: ctx.contextLayers,
+        stateDir: ctx.config.stateDir,
+        ledger: ctx.tokenLedger ?? null,
+        topicIntentStore: ctx.topicIntentStore ?? null,
+        topicMemory: ctx.topicMemory ?? null,
+      }, parsed.query);
+      if (contextBudgetMetricsMemo.size > 200) contextBudgetMetricsMemo.clear();
+      contextBudgetMetricsMemo.set(memoKey, { at: Date.now(), layers: ctx.contextLayers, body });
+      res.json(body);
+    } catch (err) {
+      res.status(500).json({ error: `context-budget metrics failed: ${(err as Error).message}` });
+    }
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -13017,7 +12946,7 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, workWeight } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight } = req.body;
     // resource-aware placement §6: a heavy helper forwarded by POST /pool/heavy-work/spawn
     // says so, and this machine counts it in its advertised `heavyPending`.
     if (workWeight !== undefined && workWeight !== 'light' && workWeight !== 'standard' && workWeight !== 'heavy') {
@@ -13139,6 +13068,26 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // Owner bootstrap can publish the owned runtime after server boot. Await
+    // its already-registered composition before dispatch; a stale static
+    // runtime must never stand in for a held newer binding.
+    const graphBinding=ctx.getConversationGraphDelegation
+      ?await ctx.getConversationGraphDelegation().catch(()=>({status:'held' as const,reason:'verified-delegation-runtime-unavailable'})):null;
+    const localGraphDelegation=ctx.getConversationGraphDelegation
+      ?graphBinding?.status==='ready'?graphBinding.local:null:ctx.conversationGraphDelegationRuntime;
+    const remoteGraphDelegation=ctx.getConversationGraphDelegation
+      ?graphBinding?.status==='ready'?graphBinding.remote:null:ctx.conversationGraphDelegationRemoteRuntime;
+
+    if(targetMachineId!==undefined){
+      if(jobSlug!==undefined||ultracode===true||spawnRole!==undefined){res.status(409).json({error:'remote-spawn-options-unsupported'});return;}
+      if(typeof targetMachineId!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(targetMachineId)||parsedTopicId===undefined||!remoteGraphDelegation){res.status(409).json({error:'verified-remote-spawn-unavailable'});return;}
+      try{
+        const outcome=await remoteGraphDelegation.dispatch({parentBindToken:req.headers['x-instar-bind-token'],topicId:parsedTopicId,targetMachineId,
+          launch:{name,prompt,model:topicSpawnProfile.model,framework:topicSpawnProfile.framework}});
+        res.status(outcome.ok?202:409).json({status:outcome.ok?'remote-launch-accepted':'remote-launch-checking',transport:outcome,graph:{state:'checking-save'}});
+      }catch{res.status(409).json({error:'verified-remote-spawn-refused'});}return;
+    }
+
     const persistTopicBinding = (boundTopicId: number, tmuxSession: string): void => {
       if (ctx.telegram?.registerTopicSession) {
         ctx.telegram.registerTopicSession(boundTopicId, tmuxSession, cleanTopicName);
@@ -13201,9 +13150,13 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       }
+      const graphDelegation = localGraphDelegation?await localGraphDelegation.afterSuccessfulSpawn(
+        req.headers['x-instar-bind-token'], session.id):ctx.getConversationGraphDelegation&&req.headers['x-instar-bind-token']
+          ?{status:'refused',reason:'verified-delegation-runtime-unavailable'}:undefined;
       if (workWeight === 'heavy') acceptedHeavy.record('self');
       res.status(201).json({
         ...session,
+        ...(graphDelegation ? { graphDelegation } : {}),
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
       });
     } catch (err) {
@@ -21736,7 +21689,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       beforeMs = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
       if (!Number.isFinite(beforeMs)) { res.status(400).json({ error: '"before" must be an ISO time or epoch milliseconds' }); return; }
     }
-    const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit) : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit);
+    let beforeMessageId: number | null = null;
+    if (req.query.beforeMessageId !== undefined) {
+      beforeMessageId = Number(req.query.beforeMessageId);
+      if (beforeMs === null || !Number.isSafeInteger(beforeMessageId) || beforeMessageId <= 0) {
+        res.status(400).json({ error: 'beforeMessageId requires before and a positive message id' }); return;
+      }
+    }
+    const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
+      : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
@@ -21760,7 +21721,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, ...readUpToField(), ...pinsField() });
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -21773,13 +21734,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
         if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
-        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${beforeMessageId === null ? '' : `&beforeMessageId=${beforeMessageId}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
           headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
         });
         if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
         const payload = await r.text();
         if (Buffer.byteLength(payload) > 512 * 1024) { failed.push({ machineId: p.machineId, error: 'too-large' }); return; }
-        const body = JSON.parse(payload) as { messages?: unknown };
+        const body = JSON.parse(payload) as { messages?: unknown; historyCursorVersion?: unknown };
+        if (beforeMessageId !== null && body.historyCursorVersion !== 2) {
+          failed.push({ machineId: p.machineId, error: 'history-cursor-upgrade-needed' }); return;
+        }
         for (const raw of Array.isArray(body.messages) ? body.messages.slice(0, 100) : []) {
           if (!raw || typeof raw !== 'object') continue;
           const m = raw as Record<string, unknown>;
@@ -21809,7 +21773,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // This machine's own rows win a key collision; a peer's row is untrusted display data.
     const seen = new Set<string>(rows.filter(m => m.machine === self).map(keyOf));
     const merged = rows
-      .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+      .sort((a, b) => (Date.parse(String(a.timestamp)) - Date.parse(String(b.timestamp)))
+        || (Number(a.messageId) || 0) - (Number(b.messageId) || 0))
       .filter(m => {
         if (m.machine === self) return true;
         const k = keyOf(m);
@@ -21819,7 +21784,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -30283,6 +30248,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: !trust,
+          ...(!trust && ingressDecision.verified && req.body.sourceChatType === 'private'
+            && Number.isSafeInteger(req.body.sourceChatId) && req.body.sourceChatId > 0
+            && req.body.sourceChatId === fromUserId
+            ? { telegramPrivateChatId: req.body.sourceChatId } : {}),
           ...(trust ? { viaMobileDevice: true, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
           // A team phone's words are never a command (team-roles-and-access §4.1). Set only here, from
           // the authenticated phone: onTopicMessage reads it to skip every intercept.

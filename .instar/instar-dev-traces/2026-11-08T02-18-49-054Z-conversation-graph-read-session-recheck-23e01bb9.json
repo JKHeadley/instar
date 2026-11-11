@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-read-session-recheck",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-08T02:18:49.054Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-read-session-recheck.md",
+  "artifactSha256": "e80873cbb7537105a4af673f6317004c91d096794bda3c7cb4dc91837dac175b",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/ConversationGraphReplication.ts",
+    "upgrades/side-effects/conversation-graph-read-session-recheck.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes how often existing checks run; no new trigger or loop"
+  }
+}
