@@ -40,7 +40,11 @@ export type MeshCommand =
       transferEpoch: number;
       transfer: import('./InboundDeliveryStore.js').EncryptedDeliveryTransfer;
     }
-  | { type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number }
+  | {
+      type: 'deliverMessage'; session: string; messageId: string; payload: unknown; ownershipEpoch: number;
+      /** The message's TopicMemory row (context-budget §14 relay-path carrier). An older peer ignores it. */
+      row?: unknown;
+    }
   | {
       /** Signed cross-machine carrier into the existing A2A inbox accept boundary. */
       type: 'a2a-inbox-deliver';
@@ -306,6 +310,19 @@ export type MeshCommand =
       // same-operator peer. Exists so a move needs no shared bearer token.
       type: 'topic-history-pull';
       topic: number;
+      limit?: number;
+    }
+  | {
+      // Relay-path row carrier (context-budget-layered-summaries §14). Read/observe class:
+      // a registered same-operator peer asks for this machine's OWN TopicMemory rows of one
+      // topic — by seq of the stream this machine carried (a gap), or its recent rows and
+      // stream heads (a topic move). Bounded by its handler; the receiver re-validates every row.
+      type: 'topic-row-pull';
+      topic: number;
+      mode: 'seq' | 'recent';
+      stream?: string;
+      fromSeq?: number;
+      toSeq?: number;
       limit?: number;
     }
   | {
@@ -584,6 +601,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'app-media-pull':
     case 'topic-profile-pull':
     case 'topic-history-pull':
+    case 'topic-row-pull':
     case 'session-live-probe':
     case 'ownership-nudge':
     case 'commitments-sync':
@@ -639,6 +657,9 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // topic-history-pull joins it (session-pool-signed-history): it serves OWN recent
       // messages for one topic, the same disclosure the bearer history route makes to
       // this agent's own machines, capped in count and size by its handler.
+      // topic-row-pull joins it (context-budget §14): it serves OWN TopicMemory rows of one
+      // topic (the rows this machine carried, or its recent rows), the same disclosure the
+      // deliverMessage carrier already makes to the owner; capped by its handler.
       // pool-view-fetch joins it (MULTI-MACHINE-SEAMLESSNESS-SPEC §WS4.4): the
       // verb is reachable by any registered peer, but its HANDLER is the real
       // gate — it serves a private view body ONLY when the carried user-auth

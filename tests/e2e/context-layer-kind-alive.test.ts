@@ -83,7 +83,7 @@ describe('context layer kind — alive on the production init path', () => {
     const replicatedKindRegistry = new ReplicatedKindRegistry();
     const { CONTEXT_LAYER_KIND_REGISTRATION } = await import('../../src/monitoring/contextLayerKind.js');
     replicatedKindRegistry.register(CONTEXT_LAYER_KIND_REGISTRATION);
-    // The same dependency set server.ts passes today: no sentinelHeartbeatFresh, topicRowsPresent false.
+    // The same dependency set server.ts passes at boot: no sentinel heartbeat yet, and no rows present for the topic.
     const { coordinator } = buildFoldCoordinator({
       stateDir, runningTopicSessions: () => [{ topicKey: TOPIC }], poolPlacementLive: () => false, inboundQueueLive: () => true,
       topicRowsPresent: () => false,
@@ -95,7 +95,8 @@ describe('context layer kind — alive on the production init path', () => {
     const call = src.slice(build, src.indexOf('});', build));
     // The heartbeat is read lazily from the sentinel, which is built after the sweep and has not ticked at boot.
     expect(call).toContain('sentinelHeartbeatFresh: () => _contextBudgetSentinel?.heartbeatFresh() ?? false');
-    expect(call).toContain('topicRowsPresent: () => false');
+    // S3: the precondition reads the relay-path carrier's watermark (false until rows are present).
+    expect(call).toContain('topicRowsPresent: (topicKey) => _topicRowCarrier?.rowsPresent(topicKey) ?? false');
   });
 
   it('WIRED: server.ts registers the kind before building the coordinator and passes the registry check', () => {
