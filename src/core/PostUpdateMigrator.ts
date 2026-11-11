@@ -558,6 +558,8 @@ When active, an exact certified routine shape may be closed by a fixed rule. Jev
 
 For the llm-decision-grading job, a server receipt confirms that the grading endpoint ran. A separate idle effect proof can grade a routine Jev verdict correct only when strict before/after reads show no decision rows at any grading point, including behind each cursor. A nonempty or unreadable workset remains outcome-unknown. This narrow proof does not enable Jev rollout by itself.
 
+**Held script routes:** a job whose script route is held runs as a session instead (the prior runner). A script run cut off by a server restart or crash is recorded as a failed, interrupted run and does not hold the job. A hold the restart check wrote is lifted by that same check once its cause is settled. Read a hold and its release history with GET http://localhost:${port}/jobs/SLUG/supervision-hold; release one with POST /jobs/SLUG/supervision-hold/release and a \`{"reason":"..."}\` body. A release is recorded and is refused (409 \`cause-unsettled\`) while a run still disagrees between the run history and the supervision record.
+
 **When to use:** "Did every script result get checked?" or "Why did this job stay open?" → read GET /jobs/triage and its supervision block. The scope=pool query shows partial-pool failures explicitly. Never infer full coverage from a missing peer or an empty model log.
 `;
 }
@@ -10066,6 +10068,17 @@ setTimeout(() => process.exit(0), 2000);
         content = content.replace(marker, `${paragraph}\n\n${marker}`);
         patched = true;
         result.upgraded.push('CLAUDE.md: added grading-job idle proof guidance');
+      }
+    }
+    const heldRouteAwareness = '**Held script routes:**';
+    if (content.includes(JOB_RESULT_SUPERVISION_CLAUDEMD_MARKER) && !content.includes(heldRouteAwareness)) {
+      const marker = '**When to use:** "Did every script result get checked?"';
+      const paragraph = JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION(port)
+        .split('\n').find(line => line.startsWith(heldRouteAwareness));
+      if (paragraph && content.includes(marker)) {
+        content = content.replace(marker, `${paragraph}\n\n${marker}`);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: added held script route guidance');
       }
     }
     const oldTriageLine = '- **After their audit gate opens**, the triage jobs (health-check, commitment-checkin-reminder, the three feedback-factory jobs) can use Jev to check whether a non-routine result needs a real session. An uncertain answer requests a bounded investigator session; only during a Jev outage does Luna or Haiku sample routine results. Until benchmark and outcome-audit coverage is verified, those jobs stay on their existing session path and the model-backed daily review is inactive. Active scripts still get a daily must-fail canary.';
