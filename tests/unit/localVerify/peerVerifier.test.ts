@@ -334,6 +334,38 @@ describe('coordinator — dispatch', () => {
       expect(c.spawned).toHaveLength(1);
     });
 
+    it('a main canary queued behind a deferred PR ends the deferral and runs here', async () => {
+      const c = coordinator();
+      c.setFit(busySelf);
+      c.peer.setStatus(null); // the peer never takes the PR
+      await c.svc.request(1);
+      await c.svc.tick();
+      expect(c.spawned).toHaveLength(0);
+      expect(c.priorities.at(-1)).toBe(false); // the suite-slot claim is released while deferring
+      c.svc.noteMainHead(sha('d'));
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1);
+    });
+
+    it('after one deferral expires, the next PR is not deferred for another window', async () => {
+      const c = coordinator();
+      c.setFit(busySelf);
+      c.peer.setStatus(null);
+      await c.svc.request(1);
+      await c.svc.request(2);
+      await c.svc.tick();
+      expect(c.spawned).toHaveLength(0);
+      c.advance(STRAINED_PEER_PREFERENCE_MS + 1);
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(1); // PR 1 runs here
+      await c.finish(0, ok(record({ pr: 1, machineId: 'coord' })));
+      await c.svc.tick();
+      await c.runTimers();
+      expect(c.spawned).toHaveLength(2); // PR 2 starts at once: cooldown, no second 10-minute wait
+    });
+
     it('a main verify is never deferred', async () => {
       const c = coordinator();
       c.setFit(busySelf);
@@ -701,6 +733,37 @@ describe('coordinator — results', () => {
     c.setHolds(true); c.setEpoch(8);
     await c.svc.tick();
     expect(c.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1' });
+  });
+
+  it('a foreign holder reported at exactly the next epoch is still not adopted', async () => {
+    const { c, req } = await dispatched();
+    c.setEpoch(8);
+    c.svc.onLeaseAcquired({ foreignHolder: true, epoch: 8 });
+    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
+    c.advance(PEER_LIMITS.pollMs + 1);
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
+    expect(c.peer.calls.some((x) => x.kind === 'cancel' && x.arg === req.attemptId)).toBe(true);
+  });
+
+  it('the epoch moving to exactly the next one during the result fetch is carried and imported, with no peer failure', async () => {
+    const { c, req } = await dispatched();
+    c.peer.setResult(() => { c.setEpoch(8); return { state: 'done', record: peerRecord(req) }; });
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1' });
+  });
+
+  it('an epoch jump during the result fetch abandons without counting against the peer', async () => {
+    const { c, req } = await dispatched();
+    c.peer.setResult(() => { c.setEpoch(9); return { state: 'done', record: peerRecord(req) }; });
+    await c.svc.tick();
+    expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
+    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
+    const rows = fs.readFileSync(path.join(c.stateDir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as { event: string; reason?: string });
+    expect(rows.some((r) => r.event === 'peer-attempt-abandoned' && r.reason === 'lease-changed')).toBe(true);
+    expect(rows.some((r) => r.event === 'peer-breaker-open')).toBe(false);
+    expect(c.svc.snapshot().peers.configured.find((p) => p.machineId === 'peer1')?.consecutiveFailures ?? 0).toBe(0);
   });
 
   it('a wait for the lease is bounded by the run bound', async () => {

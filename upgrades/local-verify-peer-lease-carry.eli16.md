@@ -11,3 +11,5 @@ What changes:
 3. When the coordinator itself is too busy for heavy work, it now offers the next queued run to a free peer instead of starting it locally. A run is never held back more than 10 minutes, and the main-branch check always runs on the coordinator.
 
 The safety checks on what gets imported stay the same: the same change, the same base, the same test code and policy, and the same coordinator.
+
+After review, three limits were tightened. The Studio never holds runs back for the M5 while a main-branch check is waiting. Only one run is held back at a time, and if the M5 never picks it up, the Studio stops holding runs back for another 10 minutes. And if the lease number moves while the Studio is collecting the M5's result, that is no longer counted against the M5 as a failure.

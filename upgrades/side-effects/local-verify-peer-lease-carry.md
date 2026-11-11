@@ -97,3 +97,20 @@ Ship. The second-pass review applies because the change touches a dispatch-order
   - Epochs 23480 → 23481 → 23482 → 23483 were all re-acquired by the Studio itself (`foreignHolder:false`).
 - Unit tests: `tests/unit/localVerify/peerVerifier.test.ts`.
 - Trade-off stated: an epoch gap on the same machine (for example, the event loop stalls through two lease cycles) now abandons where #3066 would adopt. That is the conservative direction, and tonight's re-acquisitions were mostly contiguous (23480 → 23481 → 23482 → 23483).
+
+## Second-pass review (if required)
+
+**Reviewer:** independent reviewer (coordinator-dispatched), PR #3073
+**Independent read of the artifact: concern** — no stale or forged import path found. Five findings, all fixed in the follow-up commit:
+
+1. **MEDIUM, fixed.** The strained deferral could hold the whole local queue, including a queued `main` canary, for 10 minutes. A stale "free" peer reading also let each PR spend its own window in turn. Now:
+   - No deferral while any `main` entry is queued.
+   - The suite-slot claim is released while deferring.
+   - Only one deferral is active at a time.
+   - An expired deferral starts a cooldown of one more window, during which nothing is deferred.
+2. **LOW-MED, fixed.** An epoch bump during the result fetch made `importRefusal` return `lease-epoch-changed`, which counted against the peer's breaker. Now the lease decision is re-run after the fetch: exactly +1 is carried, a lapse waits, and anything else abandons with `failure:false`. Lease-fence refusals (`lease-epoch-changed`, `not-lease-holder`) never count against the peer.
+3. **Fixed.** `onLeaseAcquired({foreignHolder:true})` now explicitly abandons every reservation, even at the next epoch. Previously the poll alone would have carried a +1 move.
+4. **LOW, fixed.** The lease-wait audit set is cleared on keep, carry and import.
+5. **NIT, fixed.** The per-entry spent-marker map is gone; a single deferral slot plus a cooldown replaces it.
+
+Tests added for each of these. All five failed on the previous commit and pass now.

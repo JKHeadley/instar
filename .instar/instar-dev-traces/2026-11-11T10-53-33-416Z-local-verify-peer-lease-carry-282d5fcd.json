@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "local-verify-peer-lease-carry",
+  "sessionId": "6aff2016-3a47-4f28-ac95-efaf2b9f95ca",
+  "timestamp": "2026-11-11T10:53:33.416Z",
+  "artifactPath": "upgrades/side-effects/local-verify-peer-lease-carry.md",
+  "artifactSha256": "6cd2af2a11b7bb8e3db66b44369e59f8eb8f3a7dfbfb5da5df0d334ddc0501f9",
+  "coveredFiles": [
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "review fixes to the same narrow local-verify peer change",
+  "eli16Path": "upgrades/local-verify-peer-lease-carry.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-peer-lease-carry.md",
+  "secondPass": "independent reviewer (coordinator), PR #3073",
+  "reviewerConcurred": null
+}
