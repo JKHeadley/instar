@@ -26,7 +26,10 @@
  *  3. CHECKPOINT GRACE PASS — `pruneSettledCheckpoints` deletes rolled-back
  *     folds' engine checkpoints after their 24 h grace.
  *  3b. OUTBOX and CANARY — pending notices are sent; the standing compaction
- *     canary (§9.1, `compactionCanary.ts`) scans the topic sessions' transcripts.
+ *     canary (§9.1, `compactionCanary.ts`) scans the topic sessions' transcripts;
+ *     with compaction recovery on, the heal ladder by cause (`canaryHealLadder.ts`)
+ *     acts on its settled divergences and the synthetic press (`syntheticPress.ts`)
+ *     earns its positive control on a throwaway session.
  *  3c. THE §17 ROWS (Phase 1):
  *     - LAYER FRESHNESS (§6, Defaults "Layer freshness target"): each live topic
  *       session's H1 against TopicMemory. Over target on a topic this machine
@@ -67,6 +70,8 @@ import { TORN_MARKER_KEY } from './foldMarker.js';
 import { H1_TARGET_USER_TURNS } from './contextLayers/layerProjection.js';
 import { pruneSettledCheckpoints } from './engineCheckpoint.js';
 import type { CanaryReport, CanarySession, CompactionCanary } from './compactionCanary.js';
+import type { CanaryHealLadder, CanaryHealStatus } from './canaryHealLadder.js';
+import type { PressTickOutcome, SyntheticPress } from './syntheticPress.js';
 import { readSuiteResults, adapterSuiteDir, type AdapterSuiteResult } from './adapterVerificationSuite.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { topicRef } from '../messaging/shared/topicRef.js';
@@ -145,6 +150,14 @@ export interface ContextBudgetSentinelDeps {
    */
   canary?: { instance: CompactionCanary; sessions(): CanarySession[]; switchOn(): boolean };
   /**
+   * The canary's heal ladder by cause (§9.1, `canaryHealLadder.ts`) and its
+   * positive control, the synthetic press on a throwaway session
+   * (`syntheticPress.ts`). Each runs after the canary scan, ONLY while the
+   * canary's switch (compaction recovery) is on; absent ⇒ observation only.
+   */
+  heal?: CanaryHealLadder;
+  press?: SyntheticPress;
+  /**
    * The adapter verification suite's trigger (§9.6: "triggers: adapter build and
    * any change of the retained engine binary version"): when the engine version
    * has no recorded result, run the suite once (in its own process), at most once
@@ -161,6 +174,12 @@ export interface ContextBudgetSentinelDeps {
    * degradation sink that makes every clear loud. Absent ⇒ the row reads `unavailable`.
    */
   holdHealth?: { carriers: HoldCarrierSource[]; admit: SelfHealGateDeps['admit']; degradation(r: DegradationRow): void; graceMs?: number };
+  /**
+   * The Codex adapter's suite trigger (§9.6 Codex column, Phase 1 S17): the same
+   * rule for the retained Codex binary. One suite run at a time across engines
+   * (the cost bound is one throwaway session per run).
+   */
+  codexAdapterSuite?: { currentVersion(): string | null; run(): Promise<void>; retryAfterMs?: number };
 }
 
 const SUITE_RETRY_MS = 24 * 60 * 60_000;
@@ -218,6 +237,10 @@ export interface SentinelStatus {
   lastError: string | null;
   /** The compaction canary's report (null when no canary is wired). */
   canary: CanaryReport | null;
+  /** The heal ladder's recent decisions and breaker (null when not wired). */
+  heal: CanaryHealStatus | null;
+  /** The synthetic press's last outcome (null when not wired). */
+  press: { last: { at: number; outcome: PressTickOutcome } | null } | null;
   /** The adapter verification suite's recorded results on this machine, newest first, and whether a run is in progress. */
   adapterSuite: {
     running: boolean; results: AdapterSuiteResult[]; attempts: Record<string, { count: number; lastAt: number }>; gaveUp: string[];
@@ -225,6 +248,8 @@ export interface SentinelStatus {
     engineVersion: string | null;
     /** The latest attempt's outcome (`last-run.json`), including an inconclusive run's errors. */
     lastRun: Record<string, unknown> | null;
+    /** The Codex adapter's suite trigger (S17): its engine version and latest attempt. */
+    codex: { wired: boolean; engineVersion: string | null; lastRun: Record<string, unknown> | null };
   };
   /**
    * §17 "stale layers": H1 against TopicMemory for every live topic session (H3 not built yet).
@@ -359,13 +384,22 @@ export class ContextBudgetSentinel {
       clean = await this.step('quarantine', () => this.reconcileQuarantines()) && clean;
       clean = await this.step('torn', () => this.escalateTorn()) && clean;
       clean = await this.step('outbox', () => this.flushOutbox()) && clean;
-      if (this.d.canary) { const k = this.d.canary; clean = await this.step('canary', () => k.instance.scan(k.sessions(), k.switchOn())) && clean; }
-      if (this.d.adapterSuite) clean = await this.step('adapter-suite', () => this.maybeRunAdapterSuite()) && clean;
+      if (this.d.canary) {
+        const k = this.d.canary;
+        clean = await this.step('canary', () => k.instance.scan(k.sessions(), k.switchOn())) && clean;
+        // Heal and press act only with compaction recovery on (§9.1: off ⇒ today's behaviour, nothing acts).
+        let on = false;
+        try { on = k.switchOn() === true; } catch { on = false; } // @silent-fallback-ok — an unreadable switch acts on nothing
+        if (on && this.d.heal) { const h = this.d.heal; clean = await this.step('heal', () => h.tick()) && clean; }
+        if (on && this.d.press) { const pr = this.d.press; clean = await this.step('press', () => pr.tick()) && clean; }
+      }
+      if (this.d.adapterSuite) clean = await this.step('adapter-suite', () => this.maybeRunAdapterSuite('claude-code')) && clean;
+      if (this.d.codexAdapterSuite) clean = await this.step('adapter-suite-codex', () => this.maybeRunAdapterSuite('codex-cli')) && clean;
       if (this.d.layers && this.d.liveTopics) clean = await this.step('layer-freshness', () => this.checkFreshness()) && clean;
       if (this.d.holdHealth) clean = await this.step('hold-health', () => this.checkHolds()) && clean;
       if (this.d.liveTopics) clean = await this.step('eligible-without-fold', () => this.observeEligible()) && clean;
       clean = await this.step('checkpoints', () => { this.checkpointsPruned += pruneSettledCheckpoints(this.d.stateDir, this.now()).length; }) && clean;
-      clean = await this.step('prune', () => { this.gate.pruneTerminal(); this.orphanGate?.pruneTerminal(); }) && clean;
+      clean = await this.step('prune', () => { this.gate.pruneTerminal(); this.orphanGate?.pruneTerminal(); this.d.heal?.prune(); this.d.press?.prune(); }) && clean;
       // The heartbeat means a WORKING sentinel: a tick with a failed step does not refresh it.
       if (clean) this.lastTickAt = this.now();
     } finally {
@@ -497,12 +531,14 @@ export class ContextBudgetSentinel {
   private suiteRunning = false;
 
   /** Start the suite (not awaited) when this engine version has no recorded result and no recent attempt. */
-  private maybeRunAdapterSuite(): void {
-    const k = this.d.adapterSuite!;
+  private maybeRunAdapterSuite(engine: 'claude-code' | 'codex-cli'): void {
+    const k = engine === 'codex-cli' ? this.d.codexAdapterSuite! : this.d.adapterSuite!;
     if (this.suiteRunning) return;
-    const version = k.currentVersion();
-    if (!version) return;
-    if (readSuiteResults(this.d.stateDir).some((r) => r.version === version)) return;
+    const v = k.currentVersion();
+    if (!v) return;
+    if (readSuiteResults(this.d.stateDir).some((r) => (r.engine ?? 'claude-code') === engine && r.version === v)) return;
+    // Attempts are keyed per engine (Claude Code keeps the bare version, as recorded before).
+    const version = engine === 'codex-cli' ? `codex-cli@${v}` : v;
     const f = path.join(adapterSuiteDir(this.d.stateDir), 'attempts.json');
     let attempts: Record<string, { count: number; lastAt: number }> = {};
     try { attempts = JSON.parse(fs.readFileSync(f, 'utf-8')) as typeof attempts; } catch { attempts = {}; } // @silent-fallback-ok — no attempts yet
@@ -898,14 +934,22 @@ export class ContextBudgetSentinel {
       checkpointsPruned: this.checkpointsPruned,
       lastError: this.lastError,
       canary: this.d.canary ? this.d.canary.instance.report(this.d.canary.switchOn()) : null,
+      heal: this.d.heal ? this.d.heal.status() : null,
+      press: this.d.press ? this.d.press.status() : null,
       adapterSuite: (() => {
         let attempts: Record<string, { count: number; lastAt: number }> = {};
         try { attempts = JSON.parse(fs.readFileSync(path.join(adapterSuiteDir(this.d.stateDir), 'attempts.json'), 'utf-8')) as typeof attempts; } catch { attempts = {}; } // @silent-fallback-ok — no attempts yet
         const results = readSuiteResults(this.d.stateDir);
-        const gaveUp = Object.entries(attempts).filter(([v, a]) => a.count >= SUITE_MAX_ATTEMPTS && !results.some((r) => r.version === v)).map(([v]) => v);
-        let lastRun: Record<string, unknown> | null = null;
-        try { lastRun = JSON.parse(fs.readFileSync(path.join(adapterSuiteDir(this.d.stateDir), 'last-run.json'), 'utf-8')) as Record<string, unknown>; } catch { lastRun = null; } // @silent-fallback-ok — no run yet
-        return { running: this.suiteRunning, results: results.slice(0, 5), attempts, gaveUp, engineVersion: this.d.adapterSuite?.currentVersion() ?? null, lastRun };
+        const recorded = (key: string) => results.some((r) => key.startsWith('codex-cli@') ? r.engine === 'codex-cli' && `codex-cli@${r.version}` === key : (r.engine ?? 'claude-code') === 'claude-code' && r.version === key);
+        const gaveUp = Object.entries(attempts).filter(([v, a]) => a.count >= SUITE_MAX_ATTEMPTS && !recorded(v)).map(([v]) => v);
+        const readLast = (name: string): Record<string, unknown> | null => {
+          try { return JSON.parse(fs.readFileSync(path.join(adapterSuiteDir(this.d.stateDir), name), 'utf-8')) as Record<string, unknown>; } catch { return null; } // @silent-fallback-ok — no run yet
+        };
+        return {
+          running: this.suiteRunning, results: results.slice(0, 5), attempts, gaveUp,
+          engineVersion: this.d.adapterSuite?.currentVersion() ?? null, lastRun: readLast('last-run.json'),
+          codex: { wired: !!this.d.codexAdapterSuite, engineVersion: this.d.codexAdapterSuite?.currentVersion() ?? null, lastRun: readLast('last-run-codex-cli.json') },
+        };
       })(),
       layerFreshness: !this.d.layers ? { state: 'unavailable', reason: 'layers-off' }
         : !this.d.liveTopics ? { state: 'unavailable', reason: 'no-session-source' }

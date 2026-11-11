@@ -28,6 +28,7 @@ const iso = (ms: number) => new Date(ms).toISOString();
 
 const meta = (at: number, extra: Record<string, unknown> = {}) => ({ timestamp: iso(at), type: 'session_meta', payload: { id: SID, timestamp: iso(at), cwd: '/p', cli_version: '0.167.0', ...extra } });
 const usage = (at: number, used: number, win: number | null = WIN) => ({ timestamp: iso(at), type: 'event_msg', payload: { type: 'token_count', info: { total_token_usage: { input_tokens: used }, last_token_usage: { input_tokens: used }, ...(win ? { model_context_window: win } : {}) } } });
+const prompt = (at: number, text: string) => ({ timestamp: iso(at), type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text }] } });
 const compacted = (at: number, windowId: string, before = 240_000) => ({ timestamp: iso(at), type: 'compacted', payload: { message: '', window_id: windowId, first_window_id: 'w0', previous_window_id: 'w0', window_number: 1, replacement_history: [], latest_token_usage_record: { usage: { input_tokens: before } } } });
 
 describe('classifyCodexRolloutEntry (the rollout parser change)', () => {
@@ -41,7 +42,15 @@ describe('classifyCodexRolloutEntry (the rollout parser change)', () => {
     expect(classifyCodexRolloutEntry(meta(1, { forked_from_id: 'p' }))).toEqual({ kind: 'meta', version: '0.167.0', forkedFrom: 'p' });
     expect(classifyCodexRolloutEntry({ type: 'response_item', payload: { type: 'message' } })).toBeNull();
   });
-  it('the pre-filter admits only the three entry kinds', () => {
+  it('a real user prompt is a prompt; Codex\'s own tagged context blocks and other roles are not (S17)', () => {
+    expect(classifyCodexRolloutEntry(prompt(2_000, '[telegram:5] hello'))).toMatchObject({ kind: 'prompt', at: 2_000, topic: true });
+    expect(classifyCodexRolloutEntry(prompt(2_000, 'plain'))).toMatchObject({ kind: 'prompt', topic: false });
+    expect(classifyCodexRolloutEntry(prompt(2_000, '<environment_context>cwd</environment_context>'))).toBeNull();
+    expect(classifyCodexRolloutEntry({ ...prompt(2_000, 'note'), payload: { type: 'message', role: 'developer', content: [{ type: 'input_text', text: 'note' }] } })).toBeNull();
+    expect(classifyCodexRolloutEntry(prompt(2_000, ''))).toBeNull();
+  });
+  it('the pre-filter admits only the four entry kinds', () => {
+    expect(codexRolloutLineMayMatter(JSON.stringify(prompt(1, 'hi')))).toBe(true);
     expect(codexRolloutLineMayMatter(JSON.stringify(compacted(1, 'w')))).toBe(true);
     expect(codexRolloutLineMayMatter(JSON.stringify(usage(1, 5)))).toBe(true);
     expect(codexRolloutLineMayMatter('{"type":"response_item","payload":{"type":"reasoning"}}')).toBe(false);
@@ -119,19 +128,19 @@ describe('the canary\'s Codex group', () => {
     expect(produced).toEqual([]);
   });
 
-  it('entry PRESENT: a compacted entry ALONE is a detection, marked synthesized, counted, never healed by injection; the producer fires', () => {
+  it('entry PRESENT: a compacted entry ALONE is a detection, marked synthesized, never healed by injection; the producer fires; it waits for its next prompt (S17)', () => {
     const c = canary();
     c.scan([session], true);
     append(usage(now, 120_000), compacted(now + 1_000, 'w1'));
     c.scan([session], true);
     const g = codexGroup(c)!;
-    expect(g).toMatchObject({ engine: 'codex-cli', version: '0.167.0', detected: 1, complete: 0, pending: 0, state: 'counted', marking: 'synthesized' });
+    expect(g).toMatchObject({ engine: 'codex-cli', version: '0.167.0', detected: 1, complete: 0, pending: 1, state: 'uninitialized', marking: 'synthesized' });
     expect(g.profile).toEqual(ENGINE_CANARY_PROFILES['codex-cli']);
-    expect(g.profile).toMatchObject({ detection: 'supported', postCompactEvent: 'synthesized', healByInjection: false, recoveryVerifiable: false });
+    expect(g.profile).toMatchObject({ detection: 'supported', postCompactEvent: 'synthesized', healByInjection: false, recoveryVerifiable: true, recoveryArtifacts: 'next-prompt-seed', positiveControl: false });
     expect(produced).toEqual(['w1']);
-    // Long past the artifact grace it still reads counted (no artifact to miss), never diverged.
+    // Long past the artifact grace, with no prompt yet, it is still PENDING (the seed rides the next prompt), never diverged.
     now += 60 * 60_000;
-    expect(codexGroup(c)!.state).toBe('counted');
+    expect(codexGroup(c)).toMatchObject({ pending: 1, state: 'uninitialized' });
   });
 
   it('switch off ⇒ n/a for the Codex group too', () => {
@@ -168,7 +177,7 @@ describe('the canary\'s Codex group', () => {
     expect(codexGroup(c)).toMatchObject({ detected: 0, synthesizedSignals: 1, state: 'uninitialized' });
     append(compacted(now + 3, 'w1'), usage(now + 4, 0), usage(now + 5, Math.ceil(WIN * 0.86)));
     c.scan([session], true);
-    expect(codexGroup(c)).toMatchObject({ detected: 1, synthesizedSignals: 2, state: 'counted' });
+    expect(codexGroup(c)).toMatchObject({ detected: 1, synthesizedSignals: 2, pending: 1, state: 'uninitialized' });
     // the armed flag is durable: a NEW canary instance (a restart) does not fire again for the same cycle
     append(usage(now + 6, WIN - 10_000));
     canary().scan([session], true);
@@ -182,7 +191,7 @@ describe('the canary\'s Codex group', () => {
     now += CHANNEL_FRESH_MS + 120_000; // ...and the server then misses ticks past the fresh window
     fs.writeFileSync(rollout, [meta(old), usage(now - CHANNEL_FRESH_MS - 30_000, WIN - 1_000), compacted(now - CHANNEL_FRESH_MS - 20_000, 'late-1')].map((x) => JSON.stringify(x)).join('\n') + '\n');
     c.scan([session], true);
-    expect(codexGroup(c)).toMatchObject({ detected: 1, state: 'counted', synthesizedSignals: 0 });
+    expect(codexGroup(c)).toMatchObject({ detected: 1, pending: 1, state: 'uninitialized', synthesizedSignals: 0 });
     expect(produced).toEqual([]);
     expect(usageCalls).toEqual([]);
     expect(rearmed).toBe(1);

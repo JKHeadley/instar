@@ -1703,6 +1703,75 @@ const contextBudgetLayerRebuildRequest: SelfActionController = {
   },
 };
 
+/**
+ * context-budget-canary-heal — the compaction canary's heal ladder by cause
+ * (context-budget-layered-summaries §9.1): one SelfHealGate episode per
+ * machine.session.context-epoch, at most 3 attempts (backoff 10 min, 1 h) in a
+ * 30-minute wall clock, then exhausted (one Attention item); at most 3 runs per
+ * session per day; 3 completed heals of one cause in 24 h open its breaker
+ * (record only). Pressure model: a session whose recovery never lands, ticked
+ * every 5 minutes for a day.
+ */
+const contextBudgetCanaryHeal: SelfActionController = {
+  id: 'context-budget-canary-heal',
+  actionVerb: 'retry-compaction-reseed',
+  models: 'src/monitoring/canaryHealLadder.ts (pool-shared async SelfHealGate ladder per session+epoch: <=3 attempts / 30 min, <=3 runs per session per day, same-cause breaker)',
+  modelsPath: 'src/monitoring/canaryHealLadder.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetCanaryHeal.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const BACKOFF = [10 * 60_000, 60 * 60_000]; const WALL_MS = 30 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-canary-heal') as { attempts: number; startedAt: number; next: number; exhausted: boolean; runs: number } | undefined)
+        ?? { attempts: 0, startedAt: f.clock.nowMs(), next: 0, exhausted: false, runs: 0 };
+      if (st.exhausted || st.runs >= 3) { f.durableState.set('cb-canary-heal', st); return; }
+      if (st.attempts >= 3 || f.clock.nowMs() - st.startedAt >= WALL_MS) { f.durableState.set('cb-canary-heal', { ...st, exhausted: true }); return; }
+      if (f.clock.nowMs() < st.next) { f.durableState.set('cb-canary-heal', st); return; }
+      sink.emit({ verb: 'retry-compaction-reseed', target: 'session:s1' });
+      f.durableState.set('cb-canary-heal', { ...st, attempts: st.attempts + 1, runs: st.runs + 1, next: f.clock.nowMs() + BACKOFF[Math.min(st.attempts, 1)] });
+    } };
+  },
+};
+
+/**
+ * context-budget-synthetic-press — the canary's positive control (§9.1): a
+ * /compact pressed on a THROWAWAY session only, at most 3 per machine per day
+ * and 1 h apart (one SelfHealGate episode per day), only while the epoch lacks
+ * a synthetic positive. Pressure model: presses that never produce a positive,
+ * ticked every 5 minutes for a day.
+ */
+const contextBudgetSyntheticPress: SelfActionController = {
+  id: 'context-budget-synthetic-press',
+  actionVerb: 'retry-synthetic-compaction',
+  models: 'src/monitoring/syntheticPress.ts (SelfHealGate episode per machine per day: <=3 presses, 1 h backoff; throwaway targets only)',
+  modelsPath: 'src/monitoring/syntheticPress.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetSyntheticPress.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const GAP = 60 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-press') as { count: number; lastAt: number } | undefined) ?? { count: 0, lastAt: -Infinity };
+      if (st.count >= 3 || f.clock.nowMs() - st.lastAt < GAP) { f.durableState.set('cb-press', st); return; }
+      sink.emit({ verb: 'retry-synthetic-compaction', target: 'session:cb-press-1' });
+      f.durableState.set('cb-press', { count: st.count + 1, lastAt: f.clock.nowMs() });
+    } };
+  },
+};
+
 const feedbackTriageSelfHealProbe: SelfActionController = {
   id: 'feedback-triage-self-heal-probe',
   actionVerb: 'retry-authority-probe',
@@ -5422,6 +5491,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   contextBudgetAdapterSuite,
   contextBudgetOrphanCarrierClear,
   contextBudgetLayerRebuildRequest,
+  contextBudgetCanaryHeal,
+  contextBudgetSyntheticPress,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,

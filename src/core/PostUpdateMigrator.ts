@@ -360,6 +360,76 @@ const KEEP_INSTRUCTIONS_PY = [
   'sys.stdout.flush()',
 ].join('\n');
 
+/**
+ * The standing-packet read (context-budget-layered-summaries §9.5, Phase 1
+ * S10), embedded in compaction-recovery.sh as `python3 -c` (no `"`, `$` or
+ * backtick inside). argv[1] is the state root, argv[2] the topic. Prints the
+ * staged, VERIFIED packet for the topic wrapped in nonce-delimited lines
+ * (the fitter keeps that section whole), and nothing otherwise: absent,
+ * unverified, stale (over 7 days), a hash or length mismatch, or over the
+ * hook ceiling all print nothing and the hook falls back to today's block.
+ * Schema written by `stageStandingPacket`
+ * (src/monitoring/contextLayers/standingPacket.ts); keep the two in step.
+ */
+export const STANDING_PACKET_PY = [
+  'import sys,json,os,hashlib,time',
+  'root=sys.argv[1]',
+  "topic=sys.argv[2] if len(sys.argv)>2 else ''",
+  "if not topic or len(topic)>15 or not (topic.isascii() and topic.isdigit()):",
+  '    sys.exit(0)',
+  "d=os.path.join(os.path.realpath(os.path.join(root,'state','context-layers')),'_standing')",
+  'try:',
+  "    p=json.load(open(os.path.join(d,topic+'.json')))",
+  'except Exception:',
+  '    sys.exit(0)',
+  "if p.get('schema')!='standing-packet/1' or p.get('topicKey')!=topic or p.get('verified') is not True:",
+  '    sys.exit(0)',
+  "b=p.get('builtAt')",
+  'now=time.time()*1000',
+  'if not isinstance(b,(int,float)) or now-b>7*86400000 or b-now>300000:',
+  '    sys.exit(0)',
+  'try:',
+  "    body=open(os.path.join(d,topic+'.md'),'rb').read(26001)",
+  "    t=body.decode('utf-8')",
+  'except Exception:',
+  '    sys.exit(0)',
+  "h=hashlib.sha256(body).hexdigest()",
+  "if len(body)>26000 or h!=p.get('sha256'):",
+  '    sys.exit(0)',
+  "n=len(t.encode('utf-16-le'))//2",
+  "if n!=p.get('chars') or n>6500:",
+  '    sys.exit(0)',
+  "sys.stdout.buffer.write(('--- STANDING PACKET '+h[:8]+' ---'+chr(10)).encode('ascii')+body+(chr(10)+'--- END STANDING PACKET '+h[:8]+' ---'+chr(10)).encode('ascii'))",
+  'sys.stdout.buffer.flush()',
+].join('\n');
+
+/**
+ * Which carrier a compaction seed delivered (context budget §17 "delivered vs
+ * staged"): the standing packet's nonce, only when the nonce really is the
+ * sha256 of the delimited text (as the fitter checks), else `legacy`. Embedded
+ * in session-start.sh as `python3 -c` (no `"`, `$` or backtick inside).
+ */
+export const SEED_CARRIER_PY = [
+  'import sys,hashlib',
+  "t=sys.stdin.buffer.read().decode('utf-8','replace')",
+  'L=t.split(chr(10))',
+  "out='legacy'",
+  'for i,l in enumerate(L):',
+  "    if not (len(l)==32 and l.startswith('--- STANDING PACKET ') and l.endswith(' ---')):",
+  '        continue',
+  '    n=l[20:28]',
+  "    if not all(c in '0123456789abcdef' for c in n):",
+  '        continue',
+  "    end='--- END STANDING PACKET '+n+' ---'",
+  '    if end in L[i+1:]:',
+  '        j=L.index(end,i+1)',
+  '        inner=chr(10).join(L[i+1:j])',
+  "        if hashlib.sha256(inner.encode('utf-8')).hexdigest().startswith(n) and len(inner.encode('utf-16-le'))//2<=6600:",
+  '            out=n',
+  '            break',
+  'print(out)',
+].join('\n');
+
 /** The overload-shed line in an agent's CLAUDE.md, shared by the section template and the
  *  add/update migrations so the three cannot drift. */
 /**
@@ -3061,6 +3131,20 @@ export class PostUpdateMigrator {
    * Run all post-update migrations. Safe to call multiple times —
    * each migration is idempotent.
    */
+  /**
+   * The compaction canary's heal ladder, rung 1 (context-budget-layered-
+   * summaries §9.1: "hook not installed ⇒ re-run the migration"): only the two
+   * steps that install the hook family — the always-overwritten built-in hook
+   * scripts and the settings entries — not the whole migration. Idempotent like
+   * every migration step.
+   */
+  repairCompactionRecoveryHooks(): MigrationResult {
+    const result: MigrationResult = { upgraded: [], skipped: [], errors: [] };
+    this.migrateHooks(result);
+    this.migrateSettings(result);
+    return result;
+  }
+
   migrate(): MigrationResult {
     const result: MigrationResult = {
       upgraded: [],
@@ -16083,15 +16167,15 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
     // "does compaction recovery work" to its read surface. Idempotent: inserted
     // once after the "What are we working on?" row, sniffed on the route.
     if (!content.includes('/context-budget/sentinel') && content.includes('| What are we working on?')) {
-      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
+      const row = `| Does compaction recovery work on this machine? / is a context fold stuck? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/sentinel\` — the Context Budget sentinel: the standing compaction canary per machine, engine and version (\`healthy\` = at least 3 compactions each with its PostCompact record and recovery block, one of them a synthetic positive, none pending; \`accruing\` = all recovered but not enough yet; \`diverged\` = a compaction without its recovery; \`uninitialized\` = none seen; \`n/a\` = recovery switched off; \`counted\` = recovery unverifiable, never healed by injection; Codex stops at \`accruing\`), plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (\`layerFreshness\`), leftover fold pauses it found or cleared (\`holdHealth\`), and conversations with no fold for a day (\`eligibleWithoutFold\`, which reads \`unknown\` until the benefit estimator exists). \`503\` = the sentinel is off (it ships dark). NEVER claim recovery works from memory |`;
       content = content.replace(/(\| What are we working on\?[^\n]*\n)/, `$1${row}\n`);
       patched = true;
       result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
     }
     // The canary's `counted` state (S16, §9.6 Codex adapter): refresh an existing
     // row that predates it. Idempotent: sniffed on the old row's closing words.
-    if (content.includes('/context-budget/sentinel') && !content.includes('`counted` = an engine') && content.includes('`n/a` = recovery switched off), plus')) {
-      content = content.replace('`n/a` = recovery switched off), plus', '`n/a` = recovery switched off; `counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection), plus');
+    if (content.includes('/context-budget/sentinel') && !content.includes('`counted` = ') && content.includes('`n/a` = recovery switched off), plus')) {
+      content = content.replace('`n/a` = recovery switched off), plus', '`n/a` = recovery switched off; `counted` = recovery unverifiable, never healed by injection; Codex stops at `accruing`), plus');
       patched = true;
       result.upgraded.push('CLAUDE.md: the Context Budget sentinel row names the canary\'s counted state');
     }
@@ -16103,6 +16187,13 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
         "plus any quarantined or unreadable context folds, how far behind each live conversation's running summary is (`layerFreshness`), leftover fold pauses it found or cleared (`holdHealth`), and conversations with no fold for a day (`eligibleWithoutFold`, which reads `unknown` until the benefit estimator exists). `503`");
       patched = true;
       result.upgraded.push('CLAUDE.md: extended the Context Budget sentinel row with its freshness, hold-health and no-fold rows');
+    }
+    // S17: Codex recovery became verifiable (the next-prompt seed), so the row's
+    // `counted` example no longer names Codex. Idempotent: sniffed on the old phrase.
+    if (content.includes('`counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection')) {
+      content = content.replace('`counted` = an engine such as Codex whose compactions are detected and counted but whose recovery cannot be verified yet, never healed by injection', '`counted` = recovery unverifiable, never healed by injection; Codex stops at `accruing`');
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the Context Budget sentinel row says a Codex row stops at accruing');
     }
 
     // Context Budget U (context-budget-layered-summaries §6 row U, §8): route
@@ -16124,6 +16215,58 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
         patched = true;
         result.upgraded.push('CLAUDE.md: added the Context Budget delta-shadow Registry-First row');
       }
+    }
+
+    // Context Budget A and G (context-budget-layered-summaries §6.1, §6.2): route
+    // "what is this topic for / which decisions are settled" to its read surface.
+    // Idempotent: inserted once after the user-corpus row, sniffed on the route.
+    if (!content.includes('/topic/N/anchor') && content.includes("| How large are the operator's own messages in topic N?")) {
+      const row = `| What is topic N for? / which of the operator's decisions are settled, and which purpose changes still need a yes? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic/N/anchor\` — the Anchor (the operator's framing message rows, or \`no-anchor\`) and the decisions/evolutions ledger (context budget): each entry's type, cause, effect, status and supersedes links. Only a decision bound to the operator's own message whose referent stub is an answer or directive reads \`derived-settled\` (\`settled\` once the operator re-affirms it); anything else is \`pending\`. A purpose change is \`tentative\` until the operator confirms it — silence never confirms. Row references and statuses only, never the words. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| How large are the operator's own messages in topic N\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget anchor-ledger Registry-First row');
+    }
+
+    // Context Budget backfill (context-budget-layered-summaries §6.1, S7): route
+    // "which conversations were rebuilt from history / what still waits for the
+    // operator" to its read surface. Idempotent: inserted once after the
+    // anchor-ledger row, sniffed on the metrics field.
+    if (!content.includes('anchors.backfill') && content.includes("| What is topic N for? / which of the operator's decisions are settled")) {
+      const row = `| Which conversations had their purpose and decisions rebuilt from history? / how many rebuilt items still wait for the operator? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/metrics\` → \`anchors.backfill\` (context budget backfill): topics rebuilt, entries still \`backfilled-unconfirmed\` (usable, labelled), and \`pendingConfirmations\` (what the dashboard card and Home count). The per-topic anchor view carries the same as its \`backfill\` block. The one-line check is folded into my next reply in a conversation the operator has written in since; it is never a message of its own. The lane runs on the topic's owner, at most 20 topics a day, only while \`contextBudget.backfill.enabled\` is on. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| What is topic N for\? \/ which of the operator's decisions are settled[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget backfill Registry-First row');
+    }
+
+    // Context Budget H3 (context-budget-layered-summaries §6 row H3, §6.5):
+    // route "what is the whole story / who writes the summary" to /topic/summarize
+    // and say that H3 is the summary's single writer. Idempotent: inserted once
+    // after the anchor-ledger row, sniffed on the 409 reason.
+    if (!content.includes('summary-written-by-h3') && content.includes('| What is topic N for? / which of the operator')) {
+      const row = `| What is the whole story of topic N so far? / who writes the topic summary? | \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/topic/summarize -d '{"topicId":N}'\` — with the context layers on this returns H3, the long-term view (\`writer: h3\`), rebuilt from a bounded selection of the topic's chunk and range summaries with an \`as of\` stamp and which older ranges were read only through their range summary. H3 is then the ONLY writer of the topic summary: \`POST /topic/summary\` returns \`409 summary-written-by-h3\` and the rolling summarizer is off, so never try to write one. With the layers off both routes behave as before |`;
+      content = content.replace(/(\| What is topic N for\? \/ which of the operator[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget H3 Registry-First row');
+    }
+
+    // Context Budget standing packet (context-budget-layered-summaries §9.5, S10):
+    // route "what will this session see after a compaction" to the packet view.
+    // Idempotent: inserted once after the H3 row, sniffed on the route path.
+    if (!content.includes('/standing-packet') && content.includes('| What is the whole story of topic N so far?')) {
+      const row = `| What will topic N's session see after a compaction? / is its standing packet healthy? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic/N/standing-packet\` — the standing packet (context budget): what the session is re-seeded with after an unplanned compaction — the Anchor, the live ledger and the operator's recent messages verbatim, then the current work, phase and long-term view with \`as of\` stamps, and chunk pointers. Shows its sizes against the hook budget, the sections present or absent, whether it was reduced (then saved in full for the session to read), and the verifier's verdict. A packet that fails verification is never delivered: the older recovery block is used instead. Sizes and verdicts only, never the words. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| What is the whole story of topic N so far\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget standing-packet Registry-First row');
+    }
+
+    // Context Budget Codex next-prompt seed (context-budget-layered-summaries §9.6, S17):
+    // route "did a Codex session get its context back" to the seed status.
+    // Idempotent: inserted once after the standing-packet row, sniffed on the route path.
+    if (!content.includes('/context-budget/codex-seed') && content.includes("| What will topic N's session see after a compaction?")) {
+      const row = `| Codex context restored after compaction? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/context-budget/codex-seed\` — Codex next-prompt seed counts (503: layers off) |`;
+      content = content.replace(/(\| What will topic N's session see after a compaction\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget Codex next-prompt seed Registry-First row');
     }
 
     // Process Health (Dashboard Tab) — Agent Awareness backfill for the
@@ -20164,7 +20307,11 @@ if [ "\$EVENT" = "compact" ]; then
     # compact-boundary entry only after this hook runs (measured on 2.1.321), so
     # the newest boundary visible now is the PREVIOUS compaction's. The sentinel
     # binds the epoch to the boundary that follows its report.
-    CB_SEED_OUT=\$(bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh")
+    # CB_PACKET_OK: the recovery seed may print the topic's staged, verified
+    # standing packet (context budget §9.5) in place of today's conversation
+    # context. Only this switch-on Claude Code path sets it; the exec path above
+    # (switch off, other engines) keeps today's block exactly.
+    CB_SEED_OUT=\$(CB_PACKET_OK=1 bash "$INSTAR_DIR/hooks/instar/compaction-recovery.sh")
     CB_SEED_RC=\$?
     CB_STATE_ROOT="$INSTAR_DIR"
     if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
@@ -20192,9 +20339,14 @@ print(s if s and len(s)<=128 and all(c.isalnum() or c in '-_' for c in s) else '
       printf '%s\\n' "\$CB_SEED_OUT"
       if [ "\${#CB_SEED_OUT}" -le 9000 ]; then CB_FIT_OK=1; fi
     fi
+    # Which carrier this seed delivered (context budget §17 "delivered vs staged"):
+    # the standing packet's 8-hex nonce, or legacy.
+    CB_CARRIER=\$(printf '%s\\n' "\$CB_SEED_OUT" | python3 -c "${SEED_CARRIER_PY}" 2>/dev/null)
+    [ -n "\$CB_CARRIER" ] || CB_CARRIER="legacy"
     if [ "\$CB_SEED_RC" -eq 0 ] && [ -n "\$CB_SEED_OUT" ] && [ "\$CB_FIT_OK" -eq 1 ]; then
       printf '%s' "\$HOOK_INPUT" | python3 -c "import sys,json,os,time
 root=sys.argv[1]
+carrier=sys.argv[2] if len(sys.argv)>2 else 'legacy'
 try:
     d=json.load(sys.stdin)
 except Exception:
@@ -20208,10 +20360,10 @@ try:
     tmp=os.path.join(dirp,sid+'.json.tmp')
     fd=os.open(tmp,os.O_WRONLY|os.O_CREAT|os.O_TRUNC,0o600)
     with os.fdopen(fd,'w') as w:
-        json.dump({'sessionId':sid,'epoch':'','source':'compact','seededAt':int(time.time()*1000)},w)
+        json.dump({'sessionId':sid,'epoch':'','source':'compact','seededAt':int(time.time()*1000),'carrier':carrier},w)
     os.replace(tmp,os.path.join(dirp,sid+'.json'))
 except Exception:
-    pass" "\$CB_STATE_ROOT" 2>/dev/null
+    pass" "\$CB_STATE_ROOT" "\$CB_CARRIER" 2>/dev/null
     fi
     exit 0
   fi
@@ -21362,7 +21514,7 @@ if [ -n "\$NOW" ]; then
   echo ""
 fi
 
-# Read the user prompt from stdin (Claude Code pipes JSON with { prompt: "..." })
+# Read the user prompt from stdin (Claude Code and Codex pipe JSON with { prompt: "..." }); HOOK_INPUT was captured above.
 USER_PROMPT=\$(printf '%s' "\$HOOK_INPUT" | python3 -c "
 import sys, json
 try:
@@ -21461,6 +21613,59 @@ fi
 
 if [ "\$PC_OK" != "1" ]; then
 # Older server: the two calls the hook always made.
+# Codex next-prompt seed (context-budget-layered-summaries §9.6): Codex has no
+# post-compaction seed hook, so on the first prompt after a detected compaction
+# the server returns the topic's verified standing packet, in its disclosure
+# marker, and it is printed IN PLACE of the briefing and recent history for this
+# one prompt. Printed first, then acknowledged (the acknowledgement writes the
+# seeded marker; the server reads "already seeded" from the rollout itself, so
+# a delivery Codex dropped is retried once on the next prompt). No packet (layers off, not
+# Codex, not the first prompt, an unverified packet, the server slow) leaves
+# today's output exactly.
+CB_SEED_SHOWN=""
+if [ "\${INSTAR_FRAMEWORK:-}" = "codex-cli" ] && [ -n "\$AUTH_TOKEN" ]; then
+  CB_SEED_REQ=\$(printf '%s' "\$HOOK_INPUT" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+import hashlib
+p=d.get("prompt")
+p=p if isinstance(p,str) else ""
+print(json.dumps({"topicId":int(sys.argv[1]),"sessionId":str(d.get("session_id") or ""),"transcriptPath":str(d.get("transcript_path") or ""),"framework":"codex-cli","promptSha256":hashlib.sha256(p.encode("utf-8")).hexdigest()}))' "\$TOPIC_ID" 2>/dev/null)
+  if [ -n "\$CB_SEED_REQ" ]; then
+    CB_SEED_RESP=\$(curl -s --max-time 3 -X POST \\
+      -H "Authorization: Bearer \${AUTH_TOKEN}" -H "X-Instar-AgentId: \${AGENT_ID}" -H 'Content-Type: application/json' \\
+      -d "\$CB_SEED_REQ" "http://localhost:\${PORT}/context-budget/codex-seed" 2>/dev/null)
+    CB_SEED_TEXT=\$(printf '%s' "\$CB_SEED_RESP" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if d.get("deliver") is True and isinstance(d.get("text"),str) and d.get("text"):
+    sys.stdout.write(d["text"])' 2>/dev/null)
+    if [ -n "\$CB_SEED_TEXT" ]; then
+      printf '%s\\n\\n' "\$CB_SEED_TEXT"
+      CB_SEED_SHOWN=1
+      CB_SEED_ACK=\$(printf '%s' "\$CB_SEED_RESP" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin)
+    q=json.loads(sys.argv[1])
+except Exception:
+    sys.exit(0)
+print(json.dumps({"sessionId":q.get("sessionId"),"transcriptPath":q.get("transcriptPath"),"epoch":d.get("epoch"),"carrier":d.get("carrier")}))' "\$CB_SEED_REQ" 2>/dev/null)
+      if [ -n "\$CB_SEED_ACK" ]; then
+        curl -s --max-time 1 -X POST \\
+          -H "Authorization: Bearer \${AUTH_TOKEN}" -H "X-Instar-AgentId: \${AGENT_ID}" -H 'Content-Type: application/json' \\
+          -d "\$CB_SEED_ACK" "http://localhost:\${PORT}/context-budget/codex-seed/ack" >/dev/null 2>&1
+      fi
+    fi
+  fi
+fi
+if [ -n "\$CB_SEED_SHOWN" ]; then
+  exit 0
+fi
+
 # Fetch recent messages for this topic
 if [ -n "\$AUTH_TOKEN" ]; then
   RECENT_MSGS=\$(curl -s \\
@@ -21601,6 +21806,7 @@ exit 0
     return String.raw`#!/usr/bin/env node
 // Fits the post-compaction recovery block under Claude Code's hook-output limit.
 // Generated by instar (PostUpdateMigrator.getFitRecoveryOutput) — always overwritten.
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 const limit = Math.max(2000, Number(process.argv[2]) || 9000);
@@ -21632,11 +21838,30 @@ const SECTIONS = [
   { key: 'tg', start: /^--- TELEGRAM SESSION/, end: /^--- END TELEGRAM SESSION ---/ },
 ];
 const lines = input.split('\n');
+// The topic's standing packet (context budget §9.5, S10), delimited by a nonce
+// only its own hash yields, so no quoted line can end it. It is kept WHOLE: the
+// server bounded it to fit, and a cut packet would cut the operator's words.
+let pk = null;
+{
+  const i = lines.findIndex((l) => /^--- STANDING PACKET [0-9a-f]{8} ---$/.test(l));
+  if (i >= 0) {
+    const endLine = '--- END STANDING PACKET ' + lines[i].slice(20, 28) + ' ---';
+    const j = lines.findIndex((l, k) => k > i && l === endLine);
+    // Only a REAL packet: its nonce is the sha256 of its own text and it is within
+    // the hook ceiling. A quoted pair of delimiter lines in a message is not one.
+    if (j > i) {
+      const inner = lines.slice(i + 1, j).join('\n');
+      const h = crypto.createHash('sha256').update(Buffer.from(inner, 'utf-8')).digest('hex');
+      if (h.startsWith(lines[i].slice(20, 28)) && inner.length <= 6600) pk = { i, j, text: lines.slice(i, j + 1).join('\n') };
+    }
+  }
+}
+const inPk = (k) => pk !== null && k >= pk.i && k <= pk.j;
 const found = {};
 for (const sec of SECTIONS) {
-  const i = lines.findIndex((l) => sec.start.test(l));
+  const i = lines.findIndex((l, k) => !inPk(k) && sec.start.test(l));
   if (i < 0) continue;
-  let j = lines.findIndex((l, k) => k > i && sec.end.test(l));
+  let j = lines.findIndex((l, k) => k > i && !inPk(k) && sec.end.test(l));
   if (j < 0) j = lines.length - 1;
   found[sec.key] = lines.slice(i, j + 1).join('\n');
 }
@@ -21658,6 +21883,19 @@ const pointer = [
   '=== END IDENTITY RECOVERY ===',
 ].join('\n');
 // The marker always first, so the canary and a 2 KB preview both still carry it.
+if (pk) {
+  // The packet replaces the conversation context; identity and memory heads share what is left.
+  const tg = found.tg ? head(found.tg, 700) : '';
+  const rem = limit - MARKER.length - pk.text.length - tg.length - pointer.length - 16;
+  const identN = Math.min(1200, Math.max(0, Math.floor(rem * 0.7)));
+  const memN = Math.min(600, Math.max(0, rem - identN));
+  const tail = [tg, found.ident && identN >= 150 ? head(found.ident, identN) : '', found.mem && memN >= 150 ? head(found.mem, memN) : ''].filter(Boolean);
+  let o = [MARKER, pk.text, ...tail].join('\n') + '\n' + pointer + '\n';
+  // Never cut the packet: shed the heads instead.
+  while (o.length > limit && tail.length) { tail.pop(); o = [MARKER, pk.text, ...tail].join('\n') + '\n' + pointer + '\n'; }
+  process.stdout.write(o);
+  process.exit(0);
+}
 const parts = [MARKER];
 const fixed = [found.tg ? head(found.tg, 700) : '', found.ident ? head(found.ident, 1200) : '', found.mem ? head(found.mem, 600) : ''].filter(Boolean);
 const used = MARKER.length + fixed.reduce((a, t) => a + t.length + 1, 0) + pointer.length + 8;
@@ -21704,7 +21942,25 @@ echo "=== IDENTITY RECOVERY (post-compaction) ==="
 
 # ── 1. TOPIC CONTEXT (highest priority — what are we working on?) ──
 # After compaction, the conversation history is lost. Re-inject it from TopicMemory.
-if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
+# With the context layers on, the topic's STANDING PACKET (context budget §9.5:
+# the Anchor, the live ledger and the operator's recent messages verbatim, then
+# H1/H2/H3 and chunk pointers, verified and staged by the server) takes this
+# place. Only when the session-start compact branch asks (CB_PACKET_OK=1) and a
+# verified, hash-matching packet is staged; otherwise today's context below.
+CB_PACKET_SHOWN=""
+if [ "\${CB_PACKET_OK:-}" = "1" ] && [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
+  CB_PKT_ROOT="\$INSTAR_DIR"
+  if [ -n "\$INSTAR_AGENT_HOME" ] && [ -d "\$INSTAR_AGENT_HOME/.instar" ]; then
+    CB_PKT_ROOT="\$INSTAR_AGENT_HOME/.instar"
+  fi
+  CB_PKT_OUT=\$(python3 -c "${STANDING_PACKET_PY}" "\$CB_PKT_ROOT" "\$INSTAR_TELEGRAM_TOPIC" 2>/dev/null)
+  if [ -n "\$CB_PKT_OUT" ]; then
+    echo ""
+    printf '%s\\n' "\$CB_PKT_OUT"
+    CB_PACKET_SHOWN=1
+  fi
+fi
+if [ -z "\$CB_PACKET_SHOWN" ] && [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then
   TOPIC_ID="\$INSTAR_TELEGRAM_TOPIC"
   CONFIG_FILE="\$INSTAR_DIR/config.json"
   if [ -f "\$CONFIG_FILE" ]; then

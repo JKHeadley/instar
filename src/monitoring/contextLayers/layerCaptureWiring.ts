@@ -22,6 +22,10 @@ import type { ContextLayers } from './contextLayersBoot.js';
 import { projectAwareness } from './layerProjection.js';
 import { LayerTicker, type TickSession } from './layerTicker.js';
 import { UserCorpus, type OperatorResolver, type UserCorpusRowSource } from './userCorpus.js';
+import { AnchorLedger } from './anchorLedger.js';
+import { PendingConfirmationManager } from '../../core/TopicIntentPendingConfirm.js';
+import { BackfillLane, BACKFILL_FEATURE_ID, backfillStateFile, type BackfillLaneDeps } from './backfillLane.js';
+import { featureEvidence } from '../FeatureEvidenceLog.js';
 
 export interface LayerSessionSource {
   listRunningSessions(): Array<{ tmuxSession: string; telegramTopicId?: number | null; claudeSessionId?: string | null; framework?: string; cwd?: string }>;
@@ -31,12 +35,29 @@ export interface LayerSessionSource {
 }
 
 export interface LayerCaptureWiring {
-  captureDeps: Pick<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus' | 'onLayerOutcome'>;
+  captureDeps: Pick<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus' | 'onLayerOutcome' | 'anchorLedger'>;
   /** U, the protected user corpus with its referent stubs (§6 row U, §8); null without TopicMemory. */
   userCorpus: UserCorpus | null;
+  /** A and G, the Anchor and the decisions/evolutions ledger (§6.1, §6.2); built on U, so null without TopicMemory. */
+  anchorLedger: AnchorLedger | null;
   /** Pass to `createLlmExtractFn` as its usage observer: provider-reported tokens per trigger (§11). */
   onExtractUsage(input: { message: { id: string } }, usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }): void;
-  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus' | 'onLayerOutcome'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[] }): { ticker: LayerTicker; stop(): void };
+  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus' | 'onLayerOutcome' | 'anchorLedger'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[] }): { ticker: LayerTicker; stop(): void };
+  /**
+   * S7: build (and by default start) the backfill lane over U and the ledger;
+   * null without them. The lane checks its switch on every tick.
+   */
+  startBackfillLane(o: {
+    stateDir: string;
+    topics: BackfillLaneDeps['topics'];
+    isOwner: BackfillLaneDeps['isOwner'];
+    latestMessageId: BackfillLaneDeps['latestMessageId'];
+    shouldShed?: BackfillLaneDeps['shouldShed'];
+    onDegraded?: BackfillLaneDeps['onDegraded'];
+    start?: boolean;
+    firstMs?: number;
+    everyMs?: number;
+  }): BackfillLane | null;
   /** Projection outcomes, for the status and tests. */
   counts: { projected: number; failed: number };
   /** The session → transcript resolver the ticker uses (exposed for the wiring test). */
@@ -65,12 +86,19 @@ export function wireLayerCapture(o: {
   isOperator?: OperatorResolver;
   /** Who counts as the operator, fingerprinted; a change re-lists U so labels follow it. */
   bindingFingerprint?: () => string;
+  /** `contextBudget.backfill.enabled` (S7), read live; absent ⇒ off. */
+  backfillEnabled?: () => boolean;
 }): LayerCaptureWiring {
   const counts = { projected: 0, failed: 0 };
   const userCorpus = o.topicMemory
     ? new UserCorpus({ store: o.layers.store, rows: o.topicMemory, isOperator: o.isOperator, bindingFingerprint: o.bindingFingerprint, machine: o.machine, model: o.model ?? null })
     : null;
   if (userCorpus) o.layers.attachUserCorpus(userCorpus);
+  // A and G read U's labels and stubs and the topic-intent refs; surfacing uses the extended pending-confirmation primitive.
+  const anchorLedger = userCorpus && o.topicMemory
+    ? new AnchorLedger({ store: o.layers.store, intent: o.store, pending: new PendingConfirmationManager(o.store), rows: o.topicMemory, machine: o.machine, backfilling: (t) => userCorpus.backfilling(t), backfill: () => o.backfillEnabled?.() === true })
+    : null;
+  if (anchorLedger) o.layers.attachAnchorLedger(anchorLedger);
   let ticker: LayerTicker | null = null;
 
   const project = (topicId: number, sessionId: string | null, sampled?: number) => {
@@ -154,8 +182,30 @@ export function wireLayerCapture(o: {
     tickSessions,
     userCorpus,
     reproject,
+    anchorLedger,
     onExtractUsage,
-    captureDeps: { layerBudget: o.layers.budget, onCaptured, ...(userCorpus ? { userCorpus } : {}), onLayerOutcome },
+    startBackfillLane(b) {
+      if (!userCorpus || !anchorLedger) return null;
+      const lane = new BackfillLane({
+        enabled: () => o.backfillEnabled?.() === true,
+        topics: b.topics,
+        isOwner: b.isOwner,
+        latestMessageId: b.latestMessageId,
+        userCorpus: { refresh: (t) => userCorpus.refresh(t), backfilling: (t) => userCorpus.backfilling(t) },
+        ledger: { backfillTopic: (t, x) => anchorLedger.backfillTopic(t, x) },
+        alreadyBackfilled: (t) => typeof o.layers.store.read(String(t), 'anchor', 'current')?.data.backfilledAt === 'number',
+        shouldShed: b.shouldShed,
+        onDegraded: b.onDegraded,
+        onEvidence: (kind, reason, context) => {
+          try { featureEvidence.record(BACKFILL_FEATURE_ID, { kind, reason, context }); } catch { /* @silent-fallback-ok — evidence is a side channel; the lane's counters hold the same facts */ }
+        },
+        file: backfillStateFile(b.stateDir),
+      });
+      o.layers.attachBackfillLane(lane);
+      if (b.start !== false) lane.start({ firstMs: b.firstMs, everyMs: b.everyMs });
+      return lane;
+    },
+    captureDeps: { layerBudget: o.layers.budget, onCaptured, ...(userCorpus ? { userCorpus } : {}), onLayerOutcome, ...(anchorLedger ? { anchorLedger } : {}) },
     startTicker(base, opts = {}) {
       const deps: CaptureLoopDeps = { ...base, layerBudget: o.layers.budget, onCaptured, onLayerOutcome };
       ticker = new LayerTicker({

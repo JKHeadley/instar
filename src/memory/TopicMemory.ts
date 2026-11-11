@@ -760,6 +760,16 @@ export class TopicMemory {
    * backfill). `maxRowId` is the topic's highest row id, so a caller can tell
    * a rebuilt database (its watermark above every row).
    */
+  /**
+   * The message id of the topic's LAST row in insertion order (the order
+   * `messagePrecedes` uses), or null. Context-budget S7: the backfill's history bound.
+   */
+  lastMessageIdByRow(topicId: number): number | null {
+    if (!this.db) return null;
+    const r = this.db.prepare('SELECT message_id AS messageId FROM messages WHERE topic_id = ? ORDER BY id DESC LIMIT 1').get(topicId) as { messageId: number } | undefined;
+    return r && Number.isSafeInteger(r.messageId) ? r.messageId : null;
+  }
+
   getUserCorpusRows(topicId: number, opts: { afterRowId?: number; limit?: number; messageId?: number } = {}): { rows: Array<{ rowId: number; message: TopicMessage }>; complete: boolean; maxRowId: number } {
     if (!this.db) return { rows: [], complete: false, maxRowId: 0 };
     const bounded = Math.max(1, Math.min(Math.floor(opts.limit ?? 2_000), 10_000));
@@ -1274,17 +1284,23 @@ export class TopicMemory {
    * Format topic context as readable text for session injection.
    * This is the primary interface for loading topic context into a session.
    */
-  formatContextForSession(topicId: number, recentLimit: number = 50): string {
+  formatContextForSession(topicId: number, recentLimit: number = 50, opts: { standingPacket?: string | null } = {}): string {
     // Return empty string when db is not open — callers use this as a falsy check
     // to trigger JSONL fallback. A non-empty string from a broken db would
     // prevent the fallback and leave the session without conversation history.
     if (!this.db) return '';
 
     const ctx = this.getTopicContext(topicId, recentLimit);
+    // Context budget §6 (Phase 1 S10): with the layers on, the caller passes the
+    // topic's VERIFIED standing packet, which takes the summary's place (the
+    // Anchor, the live ledger and the operator's recent words verbatim, then
+    // H1/H2/H3 with freshness stamps). Without it: exactly today's block.
+    const packet = typeof opts.standingPacket === 'string' && opts.standingPacket.length > 0 ? opts.standingPacket : null;
+    if (packet) ctx.summary = null;
 
     // Also return empty if the db is open but has no data for this topic —
     // the JSONL might have messages that weren't imported yet.
-    if (ctx.recentMessages.length === 0 && !ctx.summary) return '';
+    if (ctx.recentMessages.length === 0 && !ctx.summary && !packet) return '';
 
     const lines: string[] = [];
 
@@ -1298,7 +1314,10 @@ export class TopicMemory {
       lines.push(`Current focus: ${ctx.purpose}`);
     }
 
-    if (ctx.summary) {
+    if (packet) {
+      lines.push('');
+      lines.push(packet);
+    } else if (ctx.summary) {
       lines.push('');
       lines.push('CONVERSATION SUMMARY:');
       lines.push(ctx.summary);

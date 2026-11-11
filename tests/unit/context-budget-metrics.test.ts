@@ -4,7 +4,7 @@
  * Unit — context budget measurement (context-budget-layered-summaries §11,
  * Phase 1 S13): the Phase 0 cost weighting, rework counting from the ledger's
  * tool inputs, dedupe of a session copied into two config homes, `pending`
- * while the poller lags, Anchors reported unavailable (never zero), the
+ * while the poller lags, Anchors counted per state (never-evaluated is not no-anchor), the
  * ledger scanning a follow-me home, the transcript-root resolver, and the
  * per-trigger LayerUpdate rollup.
  */
@@ -14,7 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { TokenLedger, reworkKey } from '../../src/monitoring/TokenLedger.js';
 import { claudeTranscriptRoots } from '../../src/monitoring/claudeTranscriptRoots.js';
-import { costWeigh, reworkWithFreshness, computeContextBudgetMetrics, parseMetricsQuery, COST_WEIGHTS, ANCHORS_UNAVAILABLE, POLLER_LAG_TOLERANCE_MS } from '../../src/monitoring/contextBudgetMetrics.js';
+import { costWeigh, reworkWithFreshness, computeContextBudgetMetrics, parseMetricsQuery, COST_WEIGHTS, POLLER_LAG_TOLERANCE_MS } from '../../src/monitoring/contextBudgetMetrics.js';
 import { buildContextLayers } from '../../src/monitoring/contextLayers/contextLayersBoot.js';
 import { LayerSpendLog } from '../../src/monitoring/contextLayers/layerSpendLog.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
@@ -234,11 +234,11 @@ describe('context budget metrics — unit', () => {
     expect(days[1].tick).toMatchObject({ attempts: 1, calls: 1 });
   });
 
-  it('metrics: Anchors are unavailable (never zero), a bad query is refused, and no ledger is reported as unavailable', () => {
+  it('metrics: Anchors are counted (zero topics reads as zero topics, the builder as not wired), a bad query is refused, and no ledger is reported as unavailable', () => {
     const sd = tmp('cbm-m-');
     const layers = buildContextLayers({ stateDir: sd });
     const m = computeContextBudgetMetrics({ layers, stateDir: sd, ledger: null });
-    expect(m.anchors).toEqual({ unavailable: ANCHORS_UNAVAILABLE });
+    expect(m.anchors).toMatchObject({ source: 'layer store on this machine', topics: 0, anchored: 0, 'no-anchor': 0, 'not-yet-evaluated': 0, ledger: { total: 0, scope: 'listed-topics', topicsCounted: 0 }, builder: { wired: false } });
     expect(m.ledger).toEqual({ available: false, reason: 'token-ledger-unavailable' });
     expect(m.overall).toEqual({ unavailable: 'token-ledger-unavailable' });
     expect(parseMetricsQuery({ topic: '12x' }).ok).toBe(false);
@@ -270,7 +270,25 @@ describe('context budget metrics — unit', () => {
     expect(t.extractor).toMatchObject({ extractions_attempted: 7, layer_ticks: 2, budget_deferred: 1 });
     expect(t.operatorVerbatimShare).toMatchObject({ delivered: 1, verbatimInContext: 1, share: 1 });
     expect(t.liveSetBudgetInputs.g.status).toBe('no-records-yet');
-    expect(m.anchors).toEqual({ unavailable: ANCHORS_UNAVAILABLE });
+    // No layer record for the topic yet: never evaluated, which is not the same as no-anchor.
+    expect(t.anchorLedger).toMatchObject({ anchor: 'not-yet-evaluated', anchorRows: 0, ledger: { total: 0 } });
+    expect(m.anchors).toMatchObject({ topics: 0, 'not-yet-evaluated': 0, ledger: { total: 0 } });
+  });
+
+  it('metrics: Anchor states and ledger counts come from the layer store (S6 replaces the unavailable read)', () => {
+    const sd = tmp('cbm-a-');
+    const layers = buildContextLayers({ stateDir: sd });
+    const meta = (status: string) => ({ author: { sessionId: null, machine: 'm', model: null, kind: 'user' as const }, asOf: { at: T0, lastMessageId: 1 }, status });
+    const ref = { messageId: 1, sha256: 'a'.repeat(64), length: 40 };
+    layers.store.writeProtected('4242', 'anchor', 'current', [ref], meta('anchored'), { messageIds: [1] });
+    layers.store.writeProtected('4242', 'ledger-entry', 'dc-ref-1', [ref], meta('derived-settled'), { type: 'decision', at: T0 });
+    layers.store.writeProtected('4242', 'ledger-entry', 'ev-ref-2', [], meta('tentative'), { type: 'evolution', at: T0 });
+    layers.store.writeProtected('5353', 'anchor', 'current', [], meta('no-anchor'), {});
+    const m = computeContextBudgetMetrics({ layers, stateDir: sd, ledger: null, now: () => T0 });
+    expect(m.anchors).toMatchObject({ topics: 2, anchored: 1, 'no-anchor': 1, 'not-yet-evaluated': 0 });
+    expect(m.anchors.ledger).toMatchObject({ total: 2, byType: { decision: 1, evolution: 1 }, byStatus: { 'derived-settled': 1, tentative: 1 } });
+    const t = m.topics.find((x) => x.topicId === 4242)!;
+    expect(t.anchorLedger).toMatchObject({ anchor: 'anchored', anchorRows: 1, ledger: { total: 2 } });
   });
 
   it('overall is uncapped and flags the per-session cut; a session keeps a topic whose prompt is older than the window', () => {

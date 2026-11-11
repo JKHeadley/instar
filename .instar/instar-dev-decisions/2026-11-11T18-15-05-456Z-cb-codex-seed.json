@@ -1,0 +1,49 @@
+{
+  "ts": "2026-11-11T18:15:05.456Z",
+  "slug": "cb-codex-seed",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 1088,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/monitoring/CodexRolloutParser.ts",
+      "src/monitoring/ContextBudgetSentinel.ts",
+      "src/monitoring/adapterSuiteCli.ts",
+      "src/monitoring/adapterVerificationSuite.ts",
+      "src/monitoring/codexAdapterSuite.ts",
+      "src/monitoring/compactionCanary.ts",
+      "src/monitoring/contextBudgetSentinelBoot.ts",
+      "src/monitoring/contextLayers/codexSeed.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1047,
+    "deletedLines": 41
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The Codex suite trigger is the same maybeRunAdapterSuite controller registered as context-budget-adapter-suite in selfActionRegistry: one run per unrecorded (engine, version), durable attempt stamp written before the run, 24 h retry floor, 3 attempts then give-up, one run at a time across engines; steady state is zero runs once a version is recorded or given up"
+    }
+  },
+  "verdict": "pass"
+}

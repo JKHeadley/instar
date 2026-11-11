@@ -459,6 +459,24 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
     },
   });
 
+  // POST /context-budget/codex-seed and /ack (context-budget-layered-summaries §9.6,
+  // Phase 1 S17): the Codex next-prompt seed. The per-prompt hook calls its own
+  // machine's server over loopback; the offer restages the topic's standing packet
+  // and the ack writes the seeded marker, both under that machine's git-ignored
+  // .instar/state/context-layers/. The session and its rollout live on that machine.
+  reg.add({
+    kind: 'route',
+    method: 'POST',
+    pathPrefix: '/context-budget/codex-seed',
+    domain: 'machine-local',
+    story: {
+      logical: 'per-machine-path',
+      onSharedGitSyncedPath: true,
+      fileLevel: 'git-sync-excluded',
+      note: 'staged standing packets under .instar/state/context-layers/_standing/ and seeded markers under _seeded/, git-ignored; written by the machine hosting the Codex session',
+    },
+  });
+
   // POST /agent-identity/reload — the a2a-single-agent-identity §1.2 reload lever: re-reads
   // THIS machine's own identity file, rebuilds THIS process's relay client, appends one row
   // to this machine's key-free audit log. Local effect only; carries no key; installs

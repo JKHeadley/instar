@@ -121,6 +121,7 @@ const ARGUED_FALSE_BASELINE = [
   'Usher',
   'PreCompactionFlush',
   'ContextLayerChunk',
+  'ContextLayerH3',
   'TreeSynthesis',
   'LLMConflictResolver',
   'openConversationBrief',

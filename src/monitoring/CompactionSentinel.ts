@@ -37,6 +37,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DegradationReporter } from './DegradationReporter.js';
 import { findNewestRolloutSync } from '../providers/adapters/openai-codex/observability/sessionPaths.js';
+import { deriveContextEpoch } from './contextEpoch.js';
 import { findNewestGeminiSessionSync } from '../providers/adapters/gemini-cli/observability/sessionPaths.js';
 
 export type CompactionTrigger = 'PreCompact' | 'watchdog-poll' | 'recovery-hook' | string;
@@ -151,7 +152,19 @@ export interface CompactionSentinelDeps {
    * recovery seed succeeded (`state/context-layers/_seeded/<claudeSessionId>.json`).
    * Returns null when there is none. Absent ⇒ no seed wait.
    */
-  readSeedMarker?: (sessionName: string) => { seededAt: number; epoch: string } | null;
+  readSeedMarker?: (sessionName: string) => { seededAt: number; epoch: string; source?: string } | null;
+
+  /**
+   * The server's own writer of the seeded marker (§9.1, §7.7): called after the
+   * idle-gated path delivered a compaction's context (the fallback or a heal
+   * re-inject), with the compaction's boundary id as the epoch. Returns the
+   * marker's seededAt, or null when it could not be written. Absent ⇒ no
+   * server marker (today's behaviour).
+   */
+  writeSeedMarker?: (sessionName: string, boundaryUuid: string, source: 'server-fallback' | 'heal') => number | null;
+
+  /** Is the heal ladder wired on this boot (sentinel + layers on)? A staged heal re-seed resumes at boot only then. */
+  isHealEnabled?: () => boolean;
 
   /**
    * The idle-gated, durable server fallback (context-budget-layered-summaries
@@ -181,6 +194,12 @@ export interface StagedCompactionFallback {
   /** This compaction's compact-boundary time, when one was seen (late-seed freshness). */
   boundaryAt?: number;
 }
+
+/** What a heal re-inject (§9.1 heal ladder, rung 2) came to. */
+export type HealReinjectOutcome = 'delivered' | 'already-delivered' | 'busy' | 'not-recoverable' | 'unsupported' | 'failed' | 'withdrawn';
+
+/** A staged record whose text is a heal re-inject (never rebuilt from the unanswered-message builder). */
+export const HEAL_TRIGGER = 'heal';
 
 export interface CompactionFallbackDeps {
   /**
@@ -277,6 +296,8 @@ export class CompactionSentinel extends EventEmitter {
   private readonly deliveredFallback = new Map<string, { epoch: string; at: number }>();
   /** Sessions whose current recovery is a once-only fallback delivery (verify never re-injects). */
   private readonly onceOnly = new Set<string>();
+  /** A heal re-inject's caller, waiting for its delivery or end (one per session). */
+  private readonly healWaiters = new Map<string, (o: HealReinjectOutcome) => void>();
 
   constructor(deps: CompactionSentinelDeps, config: CompactionSentinelConfig = {}) {
     super();
@@ -393,7 +414,7 @@ export class CompactionSentinel extends EventEmitter {
   private awaitSeed(state: RecoveryState): void {
     if (this.active.get(state.sessionName) !== state) return; // cleared meanwhile
     const now = this.now();
-    let marker: { seededAt: number; epoch: string } | null = null;
+    let marker: { seededAt: number; epoch: string; source?: string } | null = null;
     try { marker = this.deps.readSeedMarker!(state.sessionName); } catch { marker = null; /* @silent-fallback-ok — no readable marker means "not seeded": the server delivers the recovery itself */ }
     const consumed = this.consumedSeedAt.get(state.sessionName) ?? -Infinity;
     const boundary = this.readCompactBoundary(state, consumed);
@@ -404,13 +425,18 @@ export class CompactionSentinel extends EventEmitter {
     //    while that boundary is not yet visible, after this report itself.
     // The hook writes an empty epoch (it cannot see this compaction's boundary);
     // the epoch is bound here to the boundary entry's id (§7.7).
+    // A marker the SERVER wrote (fallback or heal) names its epoch explicitly; it
+    // covers only that same compaction, never a newer one by timing alone.
+    const serverWritten = marker !== null && marker.source !== undefined && marker.source !== 'compact';
     const markerFresh = marker !== null
       && marker.seededAt > consumed
-      && (boundary
-        ? marker.seededAt >= boundary.at - 2_000
-        : marker.seededAt >= state.detectedAt - this.lookbackFor(state));
+      && (serverWritten
+        ? !!boundary && marker.epoch === deriveContextEpoch({ source: 'compact', boundaryUuid: boundary.uuid })
+        : boundary
+          ? marker.seededAt >= boundary.at - 2_000
+          : marker.seededAt >= state.detectedAt - this.lookbackFor(state));
     if (marker && markerFresh) {
-      const key = boundary?.uuid || marker.epoch || `t${marker.seededAt}`;
+      const key = (boundary ? deriveContextEpoch({ source: 'compact', boundaryUuid: boundary.uuid }) : '') || marker.epoch || `t${marker.seededAt}`;
       this.consumedSeedAt.set(state.sessionName, marker.seededAt);
       console.log(`[Sentinel] "${state.sessionName}" seeded by its compaction hook (epoch ${key}); server recovery stands down`);
       this.emit('compaction:seeded', { ...state, epoch: key });
@@ -428,7 +454,7 @@ export class CompactionSentinel extends EventEmitter {
       );
       state.status = 'pending-inject';
       if (this.deps.fallback) {
-        void this.startFallback(state, boundary?.uuid || `t${state.detectedAt}`, boundary ? boundary.at : null);
+        void this.startFallback(state, (boundary ? deriveContextEpoch({ source: 'compact', boundaryUuid: boundary.uuid }) : '') || `t${state.detectedAt}`, boundary ? boundary.at : null);
         return;
       }
       this.attemptInjection(state);
@@ -503,11 +529,19 @@ export class CompactionSentinel extends EventEmitter {
 
   /** Same freshness rule as awaitSeed: the marker must belong to THIS compaction. */
   private seedMarkerCovers(state: RecoveryState, staged: StagedCompactionFallback): boolean {
-    let marker: { seededAt: number; epoch: string } | null = null;
+    let marker: { seededAt: number; epoch: string; source?: string } | null = null;
     try { marker = this.deps.readSeedMarker?.(state.sessionName) ?? null; } catch { marker = null; /* @silent-fallback-ok — unreadable marker reads as "not seeded", so the staged fallback is kept, never dropped */ }
     if (!marker) return false;
     const consumed = this.consumedSeedAt.get(state.sessionName) ?? -Infinity;
     if (!(marker.seededAt > consumed)) return false;
+    if (marker.source !== undefined && marker.source !== 'compact') {
+      const covers = marker.epoch !== '' && marker.epoch === staged.epoch;
+      if (covers) this.consumedSeedAt.set(state.sessionName, marker.seededAt);
+      return covers;
+    }
+    // A heal re-inject was chosen BECAUSE the hook's seed did not reach the model:
+    // only a server marker for the same epoch (above) stands it down.
+    if (staged.trigger === HEAL_TRIGGER) return false;
     const fresh = staged.boundaryAt !== undefined
       ? marker.seededAt >= staged.boundaryAt - 2_000
       : marker.seededAt >= state.detectedAt - this.lookbackFor(state);
@@ -544,7 +578,8 @@ export class CompactionSentinel extends EventEmitter {
       // Re-check at release, not just at stage time: the session may have
       // answered the user while we waited (the text names an unanswered message).
       let fresh: { text: string } | 'declined' | 'unsupported' | null = null;
-      try { fresh = await fb.build(name, state.trigger); } catch (err) {
+      if (staged.trigger === HEAL_TRIGGER) fresh = { text: staged.text }; // re-staged by the heal ladder just now
+      else try { fresh = await fb.build(name, state.trigger); } catch (err) {
         // A builder error is not an answer: keep waiting and try again next tick.
         // @silent-fallback-ok — retried on the next tick; the idle deadline bounds it.
         console.warn(`[Sentinel] fallback rebuild threw on "${name}"; retrying next tick:`, err);
@@ -587,6 +622,16 @@ export class CompactionSentinel extends EventEmitter {
       }
       this.deliveredFallback.set(name, { epoch: staged.epoch, at: this.now() });
       console.log(`[Sentinel] fallback delivered to "${name}" at an idle prompt (epoch ${staged.epoch})`);
+      // §9.1: the delivery writes the seeded marker for this epoch, so any later
+      // carrier for the same compaction (a late hook seed read by the seed wait,
+      // the heal ladder) sees it as delivered. Only a real boundary id is an epoch.
+      if (this.deps.writeSeedMarker && staged.boundaryAt !== undefined && !staged.epoch.startsWith('t')) {
+        let at: number | null = null;
+        try { at = this.deps.writeSeedMarker(name, staged.epoch, staged.trigger === HEAL_TRIGGER ? 'heal' : 'server-fallback'); } catch { at = null; /* @silent-fallback-ok — reported just below */ }
+        if (at !== null) this.consumedSeedAt.set(name, Math.max(at, this.consumedSeedAt.get(name) ?? -Infinity));
+        else console.warn(`[Sentinel] could not write the seeded marker for "${name}" (epoch ${staged.epoch})`);
+      }
+      this.settleHeal(name, 'delivered');
       this.onceOnly.add(name);
       state.status = 'verifying';
       this.scheduleVerify(state);
@@ -646,6 +691,7 @@ export class CompactionSentinel extends EventEmitter {
       const age = this.now() - rec.stagedAt;
       let reason: string | null = null;
       if (!enabled) reason = 'compaction recovery is switched off';
+      else if (rec.trigger === HEAL_TRIGGER && (() => { try { return this.deps.isHealEnabled?.() !== true; } catch { return true; /* @silent-fallback-ok — an unreadable heal switch withdraws the staged heal (reported with the other withdrawals) */ } })()) reason = 'the heal ladder is off on this boot';
       else if (!Number.isFinite(age) || age > this.cfg.fallbackResumeMaxAgeMs) reason = 'staged too long ago';
       else if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(name)) reason = 'session no longer running';
       else if (this.active.has(name)) reason = 'a newer recovery already owns the session';
@@ -739,6 +785,7 @@ export class CompactionSentinel extends EventEmitter {
       this.timers.delete(sessionName);
     }
     this.active.delete(sessionName);
+    this.settleHeal(sessionName, 'withdrawn');
     this.consumedSeedAt.delete(sessionName);
     this.onceOnly.delete(sessionName);
     this.deliveredFallback.delete(sessionName);
@@ -751,11 +798,67 @@ export class CompactionSentinel extends EventEmitter {
   stop(): void {
     for (const handle of this.timers.values()) this.clearTimer(handle);
     this.timers.clear();
+    for (const name of [...this.healWaiters.keys()]) this.settleHeal(name, 'withdrawn');
     this.active.clear();
     this.recentReports.clear();
     this.consumedSeedAt.clear();
     this.onceOnly.clear();
     this.deliveredFallback.clear();
+  }
+
+  private settleHeal(name: string, o: HealReinjectOutcome): void {
+    const w = this.healWaiters.get(name);
+    if (w) { this.healWaiters.delete(name); w(o); }
+  }
+
+  /**
+   * The heal ladder's rung 2 (context-budget-layered-summaries §9.1:
+   * "re-stage the standing packet and inject it once through the injection
+   * step of the `recoverCompactedSession` helper called directly (never
+   * through `report`)"): deliver `text` — the re-staged packet — through the
+   * SAME idle-gated, durable path as the fallback (PendingInjectStore, released
+   * only when the session is not actively working AND the pane shows a ready
+   * prompt, re-checked every tick within the idle bound; never a bare inject),
+   * once per `(session, epoch)`, one injector at a time. Resolves on delivery
+   * (`delivered`, the seeded marker for the epoch then written) or on its end.
+   */
+  healReinject(sessionName: string, o: { epoch: string; boundaryAt: number; text: string }): Promise<HealReinjectOutcome> {
+    const fb = this.deps.fallback;
+    if (!fb) return Promise.resolve('unsupported');
+    if (this.deps.isSessionRecoverable && !this.deps.isSessionRecoverable(sessionName)) return Promise.resolve('not-recoverable');
+    if (!o.epoch || !o.text) return Promise.resolve('failed');
+    // Idempotence first: an epoch already delivered is answered as such, even while its verify window runs.
+    if (this.deliveredFallback.get(sessionName)?.epoch === o.epoch) return Promise.resolve('already-delivered');
+    if (this.active.has(sessionName) || this.healWaiters.has(sessionName)) return Promise.resolve('busy'); // one injector at a time
+    if (this.deferIf?.(sessionName)) return Promise.resolve('busy');
+    let marker: { seededAt: number; epoch: string; source?: string } | null = null;
+    try { marker = this.deps.readSeedMarker?.(sessionName) ?? null; } catch { marker = null; /* @silent-fallback-ok — no readable marker: the heal proceeds, still once per epoch */ }
+    if (marker && marker.source !== undefined && marker.source !== 'compact' && marker.epoch === o.epoch) return Promise.resolve('already-delivered');
+    const now = this.now();
+    const baseline = this.readJsonlBaseline(sessionName);
+    const state: RecoveryState = {
+      sessionName, trigger: HEAL_TRIGGER, detectedAt: now, attempts: 0, workingDefers: 0, lastInjectAt: 0,
+      baselineJsonlPath: baseline?.path ?? null, baselineJsonlSize: baseline?.size ?? null, baselineJsonlMtime: baseline?.mtime ?? null,
+      status: 'awaiting-idle',
+    };
+    const staged: StagedCompactionFallback = { tmuxSession: sessionName, epoch: o.epoch, trigger: HEAL_TRIGGER, text: o.text, stagedAt: now, boundaryAt: o.boundaryAt };
+    const done = new Promise<HealReinjectOutcome>((resolve) => { this.healWaiters.set(sessionName, resolve); });
+    this.active.set(sessionName, state);
+    this.recentReports.set(sessionName, now);
+    try { fb.stage(staged); } catch (err) {
+      console.warn(`[Sentinel] heal stage failed on "${sessionName}" (delivering without durability):`, err);
+      DegradationReporter.getInstance().report({
+        feature: 'CompactionSentinel.fallback',
+        primary: 'Stage the heal re-seed durably before waiting for idle',
+        fallback: 'Hold it in memory only',
+        reason: `heal stage failed: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'A server restart before delivery would lose this re-seed; the heal ladder tries again on its next attempt.',
+      });
+    }
+    console.log(`[Sentinel] heal re-inject staged for "${sessionName}" (epoch ${o.epoch}); waiting for an idle, ready prompt`);
+    this.emit('compaction:fallback-staged', { ...state, epoch: o.epoch });
+    void this.tickFallback(state, staged, now + this.cfg.fallbackIdleBoundMs);
+    return done;
   }
 
   /** Get current active recovery state (test introspection). */
@@ -919,6 +1022,7 @@ export class CompactionSentinel extends EventEmitter {
 
   private finalize(state: RecoveryState, status: 'recovered' | 'failed', reason?: string): void {
     state.status = status;
+    this.settleHeal(state.sessionName, status === 'recovered' ? 'withdrawn' : 'failed');
     if (status === 'failed') {
       console.warn(`[Sentinel] failed "${state.sessionName}": ${reason ?? 'unknown'}`);
       this.emit('compaction:failed', { ...state, reason: reason ?? 'unknown' });

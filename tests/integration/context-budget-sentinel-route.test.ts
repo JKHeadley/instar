@@ -76,7 +76,7 @@ describe('GET /context-budget/sentinel', () => {
     expect(r.body.canary.groups[0]).toMatchObject({ engine: 'claude-code', version: '2.1.321', detected: 1, pending: 1 });
   });
 
-  it('a Codex session\'s rollout compaction reads as a counted, synthesized-marked group beside Claude Code (S16, §9.6)', async () => {
+  it('a Codex session\'s rollout compaction reads as a synthesized-marked group beside Claude Code, pending its next-prompt seed (S16/S17, §9.6)', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-route-codex-')); dirs.push(stateDir);
     const rollout = path.join(stateDir, 'rollout-2026-11-10T10-00-00-cdx.jsonl');
     fs.writeFileSync(rollout, `${JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: 'cdx', cli_version: '0.167.0' } })}\n`);
@@ -99,7 +99,8 @@ describe('GET /context-budget/sentinel', () => {
     const r = await request(appFor(stateDir, sentinel)).get('/context-budget/sentinel');
     expect(r.status).toBe(200);
     const g = r.body.canary.groups.find((x: { engine: string }) => x.engine === 'codex-cli');
-    expect(g).toMatchObject({ engine: 'codex-cli', version: '0.167.0', detected: 1, state: 'counted', marking: 'synthesized', synthesizedSignals: 1 });
+    // S17: the next-prompt seed makes Codex recovery verifiable; with no prompt yet the detection is pending.
+    expect(g).toMatchObject({ engine: 'codex-cli', version: '0.167.0', detected: 1, pending: 1, state: 'uninitialized', marking: 'synthesized', synthesizedSignals: 1 });
     expect(g.profile).toMatchObject({ detection: 'supported', postCompactEvent: 'synthesized', healByInjection: false });
   });
 

@@ -33,6 +33,8 @@ const PENDING_BASELINE = [
   // context-budget-layered-summaries §6.5 (Phase 1 S8, 2026-11-10): chunk/C2 summaries over an archived span;
   // graded by the Phase 2 fold probes until a bench task lands.
   'ContextLayerChunk',
+  // context-budget-layered-summaries §6 row H3 (Phase 1 S9, 2026-11-10): the long-term view from chunk/C2 summaries.
+  'ContextLayerH3',
   'SelfKnowledgeTree', 'GoalPriorityExtractor',
   'StandardsConformanceReviewer',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',

@@ -22,7 +22,10 @@ import { TopicLayerBudget, type LayerBudgetStatus } from './layerCadence.js';
 import type { LayerTicker, LayerTickerStatus } from './layerTicker.js';
 import { layerFreshness } from './layerProjection.js';
 import type { UserCorpus } from './userCorpus.js';
+import type { AnchorLedger } from './anchorLedger.js';
+import type { BackfillLane } from './backfillLane.js';
 import { LayerSpendLog, layerSpendFile } from './layerSpendLog.js';
+import { PACKET_INPUT_TYPES, type StandingPacketStager, type StandingPacketStatus } from './standingPacket.js';
 
 /** The feature id the maturation ladder reads (src/data/feature-ladders.json). */
 export const CONTEXT_LAYERS_FEATURE_ID = 'contextBudget.layers';
@@ -40,6 +43,18 @@ export interface ContextLayers {
   attachUserCorpus(u: UserCorpus): void;
   /** U on this machine, or null when capture is not wired here. */
   userCorpus(): UserCorpus | null;
+  /** Attach A and G once the capture pipeline builds them (the route reads their counters). */
+  attachAnchorLedger(a: AnchorLedger): void;
+  /** A and G on this machine, or null when capture is not wired here. */
+  anchorLedger(): AnchorLedger | null;
+  /** Attach the backfill lane (S7) once the capture pipeline builds it. */
+  attachBackfillLane(l: BackfillLane): void;
+  /** The backfill lane on this machine, or null when it is not wired here. */
+  backfillLane(): BackfillLane | null;
+  /** Attach the standing-packet stager (§9.5): every committed layer write then re-renders its topic's packet. */
+  attachStandingPacket(s: StandingPacketStager): void;
+  /** The standing-packet stager on this machine, or null when TopicMemory is not available here. */
+  standingPacket(): StandingPacketStager | null;
   /** The agent's live secret values (cached), for scrubbing anything bound for an LLM. */
   liveSecrets(): readonly string[];
   /** The current-work layer's freshness against TopicMemory; `unknown` when no H1 record exists yet. */
@@ -58,6 +73,9 @@ export interface ContextLayersStatus {
   budget: LayerBudgetStatus;
   ticker: LayerTickerStatus | null;
   userCorpus: ReturnType<UserCorpus['status']> | null;
+  anchorLedger: ReturnType<AnchorLedger['status']> | null;
+  backfillLane: ReturnType<BackfillLane['status']> | null;
+  standingPacket: StandingPacketStatus | null;
 }
 
 /** The minimal emitter seam (ReplicatedRecordEmitter.emit). */
@@ -106,6 +124,8 @@ export function buildContextLayers(deps: {
     stateDir: deps.stateDir, liveSecrets, replicate,
     onWrite: (topicKey, recordType, r) => {
       if (r.written) {
+        // §9.5: "re-rendered and verified on every layer commit" (debounced per topic by the stager).
+        if (standingPacket && PACKET_INPUT_TYPES.has(recordType)) standingPacket.request(topicKey);
         featureEvidence.recordAtMostEvery(CONTEXT_LAYERS_FEATURE_ID, `${topicKey}:${recordType}`, 10 * 60_000, { kind: 'fired', reason: `${recordType} layer written`, context: { topicKey, recordType, replication: r.replication } });
       } else if (r.reason === 'write-failed') {
         featureEvidence.record(CONTEXT_LAYERS_FEATURE_ID, { kind: 'error', reason: `${recordType} layer write failed`, context: { topicKey, recordType } });
@@ -117,6 +137,9 @@ export function buildContextLayers(deps: {
   const spend = new LayerSpendLog({ file: layerSpendFile(deps.stateDir) });
   let ticker: LayerTicker | null = null;
   let userCorpus: UserCorpus | null = null;
+  let anchorLedger: AnchorLedger | null = null;
+  let backfillLane: BackfillLane | null = null;
+  let standingPacket: StandingPacketStager | null = null;
   // Both roots exist, permissioned, from boot: the e2e "alive" check and the
   // never-served / never-backed-up rules have something real to act on.
   for (const root of [contextLayersRoot(deps.stateDir), contextArchiveRoot(deps.stateDir)]) {
@@ -131,6 +154,12 @@ export function buildContextLayers(deps: {
     attachTicker(t) { ticker = t; },
     attachUserCorpus(u) { userCorpus = u; },
     userCorpus: () => userCorpus,
+    attachAnchorLedger(a) { anchorLedger = a; },
+    anchorLedger: () => anchorLedger,
+    attachBackfillLane(l) { backfillLane = l; },
+    backfillLane: () => backfillLane,
+    attachStandingPacket(s) { standingPacket = s; },
+    standingPacket: () => standingPacket,
     liveSecrets,
     h1Freshness(topicId, topicMemory) {
       const rec = store.read(String(topicId), 'h1', 'current');
@@ -156,6 +185,9 @@ export function buildContextLayers(deps: {
         budget: budget.status(),
         ticker: ticker ? ticker.status() : null,
         userCorpus: userCorpus ? userCorpus.status() : null,
+        anchorLedger: anchorLedger ? anchorLedger.status() : null,
+        backfillLane: backfillLane ? backfillLane.status() : null,
+        standingPacket: standingPacket ? standingPacket.status() : null,
       };
     },
   };

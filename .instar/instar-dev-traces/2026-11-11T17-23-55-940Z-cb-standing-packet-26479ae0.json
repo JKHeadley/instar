@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "slug": "cb-standing-packet",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-11T17:23:55.940Z",
+  "artifactPath": "upgrades/side-effects/cb-standing-packet.md",
+  "artifactSha256": "c88ad3a804d685d8187863c975371418dc0253dff91b1356a40c4bfe4b7bc23a",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/BackupManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/memory/TopicMemory.ts",
+    "src/monitoring/contextLayers/contextLayersBoot.ts",
+    "src/monitoring/contextLayers/standingPacket.ts",
+    "src/monitoring/contextLayers/standingPacketBoot.ts",
+    "src/scaffold/templates.ts",
+    "src/server/CapabilityIndex.ts",
+    "src/server/routes.ts",
+    "tests/e2e/context-layer-standing-packet-alive.test.ts",
+    "tests/integration/context-layer-standing-packet.test.ts",
+    "tests/unit/context-layer-standing-packet.test.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/migrate-context-budget-standing-packet-row.test.ts",
+    "tests/unit/standing-packet-hook.test.ts",
+    "upgrades/next/cb-standing-packet.md",
+    "upgrades/side-effects/cb-standing-packet.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "S10 re-applied onto main+S5+S6+S9; only conflict a CapabilityIndex registry append; reviewed and concurred at build time (Fable 5.2)",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "re-landing of an already-reviewed slice onto current main; merge resolution only"
+  }
+}

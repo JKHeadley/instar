@@ -137,6 +137,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   AlignmentReviewer: 'reflector',        // compare active run focus with the durable priority digest
   PreCompactionFlush: 'reflector',       // extract durable facts before compaction
   ContextLayerChunk: 'reflector',        // context-budget chunk / range summaries from an archived transcript span
+  ContextLayerH3: 'reflector',           // context-budget H3 long-term view from a bounded chunk / C2 selection
   TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
   LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state
   openConversationBrief: 'reflector',    // generate an A2A conversation brief

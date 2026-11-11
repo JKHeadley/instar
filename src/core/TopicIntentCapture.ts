@@ -221,6 +221,16 @@ export interface CaptureLoopDeps {
    * call's stub back for deterministic validation. Absent ⇒ the extractor
    * input carries no candidate field at all (byte-identical prompt).
    */
+  /**
+   * Context-budget §6.1/§6.2 (layers on only): the Anchor and the
+   * decisions/evolutions ledger, re-derived after every turn of a topic from
+   * the refs this turn's extraction wrote, U's labels and the referent stubs.
+   * An automated agent message is not a natural reply, so it never surfaces
+   * an evolution. Absent ⇒ nothing runs. Never affects the outcome.
+   */
+  anchorLedger?: {
+    afterTurn(topicId: number, entry: { messageId: string | number; fromUser: boolean; automated?: boolean; timestamp?: string | number }): void;
+  };
   userCorpus?: {
     refresh(topicId: number, opts?: { messageId?: number }): unknown;
     /** null = not a protected operator row; [] = an operator row with no agent message to name. */
@@ -328,6 +338,11 @@ export async function captureTurn(
 ): Promise<CaptureOutcome> {
   const outcome = await captureTurnInner(deps, entry, rateState);
   noteLayerOutcome(deps, typeof entry.topicId === 'number' ? entry.topicId : undefined, 'turn', outcome);
+  if (deps.anchorLedger && typeof entry.topicId === 'number') {
+    try {
+      deps.anchorLedger.afterTurn(entry.topicId, { messageId: entry.messageId, fromUser: entry.fromUser, automated: entry.provenance === 'automation', ...(entry.timestamp !== undefined ? { timestamp: entry.timestamp } : {}) });
+    } catch { /* @silent-fallback-ok — the ledger is a derived layer that counts its own failures; capture's outcome is unaffected */ }
+  }
   return outcome;
 }
 
