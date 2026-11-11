@@ -6,11 +6,12 @@ import { enrollOriginBrowser, enrollReviewedOriginBrowser, type EnrollmentCanary
 import { REVIEWED_WEB_K_BUILDS, matchReviewedWebKBuild, nextSupportedBuilds } from '../../../src/messaging/telegram-origin/ReviewedWebKBuilds.js';
 import { advanceBrowserRecovery, type BrowserRecoveryAction, type BrowserRecoveryState } from '../../../src/messaging/telegram-origin/OriginBrowserRecovery.js';
 import { TelegramBrowserBroker } from '../../../src/messaging/telegram-origin/TelegramBrowserBroker.js';
-import { validWebKBuildEnrollment } from '../../../src/messaging/telegram-origin/TelegramWebKDriver.js';
+import { validWebKBuildEnrollment, webKBuildFingerprint } from '../../../src/messaging/telegram-origin/TelegramWebKDriver.js';
 import type { BrowserCanary, TelegramBrowserDriver } from '../../../src/messaging/telegram-origin/BrowserTypes.js';
 import { temporaryState } from '../../helpers/telegramOriginStore.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 
+const b687 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.3-687')!;
 const b686 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.3-686')!;
 const b684 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-684')!;
 const b679 = REVIEWED_WEB_K_BUILDS.find(build => build.buildId === 'web-k-2.2-679')!;
@@ -49,6 +50,11 @@ describe('reviewed Web K build list', () => {
     expect(matchReviewedWebKBuild({ criticalAssets: ['index-C47pEAow.js', 'app-Bzzv1JNw.js', 'apiManagerProxy-DnfIRNVs.js'], assetDigests: b686.assetDigests })?.buildId)
       .toBe('web-k-2.3-686');
     expect(nextSupportedBuilds(b686, [b684]).map(b => b.buildId)).toEqual(['web-k-2.3-686', 'web-k-2.2-684']);
+    // Web K 2.3 (687): the exact public bytes the authenticated canary observed on 2026-11-11 (fingerprint 6809d24c…).
+    expect(matchReviewedWebKBuild({ criticalAssets: ['index-Dthh6gB6.js', 'app-B3AbKbVS.js', 'apiManagerProxy-xL1OSBOW.js'], assetDigests: b687.assetDigests })?.buildId)
+      .toBe('web-k-2.3-687');
+    expect(webKBuildFingerprint([...b687.criticalAssets])).toBe('6809d24cb4b13c010206dea32ff726d177b500ed9180351276092efe8d3b839e');
+    expect(nextSupportedBuilds(b687, [b686, b684]).map(b => b.buildId)).toEqual(['web-k-2.3-687', 'web-k-2.3-686']);
     expect(nextSupportedBuilds(b679, [b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
     expect(nextSupportedBuilds(b679, [b679, b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
     expect(nextSupportedBuilds(b679, []).map(b => b.buildId)).toEqual(['web-k-2.2-679']);
