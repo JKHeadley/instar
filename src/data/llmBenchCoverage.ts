@@ -640,10 +640,9 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
     false:
       'routes a turn to candidate TOPIC IDS — an OPEN, machine-supplied set, not a closed taught vocabulary the prompt fixes and a parser gates on',
   },
-  TopicIntentExtractor: {
-    false:
-      'extracts a topic-intent description from a turn — free-text content, not a closed taught verdict vocabulary a parser accepts',
-  },
+  // context-budget §6.2/§15: with the layers on, the same call teaches the closed
+  // referent-stub `kind` vocabulary and the deterministic validator gates on it.
+  TopicIntentExtractor: { contractTest: 'tests/unit/referent-stub-contract.test.ts' },
   PreCompactionFlush: {
     false:
       'extracts durable facts before compaction as free-text content — no closed taught output vocabulary a parser gates on',

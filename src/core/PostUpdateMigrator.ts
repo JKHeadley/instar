@@ -16061,6 +16061,16 @@ Claude Code can report session events (tool used, subagent started/stopped, stop
       result.upgraded.push('CLAUDE.md: added the Context Budget sentinel Registry-First row');
     }
 
+    // Context Budget U (context-budget-layered-summaries §6 row U, §8): route
+    // "how large is the operator's own text / stub coverage" to its read
+    // surface. Idempotent: inserted once after the sentinel row, sniffed on the route.
+    if (!content.includes('/user-corpus') && content.includes('| Does compaction recovery work on this machine?')) {
+      const row = `| How large are the operator's own messages in topic N? / do their answers carry referent stubs? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/topic/N/user-corpus\` — U, the protected user corpus (context budget): sizes in tokens and messages per label (\`operator\`, \`forwarded\`, \`relay\`, \`third-party\`; only operator rows carry authority), pasted artifacts and referent-stub coverage. Sizes and labels only, never the words. \`503\` = the context layers are off |`;
+      content = content.replace(/(\| Does compaction recovery work on this machine\?[^\n]*\n)/, `$1${row}\n`);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added the Context Budget user-corpus Registry-First row');
+    }
+
     // Process Health (Dashboard Tab) — Agent Awareness backfill for the
     // Failure-Learning Loop's read surface. Fresh inits get this via
     // generateClaudeMd; existing agents get it here on update. The copy mirrors

@@ -119,7 +119,6 @@ const ARGUED_FALSE_BASELINE = [
   'StandardsConformanceReviewer',
   'DiscoveryEvaluator',
   'Usher',
-  'TopicIntentExtractor',
   'PreCompactionFlush',
   'ContextLayerChunk',
   'TreeSynthesis',

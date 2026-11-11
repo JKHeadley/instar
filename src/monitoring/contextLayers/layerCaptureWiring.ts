@@ -19,6 +19,7 @@ import type { TopicIntentStore } from '../../core/TopicIntent.js';
 import type { ContextLayers } from './contextLayersBoot.js';
 import { projectAwareness } from './layerProjection.js';
 import { LayerTicker, type TickSession } from './layerTicker.js';
+import { UserCorpus, type OperatorResolver, type UserCorpusRowSource } from './userCorpus.js';
 
 export interface LayerSessionSource {
   listRunningSessions(): Array<{ tmuxSession: string; telegramTopicId?: number | null; claudeSessionId?: string | null; framework?: string; cwd?: string }>;
@@ -28,8 +29,10 @@ export interface LayerSessionSource {
 }
 
 export interface LayerCaptureWiring {
-  captureDeps: Pick<CaptureLoopDeps, 'layerBudget' | 'onCaptured'>;
-  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[] }): { ticker: LayerTicker; stop(): void };
+  captureDeps: Pick<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus'>;
+  /** U, the protected user corpus with its referent stubs (§6 row U, §8); null without TopicMemory. */
+  userCorpus: UserCorpus | null;
+  startTicker(base: Omit<CaptureLoopDeps, 'layerBudget' | 'onCaptured' | 'userCorpus'>, opts?: { intervalMs?: number; baseMs?: number; liveSecrets?: () => readonly string[] }): { ticker: LayerTicker; stop(): void };
   /** Projection outcomes, for the status and tests. */
   counts: { projected: number; failed: number };
   /** The session → transcript resolver the ticker uses (exposed for the wiring test). */
@@ -43,8 +46,18 @@ export function wireLayerCapture(o: {
   machine: string;
   projectDir: string;
   model?: string | null;
+  /** The sender-row source U is built from (TopicMemory). */
+  topicMemory?: UserCorpusRowSource | null;
+  /** The operator binding (MemoryPrivacy); absent ⇒ every row is labelled and none is protected. */
+  isOperator?: OperatorResolver;
+  /** Who counts as the operator, fingerprinted; a change re-lists U so labels follow it. */
+  bindingFingerprint?: () => string;
 }): LayerCaptureWiring {
   const counts = { projected: 0, failed: 0 };
+  const userCorpus = o.topicMemory
+    ? new UserCorpus({ store: o.layers.store, rows: o.topicMemory, isOperator: o.isOperator, bindingFingerprint: o.bindingFingerprint, machine: o.machine, model: o.model ?? null })
+    : null;
+  if (userCorpus) o.layers.attachUserCorpus(userCorpus);
   let ticker: LayerTicker | null = null;
 
   const project = (topicId: number, sessionId: string | null, sampled?: number) => {
@@ -95,7 +108,8 @@ export function wireLayerCapture(o: {
   return {
     counts,
     tickSessions,
-    captureDeps: { layerBudget: o.layers.budget, onCaptured },
+    userCorpus,
+    captureDeps: { layerBudget: o.layers.budget, onCaptured, ...(userCorpus ? { userCorpus } : {}) },
     startTicker(base, opts = {}) {
       const deps: CaptureLoopDeps = { ...base, layerBudget: o.layers.budget, onCaptured };
       ticker = new LayerTicker({

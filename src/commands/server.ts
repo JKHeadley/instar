@@ -18743,6 +18743,10 @@ export async function startServer(options: StartOptions): Promise<void> {
               ? (await import('../monitoring/contextLayers/layerCaptureWiring.js')).wireLayerCapture({
                   layers: _contextLayers, store: topicIntentStore, sessions: sessionManager as unknown as import('../monitoring/contextLayers/layerCaptureWiring.js').LayerSessionSource,
                   machine: _meshSelfId ?? 'local', projectDir: config.projectDir,
+                  // §6 row U, §8: the protected user corpus from TopicMemory sender rows, bound to the operator through memory privacy.
+                  topicMemory: topicMemory ?? null,
+                  isOperator: ({ senderKey, userId }) => _memoryPrivacyWired.isOperator(senderKey) || _memoryPrivacyWired.isOwnerSender(senderKey, userId),
+                  bindingFingerprint: () => _memoryPrivacyWired.operatorBindingFingerprint(),
                 })
               : null;
             const captureLoop = createCaptureLoop({
@@ -18777,6 +18781,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 shouldShed: () => { const r = quotaTracker?.getRecommendation(); return r === 'critical' || r === 'stop'; },
               }, { liveSecrets: () => _contextLayers?.liveSecrets() ?? [] });
               console.log(pc.green('  Context layers: H1/H2 projection + transcript-growth ticks wired'));
+              if (layerWiring.userCorpus) console.log(pc.green('  Context layers: U (protected user corpus) + referent stubs wired'));
             }
             // Anti-"shipped-but-asleep" marker for the wiring-integrity test.
             (globalThis as Record<string, unknown>).__instarTopicIntentCaptureWired = true;

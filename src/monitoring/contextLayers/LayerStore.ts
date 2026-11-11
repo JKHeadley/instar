@@ -42,7 +42,8 @@ import type { ContextLayerRecordType } from '../contextLayerKind.js';
  */
 export const DERIVED_TYPES = ['h1', 'h2', 'h3', 'chunk', 'c2', 'u-stub', 'probe', 'watermark'] as const;
 export type DerivedType = typeof DERIVED_TYPES[number];
-export const PROTECTED_TYPES = ['anchor', 'ledger-entry', 'u'] as const;
+/** `u-mark`: U's per-topic listing watermark (a row id on THIS machine's TopicMemory; never replicated). */
+export const PROTECTED_TYPES = ['anchor', 'ledger-entry', 'u', 'u-mark'] as const;
 export type ProtectedType = typeof PROTECTED_TYPES[number];
 
 /** Per-field scrub bound: over it, the field is stored as a pointer with its size. */
@@ -183,7 +184,7 @@ function protectedDataOk(v: unknown, depth = 0): boolean {
 /** The replicated record type for a stored type (U bodies are rows, only their stubs replicate). */
 const REPLICATED_TYPE: Record<string, ContextLayerRecordType | null> = {
   h1: 'h1', h2: 'h2', h3: 'h3', chunk: 'chunk', c2: 'c2', 'u-stub': 'u-stub', probe: null, watermark: null,
-  anchor: 'anchor', 'ledger-entry': 'ledger-entry', u: null,
+  anchor: 'anchor', 'ledger-entry': 'ledger-entry', u: null, 'u-mark': null,
 };
 
 export class LayerStore {
