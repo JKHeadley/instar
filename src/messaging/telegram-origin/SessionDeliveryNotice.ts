@@ -4,6 +4,10 @@ export function sessionDeliveryNotice(state: string, uncertain = false): { summa
     summary: 'A reply may have been lost. I cannot confirm whether it reached the conversation, so I will not send a duplicate blindly.',
     topicText: 'An earlier reply may have been lost after a delivery interruption. I cannot confirm whether it reached you, so I will not send a duplicate blindly. Please ask me to restate the answer if you need it.',
   };
+  if (state === 'suppressed') return {
+    summary: 'A held reply was not sent because a newer reply reached the conversation first.',
+    topicText: 'An earlier reply was not sent because a newer reply reached you first. Please ask me to restate it if something is missing.',
+  };
   if (state === 'known-failed' || state === 'expired') return {
     summary: 'A reply did not reach the conversation. The original delivery attempt has ended.',
     topicText: 'An earlier reply did not reach you after a delivery interruption. I am sorry; please ask me to restate it.',

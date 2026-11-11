@@ -89,4 +89,31 @@ describe('session delivery exception scan stays bounded on a large store', () =>
       'op-far': false, 'op-in-order': false, 'op-in-order-newer': false });
     expect(rows.map(row => row.preparedAt)).toEqual([...rows.map(row => row.preparedAt)].sort((a, b) => a - b));
   });
+
+  it('lists a retired overtaken reply so the retirement is never silent, and no other suppression', async () => {
+    const { store, db } = await open();
+    const at = BASE + 50_000_000;
+    seed(db, [{ id: 'retired', preparedAt: at, acceptedAt: at + 1000, messageId: 9001 },
+      { id: 'quiet', preparedAt: at + 1000, acceptedAt: at + 2000, messageId: 9002 }]);
+    db.prepare("UPDATE telegram_origin_operations SET state='held' WHERE operation_id IN ('op-retired','op-quiet')").run();
+    db.prepare("DELETE FROM telegram_origin_platform_receipts WHERE child_id IN ('c-retired','c-quiet')").run();
+    db.prepare("DELETE FROM telegram_origin_attempts WHERE child_id IN ('c-retired','c-quiet')").run();
+    db.prepare("UPDATE telegram_origin_children SET state='queued' WHERE child_id IN ('c-retired','c-quiet')").run();
+    db.close();
+    expect(await store.recordOperationState({ operationId: 'op-retired', state: 'suppressed', holdReason: 'overtaken-reply' })).toBe(true);
+    expect(await store.recordOperationState({ operationId: 'op-quiet', state: 'suppressed' })).toBe(true);
+    const rows = (await store.listSessionDeliveryExceptions({ afterPreparedAt: at - 1, limit: 100 }))
+      .filter(row => row.operationId === 'op-retired' || row.operationId === 'op-quiet');
+    expect(rows).toEqual([expect.objectContaining({ operationId: 'op-retired', state: 'suppressed', reason: 'overtaken-reply' })]);
+  });
+
+  it('refuses the overtaken reason on any state but suppressed, and with a detail', async () => {
+    const { store, db } = await open();
+    const at = BASE + 60_000_000;
+    seed(db, [{ id: 'x', preparedAt: at, acceptedAt: at + 1000, messageId: 9100 }]);
+    db.prepare("UPDATE telegram_origin_operations SET state='held' WHERE operation_id='op-x'").run();
+    db.close();
+    await expect(store.recordOperationState({ operationId: 'op-x', state: 'admitted', holdReason: 'overtaken-reply' })).rejects.toThrow();
+    await expect(store.recordOperationState({ operationId: 'op-x', state: 'suppressed', holdReason: 'overtaken-reply', holdDetail: { a: 1 } })).rejects.toThrow();
+  });
 });

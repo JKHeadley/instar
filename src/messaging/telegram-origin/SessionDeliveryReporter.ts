@@ -21,14 +21,15 @@ export async function reportSessionDelivery(entry: DeliveryEvent, topicId: numbe
   const liveNotice = entry.source === 'live';
   const copy = sessionDeliveryNotice(entry.state ?? 'held', entry.uncertain);
   await telegram.upsertAttentionItem({ id: attentionId,
-    category: 'telegram-origin', priority: 'HIGH', title: 'A reply needs delivery attention',
+    // A retired overtaken reply is a record: a newer reply already reached the topic.
+    category: 'telegram-origin', priority: entry.state === 'suppressed' ? 'NORMAL' : 'HIGH', title: 'A reply needs delivery attention',
     sourceContext: 'telegram-origin-session-hold', summary: copy.summary,
     description: `Original reply to ${topicRef(topicId)}; delivery state ${entry.state ?? 'held'}.`,
     contextTopicIds: topicId === null ? undefined : [topicId],
   }, liveNotice ? undefined : { recordOnly: true });
   // A historical exception is evidence for the dashboard, not a fresh
   // conversational turn. Never turn a scan/restart into one send per reply.
-  if (!liveNotice || topicId === null) return;
+  if (!liveNotice || topicId === null || entry.state === 'suppressed') return;
   const noticeState = entry.uncertain || entry.state === 'outcome-unknown' ? 'uncertain'
       : entry.state === 'expired' || entry.state === 'known-failed' ? 'failed' : 'delayed';
   const response = await deps.sendNotice(topicId, copy.topicText, `reply-delivery-notice:${entry.operationId}:${noticeState}`);

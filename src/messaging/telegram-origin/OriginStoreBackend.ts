@@ -798,8 +798,11 @@ export class OriginStoreBackend {
     holdReason?: string; holdDetail?: Record<string, unknown> | null }): boolean {
     const quietReceipt = input.state === 'suppressed' && input.holdReason === 'quiet-notification-recorded' &&
       typeof input.holdDetail?.quietId === 'string' && input.holdDetail.quietId.length <= 200 && Object.keys(input.holdDetail).length === 1;
+    // A retired overtaken reply keeps its reason so the exception scan can show it.
+    const overtakenRetire = input.state === 'suppressed' && input.holdReason === 'overtaken-reply' &&
+      (input.holdDetail === undefined || input.holdDetail === null);
     if (input.holdReason !== undefined) {
-      if ((!quietReceipt && input.state !== 'held') || typeof input.holdReason !== 'string' || !/^[a-z0-9-]{1,64}$/.test(input.holdReason)) fail('invalid-hold-reason');
+      if ((!quietReceipt && !overtakenRetire && input.state !== 'held') || typeof input.holdReason !== 'string' || !/^[a-z0-9-]{1,64}$/.test(input.holdReason)) fail('invalid-hold-reason');
     }
     const holdDetailJson = input.holdDetail === undefined || input.holdDetail === null ? null : JSON.stringify(input.holdDetail);
     if (holdDetailJson !== null) { if (input.state !== 'held' && !quietReceipt) fail('invalid-hold-detail'); json(holdDetailJson, 64 * 1024); }
@@ -814,6 +817,8 @@ export class OriginStoreBackend {
         // A re-hold without a named reason keeps the reason already recorded.
         this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=coalesce(?,hold_reason),hold_detail_json=CASE WHEN ? IS NULL THEN hold_detail_json ELSE ? END WHERE operation_id=?')
           .run(input.state, input.holdReason ?? null, holdDetailJson, holdDetailJson, input.operationId);
+      } else if (overtakenRetire) {
+        this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=?,hold_detail_json=NULL WHERE operation_id=?').run(input.state, input.holdReason, input.operationId);
       } else if (quietReceipt) {
         this.db.prepare('UPDATE telegram_origin_operations SET state=?,hold_reason=?,hold_detail_json=? WHERE operation_id=?').run(input.state, input.holdReason, holdDetailJson, input.operationId);
       } else if (input.state === 'admitted') {
@@ -864,6 +869,7 @@ export class OriginStoreBackend {
       JOIN telegram_origin_destinations d ON d.origin_id=o.origin_id
       WHERE o.kind='ordinary' AND (o.prepared_at>? OR (o.prepared_at=? AND o.operation_id>?))
         AND (o.state IN ('held','known-failed','outcome-unknown','expired')
+          OR (o.state='suppressed' AND o.hold_reason='overtaken-reply')
           OR (o.state='admitted' AND o.prepared_at<=?
             AND EXISTS(SELECT 1 FROM telegram_origin_children c JOIN entries e ON e.delivery_id=c.delivery_id
               WHERE c.operation_id=o.operation_id AND e.state='queued'))

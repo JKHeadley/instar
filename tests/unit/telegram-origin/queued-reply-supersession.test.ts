@@ -24,6 +24,21 @@ describe('queued reply supersession', () => {
     ])).toBe(false);
   });
 
+  // Regression, 2026-11-11 04:40Z (topic 141014): two replies were held by the
+  // Studio's send capacity; the operator wrote "Checking in here" while waiting,
+  // and the next retry retired both as overtaken. A user who checks in is still
+  // waiting for the held answer, so a user message alone must never retire it.
+  it('keeps a held reply when only the user wrote after it (a check-in)', () => {
+    const drafted = Date.parse('2026-11-11T04:21:34.000Z');
+    const checkIn = [message('2026-11-11T04:40:13.000Z', true, 'user')];
+    expect(queuedReplyOvertaken(drafted, checkIn)).toBe(false);
+    expect(reviewQueuedReplyHistory({ preparedAt: drafted, local: checkIn, pooled: checkIn, failedPeers: 0 })).toBe('deliver');
+  });
+
+  it('a user message never counts even when mislabelled as agent provenance', () => {
+    expect(queuedReplyOvertaken(prepared, [message('2026-11-05T02:20:00.000Z', true, 'agent')])).toBe(false);
+  });
+
   it('does not infer a newer message from missing or malformed history', () => {
     expect(queuedReplyOvertaken(prepared, [])).toBe(false);
     expect(queuedReplyOvertaken(prepared, [message('unknown', true)])).toBe(false);
@@ -77,6 +92,9 @@ describe('queued reply supersession', () => {
       message('2026-11-05T02:08:46.000Z', true, 'user'),
       message('2026-11-05T02:30:00.000Z', false, 'automation'),
     ], failedPeers: 0 })).toBe('deliver');
+    expect(reviewQueuedReplyHistory({ preparedAt: prepared, local: [], pooled: [
+      message('2026-11-05T02:30:00.000Z', true, 'user'),
+    ], failedPeers: 0 })).toBe('deliver');
   });
 
   it('reconciles a forwarded unknown outcome, then retires it after definite nonacceptance', async () => {
@@ -98,7 +116,7 @@ describe('queued reply supersession', () => {
     expect(reviewQueuedReply).not.toHaveBeenCalled();
     expect(await gate(operation, { holdDetail: { lastAttempt: 'refused' } }, audit)).toBe(false);
     expect(reviewQueuedReply).toHaveBeenCalledOnce();
-    expect(recordOperationState).toHaveBeenCalledWith({ operationId: 'old-reply', state: 'suppressed' });
+    expect(recordOperationState).toHaveBeenCalledWith({ operationId: 'old-reply', state: 'suppressed', holdReason: 'overtaken-reply' });
   });
 
   it('checks a replacement forward against the original session draft time', async () => {
@@ -116,6 +134,6 @@ describe('queued reply supersession', () => {
       operation: unknown, row: unknown, audit: unknown) => Promise<boolean> }).allowQueuedRecovery.bind(runtime);
     expect(await gate(operation, row, audit)).toBe(false);
     expect(reviewQueuedReply).toHaveBeenCalledWith(expect.objectContaining({ preparedAt: prepared }));
-    expect(recordOperationState).toHaveBeenCalledWith({ operationId: 'replacement', state: 'suppressed' });
+    expect(recordOperationState).toHaveBeenCalledWith({ operationId: 'replacement', state: 'suppressed', holdReason: 'overtaken-reply' });
   });
 });

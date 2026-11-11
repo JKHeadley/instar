@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "held-reply-user-checkin",
+  "sessionId": "279956c3-b5ed-4881-ab69-991cead4e896",
+  "timestamp": "2026-11-11T20:27:08.070Z",
+  "artifactPath": "upgrades/side-effects/held-reply-user-checkin.md",
+  "artifactSha256": "97c6a4d6b3feab2498f3023d341674f94482f2d9b6f8a777f5d0828eb6c8c8d1",
+  "coveredFiles": [
+    "docs/specs/held-reply-user-checkin.eli16.md",
+    "src/messaging/telegram-origin/OriginStoreBackend.ts",
+    "src/messaging/telegram-origin/QueuedReplySupersession.ts",
+    "src/messaging/telegram-origin/SessionDeliveryNotice.ts",
+    "src/messaging/telegram-origin/SessionDeliveryReporter.ts",
+    "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+    "tests/integration/session-delivery-reporting.test.ts",
+    "tests/unit/telegram-origin/queued-reply-supersession.test.ts",
+    "tests/unit/telegram-origin/session-exception-scan-bound.test.ts",
+    "upgrades/next/held-reply-user-checkin.md",
+    "upgrades/side-effects/held-reply-user-checkin.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrows an existing retire decision (user-only histories now deliver) and names the retirement; 4 production files, ~40 LOC; a revert fully undoes it.",
+  "eli16Path": "docs/specs/held-reply-user-checkin.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/held-reply-user-checkin.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

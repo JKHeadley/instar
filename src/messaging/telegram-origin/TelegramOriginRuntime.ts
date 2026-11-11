@@ -27,6 +27,7 @@ import { assessOriginActivation, type OriginEnrollmentSnapshot } from './OriginA
 import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
 import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
+import { OVERTAKEN_REPLY_HOLD_REASON } from './QueuedReplySupersession.js';
 
 /** How long an origin keeps full detail in the hot tables; the archive holds it after that. */
 const HOT_DETAIL_MS = 7 * 24 * 60 * 60_000;
@@ -693,7 +694,9 @@ export class TelegramOriginRuntime {
       topicId: Number(operation.record.destination.topicId), preparedAt: originalPreparedAt });
     if (review === 'hold') return false;
     if (review === 'retire') {
-      if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {
+      // Named, so the retirement stays visible in the delivery-exception scan.
+      if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed',
+        holdReason: OVERTAKEN_REPLY_HOLD_REASON })) {
         console.info('[telegram-origin] retired overtaken queued reply', operation.record.operationId);
       }
       return false;

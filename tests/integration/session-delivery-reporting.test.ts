@@ -119,4 +119,14 @@ describe('historical delivery reconciliation stays off Telegram', () => {
     await expect(reportSessionDelivery({ ...held(1), source: 'live' }, 2, h)).rejects.toThrow('HTTP 503');
     expect(h.telegram.getAttentionItem('telegram-origin-held-reply:original-1')?.status).toBe('OPEN');
   });
+
+  it('records a retired overtaken reply quietly: no topic notice, even from a live event', async () => {
+    const h = fixture();
+    await reportSessionDelivery({ source: 'live', operationId: 'retired-1', reason: 'overtaken-reply',
+      chatId: '-100123', threadId: 14, state: 'suppressed', preparedAt: Date.now() - 60_000 }, 14, h);
+    expect(h.sendNotice).not.toHaveBeenCalled(); expect(h.send).not.toHaveBeenCalled();
+    const item = h.telegram.getAttentionItem('telegram-origin-held-reply:retired-1');
+    expect(item?.priority).toBe('NORMAL');
+    expect(item?.summary).toContain('newer reply');
+  });
 });

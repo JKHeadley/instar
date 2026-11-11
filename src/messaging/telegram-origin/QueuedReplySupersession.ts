@@ -1,7 +1,11 @@
-/** A queued reply has lost its place when the conversation has moved on.
- * Only user and agent messages count: delivery notices and other automation
- * must never retire the reply they are explaining. The caller supplies the
- * topic's locally observed Telegram history; missing history is no evidence. */
+/** A queued reply has lost its place when the agent has answered again since
+ * it was drafted. Only a newer AGENT message counts. A user message alone never
+ * retires a held reply: a user who writes while a reply is held ("checking in")
+ * is still waiting for it, and dropping it then loses the answer they asked for
+ * (2026-11-11 incident: a check-in retired two held replies, silently). Delivery
+ * notices and other automation never retire the reply they are explaining. The
+ * caller supplies the topic's observed Telegram history; missing history is no
+ * evidence. */
 export function queuedReplyOvertaken(preparedAt: number, messages: ReadonlyArray<{
   timestamp: string;
   fromUser: boolean;
@@ -11,11 +15,14 @@ export function queuedReplyOvertaken(preparedAt: number, messages: ReadonlyArray
   return messages.some(message => {
     const at = Date.parse(message.timestamp);
     return Number.isFinite(at) && at > preparedAt &&
-      (message.fromUser || message.provenance === 'agent');
+      !message.fromUser && message.provenance === 'agent';
   });
 }
 
 export type QueuedReplyReview = 'retire' | 'deliver' | 'hold';
+
+/** Hold reason recorded on an operation retired because the agent answered again. */
+export const OVERTAKEN_REPLY_HOLD_REASON = 'overtaken-reply';
 
 /** How long a retried reply waits for a machine that cannot answer. A sleeping
  * laptop must not hold a reply until it expires: the unreachable peer is a doubt,
