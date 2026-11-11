@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-09T17:21:58.000Z",
-      "auditRef": "docs/audits/improvement-observability-amendment6-combined-building-2026-11-09.json",
-      "auditSha256": "b6b85a03d56217210a6219d8af4204a30e91d2f9858130ac8d818f12823ac123",
-      "areaSha256": "b70f1c24f14908d9f0ec4d3d611e5a9b8627ed86e8435465397a89e0251da292",
+      "lastAuditedAt": "2026-11-10T21:16:00.000Z",
+      "auditRef": "docs/audits/always-serves-a-team-building-family-2026-11-10-r2.json",
+      "auditSha256": "8c2bb067ee81b161a3c36d99d71f51aff357e49e4f9855b9d493e4deca7b97f3",
+      "areaSha256": "bce94074eabddfffbf34850d2f89eff83aaf05467b810add95192cf7508f8a83",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40

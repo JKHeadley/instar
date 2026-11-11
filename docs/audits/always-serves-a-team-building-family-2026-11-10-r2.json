@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-10T21:16:00.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:codex-cli-gpt-6.1-sol"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 3
+  },
+  "convergenceReport": "docs/specs/reports/always-serves-a-team-constitution-review-2026-11-10-r2.md",
+  "convergenceSha256": "dab659605c61be3f672539d6a802e7cf91f818c5cdd485d97c8d7dc660308c3a",
+  "areas": {
+    "Building": {
+      "areaSha256": "bce94074eabddfffbf34850d2f89eff83aaf05467b810add95192cf7508f8a83",
+      "verdict": "accepted"
+    }
+  }
+}

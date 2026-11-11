@@ -185,6 +185,8 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   // a restored cursor would describe a context the restored session does not hold.
   '_prompt-cursors',
   '_delta-shadow',
+  // Saved full recovery blocks (context-budget §9.1): per-session, transient.
+  '_recovery',
 ]);
 
 /**

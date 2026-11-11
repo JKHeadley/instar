@@ -32,12 +32,21 @@ describe('compaction canary', () => {
 
   const canary = () => new CompactionCanary({ stateDir, machineId: 'm1', now: () => now });
   const append = (o: object) => fs.appendFileSync(transcript, `${JSON.stringify(o)}\n`);
-  /** The SessionStart:compact attachment as Claude Code 2.1.321 writes it (stdout full, content a preview). */
-  const hook = (over: Record<string, unknown> = {}, uuid = 'h') => ({ type: 'attachment', attachment: {
-    type: 'hook_success', hookName: 'SessionStart:compact', hookEvent: 'SessionStart', exitCode: 0,
-    command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
-    stdout: '--- MACHINE LOAD ---\n=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.', content: '<persisted-output>\nOutput too large (45.5KB).', ...over,
-  }, uuid, sessionId: SID });
+  /**
+   * The SessionStart:compact attachment as Claude Code writes it for a block
+   * delivered WHOLE (under its 10,000-char hook-output limit): `content`, what
+   * the model received, carries the block. A block over the limit has `content`
+   * = the `<persisted-output>` preview wrapper and is NOT a recovery (see
+   * tests/unit/recovery-output-fit.test.ts).
+   */
+  const hook = (over: Record<string, unknown> = {}, uuid = 'h') => {
+    const stdout = (over.stdout as string | undefined) ?? '--- MACHINE LOAD ---\n=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.';
+    return { type: 'attachment', attachment: {
+      type: 'hook_success', hookName: 'SessionStart:compact', hookEvent: 'SessionStart', exitCode: 0,
+      command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
+      stdout, content: stdout, ...over,
+    }, uuid, sessionId: SID };
+  };
   /** A compaction as Claude Code writes it, optionally with its two artifacts. */
   const compaction = (opts: { trigger?: string; recovery?: boolean; postCompact?: boolean; hookExit?: number } = {}) => {
     const uuid = `b${(n += 1)}`;
