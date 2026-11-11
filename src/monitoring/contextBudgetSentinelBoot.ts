@@ -8,6 +8,8 @@ import { execFile, spawn, spawnSync } from 'node:child_process';
 import { applyClaudeChildAuth } from '../core/claudeChildAuth.js';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { resolveFrameworkTranscriptPath } from '../core/FrameworkSessionStore.js';
 import type { Session } from '../core/types.js';
 import type { ContextBudgetSentinelDeps, FoldCandidate } from './ContextBudgetSentinel.js';
@@ -63,19 +65,101 @@ export function productionSentinelSessionDeps(o: {
 }
 
 /**
- * The canary's scope (§9.1): topic-bound sessions whose engine and transcript
- * are known. Today Claude Code; another engine joins when its adapter's
- * transcript channel is verified (task 11 / Phase 1).
+ * A Codex session's `CODEX_HOME` (the account home its rollouts live under),
+ * read from its tmux environment; `undefined` when unset or unreadable (the
+ * caller then uses the process default). Only that one key is read.
  */
-export function productionCanarySessions(o: { sessions: SentinelSessionSource; projectDir: string }): () => CanarySession[] {
-  return () => o.sessions.listRunningSessions()
-    .filter((s) => typeof s.telegramTopicId === 'number' && !!s.claudeSessionId && s.framework === 'claude-code')
-    .map((s) => {
-      const configHome = typeof o.sessions.configHomeForSession === 'function' ? o.sessions.configHomeForSession(s.tmuxSession) : undefined;
-      const transcriptPath = resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: s.claudeSessionId as string, projectDir: (s as { cwd?: string }).cwd ?? o.projectDir, ...(configHome ? { configHome } : {}) });
-      return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: 'claude-code' };
-    })
-    .filter((x) => x.transcriptPath !== '');
+export function codexHomeForTmuxSession(name: string, run: typeof spawnSync = spawnSync, tmuxPath = 'tmux'): string | undefined {
+  if (!/^[A-Za-z0-9_.:-]{1,128}$/.test(name)) return undefined;
+  const r = run(tmuxPath, ['show-environment', '-t', `=${name}`, 'CODEX_HOME'], { encoding: 'utf-8', timeout: 2_000 });
+  if (r.error || r.status !== 0) return undefined;
+  const out = String(r.stdout ?? '').trim();
+  if (!out.startsWith('CODEX_HOME=')) return undefined;
+  const v = out.slice('CODEX_HOME='.length).trim();
+  return path.isAbsolute(v) ? v : undefined;
+}
+
+/** Newest-first day directories under a Codex `sessions` root, at most `limit`. */
+function recentCodexDayDirs(root: string, limit: number): string[] {
+  const ls = (d: string) => { try { return fs.readdirSync(d).filter((x) => /^\d+$/.test(x)).sort().reverse(); } catch { return []; } }; // @silent-fallback-ok — an unreadable level has no rollouts to offer
+  const out: string[] = [];
+  for (const y of ls(root)) for (const m of ls(path.join(root, y))) for (const d of ls(path.join(root, y, m))) {
+    out.push(path.join(root, y, m, d));
+    if (out.length >= limit) return out;
+  }
+  return out;
+}
+
+/**
+ * Find a Codex rollout by session id: the newest 7 day directories first (a
+ * running session's rollout is almost always there), then the full walk at
+ * most once an hour per session (a root of ~90K rollouts is not walked every tick).
+ */
+export function makeCodexRolloutFinder(o: { now?: () => number; fullWalk?: (sessionId: string, sessionsRoot: string, projectDir: string) => string } = {}): (sessionId: string, codexHome: string, projectDir: string) => string {
+  const now = o.now ?? Date.now;
+  const found = new Map<string, string>();
+  const lastFullWalk = new Map<string, number>();
+  const fullWalk = o.fullWalk ?? ((sid, root, projectDir) => resolveFrameworkTranscriptPath({ framework: 'codex-cli', sessionId: sid, projectDir, rootOverride: root }));
+  return (sessionId, codexHome, projectDir) => {
+    const key = `${codexHome}\u0000${sessionId}`;
+    const hit = found.get(key);
+    if (hit && fs.existsSync(hit)) return hit;
+    const root = path.join(codexHome, 'sessions');
+    const suffix = `-${sessionId}.jsonl`;
+    for (const dir of recentCodexDayDirs(root, 7)) {
+      let files: string[] = [];
+      try { files = fs.readdirSync(dir); } catch { continue; } // @silent-fallback-ok — an unreadable day has nothing to offer
+      const f = files.find((x) => x.startsWith('rollout-') && x.endsWith(suffix));
+      if (f) { const p = path.join(dir, f); found.set(key, p); return p; }
+    }
+    const last = lastFullWalk.get(key) ?? -Infinity;
+    if (now() - last < 60 * 60_000) return '';
+    lastFullWalk.set(key, now());
+    const p = fullWalk(sessionId, root, projectDir);
+    if (p) found.set(key, p);
+    return p;
+  };
+}
+
+/**
+ * The canary's scope (§9.1): topic-bound sessions whose engine and transcript
+ * are known. Claude Code always; Codex (`codex-cli`, its rollout as the
+ * transcript channel, §9.6) only while `codex.enabled()` — the
+ * `contextBudget.enabled` dev gate. With it off the scope is exactly Claude Code's.
+ */
+export function productionCanarySessions(o: {
+  sessions: SentinelSessionSource; projectDir: string;
+  codex?: { enabled: () => boolean; homeForSession?: (tmuxSession: string) => string | undefined; findRollout?: (sessionId: string, codexHome: string, projectDir: string) => string };
+}): () => CanarySession[] {
+  const findRollout = o.codex?.findRollout ?? makeCodexRolloutFinder();
+  // A session's CODEX_HOME does not change while it runs: one tmux read per session, not per tick.
+  const homes = new Map<string, string>();
+  const homeFor = (tmux: string, sessionId: string) => {
+    // Keyed on the session too (a respawn under the same tmux name may use another account home);
+    // only a real answer is cached, so a failed read is retried next tick.
+    const key = `${tmux}\u0000${sessionId}`;
+    const hit = homes.get(key);
+    if (hit) return hit;
+    const read = o.codex?.homeForSession?.(tmux);
+    if (read) { homes.set(key, read); if (homes.size > 500) homes.delete(homes.keys().next().value as string); return read; }
+    return process.env.CODEX_HOME ?? path.join(os.homedir(), '.codex');
+  };
+  return () => {
+    const codexOn = o.codex?.enabled() === true;
+    return o.sessions.listRunningSessions()
+      .filter((s) => typeof s.telegramTopicId === 'number' && !!s.claudeSessionId && (s.framework === 'claude-code' || (codexOn && s.framework === 'codex-cli')))
+      .map((s) => {
+        const projectDir = (s as { cwd?: string }).cwd ?? o.projectDir;
+        if (s.framework === 'codex-cli') {
+          const home = homeFor(s.tmuxSession, s.claudeSessionId as string);
+          return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath: findRollout(s.claudeSessionId as string, home, projectDir), engine: 'codex-cli' };
+        }
+        const configHome = typeof o.sessions.configHomeForSession === 'function' ? o.sessions.configHomeForSession(s.tmuxSession) : undefined;
+        const transcriptPath = resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: s.claudeSessionId as string, projectDir, ...(configHome ? { configHome } : {}) });
+        return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: 'claude-code' };
+      })
+      .filter((x) => x.transcriptPath !== '');
+  };
 }
 
 /**

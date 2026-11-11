@@ -76,6 +76,33 @@ describe('GET /context-budget/sentinel', () => {
     expect(r.body.canary.groups[0]).toMatchObject({ engine: 'claude-code', version: '2.1.321', detected: 1, pending: 1 });
   });
 
+  it('a Codex session\'s rollout compaction reads as a counted, synthesized-marked group beside Claude Code (S16, §9.6)', async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-route-codex-')); dirs.push(stateDir);
+    const rollout = path.join(stateDir, 'rollout-2026-11-10T10-00-00-cdx.jsonl');
+    fs.writeFileSync(rollout, `${JSON.stringify({ timestamp: new Date().toISOString(), type: 'session_meta', payload: { id: 'cdx', cli_version: '0.167.0' } })}\n`);
+    const built = buildFoldCoordinator({ stateDir, runningTopicSessions: () => [], poolPlacementLive: () => false, inboundQueueLive: () => true, topicRowsPresent: () => false, layerKindPresent: () => true });
+    const sentinel = new ContextBudgetSentinel({
+      stateDir, machineId: built.holderId, coordinator: built.coordinator, store: new FoldRecordStore(stateDir),
+      ownsFold: () => true, ownsTopic: () => true, candidates: () => [], tmuxAlive: () => false, kill: () => {}, fileBytes: () => null, attention: () => {},
+      admit: async () => ({ outcome: 'allow' as const, token: { id: 't' } as AdmissionToken, reason: 'admitted' as const }), consumeToken: () => ({ proceed: true, valid: true }),
+      episodeStore: new InMemorySelfHealEpisodeStore(),
+      canary: { instance: new CompactionCanary({ stateDir, machineId: built.holderId }), sessions: () => [{ topicKey: '200', claudeSessionId: 'cdx', transcriptPath: rollout, engine: 'codex-cli' }], switchOn: () => true },
+    });
+    await sentinel.tick();
+    const t = new Date().toISOString();
+    fs.appendFileSync(rollout, [
+      JSON.stringify({ timestamp: t, type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: 230_000 }, model_context_window: 258_400 } } }),
+      JSON.stringify({ timestamp: t, type: 'compacted', payload: { message: '', window_id: 'w-route-1', replacement_history: [] } }),
+      '',
+    ].join('\n'));
+    await sentinel.tick();
+    const r = await request(appFor(stateDir, sentinel)).get('/context-budget/sentinel');
+    expect(r.status).toBe(200);
+    const g = r.body.canary.groups.find((x: { engine: string }) => x.engine === 'codex-cli');
+    expect(g).toMatchObject({ engine: 'codex-cli', version: '0.167.0', detected: 1, state: 'counted', marking: 'synthesized', synthesizedSignals: 1 });
+    expect(g.profile).toMatchObject({ detection: 'supported', postCompactEvent: 'synthesized', healByInjection: false });
+  });
+
   it('the status carries the adapter verification suite\'s recorded results (newest first)', async () => {
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-route-suite-')); dirs.push(stateDir);
     const { writeSuiteResult, evaluateSuite } = await import('../../src/monitoring/adapterVerificationSuite.js');
