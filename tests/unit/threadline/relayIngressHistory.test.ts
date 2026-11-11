@@ -22,6 +22,7 @@ import { createThreadMessageRecorder } from '../../../src/threadline/createThrea
 import { MessageStore } from '../../../src/messaging/MessageStore.js';
 import { createThreadlineReapRecovery } from '../../../src/threadline/ThreadlineReapRecovery.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
+import { DegradationReporter } from '../../../src/monitoring/DegradationReporter.js';
 
 const PEER = 'a'.repeat(32);
 const BIG = 'x'.repeat(9000) + ' end-of-large-body';
@@ -132,6 +133,33 @@ describe('ThreadMessageRecorder — over-cap body backing', () => {
     env.message.body = 'swapped';
     fs.writeFileSync(file, JSON.stringify(env));
     expect(r.resolveText(row)).toBeNull();
+  });
+
+  it.each(['corrupt JSON', 'unreadable file'])('%s reports metadata without private text; retention stays quiet', (failure) => {
+    const report = vi.spyOn(DegradationReporter.getInstance(), 'report').mockImplementation(() => {});
+    const r = recorder();
+    r.record({ threadId: 'thread-corrupt', messageId: 'm-k', direction: 'inbound', body: BIG, createdAt: '2026-11-10T01:00:00.000Z', peerFingerprint: PEER });
+    const row = inboundRow('thread-corrupt', 'm-k')!;
+    const storeId = (row.textRef as { messageStoreId: string }).messageStoreId;
+    const file = path.join(bodyDir('thread-corrupt'), `${storeId}.json`);
+    if (failure === 'corrupt JSON') {
+      fs.writeFileSync(file, 'PRIVATE-SENTINEL malformed private body');
+    } else {
+      fs.renameSync(file, `${file}.original`);
+      fs.mkdirSync(file); // deterministic real read failure even with elevated privileges
+    }
+    expect(r.resolveText(row)).toBeNull();
+    expect(report).toHaveBeenCalledTimes(1);
+    expect(report.mock.calls[0][0]).toMatchObject({ feature: 'MessageStore.threadBody' });
+    expect(String(report.mock.calls[0][0].reason)).toContain(storeId);
+    expect(report.mock.calls[0][0].reason).toContain(failure === 'corrupt JSON' ? 'invalid JSON' : 'read failed');
+    expect(JSON.stringify(report.mock.calls[0][0])).not.toContain('PRIVATE');
+
+    report.mockClear();
+    messageStore.deleteThreadBodiesSync('thread-corrupt');
+    expect(r.resolveText(row)).toBeNull();
+    expect(messageStore.getThreadBodySync(storeId)).toBeNull();
+    expect(report).not.toHaveBeenCalled();
   });
 
   it('no backing store: an over-cap body fails observably (append-failed + Attention after the streak), no dangling row, never throws', () => {

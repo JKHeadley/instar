@@ -31,6 +31,7 @@ import type {
 } from './types.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 
 const DIRS = ['store', 'index', 'dead-letter', 'pending', 'threads', 'threads/archive', 'drop', 'outbound'];
 
@@ -126,12 +127,29 @@ export class MessageStore implements IMessageStore {
     fs.renameSync(tmpPath, filePath);
   }
 
-  /** Read one body record, or null when absent/corrupt/invalid id. */
+  /**
+   * Read one body record, or null when absent/corrupt/invalid id. An absent
+   * record (ENOENT) returns null quietly, including after close-only retention
+   * removes the partition. This cannot distinguish retention from deletion.
+   * Any other failure (corrupt JSON,
+   * unreadable file) means referenced history text is lost: it is reported
+   * through DegradationReporter before returning null.
+   */
   getThreadBodySync(storeId: string): MessageEnvelope | null {
     if (!MessageStore.isThreadBodyStoreId(storeId)) return null;
     try {
       return JSON.parse(fs.readFileSync(this.threadBodyPath(storeId), 'utf-8')) as MessageEnvelope;
-    } catch {
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+      DegradationReporter.getInstance().report({
+        feature: 'MessageStore.threadBody',
+        primary: 'Resolve an over-cap Threadline body from its canonical-history body record',
+        fallback: 'Treat the body as unresolvable (history read shows no body; reap recovery cannot replay it)',
+        // JSON parse errors can quote private body text. Report fixed categories
+        // only; neither exception messages nor their stringification are safe.
+        reason: `body record ${storeId} unreadable: ${err instanceof SyntaxError ? 'invalid JSON' : 'read failed'}`,
+        impact: 'Canonical thread history is missing the text of one over-cap message',
+      });
       return null;
     }
   }
