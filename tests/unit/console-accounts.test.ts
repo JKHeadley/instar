@@ -7,7 +7,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
 import { readFileSync } from 'node:fs';
-import { buildAccountsPage, tightest, cellState, resetWords } from '../../dashboard/console/accounts-model.js';
+import { buildAccountsPage, tightest, cellState, resetWords, usageWindows, untilWords } from '../../dashboard/console/accounts-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
@@ -134,6 +134,34 @@ describe('accounts page model', () => {
     expect(tightest({ fiveHour: { utilizationPct: 10 }, sevenDay: { utilizationPct: 70 } })!.label).toBe('weekly');
     expect(tightest({ primary: { usedPercent: 40 }, secondary: { usedPercent: 5 } })!.pct).toBe(40);
     expect(tightest(null)).toBeNull();
+  });
+  it('shows each limit on its own line with its own reset, 5-hour only when the account has one', () => {
+    const p = buildAccountsPage(ok({ accounts: [row({ lastQuota: { measuredAt: iso(-1), fiveHour: { utilizationPct: 100, resetsAt: iso(3) }, sevenDay: { utilizationPct: 49, resetsAt: iso(2000) }, fable: { utilizationPct: 24, resetsAt: iso(2000) } } })] }), NOW);
+    const w = p.accounts[0].windows;
+    expect(w.map((x: { label: string }) => x.label)).toEqual(['5-hour', 'weekly', 'Fable weekly']);
+    expect(w[0].pctText).toBe('100%');
+    expect(w[0].tone).toBe('bad');
+    expect(w[0].reset).toMatch(/^resets .*\(in 3m\)$/);
+    expect(w[1].reset).toMatch(/^resets \w{3} /);
+    expect(w[1].reset).not.toContain('(in');
+    expect(p.accounts[0].windowsText[0]).toMatch(/^5-hour: 100% used, resets /);
+    const weeklyOnly = buildAccountsPage(ok({ accounts: [row({ lastQuota: { measuredAt: iso(-1), sevenDay: { utilizationPct: 70, resetsAt: iso(2000) } } })] }), NOW);
+    expect(weeklyOnly.accounts[0].windows.map((x: { label: string }) => x.label)).toEqual(['weekly']);
+  });
+  it('a window whose reset passed after the reading no longer counts as full', () => {
+    const q = { fiveHour: { utilizationPct: 100, resetsAt: iso(-2) }, sevenDay: { utilizationPct: 49, resetsAt: iso(2000) } };
+    expect(usageWindows(q, NOW)[0].rolledOver).toBe(true);
+    expect(tightest(q, NOW)!.label).toBe('weekly');
+    const p = buildAccountsPage(ok({ accounts: [row({ lastQuota: { measuredAt: iso(-10), ...q } })] }), NOW);
+    expect(p.accounts[0].tight.pct).toBe(49);
+    expect(p.accounts[0].windows[0].reset).toBe('reset since the last reading');
+  });
+  it('time until a reset, within a day only', () => {
+    expect(untilWords(iso(25), NOW)).toBe('in 25m');
+    expect(untilWords(iso(190), NOW)).toBe('in 3h 10m');
+    expect(untilWords(iso(180), NOW)).toBe('in 3h');
+    expect(untilWords(iso(2000), NOW)).toBeNull();
+    expect(untilWords(iso(-1), NOW)).toBeNull();
   });
   it('cell states in words', () => {
     expect(cellState({ status: 'active', loginCheck: 'ok' }).label).toBe('signed in');
