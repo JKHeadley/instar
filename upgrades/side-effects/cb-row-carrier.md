@@ -141,3 +141,12 @@ The carrier closes §14's "rows are on the wrong machine" gap on the path the sp
 ## Amendment (CI)
 
 CI's `SqliteRegistry-wiring` allowlist check failed: `topicRowWatermark.ts` opens a long-lived SQLite handle and already calls `registerSqliteHandle`, but the store was missing from the test's `LONG_LIVED_STORES` list. The fix adds it there. No runtime change.
+
+## Amendment 2 (CI)
+
+A run of all 189 unit files touching the changed areas found three more breaks:
+- **The router wiring window:** `session-pool-activation-wiring` reads a 6,000-character window of source text, and the new `carryRow` dep pushed `deliverMessage:` to about 6,090 characters. The window is widened to 7,000.
+- **The spawn-hop signature:** `session-router-spawn-ack-wiring` searched for the old three-argument `spawnOnMachine` signature. Its search string now matches the new signature.
+- **The hashing helper (a real fix):** `slackSyntheticTopicId` copied the mint idiom that the conversation-identity ratchet forbids. It now calls the shared `candidateIdForRoutingKey`, which does identical arithmetic, so no id changes.
+
+tsc is clean, and the four affected files pass (51 tests).

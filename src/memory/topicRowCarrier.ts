@@ -30,6 +30,7 @@ import type { TopicMemory, TopicMessage } from './TopicMemory.js';
 import { coerceTopicRowOrigin } from './TopicMemory.js';
 import { rowChannelForTopicId, type RowBody, type RowIdentity, type TopicRowWriter } from './topicRowWriter.js';
 import { isStreamId, streamMachine, type StreamGap, type StreamState, type TopicRowWatermarkStore } from './topicRowWatermark.js';
+import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 
 /** Is the row carrier on? `contextBudget.enabled`, read live, resolved through the development-agent gate. */
 export function rowCarrierEnabled(explicit: boolean | undefined, config: { developmentAgent?: boolean } | undefined): boolean {
@@ -101,9 +102,7 @@ export function rowAddressFor(sessionKey: string, messageId: string, slackTopicI
  * every machine files a channel's rows under the same id.
  */
 export function slackSyntheticTopicId(channelId: string): number {
-  let hash = 0;
-  for (let i = 0; i < channelId.length; i++) hash = ((hash << 5) - hash + channelId.charCodeAt(i)) | 0;
-  return -(Math.abs(hash) + 1);
+  return candidateIdForRoutingKey(channelId);
 }
 
 /** The topic key the watermark uses: this machine's TopicMemory topic id. */

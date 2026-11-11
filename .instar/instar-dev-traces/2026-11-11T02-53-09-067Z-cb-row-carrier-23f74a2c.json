@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "cb-row-carrier",
+  "sessionId": "c90b1875-082d-4167-9657-2b742221f9a7",
+  "timestamp": "2026-11-11T02:53:09.067Z",
+  "artifactPath": "upgrades/side-effects/cb-row-carrier.md",
+  "artifactSha256": "b11ce391a7f11b1fb0f375304e5d4cda8b2fc34a81a49dbfd6bd78ae7df1a32c",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/memory/topicRowCarrier.ts",
+    "tests/unit/session-pool-activation-wiring.test.ts",
+    "tests/unit/session-router-spawn-ack-wiring.test.ts",
+    "upgrades/side-effects/cb-row-carrier.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "CI fixes on a Tier-2 slice: test windows and a shared-helper swap with identical arithmetic",
+  "secondPass": "not-required",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "test-window drift and a duplicated helper caught by an existing ratchet"
+  }
+}

@@ -56,8 +56,9 @@ describe('Session Pool activation wiring (§L4)', () => {
     // added lines inside the construction, pushing the later assertions out
     // (deliverMessage: now sits ~4200 chars in). Window 5500: the
     // trustworthy-machine-load C5 `overloadAwareRanking` placement seam
-    // (one line) moved it to ~5075.
-    const block = src.slice(idx, idx + 6000);
+    // (one line) moved it to ~5075. Window 7000: the context-budget row
+    // carrier's `carryRow` dep (Phase 1 S3) moved it to ~6090.
+    const block = src.slice(idx, idx + 7000);
     // The registry dep filters suspect machines from placement candidates
     // (owner-suspect breaker, P19) with an all-suspect unfiltered fallback —
     // still sourced from the REAL machinePoolRegistry capacities.
