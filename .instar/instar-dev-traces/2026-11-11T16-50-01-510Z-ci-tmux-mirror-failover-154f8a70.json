@@ -1,0 +1,35 @@
+{
+  "version": 3,
+  "slug": "ci-tmux-mirror-failover",
+  "sessionId": "8fca50f7-ccc8-4d27-9795-6855a8f65db9",
+  "timestamp": "2026-11-11T16:50:01.510Z",
+  "artifactPath": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "artifactSha256": "906ea47b2cb647fafe311cf00efeb1da53d08e6ab2ead1232438fc68de7889b3",
+  "coveredFiles": [
+    ".github/scripts/setup-ci-tmux.sh",
+    "upgrades/next/ci-tmux-mirror-failover.md",
+    "upgrades/side-effects/ci-tmux-mirror-failover.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Minimal reversible CI-only apt acquire options preserve configured repositories, signature checks, pinned tmux checksum, existing time bounds and all real-process tests. No installed-agent runtime, data, permission or migration change. Fresh independent native Opus concurred; source byte-identical to its review, shell syntax and 3 existing targeted toolchain tests pass. Actual full hosted suites remain required before merge. Documentation prerequisite is a separate reviewed ancestor commit so one final tree can satisfy both gates.",
+  "eli16Path": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "sideEffectsPath": "upgrades/side-effects/ci-tmux-mirror-failover.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    },
+    "reviewSkills": [
+      {
+        "name": "native-opus",
+        "outcome": "concur",
+        "verified": false,
+        "iterations": 1
+      }
+    ]
+  }
+}
