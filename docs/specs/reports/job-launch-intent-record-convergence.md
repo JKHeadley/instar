@@ -1,58 +1,56 @@
 # Convergence Report: Job launch intent and launch record (per-job thinking mode)
 
+**Reviewed artifact:** `docs/specs/job-launch-intent-record.md`, sha256 `35d932801fc87b13ad79c0755efa0b8f693f6e5e5aae335388b068b51d4be394`. The stamp is written on exactly this text: the only later change is the frontmatter lines the tag writer adds. Nothing else has been edited since the last full read, and the independent reader (GPT 6 Astra) confirmed the hash.
+
 ## Cross-model review: codex-cli:gpt-6-astra
 
-A real GPT-family review ran in all 3 rounds, with the verdict MINOR ISSUES each time. A clean-door Anthropic read, `claude-code:claude-fable-5-2`, also ran in all 3 rounds (MINOR ISSUES each time). Fable is the same model family as the author, so it is disclosed separately and does not count as cross-model. The internal reviews covered all six lenses: six separate reviewers in round 1, two combined reviewers in round 2 and one in round 3. The Standards-Conformance Gate ran every round and raised 3, 2 and 1 flags. Its round-3 flag was a false positive, confirmed against the coverage test and `MaturationLadder.ts:313`.
+A real GPT-family read ran in every pass. The last four passes ran **read-only inside the instar worktree with source access**, so code claims were checked against the code. The Anthropic clean-door reader was `claude-code:claude-fable-5-2`. It is the same model family as the author, so it is disclosed separately and not counted as cross-model.
+
+Internal Claude reviewers covered all six lenses in rounds 1 to 3. The Standards-Conformance Gate ran in rounds 1 to 3, raising 3, 2 and 1 flags. The round-3 flag ("ladder: not applicable") is a false positive, confirmed against `MaturationLadder.ts:313` and the coverage test.
 
 ## ELI10 overview
 
-Instar's scheduled jobs all run at the AI engine's default "how hard to think" setting. A simple daily summary therefore costs the same thinking as a careful code review. This spec lets a job set a neutral thinking level. Each engine's own launch code translates it: Claude Code's effort flag, or Codex's reasoning setting. Engines without such a setting skip it and say so.
+Instar's scheduled jobs all run at the AI engine's default "how hard to think" setting. This spec lets a job choose a neutral thinking level. Each engine's own launch code translates it: Claude Code's effort flag, or Codex's reasoning setting. Engines without such a setting skip it and say so.
 
-Every job run also records what the engine was actually told and which engine version ran. The same record will later serve every other engine feature (backup models, tighter permissions, the advisor), so each one can show an honest before-and-after.
+Every job run records what the engine was actually told and which engine version ran. That record is the base that every later engine feature will use for honest before-and-after numbers. A small build check also stops new "is this Claude or Codex?" code from spreading outside each engine's own section.
 
-A small check in the build also stops new "is this Claude or Codex?" code from spreading outside each engine's own section. That kind of code already appears in about 350 places, and the check stops the number from growing.
+**What is not in this spec:** the experiment that measures whether low effort saves usage without hurting quality. A source-aware read showed it needs its own design, so it was split into its own spec (initiative `job-thinking-mode-pilot`). This spec ships the mechanism and its record, proved mechanically.
 
 ## Original vs converged
 
-- **The CLI version.** The original read it once per server process. A self-updating engine would then have been recorded with a stale version, and the read could block a spawn. Now it is cached by file identity with a 1-hour limit, probed asynchronously against the binary that actually launches, and patched onto the run row afterwards. The spawn and the start record are never delayed.
-- **"Off".** The original left it undefined. Now, on Claude Code it uses the environment setting that topic sessions already use. On Codex it maps to "low", and the record shows both the requested and the sent value.
-- **What the record claims.** The original said "replicated". Run history is in fact machine-local, so the spec now states the inherited posture honestly and files the gap separately (fb-ca7635e0-b76).
-- **Where the field is read.** The original listed only frontmatter. The field is now on every job path, including the agentmd manifest, which is the authority. A clamp inside the builder catches anything that bypasses the loader.
-- **Graduation.** The original used a fixed "20% less" pass/fail judged by Justin. It is now a proper Maturation plan:
-  - the recurring maturation review's model decides;
-  - noise-aware floors apply;
-  - only runs that actually received the setting count;
-  - the two arms alternate by day so engine versions match;
-  - Justin's charter confirmation sits on top.
-- **The ratchet.** The original counted only `===` comparisons. It now counts every framework-id string literal outside the adapters, per file and in total. Moves between files are allowed.
+- **CLI version.** It was read once per process, so it went stale after self-updates and could block a spawn. Now an async probe runs with an identity-keyed 1-hour cache. It falls back to the probe whenever the existing Claude retainer has no version, and patches the row afterwards. Neither the spawn nor the start record is ever delayed.
+- **"Off".** It was undefined. On Claude it now uses the existing environment channel. On Codex it maps to low, and the remap is visible.
+- **Posture.** The record was claimed to be "replicated". It is in fact machine-local, and the spec now says so; the gap is filed as fb-ca7635e0-b76.
+- **Definition paths.** Only frontmatter carried the field at first. Now every path that persists or loads a job carries it, guarded by a round-trip test. Each read found one more hand-listed path. The paths deliberately left out are named, each with its reason.
+- **Row size.** `launch` is shed last among the optional fields under the existing 2,048-byte cap.
+- **Scope.** The benefit experiment (day-alternating arms, grade comparison) moved to the pilot spec.
 
 ## Iteration summary
 
-| Round | Spec | Distinct DESIGN findings | New mechanisms | Words | Notes |
-|---|---|---|---|---|---|
-| 1 | f8b3f90d… | 10 | 0 | 1,335 | All resolved in round 2 |
-| 2 | f8579b95… | 6 | 0 | 1,675 | Every round-1 resolution held. Tripwire fired on the count (10 to 6, not halved). Echo overrode it, with reasons disclosed in `round2-triage.md` |
-| 3 | f6c73d7e… | 2 | 0 | 2,086 | Astra: graduation didn't establish treatment. Internal: the 2-second wait broke completion matching. Both were fixed after the round and checked by a targeted verification |
-| final | c5fd5704… | — | 0 | 2,253 | At the 1.5× word warning (2,250) |
-
-Standards-Conformance Gate: ran every round (3, 2 and 1 flags).
+| Pass | Spec hash | Reader(s) | DESIGN findings | Outcome |
+|---|---|---|---|---|
+| Round 1 | f8b3f90d… | 6 internal lenses, Astra, Fable, gate (3 flags) | 10 | Revised |
+| Round 2 | f8579b95… | 2 combined internal, Astra, Fable, gate (2) | 7 | Revised. The tripwire fired (10 to 7). Echo overrode it alone, and the step-2 post-review judged the override unjustified |
+| Round 3 | f6c73d7e… | 1 combined internal, Astra, Fable, gate (1) | 2 | Fixed and verified by a targeted check. A stamp written on unread text was **withdrawn** |
+| Final read | 5d3df7cd… | Astra and Fable, **with source** | 5 | **Scope cut** (the interim path from the step-2 pre-review) |
+| Cut read 1 | 78415d96… | Astra and Fable, with source | 2 (missed definition paths) | Revised |
+| Cut read 2 | 5ab6a46e… | Astra and Fable, with source | Astra: 1 (template generator). Fable: CONVERGED | Revised (the generator is now scoped out, with its reason) |
+| Cut read 3 | **35d93280…** | Astra, with source | 0 | **CONVERGED** |
 
 ## Proportion
 
-The spec is Tier 2, touching the scheduler spawn path, the launch builders, JobRunHistory and a CI lint. It used 3 rounds of a 3-round cap, plus one targeted verification. The spec grew from 1,335 to 2,253 words, landing at the 1.5× warning line, with no new mechanisms. That is in line with the change's size, unlike the step-0 confirm-tap spec, which reached 6,880 words and failed.
+⚠ The budget was 3 rounds and 4 hours. The review used 3 rounds plus 4 full reads, in about 2 hours 15 minutes. The spec is about 2,700 words, roughly 1.8 times its 1,500-word budget. It adds no new durable mechanism, but the length is a signal: most of the growth is code-verified detail that the first three rounds could not catch, because those reviewers had no source access. **Lesson, now applied:** from round 1 on, external reviewers get read-only source access.
 
-## Left behind (precision, one line each)
+## Left behind
 
-- Undefined local terms for outside readers ("Jev grade", "lane"). These are standard Instar vocabulary.
-- An env value inherited from the server's own environment is not distinguished from one this launch sent (stated in the spec).
-- The ratchet is a floor, not a proof: constants and concatenation get past it (stated).
-- The graduation floor verdict is computed by a script and read by the review model. The script is part of the build.
-- The ladder line passes, but the coverage test's dangling-name check only reads specs in `docs/specs/`. The spec will be there once merged.
+These were not applied, so the reviewed hash stays the stamped hash.
+
+- **Downgrades.** Older loaders accept unknown manifest keys and ignore them (Astra). "Fail closed" therefore holds only for the private transfer. A downgraded loader runs the job at default effort. The "remove before downgrade" instruction stands, and the wording gets corrected during the build.
+- **`addJob` and CLI `job add`** (`commands/job.ts:15,45`, `cli.ts:1717`) cannot set the field and are deliberately not covered. The field is set afterwards in the authoritative definition.
+- **`writeUserTemplate`** is left out because migrated user jobs read the field from the manifest, not from frontmatter. That reason gets stated in the text during the build.
+- **The D8 job** (`bugs-overseer`) is confirmed on the lease holder as a user agentmd job on Opus, about 12 runs a day (Studio `GET /jobs`, 2026-11-11). The reviewers couldn't see it from the worktree.
+- **The dashboard job editor's existing defect** is filed as fb-63490288-73d.
 
 ## Convergence verdict
 
-**Converged at the round cap (3), with two round-3 design findings fixed afterwards and confirmed by a targeted verification** (GPT 6 Astra and an internal reviewer each returned RESOLVED for both fixes; see `job-launch-intent-record-rounds/`). No safety, security or data-loss finding is open. The spec is ready for Justin's review and `approved: true`.
-
-## Post-verification edits (disclosed)
-
-After the targeted verification, the tag writer refused the stamp: four `invariant` rows lacked a declared `basis` and `evidence`. Echo added a basis and evidence to each row. Each one cites code or the constitution (Rule 30, `validateEffortLevel`, the interactive pin precedence), and the classification of every row is unchanged. These rows were not re-reviewed. The second edit adds one sentence to §4, as the verifier advised: `recordLaunchVersion` copies the latest row whole.
+**Converged after the scope cut.** The last full, source-aware, cross-family read of the exact stamped text found no DESIGN finding, and Fable's previous read reached the same verdict. No safety, security or data-loss finding is open. The spec is ready for Justin's review and `approved: true`.

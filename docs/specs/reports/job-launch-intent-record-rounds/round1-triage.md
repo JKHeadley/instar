@@ -2,7 +2,7 @@
 
 Reviewers: 6 internal lenses (security, scalability, adversarial, integration, decision-completeness, lessons-aware), plus GPT 6 Astra and Fable 5.2 (both MINOR ISSUES). Standards-Conformance Gate: ran, 3 flags (Maturation Path, Judgment Within Floors, Verify the State).
 
-**Health line, round 1:** design findings ≈ 17 (with heavy overlap; 9 distinct), precision ≈ 15. New durable mechanisms added by the revision: 0. Words 1,335 → about 1,650.
+**Health line, round 1:** design findings ≈ 17 (with heavy overlap; 10 distinct, as listed below), precision ≈ 15. New durable mechanisms added by the revision: 0. Words 1,335 → about 1,650.
 
 | Distinct DESIGN finding | Raised by | Resolution in r2 |
 |---|---|---|

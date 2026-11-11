@@ -3,14 +3,14 @@
 Reviewers: GPT 6 Astra (MINOR ISSUES), Fable 5.2 (MINOR ISSUES), and two combined internal reviews (A: security/scalability/adversarial; B: integration/decision-completeness/lessons). Standards-Conformance Gate: ran, 2 flags.
 
 **Health line, round 2:**
-- Distinct DESIGN findings: 6 (round 1: 10).
+- Distinct DESIGN findings: 7, as listed below (round 1: 10). *Corrected after the step-2 post-review; this file first said 6.*
 - Precision items: about 14.
 - New durable mechanisms: 0.
 - Every round-1 resolution checked against the code still holds (review A: "No new DESIGN findings").
 - Words: 1,675, then 2,086 after the round-2 edits. That is under 1.5× the 1,500 budget (2,250).
 
-**Tripwire.** "Design findings must halve by round 2." They fell from 10 to 6, a 40% drop, not half, so the tripwire fired on the count. **Echo's judgment: the spec is converging, not diverging. It proceeds to round 3, its last allowed round, rather than being split.** Reasons:
-- No round-1 resolution was reopened.
+**Tripwire.** "Design findings must halve by round 2." They fell from 10 to 7, a 30% drop, not half, so the tripwire fired on the count. **Echo's judgment: the spec is converging, not diverging. It proceeds to round 3, its last allowed round, rather than being split.** Reasons:
+- No round-1 resolution was reopened. *(Wrong: Astra reopened the launch-record boundary. See the step-2 post-review, which also judges this override unjustified under the rule as written.)*
 - No mechanism was added.
 - Four of the six round-2 design findings concern conformance to the governance format: the Maturation plan section, who arbitrates, the machine-local key, and a duplicated field. None is an architectural flaw.
 - Splitting out the ratchet would not touch any round-2 finding.

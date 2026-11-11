@@ -26,7 +26,9 @@ Instar can already set the effort level for conversations: you can pin a Telegra
 
 ## How we'll know it works
 
-First, a throwaway test agent. Then, on my development agent, three routine jobs (bug overseer, coding-tools check, promise review) run at low effort for a week, after a week at the normal level. We compare usage and job-quality grades before and after. You make the call at the review, deadline December 1. The rule of thumb: about 20% less usage with no drop in quality, and at least 10 runs per job, or the answer is "not enough data yet". Only after that can the built-in jobs use it, each one through its own reviewed change. Undoing it means removing one line from a job.
+This piece is only the mechanism: the setting and its record. First a throwaway test agent shows the record is right on each engine. Then one of my own jobs, the bug overseer, runs at low effort for a week. Every run's record has to match what was really sent, with no errors. Instar's regular feature review checks that.
+
+Whether low effort actually saves usage without hurting quality is a separate, smaller design that comes next. It was split out of this one after the final review showed that measuring benefit fairly needs its own care: matching runs, engine versions, and how job quality is graded. Undoing this piece means removing one line from a job.
 
 ## What you need to decide
 

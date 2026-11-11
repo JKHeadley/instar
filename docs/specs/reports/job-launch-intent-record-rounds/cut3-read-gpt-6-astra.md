@@ -1,0 +1,11 @@
+- **PRECISION — Older loaders do not fail closed on unknown manifest keys.** `AgentMdJobLoader.ts:769–970` validates known fields but accepts additional keys; `manifestToJobDefinition` then omits unknown fields. A downgraded loader can therefore run a manifest containing `thinkingMode` at default effort. `JobLoader.validateJob` likewise accepts unknown keys. The private-transfer rejection claim is correct (`JobPortableBundle.ts:52,101`). Correct the loader claim and retain the explicit remove-before-downgrade instruction.
+
+- **PRECISION — Another hand-listed creation path exists.** `JobAddOptions` and `addJob` in `src/commands/job.ts:15,45`, plus CLI options in `src/cli.ts:1717`, enumerate supported fields and cannot create a job with `thinkingMode`. Name this as deliberately excluded and narrow “every definition path” to the supported persistence/load paths. This does not require expanding the mechanism: the command preserves existing job objects when rewriting `jobs.json`, and users can set the field subsequently in the authoritative definition.
+
+- **PRECISION — The `writeUserTemplate` exclusion lacks its promised reason.** Its omission is coherent because migrated user jobs read `thinkingMode` from the manifest, not decorative frontmatter, but the exclusion itself only names the function. State that reason explicitly.
+
+Both spec copies match SHA-256 `35d932801fc87b13ad79c0755efa0b8f693f6e5e5aae335388b068b51d4be394`. The generator exclusion now holds: built-in adoption and generator coverage belong to the pilot. The dashboard exclusion accurately describes its existing incomplete manifest reconstruction.
+
+The migration and portable-transfer additions cover the previously identified preservation gaps. The revised truncation order, cap exceptions, absent-launch updater behavior, final capture points, Codex flag placement, probe environment, retainer-null fallback, and completion-preserving patch semantics agree with the inspected source. I found no additional field-loss path requiring a mechanism change beyond those already covered or explicitly excluded. Live `bugs-overseer` configuration and run frequency were not established from this worktree.
+
+VERDICT: CONVERGED
