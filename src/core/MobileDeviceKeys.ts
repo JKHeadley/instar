@@ -183,7 +183,8 @@ const TERMINAL_KEEP_MS = 24 * 60 * 60_000;
 const MAX_TOMBSTONES = 200;
 
 /** Which proof approved a phone: the owner's private chat, a dashboard PIN session, or an owner phone's Face ID. */
-export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent';
+/** `person-phone`: a member's own phone linked this browser to them (instar-document-viewer §3.6a). */
+export type ApprovedVia = 'telegram-dm' | 'dashboard-pin' | 'owner-phone' | 'owner-agent' | 'person-phone';
 
 export interface DeviceRecord {
   id: string;
@@ -243,6 +244,15 @@ export interface DeviceRecord {
   effects?: BrowserEffect[];
   /** Last accepted signed request on this machine, written at most once a minute. */
   lastSeenAt?: string;
+  /**
+   * A member's linked computer (instar-document-viewer §3.6a): limited to documents (`documents`;
+   * `documents-read` for a guest), linked by that person's phone, and gone after `linkExpiresAt`.
+   */
+  scope?: 'documents' | 'documents-read';
+  linkedByDeviceId?: string;
+  /** The key hash of the phone key that signed the link (stays the signer across a phone key rotation). */
+  linkedByKeyHash?: string;
+  linkExpiresAt?: string;
 }
 
 export type BrowserEffectKind = 'revokeReplaced' | 'notice';
@@ -522,7 +532,7 @@ export class DeviceRegistry {
     if (f.devices.some((d) => keysOf(d).includes(row.browserPublicKey))) return { ok: false, reason: 'duplicate-key' };
     const setups = f.browserSetups ?? [];
     if (setups.some((e) => e.session === row.session)) return { ok: false, reason: 'session-used' };
-    const counted = f.devices.filter((d) => isBrowserDevice(d) && (d.status === 'pending' || d.status === 'active')
+    const counted = f.devices.filter((d) => isBrowserDevice(d) && (d.status === 'pending' || d.status === 'active') && (d.role ?? 'owner') !== 'team'
       && d.id !== row.replaces?.deviceId
       && !(row.ledgerRevokedKeyHashes && d.browserPublicKey && row.ledgerRevokedKeyHashes.has(keyHashOf(d.browserPublicKey))));
     if (counted.length >= row.maxBrowsers) return { ok: false, reason: 'too-many-browsers', browsers: counted };
@@ -539,6 +549,26 @@ export class DeviceRegistry {
     };
     f.devices.unshift(device);
     f.browserSetups = [...setups, { deviceId: id, at: t, session: row.session }];
+    this.write(f);
+    return { ok: true, device };
+  }
+
+  /**
+   * A member's computer, linked by their own phone (instar-document-viewer §3.6a): created active,
+   * documents-scoped, for that person. Refuses a key already held. The caller writes the ledger
+   * activation first and the team binding after.
+   */
+  createLinkedBrowser(row: { browserPublicKey: string; host: string; userId: string; scope: 'documents' | 'documents-read'; linkedByDeviceId: string; linkedByKeyHash: string; linkExpiresAt: string; approvedAt: string }): { ok: true; device: DeviceRecord } | { ok: false; reason: 'duplicate-key' } {
+    const f = this.normalize(this.read());
+    if (f.devices.some((d) => keysOf(d).includes(row.browserPublicKey))) return { ok: false, reason: 'duplicate-key' };
+    const device: DeviceRecord = {
+      id: crypto.randomUUID(), deviceName: 'Linked computer', label: null, pairedAt: row.approvedAt,
+      status: 'active', client: 'browser', browserPublicKey: row.browserPublicKey,
+      fingerprint: deviceFingerprint(row.browserPublicKey), host: row.host,
+      approvedAt: row.approvedAt, approvedVia: 'person-phone', approvedBy: row.linkedByDeviceId,
+      userId: row.userId, role: 'team', scope: row.scope, linkedByDeviceId: row.linkedByDeviceId, linkedByKeyHash: row.linkedByKeyHash, linkExpiresAt: row.linkExpiresAt,
+    };
+    f.devices.unshift(device);
     this.write(f);
     return { ok: true, device };
   }

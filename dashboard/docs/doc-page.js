@@ -32,8 +32,9 @@
 //   {type:'focus-comment', commentKey}                open / scroll to that thread
 //
 // Opening: the app loads url#code=<code>[&comment=<commentKey>]; the page trades the code for its
-// read cookie and removes the fragment. A computer browser signs an `open` with its browser device
-// key (dashboard/console/browser-device.js, IndexedDB 'instar-console') instead.
+// read cookie and removes the fragment. A computer browser signs an `open` with a device key
+// instead: an owner's approved console key (IndexedDB 'instar-console', read only) or a key linked
+// from a member's phone (IndexedDB 'instar-docs', §3.6a).
 
 import * as M from './doc-page-model.js';
 
@@ -135,16 +136,58 @@ async function expired() {
 
 // ── the computer browser's device key ──────────────────────────────────────────────────────────
 
-async function loadDevice() {
+// Linked-computer records live in their own IndexedDB database, 'instar-docs' (same shape as the
+// console's records, keyed by machineId), so the page never writes the console's 'instar-console'
+// store and the console never mistakes a documents-only key for its own. The console's records are
+// only READ here: an owner's already-approved console browser can open documents with its key.
+const DOCS_DB = 'instar-docs';
+const DOCS_STORE = 'device';
+
+function docsDb() {
+  return new Promise((resolve, reject) => {
+    const f = globalThis.indexedDB;
+    if (!f) { reject(new Error('indexeddb-unavailable')); return; }
+    const r = f.open(DOCS_DB, 1);
+    r.onupgradeneeded = () => { if (!r.result.objectStoreNames.contains(DOCS_STORE)) r.result.createObjectStore(DOCS_STORE, { keyPath: 'machineId' }); };
+    r.onsuccess = () => resolve(r.result);
+    r.onerror = () => reject(r.error || new Error('indexeddb-open-failed'));
+  });
+}
+async function docsTx(mode, fn) {
+  const db = await docsDb();
+  try {
+    return await new Promise((resolve, reject) => {
+      const t = db.transaction(DOCS_STORE, mode);
+      let out;
+      fn(t.objectStore(DOCS_STORE), (v) => { out = v; });
+      t.oncomplete = () => resolve(out);
+      t.onerror = () => reject(t.error || new Error('indexeddb-failed'));
+      t.onabort = () => reject(t.error || new Error('indexeddb-aborted'));
+    });
+  } finally { db.close(); }
+}
+const docsReadAll = () => docsTx('readonly', (s, set) => { const r = s.getAll(); r.onsuccess = () => set(r.result || []); });
+const docsRead = (machineId) => docsTx('readonly', (s, set) => { const r = s.get(String(machineId)); r.onsuccess = () => set(r.result || null); });
+const docsWrite = (rec) => docsTx('readwrite', (s) => { s.put(rec); });
+
+const keyOf = (rec) => (rec ? ((rec.keyPair && rec.keyPair.privateKey) || rec.privateKey || null) : null);
+const activeFor = (recs, host) => (recs || []).find((r) => r && r.deviceId && String(r.host || '').toLowerCase() === host && r.status === 'active' && keyOf(r));
+
+/**
+ * The key this page signs with: an active console record for this address first, else an active
+ * linked-computer record, else none (the page offers to link). `skipConsole` after the console's
+ * key was refused for documents, so a linked key on the same browser still works.
+ */
+async function loadDevice({ skipConsole = false } = {}) {
   if (state.device) return state.device;
   try {
     const bd = await import('/dashboard/console/browser-device.js');
-    const recs = await bd.readAllRecords();
     const host = location.host.toLowerCase();
-    const rec = (recs || []).find((r) => r && r.deviceId && String(r.host || '').toLowerCase() === host && r.status === 'active');
-    const privateKey = rec ? ((rec.keyPair && rec.keyPair.privateKey) || rec.privateKey || null) : null;
-    if (!rec || !privateKey) return null;
-    state.device = { bd, rec, privateKey, clock: bd.createClock() };
+    let rec = null; let source = null;
+    if (!skipConsole) { rec = activeFor(await bd.readAllRecords().catch(() => []), host); if (rec) source = 'console'; }
+    if (!rec) { rec = activeFor(await docsReadAll().catch(() => []), host); if (rec) source = 'docs'; }
+    if (!rec) return null;
+    state.device = { bd, rec, privateKey: keyOf(rec), clock: bd.createClock(), source };
     return state.device;
   } catch {
     return null; // no IndexedDB, not a secure context, or the console module is unavailable
@@ -168,22 +211,159 @@ async function docpageHeaders(op, payload) {
 
 /** Signs an `open` for this document and trades it for the read cookie. */
 async function browserOpen() {
-  const dev = await loadDevice();
+  let dev = await loadDevice();
   if (!dev) { showLinkComputer(); return false; }
-  let headers;
-  try { headers = await docpageHeaders('open', M.buildPayload('open', { docId: DOC_ID })); } catch { showMessage('This browser could not sign in to the document.', { tone: 'bad' }); return false; }
-  const r = await fetchJson(`/docs/${DOC_ID}/session`, { method: 'POST', headers: { ...headers, 'X-Instar-Request': '1', 'Content-Type': 'application/json' }, body: '{}' });
+  let r;
+  for (;;) {
+    let headers;
+    try { headers = await docpageHeaders('open', M.buildPayload('open', { docId: DOC_ID })); } catch { showMessage('This browser could not sign in to the document.', { tone: 'bad' }); return false; }
+    r = await fetchJson(`/docs/${DOC_ID}/session`, { method: 'POST', headers: { ...headers, 'X-Instar-Request': '1', 'Content-Type': 'application/json' }, body: '{}' });
+    // The console's key refused for documents: try a linked-computer key once before linking.
+    if (r.status === 401 && dev.source === 'console') {
+      state.device = null;
+      dev = await loadDevice({ skipConsole: true });
+      if (dev) continue;
+    }
+    break;
+  }
   if (r.ok) return true;
-  if (r.status === 401) { showLinkComputer(); return false; }
+  if (r.status === 401) { state.device = null; showLinkComputer(); return false; }
   showMessage(M.errorWords(r.status, r.data, errCtx()), { tone: 'bad' });
   return false;
 }
 
-/** This computer has no linked browser key for this address: it can't open the document. */
+// ── linking this computer to the member's phone (§3.6a) ────────────────────────────────────────
+//
+// No usable key for this address: make one (non-extractable, kept in the page's own IndexedDB
+// database 'instar-docs' under this machine's id with status 'linking'), ask the server for a
+// single-use nonce bound to it, and show a QR code with {key, nonce, machine, host} plus the key's
+// fingerprint. The member's app scans it, shows the same fingerprint, asks for Face ID and links
+// the key. The page polls the nonce's status; once linked, the record becomes an active device
+// and the page opens normally.
+
+let linkRun = 0; // bumps on every new code; a poll from an older code stops itself
+
+/** A code's state. POST with the nonce in the body, so it never sits in a URL (logs, history). */
+function linkStatus(nonce) {
+  return fetchJson('/docs/_link/status', { method: 'POST', headers: { 'X-Instar-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ nonce }) });
+}
+
+const LINK_SCOPE_WORDS = 'This computer can only read and comment on documents you can see. You can remove it from your phone at any time.';
+
+function linkView(children) {
+  main.replaceChildren(el('div', { cls: 'page-message link-computer' }, children));
+}
+
+/** This computer has no linked browser key for this address: offer to link it. */
 export function showLinkComputer() {
-  main.replaceChildren(el('div', { cls: 'page-message link-computer', attrs: { role: 'status' } }, [
-    el('p', { text: 'To comment from this computer, link it to your phone: open the Instar app, then People → Link a computer.' }),
-  ]));
+  const run = ++linkRun;
+  linkView([el('p', { attrs: { role: 'status' }, text: 'Preparing a code to link this computer…' })]);
+  startLink(run).catch(() => {
+    if (run === linkRun) linkFailed('This browser can\'t be linked here. It needs a recent browser with private storage turned on.');
+  });
+}
+
+function linkFailed(words) {
+  linkView([
+    el('p', { cls: 'bad', attrs: { role: 'alert' }, text: words }),
+    button('Try again', () => showLinkComputer(), 'btn'),
+    el('p', { cls: 'scope', text: LINK_SCOPE_WORDS }),
+  ]);
+}
+
+async function startLink(run) {
+  const bd = await import('/dashboard/console/browser-device.js');
+  // The key is made first; the record is keyed by the machine id the nonce answer names.
+  const recs = await docsReadAll().catch(() => []);
+  const host = location.host.toLowerCase();
+  const prior = (recs || []).find((r) => r && r.linkedFor === M.LINK_PURPOSE && r.status === 'linking' && String(r.host || '').toLowerCase() === host && r.keyPair && r.publicKey);
+  // An earlier code from this tab or another may already have been scanned.
+  if (prior && prior.linkNonce && Date.now() < (prior.linkDeadline || 0)) {
+    const st = await linkStatus(prior.linkNonce);
+    const d = M.linkPollDecision({ httpStatus: st.status, answer: st.data, nowMs: Date.now(), deadlineMs: prior.linkDeadline });
+    if (run !== linkRun) return;
+    if (d.next === 'linked') { await finishLink(bd, prior, d.deviceId, run); return; }
+  }
+  const key = prior ? { keyPair: prior.keyPair, publicKey: prior.publicKey } : await bd.generateDeviceKey();
+
+  const sentAt = Date.now();
+  let r;
+  try {
+    r = await fetch('/docs/_link/nonce', { method: 'POST', credentials: 'same-origin', cache: 'no-store', headers: { 'X-Instar-Request': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ browserPublicKey: key.publicKey }) });
+  } catch { r = null; }
+  if (run !== linkRun) return;
+  if (!r) { linkFailed('The agent couldn\'t be reached. Check your connection and try again.'); return; }
+  const data = await r.json().catch(() => null);
+  if (r.status === 429) { linkFailed('Too many link codes are waiting from this computer\'s network. Wait a few minutes, then try again.'); return; }
+  if (!r.ok || !data || typeof data.nonce !== 'string' || typeof data.machineId !== 'string') { linkFailed(M.errorWords(r.status, data, errCtx())); return; }
+
+  // Only the page's own database: the console's records are never written from here.
+  const existing = await docsRead(data.machineId).catch(() => null);
+  const slot = M.linkSlot(existing);
+  const deadline = M.linkDeadline({ expiresAt: data.expiresAt, serverDate: r.headers.get('Date'), receivedAt: Date.now() });
+  const fingerprint = await bd.fingerprintOf(key.publicKey);
+  const rec = {
+    machineId: data.machineId,
+    keyPair: key.keyPair,
+    publicKey: key.publicKey,
+    keyHash: await bd.keyHashOf(key.publicKey),
+    fingerprint,
+    status: 'linking',
+    linkedFor: M.LINK_PURPOSE,
+    host,
+    createdAt: (slot === 'reuse' && existing.createdAt) || new Date().toISOString(),
+    deviceName: null,
+    linkNonce: data.nonce,
+    linkDeadline: deadline,
+  };
+  await docsWrite(rec); // stored before the code is shown, so a scan always finds its key here
+  if (run !== linkRun) return;
+
+  let payload;
+  try { payload = M.linkPayload({ browserPublicKey: key.publicKey, nonce: data.nonce, machineId: data.machineId, host: data.host || host }); } catch { linkFailed('Something went wrong on the agent. Try again in a moment.'); return; }
+  const { qrSvg } = await import('./qr-code.js');
+  const code = el('div', { cls: 'link-qr' }, [qrSvg(document, payload, { scale: 4, quiet: 4, label: 'Code to scan with the Instar app' })]);
+  const status = el('p', { cls: 'link-status', attrs: { role: 'status', 'aria-live': 'polite' }, text: 'Waiting for your phone…' });
+  linkView([
+    el('h1', { cls: 'link-title', text: 'Link this computer to your phone' }),
+    el('p', { text: 'Open the Instar app on your phone, go to People → Link a computer, scan this code, and check the app shows the same code:' }),
+    el('p', { cls: 'link-fingerprint', attrs: { 'aria-label': `Check code: ${fingerprint.split('-').join(' ')}` }, text: fingerprint }),
+    code,
+    status,
+    el('p', { cls: 'scope', text: LINK_SCOPE_WORDS }),
+  ]);
+  pollLink(bd, rec, deadline, run, status, code);
+}
+
+function pollLink(bd, rec, deadline, run, statusEl, codeEl) {
+  const tick = async () => {
+    if (run !== linkRun || !statusEl.isConnected) return; // a newer code, or the page moved on
+    const st = await linkStatus(rec.linkNonce);
+    if (run !== linkRun || !statusEl.isConnected) return;
+    const d = M.linkPollDecision({ httpStatus: st.status, answer: st.data, nowMs: Date.now(), deadlineMs: deadline });
+    if (d.next === 'linked') { statusEl.textContent = 'Linked. Opening the document…'; await finishLink(bd, rec, d.deviceId, run); return; }
+    if (d.next === 'expired') {
+      codeEl.remove();
+      statusEl.textContent = 'This code expired.';
+      statusEl.after(button('Show a new code', () => showLinkComputer(), 'btn primary'));
+      return;
+    }
+    statusEl.textContent = d.next === 'retry' ? 'Waiting for your phone… (the agent isn\'t answering right now; still trying)' : 'Waiting for your phone…';
+    setTimeout(tick, M.LINK_POLL_MS);
+  };
+  setTimeout(tick, M.LINK_POLL_MS);
+}
+
+/** The phone linked this key: make it an active device and open the document, without a reload. */
+async function finishLink(bd, rec, deviceId, run) {
+  await docsWrite(M.linkedRecord(rec, { deviceId, host: location.host }));
+  if (run !== linkRun) return;
+  state.device = null;
+  state.reopenTried = true; // a refusal right after linking shows the code again, never loops
+  if (!(await loadDevice({ skipConsole: true }))) { linkFailed('This computer was linked, but its key couldn\'t be read back. Try again.'); return; }
+  if (!(await browserOpen())) return;
+  installGlobalHandlers();
+  await load(null);
 }
 
 /** A signed page write from this computer. → {ok, status, data} */

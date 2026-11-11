@@ -82,6 +82,13 @@ describe('Instar Documents — feature is alive', () => {
     expect((await request(app).get(`/docs/${id}/page-data`)).status).toBe(401);
     // Writes need a device signature: a bare request is refused, never 500.
     expect((await request(app).post(`/docs/${id}/w/comment`).set('X-Instar-Request', '1').send({})).status).toBe(401);
+    // Linking a member's computer (§3.6a) is mounted and reachable without a credential: with no
+    // running named tunnel the page is told so, and an unknown code reads as expired.
+    const nonce = await request(app).post('/docs/_link/nonce').set('X-Instar-Request', '1').send({ browserPublicKey: 'BAAA' });
+    expect([400, 409]).toContain(nonce.status);
+    expect((await request(app).post('/docs/_link/status').set('X-Instar-Request', '1').send({ nonce: 'nope' })).body).toEqual({ state: 'expired' });
+    // A phone route for linking needs a device signature: a bearer-less call is refused.
+    expect((await request(app).post('/mobile/browsers/link').send({})).status).toBe(401);
     // The link graph answers from the document.
     const graph = await request(app).get(`/docs/graph?from=doc:${id}`).set(auth());
     expect(graph.status).toBe(200);

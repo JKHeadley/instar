@@ -19,7 +19,17 @@ import { isConversationRef, isNodeRef, isUuid, LINK_KINDS, type Actor, type Conv
 import type { DocumentStore } from '../documents/store.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
 
-export interface DocumentsConfig { enabled?: boolean; agentMayResolve?: boolean }
+export interface DocumentsConfig {
+  enabled?: boolean;
+  agentMayResolve?: boolean;
+  /**
+   * Test-only (the iOS simulator against a development agent with no named tunnel): when true and
+   * there is no stable origin, a phone's open answered on this server's own loopback host (from a
+   * loopback peer, no forwarding header) gets `http://127.0.0.1:<port>` (or `localhost:<port>`).
+   * Default off; never written by the migrator.
+   */
+  loopbackOrigin?: boolean;
+}
 
 export function documentsConfig(config: unknown): DocumentsConfig {
   return ((config as { documents?: DocumentsConfig } | null)?.documents) ?? {};
@@ -78,7 +88,9 @@ export function resolveCaller(req: Request, res: Response, deps: DocumentRouteDe
   }
   const dreq = req as DeviceReq;
   const person = dreq.instarDevicePerson;
-  const deviceId = dreq.instarPrincipal?.kind === 'device' ? dreq.instarPrincipal.deviceId : null;
+  // A device-signed request, or a push's notification read token (it reads as that same phone, never as the agent).
+  const deviceId = dreq.instarPrincipal?.kind === 'device' || dreq.instarPrincipal?.kind === 'device-notify' ? dreq.instarPrincipal.deviceId : null;
+  if (dreq.instarPrincipal && !deviceId) return null;
   if (person && deviceId) {
     const client = dreq.instarDeviceClient === 'browser' ? 'browser' : 'phone';
     // Device reads carry no signed write payload; writes from devices go through the page's signed routes.
@@ -387,7 +399,9 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
       const heads: Record<string, number> = {};
       const store = deps.store();
       for (const row of store?.rowsOf(id) ?? []) heads[`${row.origin}/${row.incarnation}`] = Math.max(heads[`${row.origin}/${row.incarnation}`] ?? 0, row.seq);
-      res.json({ id, title: d.title, version: d.version?.label ?? null, versionId: d.version?.versionId ?? null, openComments: open.length, myOpenComments: mine, myOpenCommentKeys: myOpen, primary: { ref: d.state.primary, primaryRow: d.state.primaryRowKey }, heads });
+      // A notification read token gets the title only (what the alert shows; app contract 6).
+      if ((req as DeviceReq).instarPrincipal?.kind === 'device-notify') { res.json({ id, title: d.title }); return; }
+      res.json({ id, title: d.title, version: d.version?.label ?? null, versionId: d.version?.versionId ?? null, openComments: open.length, myOpenComments: mine, myOpenCommentKeys: myOpen, shared: r.svc.facts(id)?.everShared ?? false, primary: { ref: d.state.primary, primaryRow: d.state.primaryRowKey }, heads });
     } catch (err) { fail(res, err); }
   });
 

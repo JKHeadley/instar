@@ -31,6 +31,7 @@ import { canonicalJson } from '../documents/chain.js';
 import { ActionChallengeStore, permissionPresenceMessage } from './mobilePermissionsRoutes.js';
 import { verifyPresenceSignature } from './mobileConsoleTicket.js';
 import { arrivedOverLocalTls } from '../core/desktopTransport.js';
+import { ownLoopbackHost } from './documentLinkRoutes.js';
 import { deviceKeyHashOf } from '../core/AppRecordSignatures.js';
 
 /** The CSP every document page response carries (§3.6). */
@@ -45,7 +46,7 @@ const COOKIE = 'instar_doc';
 
 export interface DocPageDeps extends DocumentRouteDeps {
   /** A device by id: its person, client kind and public key (phone or browser). */
-  device: (deviceId: string) => { person: ResolvedPerson | null; client: 'phone' | 'browser'; publicKey: string | null; approvedVia: string | null } | null;
+  device: (deviceId: string) => { person: ResolvedPerson | null; client: 'phone' | 'browser'; publicKey: string | null; approvedVia: string | null; scope?: 'documents' | 'documents-read' | null } | null;
   /** Is this Host one of this machine's own names? */
   isOwnHost: (host: string) => boolean;
   /** This machine's stable origin for document links, or null (no named tunnel). */
@@ -152,10 +153,21 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     featureEvidence.record('documents', { kind: 'error', reason: 'server error' });
     res.status(500).json({ error: 'documents-error' });
   };
-  const mintCookie = (res: Response, deviceId: string, docId: string): void => {
+  /**
+   * The test-only loopback origin (documents.loopbackOrigin): `http://<host>` for a request on this
+   * server's own loopback host from a loopback peer with no forwarding header, else null.
+   */
+  const loopbackOrigin = (req: Request): string | null => {
+    const cfg = deps.config() as { documents?: { loopbackOrigin?: unknown }; port?: unknown };
+    if (cfg?.documents?.loopbackOrigin !== true) return null;
+    const host = String(req.headers.host ?? '').toLowerCase();
+    return ownLoopbackHost(req, host, cfg.port) ? `http://${host}` : null;
+  };
+  const mintCookie = (res: Response, deviceId: string, docId: string, plainHttp = false): void => {
     const tok = crypto.randomBytes(32).toString('base64url');
     sessions.set(tok, { deviceId, docId, expiresAt: Date.now() + COOKIE_TTL_MS });
-    res.setHeader('Set-Cookie', `${COOKIE}=${tok}; HttpOnly; Secure; SameSite=Strict; Path=/docs/${docId}; Max-Age=${COOKIE_TTL_MS / 1000}`);
+    // Secure always, except on the test-only loopback origin, which is plain http on this machine.
+    res.setHeader('Set-Cookie', `${COOKIE}=${tok}; HttpOnly;${plainHttp ? '' : ' Secure;'} SameSite=Strict; Path=/docs/${docId}; Max-Age=${COOKIE_TTL_MS / 1000}`);
   };
 
   // ── Static files and the shell ───────────────────────────────────────────────────────
@@ -190,7 +202,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId: string } }).instarPrincipal?.deviceId;
     if (!deviceId) { res.status(404).json({ error: 'unknown-document' }); return; }
     try { svc.read(id, withReader(r, id)); } catch (err) { fail(res, err); return; }
-    const origin = deps.stableOrigin();
+    const origin = deps.stableOrigin() ?? loopbackOrigin(req);
     if (!origin) { res.status(409).json({ error: 'documents-need-a-named-tunnel', detail: 'Documents need a permanent address for your agent. Turn on a named tunnel in Settings.' }); return; }
     prune(codes);
     const code = crypto.randomBytes(32).toString('base64url');
@@ -271,14 +283,14 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
       const s = codes.get(body.code);
       codes.delete(body.code); // single use, whatever happens next
       if (!s || s.docId !== id) { res.status(401).json({ error: 'doc-session-expired' }); return; }
-      mintCookie(res, s.deviceId, id);
+      mintCookie(res, s.deviceId, id, !!loopbackOrigin(req));
       res.json({ ok: true });
       return;
     }
     const v = verifyFromHeaders(req, id, 'open');
     if (!v.ok) { res.status(401).json({ error: 'doc-session-expired' }); return; }
     if (!sessionAllowed(v.deviceId)) { res.status(429).json({ error: 'too-many-requests' }); return; }
-    mintCookie(res, v.deviceId, id);
+    mintCookie(res, v.deviceId, id, !!loopbackOrigin(req));
     res.json({ ok: true });
   });
 
@@ -295,7 +307,11 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!d || !d.publicKey) return { ok: false, reason: 'unknown-device' };
     let payload: unknown;
     try { payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')); } catch { return { ok: false, reason: 'bad-payload' }; }
-    const v = verifyDocpage({ deviceId, host, docId, op, requestId, timeMs, payload, sigB64url: sig }, d.publicKey, deps.isOwnHost, seen);
+    // The agent's own machine (localhost) counts as an own host only for a request that really
+    // arrived over loopback with no forwarding header, exactly as loopback browsers are bound (§3.6).
+    const loopbackOk = ownLoopbackHost(req, host, (deps.config() as { port?: unknown }).port);
+    const ownHost = (h: string): boolean => deps.isOwnHost(h) || (loopbackOk && h === host);
+    const v = verifyDocpage({ deviceId, host, docId, op, requestId, timeMs, payload, sigB64url: sig }, d.publicKey, ownHost, seen);
     if (!v.ok) return { ok: false, reason: v.reason };
     return {
       ok: true, deviceId, op: v.op, payload: v.payload,
@@ -361,6 +377,8 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!v.ok) { res.status(401).json({ error: 'signature-refused', detail: v.reason }); return; }
     const base = callerForDevice(v.deviceId, v.signedOrigin);
     if (!base) { res.status(404).json({ error: 'unknown-document' }); return; }
+    // A guest's linked computer reads only (§3.6a).
+    if (deps.device(v.deviceId)?.scope === 'documents-read') { res.status(403).json({ error: 'read-only-computer', detail: 'This computer can read documents but not comment. Comment from your phone.' }); return; }
     const c = withReader(base, id);
     const p = v.payload as Record<string, string & number>;
     const blobs = Array.isArray((req.body ?? {}).blobs) ? ((req.body as { blobs: unknown[] }).blobs.filter((b) => checkBlob(b).ok) as Blob[]) : [];

@@ -1333,7 +1333,9 @@ ${MOBILE_CHAT_CONTENT_LINE}
 export const MOBILE_CHAT_STALE_CONTENT_LINE = '- Refused from the app with 422: pairing invites (`tlinv1:`), `/desktop` codes, and anything credential-shaped (point the operator to a Secret Drop link for secrets).';
 export const MOBILE_CHAT_CONTENT_LINE = '- With native app conversations on, nothing is refused for its content: a pairing invite (`tlinv1:`) or `/desktop` code is removed ("[pairing invite removed]", answer `redacted: true`) and the rest delivered; credential-shaped text is delivered as written with `credentialShaped: true` (the app asks the operator first; the 📱 mirror shows it as "[credential hidden]"). With native conversations off, all three are refused with 422 (point the operator to a Secret Drop link for secrets).';
 /** Pool reads and the approval method on app history rows; inserted after the history bullet on update. */
-export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
+/** The pool line before linked computers (instar-document-viewer §3.6a); replaced on update. */
+export const APP_CONVERSATIONS_POOL_STALE_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm` or `dashboard-pin`): how that phone was approved.';
+export const APP_CONVERSATIONS_POOL_LINE = '- Add `scope=pool` to the list or history read to merge every machine (a machine that did not answer is listed in `pool.failed`; a row only another machine holds reads `originVerified: "unknown"` here). The list pages every kind with one `nextCursor`. A row with a good verdict also carries `originApprovedVia` (`telegram-dm`, `dashboard-pin`, or `person-phone` for a member\'s computer their own phone linked): how that device was approved.';
 
 /** The "Open session" bullet (GET /mobile/conversations/session), inserted after the pool line on update. */
 export const APP_CONVERSATIONS_OPEN_SESSION_LINE = '- The app\'s "Open session" button asks `GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey>` (phone-signed only; my token gets 403). It answers the session driving that chat on this machine with a dashboard link focused on it (`/dashboard?session=<name>`; the dashboard still asks for its PIN), or `active: false` with a plain `reason`: no session yet (the next message starts one), or `ownerMachine`, the machine that runs it. When the operator asks "which session is answering this chat?" or "why does Open session say nothing is running?", read `GET /sessions` here: the button reads the same running sessions.';
@@ -10787,6 +10789,11 @@ setTimeout(() => process.exit(0), 2000);
       content = content.replace(MOBILE_CHAT_STALE_CONTENT_LINE, MOBILE_CHAT_CONTENT_LINE);
       patched = true;
       result.upgraded.push('CLAUDE.md: updated the Mobile operator chat content bullet');
+    }
+    if (content.includes(APP_CONVERSATIONS_POOL_STALE_LINE)) {
+      content = content.replace(APP_CONVERSATIONS_POOL_STALE_LINE, APP_CONVERSATIONS_POOL_LINE);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: app conversations pool line names person-phone');
     }
     if (content.includes('Native app conversations') && !content.includes(APP_CONVERSATIONS_POOL_LINE)) {
       const lines = content.split('\n');

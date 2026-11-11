@@ -45,3 +45,16 @@ The page routes (open, session, page-data, signed writes), the move and the `doc
    7. A shared document stays shared (spec §3.1). "Only me" on a shared document should say: "A shared document stays with the people of this conversation. You can move it to another shared conversation." and offer no private move.
 
 9. **Linking a member's computer (spec §3.6a).** Device-signed `POST /mobile/browsers/link { browserPublicKey, nonce, machineId, host, expiresAt }` from a member's or guest's phone after local Face ID; `expiresAt` is set by the phone, at most 30 days ahead. The server checks the nonce was issued on this machine for that key, then answers `201 { id, host, scope, expiresAt }` (`scope`: `documents` for members, `documents-read` for guests). `409 browser-link-limit` = 3 linked computers already; `429` = 4 links in the last hour. Send the request to the machine named by `m` (the QR's host `h`).
+
+10. **Answers (v6).**
+    - Push title: the notification extension may call `GET /mobile/docs/<itemId>/summary` with the notify token (headers `X-Instar-Device` + `X-Instar-Notify-Token`, no signature), exactly like the chat preview. With the token it answers `{ id, title }` only. The title never travels through Apple.
+    - Shared or private: read the summary's `shared` boolean (true once the document has ever had a conversation with anyone besides the owner; such a document stays shared). Don't infer it from wording.
+    - Computer link host: yes. `h` is the host the server itself answered the page's nonce request on, and it only answers on one of its own names (the named tunnel's host, or `localhost:<port>` for a computer on the agent's own machine). Send the link to `https://<h>` (or `http://` for a loopback host).
+
+11. **Who asked for the link code (v7, from the computer-link review).**
+    - Before Face ID, the app calls the new device-signed route `POST /mobile/browsers/link/lookup { nonce, browserPublicKey }` (members and guests). It answers `200 { state: "waiting", fingerprint, host, expiresAt, requester }`. An expired code, or one for a different key, gets `410 link-code-expired`; an owner phone gets `403 member-phone-required`.
+    - `requester` is `{ address: "203.0.113.7", browser: "Chrome on macOS", at: "<ISO time>", agoSeconds: 120 }`. `browser` comes from a fixed word list, never the raw User-Agent. The `201` from `POST /mobile/browsers/link` carries the same `requester`.
+    - Show it above the fingerprint: "A computer using Chrome on macOS asked 2 minutes ago (203.0.113.7)", and the line "Only scan a code shown on a computer in front of you."
+    - A caller may hold at most 3 waiting codes (`429 too-many-codes` to the page, not the phone).
+
+12. **Development agent on loopback (test only).** With `documents.loopbackOrigin: true` in the dev agent's config, `POST /mobile/docs/:id/open` sent to `http://127.0.0.1:<port>` (or `localhost:<port>`) of that server, from the same machine with no forwarding header, returns that `http://` origin instead of `409 documents-need-a-named-tunnel`. The page cookie drops `Secure` on that origin only. Off by default and never written by updates.

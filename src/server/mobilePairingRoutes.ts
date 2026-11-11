@@ -586,7 +586,13 @@ export class MobilePairingService {
       // Only a verified removal revokes: a phone can pair before its person's row arrives, and a revoked key is gone for good.
       if (log.wasRemoved(d.userId) && !this.teamStanding(d.userId)) this.revokePersonPhones(d.userId);
     }
+    // Linked computers (instar-document-viewer §3.6a): expired links, links whose phone was revoked
+    // or left, and people removed. Set by the server when documents are wired.
+    try { this.linkedBrowserSweep?.(); } catch (err) { this.deps.reportDegradation?.('Documents.linkSweep', err); } // @silent-fallback-ok — reported; the minute timer sweeps again
   }
+
+  /** The linked-computer expiry sweep (documentLinkRoutes sweepLinkedBrowsers), wired by AgentServer. */
+  linkedBrowserSweep: (() => void) | null = null;
 
   reportTeamFault(feature: string, err: unknown): void { this.deps.reportDegradation?.(feature, err); }
 
@@ -1132,6 +1138,14 @@ export class MobilePairingService {
 }
 
 /** Send a push trigger to every other online machine (mobile-push §2.3): 5 s, no retry. */
+/**
+ * The check for a documents-scoped computer's one send (instar-document-viewer §3.6a): the body is
+ * exactly the Send template for a document whose primary conversation is this route's. Set by the
+ * server when documents are wired; unset means no scoped computer may send.
+ */
+let documentScopedSend: ((device: DeviceRecord, path: string, rawBody: Buffer | undefined) => boolean) | null = null;
+export function setDocumentScopedSend(fn: typeof documentScopedSend): void { documentScopedSend = fn; }
+
 export function fanOutPushTrigger(ctx: PoolCtx | null, t: PushTrigger, onResult?: (machineId: string, ok: boolean) => void): void {
   if (!ctx) return;
   const allow = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
@@ -2243,6 +2257,10 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/, 'guest'],
   ['POST', /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, 'guest'],
   ['GET', /^\/docs\/[0-9a-f-]{36}\/data$/, 'guest'],
+  ['POST', /^\/mobile\/browsers\/link$/, 'guest'],
+  ['POST', /^\/mobile\/browsers\/link\/lookup$/, 'guest'],
+  ['GET', /^\/mobile\/browsers$/, 'guest'],
+  ['POST', /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
@@ -2314,6 +2332,12 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/open$/, statuses: active, body: 'json', ownBucket: 30, bucket: 'doc-open' },
     // The app cuts a comment's quote from the text it fetched itself, never from the page (§3.6).
     { method: 'GET', re: /^\/docs\/[0-9a-f-]{36}\/data$/, statuses: active, body: 'none' },
+    // Linking a member's computer from their own phone (instar-document-viewer §3.6a); phones only.
+    { method: 'POST', re: /^\/mobile\/browsers\/link$/, statuses: active, body: 'json', ownBucket: 12, bucket: 'browser-link' },
+    // Who asked for a link code (browser, address, age), shown before Face ID (§3.6a item 6).
+    { method: 'POST', re: /^\/mobile\/browsers\/link\/lookup$/, statuses: active, body: 'json', ownBucket: 30, bucket: 'browser-link-lookup' },
+    { method: 'GET', re: /^\/mobile\/browsers$/, statuses: active, body: 'none' },
+    { method: 'POST', re: /^\/mobile\/browsers\/[0-9a-f-]{36}\/forget$/, statuses: active, body: 'json', ownBucket: 12, bucket: 'browser-link' },
     // Moving a document to another conversation (§4.2): owner phone, Face ID-signed challenge.
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
     { method: 'POST', re: /^\/mobile\/docs\/[0-9a-f-]{36}\/primary$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
@@ -2507,6 +2531,9 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
 const NOTIFY_TOKEN_PATHS: ReadonlyArray<RegExp> = [
   /^\/mobile\/attention\/[^/]+$/,
   new RegExp(`^/mobile/chat/app/${APP_CONVERSATION_KEY_PATTERN}/preview/[a-z0-9._:-]{1,128}$`),
+  // A document push's title (instar-document-viewer, app contract 6): the summary, answered with
+  // the title only for this token; the documents router checks the person may read it.
+  /^\/mobile\/docs\/[0-9a-f-]{36}\/summary$/,
 ];
 
 export function deviceAuthenticator(svc: MobilePairingService) {
@@ -2540,8 +2567,13 @@ export function deviceAuthenticator(svc: MobilePairingService) {
         // The token opens a push's text, so it answers to the same limits as a signed request.
         const stop = svc.teamRefusal();
         if (stop) return refuse(403, stop);
-        const target = teamConversationTarget('GET', pathNorm);
-        if (!target || !svc.mayUse(np, target.ref, target.op)) return refuse(404, 'unknown-conversation');
+        if (/^\/mobile\/docs\//.test(pathNorm)) {
+          // A document is checked against its own conversation's audience by the documents router.
+          if (!np.tier) return refuse(403, 'tier-required');
+        } else {
+          const target = teamConversationTarget('GET', pathNorm);
+          if (!target || !svc.mayUse(np, target.ref, target.op)) return refuse(404, 'unknown-conversation');
+        }
       }
       (req as unknown as { instarPrincipal: Principal }).instarPrincipal = { kind: 'device-notify', deviceId: d.id };
       (req as unknown as { instarDevicePerson: ResolvedPerson }).instarDevicePerson = np;
@@ -2609,6 +2641,15 @@ export function deviceAuthenticator(svc: MobilePairingService) {
     if (!v.ok) return refuse(v.reason === 'rate-limited' ? 429 : 401, v.reason === 'rate-limited' ? 'too-many-requests' : 'device-unauthorized');
     // A browser may call only the routes named for it (§4.4); checked after the signature, before the person check.
     if (browserDevice && !rule.browser) return refuse(403, 'browser-device-not-allowed');
+    // A member's linked computer (instar-document-viewer §3.6a) is scoped to documents: its page reads
+    // and writes never come through here, and the one route it may use is the Send template for the
+    // opened document into that document's own conversation (a guest's computer: nothing).
+    if (browserDevice && peek!.scope) {
+      if (!peek!.linkExpiresAt || Date.parse(peek!.linkExpiresAt) <= Date.now()) return refuse(401, 'device-unauthorized');
+      let sendOk = false;
+      try { sendOk = peek!.scope === 'documents' && rule.sendRoute === true && !!documentScopedSend && documentScopedSend(peek!, pathNorm, raw); } catch { sendOk = false; } // @silent-fallback-ok — fail closed
+      if (!sendOk) return refuse(403, 'browser-scope');
+    }
     if (rule.ownBucket !== undefined) {
       if (!svc.deviceBucketOk(v.deviceId, rule.ownBucket, rule.bucket)) { if (browserDevice) svc.browser.noteRefusal(v.deviceId, 'rate-limited'); return refuse(429, 'too-many-requests'); }
     } else if (!(rule.sendRoute && svc.nativeOn) && !svc.deviceRateOk(v.deviceId)) { if (browserDevice) svc.browser.noteRefusal(v.deviceId, 'rate-limited'); return refuse(429, 'too-many-requests'); }

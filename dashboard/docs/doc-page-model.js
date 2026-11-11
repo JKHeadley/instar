@@ -353,7 +353,7 @@ export function parseAppEvent(detail) {
 // ── linking this computer (§3.6a) ───────────────────────────────────────────────────────────────
 
 export const LINK_PREFIX = 'instar-link:1:';
-/** Marks an IndexedDB record the document page made (the console store holds one record per machine). */
+/** Marks a record the document page made (kept in its own IndexedDB database, 'instar-docs'). */
 export const LINK_PURPOSE = 'documents';
 export const LINK_POLL_MS = 2000;
 
@@ -412,9 +412,9 @@ export function linkPollDecision({ httpStatus, answer, nowMs, deadlineMs }) {
 }
 
 /**
- * Whether the page may use this machine's slot in the console's store.
- * → 'free' (nothing there), 'reuse' (our own unfinished link: keep its key), 'replace' (our own
- * earlier link, refused now) or 'taken' (the console's own key: never overwritten from here).
+ * What the page finds in this machine's slot of its 'instar-docs' store.
+ * → 'free' (nothing there), 'reuse' (an unfinished link: keep its key), 'replace' (an earlier
+ * link, refused now) or 'taken' (a record the page didn't make; replaced with a fresh link).
  */
 export function linkSlot(rec) {
   if (!rec) return 'free';

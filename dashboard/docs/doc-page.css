@@ -70,6 +70,18 @@ body {
 .loading, .page-message { color: var(--text-muted); padding: 48px 0; max-width: 640px; margin: 0 auto; }
 .page-message.bad { color: var(--bad); }
 
+/* ── linking this computer (§3.6a) ──────────────────────── */
+.link-computer { color: var(--text); text-align: center; }
+.link-computer .link-title { font-size: 1.4rem; line-height: 1.3; color: var(--text-strong); margin: 0 0 12px; }
+.link-computer p { margin: 0 0 12px; }
+.link-computer .bad { color: var(--bad); }
+.link-fingerprint { font-family: var(--font-mono); font-size: clamp(1.4rem, 6vw, 2.1rem); font-weight: 600; letter-spacing: 0.06em; color: var(--text-strong); overflow-wrap: anywhere; }
+/* The code keeps its own white background and quiet zone in dark mode too, so phones can read it. */
+.link-qr { display: flex; justify-content: center; margin: 16px 0; }
+.link-qr svg { display: block; width: min(300px, 100%); height: auto; border-radius: 6px; }
+.link-status { color: var(--text-muted); }
+.link-computer .scope { color: var(--text-muted); font-size: 0.9rem; margin-top: 16px; }
+
 /* ── header ─────────────────────────────────────────────── */
 .doc-header { max-width: 720px; padding: 24px 0 8px; }
 .doc-header h1 { margin: 0 0 8px; font-size: 1.75rem; line-height: 1.25; color: var(--text-strong); overflow-wrap: anywhere; }

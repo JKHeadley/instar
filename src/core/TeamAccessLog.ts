@@ -80,6 +80,12 @@ export interface TeamAccessState {
   owned: Map<string, string>;
   /** device key hash → who it belongs to: a personKey, or 'owner' / 'msp'. */
   bindings: Map<string, string>;
+  /**
+   * A member's linked computers by key hash (instar-document-viewer §3.6a), with the phone's signed
+   * request. A forgotten link stays here marked `unbound` (its binding is gone) so the hourly link
+   * allowance still counts it.
+   */
+  browserLinks: Map<string, Extract<MachineEvent, { type: 'browser-bind' }> & { unbound?: true }>;
   highestSeq: number;
 }
 
@@ -88,7 +94,7 @@ export type LogHealth = 'absent' | 'ok' | 'unreadable';
 export interface ConfinedEntry { ref: string; placeKey?: string; personKey?: string }
 
 export function emptyState(): TeamAccessState {
-  return { on: false, ownerPersonKey: null, people: new Map(), grants: new Map(), owned: new Map(), bindings: new Map(), highestSeq: 0 };
+  return { on: false, ownerPersonKey: null, people: new Map(), grants: new Map(), owned: new Map(), bindings: new Map(), browserLinks: new Map(), highestSeq: 0 };
 }
 
 /** The bytes a machine signs for a row. */
@@ -346,6 +352,15 @@ function applyRequestEvent(s: TeamAccessState, e: RequestEvent): void {
 function applyMachineEvent(s: TeamAccessState, e: MachineEvent): void {
   switch (e.type) {
     case 'phone-bind': s.bindings.set(e.keyHash, e.boundTo); return;
+    // A linked computer is bound to its person here; every reader re-checks `signed` against the
+    // linking phone's key before trusting it (documents only, never team-log authority).
+    // First link wins: a key already bound (a phone, or an earlier link) is never re-bound.
+    case 'browser-bind': if (!s.bindings.has(e.keyHash) && !s.browserLinks.has(e.keyHash)) { s.bindings.set(e.keyHash, e.boundTo); s.browserLinks.set(e.keyHash, e); } return;
+    case 'browser-unbind': {
+      const l = s.browserLinks.get(e.keyHash);
+      if (l && !l.unbound && l.deviceId === e.deviceId) { s.bindings.delete(e.keyHash); s.browserLinks.set(e.keyHash, { ...l, unbound: true }); }
+      return;
+    }
     case 'conversation-own': s.owned.set(e.ref, e.personKey); return;
     case 'restored': return;
     case 'confine': return;

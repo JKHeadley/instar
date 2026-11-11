@@ -204,6 +204,8 @@ import { createDocumentPageRoutes } from './documentPageRoutes.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, type DeviceKeyLookup } from '../documents/originCheck.js';
 import { deviceKeyOf, isBrowserDevice } from '../core/MobileDeviceKeys.js';
+import { createDocumentLinkRoutes, linkStillValid, scopedSendTarget, sweepLinkedBrowsers, verifyBrowserLink } from './documentLinkRoutes.js';
+import { setDocumentScopedSend } from './mobilePairingRoutes.js';
 import { DocumentPuller, applySyncPage, buildSyncPage } from '../documents/sync.js';
 import { DocumentStore } from '../documents/store.js';
 import { DocumentService } from '../documents/service.js';
@@ -6904,6 +6906,21 @@ export class AgentServer {
     this.app.use(createDocumentRoutes(this.documentRouteDeps(options)));
     // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
     this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
+    // Linking a member's computer from their own phone (§3.6a), and that computer's one allowed send.
+    {
+      const pageDeps = this.documentPageDeps(options);
+      this.app.use(createDocumentLinkRoutes({
+        config: () => options.config, pairing: () => this.mobilePairing ?? null,
+        machineId: () => this.meshSelfId ?? (options as { coordinator?: { identity?: { machineId?: string } | null } }).coordinator?.identity?.machineId ?? null,
+        isOwnHost: pageDeps.isOwnHost,
+      }));
+      setDocumentScopedSend((device, routePath, rawBody) => this.documentScopedSendOk(device, routePath, rawBody));
+      // The linked-computer expiry sweep also runs whenever team phones are reconciled (§3.6a item 3).
+      if (this.mobilePairing) {
+        const svc = this.mobilePairing;
+        svc.linkedBrowserSweep = () => { if (isDocumentsEnabled(options.config)) sweepLinkedBrowsers(svc, Date.now()); };
+      }
+    }
     // Sync documents between machines whether or not phones are paired (owner-only documents replicate too).
     this.startDocumentPuller(options);
     this.app.use(createMaturationLadderRoutes({
@@ -9650,6 +9667,7 @@ export class AgentServer {
       this.documentRecheckTimer = setInterval(() => {
         // Bind any newly active device (whatever path approved it), then re-check waiting rows.
         try { this.mobilePairing?.bindTeamPhones(); } catch { /* @silent-fallback-ok — bound on the next tick */ }
+        try { if (this.mobilePairing) sweepLinkedBrowsers(this.mobilePairing, Date.now()); } catch { /* @silent-fallback-ok — swept on the next tick */ }
         try { this.documents?.store.recheckPending(); } catch { /* @silent-fallback-ok — retried next tick; GET /docs/health shows what is waiting */ }
       }, 60_000);
       this.documentRecheckTimer.unref();
@@ -9658,6 +9676,62 @@ export class AgentServer {
   }
 
   /** A device key for re-checking a document row: the replicated ledger first, then the local registry. */
+  /**
+   * A documents-scoped computer's one send (§3.6a): exactly the Send template, for a document this
+   * person may read, into that document's own conversation (the route's).
+   */
+  private documentScopedSendOk(device: import('../core/MobileDeviceKeys.js').DeviceRecord, routePath: string, rawBody: Buffer | undefined): boolean {
+    const docs = this.documents;
+    if (!docs || !rawBody || !device.userId) return false;
+    const svc = this.mobilePairing;
+    if (!svc || !svc.browserOn() || !linkStillValid(device, svc, Date.now())) return false;
+    let body: Record<string, unknown>;
+    try { body = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>; } catch { return false; } // @silent-fallback-ok — not JSON, not the template
+    // Only the message text and its request id: nothing else rides along.
+    if (!body || typeof body !== 'object' || Object.keys(body).some((k) => k !== 'text' && k !== 'requestId')) return false;
+    const t = scopedSendTarget(body.text, routePath);
+    if (!t) return false;
+    const facts = docs.service.facts(t.docId);
+    if (!facts || facts.primary !== t.conversation) return false;
+    // Exactly the template the server would write: this document's real title, a real version,
+    // this agent's own document link, and a count no larger than the person's open comments. All
+    // read as this person (a shared document is not readable by an owner-reach caller).
+    const standing = this.mobilePairing?.teamStanding(device.userId);
+    if (!standing) return false;
+    const principal = { kind: 'person' as const, personKey: device.userId, tier: standing.tier, client: 'browser' as const };
+    const caller = { principal, actor: { type: 'machine' as const }, access: {}, reader: { kind: 'person' as const, personKey: device.userId, grants: [] } };
+    // The same origin the server writes into document links (the pairing origin, else the configured named tunnel).
+    const origin = this.mobilePairing?.pairingOrigin()?.origin ?? configuredStableOrigin((this.config as { tunnel?: { type?: string; hostname?: string } } | undefined)?.tunnel) ?? null;
+    const m = /^I left (\d{1,4}) comments? on "([\s\S]*)" \(version (\d{1,6})\): (\S+)$/.exec(String(body.text));
+    if (!m || !origin) return false;
+    let read: ReturnType<typeof docs.service.read>;
+    try { read = docs.service.read(t.docId, caller); } catch { return false; } // @silent-fallback-ok — a document this person can't read gets no send
+    const labels = new Set([...read.state.versions.values()].map((v) => String(v.label)));
+    const mine = [...read.state.comments.values()].filter((c) => c.author === device.userId && !c.resolved).length;
+    const n = Number(m[1]);
+    const expected = `I left ${n} ${n === 1 ? 'comment' : 'comments'} on "${read.title ?? ''}" (version ${m[3]}): ${origin}/docs/${t.docId}`;
+    if (String(body.text) !== expected || !labels.has(m[3]) || n < 1 || n > mine) return false;
+    return docs.service.can(t.docId, caller, 'send');
+  }
+
+  /**
+   * A member's linked computer as another machine sees it (§3.6a): its binding carries the phone's
+   * whole signed link request; trusted only when the phone key it names (`linkedByKeyHash`, from the
+   * replicated ledger) signed it, that key is bound to the same person and not revoked, the request
+   * names this key, and the link has not expired.
+   */
+  private documentBrowserLinkValid(keyHash: string): { personKey: string; scope: 'documents' | 'documents-read' } | null {
+    const svc = this.mobilePairing;
+    const link = svc?.teamLog()?.state().browserLinks.get(keyHash);
+    if (!svc || !link || Date.parse(link.expiresAt) <= Date.now()) return null;
+    // Exactly the phone key that signed the link (named in the row), revoked or not, so a revoked
+    // signer is refused as revoked and a later key rotation on that phone does not break the link.
+    const phone = this.documentLedgerActivation(link.linkedByDeviceId, link.linkedByKeyHash);
+    const phoneRevoked = !!svc.keyLedger?.isRevoked(link.linkedByKeyHash, link.linkedByDeviceId) || !!svc.keyLedger?.keyRevoked(link.linkedByKeyHash);
+    const ok = verifyBrowserLink(link, phone, phone ? svc.teamLog()?.state().bindings.get(phone.keyHash) ?? null : null, phoneRevoked, Date.now());
+    return ok ? { personKey: link.boundTo, scope: link.scope } : null;
+  }
+
   /** A device's activation from the replicated key ledger: the one for this key, else its newest live key. */
   private documentLedgerActivation(deviceId: string, keyHash?: string): { keyHash: string; publicKey: string; approvedVia: string; client?: 'browser' } | null {
     const ledger = this.mobilePairing?.keyLedger;
@@ -9692,10 +9766,21 @@ export class AgentServer {
     if (person && person.ok && person.role === 'owner') role = 'owner';
     else if (person && person.ok && person.role === 'team' && person.userId) { role = 'person'; personKey = person.userId; }
     else if (bound === 'owner' || bound === 'owner-browser') role = 'owner';
-    else if (bound) { role = 'person'; personKey = bound; }
+    else if (bound && svc.teamLog()?.state().browserLinks.has(keyHash)) {
+      // A linked computer: only as strong as the phone that linked it, checked here (§3.6a), and
+      // only while the browser switch is on.
+      const linkRow = svc.teamLog()!.state().browserLinks.get(keyHash)!;
+      const link = this.documentBrowserLinkValid(keyHash);
+      if (!link || linkRow.deviceId !== deviceId || svc.keyLedger?.keyRevoked(keyHash) || !svc.browserOn()) return { status: 'revoked' };
+      role = 'person'; personKey = link.personKey;
+    } else if (bound) { role = 'person'; personKey = bound; }
     // A browser approved only with the dashboard PIN can read but never write (§3.6); a guest's linked browser reads only.
-    const scope = (local as { scope?: string } | undefined)?.scope;
-    const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read';
+    if (local?.scope && (!linkStillValid(local, svc, Date.now()) || !svc.browserOn())) return { status: 'revoked' };
+    const scope = local?.scope ?? svc.teamLog()?.state().browserLinks.get(keyHash)?.scope;
+    // A guest's computer reads only. Decided from the person's current tier as well as the row, so
+    // no machine can widen a guest's computer by rewriting its scope.
+    const guest = scope !== undefined && !!personKey && svc.teamStanding(personKey)?.tier === 'guest';
+    const mayWrite = !(client === 'browser' && approvedVia === 'dashboard-pin') && scope !== 'documents-read' && !guest;
     return { status: 'ok', publicKey, role, personKey, client, mayWrite };
   }
 
@@ -9776,11 +9861,13 @@ export class AgentServer {
         const d = svc.devices.get(deviceId);
         if (d) {
           if (d.status !== 'active') return null;
+          // A member's linked computer is valid only while its link is (expiry, the linking phone).
+          if (d.scope && (!linkStillValid(d, svc, Date.now()) || !svc.browserOn())) return null;
           const key = deviceKeyOf(d) ?? null;
           if (key && svc.keyLedger?.isRevoked(deviceKeyHashOf(key), d.id)) return null;
           const p = svc.personOfDevice(d);
           const person = p.ok ? { role: p.role, userId: p.userId, name: p.name, tier: p.tier } : null;
-          return { person: person as never, client: isBrowserDevice(d) ? 'browser' as const : 'phone' as const, publicKey: key, approvedVia: d.approvedVia ?? null };
+          return { person: person as never, client: isBrowserDevice(d) ? 'browser' as const : 'phone' as const, publicKey: key, approvedVia: d.approvedVia ?? null, scope: d.scope ?? null };
         }
         // A device paired on another machine: its replicated ledger activation and team binding (§3.6:
         // reads and writes work on any awake machine, nothing needs re-approval after a lease move).
@@ -9793,7 +9880,7 @@ export class AgentServer {
         const person = k.role === 'owner'
           ? { ok: true, role: 'owner', userId: null, name: 'Owner', telegramUserId: null }
           : { ok: true, role: 'team', userId: k.personKey, name: standing!.name, telegramUserId: null, tier: standing!.tier };
-        return { person: person as never, client: k.client, publicKey: k.publicKey, approvedVia: act.approvedVia ?? null };
+        return { person: person as never, client: k.client, publicKey: k.publicKey, approvedVia: act.approvedVia ?? null, scope: svc.teamLog()?.state().browserLinks.get(act.keyHash)?.scope ?? null };
       },
       isOwnHost: (host: string) => {
         const svc = this.mobilePairing;

@@ -63,8 +63,9 @@ function setup() {
   });
   const service = new DocumentService(store, team);
   let origin: string | null = `https://${HOST}`;
+  let cfg: Record<string, unknown> = { developmentAgent: true };
   const deps: DocPageDeps = {
-    config: () => ({ developmentAgent: true }), service: () => service, store: () => store, teamVector: () => ({}),
+    config: () => cfg, service: () => service, store: () => store, teamVector: () => ({}),
     grantsOf: () => [], ownsConversation: () => false, ownerConversation: () => OWN, deviceApprovedVia: () => 'phone',
     device: (id) => id === 'owner-phone' ? { person: { ok: true, role: 'owner', userId: null, name: 'Justin', telegramUserId: null } as never, client: 'phone', publicKey: owner.raw, approvedVia: 'phone' }
       : id === 'stranger' ? { person: null, client: 'phone', publicKey: stranger.raw, approvedVia: null } : null,
@@ -78,8 +79,8 @@ function setup() {
     if (req.path.startsWith('/mobile/') && req.headers['x-test-device']) {
       (req as unknown as Record<string, unknown>).instarPrincipal = { kind: 'device', deviceId: req.headers['x-test-device'] };
       (req as unknown as Record<string, unknown>).instarDevicePerson = { ok: true, role: 'owner', userId: null, name: 'Justin' };
-      // The tunnel's TLS ends at cloudflared on loopback.
-      req.headers['x-forwarded-proto'] = 'https';
+      // The tunnel's TLS ends at cloudflared on loopback (not for a direct loopback call).
+      if (!req.headers['x-test-direct']) req.headers['x-forwarded-proto'] = 'https';
     }
     next();
   });
@@ -87,17 +88,17 @@ function setup() {
   a.use(createDocumentPageRoutes(deps));
   const bearer: Caller = { principal: { kind: 'bearer' }, actor: { type: 'agent', placeKey: 'owner-reach' }, access: {}, reader: { kind: 'owner' } };
   const { id } = service.create(bearer, { title: 'Plan', markdown: '# Plan\n\nWe ship the viewer on Friday.\n', primary: OWN });
-  return { a, id, owner, stranger, presence, store, service, setOrigin: (o: string | null) => { origin = o; } };
+  return { a, id, owner, stranger, presence, store, service, setOrigin: (o: string | null) => { origin = o; }, setConfig: (c: Record<string, unknown>) => { cfg = c; } };
 }
 
-function signedHeaders(key: ReturnType<typeof deviceKey>, deviceId: string, docId: string, op: string, payload: Record<string, unknown>) {
+function signedHeaders(key: ReturnType<typeof deviceKey>, deviceId: string, docId: string, op: string, payload: Record<string, unknown>, host = HOST) {
   const requestId = `${Date.now()}-${crypto.randomUUID()}`;
   const timeMs = String(Date.now());
-  const msg = docpageString(deviceId, HOST, docId, op as never, requestId, timeMs, payload);
+  const msg = docpageString(deviceId, host, docId, op as never, requestId, timeMs, payload);
   const sig = lowS(crypto.sign('sha256', Buffer.from(msg), { key: key.privateKey, dsaEncoding: 'der' })).toString('base64url');
   return {
     'X-Instar-Device': deviceId, 'X-Instar-Device-Time': timeMs, 'X-Instar-Docpage-Sig': sig, 'X-Instar-Request-Id': requestId,
-    'X-Instar-Docpage-Payload': Buffer.from(JSON.stringify(payload)).toString('base64url'), 'X-Instar-Request': '1', Host: HOST,
+    'X-Instar-Docpage-Payload': Buffer.from(JSON.stringify(payload)).toString('base64url'), 'X-Instar-Request': '1', Host: host,
   };
 }
 
@@ -149,6 +150,59 @@ describe('document page', () => {
     const r = await request(s.a).post(`/mobile/docs/${s.id}/open`).set('x-test-device', 'owner-phone').send({});
     expect(r.status).toBe(409);
     expect(r.body.error).toBe('documents-need-a-named-tunnel');
+  });
+
+  describe('the test-only loopback origin (documents.loopbackOrigin)', () => {
+    const LOOP = '127.0.0.1:4062';
+    const open = (s: ReturnType<typeof setup>, host: string, extra: Record<string, string> = {}) =>
+      request(s.a).post(`/mobile/docs/${s.id}/open`).set('x-test-device', 'owner-phone').set('x-test-direct', '1').set('Host', host).set(extra).send({});
+
+    it('switch off: no stable address is still a plain 409, even on loopback', async () => {
+      const s = setup();
+      s.setOrigin(null);
+      s.setConfig({ developmentAgent: true, port: 4062 });
+      const r = await open(s, LOOP);
+      expect(r.status).toBe(409);
+      expect(r.body.error).toBe('documents-need-a-named-tunnel');
+    });
+
+    it('switch on, own loopback Host from a loopback peer: an http origin, and the whole page works on it', async () => {
+      const s = setup();
+      s.setOrigin(null);
+      s.setConfig({ developmentAgent: true, port: 4062, documents: { loopbackOrigin: true } });
+      const r = await open(s, LOOP);
+      expect(r.status).toBe(200);
+      expect(r.body.url).toBe(`http://${LOOP}/docs/${s.id}`);
+      const sess = await request(s.a).post(`/docs/${s.id}/session`).set('Host', LOOP).set('X-Instar-Request', '1').send({ code: r.body.code });
+      expect(sess.status).toBe(200);
+      const setCookie = String(sess.headers['set-cookie'][0]);
+      // Plain http on this machine: the cookie can't be Secure there, and is otherwise unchanged.
+      expect(setCookie).not.toMatch(/Secure/);
+      expect(setCookie).toMatch(/HttpOnly; SameSite=Strict; Path=\/docs\//);
+      const cookie = setCookie.split(';')[0];
+      const page = await request(s.a).get(`/docs/${s.id}/page-data`).set('Host', LOOP).set('Cookie', cookie);
+      expect(page.status).toBe(200);
+      // A write signed over the loopback host (instar-docpage-v1 signs the lowercased Host).
+      const para = page.body.blocks[1];
+      const salt = crypto.randomBytes(16).toString('hex');
+      const text = 'Loopback comment';
+      const payload = { docId: s.id, commentId: crypto.randomUUID(), onVersion: page.body.version.id, start: para.start, end: para.start + 5, bodyHash: blobHash(salt, text) };
+      const w = await request(s.a).post(`/docs/${s.id}/w/comment`).set(signedHeaders(s.owner, 'owner-phone', s.id, 'comment', payload, LOOP)).send({ blobs: [{ salt, text }] });
+      expect(w.status).toBe(201);
+      // With a stable origin, the tunnel's cookie stays Secure.
+      s.setOrigin(`https://${HOST}`);
+      expect(String((await request(s.a).post(`/docs/${s.id}/session`).set('X-Instar-Request', '1').send({ code: (await request(s.a).post(`/mobile/docs/${s.id}/open`).set('x-test-device', 'owner-phone').send({})).body.code })).headers['set-cookie'][0])).toMatch(/; Secure;/);
+    });
+
+    it('switch on, but another Host, another port, or a forwarding header: 409 as before', async () => {
+      const s = setup();
+      s.setOrigin(null);
+      s.setConfig({ developmentAgent: true, port: 4062, documents: { loopbackOrigin: true } });
+      for (const r of [await open(s, HOST), await open(s, '127.0.0.1:9999'), await open(s, 'evil.example:4062'), await open(s, LOOP, { 'X-Forwarded-For': '203.0.113.9' }), await open(s, LOOP, { 'cf-connecting-ip': '203.0.113.9' })]) {
+        expect(r.status).toBe(409);
+        expect(r.body.error).toBe('documents-need-a-named-tunnel');
+      }
+    });
   });
 
   it('a device-signed comment is stored; a changed body, a replay, or an unknown person is refused', async () => {

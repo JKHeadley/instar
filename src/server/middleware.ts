@@ -1004,6 +1004,9 @@ const DOC_PAGE_GET = new RegExp(`^/docs/(?:_assets/[a-z0-9-]+\\.(?:js|css)|${DOC
 const DOC_PAGE_POST = new RegExp(`^/docs/${DOC_UUID}/(?:session|w/[a-z]+)$`);
 /** The document page's self-authenticating routes (documentPageRoutes.ts). */
 export function DOC_PAGE_PATH(method: string, p: string): boolean {
+  // Linking a member's computer starts from a page with no credential yet (documentLinkRoutes.ts).
+  if (method === 'POST' && p === '/docs/_link/status') return true;
+  if (method === 'POST' && p === '/docs/_link/nonce') return true;
   if (method === 'GET') return DOC_PAGE_GET.test(p);
   if (method === 'POST') return DOC_PAGE_POST.test(p);
   return false;
