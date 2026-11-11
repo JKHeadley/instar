@@ -1181,6 +1181,13 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
   public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
+  /**
+   * True when the inbound gate will refuse this message (it never reaches a session — today the Chief
+   * of Staff owner-only rule). Set by the server; every "delivered" acknowledgement asks it first, so a
+   * refused message is never reported as delivered (Echo Bugs 10000002533). senderId 0 = unverified.
+   */
+  isInboundRefused: ((topicId: number, senderId: number) => boolean) | null = null;
+
   /** Chief of Staff (docs/specs/chief-of-staff-topic.md §3): an owner tap on a `cos:` button; set by the server with the loop. */
   onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string }) => Promise<'ok' | 'ignored'>) | null = null;
   /** Callback to inject text input into a tmux session. Wired by server.ts. */
@@ -2339,6 +2346,20 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   setCallbackApproverResolver(resolve: () => number | undefined): void {
     this.callbackApproverResolver = resolve;
+  }
+
+  /**
+   * The VERIFIED owner: the configured owner id, else the one verified operator (the same answer
+   * authority-bearing buttons use). Undefined means no owner is known — never "anybody".
+   * Chief of Staff reads this for its owner-only rule (src/core/chiefOfStaffOwner.ts).
+   */
+  getVerifiedOwner(): number | undefined {
+    return this.getCallbackApprover();
+  }
+
+  /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
+  ownerSourcesReady(): boolean {
+    return this.getConfiguredApprover() !== undefined || this.callbackApproverResolver !== null;
   }
 
   /** The configured owner, normalized the way pairing reads it: config is raw JSON, so an id may be a string. */
@@ -6809,9 +6830,9 @@ export class TelegramAdapter implements MessagingAdapter {
     // Owner-only, checked HERE against the explicit owner principal; anyone else gets "owner only" and
     // nothing runs. The handler (the loop's ownerTap) decides what the tap means and answers plainly.
     if (query.data.startsWith('cos:')) {
-      const owner = this.getConfiguredApprover(); // normalised: config may hold the id as a string
+      const owner = this.getVerifiedOwner(); // configured owner, else the one verified operator (chiefOfStaffOwner.ts rule 1)
       if (!owner || query.from.id !== owner) {
-        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: 'Only the owner can tap this.' }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the refusal already held */ });
+        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: owner ? 'Only the owner can tap this.' : 'No verified owner is set for this agent, so this cannot be tapped yet.' }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the refusal already held */ });
         return;
       }
       let answer = 'Not available right now.';

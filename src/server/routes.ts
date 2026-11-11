@@ -93,6 +93,8 @@ import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
+import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
+import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
@@ -1213,6 +1215,8 @@ export interface RouteContext {
   /** Desktop-only sessions the owner's phone mints with Face ID. */
   phoneDesktopSessions?: import('./PhoneDesktopSessionStore.js').PhoneDesktopSessionStore;
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
+  /** Test seam: the gh runner for the PR-link reviewer check (default: the authenticated gh for this agent). */
+  prLinkReviewGh?: import('../core/githubRuntime.js').AuthenticatedGhExec;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
   identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -2978,6 +2982,29 @@ export function createRoutes(ctx: RouteContext): Router {
   };
 
   const router = Router();
+  // A PR link sent to the operator is a review request on GitHub too (Echo Bugs 10000002537).
+  // Mounted FIRST so the origin send-policy binds the final text (an unconfirmed request appends a note).
+  {
+    let prLinkGh: import('../core/githubRuntime.js').AuthenticatedGhExec | null = ctx.prLinkReviewGh ?? null;
+    const ghFor = () => {
+      if (!prLinkGh && ctx.config.stateDir) prLinkGh = createAuthenticatedGhExec({ stateDir: ctx.config.stateDir });
+      return prLinkGh;
+    };
+    let selfLogin: (() => Promise<string | null>) | null = null;
+    const prLinkDeps = {
+      enabled: () => (ctx.config as { prLinkReviewRequest?: { enabled?: boolean } }).prLinkReviewRequest?.enabled !== false,
+      reviewer: () => (ctx.config as { prLinkReviewRequest?: { reviewer?: string } }).prLinkReviewRequest?.reviewer ?? null,
+      gh: ghFor,
+      selfLogin: async () => {
+        const gh = ghFor();
+        if (!gh) return null;
+        selfLogin ??= createSelfLoginReader(gh);
+        return selfLogin();
+      },
+      log: (line: string) => console.log(line),
+    };
+    for (const route of PR_LINK_REPLY_ROUTES) router.use(route.path, prLinkReviewMiddleware(prLinkDeps, route.maxLength));
+  }
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOriginDisplayPreferences(router, ctx);
@@ -30256,9 +30283,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
 
       try {
+        // Asked BEFORE routing, with the same cleaned sender the handler sees: a message the inbound
+        // gate refuses (Chief of Staff owner-only rule) is still handed over, so the gate logs it and
+        // tells the sender it was not delivered, but the lifeline is told `refused` and must not send
+        // "✓ Delivered" for it (Echo Bugs 10000002533).
+        let refused = false;
+        try { refused = ctx.telegram.isInboundRefused?.(Number(topicId), typeof fromUserId === 'number' && Number.isSafeInteger(fromUserId) && fromUserId > 0 ? fromUserId : 0) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the reply as before; the gate itself still decides */ refused = false; }
         const delivered = ctx.telegram.onTopicMessage(message) as unknown;
         if (trust) await delivered;
-        res.json({ ok: true, forwarded: true });
+        res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}) });
       } catch (err) {
         DegradationReporter.getInstance().report({
           feature: 'routes.onTopicMessage',
