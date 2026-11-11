@@ -222,7 +222,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
  */
 export function parseJsonResult(
   stdout: string,
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
+  onUsage?: IntelligenceOptions['onUsage'],
   preferStructuredOutput = false,
   onServedModel?: (info: { model: string; framework?: string }) => void,
 ): string {
@@ -252,7 +252,23 @@ export function parseJsonResult(
       const outputTokens = num(u.output_tokens);
       const cachedTokens = num(u.cache_read_input_tokens);
       if (inputTokens > 0 || outputTokens > 0) {
-        onUsage({ inputTokens, outputTokens, cachedTokens });
+        // Unified usage ledger (Slice 2): the disjoint parts, the session id the
+        // ledger pairs with this call's transcript, and the metered dollars.
+        const part = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+        const usd = typeof obj.total_cost_usd === 'number' && Number.isFinite(obj.total_cost_usd) ? obj.total_cost_usd : null;
+        onUsage({
+          inputTokens, outputTokens, cachedTokens,
+          detail: {
+            sessionId: typeof obj.session_id === 'string' ? obj.session_id : null,
+            input: part(u.input_tokens),
+            cacheRead: part(u.cache_read_input_tokens),
+            cacheWrite: part(u.cache_creation_input_tokens),
+            output: part(u.output_tokens),
+            reasoning: null,
+            reportedUsd: usd,
+            reportedBasis: usd != null ? 'actual' : null,
+          },
+        });
       }
     } catch {
       /* @silent-fallback-ok — usage extraction must never break the result path. */

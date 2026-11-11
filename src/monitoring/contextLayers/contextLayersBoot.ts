@@ -21,6 +21,7 @@ import { featureEvidence } from '../FeatureEvidenceLog.js';
 import { TopicLayerBudget, type LayerBudgetStatus } from './layerCadence.js';
 import type { LayerTicker, LayerTickerStatus } from './layerTicker.js';
 import { layerFreshness } from './layerProjection.js';
+import { LayerSpendLog, layerSpendFile } from './layerSpendLog.js';
 
 /** The feature id the maturation ladder reads (src/data/feature-ladders.json). */
 export const CONTEXT_LAYERS_FEATURE_ID = 'contextBudget.layers';
@@ -30,12 +31,14 @@ export interface ContextLayers {
   archive: TranscriptArchive;
   /** The layer brakes (§6.4): per-topic and component daily token ceilings, shared by turns and ticks. */
   budget: TopicLayerBudget;
+  /** LayerUpdate attempts, calls and provider-reported tokens per day by trigger (§11). */
+  spend: LayerSpendLog;
   /** Attach the transcript-growth ticker once the capture pipeline exists (its status joins ours). */
   attachTicker(t: LayerTicker): void;
   /** The agent's live secret values (cached), for scrubbing anything bound for an LLM. */
   liveSecrets(): readonly string[];
   /** The current-work layer's freshness against TopicMemory; `unknown` when no H1 record exists yet. */
-  h1Freshness(topicId: number, topicMemory: { countMessagesAfter(topicId: number, messageId: number): { total: number; fromUser: number } | null }): { line: string; stale: boolean | 'unknown' } | null;
+  h1Freshness(topicId: number, topicMemory: { countMessagesAfter(topicId: number, messageId: number): { total: number; fromUser: number } | null }): { line: string; stale: boolean | 'unknown'; userTurnsBehind?: number | null } | null;
   status(): ContextLayersStatus;
 }
 
@@ -105,6 +108,7 @@ export function buildContextLayers(deps: {
   });
   const archive = new TranscriptArchive({ stateDir: deps.stateDir, liveSecrets });
   const budget = new TopicLayerBudget();
+  const spend = new LayerSpendLog({ file: layerSpendFile(deps.stateDir) });
   let ticker: LayerTicker | null = null;
   // Both roots exist, permissioned, from boot: the e2e "alive" check and the
   // never-served / never-backed-up rules have something real to act on.
@@ -116,6 +120,7 @@ export function buildContextLayers(deps: {
     store,
     archive,
     budget,
+    spend,
     attachTicker(t) { ticker = t; },
     liveSecrets,
     h1Freshness(topicId, topicMemory) {
@@ -124,7 +129,7 @@ export function buildContextLayers(deps: {
       // capture cannot run): the stamp says unknown, never nothing.
       if (!rec) return { line: 'no layer record yet', stale: 'unknown' };
       const f = layerFreshness(rec, (id) => topicMemory.countMessagesAfter(topicId, id));
-      return { line: f.line, stale: f.stale };
+      return { line: f.line, stale: f.stale, userTurnsBehind: f.userTurnsBehind };
     },
     status(): ContextLayersStatus {
       const lr = contextLayersRoot(deps.stateDir);

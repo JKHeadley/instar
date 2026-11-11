@@ -9,11 +9,11 @@ How the 1.x registry and the 2.0 purpose and rule book compare, rule by rule. A 
 
 | Item | Count |
 |---|---|
-| 1.x articles with a `**Rule.**` line | 97 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812) |
-| 2.0 rule rows | 122 (numbers 1 to 122, each once, with instar-2 #189, #190, #191 and #192) |
+| 1.x articles with a `**Rule.**` line | 98 (92 at #2323, plus TCC from #2194, plus One Constitution, Two Books Aligned from #2708, plus The Person Decides; the Agent Does the Rest from #2734, plus Attributed Statements Trace to Their Source and No Feature May Require a Purchased Service, both from #2812, plus An Instar Agent Always Serves a Team from #3046) |
+| 2.0 rule rows | 123 (numbers 1 to 123, each once, with instar-2 #189, #190, #191 and #192, and #200) |
 | Purpose rules | 19, labelled Rule (Rule 5 is labelled Value, so it is not counted); 13 Values |
 
-Map result: **52 aligned, 42 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
+Map result: **53 aligned, 42 differs, 3 1.x-only**, plus 26 rule rows 2.0-only and 15 purpose rules 2.0-only (4 partial).
 
 Of the differs rows: 8 `CONFLICT`, 10 `CONFLICT?` (a conflict on one reading, unsure), 15 `1x-extra`, 3 `2.0-extra`, 2 `both-extra`, 4 `minor`.
 
@@ -75,6 +75,7 @@ Ranks 1 to 7 are direct text clashes. Ranks 8 to 12 depend on a reading, so trea
 | 1.x #2734 and 2.0 #190: The Person Decides; the Agent Does the Rest | New article #95, a tree node under *Agent Proposes, Operator Approves*, and R120 | **Yes, as a pair.** Same obligation and the same two owed checks. 1.x keeps *Sovereignty*'s "if it's the human's, ask", which is conflict 5 and unchanged here. |
 | 1.x #2812 and 2.0 #191: Attributed Statements Trace to Their Source | New article #96, a tree node under *Truthful Provenance — Speak Only as Yourself*, and R121 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. R89 and article 92 keep their own difference, unchanged here. |
 | 1.x #2812 and 2.0 #192: No Feature May Require a Purchased Service | New article #97, a tree node under *Framework-Agnostic — and Framework-Optimizing*, and R122 | **Yes, as a pair.** Same approved wording in both books. Neither is enforced yet. Row 30 and R118 keep their own difference, unchanged here. |
+| 1.x #3046 and 2.0 #200: An Instar Agent Always Serves a Team | New article #98, a tree node under *An Instar Agent Is Always a Multi-Machine Entity*, and R123 | **Yes, as a pair.** Same approved wording in both books, except one sentence: 2.0 says it extends #31 and #113, and 1.x names the same thing in its own terms, *An Instar Agent Is Always a Multi-Machine Entity* and its cross-machine posture declaration. Neither is enforced yet. The pull request numbers are added here when the pull requests are opened. |
 
 Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-doc commits since 2026-10-16, checked on the API with a query that does return older commits.
 
@@ -122,7 +123,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 36 | Scrape/Parser Fixture Realness — feed the parser the REAL bytes | 36 | aligned | — | — | — |
 | 37 | Zero-Failure | 37 | differs | CONFLICT | 1.x deliberately refuses a gate-scoped reading and blocks the push on red; 2.0 scopes to main and merge, permits branch red, and lets interrupted work proceed past a quarantined flake. | 1.x: "A weaker wording ("green at every gate") would restore exactly the loophole"; "do not push or release the change without a verified green suite"<br>2.0: "red-then-green on a branch is fine"; "quarantined and a defect is filed, and the work it interrupted proceeds" |
 | 38 | LLM-Supervised Execution | 38 | differs | minor | 1.x says critical is author-decided; 2.0 glossary defines it. | 1.x: "a pipeline is critical when its author says so"<br>2.0: "The glossary defines critical for verification." |
-| 39 | Observability — you can't tune what you can't see | 39 | aligned | Outcome/baseline, repeated evaluation, visual history, material components and accountable review sharpened together in topic 139374; universal enforcement remains an implementation obligation. | — | — |
+| 39 | Observability — you can't tune what you can't see | 39 | aligned | — | Outcome/baseline, repeated evaluation, visual history, material components and accountable review sharpened together in topic 139374; universal enforcement remains an implementation obligation. | — |
 | 40 | Expected Capacity Enforcement Is an Outcome, Not a Degradation | 40 | aligned | — | — | — |
 | 41 | Never Silently Cut the Data a Decision Depends On | NONE | 1.x-only | — | Proposed amendment, pending 1.x ratification. Nearest 2.0 is purpose Rule 2, which does not carry the derive/disclose/refuse duties. | — |
 | 42 | Observable Intelligence — No Autonomous LLM Action Is Unauditable | 41, 58 | differs | CONFLICT? | 1.x records metadata and is still pending ratification; the rule book calls full input/output an open decision while part 7 already requires it. Unsure which is current in 2.0. | 1.x: "the component, the resolved provider + model, the outcome"<br>2.0: "yes, the doorway keeps the full input and output by default"; "full input means the actual submitted input" |
@@ -181,6 +182,7 @@ Also #2323 itself (2026-10-23) is the header naming 2.0 as master. No purpose-do
 | 95 | The Person Decides; the Agent Does the Rest | 120 | aligned | — | — | — |
 | 96 | Attributed Statements Trace to Their Source | 121 | aligned | — | — | — |
 | 97 | No Feature May Require a Purchased Service | 122 | aligned | — | — | — |
+| 98 | An Instar Agent Always Serves a Team | 123 | aligned | — | — | — |
 
 ## 6. 2.0 rule rows with no 1.x article
 

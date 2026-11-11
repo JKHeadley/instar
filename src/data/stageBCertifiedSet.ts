@@ -24,6 +24,14 @@ export const STAGE_B_CERTIFIED_SET = {
   ],
   "excluded": [
     {
+      "file": "src/core/GraphDurableFileMemo.ts",
+      "reason": "Process-local memo of files already flushed, reached through SecretStore. It only skips a repeat fsync of unchanged content and holds no inbound-delivery or lifecycle logic."
+    },
+    {
+      "file": "src/core/GraphMembershipTypes.ts",
+      "reason": "Type-only graph membership shapes named by shared config types. Erased at runtime with no imports."
+    },
+    {
       "file": "src/core/AppRecordSignatures.ts",
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },

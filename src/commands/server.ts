@@ -1,5 +1,6 @@
+import {ConversationGraphDelegationManager} from '../server/ConversationGraphDelegationManager.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
-import { buildContextLayers, contextLayersEnabled, type LayerEmitter } from '../monitoring/contextLayers/contextLayersBoot.js';
+import { buildContextLayers, contextLayersEnabled, CONTEXT_LAYERS_FEATURE_ID, type LayerEmitter } from '../monitoring/contextLayers/contextLayersBoot.js';
 import { observeRecoveryPeer } from '../recovery/RecoveryPoolHealth.js';
 import { hasPromotedUpgradeAnnouncement, LEGACY_NOTIFICATION_GATES, scheduledJobSlug } from '../messaging/notificationCategories.js';
 import { readPeerNotifications } from '../server/notificationPoolRead.js';
@@ -111,7 +112,7 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
-import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
+import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -213,6 +214,8 @@ import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
 import { TopicMemory } from '../memory/TopicMemory.js';
 import { TopicRowWriter, writeAppConversationRow, writeSlackLogRow, reconcileAppConversationRows } from '../memory/topicRowWriter.js';
+import { TopicRowCarrier, TopicRowPullCoordinator, rowCarrierEnabled, slackSyntheticTopicId, ROW_PULL_TIMEOUT_MS } from '../memory/topicRowCarrier.js';
+import { TopicRowWatermarkStore } from '../memory/topicRowWatermark.js';
 import { SemanticMemory } from '../memory/SemanticMemory.js';
 import { WorkingMemoryAssembler } from '../memory/WorkingMemoryAssembler.js';
 import { QuotaTracker } from '../monitoring/QuotaTracker.js';
@@ -885,12 +888,43 @@ let _inboundQueueStop: ((sessionKey: string) => void) | null = null;
  *  (forward/spawn on another machine → must NOT also dispatch locally) from a
  *  self placement. Set once in startServer()'s mesh block. */
 let _meshSelfId: string | null = null;
+/** Relay-path row carrier and its watermark (context-budget §14); built beside the row writer. */
+let _topicRowCarrier: import('../memory/topicRowCarrier.js').TopicRowCarrier | null = null;
+let _topicRowWatermark: import('../memory/topicRowWatermark.js').TopicRowWatermarkStore | null = null;
+/** The gap and topic-move pulls; built at the mesh level (needs the signed client). */
+let _topicRowPulls: import('../memory/topicRowCarrier.js').TopicRowPullCoordinator | null = null;
 /** Chief of Staff §4: set by the loop wiring; the inbound hook calls it for an owner message in the CoS topic. */
 let _cosRenewalHook: ((topicId: number, telegramUserId: number, messageId: string) => void) | null = null;
 /** Chief of Staff §6: the CoS conversation accepts input only from the owner principal. Set with the loop; null ⇒ no CoS topic yet. */
 let _cosOwnerOnlyTopicId: (() => number | null) | null = null;
-/** Per-sender time of the last "only the owner can talk here" line (one per day; §6). */
-const _cosDropNoticeAt = new Map<number, number>();
+/** Per-sender+verdict time of the last "this message was not delivered" line (one per hour; §6). */
+const _cosDropNoticeAt = new Map<string, number>();
+/**
+ * Chief of Staff live gate (src/core/chiefOfStaffOwner.ts rule 2): switched on AND a verified owner.
+ * One instance per process so the "switched on but no owner" notice is reported once per episode,
+ * whichever seam (topic, loop, protocol) reads it first.
+ */
+let _cosActiveGate: (() => boolean) | null = null;
+/** A held Chief of Staff topic is re-checked by one retry chain at a time. */
+let _cosTopicRetryPending = false;
+function chiefOfStaffActiveGate(
+  telegram: { getVerifiedOwner(): number | undefined; ownerSourcesReady(): boolean } | null | undefined,
+  live: { get<T>(key: string, fallback?: T): T | undefined },
+  cfg: InstarConfig,
+): () => boolean {
+  if (!_cosActiveGate) {
+    _cosActiveGate = makeChiefOfStaffGate({
+      switchedOn: () => resolveDevAgentGate(live.get<boolean | undefined>('chiefOfStaff.enabled', undefined), cfg),
+      owner: () => telegram?.getVerifiedOwner(),
+      ownerSourcesReady: () => telegram?.ownerSourcesReady() ?? true,
+      reportNoOwner: () => {
+        console.warn('[chief-of-staff] switched on but this agent has no verified owner — staying off until one is set');
+        DegradationReporter.getInstance().report({ ...CHIEF_OF_STAFF_NO_OWNER_NOTICE });
+      },
+    });
+  }
+  return _cosActiveGate;
+}
 /** Resource-aware placement: the pool registry, late-bound for consumers built before it (the scheduler). */
 let _resourcePoolRegistryRef: import('../core/MachinePoolRegistry.js').MachinePoolRegistry | undefined;
 /** G3 lease-gated spawn (MESH-SELF-HEAL-SPEC §3.3). "Do I hold the fenced
@@ -990,6 +1024,9 @@ let _foldCoordinator: import('../monitoring/FoldCoordinator.js').FoldCoordinator
 let _contextBudgetSentinel: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null = null;
 let _contextLayers: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null = null;
 let _layerTicker: { stop(): void } | null = null;
+let _chunkBuilder: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder | null = null;
+/** The ContextBudgetSentinel's layer-rebuild seam (§17 stale layers), bound once the capture loop is wired (it is built after the sentinel). */
+let _layerReproject: ((topicId: number) => import('../monitoring/ContextBudgetSentinel.js').LayerRebuildOutcome) | null = null;
 /** context-budget-layered-summaries §10: the egress fold hold, checked at the shared outbound chokepoints. */
 let _foldHolds: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null = null;
 /** True while the listener daemon owns inbound relay handling (no capability then). */
@@ -2867,6 +2904,10 @@ export function wireTelegramRouting(
   _spawningTopicsRegistryRef = spawningTopics; // F7: expose to the outer-scope verifier
 
   _memoryTelegramOwner = () => telegram.getOwnerUserId();
+  // The same verdict as the Chief of Staff gate below, for every "delivered" acknowledgement
+  // (standby proxy, the lifeline's "✓ Delivered"): a message the gate refuses is never called delivered.
+  telegram.isInboundRefused = (topicId, senderId) => !!_cosOwnerOnlyTopicId
+    && chiefOfStaffRefusesInbound({ topicId, cosTopicId: _cosOwnerOnlyTopicId(), senderId, owner: telegram.getVerifiedOwner() });
   telegram.onTopicMessage = async (msg: Message) => {
     const handler = async (msg: Message) => {
     const topicId = (msg.metadata?.messageThreadId as number) ?? null;
@@ -2881,17 +2922,19 @@ export function wireTelegramRouting(
     const telegramUserId = msg.metadata?.senderUnverified === true ? 0 : ((msg.metadata?.telegramUserId as number) ?? 0);
     // Chief of Staff §6: the CoS conversation is owner-only. Anything else (a member, a guest, a bot, a
     // relay, an unverified sender) is dropped here and logged — never routed to a session.
-    if (_cosOwnerOnlyTopicId && _cosOwnerOnlyTopicId() === topicId) {
-      // The owner id is raw config (may be a string): normalise exactly as every other owner-gated button does.
-      const owner = resolveApprovalOwner(telegram.getOwnerUserId(), [], []);
-      if (!owner || telegramUserId !== owner) {
-        console.warn(`[chief-of-staff] dropped a non-owner message in the Chief of Staff topic ${topicId} (sender ${telegramUserId || 'unverified'}, owner ${owner ?? 'unset'})`);
-        // One plain line per sender per day so the drop is never silent toward the person (§6); nothing about the projects.
-        const who = telegramUserId || 0; const nowMs = Date.now(); const last = _cosDropNoticeAt.get(who) ?? 0;
-        if (nowMs - last > 24 * 3_600_000) {
-          _cosDropNoticeAt.set(who, nowMs);
-          const line = !owner ? 'No owner is configured for this agent yet, so nothing said here can be acted on.' : telegramUserId ? 'Only the owner can talk to the Chief of Staff here.' : 'I could not verify who sent this, so it was not read.';
-          void withNotificationEnvelope(stampNotification(), async () => telegram.sendToTopic(topicId, line)).catch(() => { /* @silent-fallback-ok: the drop is already logged; the notice is a courtesy */ });
+    // The owner is the VERIFIED owner (configured id, else the one verified operator) — the same
+    // answer the standby proxy reads, so a refused message is never later called "delivered".
+    if (_cosOwnerOnlyTopicId) {
+      const owner = telegram.getVerifiedOwner();
+      const verdict = chiefOfStaffInboundVerdict({ topicId, cosTopicId: _cosOwnerOnlyTopicId(), senderId: telegramUserId, owner });
+      const line = chiefOfStaffRefusalLine(verdict);
+      if (line) {
+        console.warn(`[chief-of-staff] refused a message in the Chief of Staff topic ${topicId} (${verdict}; sender ${telegramUserId || 'unverified'}, owner ${owner ?? 'none'})`);
+        // One plain "not delivered" line per sender per hour so the refusal is never silent toward the person (§6); nothing about the projects.
+        const key = `${telegramUserId || 0}:${verdict}`; const nowMs = Date.now(); const last = _cosDropNoticeAt.get(key) ?? 0;
+        if (nowMs - last > 3_600_000) {
+          _cosDropNoticeAt.set(key, nowMs);
+          void withNotificationEnvelope(stampNotification(), async () => telegram.sendToTopic(topicId, line)).catch(() => { /* @silent-fallback-ok: the refusal is already logged; the notice is a courtesy */ });
         }
         return;
       }
@@ -2902,7 +2945,7 @@ export function wireTelegramRouting(
     // Chief of Staff §4: an owner message in the CoS conversation renews the operator check-in lease.
     // Principal = the configured owner id on the inbound event (never content, never a relay); the
     // record is signed by this machine so other machines can verify it on read.
-    if (_cosRenewalHook && telegramUserId && resolveApprovalOwner(telegram.getOwnerUserId(), [], []) === telegramUserId) {
+    if (_cosRenewalHook && telegramUserId && telegram.getVerifiedOwner() === telegramUserId) {
       try { _cosRenewalHook(topicId, telegramUserId, String(msg.metadata?.messageId ?? '')); } catch { /* @silent-fallback-ok: a failed renewal write leaves the lease as it was (paused is the safe side) */ }
     }
 
@@ -2996,7 +3039,9 @@ export function wireTelegramRouting(
     // below, which act on the whole agent (team-roles-and-access §4.1).
     const teamPhone = msg.metadata?.teamPhone === true;
     if (text.startsWith('/') && !teamPhone) {
-      const handled = await telegram.handleCommand(text, topicId, telegramUserId);
+      const privateChatId = msg.metadata?.telegramPrivateChatId;
+      const handled = await telegram.handleCommand(text, topicId, telegramUserId,
+        typeof privateChatId === 'number' ? { privateChatId } : undefined);
       if (handled) return;
     }
 
@@ -4218,6 +4263,7 @@ async function ensureChiefOfStaffTopicFor(
   state: StateManager,
   live: { get<T>(key: string, fallback?: T): T | undefined },
   cfg: InstarConfig,
+  attempt = 0,
 ): Promise<void> {
   const { ensureChiefOfStaffTopic } = await import('../messaging/ChiefOfStaffTopic.js');
   // The greeting goes out STAMPED (like the Attention intro): an unstamped send is held by the
@@ -4229,12 +4275,24 @@ async function ensureChiefOfStaffTopicFor(
     pinTopicMessage: (id: number, m: number) => telegram.pinTopicMessage(id, m),
     unpinTopicMessages: (id: number) => telegram.unpinTopicMessages(id),
   };
-  await ensureChiefOfStaffTopic(stamped, state, {
+  const outcome = await ensureChiefOfStaffTopic(stamped, state, {
     enabled: () => resolveDevAgentGate(live.get<boolean | undefined>('chiefOfStaff.enabled', undefined), cfg),
+    // Rule 2 (src/core/chiefOfStaffOwner.ts): switched on without a verified owner creates nothing.
+    ownerKnown: () => chiefOfStaffActiveGate(telegram, live, cfg)(),
     displayName: () => live.get<string | undefined>('chiefOfStaff.displayName', undefined),
     log: (l) => console.log(l),
     warn: (l) => console.warn(l),
   });
+  // Boot order: the "one verified operator" half of the owner is wired with the routes, after this
+  // first runs. A held result is re-checked a few times so an install whose owner is its established
+  // operator still gets its topic; with truly no owner it stays held (and was reported once).
+  // One retry chain at a time, whichever pass (boot or adoption) started it.
+  if (outcome.outcome === 'held-no-owner' && attempt < 3 && (attempt > 0 || !_cosTopicRetryPending)) {
+    _cosTopicRetryPending = true;
+    setTimeout(() => { void ensureChiefOfStaffTopicFor(telegram, state, live, cfg, attempt + 1).catch(() => { /* @silent-fallback-ok: the next boot or adoption pass retries */ }); }, 60_000).unref();
+  } else if (outcome.outcome !== 'held-no-owner' || attempt >= 3) {
+    _cosTopicRetryPending = false;
+  }
 }
 
 async function ensureAgentAttentionTopic(
@@ -5739,6 +5797,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // registry the advert is `{}` (non-participant for every store): the correct
     // single-machine / no-store-yet behavior (a strict no-op).
     const replicatedKindRegistry = new ReplicatedKindRegistry();
+    // Registration advertises no availability on its own. Storage, receive,
+    // repair and owner reads remain gated until Conversations increment A
+    // verifies the independent witness and all installed-member receipts.
+    const { registerConversationGraphReplication } = await import('../core/ConversationGraphReplication.js');
+    registerConversationGraphReplication(replicatedKindRegistry);
 
     // WS2.1 (multi-machine-replicated-store-foundation §4/§13) — register the FIRST
     // concrete replicated kind, `pref-record`, onto the registry. This is the
@@ -5936,6 +5999,12 @@ export async function startServer(options: StartOptions): Promise<void> {
     //    when it is dark these stay undefined and every consumer degrades to its
     //    existing single-machine no-op. The generic record emitter is constructed below
     //    (it also needs the resolved stateSync flags).
+    const graphDelegationManager=new ConversationGraphDelegationManager(value=>{conversationGraphRemoteDelegationRuntime=value.remote??undefined;},()=>{conversationGraphRemoteDelegationRuntime=undefined;});
+    let stopGraphDelegationSubscription:(()=>void)|undefined;
+    let conversationGraphRemoteDelegationRuntime:import('../server/ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime|undefined;
+    let graphDelegationPlacement:Omit<import('../core/dashboardMachineChoice.js').CheckedTopicStartDeps,'makeDelivery'>|undefined;
+    let conversationGraphReplicationRuntime: import('../server/ConversationGraphReplicationRuntime.js').ConversationGraphReplicationRuntime | null = null;
+    let conversationGraphDefault: import('../server/ConversationGraphDefault.js').ConversationGraphDefault | undefined;
     let replicatedPeerStreamReader: import('../core/ReplicatedPeerStreamReader.js').ReplicatedPeerStreamReader | undefined;
     // Rollout step 5b (threadline-standalone-pairing D9/D11): late-bound replicated-pairing
     // inheritance, attached in the threadline block below ONLY when
@@ -5990,10 +6059,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // A real run replaced streams atomically; rebuild from the committed files.
         }
         coherenceJournal.setReplicatedRecordCommitObserver((kind, entries) => {
+          conversationGraphReplicationRuntime?.onJournalCommit(kind, entries);
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
           if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, entry.machine);
         });
         journalSyncApplier?.setReplicatedRecordCommitObserver((senderMachineId, kind, entries) => {
+          conversationGraphReplicationRuntime?.onPeerJournalCommit(senderMachineId, kind, entries);
           replicatedPeerStreamReader?.observeCommittedEntries(kind, entries);
           if (kind === 'ssh-direction-proof') for (const entry of entries) mutualSshRuntime?.handleJournalProof(entry.data, senderMachineId);
           // Merge path for replicated pairings (step 5b): null unless the gate is on.
@@ -9224,6 +9295,35 @@ export async function startServer(options: StartOptions): Promise<void> {
       topicMemory: () => topicMemory,
       channelEnabled: (channel) => channel === 'app' ? liveConfig.get<boolean>('contextBudget.enabled', false) === true : true,
     });
+    // The relay-path row carrier (context-budget-layered-summaries §14): the forward-to-owner
+    // path carries each message's row to the topic's owner, which lands it before the receipt
+    // and keeps a per-topic contiguous-ack watermark (the fold's topicRowsPresent precondition).
+    // `contextBudget.enabled`, read live and resolved through the development-agent gate.
+    try {
+      const wm = new TopicRowWatermarkStore({
+        dbPath: path.join(config.stateDir, 'state', 'topic-row-carrier', 'carrier.db'),
+        machineId: () => _meshSelfId,
+      });
+      _topicRowCarrier = new TopicRowCarrier({
+        store: wm,
+        topicMemory: () => topicMemory,
+        writer: topicRowWriter,
+        enabled: () => rowCarrierEnabled(liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined as never), config),
+        // Slack's synthetic topic id is a pure hash of the channel id (the same on every machine).
+        slackTopicId: (channelId) => slackSyntheticTopicId(channelId),
+        onGap: (topicId, gap) => { void _topicRowPulls?.onGap(topicId, gap); },
+      });
+      _topicRowWatermark = wm;
+    } catch (err) {
+      // @silent-fallback-ok — reported: without the store no row is carried and topicRowsPresent stays false (no fold)
+      DegradationReporter.getInstance().report({
+        feature: 'TopicRowCarrier',
+        primary: "Carry each forwarded message's TopicMemory row to the conversation's owner",
+        fallback: 'No rows are carried; every conversation reads rows-missing and never folds',
+        reason: err instanceof Error ? err.message : String(err),
+        impact: 'Context-budget folds stay off on this machine.',
+      });
+    }
     const telegramConfig = config.messaging.find(m => m.type === 'telegram' && m.enabled);
     // Telegram added after the install step (the recommended-services recipe, or a hand-added entry) left no reply
     // script, so a session could read the group but never answer. Write it when missing; an existing one is never touched.
@@ -13261,7 +13361,8 @@ export async function startServer(options: StartOptions): Promise<void> {
           const q = liveConfig.get<{ enabled?: boolean; dryRun?: boolean } | undefined>('multiMachine.sessionPool.inboundQueue', undefined);
           return q?.enabled === true && q?.dryRun === false && foldPoolGateOpen(livePool());
         },
-        topicRowsPresent: () => false, // the relay-path row carrier and watermark arrive in Phase 1 (§14)
+        // §14: the owner's TopicMemory holds the topic's rows up to its last message id (the carrier's watermark).
+        topicRowsPresent: (topicKey) => _topicRowCarrier?.rowsPresent(topicKey) ?? false,
         // §14: a topic folds only when its channel has a row writer that is on.
         hasRowSource: (topicId) => topicRowWriter.hasRowSource(topicId),
         // No live sentinel, no fold (§7.8): read lazily, the sentinel is built after the sweep.
@@ -13359,14 +13460,35 @@ export async function startServer(options: StartOptions): Promise<void> {
       // never by the dev-agent default. Dark ⇒ no heartbeat ⇒ no fold can begin.
       if (liveConfig.get<boolean>('contextBudget.sentinel.enabled', false) === true) {
         const { ContextBudgetSentinel } = await import('../monitoring/ContextBudgetSentinel.js');
-        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite } = await import('../monitoring/contextBudgetSentinelBoot.js');
+        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, codexHomeForTmuxSession, productionLiveTopics, productionHoldCarriers } = await import('../monitoring/contextBudgetSentinelBoot.js');
         const { CompactionCanary } = await import('../monitoring/compactionCanary.js');
         const { FoldRecordStore } = await import('../monitoring/FoldCoordinator.js');
         const { governor: sentinelGovernor, consumeAdmissionToken: sentinelConsume } = await import('../monitoring/selfaction/governor.js');
         const sentinelHandle = sentinelGovernor.for('context-budget-quarantine-reconcile');
         const poolLiveNow = () => { const p = livePool(); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; };
         const sessionDeps = productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath });
+        // §9.6 Codex adapter (S16): Codex sessions join the canary under the contextBudget.enabled dev gate, read live each tick.
+        const codexCanaryOn = () => contextLayersEnabled(config as { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined));
+        // The §17 rows (Phase 1 S12). Freshness needs the layers (off ⇒ `unavailable: layers-off`)
+        // and reads TopicMemory lazily; its rebuild request goes through the capture loop's
+        // re-projection seam once that is wired (until then each request counts as `unavailable`).
+        // Hold health clears an orphan hold or marker loudly under its own governor handle.
+        const sentinelOrphanHandle = sentinelGovernor.for('context-budget-orphan-carrier-clear');
+        const sentinelLayers = _contextLayers;
+        const sentinelRows = {
+          liveTopics: productionLiveTopics({ sessions: sessionManager }),
+          layers: sentinelLayers ? {
+            h1: (t: string) => (topicMemory ? sentinelLayers.h1Freshness(Number(t), topicMemory) : { line: 'topic memory unavailable', stale: 'unknown' as const }),
+            requestRebuild: (t: string) => (_layerReproject ? _layerReproject(Number(t)) : 'unavailable' as const),
+          } : null,
+          holdHealth: {
+            carriers: productionHoldCarriers({ stateDir: config.stateDir, holds: _foldHolds }),
+            admit: (target: Parameters<typeof sentinelOrphanHandle.admit>[0], opts: Parameters<typeof sentinelOrphanHandle.admit>[1]) => sentinelOrphanHandle.admit(target, opts),
+            degradation: (r: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => DegradationReporter.getInstance().report(r),
+          },
+        };
         _contextBudgetSentinel = new ContextBudgetSentinel({
+          ...sentinelRows,
           stateDir: config.stateDir,
           machineId: built.holderId,
           coordinator: built.coordinator,
@@ -13384,8 +13506,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           consumeToken: sentinelConsume,
           // The standing compaction canary (§9.1): observation only; its state rides GET /context-budget/sentinel.
           canary: {
-            instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId }),
-            sessions: productionCanarySessions({ sessions: sessionManager, projectDir: config.projectDir }),
+            instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() }),
+            sessions: productionCanarySessions({
+              sessions: sessionManager, projectDir: config.projectDir,
+              // §9.6 Codex adapter: Codex topic sessions join the canary (their rollout's `compacted`
+              // entry is the detection; the scan also drives trackContextUsage and the post-compaction
+              // producer) under the contextBudget.enabled dev gate, read live.
+              codex: {
+                enabled: codexCanaryOn,
+                homeForSession: (t) => codexHomeForTmuxSession(t, undefined, config.sessions.tmuxPath),
+              },
+            }),
             switchOn: () => liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false,
           },
           // The adapter verification suite (§9.6): re-run on any change of the engine binary
@@ -15003,6 +15134,11 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Only disabled if explicitly set to tunnel.enabled = false
     const tunnelEnabled = config.tunnel?.enabled !== false;
     let tunnel: TunnelManager | undefined;
+    // Conversations chat never receives a graph reader. Even an owner asking
+    // in a shared channel gets only an authenticated-app pointer, with the
+    // current public tunnel origin resolved at send time (no embedded secret).
+    const { wireConversationsPointers } = await import('../messaging/shared/conversationGraphChat.js');
+    wireConversationsPointers([telegram, slackAdapter], () => tunnel?.url ?? null);
     // Operator-facing links (notices, reminders) must open on a phone: with a tunnel configured but
     // not up yet, link-bearing notices wait for the public URL instead of sending localhost.
     const operatorLinkOrigin = createOperatorLinkOriginResolver({
@@ -17581,12 +17717,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     // we assign stable negative synthetic IDs and route sendMessage to the correct platform.
     const slackProxyChannelMap = new Map<number, string>(); // syntheticId -> Slack channelId
     function slackChannelToSyntheticId(channelId: string): number {
-      // Stable hash: sum of char codes, negated to avoid Telegram topic ID collisions
-      let hash = 0;
-      for (let i = 0; i < channelId.length; i++) {
-        hash = ((hash << 5) - hash + channelId.charCodeAt(i)) | 0;
-      }
-      const syntheticId = -(Math.abs(hash) + 1); // Always negative, never 0
+      // Stable hash, negated to avoid Telegram topic ID collisions (the row carrier derives the same id).
+      const syntheticId = slackSyntheticTopicId(channelId); // Always negative, never 0
       slackProxyChannelMap.set(syntheticId, channelId);
       return syntheticId;
     }
@@ -18386,6 +18518,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           intelligence: sharedIntelligence,
           // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
           speakerElection,
+          // Same verdict as the inbound owner-only gate: a message it refused is never "delivered".
+          isInboundRefused: (topicId, platformUserId) => {
+            const sender = Number(platformUserId);
+            return telegram?.isInboundRefused?.(topicId, Number.isSafeInteger(sender) && sender > 0 ? sender : 0) === true;
+          },
           // Stand-down honesty: a frozen copy must not narrate "actively working"
           // about a conversation another machine is answering.
           standDown: {
@@ -18661,6 +18798,45 @@ export async function startServer(options: StartOptions): Promise<void> {
         // nothing ever invoked ingest()). Chains the prior callback; capture is
         // fire-and-forget + degrade-safe so it NEVER blocks or slows delivery.
         // Spec: docs/specs/topic-intent-capture-loop.md.
+        // ── Context budget chunks (§6.5, §9.5; Phase 1 S8): the chunk / range
+        // builder, fed by the PostCompact path. Its model calls go through the
+        // same queued shared intelligence as the capture loop (background lane,
+        // daily cap) and are admitted by the layers' LayerUpdate budget. No
+        // shared intelligence ⇒ spans are still archived and every chunk stays
+        // `pending`, visibly ("unsummarized gap"), until a model is available.
+        if (_contextLayers) {
+          try {
+            const { ChunkBuilder, CHUNK_COMPONENT } = await import('../monitoring/contextLayers/chunkBuilder.js');
+            const { createQueuedIntelligence: queuedForChunks } = await import('../core/TopicIntentCapture.js');
+            const layersRef = _contextLayers;
+            _chunkBuilder = new ChunkBuilder({
+              store: layersRef.store, archive: layersRef.archive, budget: layersRef.budget,
+              intelligence: sharedIntelligence ? queuedForChunks(sharedIntelligence, (lane, fn, costCents) => sharedLlmQueue.enqueue(lane, fn, costCents)) : null,
+              machine: _meshSelfId ?? 'local',
+              messagesBetween: (topicId, fromIso, toIso) => topicMemory
+                ? topicMemory.getMessagesSince(topicId, fromIso, 2_000).messages.filter((m) => m.timestamp <= toIso).map((m) => ({ messageId: m.messageId, text: m.text, fromUser: m.fromUser, timestamp: m.timestamp }))
+                : [],
+              lastMessageBefore: (topicId, iso) => {
+                const rows = topicMemory?.getRecentMessages(topicId, 2_000) ?? [];
+                const before = rows.filter((m) => m.timestamp < iso);
+                return before.length ? Math.max(...before.map((m) => m.messageId)) : null;
+              },
+              onEvent: (e) => {
+                if (e.kind === 'closed' || e.kind === 'c2' || e.kind === 'pre-layer') featureEvidence.recordAtMostEvery(CONTEXT_LAYERS_FEATURE_ID, `${e.topicKey}:${e.kind}`, 10 * 60_000, { kind: 'fired', reason: `${CHUNK_COMPONENT} ${e.kind}`, context: { topicKey: e.topicKey } });
+                else if (e.kind === 'archive-failed' || e.kind === 'read-failed' || e.kind === 'error') featureEvidence.record(CONTEXT_LAYERS_FEATURE_ID, { kind: 'error', reason: `${CHUNK_COMPONENT} ${e.kind}${e.detail ? `: ${e.detail}` : ''}`.slice(0, 300), context: { topicKey: e.topicKey } });
+              },
+            });
+            console.log(pc.green('  Context layers: chunk builder wired (PostCompact → archive → chunk, C2 ranges)'));
+          } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'contextBudget.layers.chunks',
+              primary: 'Compactions archive the pre-compaction span and build its chunk summary',
+              fallback: 'No chunk builder on this machine until the next restart',
+              reason: `Chunk builder wiring failed: ${err instanceof Error ? err.message : String(err)}`,
+              impact: 'Spans compacted away on this machine are not archived or summarized; compaction recovery itself is unchanged.',
+            });
+          }
+        }
         // Context budget §3.2 item 7: a machine with the layers on but no shared
         // intelligence cannot keep H1 current. Say so loudly instead of serving
         // an empty briefing as if nothing were happening; the freshness stamp
@@ -18686,6 +18862,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               sharedIntelligence,
               (lane, fn, costCents) => sharedLlmQueue.enqueue(lane, fn, costCents),
             );
+            // Context budget §11: the layer wiring (built below) observes each
+            // extraction's provider-reported usage, per trigger. Late-bound.
+            let onLayerExtractUsage: ((input: import('../core/TopicIntentExtractor.js').ExtractorInput, u: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void) | null = null;
             const captureExtractFn = createLlmExtractFn(queuedIntelligence, (reason, topicId) => {
               topicIntentStore.bumpCaptureCounters(
                 topicId,
@@ -18693,7 +18872,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   ? { degraded_no_intelligence: 1 }
                   : { degraded_cap_or_error: 1 },
               );
-            });
+            }, (input, u) => onLayerExtractUsage?.(input, u));
             const captureExtractor = new TopicIntentExtractor(topicIntentStore, captureExtractFn);
             // Context budget Phase 1 (§6, §6.4): with the layers on, the capture
             // loop gets real brakes (per-topic + component token ceilings,
@@ -18705,6 +18884,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                   machine: _meshSelfId ?? 'local', projectDir: config.projectDir,
                 })
               : null;
+            if (layerWiring) onLayerExtractUsage = layerWiring.onExtractUsage;
             const captureLoop = createCaptureLoop({
               ...(layerWiring ? layerWiring.captureDeps : {}),
               extractor: captureExtractor,
@@ -18732,6 +18912,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               });
             };
             if (layerWiring) {
+              _layerReproject = (topicId) => layerWiring.reproject(topicId);
               _layerTicker = layerWiring.startTicker({
                 extractor: captureExtractor, store: topicIntentStore, topicMemory,
                 shouldShed: () => { const r = quotaTracker?.getRecommendation(); return r === 'critical' || r === 'stop'; },
@@ -28305,6 +28486,18 @@ export async function startServer(options: StartOptions): Promise<void> {
           // §2.B — the receiver-side rejection trace (metadata-only). The DECIDING
           // machine records its own refusal to logs/mesh-rejections.jsonl so a
           // future incident is never forensically blank on the machine that decided.
+          // context-budget §14 relay-path row carrier: land the carried TopicMemory row here,
+          // before the receipt (idempotent on the row key; an older peer carries none, and the
+          // message is still recorded as expected so the fold precondition reads the missing row).
+          landRow: (cmd, sender) => {
+            const carrier = _topicRowCarrier;
+            if (!carrier) return;
+            // The carried stream must be the signed sender's own (the router that forwarded it).
+            carrier.land(cmd.session, cmd.messageId, (cmd as { row?: unknown }).row, sender || undefined);
+            const addr = carrier.enabled() ? carrier.address(cmd.session, cmd.messageId) : null;
+            // First arrival per (topic, ownership epoch): mark the move pending and pull the previous owner's rows.
+            if (addr) _topicRowPulls?.onTopicAccepted(addr.topicId, cmd.ownershipEpoch);
+          },
           onRejected: (meta) => {
             appendMeshRejection(config.stateDir, {
               reason: meta.reason,
@@ -28327,13 +28520,41 @@ export async function startServer(options: StartOptions): Promise<void> {
           // redeliveries), and a deliverMessage only arrives from a router peer — but we
           // double-gate on stage!=='dark' to be safe. Fire-and-forget: the durable receipt
           // is already recorded + ACKed before this runs.
-          onAccepted: (cmd) => {
+          beforeReceipt:(cmd,_sender,envelope)=>{if(cmd.payload&&typeof cmd.payload==='object'&&'graphDelegationRequest' in cmd.payload){if(!conversationGraphRemoteDelegationRuntime)throw new Error('graph-remote-spawn-unavailable');const request=(cmd.payload as Record<string,unknown>).graphDelegationRequest as import('../core/ConversationGraphDelegationRemote.js').RemoteGraphDelegationRequest;if(request?.workerRef?.platform==='telegram'&&['place','person','none'].includes(sessionManager.memoryAudienceKind?.({telegramTopicId:request.workerRef.topicId})??'open'))throw new Error('graph-remote-spawn-memory-scope-refused');conversationGraphRemoteDelegationRuntime.beforeReceipt(envelope);}},
+          onAccepted: (cmd, sender, originalEnvelope) => {
             // app-conversations-in-the-pool §2.4: runs synchronously before the acknowledgement.
             if (cmd.session.startsWith('app:')) {
               _topicProfileCarrier?.onTopicAcquired(cmd.session);
               appOwnerReceiver.accepted(cmd.session, cmd.messageId, cmd.payload);
               return;
             }
+            const graphPayload=cmd.payload && typeof cmd.payload==='object' ? cmd.payload as Record<string,unknown> : null;
+            if(graphPayload && 'graphDelegationRequest' in graphPayload){
+              if(!conversationGraphRemoteDelegationRuntime)throw new Error('graph-remote-spawn-unavailable');
+              const request=graphPayload.graphDelegationRequest as import('../core/ConversationGraphDelegationRemote.js').RemoteGraphDelegationRequest;
+              const launch=graphPayload.graphDelegationLaunch as Record<string,unknown>|undefined;
+              if(!launch||request.targetMachineId!==_meshSelfId||request.requesterMachineId!==sender||request.workerRef.platform!=='telegram')return;
+              void (async()=>{
+                if(!telegram||!sessionManager||typeof launch.name!=='string'||typeof launch.prompt!=='string')throw new Error('graph-remote-launch-invalid');
+                const topic=request.workerRef.platform==='telegram'?request.workerRef.topicId:0;
+                if(telegram.getSessionForTopic(topic))throw new Error('graph-remote-worker-already-bound');
+                const worker=await sessionManager.spawnSession({name:launch.name,prompt:launch.prompt,
+                  ...(typeof launch.model==='string'?{model:launch.model}:{}),
+                  ...(typeof launch.framework==='string'?{framework:launch.framework as import('../core/intelligenceProviderFactory.js').IntelligenceFramework}:{}),topicId:topic});
+                telegram.registerTopicSession(topic,worker.tmuxSession,launch.name);
+                // Checked sender placement settles only after transport ACK. Wait
+                // for the exact owner generation; never claim on its behalf.
+                for(let attempt=0;attempt<40;attempt++){
+                  const ownership=sessionOwnershipRegistry?.read(String(topic));
+                  if(ownership?.status==='active'&&ownership.ownerMachineId===_meshSelfId)break;
+                  await new Promise(resolve=>setTimeout(resolve,250));
+                }
+                await conversationGraphRemoteDelegationRuntime!.afterSuccessfulSpawn(request,originalEnvelope,worker.id);
+                _inboundQueue?.markRemoteInjected(cmd.session,cmd.messageId);
+              })().catch(()=>console.warn('  Conversations remote launch remains pending; no graph save was acknowledged.'));
+              return;
+            }
+
             // dashboard-new-session-machine-choice §3.4 step 4 — a dashboard
             // create placed on THIS machine. Evaluated FIRST: a brand-new topic has
             // nothing for the working-set / profile-carrier pulls to fetch, and the
@@ -29022,6 +29243,10 @@ export async function startServer(options: StartOptions): Promise<void> {
                 },
               });
             },
+            // context-budget §14: serve this machine's own TopicMemory rows of one topic (bounded).
+            'topic-row-pull': (cmd) => _topicRowCarrier
+              ? _topicRowCarrier.servePull(cmd as Parameters<import('../memory/topicRowCarrier.js').TopicRowCarrier['servePull']>[0])
+              : { ok: false, reason: 'disabled' },
             'topic-history-pull': (cmd) => createTopicHistoryPullHandler({
               readHistory: telegram ? (topic, limit) => telegram!.getTopicHistory(topic, limit) : null,
             })(cmd as { topic?: unknown; limit?: unknown }),
@@ -29399,8 +29624,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           // execution side so a holder on another machine can act here, and the stand-down read
           // the Reconciler / resume queue / heartbeat consult. Every seam is the real one.
           try {
-            const cosEnabled = () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('chiefOfStaff.enabled', undefined), config);
-            if (cosEnabled() && coherenceJournal && replicatedRecordEmitter && leaseCoordinatorRef) {
+            // Wiring follows the switch; acting follows the live gate, which also needs a verified owner
+            // (src/core/chiefOfStaffOwner.ts rule 2). The owner is read live because its "one verified
+            // operator" half is wired with the routes, after this block.
+            const cosSwitchedOn = () => resolveDevAgentGate(liveConfig.get<boolean | undefined>('chiefOfStaff.enabled', undefined), config);
+            const cosEnabled = chiefOfStaffActiveGate(telegram, liveConfig, config);
+            if (cosSwitchedOn() && coherenceJournal && replicatedRecordEmitter && leaseCoordinatorRef) {
               const cosMod = await import('../core/ChiefOfStaffActionProtocol.js');
               const storeMod = await import('../core/ChiefOfStaffStore.js');
               const streamsMod = await import('../core/ReplicatedPeerStreamReader.js');
@@ -29610,7 +29839,7 @@ export async function startServer(options: StartOptions): Promise<void> {
                 statusUrl: () => `http://localhost:${config.port}/chief-of-staff`,
                 localHour: (ms) => { try { return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: (config as { timezone?: string }).timezone || undefined }).format(new Date(ms))) % 24; } catch { /* @silent-fallback-ok: an invalid timezone falls back to the machine's local hour */ return new Date(ms).getHours(); } },
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
-                ownerResolvable: () => resolveApprovalOwner(telegram?.getOwnerUserId(), [], []) !== undefined,
+                ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,
                 rootConversationKey: () => { const t = _cosTopicId(); return t ? `telegram:${t}` : null; },
                 log: (m) => console.log(pc.dim(`  ${m}`)),
               });
@@ -29886,6 +30115,48 @@ export async function startServer(options: StartOptions): Promise<void> {
           };
           _signedLiveCopyProbe = (machineId, url, platform, platformId) =>
             meshClient.send({ machineId, url }, { type: 'session-live-probe', platform, platformId }, 0, { timeoutMs: 5_000 });
+          // context-budget §14: the row carrier's pulls — a gap from the stream's machine, and a
+          // moved topic's recent rows and stream heads from its previous owner (journal evidence).
+          if (_topicRowCarrier && _topicRowWatermark) {
+            const rowJournalMod = await import('../core/CoherenceJournalReader.js');
+            const rowJournal = new rowJournalMod.CoherenceJournalReader({ stateDir: config.stateDir });
+            _topicRowPulls = new TopicRowPullCoordinator({
+              carrier: _topicRowCarrier,
+              store: _topicRowWatermark,
+              selfMachineId: meshSelfId,
+              send: async (machineId, cmd) => {
+                const url = peerUrl(machineId);
+                if (!url) return null;
+                const r = await meshClient.send({ machineId, url }, cmd as import('../core/MeshRpc.js').MeshCommand, 0, { timeoutMs: ROW_PULL_TIMEOUT_MS });
+                return r.ok ? r.result : null;
+              },
+              prevOwnerOf: (topicId) => {
+                try {
+                  for (const e of rowJournal.query({ kind: 'topic-placement', topic: topicId, limit: 20 }).entries) {
+                    const prev = (e.data as { prevOwner?: string }).prevOwner;
+                    if (typeof prev === 'string' && prev !== meshSelfId) return prev;
+                  }
+                } catch { /* @silent-fallback-ok — no placement evidence: only gap pulls run, and any gap stays on the watermark */ }
+                return null;
+              },
+              log: (line) => console.warn(line),
+              reportFloor: (e) => DegradationReporter.getInstance().report({
+                feature: 'TopicRowCarrier.pull',
+                primary: "Pull every missing row of a conversation from the machine that carried it",
+                fallback: `Rows below seq ${e.floor} of stream ${e.stream} are older than one bounded pull; they are recorded as the stream's floor`,
+                reason: `gap wider than one pull for conversation ${e.topicId}`,
+                impact: "Older messages before the floor may be missing from this machine's conversation memory.",
+              }),
+            });
+          }
+          // The repair sweep: retries pending moves, gaps, rows a rebuild lost and accepted rows
+          // nobody carried, a bounded batch per minute (only while the carrier is on).
+          if (_topicRowPulls) {
+            const rowSweep = setInterval(() => {
+              if (_topicRowCarrier?.enabled()) void _topicRowPulls?.sweep().catch(() => { /* @silent-fallback-ok — sweep() never throws; the next pass retries */ });
+            }, 60_000);
+            if (typeof rowSweep.unref === 'function') rowSweep.unref();
+          }
           _pullRouterHistory = async (topic) => {
             const h = coordinator.getSyncStatus().leaseHolder;
             const url = h && h !== meshSelfId ? peerUrl(h) : null;
@@ -30723,6 +30994,12 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return false;
               }
             };
+            graphDelegationPlacement={
+              readOwnership:key=>ownReg.read(key),
+              cas:(key,action)=>{const previous=ownReg.read(key)?.ownerMachineId;const result=ownReg.cas(action,{sessionKey:key,sender:meshSelfId,nonce:`${meshSelfId}:graph-${action.type}:${++routerNonce}`});emitPlacement(key,result,action.type==='release'?'released':'placed',previous);return {ok:result.ok,epoch:ownReg.read(key)?.ownershipEpoch??0,...(result.ok?{}:{reason:(result as {reason?:string}).reason})};},
+              deliver:async(machineId,env)=>{const url=peerUrl(machineId);if(!url)return {kind:'rejected',detail:'registered-peer-unavailable'};return dmcMod.classifyDeliverReply(await meshClient.send({machineId,url},{type:'deliverMessage',session:env.sessionKey,messageId:env.messageId,payload:env.payload,ownershipEpoch:env.ownershipEpoch},env.ownershipEpoch,{timeoutMs:5000}));},
+              nonce:()=>`${Date.now().toString(36)}-${++routerNonce}`,
+            };
             _dashboardStartOnMachine = (sk, target, start, pin) => dmcMod.startTopicOnMachine({
               readOwnership: (key) => {
                 const r = ownReg.read(key);
@@ -30810,6 +31087,9 @@ export async function startServer(options: StartOptions): Promise<void> {
               // is a no-op inside the carrier.
               if (r.ok && machineId === meshSelfId && prevOwner && prevOwner !== meshSelfId) {
                 _topicProfileCarrier?.onTopicAcquired(sk, prevOwner);
+                // context-budget §14: a topic this machine claims for itself pulls its rows from the previous owner too.
+                const rowTopic = _topicRowCarrier?.enabled() ? _topicRowCarrier.topicIdFor(sk) : null;
+                if (rowTopic !== null && rowTopic !== undefined) void _topicRowPulls?.onTopicAcquired(rowTopic, prevOwner, ownReg.read(sk)?.ownershipEpoch ?? 0);
               }
               return { ok: r.ok, epoch: ownReg.read(sk)?.ownershipEpoch ?? 0 };
             },
@@ -30835,7 +31115,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               // senderEnvelope (Durable Inbound Message Queue §2.2): a drained
               // forward carries the STORED sender frame; an old peer ignores
               // the extra field (version skew named in the spec).
-              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
+              const res = await meshClient.send({ machineId: target, url }, { type: 'deliverMessage', session: env.sessionKey, messageId: env.messageId, payload: env.payload, ownershipEpoch: env.ownershipEpoch, ...(env.senderEnvelope ? { senderEnvelope: env.senderEnvelope } : {}), ...(env.row != null ? { row: env.row } : {}) } as import('../core/MeshRpc.js').MeshCommand, env.ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
@@ -30845,10 +31125,12 @@ export async function startServer(options: StartOptions): Promise<void> {
             // landed, read exactly like a forward. It used to send epoch 0 and
             // discard the reply: a receiver holding an older record for the
             // topic NACKed it stale and the router still logged 'spawned'.
-            spawnOnMachine: async (machineId, msg, ownershipEpoch) => {
+            // context-budget §14: the message's TopicMemory row rides the forward (an older owner ignores it).
+            carryRow: (msg) => _topicRowCarrier?.carry(msg.sessionKey, msg.messageId) ?? null,
+            spawnOnMachine: async (machineId, msg, ownershipEpoch, row) => {
               const url = peerUrl(machineId);
               if (!url) throw new Error(`no peer url for ${machineId}`);
-              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
+              const res = await meshClient.send({ machineId, url }, { type: 'deliverMessage', session: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch, ...(msg.senderEnvelope ? { senderEnvelope: msg.senderEnvelope } : {}), ...(row != null ? { row } : {}) } as import('../core/MeshRpc.js').MeshCommand, ownershipEpoch);
               if (res.ok && res.result && typeof res.result === 'object' && 'accepted' in (res.result as object)) {
                 return res.result as { messageId: string; accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet' };
               }
@@ -33215,6 +33497,63 @@ export async function startServer(options: StartOptions): Promise<void> {
       console.log(pc.dim('  Write-admission: dark (multiMachine.writeAdmission resolves off on this agent)'));
     }
 
+    // Conversations increment A storage wiring. Missing configuration is inert;
+    // a configured but unverifiable runtime fails visibly closed. This does not
+    // enable increment B routes or claim a managed remote witness deployment.
+    const graphStorageConfig = config.multiMachine?.conversationGraph;
+    conversationGraphReplicationRuntime = await (async () => {
+    if (graphStorageConfig?.storage?.enabled === true && graphStorageConfig.witness && graphStorageConfig.agentId && graphStorageConfig.membership && graphStorageConfig.ownerPublicKey) {
+      try {
+        const identityManager = coordinator?.managers?.identityManager;
+        if (!identityManager || !identityStore || !leaseCoordinatorRef || !writeAdmission || !coherenceJournal
+          || !replicatedPeerStreamReader || !replicatedHlcClock || !meshResolver) throw new Error('graph-storage-prerequisite-missing');
+        const { SecretStore } = await import('../core/SecretStore.js');
+        const graphSecrets = new SecretStore({stateDir: config.stateDir, forceFileKey: config.secrets?.forceFileKey});
+        const peerToken = graphSecrets.get(graphStorageConfig.peerBearerSecret ?? 'conversation_graph_peer_bearer');
+        const witnessToken = graphSecrets.get(graphStorageConfig.witness.bearerSecret ?? 'conversation_graph_witness_bearer');
+        if (typeof peerToken !== 'string' || !peerToken || typeof witnessToken !== 'string' || !witnessToken) throw new Error('graph-storage-secret-missing');
+        const [{ ConversationGraphReplicationRuntime }, { GraphWitnessClient }] = await Promise.all([
+          import('../server/ConversationGraphReplicationRuntime.js'), import('../core/GraphWitnessClient.js')]);
+        const witness = new GraphWitnessClient({baseUrl:graphStorageConfig.witness.baseUrl, agentId:graphStorageConfig.agentId,
+          bearerToken:witnessToken,witnessId:graphStorageConfig.witness.witnessId,witnessPublicKey:graphStorageConfig.witness.publicKey,
+          ownerPublicKey:graphStorageConfig.ownerPublicKey,expectedFailureDomain:graphStorageConfig.witness.failureDomain,historicalWitnessPublicKeys:graphStorageConfig.witness.historicalPublicKeys});
+        const runtime = await ConversationGraphReplicationRuntime.open({stateDir:config.stateDir,scopeVerifier,telegramChatId:String((originTelegramConfig?.config as {chatId?:unknown}|undefined)?.chatId??''),
+          configuration:{agentId:graphStorageConfig.agentId,stagingDiskQuotaBytes:graphStorageConfig.storage.stagingDiskQuotaBytes,membership:graphStorageConfig.membership,ownerPublicKey:graphStorageConfig.ownerPublicKey,
+            witnessPublicKeys:new Map([...Object.entries(graphStorageConfig.witness.historicalPublicKeys ?? {}),[graphStorageConfig.witness.witnessId,graphStorageConfig.witness.publicKey]]),witness,peerBearerToken:peerToken},
+          identity:identityManager,identities:identityStore,leaseCoordinator:leaseCoordinatorRef,writeAdmission,instanceLock:singleInstanceLock,
+          endpointResolver:meshResolver,journal:coherenceJournal,registry:replicatedKindRegistry,peerStreams:replicatedPeerStreamReader,
+          clock:replicatedHlcClock,droppedOrigins:droppedOriginRegistry,conflictStore});
+        console.log(pc.dim('  Conversations storage: initialized; read availability awaits verified witness catch-up.'));
+        return runtime;
+      } catch {
+        DegradationReporter.getInstance().report({feature:'Conversations.storage',primary:'Initialize verified graph storage',fallback:'Keep graph routes unavailable',reason:'graph-storage-prerequisite-unavailable',impact:'Conversations hierarchy remains off',internalOnly:true});
+        console.warn(pc.yellow('  Conversations storage: unavailable; configured trust, secrets, or storage prerequisites could not be verified. Graph reads remain disabled.'));
+      }
+    }
+
+      return null;
+    })();
+
+    // Keep graph initialization in its own control-flow scope.
+    await (async()=>{
+    // Owned-machine default is composed lazily by an actual owner request. Existing
+    // pinned installations reopen here; no external account or public listener is required.
+    if(!graphStorageConfig?.witness&&graphStorageConfig?.storage?.enabled!==false){
+      try{
+        const [{ConversationGraphDefault},{SecretStore}]=await Promise.all([import('../server/ConversationGraphDefault.js'),import('../core/SecretStore.js')]);
+        const identity=coordinator?.managers?.identityManager;
+        const fleetMissing=Object.entries({identity,identityStore,leaseCoordinator:leaseCoordinatorRef,writeAdmission,coherenceJournal,replicatedPeerStreamReader,replicatedHlcClock,meshResolver}).filter(([,value])=>!value).map(([name])=>name);
+        if(fleetMissing.length&&(identity?identity.hasIdentity():false))console.warn(`  Conversations: this machine cannot share a graph yet; missing ${fleetMissing.join(', ')}.`);
+        const fleet=identity&&identityStore&&leaseCoordinatorRef&&writeAdmission&&coherenceJournal&&replicatedPeerStreamReader&&replicatedHlcClock&&meshResolver
+          ?{stateDir:config.stateDir,identity,identities:identityStore,leaseCoordinator:leaseCoordinatorRef,writeAdmission,instanceLock:singleInstanceLock,endpointResolver:meshResolver,journal:coherenceJournal,registry:replicatedKindRegistry,peerStreams:replicatedPeerStreamReader,clock:replicatedHlcClock,droppedOrigins:droppedOriginRegistry,conflictStore,scopeVerifier,telegramChatId:String((originTelegramConfig?.config as {chatId?:unknown}|undefined)?.chatId??'')}:undefined;
+        conversationGraphDefault=new ConversationGraphDefault({stateDir:config.stateDir,agentId:graphStorageConfig?.agentId??config.projectName,stagingDiskQuotaBytes:graphStorageConfig?.storage?.stagingDiskQuotaBytes,instanceLock:singleInstanceLock,secrets:new SecretStore({stateDir:config.stateDir,forceFileKey:config.secrets?.forceFileKey}),genesisMembers:()=>config.multiMachine?.conversationGraph?.genesisMembers,scopeVerifier,telegramChatId:String((originTelegramConfig?.config as {chatId?:unknown}|undefined)?.chatId??''),fleet,onRuntime:runtime=>{conversationGraphReplicationRuntime=runtime;graphDelegationManager.publish(runtime);}});
+        stopGraphDelegationSubscription=conversationGraphDefault.subscribeRuntime(runtime=>graphDelegationManager.publish(runtime));
+        await conversationGraphDefault.restore();conversationGraphDefault.start();
+      }catch{DegradationReporter.getInstance().report({feature:'Conversations.ownedDefault',primary:'Restore authenticated owned custody',fallback:'Keep unresolved state for authenticated recovery',reason:'owned-custody-restore-unavailable',impact:'Conversations remains pending; no replacement genesis is inferred',internalOnly:true});}
+    }
+
+    })();
+
     // PULL/AUDIT-ONLY: deliberately no notification, governor, A2A, or remediation seam.
     try {
       const tfCfg = (config.monitoring as { throughputFloor?: import('../monitoring/AutonomousThroughputFloor.js').AutonomousThroughputFloorConfig } | undefined)?.throughputFloor ?? {};
@@ -33750,10 +34089,22 @@ export async function startServer(options: StartOptions): Promise<void> {
       catch { console.warn('[instar] Windows desktop bootstrap diagnostic could not be persisted'); }
     }
 
+    const {createConversationGraphDelegationFactory}=await import('../server/ConversationGraphDelegationFactory.js');
+    graphDelegationManager.setFactory(createConversationGraphDelegationFactory({state,bindAuth:conversationBindAuth,conversations:conversationRegistry,scopeVerifier,
+      telegram:telegram!,telegramChatId:String((originTelegramConfig?.config as {chatId?:unknown}|undefined)?.chatId??''),tmuxPath:config.sessions.tmuxPath??detectTmuxPath()??'',
+      native:()=>conversationGraphDefault?conversationGraphDefault.nativeDelegationDependencies:(coordinator?.managers?.identityManager&&identityStore&&writeAdmission&&leaseCoordinatorRef?{identity:coordinator.managers.identityManager,identities:identityStore,writeAdmission,leaseCoordinator:leaseCoordinatorRef,instanceLock:singleInstanceLock,droppedOrigins:droppedOriginRegistry}:null),
+      ownership:()=>sessionOwnershipRegistry??null,placement:()=>graphDelegationPlacement,
+    }));
+    if(conversationGraphReplicationRuntime)graphDelegationManager.publish(conversationGraphReplicationRuntime);
+    const getConversationGraphDelegation=graphDelegationManager.get;
+    const initialDelegation=await getConversationGraphDelegation();
+    const conversationGraphDelegationRuntime=initialDelegation.status==='ready'?initialDelegation.local:undefined;
+
     // Only now: a retry must see the session router, spawn admission and the operator routes.
     _slackRefusedHold?.start();
     activeUsageLimitWatch()?.start();
-    const server = new AgentServer({ config, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, contextLayers: _contextLayers ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx }); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
+    const server = new AgentServer({ config, getConversationGraphDelegation, conversationGraphDelegationRemoteRuntime:conversationGraphRemoteDelegationRuntime, conversationGraphDelegationRuntime, conversationGraphReplicationRuntime: conversationGraphDefault?undefined:conversationGraphReplicationRuntime ?? undefined, conversationGraphDefault, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx, chunkBuilder: _chunkBuilder ?? undefined, contextLayers: _contextLayers ?? undefined}); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
+    conversationGraphReplicationRuntime?.start();
     // Unread (mobile-unread-messages §3.3): the retry and gc timers, and the boot catch-up from any reachable
     // peer once the pool registry has had a moment to name them. Phones get no baseline until it settles.
     _conversationUnreadRef = server.startConversationUnread();    // Resolve the late-bound topic-operator getter (increment 2e): routing was
@@ -35470,7 +35821,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // unregister-by-path here deletes the successor generation's fresh
       // entry during back-to-back update restarts (registry lost-update
       // race) — the agent then vanishes from the registry until restart.
-      try { unregisterAgent(config.projectDir, { onlyIfPid: process.pid }); } catch { /* ELOCKED is non-critical during shutdown */ }
+      try { unregisterAgent(config.projectDir, { onlyIfPid: process.pid }); } catch { /* @silent-fallback-ok: ELOCKED is non-critical during shutdown */ }
       scheduler?.stop();
       shutdownStep = 'telegram';
       if (telegram) await telegram.stop();
@@ -35479,6 +35830,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Integrated-Being v1 — flush stats sidecar (coalesces pending writes)
       // BEFORE closing SQLite, so no unflushed write is lost.
       try { sharedStateLedger?.shutdown(); } catch { /* best effort */ }
+      shutdownStep = 'conversation-graph-storage';
+      await server.stopGraphSourceInventory();
+      stopGraphDelegationSubscription?.();
+      await graphDelegationManager.close();
+      if(conversationGraphDefault)await conversationGraphDefault.close();else await conversationGraphReplicationRuntime?.close();
       shutdownStep = 'http-server';
       await server.stop();
       shutdownStep = 'sqlite';

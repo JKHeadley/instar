@@ -1,0 +1,24 @@
+# Side-effects review — authorized graph read primitives
+
+## Scope and state
+This checkpoint adds the pure graph reducer, projection, read-source port and unmounted HTTP router. It enables no deployed feature. The pending runtime composition, source storage, native UI and real boot remain separate work. Original approved v3 provenance and the later owned-machine/no-required-paid-service direction remain unchanged. No approval or convergence is inferred from this checkpoint.
+
+## Behavior and authority
+NodeRef objects remain in responses; canonical base64url is route encoding only. Readiness comes from the supplied real source port and is checked before reading graph data. A genuinely available local-recording port may advertise only local recording while canonical authority is held. It cannot supply an empty canonical graph or positive shared-write authority.
+
+The reducer verifies receipts before authority reduction. Projections filter viewer access before titles, parent path, counts, sorting, search and paging. Front doors come only from certified events supplied by the runtime and only appear when their target is visible. This module cannot certify its own source. A caller supplying raw events as certified events would violate the port contract; real runtime verification remains required before mounting.
+
+Correction heads are privileged metadata. An independent source review reproduced hidden-parent placement IDs and a hidden-front-door explanation in otherwise filtered node output. The fix requires an explicit fresh full-correction-scope grant from the trusted viewer resolver; default and restricted viewers consistently receive no correction subsection even for truly unplaced nodes. It never invents empty current heads or claims move eligibility from filtered history. The final route authorization re-resolves the viewer and rejects a result carrying correction metadata when that scope has disappeared. Real full-owner resolvers must bind the predicate to current authentication; the working-tree composition does so through current dashboard owner or the actual device-admission snapshot. This checkpoint's router does not implement or relax preview or write admission.
+
+## Read and cursor consequences
+Read responses include bounded Overview, All/search, node children and authorized destination search. Snapshot cursors are signed and bind query, viewer principal, grant version and expiry; every page rechecks visibility. A grant change or lost correction scope is refused rather than returning privileged bytes. Responses are no-store. Existing clients still receive the same full-owner wire shape after the runtime supplies the explicit grant. Restricted clients receive less metadata, never new write permission. Replication state remains partial when the real source reports lag; no everywhere-saved claim is introduced.
+
+## Failure and resource behavior
+Unavailable source fails closed with 503; a hidden/missing node is 404, malformed view/query 400 and stale/foreign cursor 409. Ordinary bearer access is not an owner grant. Pagination remains bounded; this checkpoint does not solve source-history storage limits, reserve disk, buy infrastructure, send messages, alter membership, purge data or activate background work. Known-unavailable references are tombstoned rather than synthesized as healthy conversations. Partial evidence is preserved. These pure read modules do not erase or recover private bytes.
+
+## Verification and review
+Owner-run baseline tests: 71/71. The new restricted correction test failed on the previous source (19 passed, 1 failed). Fixed reducer/read/router suite: 75/75, including real HTTP final-send loss of full scope, exact full-owner heads and hidden front-door target suppression. Test-runner posture was dry-run; this is functional evidence, not capacity-enforcement proof. Independent review identities and the earlier reproducible direct-call finding are in .instar/state/build/review-read-model-checkpoint.md. Concurrence on the fixed source is pending; this document grants no self-approval. Required typecheck, isolated-prefix verification and normal Tier-2 commit gates remain required.
+
+
+## Independent second pass
+Concur with the review for this unmounted reducer/read/router prerequisite checkpoint only. Independently read the full-scope metadata grant and final-send revalidation fix plus actual regressions; reran the unchanged direct-call three-case probe and observed correction consistently absent for restricted unplaced/hidden-placement/hidden-front-door nodes. Original red evidence retained. Observed owner normal75/75 PASS with dry-run posture; no independent suite/capacity proof claimed. Exact reviewed source hashes and evidence: `.instar/state/build/review-read-model-checkpoint.md`. Typecheck, isolated-prefix verification, normal commit gates and later runtime/full release acceptance remain required.

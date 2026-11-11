@@ -39,7 +39,8 @@ describe('Chief of Staff loop wiring', () => {
   });
   it('an owner message in the CoS topic renews the lease through the module-scope hook', () => {
     expect(server).toContain('let _cosRenewalHook:');
-    expect(server).toContain('if (_cosRenewalHook && telegramUserId && resolveApprovalOwner(telegram.getOwnerUserId(), [], []) === telegramUserId)'); // owner id normalised (PR 4 review #3)
+    // The verified owner (normalised configured id, else the one verified operator) — Echo Bugs 10000002533.
+    expect(server).toContain('if (_cosRenewalHook && telegramUserId && telegram.getVerifiedOwner() === telegramUserId)');
     expect(server).toContain("loop.recordRenewal({ renewedVia: 'telegram'");
   });
   it('routes expose the loop and the protocol', () => {

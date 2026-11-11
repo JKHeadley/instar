@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-07T12:36:13.046Z",
+  "slug": "conversation-graph-real-machine-fixes",
+  "suggestedTier": 1,
+  "declaredTier": null,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphReplicationTransfer.ts",
+      "src/core/ConversationGraphTransferCustody.ts",
+      "src/server/GraphOwnerMemberLossExecution.ts"
+    ],
+    "addedLines": 12,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One owner-driven retry path; no new trigger."
+  },
+  "verdict": "pass"
+}

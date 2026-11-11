@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-suite-fixes",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-10T23:31:01.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-suite-fixes.md",
+  "artifactSha256": "b6bdf417f93f581b11407e6e83637dac0963d9f0cd423588409bd2c0d2990c7a",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "src/server/AgentServer.ts",
+    "upgrades/side-effects/unified-usage-ledger-suite-fixes.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Boot-timing fix for the Tier-2 usage ledger pool pull",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

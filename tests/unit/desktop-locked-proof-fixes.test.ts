@@ -135,7 +135,7 @@ describe('persistDashboardPin', () => {
     const written: Array<[string, unknown]> = [];
     let config: unknown;
     expect(persistDashboardPin(stateDir(true), '123456', value => { config = value; },
-      () => ({ set: (key: string, value: unknown) => { written.push([key, value]); } }))).toBe('vault');
+      () => ({ set: (key: string, value: unknown) => { written.push([key, value]); },syncDurably:()=>{} }))).toBe('vault');
     expect(written).toEqual([['dashboardPin', '123456']]);
     expect(config).toEqual({ secret: true });
   });
@@ -143,12 +143,12 @@ describe('persistDashboardPin', () => {
   it('falls back to config when the vault write fails, and uses config when there is no vault', () => {
     let config: unknown;
     expect(persistDashboardPin(stateDir(true), '123456', value => { config = value; },
-      () => ({ set: () => { throw new Error('keychain locked'); } }))).toBe('config');
+      () => ({ set: () => { throw new Error('keychain locked'); },syncDurably:()=>{} }))).toBe('config');
     expect(config).toBe('123456');
     let plain: unknown;
     let opened = false;
     expect(persistDashboardPin(stateDir(false), '654321', value => { plain = value; },
-      () => { opened = true; return { set: () => {} }; })).toBe('config');
+      () => { opened = true; return { set: () => {},syncDurably:()=>{} }; })).toBe('config');
     expect(plain).toBe('654321');
     expect(opened).toBe(false);
   });

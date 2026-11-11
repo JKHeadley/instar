@@ -22,6 +22,8 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  * steady-state FREQUENCY under feedback).
  */
 
+import { GRAPH_SOURCE_SWEEP_HEARTBEAT_MS, sourceSweepCheckpointDue } from '../core/ConversationGraphSourceSweep.js';
+import { SOURCE_STATUS_RETRY_MS, sourceStatusPollGivesUp } from '../core/GraphSourceStatusPoll.js';
 import { WorkAdmission } from '../core/workAdmission.js';
 import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
@@ -1624,6 +1626,79 @@ const contextBudgetAdapterSuite: SelfActionController = {
       if (st.count >= 3 || f.clock.nowMs() - st.lastAt < RETRY_MS) return; // gives up after 3 attempts per version
       f.durableState.set('cb-adapter-suite', { count: st.count + 1, lastAt: f.clock.nowMs() });
       sink.emit({ verb: 'retry-adapter-suite', target: 'claude-code@failing-version' });
+    } };
+  },
+};
+
+/**
+ * context-budget-orphan-carrier-clear — the ContextBudgetSentinel's hold-health
+ * ladder (context-budget-layered-summaries §10, §17): one SelfHealGate episode
+ * per (carrier kind, topic, fold) whose hold or marker outlived its record past
+ * the grace period. At most 3 attempts inside a 30-minute wall clock, then
+ * exhausted (one Attention item) and RETAINED for 7 days, so the same leftover
+ * never re-opens a ladder within the horizon. Pressure model: a release that
+ * never takes (the file reappears every time), ticked every 5 minutes for 2 days.
+ */
+const contextBudgetOrphanCarrierClear: SelfActionController = {
+  id: 'context-budget-orphan-carrier-clear',
+  actionVerb: 'converge-orphan-carrier',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (pool-shared sync SelfHealGate ladder per orphan hold/marker: <=3 attempts / 30 min, exhausted episodes retained 7 days)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 2 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetOrphanCarrierClear.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WALL_CLOCK_MS = 30 * 60_000; const MAX_ATTEMPTS = 3;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-orphan') as { attempts: number; startedAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, startedAt: f.clock.nowMs(), exhausted: false };
+      if (st.exhausted) { f.durableState.set('cb-orphan', st); return; }
+      if (st.attempts >= MAX_ATTEMPTS || f.clock.nowMs() - st.startedAt >= WALL_CLOCK_MS) { f.durableState.set('cb-orphan', { ...st, exhausted: true }); return; }
+      sink.emit({ verb: 'converge-orphan-carrier', target: 'fold-hold:141133:f1' });
+      f.durableState.set('cb-orphan', { ...st, attempts: st.attempts + 1 });
+    } };
+  },
+};
+
+/**
+ * context-budget-layer-rebuild-request — the ContextBudgetSentinel's layer
+ * freshness row (context-budget-layered-summaries §6, §17): a topic whose H1 is
+ * over target gets at most 3 rebuild requests per stale episode, 30 minutes
+ * apart, through the capture loop's re-projection seam (deterministic, no model
+ * call); the episode is durable and ends only on a fresh reading. The bound is
+ * per episode FILE: a corrupt or unreadable episodes file (never self-induced)
+ * is audited and restarts the episodes once. This is §7.8's bounded "ask", not a
+ * heal ladder, so it carries its own durable counters rather than a SelfHealGate
+ * episode. Pressure model: a layer that never catches up, ticked every 5
+ * minutes for 2 days.
+ */
+const contextBudgetLayerRebuildRequest: SelfActionController = {
+  id: 'context-budget-layer-rebuild-request',
+  actionVerb: 'retry-layer-rebuild',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (checkFreshness: <=3 rebuild requests per durable stale episode, 30 min apart; one notice per episode)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 2 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetLayerRebuildRequest.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const SPACING_MS = 30 * 60_000; const MAX = 3;
+    return { tick() {
+      sink.considered += 1;
+      const ep = (f.durableState.get('cb-layer-stale') as { requests: number; lastAt: number } | undefined) ?? { requests: 0, lastAt: -Infinity };
+      if (ep.requests >= MAX || f.clock.nowMs() - ep.lastAt < SPACING_MS) return; // the stale episode never ends under pressure
+      f.durableState.set('cb-layer-stale', { requests: ep.requests + 1, lastAt: f.clock.nowMs() });
+      sink.emit({ verb: 'retry-layer-rebuild', target: 'topic:141133' });
     } };
   },
 };
@@ -4369,6 +4444,56 @@ const presenceUsageNotice: SelfActionController = {
   makeUnderPressure: makePresenceUsageNotice,
 };
 
+const graphSourceSweepCheckpointRetry: SelfActionController = {
+  id: 'graph-source-sweep-checkpoint-retry',
+  actionVerb: 'retry',
+  models: 'src/server/ConversationGraphSourceInventoryRuntime.ts (run — sourceSweepCheckpointDue, publish on change plus a daily heartbeat)',
+  modelsPath: 'src/server/ConversationGraphSourceInventoryRuntime.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The last checkpoint is remembered in memory, so a restart publishes one more checkpoint and then settles.' },
+  boundK: 170,
+  perTargetBoundK: 170,
+  ticks: 60 * 24 * 7,
+  tickMs: 60_000,
+  eternalSentinel: { reason: 'Coverage readers need a recent signed checkpoint, so a live producer keeps publishing once a day while nothing changes.', rateFloorMs: GRAPH_SOURCE_SWEEP_HEARTBEAT_MS },
+  delegatedGiveUp: 'The hourly heartbeat; a scan that does not commit publishes nothing new',
+  makeUnderPressure(f, sink) {
+    let last: { hash: string; at: number } | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!sourceSweepCheckpointDue(last, 'unchanged-inventory', now)) return;
+        sink.emit({ verb: 'retry', target: 'graph-source-checkpoint' });
+        last = { hash: 'unchanged-inventory', at: now };
+      },
+    };
+  },
+};
+
+const graphSourceStatusPollRetry: SelfActionController = {
+  id: 'graph-source-status-poll-retry',
+  actionVerb: 'retry',
+  models: 'src/server/ConversationGraphDefault.ts (applyHeldSourceCustodyStageV2 — sourceStatusPollGivesUp, 120s limit while the peer is unreachable)',
+  modelsPath: 'src/server/ConversationGraphDefault.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The poll belongs to one running stage. A restart ends that stage, so nothing resumes polling on its own.' },
+  boundK: 241,
+  perTargetBoundK: 241,
+  ticks: 2400,
+  tickMs: SOURCE_STATUS_RETRY_MS,
+  makeUnderPressure(f, sink) {
+    const since = f.clock.nowMs();
+    let gaveUp = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (gaveUp) return;
+        if (sourceStatusPollGivesUp(since, f.clock.nowMs())) { gaveUp = true; return; }
+        sink.emit({ verb: 'retry', target: 'graph-source-status' });
+      },
+    };
+  },
+};
+
 /**
  * learned-skill-reconciler — the every-machine reconcile of LEARNED skill
  * renderings (docs/specs/skill-learning-sentinel.md §3.2, decision 19;
@@ -5229,6 +5354,8 @@ const reloginApprovalReminder: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  graphSourceSweepCheckpointRetry,
+  graphSourceStatusPollRetry,
   reloginApprovalReminder,
   peerPlaceSessionTick,
   skillLearningHealRevertFirst,
@@ -5293,6 +5420,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackTriageSelfHealProbe,
   contextBudgetQuarantineReconcile,
   contextBudgetAdapterSuite,
+  contextBudgetOrphanCarrierClear,
+  contextBudgetLayerRebuildRequest,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,

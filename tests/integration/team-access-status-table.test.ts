@@ -36,14 +36,17 @@ afterAll(() => {
 
 /** One concrete path for an allowlist pattern. */
 function sample(re: RegExp): string {
-  return re.source
+  let s = re.source
     .replace(/^\^/, '').replace(/\$$/, '')
     .replace(/\[0-9a-f\]\{8\}-\[0-9a-f\]\{4\}-[^)]*?\{12\}/g, UUID)
     .replace(/\[0-9a-f\]\{64\}/g, 'a'.repeat(64))
     .replace(/\[0-9a-f-\]\{36\}/g, UUID)
-    .replace(/\(\?:/g, '(')
-    .replace(/\(([^()|]+)(\|[^()]*)?\)\??/g, '$1')
-    .replace(/\[[^\]]*\](\{[^}]*\}|\+|\*)?/g, 'x')
+    .replace(/\(\?:/g, '(');
+  // Innermost groups first, repeated until none is left, so a group that holds groups is read too.
+  for (let prev = ''; prev !== s;) { prev = s; s = s.replace(/\(([^()|]+)(\|[^()]*)?\)\??/g, '$1'); }
+  return s
+    // A character class becomes as many x's as its quantifier's minimum, so `[a-z]{8,80}` still matches.
+    .replace(/\[[^\]]*\](\{(\d+)(,\d*)?\}|\+|\*)?/g, (_m, _q, min) => 'x'.repeat(Math.max(1, Number(min ?? 1))))
     .replace(/\\d(\{[^}]*\}|\+)?/g, '50')
     .replace(/\\\//g, '/').replace(/\\\./g, '.').replace(/\\-/g, '-');
 }

@@ -126,6 +126,8 @@ interface IdentityTransactionJournal {
 interface IdentityRevocationJournal {
   version: 1;
   kind: 'revocation';
+  /** Opt-in transaction whose recovery must repeat physical barriers. */
+  durable?: true;
   id: string;
   machineId: string;
   epochs: IdentityEpochFile;
@@ -656,6 +658,16 @@ export class IdentityStore {
    * committed before the human-facing registry row, so a crash between writes
    * can only fail closed (the principal is already untrusted). */
   revoke(machineId: string, revokedBy: string, reason: string): void {
+    this.revokeTransaction(machineId, revokedBy, reason, false);
+  }
+
+  /** Same native transaction, with journal-first durable recovery. This adds no
+   * permission: callers must still supply the existing owner administration. */
+  revokeDurably(machineId: string, revokedBy: string, reason: string): void {
+    this.revokeTransaction(machineId, revokedBy, reason, true);
+  }
+
+  private revokeTransaction(machineId: string, revokedBy: string, reason: string, durable: boolean): void {
     assertValidMachineId(machineId);
     if (this.applying) throw new IdentityStoreRefusal('concurrent-writer', 'Identity mutation already in progress');
     this.applying = true;
@@ -716,6 +728,7 @@ export class IdentityStore {
       const journal: IdentityRevocationJournal = {
         version: 1,
         kind: 'revocation',
+        ...(durable ? {durable: true as const} : {}),
         id: transactionId,
         machineId,
         epochs,
@@ -723,11 +736,33 @@ export class IdentityStore {
         ledgerRow,
       };
       atomicWrite(this.transactionPath, JSON.stringify(journal, null, 2));
+      if (journal.durable) this.syncRevocationFile(this.transactionPath, JSON.stringify(journal, null, 2));
       this.faultInjector?.('after-journal');
       this.completeRevocation(journal, true);
     } finally {
       this.applying = false;
     }
+  }
+
+  /** Exact historical revocation lookup without a recent-row window or a
+   * whole-ledger allocation. Unrelated audit growth cannot erase this fact. */
+  findRevocationEvidence(machineId:string,keyEpoch:number,fingerprint:string):IdentityChangeRow|null {
+    if(!machineId||!Number.isSafeInteger(keyEpoch)||keyEpoch<0||!/^[a-f0-9]{32}$/.test(fingerprint))throw new Error('identity-revocation-lookup-invalid');
+    let fd:number;try{fd=fs.openSync(this.ledgerPath,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW??0));}catch(error){if((error as NodeJS.ErrnoException).code==='ENOENT')return null;throw error;}
+    try{
+      const original=fs.fstatSync(fd);if(!original.isFile()||original.nlink!==1)throw new Error('identity-revocation-ledger-invalid');
+      const chunk=Buffer.alloc(64*1024),maxRow=256*1024;let position=original.size,tail=Buffer.alloc(0),dropping=false,found:IdentityChangeRow|null=null;
+      const match=(prefix:Buffer):IdentityChangeRow|null=>{
+        if(dropping||prefix.length+tail.length>maxRow)return null;const bytes=Buffer.concat([prefix,tail]);if(!bytes.length)return null;
+        let value:IdentityChangeRow;try{value=JSON.parse(bytes.toString('utf8')) as IdentityChangeRow;}catch{/* @silent-fallback-ok: malformed audit bytes cannot supply affirmative historical Native evidence */return null;}
+        return value&&value.machineId===machineId&&value.keyEpoch===keyEpoch&&value.path==='revocation'&&value.actor==='operator'&&value.newSigningFingerprint===fingerprint&&typeof value.at==='string'&&Number.isFinite(Date.parse(value.at))&&Number.isSafeInteger(value.recoveryEpoch)&&value.recoveryEpoch>=0&&typeof value.transactionId==='string'&&value.transactionId.length>0?value:null;
+      };
+      while(position>0&&!found){const length=Math.min(chunk.length,position),start=position-length;if(fs.readSync(fd,chunk,0,length,start)!==length)throw new Error('identity-revocation-ledger-changed');let end=length;
+        for(let at=length-1;at>=0;at--)if(chunk[at]===10){found=match(chunk.subarray(at+1,end));tail=Buffer.alloc(0);dropping=false;end=at;if(found)break;}
+        if(!found){const prefix=chunk.subarray(0,end);if(dropping||prefix.length+tail.length>maxRow){tail=Buffer.alloc(0);dropping=true;}else tail=Buffer.concat([prefix,tail]);}position=start;
+      }
+      if(!found&&!dropping)found=match(Buffer.alloc(0));const current=fs.fstatSync(fd),named=fs.lstatSync(this.ledgerPath);if(!current.isFile()||current.nlink!==1||current.size<original.size||named.isSymbolicLink()||named.ino!==current.ino||named.dev!==current.dev)throw new Error('identity-revocation-ledger-changed');return found;
+    }finally{fs.closeSync(fd);}
   }
 
   readChanges(limit = 200): IdentityChangeRow[] {
@@ -820,16 +855,46 @@ export class IdentityStore {
     SafeFsExecutor.safeUnlinkSync(this.transactionPath, { operation: 'IdentityStore.completeTransaction' });
   }
 
+  private syncRevocationDirectory(directory: string): void {
+    // Include newly-created ancestor links, rather than only the leaf directory.
+    for (let current = fs.realpathSync(directory);; current = path.dirname(current)) {
+      const fd = fs.openSync(current, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+      try { if (!fs.fstatSync(fd).isDirectory()) throw new Error('native-revocation-directory-invalid'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      if (path.dirname(current) === current) break;
+    }
+  }
+
+  private syncRevocationFile(file: string, expected?: string): void {
+    const before = fs.lstatSync(file);
+    if (!before.isFile() || before.isSymbolicLink()) throw new Error('native-revocation-file-invalid');
+    const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = fs.fstatSync(fd);
+      if (opened.dev !== before.dev || opened.ino !== before.ino) throw new Error('native-revocation-file-replaced');
+      fs.fsyncSync(fd);
+      if (expected !== undefined && fs.readFileSync(fd, 'utf8') !== expected) throw new Error('native-revocation-readback-invalid');
+      const after = fs.lstatSync(file);
+      if (after.dev !== opened.dev || after.ino !== opened.ino) throw new Error('native-revocation-file-replaced');
+    } finally { fs.closeSync(fd); }
+    this.syncRevocationDirectory(path.dirname(file));
+  }
+
   private completeRevocation(journal: IdentityRevocationJournal, injectFaults: boolean): void {
+    if (journal.durable) this.syncRevocationFile(this.transactionPath, JSON.stringify(journal, null, 2));
     // Epoch tombstone is the security commit point. The journal then guarantees
     // registry visibility and the attributable ledger converge after a crash.
     atomicWrite(this.epochPath, JSON.stringify(journal.epochs, null, 2));
+    if (journal.durable) this.syncRevocationFile(this.epochPath, JSON.stringify(journal.epochs, null, 2));
     if (injectFaults) this.faultInjector?.('after-epoch');
-    atomicWrite(path.join(this.stateDir, 'machines', 'registry.json'), JSON.stringify(journal.registry, null, 2));
+    const registryPath = path.join(this.stateDir, 'machines', 'registry.json');
+    atomicWrite(registryPath, JSON.stringify(journal.registry, null, 2));
+    if (journal.durable) this.syncRevocationFile(registryPath, JSON.stringify(journal.registry, null, 2));
     if (injectFaults) this.faultInjector?.('after-registry');
     this.appendLedger(journal.ledgerRow);
+    if (journal.durable) this.syncRevocationFile(this.ledgerPath);
     if (injectFaults) this.faultInjector?.('after-ledger');
     SafeFsExecutor.safeUnlinkSync(this.transactionPath, { operation: 'IdentityStore.completeRevocation' });
+    if (journal.durable) this.syncRevocationDirectory(path.dirname(this.transactionPath));
   }
 
   private recoverPendingTransaction(): void {
@@ -840,7 +905,7 @@ export class IdentityStore {
       if (raw?.kind === 'revocation') {
         const epoch = raw.epochs?.version === 1 ? raw.epochs.machines?.[raw.machineId] : undefined;
         const entry = raw.registry?.machines?.[raw.machineId];
-        if (!raw.id || !MACHINE_ID_PATTERN.test(raw.machineId) || !epoch?.revokedAt
+        if ((raw.durable !== undefined && raw.durable !== true) || !raw.id || !MACHINE_ID_PATTERN.test(raw.machineId) || !epoch?.revokedAt
           || !entry || entry.status !== 'revoked' || !entry.revokedAt
           || raw.ledgerRow.transactionId !== raw.id || raw.ledgerRow.machineId !== raw.machineId
           || raw.ledgerRow.path !== 'revocation' || raw.ledgerRow.actor !== 'operator') {

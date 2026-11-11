@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "unified-usage-ledger-migration",
+  "sessionId": "d2851b0b-cdde-4df8-a475-e16770ac5b1f",
+  "timestamp": "2026-11-10T21:59:41.000Z",
+  "artifactPath": "upgrades/side-effects/unified-usage-ledger-migration.md",
+  "artifactSha256": "74591d4531733138a2fac42ba9e2db46fe083167451549f9b9d542966f3ae590",
+  "specPath": "docs/specs/unified-usage-ledger.md",
+  "coveredFiles": [
+    "src/core/BackupManager.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/data/state-coherence-registry.json",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-usageLedger.test.ts",
+    "upgrades/next/unified-usage-ledger-slice1.md",
+    "upgrades/next/unified-usage-ledger.md",
+    "upgrades/side-effects/unified-usage-ledger-migration.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Migration touching every existing agent (CLAUDE.md, ignore files, backup set); dev-gated feature, no behavior change when off",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

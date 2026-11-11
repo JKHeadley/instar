@@ -291,6 +291,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Genuinely cluster-shared, single-writer = lease holder (byte-identical to today).
   reg.add({ kind: 'op', op: 'saveJobState', domain: 'cluster-shared' });
   reg.add({ kind: 'op', op: 'appendEvent', domain: 'cluster-shared' });
+  // Conversations v3 §7.2: shared graph/header/erasure writes require the
+  // admitted writer at the store seam as well as the HTTP boundary.
+  for (const op of ['conversationGraph.append', 'conversationGraph.certify', 'conversationGraph.header', 'conversationGraph.erase']) {
+    reg.add({ kind: 'op', op, domain: 'cluster-shared' });
+  }
+  for (const pathPrefix of ['/conversation-graph/changes', '/conversation-graph/forget', '/conversation-graph/decisions', '/mobile/conversation-graph/changes', '/mobile/conversation-graph/forget', '/mobile/conversation-graph/decisions']) {
+    reg.add({ kind: 'route', method: 'POST', pathPrefix, domain: 'cluster-shared' });
+  }
   // kv `set`/`delete` default cluster-shared for unclassified keys (I8) — no
   // op-level entry needed; exact-key entries below override per key.
 
@@ -558,6 +566,10 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/enable', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/override', domain: 'cluster-shared' });
   reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/unfork', domain: 'cluster-shared' });
+  // CMT-1610: releasing a script-route supervision hold writes the scheduler's
+  // supervision ledger. Only the serving scheduler answers (a read-only standby
+  // gets 409), so the lease holder is its single writer.
+  reg.add({ kind: 'route', method: 'POST', pathPrefix: '/jobs/:slug/supervision-hold/release', domain: 'cluster-shared' });
   // Portable export consent and bundle replay accounting belong to the source
   // machine, which may be a standby. Their state is excluded from git-sync.
   const portableSourceStory: ConvergenceStory = {

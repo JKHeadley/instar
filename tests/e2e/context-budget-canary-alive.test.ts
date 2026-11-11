@@ -61,7 +61,7 @@ describe('compaction canary — alive on the production path', () => {
     fs.appendFileSync(transcript, [
       JSON.stringify({ parentUuid: null, isSidechain: false, type: 'system', subtype: 'compact_boundary', content: 'Conversation compacted', level: 'info', compactMetadata: { trigger: 'auto', preTokens: 968913, postTokens: 34011 }, uuid: 'b1', timestamp: new Date(at).toISOString(), sessionId: SID, version: '2.1.321' }),
       // The attachment exactly as Claude Code 2.1.321 writes it for Instar's session-start hook.
-      JSON.stringify({ type: 'attachment', attachment: { type: 'hook_success', hookName: 'SessionStart:compact', hookEvent: 'SessionStart', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"', stdout: '=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.', content: '<persisted-output>', exitCode: 0 }, uuid: 'h1', sessionId: SID }),
+      JSON.stringify({ type: 'attachment', attachment: { type: 'hook_success', hookName: 'SessionStart:compact', hookEvent: 'SessionStart', command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"', stdout: '=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.', content: '=== IDENTITY RECOVERY (post-compaction) ===\nI am Echo.', exitCode: 0 }, uuid: 'h1', sessionId: SID }),
       '',
     ].join('\n'));
     recordPostCompact(stateDir, { topicKey: '141133', instarSessionId: 'inst1', claudeSessionId: SID, trigger: 'auto', summary: 'summary', receivedAt: at + 500 });
@@ -81,8 +81,9 @@ describe('compaction canary — alive on the production path', () => {
 
   it('WIRED: server.ts gives the sentinel its canary and passes the sentinel to AgentServer', () => {
     const src = fs.readFileSync(path.join(ROOT, 'src/commands/server.ts'), 'utf-8');
-    expect(src).toContain('instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId })');
-    expect(src).toContain('sessions: productionCanarySessions({ sessions: sessionManager, projectDir: config.projectDir })');
+    expect(src).toContain("instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() })");
+    expect(src).toContain('sessions: productionCanarySessions({');
+    expect(src).toContain('sessions: sessionManager, projectDir: config.projectDir,');
     expect(src).toContain("switchOn: () => liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false");
     expect(src).toContain('contextBudgetSentinel: _contextBudgetSentinel ?? undefined');
   });

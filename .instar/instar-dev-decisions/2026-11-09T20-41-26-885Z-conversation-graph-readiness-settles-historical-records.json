@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-09T20:41:26.885Z",
+  "slug": "conversation-graph-readiness-settles-historical-records",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/server/ConversationGraphReplicationRuntime.ts",
+      "src/server/conversationGraphChangeRoutes.ts"
+    ],
+    "addedLines": 14,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

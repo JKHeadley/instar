@@ -2,6 +2,8 @@ import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
 import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
+import { listChunks, readChunk, isSafeChunkTopic, isSafeChunkKey } from '../monitoring/contextLayers/chunkLookup.js';
+import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -39,6 +41,7 @@ import { computePoolReadiness, getActivePoolReadiness, SINGLE_MACHINE_READINESS 
 import { isConversationPinsEnabled, pinRowsFor } from '../core/ConversationPins.js';
 import { deviceMayUse, filterAttentionForPhone, filterTopicsForTeam, maskSessionsForPhone, stripViewSignatures, devicePersonOf } from './mobilePairingRoutes.js';
 import { mountMobileCapacityRoutes, type SpendPart } from './mobileCapacityRoutes.js';
+import { mountUsageRoutes } from './usageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
@@ -91,6 +94,8 @@ import { JobCoverageMonitor } from '../core/JobCoverageMonitor.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
 import { desktopProbeUnavailableReason } from '../core/DesktopProbeReadiness.js';
 import { mountTelegramOriginRoutes, sendOriginHoldResponse } from './telegramOriginRoutes.js';
+import { PR_LINK_REPLY_ROUTES, createSelfLoginReader, prLinkReviewMiddleware } from '../messaging/prLinkReviewRequest.js';
+import { createAuthenticatedGhExec } from '../core/githubRuntime.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError, OriginConfigUnavailableError } from '../messaging/telegram-origin/types.js';
 import { deterministicAutomationAuthor } from '../messaging/telegram-origin/OriginAutomationAuthor.js';
 import { cadenceReportProducerPayload, type WindowRunCadenceExecutor, type WindowCadenceReportReceipt } from '../core/WindowRunCadenceExecutor.js';
@@ -1163,6 +1168,10 @@ export interface MobileInboundTrust {
 }
 
 export interface RouteContext {
+  /** Actual signed post-spawn capture; absent until graph storage is configured. */
+  conversationGraphDelegationRuntime?: import('./ConversationGraphDelegationRuntime.js').ConversationGraphDelegationRuntime | null;
+  conversationGraphDelegationRemoteRuntime?: import('./ConversationGraphDelegationRemoteRuntime.js').ConversationGraphDelegationRemoteRuntime | null;
+  getConversationGraphDelegation?: import('./ConversationGraphDelegationManager.js').ConversationGraphDelegationGetter;
   /** Attribution paper trail; absent/null when dark. docs/specs/attribution-paper-trail.md */
   attribution?: import('../core/attribution/attributionRuntime.js').AttributionRuntime | null;
   /** Stops the lease coverage peer poller when AgentServer shuts down. */
@@ -1209,6 +1218,8 @@ export interface RouteContext {
   /** Desktop-only sessions the owner's phone mints with Face ID. */
   phoneDesktopSessions?: import('./PhoneDesktopSessionStore.js').PhoneDesktopSessionStore;
   telegramOrigin?: import('../messaging/telegram-origin/TelegramOriginRuntime.js').TelegramOriginRuntime | null;
+  /** Test seam: the gh runner for the PR-link reviewer check (default: the authenticated gh for this agent). */
+  prLinkReviewGh?: import('../core/githubRuntime.js').AuthenticatedGhExec;
   /** Machine identity recovery authority/read surfaces. Absent keeps routes
    * honest (503) on single-machine or feature-dark installs. */
   identityStore?: import('../core/IdentityStore.js').IdentityStore | null;
@@ -1292,6 +1303,8 @@ export interface RouteContext {
   /** context-budget-layered-summaries §7.8: the ContextBudgetSentinel, or null when it is off. */
   contextBudgetSentinel?: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null;
   contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null;
+  /** context-budget-layered-summaries §6.5/§9.5: chunk (C) and range (C2) builds; null when the layers are off. */
+  chunkBuilder?: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -1675,6 +1688,8 @@ export interface RouteContext {
   /** Token-usage ledger (read-only observability over Claude Code JSONL
    *  transcripts). Null when stateDir is unavailable. */
   tokenLedger: import('../monitoring/TokenLedger.js').TokenLedger | null;
+  /** Unified usage ledger read routes (docs/specs/unified-usage-ledger.md). Absent/null = ledger off (503). */
+  usageRouteDeps?: () => import('./usageRoutes.js').UsageRouteDeps | null;
   /** Zero-spend live codex quota reader (`codex app-server` →
    *  account/rateLimits/read), injected at composition via
    *  buildCodexLiveUsageReader. Absent/null → GET /codex/usage stays
@@ -2968,6 +2983,29 @@ export function createRoutes(ctx: RouteContext): Router {
   };
 
   const router = Router();
+  // A PR link sent to the operator is a review request on GitHub too (Echo Bugs 10000002537).
+  // Mounted FIRST so the origin send-policy binds the final text (an unconfirmed request appends a note).
+  {
+    let prLinkGh: import('../core/githubRuntime.js').AuthenticatedGhExec | null = ctx.prLinkReviewGh ?? null;
+    const ghFor = () => {
+      if (!prLinkGh && ctx.config.stateDir) prLinkGh = createAuthenticatedGhExec({ stateDir: ctx.config.stateDir });
+      return prLinkGh;
+    };
+    let selfLogin: (() => Promise<string | null>) | null = null;
+    const prLinkDeps = {
+      enabled: () => (ctx.config as { prLinkReviewRequest?: { enabled?: boolean } }).prLinkReviewRequest?.enabled !== false,
+      reviewer: () => (ctx.config as { prLinkReviewRequest?: { reviewer?: string } }).prLinkReviewRequest?.reviewer ?? null,
+      gh: ghFor,
+      selfLogin: async () => {
+        const gh = ghFor();
+        if (!gh) return null;
+        selfLogin ??= createSelfLoginReader(gh);
+        return selfLogin();
+      },
+      log: (line: string) => console.log(line),
+    };
+    for (const route of PR_LINK_REPLY_ROUTES) router.use(route.path, prLinkReviewMiddleware(prLinkDeps, route.maxLength));
+  }
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
   mountOriginDisplayPreferences(router, ctx);
@@ -7009,8 +7047,44 @@ export function createRoutes(ctx: RouteContext): Router {
       summary: typeof body.compact_summary === 'string' ? body.compact_summary : '',
       receivedAt: Date.now(),
     }, liveSecrets);
+    // §9.5: archive the pre-compaction span and enqueue exactly one chunk
+    // build through the 6.5 sampler. Conditioned on the layers AND on
+    // `contextBudget.compactionRecovery.enabled` on this machine (§9.1: off ⇒
+    // today's path, the record stays observability only). The transcript path
+    // is resolved and the build runs AFTER the response: never slows the hook.
+    let chunk: 'enqueued' | 'off' | 'no-transcript-session' = 'off';
+    const recoveryOn = (ctx.liveConfig?.get<boolean | undefined>('contextBudget.compactionRecovery.enabled', undefined)
+      ?? (ctx.config as { contextBudget?: { compactionRecovery?: { enabled?: boolean } } }).contextBudget?.compactionRecovery?.enabled) !== false;
+    const chunkBuilder = ctx.chunkBuilder;
+    if (result.recorded && ctx.contextLayers && chunkBuilder && recoveryOn) {
+      // The hook's own session id names the transcript that just compacted (the stored one can be stale after a resume).
+      const engineSessionId = claudeSessionId || session.claudeSessionId || '';
+      const framework = session.framework ?? 'claude-code';
+      if (!engineSessionId || framework !== 'claude-code') {
+        chunk = 'no-transcript-session';
+      } else {
+        chunk = 'enqueued';
+        setImmediate(() => {
+          try {
+            const sm = ctx.sessionManager as unknown as { configHomeForSession?: (t: string, o?: { defaultWhenUnset?: boolean }) => string | undefined };
+            const configHome = typeof sm.configHomeForSession === 'function' ? sm.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true }) : undefined;
+            const transcriptPath = resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: engineSessionId, projectDir: (session as { cwd?: string }).cwd ?? ctx.config.projectDir, ...(configHome ? { configHome } : {}) });
+            if (!transcriptPath) return;
+            chunkBuilder.enqueue({ topicKey, transcriptPath, sessionKey: engineSessionId, trigger: 'post-compact', upTo: 'last-compact-boundary', sessionId: instarSessionId });
+          } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'contextBudget.layers.chunks',
+              primary: 'A compaction archives the pre-compaction span and queues its chunk summary',
+              fallback: 'No chunk queued for this compaction; the next trigger reads from the same watermark',
+              reason: `Resolving the transcript failed: ${err instanceof Error ? err.message : String(err)}`,
+              impact: 'The conversation\'s summary of that span is delayed until the next compaction; nothing is lost.',
+            });
+          }
+        });
+      }
+    }
     res.status(200).json(result.recorded
-      ? { recorded: true, topicKey, trigger: result.record.trigger, summaryChars: result.record.summaryChars, redactionKinds: result.record.redactionKinds }
+      ? { recorded: true, topicKey, trigger: result.record.trigger, summaryChars: result.record.summaryChars, redactionKinds: result.record.redactionKinds, chunk }
       : { recorded: false, reason: result.reason });
   });
 
@@ -8917,7 +8991,70 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
       return;
     }
-    res.json(ctx.contextLayers.status());
+    res.json({ ...ctx.contextLayers.status(), chunks: ctx.chunkBuilder?.status() ?? null });
+  });
+  // context-budget-layered-summaries §7.6: chunk (C) and range (C2) records of
+  // one conversation, with sizes, status and each span's archive state.
+  // Bearer-only (memory-session tokens are refused: not on the session guard's
+  // allowlist), bounded, paginated; 503 while the layers are off.
+  router.get('/topic/:id/chunks', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const topicKey = String(req.params.id);
+    if (!isSafeChunkTopic(topicKey)) { res.status(400).json({ error: 'invalid topic id' }); return; }
+    const kindQ = typeof req.query.kind === 'string' ? req.query.kind : 'all';
+    if (!['all', 'chunk', 'c2'].includes(kindQ)) { res.status(400).json({ error: 'kind must be all, chunk or c2' }); return; }
+    const limit = req.query.limit !== undefined ? Number(req.query.limit) : undefined;
+    const offset = req.query.offset !== undefined ? Number(req.query.offset) : undefined;
+    if ((limit !== undefined && !Number.isFinite(limit)) || (offset !== undefined && !Number.isFinite(offset))) { res.status(400).json({ error: 'limit and offset must be numbers' }); return; }
+    res.json(listChunks(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, { limit, offset, kind: kindQ as 'all' | 'chunk' | 'c2' }));
+  });
+  router.get('/topic/:id/chunks/:k', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const topicKey = String(req.params.id);
+    const key = String(req.params.k);
+    if (!isSafeChunkTopic(topicKey) || !isSafeChunkKey(key)) { res.status(400).json({ error: 'invalid topic id or chunk key' }); return; }
+    const r = readChunk(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, key);
+    if (!r) { res.status(404).json({ error: 'no such chunk' }); return; }
+    res.json(r);
+  });
+  // context-budget-layered-summaries §11: the measurement backend — cost-weighted
+  // tokens per request per session and topic, live context size, rework (pending
+  // while the ledger poller lags), extractor spend per day by trigger, LayerUpdate
+  // spend against its reserve, U size, archive/layer bytes, G/C growth for the
+  // live-set budget. Read-only, bounded; 503 when the layers are off.
+  const contextBudgetMetricsMemo = new Map<string, { at: number; layers: unknown; body: ReturnType<typeof computeContextBudgetMetrics> }>();
+  router.get('/context-budget/metrics', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const parsed = parseMetricsQuery({ topic: req.query.topic, sinceHours: req.query.sinceHours });
+    if (!parsed.ok) { res.status(400).json({ error: parsed.error }); return; }
+    try {
+      // The computation is synchronous (SQLite reads, directory stats): one result
+      // per query shape is reused for 30 s so a polling card cannot stack it.
+      const memoKey = `${parsed.query.topicId ?? '*'}:${parsed.query.sinceHours ?? ''}`;
+      const hit = contextBudgetMetricsMemo.get(memoKey);
+      if (hit && Date.now() - hit.at < 30_000 && hit.layers === ctx.contextLayers) { res.json({ ...hit.body, cachedForMs: Date.now() - hit.at }); return; }
+      const body = computeContextBudgetMetrics({
+        layers: ctx.contextLayers,
+        stateDir: ctx.config.stateDir,
+        ledger: ctx.tokenLedger ?? null,
+        topicIntentStore: ctx.topicIntentStore ?? null,
+        topicMemory: ctx.topicMemory ?? null,
+      }, parsed.query);
+      if (contextBudgetMetricsMemo.size > 200) contextBudgetMetricsMemo.clear();
+      contextBudgetMetricsMemo.set(memoKey, { at: Date.now(), layers: ctx.contextLayers, body });
+      res.json(body);
+    } catch (err) {
+      res.status(500).json({ error: `context-budget metrics failed: ${(err as Error).message}` });
+    }
   });
   router.get('/chief-of-staff', (_req, res) => {
     if (!ctx.chiefOfStaffLoop) {
@@ -12782,7 +12919,7 @@ export function createRoutes(ctx: RouteContext): Router {
   });
 
   router.post('/sessions/spawn', spawnLimiter, async (req, res) => {
-    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, workWeight } = req.body;
+    const { name, prompt, model, jobSlug, framework, ultracode, topicId, topicName, requireTopicBinding, spawnRole, targetMachineId, workWeight } = req.body;
     // resource-aware placement §6: a heavy helper forwarded by POST /pool/heavy-work/spawn
     // says so, and this machine counts it in its advertised `heavyPending`.
     if (workWeight !== undefined && workWeight !== 'light' && workWeight !== 'standard' && workWeight !== 'heavy') {
@@ -12904,6 +13041,26 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
 
+    // Owner bootstrap can publish the owned runtime after server boot. Await
+    // its already-registered composition before dispatch; a stale static
+    // runtime must never stand in for a held newer binding.
+    const graphBinding=ctx.getConversationGraphDelegation
+      ?await ctx.getConversationGraphDelegation().catch(()=>({status:'held' as const,reason:'verified-delegation-runtime-unavailable'})):null;
+    const localGraphDelegation=ctx.getConversationGraphDelegation
+      ?graphBinding?.status==='ready'?graphBinding.local:null:ctx.conversationGraphDelegationRuntime;
+    const remoteGraphDelegation=ctx.getConversationGraphDelegation
+      ?graphBinding?.status==='ready'?graphBinding.remote:null:ctx.conversationGraphDelegationRemoteRuntime;
+
+    if(targetMachineId!==undefined){
+      if(jobSlug!==undefined||ultracode===true||spawnRole!==undefined){res.status(409).json({error:'remote-spawn-options-unsupported'});return;}
+      if(typeof targetMachineId!=='string'||!/^[A-Za-z0-9_-]{1,160}$/.test(targetMachineId)||parsedTopicId===undefined||!remoteGraphDelegation){res.status(409).json({error:'verified-remote-spawn-unavailable'});return;}
+      try{
+        const outcome=await remoteGraphDelegation.dispatch({parentBindToken:req.headers['x-instar-bind-token'],topicId:parsedTopicId,targetMachineId,
+          launch:{name,prompt,model:topicSpawnProfile.model,framework:topicSpawnProfile.framework}});
+        res.status(outcome.ok?202:409).json({status:outcome.ok?'remote-launch-accepted':'remote-launch-checking',transport:outcome,graph:{state:'checking-save'}});
+      }catch{res.status(409).json({error:'verified-remote-spawn-refused'});}return;
+    }
+
     const persistTopicBinding = (boundTopicId: number, tmuxSession: string): void => {
       if (ctx.telegram?.registerTopicSession) {
         ctx.telegram.registerTopicSession(boundTopicId, tmuxSession, cleanTopicName);
@@ -12966,9 +13123,13 @@ export function createRoutes(ctx: RouteContext): Router {
           }
         }
       }
+      const graphDelegation = localGraphDelegation?await localGraphDelegation.afterSuccessfulSpawn(
+        req.headers['x-instar-bind-token'], session.id):ctx.getConversationGraphDelegation&&req.headers['x-instar-bind-token']
+          ?{status:'refused',reason:'verified-delegation-runtime-unavailable'}:undefined;
       if (workWeight === 'heavy') acceptedHeavy.record('self');
       res.status(201).json({
         ...session,
+        ...(graphDelegation ? { graphDelegation } : {}),
         ...(parsedTopicId !== undefined ? { topicId: parsedTopicId, topicBound: true, ownership: topicOwnership } : {}),
       });
     } catch (err) {
@@ -20065,6 +20226,51 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
   // Clears stale pending/failure state for a job. Useful when a session dies
   // without reporting back, leaving lastResult stuck on 'pending' forever.
 
+  // Script-route supervision holds (CMT-1610): read the hold + its release
+  // audit trail, and release a hold with a recorded reason. A release is
+  // refused while the run-history census still finds an unsettled run.
+  router.get('/jobs/:slug/supervision-hold', (req, res) => {
+    const { slug } = req.params;
+    if (!/^[a-z0-9-]+$/.test(slug)) { res.status(400).json({ error: 'Invalid job slug' }); return; }
+    if (!ctx.scheduler) { res.status(503).json({ error: 'Scheduler not running' }); return; }
+    if (ctx.scheduler.isReadOnlyStandby()) { res.status(409).json({ error: 'read-only-standby' }); return; }
+    try {
+      const store = ctx.scheduler.getJobSupervisionStore();
+      res.json({ slug, hold: store.heldSlugs().find(h => h.slug === slug) ?? null, releases: store.holdReleases(slug, 20) });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
+  router.post('/jobs/:slug/supervision-hold/release', (req, res) => {
+    const { slug } = req.params;
+    if (!/^[a-z0-9-]+$/.test(slug)) { res.status(400).json({ error: 'Invalid job slug' }); return; }
+    if (!ctx.scheduler) { res.status(503).json({ error: 'Scheduler not running' }); return; }
+    if (ctx.scheduler.isReadOnlyStandby()) { res.status(409).json({ error: 'read-only-standby' }); return; }
+    const body = (req.body ?? {}) as { reason?: unknown };
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    if (!reason || reason.length > 500) {
+      res.status(400).json({ error: 'reason is required (1-500 characters): say why the hold\'s cause is settled' });
+      return;
+    }
+    // The caller holds the agent's bearer token; the record names that
+    // principal and never a self-declared label.
+    const by = 'agent';
+    try {
+      const out = ctx.scheduler.releaseSupervisionHold(slug, { by, reason });
+      if (out.status === 'released') { res.json({ released: true, slug, hold: out.hold, releasedBy: by }); return; }
+      if (out.status === 'not-held') { res.status(404).json({ error: 'not-held', slug }); return; }
+      if (out.status === 'cause-unsettled') {
+        res.status(409).json({ error: 'cause-unsettled', slug, runIds: out.runIds,
+          detail: 'These runs still disagree between the run history and the supervision journal.' });
+        return;
+      }
+      res.status(503).json({ error: 'census-unavailable', slug, detail: 'Run history could not be read completely.' });
+    } catch (err) {
+      res.status(500).json({ error: operatorError(err, res.app?.locals?.stateDir) });
+    }
+  });
+
   router.post('/jobs/:slug/reset-state', (req, res) => {
     const { slug } = req.params;
 
@@ -21501,7 +21707,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       beforeMs = /^\d+$/.test(raw) ? Number(raw) : Date.parse(raw);
       if (!Number.isFinite(beforeMs)) { res.status(400).json({ error: '"before" must be an ISO time or epoch milliseconds' }); return; }
     }
-    const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit) : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit);
+    let beforeMessageId: number | null = null;
+    if (req.query.beforeMessageId !== undefined) {
+      beforeMessageId = Number(req.query.beforeMessageId);
+      if (beforeMs === null || !Number.isSafeInteger(beforeMessageId) || beforeMessageId <= 0) {
+        res.status(400).json({ error: 'beforeMessageId requires before and a positive message id' }); return;
+      }
+    }
+    const local = beforeMs === null ? ctx.telegram.getTopicHistory(topicId, limit)
+      : ctx.telegram.getTopicHistoryBefore(topicId, beforeMs, limit, beforeMessageId ?? undefined);
     // A phone (device principal) never receives token-derived view signatures (mobile-device-keys §2.3).
     const isDevice = (req as unknown as { instarPrincipal?: { kind: string } }).instarPrincipal?.kind === 'device';
     // Signed records (mobile-native-conversations §4.9): a device's read joins each row to the app
@@ -21525,7 +21739,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     if (req.query.scope !== 'pool') {
       const joined = joinForDevice(local as unknown as Array<Record<string, unknown>>);
       const shaped = withOrigin ? await joinTelegramOrigin(topicId, joined, null) : joined;
-      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, ...readUpToField(), ...pinsField() });
+      res.json({ topicId, messages: isDevice ? stripViewSignatures(shaped) : shaped, historyCursorVersion: 2, ...readUpToField(), ...pinsField() });
       return;
     }
     // Pool read (mobile-operator-chat §2.4a): every answering machine's rows, tagged with the
@@ -21538,13 +21752,16 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       try {
         const allowlist = (ctx.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
         if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allowlist).ok) { failed.push({ machineId: p.machineId, error: 'peer URL refused' }); return; }
-        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
+        const r = await poolPeerFetch(ctx.recordRopeResult ?? undefined, p, `/telegram/topics/${topicId}/messages?limit=${limit}${beforeMs === null ? '' : `&before=${beforeMs}`}${beforeMessageId === null ? '' : `&beforeMessageId=${beforeMessageId}`}${withOrigin ? '&includeOrigin=1' : ''}`, {
           headers: { Authorization: `Bearer ${ctx.config.authToken}` }, signal: AbortSignal.timeout(5000), redirect: 'manual',
         });
         if (!r.ok) { failed.push({ machineId: p.machineId, error: `HTTP ${r.status}` }); return; }
         const payload = await r.text();
         if (Buffer.byteLength(payload) > 512 * 1024) { failed.push({ machineId: p.machineId, error: 'too-large' }); return; }
-        const body = JSON.parse(payload) as { messages?: unknown };
+        const body = JSON.parse(payload) as { messages?: unknown; historyCursorVersion?: unknown };
+        if (beforeMessageId !== null && body.historyCursorVersion !== 2) {
+          failed.push({ machineId: p.machineId, error: 'history-cursor-upgrade-needed' }); return;
+        }
         for (const raw of Array.isArray(body.messages) ? body.messages.slice(0, 100) : []) {
           if (!raw || typeof raw !== 'object') continue;
           const m = raw as Record<string, unknown>;
@@ -21574,7 +21791,8 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // This machine's own rows win a key collision; a peer's row is untrusted display data.
     const seen = new Set<string>(rows.filter(m => m.machine === self).map(keyOf));
     const merged = rows
-      .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+      .sort((a, b) => (Date.parse(String(a.timestamp)) - Date.parse(String(b.timestamp)))
+        || (Number(a.messageId) || 0) - (Number(b.messageId) || 0))
       .filter(m => {
         if (m.machine === self) return true;
         const k = keyOf(m);
@@ -21584,7 +21802,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       })
       .slice(-limit);
     const joinedPool = joinForDevice(merged);
-    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
+    res.json({ topicId, messages: isDevice ? stripViewSignatures(joinedPool) : joinedPool, historyCursorVersion: 2, pool: { failed, queried: peers.map(p => p.machineId) }, ...readUpToField(), ...pinsField() });
   });
 
   // ── Message Log Search ──────────────────────────────────────────
@@ -30048,6 +30266,10 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
           firstName: fromFirstName,
           messageThreadId: topicId,
           viaLifeline: !trust,
+          ...(!trust && ingressDecision.verified && req.body.sourceChatType === 'private'
+            && Number.isSafeInteger(req.body.sourceChatId) && req.body.sourceChatId > 0
+            && req.body.sourceChatId === fromUserId
+            ? { telegramPrivateChatId: req.body.sourceChatId } : {}),
           ...(trust ? { viaMobileDevice: true, deviceId: trust.deviceId, eventId: trust.eventId } : {}),
           // A team phone's words are never a command (team-roles-and-access §4.1). Set only here, from
           // the authenticated phone: onTopicMessage reads it to skip every intercept.
@@ -30075,9 +30297,15 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       };
 
       try {
+        // Asked BEFORE routing, with the same cleaned sender the handler sees: a message the inbound
+        // gate refuses (Chief of Staff owner-only rule) is still handed over, so the gate logs it and
+        // tells the sender it was not delivered, but the lifeline is told `refused` and must not send
+        // "✓ Delivered" for it (Echo Bugs 10000002533).
+        let refused = false;
+        try { refused = ctx.telegram.isInboundRefused?.(Number(topicId), typeof fromUserId === 'number' && Number.isSafeInteger(fromUserId) && fromUserId > 0 ? fromUserId : 0) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the reply as before; the gate itself still decides */ refused = false; }
         const delivered = ctx.telegram.onTopicMessage(message) as unknown;
         if (trust) await delivered;
-        res.json({ ok: true, forwarded: true });
+        res.json({ ok: true, forwarded: true, ...(refused ? { refused: true } : {}) });
       } catch (err) {
         DegradationReporter.getInstance().report({
           feature: 'routes.onTopicMessage',
@@ -39783,6 +40011,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         return { ok: false, off: false, unreached: true };
       }
     };
+    mountUsageRoutes(router, () => ctx.usageRouteDeps?.() ?? null);
     mountMobileCapacityRoutes(router, {
       accountsView: () => subscriptionPoolScopeView(),
       inUseAccountId: async () => {

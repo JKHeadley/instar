@@ -477,7 +477,10 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    # 50 was cancelling green-in-progress runs: main itself was cancelled at 50 min on
+    # 2026-11-10 (run 42878286348), and the conversations release adds about 15 min of
+    # multi-machine graph suites. Same bound as the E2E job.
+    timeout-minutes: 70
     # Independent checkout and runner: start alongside unit shards. Both
     # results remain required branch checks before a PR can merge.
     steps:

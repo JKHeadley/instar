@@ -187,6 +187,12 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   '_fold-markers',
   '_clear-seed',
   '_seeded',
+  // The per-prompt delta's cursors and shadow log (§7.7): machine-local measurement;
+  // a restored cursor would describe a context the restored session does not hold.
+  '_prompt-cursors',
+  '_delta-shadow',
+  // Saved full recovery blocks (context-budget §9.1): per-session, transient.
+  '_recovery',
 ]);
 
 /**
@@ -236,6 +242,9 @@ const DEFAULT_CONFIG: BackupConfig = {
     // The bulky per-thread `threadline/threads/*.log.jsonl` are EXCLUDED by design
     // (large, reconstructable via backfill; the symmetry surface flags any gap).
     'threadline/conversations.json',
+    // Unified usage ledger: the slim snapshot (day rollups, bindings, checkpoints, open pairs).
+    // The live database is rebuilt from it plus the source transcripts (docs/specs/unified-usage-ledger.md).
+    'server-data/usage-ledger.snapshot.db',
     // ClassReview is the retained audit/correspondence artifact. Include the
     // SQLite main file plus active WAL/SHM companions as one glob so restore
     // cannot strand a filled review behind a missing journal.
