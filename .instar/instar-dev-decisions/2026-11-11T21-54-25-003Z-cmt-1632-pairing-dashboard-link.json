@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-11T21:54:25.003Z",
+  "slug": "cmt-1632-pairing-dashboard-link",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": true,
+  "files": 3,
+  "loc": 94,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/routes.ts",
+      "src/threadline/PairingInviteTelegram.ts"
+    ],
+    "addedLines": 84,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

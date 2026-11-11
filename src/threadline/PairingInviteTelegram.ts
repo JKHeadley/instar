@@ -23,6 +23,7 @@ import type { InviteEvent, Result } from './PairingInviteFlow.js';
 import { pairingNoticeText, type PairingNotice } from './pairingHandshake.js';
 import { isVerifiedTopicOperatorBinding } from '../users/TopicOperatorStore.js';
 import type { RestartNotice } from './PairingPendingAcceptMarkers.js';
+import { consolePageUrl } from '../server/dashboardPaths.js';
 
 export const CALLBACK_PREFIX = 'pi:';
 const TOKEN_TTL_MS = 24 * 60 * 60_000; // a button outlives no invite (24 h max)
@@ -75,6 +76,13 @@ export interface InviteTelegramDeps {
    * message so the owner sees the cause (topic 61599, 2026-10-21: PP's owner could not tell).
    */
   whyNoButtons?: () => string | null;
+  /**
+   * The origin the operator's dashboard opens at (`https://name.example`), or null when no address
+   * that opens for the operator is known right now. Every "use the dashboard" line then carries a
+   * direct link to the Other agents page (`agentsPageUrl`); without it the line names the page in
+   * plain words and no URL is made up (CMT-1632).
+   */
+  dashboardOrigin?: () => string | null;
   now?: () => number;
   /**
    * Invites that were waiting for approval when the server restarted (the engine keeps them in
@@ -128,7 +136,36 @@ export interface InviteCallback {
   verified: boolean;
 }
 
-const DASHBOARD_HINT = 'Open the Threadline tab on the dashboard to do this with your PIN.';
+/** The console route of the dashboard page where pairing is done by hand ("Other agents", under People). */
+export const AGENTS_PAGE_ROUTE = '#/people/agents';
+/** Telegram's limit for a button-tap answer (an alert). Longer text is refused by Telegram. */
+const TAP_ANSWER_MAX = 200;
+
+/**
+ * The Other agents page on an origin (`https://name.example`), or null when the origin is not a
+ * usable http(s) address. Only the origin is kept: no path, query, credentials or fragment from
+ * the input reaches the link. The invite itself is a secret and is never put in a link.
+ */
+export function agentsPageUrl(origin: string | null | undefined): string | null {
+  if (typeof origin !== 'string' || !origin.trim()) return null;
+  let u: URL;
+  try { u = new URL(origin.trim()); } catch { return null; } // @silent-fallback-ok — no link is the honest answer
+  if ((u.protocol !== 'https:' && u.protocol !== 'http:') || u.username || u.password) return null;
+  return consolePageUrl(u.origin, AGENTS_PAGE_ROUTE);
+}
+
+/** "Do this on the dashboard" with the direct link when one is known, else the page in plain words. */
+export function dashboardHint(url: string | null | undefined): string {
+  return url
+    ? `Do this on the dashboard's Other agents page with your PIN: ${url}`
+    : 'Do this on the dashboard\'s Other agents page (under People) with your PIN.';
+}
+
+/** Where to paste an invite this chat could not take, with the direct link when one is known. */
+export function pasteInviteHint(url: string | null | undefined): string {
+  const steps = 'To pair, open the dashboard\'s Other agents page, tap Connect another agent, paste the invite under "I was sent one" and approve with your PIN';
+  return url ? `${steps}: ${url}` : `${steps}. The page is under People.`;
+}
 export const NOT_OWNER_REFUSAL = 'Only the agent\'s owner can do this.';
 export const NO_OWNER_REFUSAL = 'I can\'t approve this here because this agent hasn\'t been told who its owner is.';
 /** Offered next to an invite the agent posted, when Telegram approval is on (spec §11.6). */
@@ -247,6 +284,31 @@ export class PairingInviteTelegram {
     return text.replace(/tlinv1:[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, 'tlinv1:[removed]');
   }
 
+  /**
+   * The direct link for a "use the dashboard" line, or null. Only for the owner, or anyone when this
+   * agent names no owner: a refusal posted for someone who is known NOT to be the owner gets the
+   * plain words (they cannot use the PIN page, and the address is not theirs to have). Never throws.
+   */
+  private dashboardLink(fromUserId?: unknown): string | null {
+    try {
+      if (fromUserId !== undefined) {
+        const owner = this.deps.ownerUserId();
+        if (owner !== undefined && Number(fromUserId) !== owner) return null;
+      }
+      return agentsPageUrl(this.deps.dashboardOrigin?.() ?? null) ?? null;
+    } catch { return null; } // @silent-fallback-ok — the plain-words line still names the page
+  }
+
+  /**
+   * A tap answer within Telegram's limit (an over-long answer is refused, so the owner would see
+   * nothing): the full line with the link, else a shorter line with the link, else plain words.
+   */
+  private tapAnswer(lead: string, fromUserId: unknown): string {
+    const url = this.dashboardLink(fromUserId);
+    const choices = url ? [`${lead} ${dashboardHint(url)}`, `${lead} Use the dashboard with your PIN: ${url}`] : [];
+    return choices.find((t) => t.length <= TAP_ANSWER_MAX) ?? `${lead} ${dashboardHint(null)}`;
+  }
+
   /** "Approving in Telegram is off" with its cause when known. Never throws. */
   private offLine(withCause = true): string {
     let why: string | null = null;
@@ -285,7 +347,7 @@ export class PairingInviteTelegram {
   async onForwardedInvite(m: ForwardedInvite): Promise<void> {
     const refusal = this.operatorTap(m.fromUserId, m.chatId, m.verified);
     if (refusal) {
-      await this.deps.send(m.topicId, `I got a pairing invite, but I can't take it from here. ${refusal} ${DASHBOARD_HINT} Paste the invite there.`);
+      await this.deps.send(m.topicId, `I got a pairing invite, but I can't take it from here. ${refusal} ${pasteInviteHint(this.dashboardLink(m.fromUserId))}`);
       return;
     }
     const r = await this.deps.flow.receiveInvite(m.text);
@@ -311,14 +373,14 @@ export class PairingInviteTelegram {
     const refusal = this.operatorTap(c.fromUserId, c.chatId, c.verified, true);
     if (refusal) {
       // Not consumed: the real owner can still tap the same button.
-      await this.deps.answer(c.callbackQueryId, `${refusal} ${DASHBOARD_HINT}`);
+      await this.deps.answer(c.callbackQueryId, this.tapAnswer(refusal, c.fromUserId));
       return true;
     }
     const id = c.data.slice(CALLBACK_PREFIX.length);
     const p = this.tokens.get(id);
     if (!p || p.exp < this.now()) {
       this.tokens.delete(id);
-      await this.deps.answer(c.callbackQueryId, `This button has expired or was already used. ${DASHBOARD_HINT}`);
+      await this.deps.answer(c.callbackQueryId, this.tapAnswer('This button has expired or was already used.', c.fromUserId));
       return true;
     }
     for (const s of p.siblings) this.tokens.delete(s); // one decision per prompt
@@ -418,7 +480,7 @@ export class PairingInviteTelegram {
         const t = this.mint(e.iid, ['finish', 'not-them']);
         await this.post(iid, text, 'finish prompt', [{ text: 'Finish', data: t.finish }, { text: 'Not them', data: t['not-them'] }]);
       } else {
-        await this.post(iid, `${text} ${this.offLine()} ${DASHBOARD_HINT}`, 'finish prompt');
+        await this.post(iid, `${text} ${this.offLine()} ${dashboardHint(this.dashboardLink())}`, 'finish prompt');
       }
     } else if (e.kind === 'second-accept-alarm') {
       await this.post(iid, `Warning: two agents used the same pairing invite, so it got out. The second one calls itself "${e.lateClaimedAgent}". `

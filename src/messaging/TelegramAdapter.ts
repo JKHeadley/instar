@@ -27,7 +27,7 @@ import { multipartFileName, multipartMediaType, telegramGroupTypes, telegramKind
 import path from 'node:path';
 import type { MessagingAdapter, Message, OutgoingMessage, UserChannel, IntelligenceProvider, IngressPosition } from '../core/types.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
-import { resolveApprovalOwner } from '../threadline/PairingInviteTelegram.js';
+import { resolveApprovalOwner, agentsPageUrl, pasteInviteHint, dashboardHint } from '../threadline/PairingInviteTelegram.js';
 import { NotificationBatcher, NotificationTier } from './NotificationBatcher.js';
 import type { ContentValidationConfig } from './TopicContentValidator.js';
 import { validateTopicContent, getTopicPurpose, classifyContent } from './TopicContentValidator.js';
@@ -68,7 +68,10 @@ import {
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
   type AttentionLifecycleClass, type AttentionLifecycleConfig, type ResolvedAttentionLifecycleConfig,
 } from '../core/AttentionLifecycle.js';
-const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
+/** The reply to an invite this chat cannot take, with the direct dashboard link when one is known (CMT-1632). */
+export function pairingDashboardFallback(publicOrigin: string | null): string {
+  return `I got a pairing invite, but I can't take it from this chat. ${pasteInviteHint(agentsPageUrl(publicOrigin))}`;
+}
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {
   onForwardedInvite(m: { text: string; topicId: number; fromUserId: number; chatId?: string; verified: boolean }): Promise<void>;
@@ -641,6 +644,10 @@ export class TelegramAdapter implements MessagingAdapter {
   private conversationsUrl: () => string | null = () => null;
 
   setConversationsUrlProvider(provider: () => string | null): void { this.conversationsUrl = provider; }
+  /** The public dashboard origin for an operator link, or null. Never throws. */
+  private safeConversationsOrigin(): string | null {
+    try { return this.conversationsUrl() ?? null; } catch { return null; } // @silent-fallback-ok — the line falls back to plain words
+  }
   private polling = false;
 
   /** True when this adapter is actively polling for messages (false in send-only mode). */
@@ -6205,12 +6212,12 @@ export class TelegramAdapter implements MessagingAdapter {
         }).catch((err: unknown) => {
           // Never leave a forwarded invite unanswered (Echo's review): fall back to the dashboard line.
           console.warn(`[telegram] pairing invite handler failed: ${err instanceof Error ? err.message : String(err)}`);
-          void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
+          void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, pairingDashboardFallback(this.safeConversationsOrigin()))).catch(() => {});
         });
         return;
       }
       if (this.isAuthorized(msg.from.id)) {
-        void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
+        void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, pairingDashboardFallback(this.safeConversationsOrigin()))).catch(() => {});
       }
       return;
     }
@@ -6887,7 +6894,7 @@ export class TelegramAdapter implements MessagingAdapter {
       }
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
-        text: 'Approve this on the dashboard (Threadline tab) with your PIN.',
+        text: (() => { const t = `Approving here is not set up on this agent. ${dashboardHint(agentsPageUrl(this.safeConversationsOrigin()))}`; return t.length <= 200 ? t : `Approving here is not set up on this agent. ${dashboardHint(null)}`; })(),
       }).catch(() => {});
       return;
     }

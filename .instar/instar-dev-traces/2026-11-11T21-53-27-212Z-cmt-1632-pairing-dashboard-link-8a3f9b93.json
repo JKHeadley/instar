@@ -1,0 +1,31 @@
+{
+  "version": 2,
+  "slug": "cmt-1632-pairing-dashboard-link",
+  "sessionId": "99adafd5-0a1d-41f4-9d19-ed5ffcf50352",
+  "timestamp": "2026-11-11T21:53:27.212Z",
+  "artifactPath": "upgrades/side-effects/cmt-1632-pairing-dashboard-link.md",
+  "artifactSha256": "cea6f28f9edb54515b7988052f579b6e4345d2504dd20a18f40c63ab5246a32b",
+  "coveredFiles": [
+    "docs/specs/cmt-1632-pairing-dashboard-link.eli16.md",
+    "src/messaging/TelegramAdapter.ts",
+    "src/server/routes.ts",
+    "src/threadline/PairingInviteTelegram.ts",
+    "tests/integration/pairing-invite-telegram-routes.test.ts",
+    "tests/unit/pairing-invite-never-persisted.test.ts",
+    "tests/unit/threadline/PairingInviteTelegram-dashboard-link.test.ts",
+    "upgrades/next/cmt-1632-pairing-dashboard-link.md",
+    "upgrades/side-effects/cmt-1632-pairing-dashboard-link.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Message wording plus a link on existing pairing replies; no decision logic changed; a revert fully undoes it.",
+  "eli16Path": "docs/specs/cmt-1632-pairing-dashboard-link.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cmt-1632-pairing-dashboard-link.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: only the wording of existing replies to an operator paste or tap changes; no new send, retry or spawn"
+  }
+}

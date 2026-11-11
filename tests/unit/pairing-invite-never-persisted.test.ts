@@ -91,7 +91,7 @@ describe('pairing invites are never persisted', () => {
       await new Promise((r) => setTimeout(r, 0));
       expect(sent).toHaveLength(1);
       expect(sent[0]).toMatchObject({ topicId: 77 });
-      expect(sent[0].text).toMatch(/Threadline tab on the dashboard/);
+      expect(sent[0].text).toMatch(/Other agents page/);
     });
     it('without a handler the old behaviour stands (the adapter is inert for pairing)', async () => {
       const adapter = new TelegramAdapter({ token: '', chatId: '-1001', authorizedUserIds: [4242] } as never, dir);

@@ -40,7 +40,7 @@ interface Effects {
   flow: string[];
 }
 
-interface Boot { owner?: number | undefined; operators?: TopicOperatorStore | null; polling?: boolean; pollingHandler?: { h: null | { onForwardedInvite(m: unknown): Promise<void>; onCallback(c: unknown): Promise<boolean> } } }
+interface Boot { tunnel?: { url: string | null } | null; owner?: number | undefined; operators?: TopicOperatorStore | null; polling?: boolean; pollingHandler?: { h: null | { onForwardedInvite(m: unknown): Promise<void>; onCallback(c: unknown): Promise<boolean> } } }
 
 function makeContext(stateDir: string, fx: Effects, extra: Record<string, unknown>, b: Boot = {}): RouteContext {
   const owner = 'owner' in b ? b.owner : OWNER;
@@ -80,7 +80,7 @@ function makeContext(stateDir: string, fx: Effects, extra: Record<string, unknow
     pairingInvites: { flow, handshake: flow, store: {} as never, events: new EventEmitter() } as never,
     topicOperatorStore: b.operators ?? null,
     relationships: null, feedback: null, dispatches: null, updateChecker: null, autoUpdater: null,
-    autoDispatcher: null, quotaTracker: null, publisher: null, viewer: null, tunnel: null,
+    autoDispatcher: null, quotaTracker: null, publisher: null, viewer: null, tunnel: (b.tunnel ?? null) as never,
     evolution: null, watchdog: null, triageNurse: null, topicMemory: null, discoveryEvaluator: null,
     startTime: new Date(),
   } as never;
@@ -346,6 +346,30 @@ describe('invite pairing — Telegram routes', () => {
       const app = boot({}, { polling: true });
       await forward(app, INVITE, { secret: secret() });
       expect(fx.sent.at(-1)?.text).toMatch(/because this agent reads Telegram directly, not through its listener \(Instar [^)]+\)/);
+    });
+  });
+  // CMT-1632: the "use the dashboard" line is a direct link, built from the real server wiring.
+  describe('the dashboard line carries a direct link (routes.ts wiring)', () => {
+    const dev = { developmentAgent: true };
+    it('tunnel up: the no-owner refusal links the Other agents page on the public origin', async () => {
+      const app = boot(dev, { owner: undefined, tunnel: { url: 'https://cora-test.example.com' } });
+      await forward(app, INVITE, { secret: secret(), from: OWNER });
+      const text = fx.sent.at(-1)!.text;
+      expect(text).toContain(NO_OWNER_REFUSAL);
+      expect(text).toContain('https://cora-test.example.com/dashboard/console/#/people/agents');
+      expect(text).not.toContain('tlinv1:');
+    });
+    it('no tunnel at all: the link is the only address this agent has (localhost on its port)', async () => {
+      const app = boot({ ...dev, port: 4987 }, { owner: undefined, tunnel: null });
+      await forward(app, INVITE, { secret: secret(), from: OWNER });
+      expect(fx.sent.at(-1)!.text).toContain('http://localhost:4987/dashboard/console/#/people/agents');
+    });
+    it('tunnel configured but not up yet: plain words naming the page, no made-up URL', async () => {
+      const app = boot(dev, { owner: undefined, tunnel: { url: null } });
+      await forward(app, INVITE, { secret: secret(), from: OWNER });
+      const text = fx.sent.at(-1)!.text;
+      expect(text).toContain('Other agents page');
+      expect(text).not.toMatch(/https?:\/\//);
     });
   });
 });

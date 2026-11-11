@@ -3902,6 +3902,7 @@ export function createRoutes(ctx: RouteContext): Router {
   } catch {
     // @silent-fallback-ok: this check only reports, so it must never stop the server's routes from loading
   }
+  const pairingLinkOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
   const pairingInviteTelegram = ctx.pairingInvites && ctx.telegram
     ? new PairingInviteTelegram({
       // Operator acts go through the handshake (spec §11): both sides are told how a pairing ended.
@@ -3952,6 +3953,10 @@ export function createRoutes(ctx: RouteContext): Router {
           : lifelineIngressGuard.tapsUnprovableReason();
         return why ? `${why} (Instar ${ctx.config.version || 'unknown version'})` : null;
       },
+      // Every "use the dashboard" line carries the direct link to the Other agents page (CMT-1632).
+      // The public tunnel origin when it is up; localhost only when this agent has no tunnel at all;
+      // while a configured tunnel is still starting, null, so the line names the page in plain words.
+      dashboardOrigin: () => originOrNull(pairingLinkOrigin()),
       // Invites that were waiting for approval when the server restarted: told once each (spec §8).
       restartNotices: ctx.pairingInvites.markers
         ? { list: () => ctx.pairingInvites!.markers!.notices(), markNotified: (id: string) => ctx.pairingInvites!.markers!.markTelegramNotified(id) }
