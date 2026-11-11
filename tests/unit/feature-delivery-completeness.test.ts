@@ -434,6 +434,7 @@ describe('Feature Delivery Completeness', () => {
       'The "Threadline" hub topic — notifications',       // CMT-519 migrator-only notification-routing guidance, no template parity
       'Cross-Machine Seamlessness (one agent, many machines)', // operational self-heal/handoff awareness (like Version-Skew); not a user-invokable capability
       'What are we working on?',                           // migrator patch for the initiatives Registry-First row, not a capability section
+      '/context-budget/delta-shadow',                      // migrator patch for the Context Budget delta-shadow Registry-First row (template carries the same row), not a capability section
       '/context-budget/sentinel',                          // migrator patch for the Context Budget sentinel Registry-First row (template carries the same row), not a capability section
       'Framework-Onboarding Mentor System',               // developer-layer issue-ledger observability; not a Codex/Gemini end-user capability (no shadow-marker parity)
       '**Apprenticeship Program**',                       // developer/overseer-layer capability: the overseer agent (e.g. Echo) drives the apprenticeship/mentorship instance registry + lifecycle gates. Like 'Framework-Onboarding Mentor System' — templated + migrated for the overseer, but not a mentee/end-user capability the Codex/Gemini frameworks invoke, so no shadow-marker parity required. (Was previously untracked — a pre-existing red in this guard, fixed here.)
