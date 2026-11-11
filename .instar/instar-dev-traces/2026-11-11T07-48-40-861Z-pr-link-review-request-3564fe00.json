@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "pr-link-review-request",
+  "sessionId": "56e1d5a0-e610-42be-9f4d-baafeda4bf65",
+  "timestamp": "2026-11-11T07:48:40.861Z",
+  "artifactPath": "upgrades/side-effects/pr-link-review-request.md",
+  "artifactSha256": "00ccb620ac1afa3297ea38a1ccc2831b7603566733fc0c7308495d926d40008b",
+  "coveredFiles": [
+    "src/messaging/prLinkReviewRequest.ts",
+    "tests/unit/feature-delivery-completeness.test.ts",
+    "tests/unit/prLinkReviewRequest.test.ts",
+    "upgrades/next/pr-link-review-request.md",
+    "upgrades/pr-link-review-request.eli16.md",
+    "upgrades/side-effects/pr-link-review-request.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CI fix on the same Tier-1 change: unreadable PR links are logged, not annotated; track the new CLAUDE.md section",
+  "eli16Path": "upgrades/pr-link-review-request.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pr-link-review-request.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

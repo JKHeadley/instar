@@ -169,6 +169,25 @@ interface TelegramUpdate {
   };
 }
 
+
+/** What the server said about a forward it accepted: `refused` = its inbound gate turned the message away. */
+interface ForwardAck { refused?: boolean }
+
+/**
+ * Read `refused` from an accepted forward's body. An older server sends no such field, and an
+ * unreadable body reads as not refused (the acknowledgement stays as it was before this field).
+ */
+export async function readForwardRefused(response: { json?: () => Promise<unknown> }): Promise<boolean> {
+  try {
+    if (typeof response.json !== 'function') return false;
+    const body = await response.json();
+    return !!body && typeof body === 'object' && (body as { refused?: unknown }).refused === true;
+  } catch {
+    // @silent-fallback-ok: no readable body means no refusal claim; the server's gate already acted
+    return false;
+  }
+}
+
 export class TelegramLifeline {
   private telegramOriginBoot?: Awaited<ReturnType<typeof import('../messaging/telegram-origin/TelegramOriginBoot.js').bootTelegramOrigin>>;
   private config: LifelineConfig;
@@ -1393,10 +1412,12 @@ export class TelegramLifeline {
 
     // Forward to server if healthy
     if (this.supervisor.healthy) {
-      const forwarded = await this.forwardToServer(topicId, text, msg);
+      const fwd: ForwardAck = {};
+      const forwarded = await this.forwardToServer(topicId, text, msg, fwd);
       if (forwarded) {
-        // Delivery confirmation — user knows message reached the server
-        await this.sendFixedNotice(topicId, '✓ Delivered');
+        // Delivery confirmation — user knows message reached the server. Never for a message the
+        // server's inbound gate refused (it already told the sender it was not delivered).
+        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1475,9 +1496,10 @@ export class TelegramLifeline {
 
     const serverWasHealthy = this.supervisor.healthy;
     if (serverWasHealthy) {
-      const forwarded = await this.forwardToServer(topicId, content, msg);
+      const fwd: ForwardAck = {};
+      const forwarded = await this.forwardToServer(topicId, content, msg, fwd);
       if (forwarded) {
-        await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1582,9 +1604,10 @@ export class TelegramLifeline {
 
     const serverWasHealthy = this.supervisor.healthy;
     if (serverWasHealthy) {
-      const forwarded = await this.forwardToServer(topicId, content, msg);
+      const fwd: ForwardAck = {};
+      const forwarded = await this.forwardToServer(topicId, content, msg, fwd);
       if (forwarded) {
-        await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1872,8 +1895,9 @@ export class TelegramLifeline {
     topicId: number,
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
+    ack?: ForwardAck,
   ): Promise<boolean> {
-    return (await this.forwardToServerClassified(topicId, text, rawMsg)) === 'ok';
+    return (await this.forwardToServerClassified(topicId, text, rawMsg, ack)) === 'ok';
   }
 
   /**
@@ -1886,6 +1910,7 @@ export class TelegramLifeline {
     topicId: number,
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
+    ack?: ForwardAck,
   ): Promise<ForwardOutcome> {
     // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
     // server's /internal/telegram-forward handler passes these to
@@ -1960,6 +1985,7 @@ export class TelegramLifeline {
         if (response.ok) {
           this.observeForwardResponseDriftHeader(response);
           this.observeStaleSecretHint(response);
+          if (ack) ack.refused = await readForwardRefused(response);
           return true;
         }
         if (response.status === 426) {
@@ -1999,7 +2025,7 @@ export class TelegramLifeline {
               `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`,
               { method: 'POST', headers: fwdHeaders, body: buildBody(false) }
             );
-            if (r2.ok) return true;
+            if (r2.ok) { if (ack) ack.refused = await readForwardRefused(r2); return true; }
             if (r2.status === 400) throw new ForwardBadRequestError(await r2.json().catch(() => ({})));
             throw new ForwardTransientError(r2.status);
           }
@@ -2374,6 +2400,7 @@ export class TelegramLifeline {
       // 2026-05-20 b2lead-insights silent-drop failure mode).
       if (this.versionSkewActive) break;
 
+      const replayAck: ForwardAck = {};
       const outcome = await this.forwardToServerClassified(msg.topicId, msg.text, {
         message_id: parseInt(msg.id.replace('tg-', ''), 10) || 0,
         from: {
@@ -2385,7 +2412,7 @@ export class TelegramLifeline {
         message_thread_id: msg.topicId,
         text: msg.text,
         date: Math.floor(new Date(msg.timestamp).getTime() / 1000),
-      });
+      }, replayAck);
 
       const decision = decideReplay(outcome, {
         poisonFailures: msg.replayFailures ?? 0,
@@ -2400,12 +2427,16 @@ export class TelegramLifeline {
 
       if (decision.action === 'delivered') {
         this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it
-        replayed++;
-        const counts = deliveredByTopic.get(msg.topicId) ?? { outage: 0, delayedHandoff: 0, legacyUnknown: 0 };
-        if (msg.queueReason === 'server-unhealthy') counts.outage++;
-        else if (msg.queueReason === 'healthy-forward-failed') counts.delayedHandoff++;
-        else if (msg.queueReason === undefined) counts.legacyUnknown++;
-        deliveredByTopic.set(msg.topicId, counts);
+        // Handled, but refused by the server's inbound gate: it is not counted in the
+        // "has now been delivered" notice (the sender was told it was not delivered).
+        if (!replayAck.refused) {
+          replayed++;
+          const counts = deliveredByTopic.get(msg.topicId) ?? { outage: 0, delayedHandoff: 0, legacyUnknown: 0 };
+          if (msg.queueReason === 'server-unhealthy') counts.outage++;
+          else if (msg.queueReason === 'healthy-forward-failed') counts.delayedHandoff++;
+          else if (msg.queueReason === undefined) counts.legacyUnknown++;
+          deliveredByTopic.set(msg.topicId, counts);
+        }
       } else if (decision.action === 'drop') {
         dropped++;
         // Before the drop becomes silent: persist the record, report a
