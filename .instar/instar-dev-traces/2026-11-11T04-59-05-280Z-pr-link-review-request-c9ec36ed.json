@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "pr-link-review-request",
+  "sessionId": "56e1d5a0-e610-42be-9f4d-baafeda4bf65",
+  "timestamp": "2026-11-11T04:59:05.280Z",
+  "artifactPath": "upgrades/side-effects/pr-link-review-request.md",
+  "artifactSha256": "40fa5689c8a916f7ab6993e23d38779dea6cd91c28079b60f93f2a207cd8c520",
+  "coveredFiles": [
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/types.ts",
+    "src/messaging/prLinkReviewRequest.ts",
+    "src/scaffold/templates.ts",
+    "src/server/routes.ts",
+    "tests/integration/pr-link-review-request-route.test.ts",
+    "tests/unit/PostUpdateMigrator-prLinkReviewAwareness.test.ts",
+    "tests/unit/prLinkReviewRequest.test.ts",
+    "upgrades/next/pr-link-review-request.md",
+    "upgrades/pr-link-review-request.eli16.md",
+    "upgrades/side-effects/pr-link-review-request.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small reversible fix: one new middleware that never blocks a reply, idempotent GitHub review request, no stored state; a revert or the config flag undoes it",
+  "eli16Path": "upgrades/pr-link-review-request.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pr-link-review-request.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

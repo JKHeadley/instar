@@ -16501,6 +16501,18 @@ An agent created in a temporary folder (\`/tmp\`, \`/private/tmp\`, \`/var/folde
       result.upgraded.push('CLAUDE.md: added Throwaway test agents section');
     }
 
+    // PR-link reviewer check (src/messaging/prLinkReviewRequest.ts, Echo Bugs 10000002537).
+    // OWN sniff key; the template emits the same section for new agents.
+    if (!content.includes('## PR links ask for the review on GitHub too')) {
+      content += '\n\n' + `## PR links ask for the review on GitHub too
+
+When a reply I send (Telegram, Slack, app) links an open pull request that my own GitHub account opened, the server first makes sure the reviewer is requested on it — the configured \`prLinkReviewRequest.reviewer\`, else the repository owner when that owner is a person — and reads the request back from GitHub before the reply goes out. A review that was dismissed by a later push leaves no request behind on GitHub, so this re-requests it. If it cannot be confirmed, the reply still goes out with one line saying so.
+- **When to use** (PROACTIVE): just send the link — never tell the user "I've requested your review" from memory. If the reply came back with "could not confirm … as a reviewer", fix the cause (GitHub login, repo access) before asking again. Turn it off with \`prLinkReviewRequest.enabled: false\` in \`.instar/config.json\`.
+`;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added PR links ask for the review section');
+    }
+
     return { content, patched };
   }
 
