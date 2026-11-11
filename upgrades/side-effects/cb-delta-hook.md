@@ -194,3 +194,7 @@ Kept by choice:
 **Re-check 2 (same reviewer, ~15:12 PST): "Concur."** All three items were verified in the code, the fitter is clean under `python3 -W error`, and unit 21/21 and integration 9/9 were re-run. Two residuals were noted:
 - an over-budget prompt records everything as delivered. This is now written into Under-block.
 - over-budget prompts were invisible in the refusal counts. Fixed: `summarizeShadow` now counts `delta-over-budget`.
+
+## Amendment (CI)
+
+feature-delivery-completeness requires every migrateClaudeMd section to be tracked. The /context-budget/delta-shadow Registry-First row is now listed beside the sentinel row. The test passes: 269 tests.
