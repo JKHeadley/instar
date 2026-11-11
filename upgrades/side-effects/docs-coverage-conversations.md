@@ -19,14 +19,21 @@ Both pages are written from each module's header comment, its exports and the wi
 
 The manual Architecture sidebar in `site/astro.config.mjs` links to both pages, so they are discoverable. No installed-agent runtime source, test, config default, migration, hook, scanner, threshold or exemption changed.
 
+A later addition documents the two job supervision-hold routes that #3071 (CMT-1610, commit `164d3f56d`) added on main after this branch was cut: `GET /jobs/:slug/supervision-hold` and `POST /jobs/:slug/supervision-hold/release`. A new "Script-route supervision holds" subsection in the existing Jobs section of `site/src/content/docs/reference/api.md` explains what a hold is, the bearer-token requirement, the slug pattern, the `{ "reason": "..." }` body (1–500 characters), that the releaser is always recorded as `agent`, that a release re-runs the run-history check and is refused while the cause is unsettled, and each response status. It is written from the route handlers in `src/server/routes.ts`, `JobScheduler.releaseSupervisionHold()` and `JobSupervisionStore` on current main. The branch's runtime base predates these routes; no runtime code was copied into the branch.
+
 ## Metrics
 
-| | Overall | Class | Result |
-|---|---|---|---|
-| Before (main `59aedce47`, clean worktree) | 54% (780 documented + 970 partial / 2364) | 50% (418 documented / 1207) | red: below 55% / 55% |
-| After (this change, same unchanged script) | 57% (827 + 1023 / 2364) | 56% (465 / 1207) | green |
+| | Overall | Class | Route | Result |
+|---|---|---|---|---|
+| Old base (main `59aedce47`, clean worktree) | 54% | 50% | — | red |
+| Branch head `6bc05eb` on its own old base (2364 capabilities, 1042 routes) | 57% | 56% | 55% | green, but SUPERSEDED: not a proof against current main |
+| Exact current main `3ae8208a` | 53% | 50% | 54% | red (matches the hosted check) |
+| Exact merge of `6bc05eb` with `3ae8208a` (tree `9d4456e`) | 57% | 56% | 54% (568 points / 1044) | red: exit 1 |
+| That merge tree plus the supervision-hold section | 57% (827 + 1025 partial / 2366) | 56% (465 / 1207) | 55% (291 + 556 partial = 569 points / 1044) | green: exit 0 |
 
-Floors are unchanged (overall 55%, class 55%). No `INSTAR_DOCS_COVERAGE_*` override was set.
+The earlier "after" claim of this review (57% / 56%, green) was measured on the branch's own old base. It was not a pass on the merge with current main. Two routes added on main moved the route total from 1042 to 1044 and pushed the merge to 54%. Route coverage now sits exactly at its floor with no spare point: each supervision-hold route is named on one docs page (PARTIAL), which is the scanner's existing rule.
+
+Floors are unchanged (overall 55%, class 55%, route 55%). No `INSTAR_DOCS_COVERAGE_*` override was set.
 
 ## Decision-point inventory
 
@@ -66,7 +73,7 @@ No runtime effect. The pages describe existing multi-machine behavior as the cod
 
 ## 8. Rollback cost
 
-Remove the four new documentation/release files and restore the two Architecture sidebar entries in `site/astro.config.mjs`. No installed-agent runtime depends on them. The gate would go red again.
+Remove the four new documentation/release files, restore the two Architecture sidebar entries in `site/astro.config.mjs`, and remove the supervision-hold rows and subsection from `site/src/content/docs/reference/api.md`. No installed-agent runtime depends on them. The gate would go red again.
 
 ## Migration / awareness
 
@@ -76,7 +83,9 @@ No migration is needed: no installed-agent files, hooks, config defaults, skills
 
 Instar has an automatic checker that counts how many of its code modules are explained somewhere in the documentation website. If too few are explained, this advisory online check fails. The project uses a separate required verification step for merge approval. A big feature called the Conversations graph recently landed. It adds about a hundred new modules. They store how conversations relate to each other, keep encrypted copies among the enrolled graph members, and handle what happens when a machine is lost or someone asks for content to be deleted. None of those modules had docs yet, so the share of explained modules fell from about 55% to 50%, and the checker went red for everyone.
 
-This repair does not lower the bar, add exceptions, or change how the checker counts. It adds two real pages that a developer can read to understand that code. The first explains how a conversation record is written, checked by a "witness", copied among graph members, and moved when the set of machines changes. The second explains recovery after a crash, removing a machine that is gone for good, getting the owner back in control, and deleting captured content. Both pages are taken from the code's own comments, and they also say what the code does not guarantee. The checker passes with the same rules as before, because the modules are now actually explained.
+This repair does not lower the bar, add exceptions, or change how the checker counts. It adds two real pages that a developer can read to understand that code. The first explains how a conversation record is written, checked by a "witness", copied among graph members, and moved when the set of machines changes. The second explains recovery after a crash, removing a machine that is gone for good, getting the owner back in control, and deleting captured content. Both pages are taken from the code's own comments, and they also say what the code does not guarantee.
+
+While this was in review, main gained two new server routes for "supervision holds" on scheduled jobs. A hold means a job that normally runs a script runs as a full session instead, because a restart check found its run records disagree. One route reads a hold; the other releases it with a written reason, and it refuses if the records still disagree. Those routes had no docs either, so the checker stayed red on the real combined code even though it had passed on the older base. This repair also adds a short section on the API reference page that explains both routes, their inputs and every answer they can return. The checker passes on the real combined code with the same rules as before, because the code is now actually explained.
 
 ## Remaining gaps
 
@@ -93,7 +102,10 @@ Fresh native Opus 5.5 review concurred. It independently checked about 25 specif
 ## Evidence pointers
 
 - Before: `node scripts/docs-coverage.mjs --check` on a clean worktree at `59aedce475ce9dde8b5dee27ab2ba34d40791312` → exit 1, "overall 54% < 55%", "class 50% < 55%".
-- After: the same command with the two pages added → "✅ docs-coverage check passed.", overall 57%, class 56%.
+- After, old base only (SUPERSEDED as current-main proof): the same command with the two pages added → "✅ docs-coverage check passed.", overall 57%, class 56%, route 55% of 1042.
+- Current main and merge: `.instar/state/build/docs-current-base-coverage-verification.json` (base `3ae8208a` exit 1 at 53/50/54; merge tree `9d4456e` exit 1 at 57/56/54).
+- Current merge plus the supervision-hold section: a fresh copy of merge tree `9d4456e` with only the `api.md` diff applied by `patch -p1` (no conflicts); unchanged `node scripts/docs-coverage.mjs --check` run from that copy, no override → exit 0, overall 57%, class 56%, route 55%. Run record: `.instar/state/build/docs-cov-verify-1111/composed-coverage-verification.json`.
+- The earlier second-pass review covered the Conversations pages. A fresh independent Opus 5.5 review of the supervision-hold section and corrected current-base evidence CONCURRED (successful result, 11 turns), checked the unchanged three-file hashes and ran the normal Astro build on `composed-2/site` (exit 0). The generated API HTML contains the new section, both workflow routes and documented refusal categories. It ran no test suite and made no tracked edits.
 - `git diff --check` clean.
 - Not done yet at this checkpoint: write-trace, commit, and the full hosted CI run. No Vitest or full suite was run; none is needed for docs-only changes, and none is claimed.
 
@@ -102,3 +114,5 @@ Root follow-up before independent review: corrected the custody introduction to 
 ## Merge-policy clarification
 
 Root verified the live main rules after the initial review: the required test status is `instar/local-verify`, together with applicable code-owner review. Actions Docs Coverage is advisory. Calling it a required merge gate in the original checkpoint was incorrect. This documentation improvement is separate maintenance and must not hold Threadline history PR #3078 after that PR passes its actual required verification. Source pages, sidebar and coverage floors are unchanged by this clarification.
+
+Final correction review evidence: `.instar/state/build/docs-hold-independent-review.md`, `docs-hold-site-build-receipt.json` and full `docs-hold-site-build.log`. The primary appended this completion stamp after the review; API/release-note bytes remain frozen. The builder first hit its12turn cap (error, not completion); its same-context continuation completed successfully in3turns and wrote the previously missing coverage receipt from real retained outputs. Invalid wrong-tree and skipped-patch trials remain explicitly superseded. No runtime files or coverage floors changed.
