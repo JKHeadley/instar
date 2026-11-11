@@ -13460,13 +13460,15 @@ export async function startServer(options: StartOptions): Promise<void> {
       // never by the dev-agent default. Dark ⇒ no heartbeat ⇒ no fold can begin.
       if (liveConfig.get<boolean>('contextBudget.sentinel.enabled', false) === true) {
         const { ContextBudgetSentinel } = await import('../monitoring/ContextBudgetSentinel.js');
-        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, productionLiveTopics, productionHoldCarriers } = await import('../monitoring/contextBudgetSentinelBoot.js');
+        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, codexHomeForTmuxSession, productionLiveTopics, productionHoldCarriers } = await import('../monitoring/contextBudgetSentinelBoot.js');
         const { CompactionCanary } = await import('../monitoring/compactionCanary.js');
         const { FoldRecordStore } = await import('../monitoring/FoldCoordinator.js');
         const { governor: sentinelGovernor, consumeAdmissionToken: sentinelConsume } = await import('../monitoring/selfaction/governor.js');
         const sentinelHandle = sentinelGovernor.for('context-budget-quarantine-reconcile');
         const poolLiveNow = () => { const p = livePool(); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; };
         const sessionDeps = productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath });
+        // §9.6 Codex adapter (S16): Codex sessions join the canary under the contextBudget.enabled dev gate, read live each tick.
+        const codexCanaryOn = () => contextLayersEnabled(config as { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined));
         // The §17 rows (Phase 1 S12). Freshness needs the layers (off ⇒ `unavailable: layers-off`)
         // and reads TopicMemory lazily; its rebuild request goes through the capture loop's
         // re-projection seam once that is wired (until then each request counts as `unavailable`).
@@ -13504,8 +13506,17 @@ export async function startServer(options: StartOptions): Promise<void> {
           consumeToken: sentinelConsume,
           // The standing compaction canary (§9.1): observation only; its state rides GET /context-budget/sentinel.
           canary: {
-            instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId }),
-            sessions: productionCanarySessions({ sessions: sessionManager, projectDir: config.projectDir }),
+            instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() }),
+            sessions: productionCanarySessions({
+              sessions: sessionManager, projectDir: config.projectDir,
+              // §9.6 Codex adapter: Codex topic sessions join the canary (their rollout's `compacted`
+              // entry is the detection; the scan also drives trackContextUsage and the post-compaction
+              // producer) under the contextBudget.enabled dev gate, read live.
+              codex: {
+                enabled: codexCanaryOn,
+                homeForSession: (t) => codexHomeForTmuxSession(t, undefined, config.sessions.tmuxPath),
+              },
+            }),
             switchOn: () => liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false,
           },
           // The adapter verification suite (§9.6): re-run on any change of the engine binary
