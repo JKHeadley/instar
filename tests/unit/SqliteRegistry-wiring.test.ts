@@ -49,6 +49,7 @@ const LONG_LIVED_STORES = [
   'src/monitoring/FrameworkIssueLedger.ts',
   'src/monitoring/ApprenticeshipCycleStore.ts',
   'src/memory/TopicMemory.ts',
+  'src/memory/topicRowWatermark.ts',  // row-carrier watermark store (context-budget S3)
   'src/memory/SemanticMemory.ts',
   'src/messaging/MessageProcessingLedger.ts',
   'src/messaging/OutboundDedupStore.ts',

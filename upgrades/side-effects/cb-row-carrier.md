@@ -137,3 +137,7 @@ The carrier closes §14's "rows are on the wrong machine" gap on the path the sp
 - **`defectClass`:** `n/a`
 - **`closure`:** `n/a`
 - **Reason:** a new capability on an existing delivery path, not a fix to an agent-authored artifact; its only self-triggered actions (gap and arrival pulls) are bounded per (topic, stream) with a cooldown and a once-per-process arrival pull, and they only read from peers.
+
+## Amendment (CI)
+
+CI's `SqliteRegistry-wiring` allowlist check failed: `topicRowWatermark.ts` opens a long-lived SQLite handle and already calls `registerSqliteHandle`, but the store was missing from the test's `LONG_LIVED_STORES` list. The fix adds it there. No runtime change.
