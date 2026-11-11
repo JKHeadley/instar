@@ -96,6 +96,7 @@ Concur with the review
 - `tests/unit/chief-of-staff-surfaces-wiring.test.ts`: static wiring of each server seam.
 - `tests/integration/telegram-forward-refused-inbound.test.ts`: the real forward route replies `refused: true` for the incident case, still hands the message to the gate, and leaves other conversations and older adapters unchanged.
 - `tests/unit/lifeline/refused-forward-no-delivered.test.ts`: `readForwardRefused` on both sides; all three "✓ Delivered" sites check it; a refused replay is not counted.
+- Follow-up: the standby proxy's new `isInboundRefused` option now sits after `speakerElection` in the server wiring, so `tests/unit/ws3-one-voice-wiring.test.ts` (which looks for `speakerElection` near the start of the `PresenceProxy` config) passes again. Ordering only; no behaviour change.
 - Existing `tests/unit/chief-of-staff-topic.test.ts`, `ChiefOfStaffLoop.test.ts`, `chief-of-staff-protocol-wiring.test.ts` and `callback-owner-fails-closed.test.ts` all pass.
 
 ## Class-Closure Declaration (display-only mirror)

@@ -25,3 +25,5 @@ Strangers and unverified senders are still refused. A configured owner id always
 ## What you need to decide
 
 Nothing. A revert undoes it fully.
+
+A small follow-up moved one setting in the wiring so an existing test that checks the standby helper still passes. It does not change what anyone sees.

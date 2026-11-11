@@ -4,7 +4,7 @@
   "sessionId": "746c78a5-803e-4b0d-8f0e-bc02d0e98d22",
   "timestamp": "2026-11-11T05:29:15.284Z",
   "artifactPath": "upgrades/side-effects/chief-of-staff-verified-owner.md",
-  "artifactSha256": "9f659c08d128e31db0e975f56e6357237b56e7fe8c31f884d3887a5432bb77ba",
+  "artifactSha256": "638232ca407daeaa07a10829fd0dd8447398cd2738a0228d467f66ab759cc697",
   "coveredFiles": [
     "scripts/plain-user-notices-baseline.json",
     "src/commands/server.ts",
@@ -29,5 +29,10 @@
   "eli16Path": "upgrades/chief-of-staff-verified-owner.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/chief-of-staff-verified-owner.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Bounded one-shot re-check, not a loop: a held Chief of Staff topic is re-checked at most 3 times, 60 s apart, by a single chain (_cosTopicRetryPending), and each check only reads state; no restart/spawn/notify cascade. The only notice (ownerless degradation report) fires once per episode."
+  }
 }

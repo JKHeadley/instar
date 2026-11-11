@@ -18430,13 +18430,13 @@ export async function startServer(options: StartOptions): Promise<void> {
         presenceProxy = new PresenceProxy({
           stateDir: config.stateDir,
           intelligence: sharedIntelligence,
+          // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
+          speakerElection,
           // Same verdict as the inbound owner-only gate: a message it refused is never "delivered".
           isInboundRefused: (topicId, platformUserId) => {
             const sender = Number(platformUserId);
             return telegram?.isInboundRefused?.(topicId, Number.isSafeInteger(sender) && sender > 0 ? sender : 0) === true;
           },
-          // WS3 one-voice gate: only this topic's owner machine speaks 🔭.
-          speakerElection,
           // Stand-down honesty: a frozen copy must not narrate "actively working"
           // about a conversation another machine is answering.
           standDown: {
