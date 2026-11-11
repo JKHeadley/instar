@@ -600,7 +600,7 @@ export class ContextBudgetSentinel {
       if (raised.has(k) || this.d.ownsTopic(x.topicKey) !== true) continue;
       this.enqueue({ notice: {
         id: `context-budget-torn-record-${x.topicKey}-${x.foldId}`,
-        title: `A context fold record on ${topicRef(x.topicKey)} is unreadable`,
+        title: `A context fold record on ${topicRef(x.topicKey)} (fold ${x.foldId}) is unreadable`,
         summary: `The record for fold ${x.foldId} is damaged, so the conversation's pause and its saved copy are kept in place rather than released on a guess. It needs a look before that conversation can continue normally.`,
         priority: 'URGENT',
       } });

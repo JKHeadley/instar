@@ -79,6 +79,7 @@ export const GROUPS = [
       { id: 'features', label: 'What I’m allowed to do', icon: 'toggle', desc: 'How independent I am, the safety checks, and which features are on.' },
       { id: 'preferences-learning', label: 'What I’ve learned about you', icon: 'sparkle', desc: 'How you like things, picked up from your corrections, and the corrections I am still watching.' },
       { id: 'files', label: 'Files', icon: 'folder', desc: 'Find, read and fix a project file from your phone, and choose which folders can be browsed and edited.' },
+      { id: 'context', label: 'Context', icon: 'layers', desc: 'What each conversation’s running summary holds, how fresh it is, what it costs, and whether recovery after a long conversation is compressed works.' },
     ],
     hood: [
       { id: 'insights', label: 'Insights', desc: 'A plain-language read of what stands out.' },
@@ -101,7 +102,7 @@ export function allTabIds() {
 
 /** Features rebuilt natively in the console, by legacy tab id. */
 /** Tiles with no legacy dashboard tab: new pages are built in the console only. */
-export const CONSOLE_ONLY_TABS = ['reach', 'chats'];
+export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'context'];
 
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
@@ -129,6 +130,7 @@ export const NATIVE_PAGES = {
   features: '#/settings/allowed',
   'preferences-learning': '#/settings/learned',
   files: '#/settings/files',
+  context: '#/settings/context',
   // The pairing code page: its own strict page, outside the console (PIN, then the code + Copy).
   phones: '/dashboard/pair',
   'pr-pipeline': '#/work/development?s=shipping',
@@ -186,6 +188,7 @@ export const PHONE_PAGE_ALIASES = {
   learned: 'settings/learned',
   inside: 'settings/inside',
   files: 'settings/files',
+  context: 'settings/context',
 };
 
 /** Pages that exist only in phone mode (the Pace card is a page of its own there). */
