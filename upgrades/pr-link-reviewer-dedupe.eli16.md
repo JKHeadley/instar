@@ -4,7 +4,7 @@ When the agent sends Justin a link to a pull request, it should first ask GitHub
 
 On Echo both ran. One link could ask GitHub twice. The two also disagreed on failure: 3061 held the message back and 3063 sent it with a line saying the request could not be confirmed. Two code paths doing the same job will drift further apart over time, and every fix would have to be made twice.
 
-What this change does: it keeps the 3063 path, because that is the one already on everywhere and it matches what was asked for. Your own open PRs get the reviewer requested first. A failed request is said in the message. Links to other people's PRs are only noted in the log. It deletes the 3061 path completely: the check, its setting, its development switch and its rollout plan. The merge script keeps its own reviewer request, because that happens at merge time, not when a message is sent.
+What this change does: it keeps the 3063 path, because that is the one already on everywhere and it matches what was asked for. Your own open PRs get the reviewer requested first. A failed request is said in the message. Links to other people's PRs are only noted in the log. It deletes the 3061 path completely: the check, its setting, its development switch and its rollout plan. The old check also watched WhatsApp sends and Agent Updates posts, so the kept check now watches those two as well and nothing loses coverage. The merge script keeps its own reviewer request, because that happens at merge time, not when a message is sent.
 
 A new test reads the source and fails if any other file starts sending reviewer requests to GitHub, so a third copy cannot slip in quietly.
 

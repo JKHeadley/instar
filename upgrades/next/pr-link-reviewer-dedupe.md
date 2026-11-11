@@ -5,6 +5,7 @@ Two merged changes (PRs 3061 and 3063) both asked GitHub to add the reviewer bef
 
 - Removed the PR 3061 send-time check (`PrLinkReviewerCheck`), its `prLinkReviewer` setting, development gate and rollout ladder.
 - The one path is the PR 3063 reply check (`prLinkReviewRequest`, on by default): the agent's own open PRs get the reviewer requested first, a request that cannot be confirmed is said in the message, and links to other people's PRs are only logged.
+- The kept check now also runs on WhatsApp sends and Agent Updates posts (`/telegram/post-update`), two routes the removed check had covered on development agents.
 - A test now fails if a second place in the source starts requesting reviewers.
 
 ## What to Tell Your User

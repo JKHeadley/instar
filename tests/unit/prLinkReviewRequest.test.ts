@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  applyPrLinkReviewRequests, createSelfLoginReader, ensureReviewerOnPr, extractPrLinks, MAX_PR_LINKS,
+  applyPrLinkReviewRequests, createSelfLoginReader, ensureReviewerOnPr, extractPrLinks, MAX_PR_LINKS, PR_LINK_REPLY_ROUTES,
 } from '../../src/messaging/prLinkReviewRequest.js';
 import type { AuthenticatedGhExec } from '../../src/core/githubRuntime.js';
 
@@ -140,5 +140,24 @@ describe('createSelfLoginReader', () => {
     expect(await read()).toBe('EchoOfDawn');
     expect(await read()).toBe('EchoOfDawn');
     expect(n).toBe(2);
+  });
+});
+
+describe('PR_LINK_REPLY_ROUTES (the one send-time path, Echo Bugs 10000002553)', () => {
+  it('covers every direct outbound text route that the removed 3061 hook covered', () => {
+    const paths = PR_LINK_REPLY_ROUTES.map((r) => r.path);
+    expect(paths).toEqual(expect.arrayContaining([
+      '/telegram/reply/:topicId',
+      '/slack/reply/:channelId',
+      '/slack/session-reply',
+      '/app/session-reply',
+      '/whatsapp/send/:jid',
+      '/telegram/post-update',
+    ]));
+  });
+  it('uses each route\'s own text limit so an appended note never breaks the send', () => {
+    const byPath = Object.fromEntries(PR_LINK_REPLY_ROUTES.map((r) => [r.path, r.maxLength]));
+    expect(byPath['/whatsapp/send/:jid']).toBe(40_000);
+    expect(byPath['/telegram/post-update']).toBe(4096);
   });
 });
