@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-release-merge-chunkbuilder-order",
+  "sessionId": "c06e6b9f-4be0-4b49-87e4-02d119813fa8",
+  "timestamp": "2026-11-11T10:00:28.250Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-release-merge-chunkbuilder-order.md",
+  "artifactSha256": "7cabd81bf330477928f992c39f6da078231926008f99b251782359186c914b3d",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/side-effects/conversation-graph-release-merge-chunkbuilder-order.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Reorders two options in one object literal after a merge; no behaviour change; part of the Conversations release branch.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

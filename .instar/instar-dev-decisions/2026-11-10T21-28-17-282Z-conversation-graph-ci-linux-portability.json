@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-10T21:28:17.282Z",
+  "slug": "conversation-graph-ci-linux-portability",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 16,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/ConversationGraphReplication.ts",
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/graphWitnessServer.ts"
+    ],
+    "addedLines": 8,
+    "deletedLines": 8
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

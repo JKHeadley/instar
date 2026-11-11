@@ -291,6 +291,14 @@ export function buildWriteDomainRegistry(opts: { machineId: string | null }): Wr
   // Genuinely cluster-shared, single-writer = lease holder (byte-identical to today).
   reg.add({ kind: 'op', op: 'saveJobState', domain: 'cluster-shared' });
   reg.add({ kind: 'op', op: 'appendEvent', domain: 'cluster-shared' });
+  // Conversations v3 §7.2: shared graph/header/erasure writes require the
+  // admitted writer at the store seam as well as the HTTP boundary.
+  for (const op of ['conversationGraph.append', 'conversationGraph.certify', 'conversationGraph.header', 'conversationGraph.erase']) {
+    reg.add({ kind: 'op', op, domain: 'cluster-shared' });
+  }
+  for (const pathPrefix of ['/conversation-graph/changes', '/conversation-graph/forget', '/conversation-graph/decisions', '/mobile/conversation-graph/changes', '/mobile/conversation-graph/forget', '/mobile/conversation-graph/decisions']) {
+    reg.add({ kind: 'route', method: 'POST', pathPrefix, domain: 'cluster-shared' });
+  }
   // kv `set`/`delete` default cluster-shared for unclassified keys (I8) — no
   // op-level entry needed; exact-key entries below override per key.
 

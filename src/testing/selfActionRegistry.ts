@@ -22,6 +22,8 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  * steady-state FREQUENCY under feedback).
  */
 
+import { GRAPH_SOURCE_SWEEP_HEARTBEAT_MS, sourceSweepCheckpointDue } from '../core/ConversationGraphSourceSweep.js';
+import { SOURCE_STATUS_RETRY_MS, sourceStatusPollGivesUp } from '../core/GraphSourceStatusPoll.js';
 import { WorkAdmission } from '../core/workAdmission.js';
 import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
@@ -4442,6 +4444,56 @@ const presenceUsageNotice: SelfActionController = {
   makeUnderPressure: makePresenceUsageNotice,
 };
 
+const graphSourceSweepCheckpointRetry: SelfActionController = {
+  id: 'graph-source-sweep-checkpoint-retry',
+  actionVerb: 'retry',
+  models: 'src/server/ConversationGraphSourceInventoryRuntime.ts (run — sourceSweepCheckpointDue, publish on change plus a daily heartbeat)',
+  modelsPath: 'src/server/ConversationGraphSourceInventoryRuntime.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The last checkpoint is remembered in memory, so a restart publishes one more checkpoint and then settles.' },
+  boundK: 170,
+  perTargetBoundK: 170,
+  ticks: 60 * 24 * 7,
+  tickMs: 60_000,
+  eternalSentinel: { reason: 'Coverage readers need a recent signed checkpoint, so a live producer keeps publishing once a day while nothing changes.', rateFloorMs: GRAPH_SOURCE_SWEEP_HEARTBEAT_MS },
+  delegatedGiveUp: 'The hourly heartbeat; a scan that does not commit publishes nothing new',
+  makeUnderPressure(f, sink) {
+    let last: { hash: string; at: number } | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!sourceSweepCheckpointDue(last, 'unchanged-inventory', now)) return;
+        sink.emit({ verb: 'retry', target: 'graph-source-checkpoint' });
+        last = { hash: 'unchanged-inventory', at: now };
+      },
+    };
+  },
+};
+
+const graphSourceStatusPollRetry: SelfActionController = {
+  id: 'graph-source-status-poll-retry',
+  actionVerb: 'retry',
+  models: 'src/server/ConversationGraphDefault.ts (applyHeldSourceCustodyStageV2 — sourceStatusPollGivesUp, 120s limit while the peer is unreachable)',
+  modelsPath: 'src/server/ConversationGraphDefault.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The poll belongs to one running stage. A restart ends that stage, so nothing resumes polling on its own.' },
+  boundK: 241,
+  perTargetBoundK: 241,
+  ticks: 2400,
+  tickMs: SOURCE_STATUS_RETRY_MS,
+  makeUnderPressure(f, sink) {
+    const since = f.clock.nowMs();
+    let gaveUp = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (gaveUp) return;
+        if (sourceStatusPollGivesUp(since, f.clock.nowMs())) { gaveUp = true; return; }
+        sink.emit({ verb: 'retry', target: 'graph-source-status' });
+      },
+    };
+  },
+};
+
 /**
  * learned-skill-reconciler — the every-machine reconcile of LEARNED skill
  * renderings (docs/specs/skill-learning-sentinel.md §3.2, decision 19;
@@ -5302,6 +5354,8 @@ const reloginApprovalReminder: SelfActionController = {
 };
 
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  graphSourceSweepCheckpointRetry,
+  graphSourceStatusPollRetry,
   reloginApprovalReminder,
   peerPlaceSessionTick,
   skillLearningHealRevertFirst,

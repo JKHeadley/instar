@@ -1219,6 +1219,26 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 /* Home headline as a link to the first thing that needs the operator. */
 .hero-link { all: unset; cursor: pointer; color: inherit; text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 0.15em; }
 .hero-link:focus-visible { outline: 2px solid currentColor; outline-offset: 4px; border-radius: 4px; }
+/* Conversations uses the console's existing rows, chips and semantic colors. */
+.conversations-page { max-width: 760px; min-width: 0; }
+.conversation-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.conversation-tabs .active { border-color: var(--accent); color: var(--accent); }
+.conversation-search { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 16px 0; }
+.conversation-search input { flex: 1 1 180px; min-width: 0; margin: 0; }
+.conversation-row { text-decoration: none; min-height: 48px; }
+.conversation-row .row-main { min-width: 0; }
+.conversation-row .row-title { overflow-wrap: anywhere; }
+.conversation-details { margin-top: 24px; }
+.conversation-details summary { cursor: pointer; padding: 12px 0; }
+.conversation-correction-sheet .sheet-title,
+.conversation-correction-sheet .need-sub { min-width: 0; overflow-wrap: anywhere; }
+.conversation-correction-sheet .conversation-row { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.conversation-path { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.conversation-transcript { margin: 16px 0; }
+.conversation-message { padding: 14px 0; border-bottom: 1px solid var(--hairline); }
+.conversation-message .need-sub { display: flex; flex-wrap: wrap; gap: 12px; }
+.conversation-message.from-user { border-left: 2px solid var(--accent); padding-left: 12px; }
+.conversation-message-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
 
 /* Independent coverage, shared by standalone and console. */
 .mb-coverage { max-width: 880px; margin: 0 0 var(--s-5); padding: 16px; border: 1px solid var(--hairline); border-radius: 12px; overflow-wrap: anywhere; }

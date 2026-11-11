@@ -110,9 +110,11 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
   it('the owner-side mesh bridge replays a forwarded Slack key through the shared dispatch', () => {
     // onAccepted: a non-numeric forwarded session key is a Slack conversation
     // owned by THIS machine → reconstruct the Message and replay it.
-    const acceptStart = SERVER_TS.indexOf('onAccepted: (cmd) => {');
+    const acceptStart = SERVER_TS.indexOf('onAccepted: (cmd, sender, originalEnvelope) => {');
     expect(acceptStart).toBeGreaterThan(-1);
-    const acceptBlock = SERVER_TS.slice(acceptStart, acceptStart + 5000);
+    const acceptEnd = SERVER_TS.indexOf('// ── WS1.2 owner-side drain runner', acceptStart);
+    expect(acceptEnd).toBeGreaterThan(acceptStart);
+    const acceptBlock = SERVER_TS.slice(acceptStart, acceptEnd);
     expect(acceptBlock).toContain('_slackInboundDispatch');
     // Slack keys are non-numeric; Telegram topic keys are pure numbers.
     expect(acceptBlock).toContain('isSlackConversationKey(slackKey)');

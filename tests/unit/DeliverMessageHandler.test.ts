@@ -69,8 +69,12 @@ describe('createDeliverMessageHandler (§L4)', () => {
       recordReceipt: (id) => (seen.has(id) ? false : (seen.add(id), true)),
       onAccepted,
     });
-    expect(h(deliver(), 'ROUTER', ENV)).toEqual({ messageId: 'm1', accepted: 'queued' });
+    const command = deliver();
+    const envelope = { sender: 'ROUTER', recipient: 'OWNER', command, signature: 'original-signature', nonce: 17 } as unknown as MeshEnvelope;
+    expect(h(command, 'ROUTER', envelope)).toEqual({ messageId: 'm1', accepted: 'queued' });
     expect(onAccepted).toHaveBeenCalledOnce();
+    expect(onAccepted).toHaveBeenCalledWith(command, 'ROUTER', envelope);
+    expect(onAccepted.mock.calls[0][2]).toBe(envelope);
   });
 
   it('redelivery of the same messageId → duplicate, onAccepted NOT fired again', () => {
@@ -98,4 +102,11 @@ describe('createDeliverMessageHandler (§L4)', () => {
     const h = createDeliverMessageHandler({ ownerEpochOf: () => null, recordReceipt: (id) => (seen.has(id) ? false : (seen.add(id), true)) });
     expect(h(deliver(), 'ROUTER', ENV)).toMatchObject({ accepted: 'queued' });
   });
+  it('cannot record a transport ACK when synchronous dispatch custody fails',()=>{
+    const recordReceipt=vi.fn(()=>true),accepted=vi.fn();
+    const handler=createDeliverMessageHandler({ownerEpochOf:()=>null,recordReceipt,onAccepted:accepted,beforeReceipt:()=>{throw new Error('custody-unavailable');}});
+    expect(()=>handler(deliver(),'ROUTER',ENV)).toThrow('custody-unavailable');
+    expect(recordReceipt).not.toHaveBeenCalled();expect(accepted).not.toHaveBeenCalled();
+  });
+
 });

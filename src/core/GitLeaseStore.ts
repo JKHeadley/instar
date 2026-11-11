@@ -1,3 +1,4 @@
+import {syncNativeLeaseFile} from './NativeLeaseDurability.js';
 /**
  * GitLeaseStore — the durable (git-backed) LeaseStore for LeaseCoordinator.
  *
@@ -57,6 +58,9 @@ export class GitLeaseStore implements LeaseStore {
     this.d.logger?.(`[git-lease] ${m}`);
   }
 
+  /** Supplements the actual commit/push CAS with local crash durability. */
+  syncDurably(expected:LeaseRecord|null=this.read().lease):void{syncNativeLeaseFile(this.d.registryAbsPath,expected,document=>(document as MachineRegistry).lease??null);}
+  get durabilityPath():string{return this.d.registryAbsPath;}
   /**
    * No remote means no shared medium: a peer learns of this lease only over the lease wire, as
    * with LocalLeaseStore, so the coordinator applies the same rules (ask before claiming, fold a

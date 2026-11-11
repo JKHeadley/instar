@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-held-read-stable-recheck",
+  "sessionId": "f7388af1-08a7-4e6d-b54b-dc07d6afc31e",
+  "timestamp": "2026-11-07T23:10:34.450Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-held-read-stable-recheck.md",
+  "artifactSha256": "5f32f1e8b5ca887e81dd3f4789d76354b93f34040f9e69ad6984014b81b09e55",
+  "specPath": "docs/specs/conversation-effort-hierarchy-v3.md",
+  "coveredFiles": [
+    "src/core/ConversationGraphReplication.ts",
+    "tests/integration/graph-source-postcas-held-reader.test.ts",
+    "upgrades/side-effects/conversation-graph-held-read-stable-recheck.md"
+  ],
+  "phase": "complete",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "changes how often existing checks run; no new trigger or loop"
+  }
+}

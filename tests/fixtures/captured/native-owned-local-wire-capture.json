@@ -1,0 +1,284 @@
+{
+  "kind": "actual-agent-server-synthetic-signed-phone-capture",
+  "uncommittedSources": true,
+  "runtime": "injected-two-member-owned-runtime; not-default-bootstrap-or-physical-device-proof",
+  "sourceHashesAtCapture": {
+    "src/server/ConversationGraphOwnerChanges.ts": "5181b7ced2f5aa217db07e0ee33c10f6169a9bd209ddc4acdad309e3b469cb59",
+    "src/server/ConversationGraphSurface.ts": "ce2731eab853e1ed503441c07bd1ccdcf1d7a2c25c11532cbb3f627320cfa435",
+    "src/server/ConversationGraphOwnerAdmission.ts": "0345b442e9afcbc5e96526d09f104d2a4e79e3daaccf5f1a31a6bc005395af37",
+    "src/server/ConversationGraphReplicationRuntime.ts": "99828b53cfd5a3e122673cb7ebfe91a9a68128ec8efd90d63b2de60f4ceaeec3"
+  },
+  "capturedAt": "2026-11-05T23:48:38.260Z",
+  "roots": {
+    "revision": "2786d76a368e064fcf29cd10f5460309acdb5177c456684facbd89ef4e9aca08",
+    "asOf": "2026-11-05T23:48:38.104Z",
+    "partial": true,
+    "partialReasons": [
+      {
+        "reason": "evidence-missing"
+      }
+    ],
+    "capabilities": {
+      "ownerCorrections": true,
+      "ownerErasure": true
+    },
+    "replicationState": "current",
+    "items": [
+      {
+        "ref": {
+          "kind": "effort",
+          "id": "87f07089-641b-4111-9d85-547732bad845"
+        },
+        "title": "",
+        "kind": "effort",
+        "role": "effort",
+        "primaryPath": [],
+        "visibleChildCount": 0,
+        "digestVersion": null,
+        "sourceFreshness": null,
+        "metadata": {}
+      }
+    ],
+    "nextCursor": null
+  },
+  "node": {
+    "revision": "2786d76a368e064fcf29cd10f5460309acdb5177c456684facbd89ef4e9aca08",
+    "asOf": "2026-11-05T23:48:38.140Z",
+    "partial": true,
+    "partialReasons": [
+      {
+        "reason": "evidence-missing"
+      }
+    ],
+    "capabilities": {
+      "ownerCorrections": true,
+      "ownerErasure": true
+    },
+    "replicationState": "current",
+    "node": {
+      "ref": {
+        "kind": "effort",
+        "id": "87f07089-641b-4111-9d85-547732bad845"
+      },
+      "title": "",
+      "kind": "effort",
+      "role": "effort",
+      "primaryPath": [],
+      "visibleChildCount": 0,
+      "digestVersion": null,
+      "sourceFreshness": null,
+      "metadata": {}
+    },
+    "path": [],
+    "children": {
+      "items": [],
+      "nextCursor": null
+    },
+    "links": [],
+    "provenance": [],
+    "digest": null,
+    "erasure": {
+      "headerForgotten": false
+    },
+    "correction": {
+      "replacesPlacementEventIds": [],
+      "moveEligible": true,
+      "replacesFrontDoorEventIds": [],
+      "headerVersion": 0,
+      "headerForgotten": false
+    }
+  },
+  "committed": {
+    "wireVersion": 2,
+    "requestId": "alive-effort-0001",
+    "operationKey": "graph-event:change-21946b3f-a07d-40e2-90ba-467528d4332e",
+    "eventId": "graph-event:change-21946b3f-a07d-40e2-90ba-467528d4332e",
+    "state": "committed",
+    "custody": {
+      "kind": "copied-on-owned-machine",
+      "machine": {
+        "machineId": "m_c5e2689a44b3cfa7ad789336b447cffb",
+        "name": "Mac Lan 2"
+      },
+      "copyEvidence": "verified-member-source",
+      "recordedMachine": {
+        "machineId": "m_f43240ea15db7db37edc80a72e883064",
+        "name": "Mac Lan"
+      }
+    },
+    "sync": {
+      "state": "ready"
+    },
+    "waitingMachines": [],
+    "coreType": "graph-event",
+    "effort": {
+      "kind": "effort",
+      "id": "87f07089-641b-4111-9d85-547732bad845"
+    },
+    "headerId": "hdr-4BV72qhNTThX-qFORyJL8w",
+    "certificate": {
+      "v": 1,
+      "agentId": "echo",
+      "eventId": "graph-event:change-21946b3f-a07d-40e2-90ba-467528d4332e",
+      "operationHash": "a13455d89fc8fa3b7c84e0302a1465d956d3e5da60688ac31742d2b93c5974a4",
+      "coreHash": "a4ccba56189183adea2de7c47e3848966bf66914d589e649deec4a2b0397be75",
+      "authorizationReceiptHash": "3a69ce7dca954b25b72ea91c756362487e57cf331a02ca2f13c7459c22e855f4",
+      "sourceSequence": 1,
+      "predecessorHash": null,
+      "membershipEpoch": 1,
+      "leaseEpoch": 1,
+      "membershipHash": "49e39460615587ccc1b8e4a06d1c91e594d9deff1b8c2749bca11c8ab518160b",
+      "memberReceipts": [
+        {
+          "agentId": "echo",
+          "eventId": "graph-event:change-21946b3f-a07d-40e2-90ba-467528d4332e",
+          "operationHash": "a13455d89fc8fa3b7c84e0302a1465d956d3e5da60688ac31742d2b93c5974a4",
+          "membershipEpoch": 1,
+          "leaseEpoch": 1,
+          "machineId": "m_c5e2689a44b3cfa7ad789336b447cffb",
+          "phase": "source",
+          "persistedAt": "2026-11-05T23:48:37.816Z",
+          "signature": "YGIJeatpbAqTPa9I6gJRa2xEHweUkJMhjFOu64ozs2Ep_o9fAOKEvrBQ5qkHfdC9_CVyTk2APKFQl_J04bhcDw"
+        },
+        {
+          "agentId": "echo",
+          "eventId": "graph-event:change-21946b3f-a07d-40e2-90ba-467528d4332e",
+          "operationHash": "a13455d89fc8fa3b7c84e0302a1465d956d3e5da60688ac31742d2b93c5974a4",
+          "membershipEpoch": 1,
+          "leaseEpoch": 1,
+          "machineId": "m_f43240ea15db7db37edc80a72e883064",
+          "phase": "source",
+          "persistedAt": "2026-11-05T23:48:37.747Z",
+          "signature": "1QBDotX8UeVaqoXDm_r3gjBNo94lRjkpSIdJkgKq0N3ZC59tUslpYJcu4VYcWU6u-7Dej87hNkCpZU0ETyh4Aw"
+        }
+      ],
+      "witnessId": "independent-witness",
+      "committedAt": "2026-11-05T23:48:37.851Z",
+      "signature": "w15qMMshIsbzO44QLHjnRPt1TBA-9Fj6McNL9DzG6gwqI6iE7y9KNFvKYnZjQTwxHgaiRGz5RjKYnTmGt3JqDw"
+    },
+    "cancelEligible": false
+  },
+  "recordedLocal": {
+    "wireVersion": 2,
+    "requestId": "alive-offline-0001",
+    "operationKey": "queued:owner-change:4ca40c703dbb698238d8e1f08965fc0336a8f0e934bc6a09f2be5bc26dce5f7c",
+    "state": "recorded-local",
+    "recordedAt": "2026-11-05T23:48:38.156Z",
+    "custody": {
+      "kind": "recorded-here",
+      "machine": {
+        "machineId": "m_f43240ea15db7db37edc80a72e883064",
+        "name": "Mac Lan"
+      }
+    },
+    "cancelEligible": true,
+    "sync": {
+      "state": "unavailable"
+    },
+    "waitingMachines": [
+      {
+        "machineId": "m_c5e2689a44b3cfa7ad789336b447cffb",
+        "name": "Mac Lan 2"
+      }
+    ],
+    "details": "available",
+    "localIntent": {
+      "v": 1,
+      "change": {
+        "kind": "create-effort",
+        "projectScope": []
+      },
+      "createdEffort": {
+        "headerId": "hdr-ngbCPwyFFnQ3yz-1evMTMQ",
+        "ref": {
+          "id": "28f957a8-296f-43e2-b7d9-ee762ddc84ab",
+          "kind": "effort"
+        }
+      }
+    }
+  },
+  "localStatus": {
+    "wireVersion": 2,
+    "requestId": "alive-offline-0001",
+    "operationKey": "queued:owner-change:4ca40c703dbb698238d8e1f08965fc0336a8f0e934bc6a09f2be5bc26dce5f7c",
+    "state": "recorded-local",
+    "recordedAt": "2026-11-05T23:48:38.156Z",
+    "custody": {
+      "kind": "recorded-here",
+      "machine": {
+        "machineId": "m_f43240ea15db7db37edc80a72e883064",
+        "name": "Mac Lan"
+      }
+    },
+    "cancelEligible": true,
+    "sync": {
+      "state": "unavailable"
+    },
+    "waitingMachines": [
+      {
+        "machineId": "m_c5e2689a44b3cfa7ad789336b447cffb",
+        "name": "Mac Lan 2"
+      }
+    ],
+    "details": "available",
+    "localIntent": {
+      "v": 1,
+      "change": {
+        "kind": "create-effort",
+        "projectScope": []
+      },
+      "createdEffort": {
+        "headerId": "hdr-ngbCPwyFFnQ3yz-1evMTMQ",
+        "ref": {
+          "id": "28f957a8-296f-43e2-b7d9-ee762ddc84ab",
+          "kind": "effort"
+        }
+      }
+    }
+  },
+  "pending": {
+    "items": [
+      {
+        "wireVersion": 2,
+        "requestId": "alive-offline-0001",
+        "operationKey": "queued:owner-change:4ca40c703dbb698238d8e1f08965fc0336a8f0e934bc6a09f2be5bc26dce5f7c",
+        "state": "recorded-local",
+        "recordedAt": "2026-11-05T23:48:38.156Z",
+        "custody": {
+          "kind": "recorded-here",
+          "machine": {
+            "machineId": "m_f43240ea15db7db37edc80a72e883064",
+            "name": "Mac Lan"
+          }
+        },
+        "cancelEligible": true,
+        "sync": {
+          "state": "unavailable"
+        },
+        "waitingMachines": [
+          {
+            "machineId": "m_c5e2689a44b3cfa7ad789336b447cffb",
+            "name": "Mac Lan 2"
+          }
+        ],
+        "details": "available",
+        "localIntent": {
+          "v": 1,
+          "change": {
+            "kind": "create-effort",
+            "projectScope": []
+          },
+          "createdEffort": {
+            "headerId": "hdr-ngbCPwyFFnQ3yz-1evMTMQ",
+            "ref": {
+              "id": "28f957a8-296f-43e2-b7d9-ee762ddc84ab",
+              "kind": "effort"
+            }
+          }
+        }
+      }
+    ],
+    "total": 1,
+    "nextOffset": null
+  }
+}

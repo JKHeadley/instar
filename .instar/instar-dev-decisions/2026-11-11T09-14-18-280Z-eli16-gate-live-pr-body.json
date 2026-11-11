@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-11T09:14:18.280Z",
+  "slug": "eli16-gate-live-pr-body",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/eli16-pr-description-check.mjs"
+    ],
+    "addedLines": 6,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
