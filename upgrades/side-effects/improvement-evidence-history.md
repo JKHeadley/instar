@@ -1,5 +1,7 @@
 # Side-Effects Review — improvement evidence history
 
+> **Historical record (2026-11-05).** This review describes the change as it was built then. The standard it served was later ratified in PR #2842 (code-owner approval, 2026-11-09); read docs/STANDARDS-REGISTRY.md for the current wording.
+
 **Version / slug:** `improvement-evidence-history`
 **Date:** 2026-11-05
 **Author:** Echo
