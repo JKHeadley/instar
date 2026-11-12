@@ -132,8 +132,13 @@ describe('Telegram origin signed mesh HTTP pipeline', () => {
     expect(await originDeliveryConfirmed(h.source.store, heldOperation, { selfMachineId: 'source', agentId: 'echo', send: query })).toBe(true);
     expect(query).toHaveBeenCalledOnce(); expect(h.botNetwork).toHaveBeenCalledOnce();
     const receipt = await h.send({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
-    expect(receipt.result).toEqual({ ok: true, operationId: heldOperation, originId: source!.record.originId,
-      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true, messageIds: ['321'] });
+    expect(receipt.result).toMatchObject({ ok: true, operationId: heldOperation, originId: source!.record.originId,
+      envelopeDigest: source!.record.envelopeDigest, executionOwnerMachineId: 'owner', state: 'accepted', originReceiptConfirmed: true, messageIds: ['321'],
+      // native-conversation-base §3b — the classified verdict travels beside the raw state.
+      role: 'execution-owner', outcome: 'delivered', safeToResend: false, originMachineId: 'source' });
+    // A third machine is refused without `reader` and answered with it.
+    expect((await h.sendOther({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation, reader: true })).result)
+      .toMatchObject({ ok: true, role: 'execution-owner', outcome: 'delivered', messageIds: ['321'] });
     const intruder = await h.sendOther({ type: 'telegram-origin', protocol: ORIGIN_MESH_PROTOCOL, action: 'receipt', operationId: heldOperation });
     expect(intruder.result).toEqual({ ok: false, reason: 'origin-receipt-unavailable' });
     const lookup = h.owner.store.getOperation.bind(h.owner.store);

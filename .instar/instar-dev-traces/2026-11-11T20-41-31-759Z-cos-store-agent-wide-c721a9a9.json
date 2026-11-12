@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "cos-store-agent-wide",
+  "sessionId": "7e0078d1-66a6-47dd-b4ad-0e9dc8b7cf44",
+  "timestamp": "2026-11-11T20:41:31.759Z",
+  "artifactPath": "upgrades/side-effects/cos-store-agent-wide.md",
+  "artifactSha256": "d15b0c87e447d3b6d85e92f2adc2c24a108cc9f1a8039d6433fabf115527c725",
+  "coveredFiles": [
+    "docs/specs/cos-store-agent-wide.eli16.md",
+    "src/commands/server.ts",
+    "src/core/ChiefOfStaffStore.ts",
+    "tests/unit/chief-of-staff-store-wiring.test.ts",
+    "upgrades/next/cos-store-agent-wide.md",
+    "upgrades/side-effects/cos-store-agent-wide.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Supplies a spec-required stateSync flag for a dev-gated feature; about 20 lines, fully undone by a revert.",
+  "eli16Path": "docs/specs/cos-store-agent-wide.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/cos-store-agent-wide.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
