@@ -34,6 +34,8 @@ import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } f
 
 /** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
 export const MAX_LANE_SHARDS = 4;
+/** Upper bound for the per-machine unit-lane worker setting (`laneShards.unitWorkers`). */
+export const MAX_UNIT_WORKERS = 12;
 
 // ── Seams ──────────────────────────────────────────────────────────────
 
@@ -173,10 +175,11 @@ export interface VerifyRunInput {
   /** True only for an automatic watcher candidate that can be rediscovered after a lease move. */
   preflightRediscoverable?: boolean;
   /**
-   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service).
-   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards`.
+   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service),
+   * and the per-machine unit-lane worker count `unitWorkers` (1..MAX_UNIT_WORKERS).
+   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards` / `unitWorkersParallel`.
    */
-  laneShards?: { integration?: number; e2e?: number };
+  laneShards?: { integration?: number; e2e?: number; unitWorkers?: number };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -565,7 +568,10 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
         // enforces, and the parallel lanes' worker total (4 + 1 + 1 + 1) is the claim.
-        laneEnv.INSTAR_TEST_WORKERS = String(LOCAL_VERIFY_LIMITS.unitWorkersParallel);
+        const uw = input.laneShards?.unitWorkers;
+        const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
+        laneEnv.INSTAR_TEST_WORKERS = String(workers);
+        seams.log({ event: 'unit-workers', workers, source: workers === uw ? 'machine-setting' : 'policy-default' });
         laneEnv.AUDIT_CHANGE_KIND = 'pull_request';
         laneEnv.AUDIT_CHANGE_BASE_SHA = input.baseSha;
         laneEnv.AUDIT_CHANGE_HEAD_SHA = input.headSha;

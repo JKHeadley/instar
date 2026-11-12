@@ -36,6 +36,15 @@ The second half of E2, holding a timed-out head instead of re-running it unchang
 - **Signal vs authority:** no gate changes; the watcher still requires a healthy `main` before offering PRs.
 - **Rollback:** revert; in-memory counters only, no state migration.
 
+## Part 3: a per-machine unit-lane worker count
+
+- `monitoring.localVerify.laneShards.unitWorkers` (integer 1..12, read at each start like the shard counts; anything else is ignored) sets `INSTAR_TEST_WORKERS` for the unit lane. Absent ⇒ `LOCAL_VERIFY_LIMITS.unitWorkersParallel` (4), as before.
+- **Why:** throughput brainstorm 2026-11-12 E3. The M5 sampler showed 45–90 % idle with no swapping while its 4-worker unit lane hit 1200 s; its two latest attempts for PR 3093 both ended `deadline:unit`.
+- **Verdicts:** unchanged. The worker count never changes which files run; the inventory rule still requires every file. Like the shard counts, it is a machine setting outside `policyHash` (both shard and worker counts are scheduling, not policy).
+- **Peer runs:** a peer builds its run input from its own config (`peerRun` → `start`), so each machine's setting applies to the runs it executes.
+- **Risk:** more parallel unit workers can expose load-sensitive tests (five such first-try failures on 2026-11-11). It is opt-in per machine and will be tried on the M5 first, one variable at a time.
+- **Agent awareness:** the CLAUDE.md laneShards line is not rewritten for existing agents (its migration inserts only when absent); the upgrade note carries the key.
+
 ## Second-pass review
 
 **Reviewer:** independent Claude Sonnet subagent (fresh context, given the staged diff and the files, not the author's conclusion), 2026-11-12 07:51 PST
@@ -52,3 +61,5 @@ The second half of E2, holding a timed-out head instead of re-running it unchang
 - No self-trigger (main runs are excluded), no duplicate main entries (pending/in-flight checked, `decideMainEnqueue` dedupes); the release alias key matches what `completeMain` records.
 - `main-red` and `healthy` excluded, so the red hold keeps the red case; peer results do not trigger.
 - Notes taken: the bound is per green PR run (now stated in the `local-verify-main-schedule` model comment); the trigger needs a queued or explicit PR while main is unhealthy (stated above).
+
+**Part 3 reviewer:** independent Claude Sonnet subagent (fresh context), 2026-11-12 08:27 PST. **Verdict: CONCUR.** Worker count reaches only `resolveUnitLaneWorkers`/`maxWorkers`, never file selection; keeping it out of `policyHash` is right (a hardware tunable, not policy); peer input comes from the executing machine's config. Notes applied: the effective count is logged per run (`unit-workers` event), and the `laneShards` doc comment names the new key. Noted: a nested test-runner clamp (pool max 4) applies only under an ancestor semaphore holder, which verify lanes do not set.

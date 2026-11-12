@@ -841,6 +841,14 @@ describe('runVerify — e2e shards', () => {
     expect(lanes[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
     for (const l of lanes.slice(1)) expect(l.env.INSTAR_TEST_WORKERS).toBeUndefined();
   });
+  it('a per-machine unitWorkers setting sets the unit lane worker count; out of range keeps the default', async () => {
+    const f = fake();
+    await runVerify(input({ laneShards: { unitWorkers: 8 } }), f.seams);
+    expect(f.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe('8');
+    const g = fake();
+    await runVerify(input({ laneShards: { unitWorkers: 99 } }), g.seams);
+    expect(g.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
+  });
   it('a busy slot leaves an overlap entry (the evidence a re-queue happened)', async () => {
     const f = fake();
     f.seams.holdSuiteSlot = async () => 'busy';

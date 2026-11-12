@@ -3,10 +3,13 @@ When a Local Verify lane hits its time limit, the run now records which test fil
 
 A green PR verify after `main`'s own error retries ran out now queues one more `main` verify. Before, `main` stayed unverified after three errored checks, and the merge watcher stopped offering changes to the queue until a restart.
 
+Each machine can set its own unit-lane worker count with `monitoring.localVerify.laneShards.unitWorkers` (1..12; default 4), read at each run start like the shard counts. It changes how many unit test files run at once, never which ones.
+
 ## What to Tell Your User
 When a test run on the way to merging times out, I can now see which test was stuck instead of guessing, and the machine is freed for the next change sooner. Changes waiting to merge also no longer stall for hours after the main branch's own check times out a few times. Nothing for you to do.
 
 ## Summary of New Capabilities
+- Per-machine unit-lane worker count: `monitoring.localVerify.laneShards.unitWorkers`.
 - Deadline forensics: `deadline-in-flight` events in Local Verify run logs, naming the files still running when a lane was killed.
 
 ## Evidence

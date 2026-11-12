@@ -9,3 +9,7 @@
 ## Second fix in this change: `main` no longer gets stuck "unverified"
 
 Before any change can merge automatically, the system wants a recent green check of `main` itself. If that check errors (for example on a time limit), it retries three times and then stops for good. On 2026-11-12 that happened at 12:34Z: `main` stayed "unverified", and while `main` is not healthy the merge watcher offers no change to the test queue at all. Changes that had been turned away while the queue was full were never offered again (PR 3088 among them), and only hand-requested ones got in. Now, when a change passes a full test run on this machine after `main`'s retries ran out, that pass counts as "something changed" and `main` gets one more check. It cannot loop: each passing change can trigger at most one extra `main` check.
+
+## Third fix in this change: each machine can set its own number of unit-test workers
+
+The unit tests always ran with 4 workers on every machine. On 2026-11-12 the M5 was 45 to 90 percent idle while its unit lane still hit the 20-minute limit, so 4 workers was the limit there, not the machine. Each machine can now set its own count (1 to 12) in its existing lane setting. It does not change which tests run or any pass rule, only how many run at once. The default stays 4.
