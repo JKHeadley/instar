@@ -382,6 +382,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Delivery is externally visible, so the block ships dryRun:true even live-on-dev: the id<0 arm returns typed §5.1 non-deliveries + would-deliver audit lines (never success-shaped) until a deliberate dryRun:false flip for the live proof. Zero consumers ride the funnel in increment 1, so enabling is inert until the §6.1 proof-consumer increment; no spend, no destructive action, no egress while dry.',
   },
   {
+    name: 'telegramTokenlessDurableForward',
+    configPath: 'telegramOrigin.tokenlessDurableForward.enabled',
+    description: 'A standby without the Telegram bot token durably holds a reply when the lease holder is unreachable, instead of dropping it (spec: standby-durable-forward-without-token §5). Gates only the CREATION of token-less holds; recovery and expiry stay wired so held rows always drain.',
+    justification: 'Not dryRun-shaped: it changes durable delivery, so it ships dark on the fleet and live on development agents, and graduates through its feature-ladders entry. It adds no blocking authority: the holder still validates every submission against its own credential, and a held reply is delivered exactly once or expires loudly.',
+  },
+  {
     name: 'actionClaimSlack',
     configPath: 'messaging.actionClaim.slack.enabled',
     description: 'Slack follow-through generalization — the /action-claim/observe registration lane for NEGATIVE (minted Slack) conversation ids (spec: slack-followthrough-generalization §8.1). Registration only; follow-through DELIVERY rides the separate conversationIdentity.followThrough gate.',

@@ -7336,7 +7336,9 @@ export class AgentServer {
         selfMachineId: teamSelfId,
         peers: () => this.teamSwitchPeers(),
         knownMachines: () => {
-          try { return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false)); } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
+          try {
+            return (options.coordinator?.managers?.identityManager?.getActiveMachines().map((m) => m.machineId) ?? []).filter((id) => !(pairingSvc.teamLog()?.isGone(id) ?? false));
+          } catch { return []; } // @silent-fallback-ok — the dialable peers are still reached; an unreadable registry only loses the no-address listing
         },
         applyLocal: (setting) => this.applyTeamSwitchHere(setting, options, 'the owner\'s phone'),
         reportsOn: (setting, machineId) => {
@@ -7347,6 +7349,17 @@ export class AgentServer {
         reportError: (err) => pairingSvc.reportTeamFault('TeamAccess.switch', err),
       });
       this.teamSwitchApplier = teamSwitches;
+      // standby-durable-forward-without-token §9: a machine the owner recorded as gone closes its
+      // held-reply debt as a LOSS (one attention item each), never by silent deletion. Wired once here.
+      void import('../messaging/telegram-origin/TokenlessHeldDebt.js').then(m => m.setHeldDebtGoneCheck(
+        id => pairingSvc.teamLog()?.isGone(id) ?? false,
+        entry => {
+          /* @self-action-controller: held-debt-loss-notice */
+          void options.telegram?.createAttentionItem({ id: `telegram-origin-held-lost:${entry.originMachineId}:${entry.rootOperationId}`,
+            category: 'telegram-origin', priority: 'HIGH', title: 'A reply was lost with a removed machine',
+            summary: `A reply${entry.topicId == null ? '' : ` to topic ${entry.topicId}`} was waiting on machine ${entry.originMachineId}, which the owner marked as gone. It may not have reached you; check the conversation before asking for it again.`,
+            sourceContext: 'telegram-origin-held-debt' }, { hubOnly: true }).catch(() => undefined); // @silent-fallback-ok — the loss is also visible in the held-debt status
+        })).catch(() => undefined); // @silent-fallback-ok — closure then waits for the next status read wiring
       this.app.use(createTeamRouter(pairingSvc, {
         signer: () => loadMachineSigner(options.config.stateDir),
         applyConversationChange: (ref, change) => options.sessionManager.applyConversationChange(ref, change),

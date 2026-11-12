@@ -20,7 +20,8 @@ export function sendOriginHoldResponse(res: Response, error: TelegramOriginHoldE
     outcome: error.outcome, operationId: error.operationId, retryable: false,
     // Telegram accepted it: the caller must not resend (held-reply outcome lookup).
     ...(delivered ? { delivered: true, messageId: error.delivered?.messageId ?? null, fallbackRecorded: error.delivered?.fallbackRecorded ?? false } : {}),
-    ...(error.operationId ? { checkOutcome: `/telegram/origins/operations/${error.operationId}/outcome` } : {}) });
+    ...(error.operationId ? { checkOutcome: `/telegram/origins/operations/${error.operationId}/outcome` } : {}),
+    ...(error.custody ? { custody: error.custody } : {}) });
 }
 export function mountTelegramOriginRoutes(router: Router, deps: {
   runtime: () => TelegramOriginRuntime | null | undefined;
@@ -127,7 +128,11 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
       return;
     }
     if (req.query.scope !== undefined && req.query.scope !== 'local') { res.status(400).json({ error: 'invalid-origin-scope' }); return; }
-    try { res.json(await runtime.status()); }
+    try {
+      // §9 (standby-durable-forward-without-token): other machines' token-less holds past the deadline.
+      const { peerHeldDebtSummary } = await import('../messaging/telegram-origin/TokenlessHeldDebt.js');
+      res.json({ ...(await runtime.status()), peerHeldDebt: peerHeldDebtSummary(6 * 60 * 60_000) });
+    }
     catch { res.status(503).json({ error: 'origin-status-unavailable', coverage: 'unknown' }); }
   });
   router.post('/telegram/origins/diagnose', async (req, res) => {
@@ -174,7 +179,8 @@ export function mountTelegramOriginRoutes(router: Router, deps: {
   // message ids, never message content.
   router.get('/telegram/origins/operations/:operationId/outcome', async (req, res) => {
     const operationId = req.params.operationId;
-    if (!/^[A-Za-z0-9-]{8,64}$/.test(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
+    // `~` admits derived successor ids (`<root>~r<hop>-<plan8>`, standby-durable-forward-without-token §2).
+    if (!/^[A-Za-z0-9~-]{8,96}$/.test(operationId)) { res.status(400).json({ error: 'invalid-operation-id' }); return; }
     const runtime = deps.runtime();
     if (!runtime) { res.status(503).json({ error: 'origin-runtime-unavailable', operationId, outcome: 'unknown', safeToResend: false }); return; }
     let captured: import('../messaging/telegram-origin/OriginUnrecordedReceipts.js').UnrecordedReceiptEntry[] = [];

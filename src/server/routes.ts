@@ -21131,8 +21131,9 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
         // lease holder, the kind metadata must survive the hop so the
         // HOLDER's gate/audit see accurate context. Direct sends ignore it.
         kindMetadata:
-          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied
+          messageKind || senderClass || advisoryAck || toneAdvisoryAck || toneAdvisoryComplied || originProducer?.producerId === 'reply-delivery-notice'
             ? {
+                ...(originProducer?.producerId === 'reply-delivery-notice' ? { noticeClass: 'reply-delivery-notice' } : {}),
                 ...(messageKind ? { messageKind } : {}),
                 ...(senderClass ? { senderClass } : {}),
                 ...(metadataJobSlug ? { jobSlug: metadataJobSlug } : {}),

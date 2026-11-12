@@ -626,8 +626,10 @@ d=json.load(sys.stdin)
 print(d.get("operationId") or "")
 print(d.get("outcome") or "")
 print(d.get("reason") or "")
-print(d.get("messageId") or "")' 2>/dev/null)
+print(d.get("messageId") or "")
+print(d.get("custody") or "")' 2>/dev/null)
   HELD_OP=$(printf '%s\n' "$HELD_FIELDS" | sed -n '1p')
+  HELD_CUSTODY=$(printf '%s\n' "$HELD_FIELDS" | sed -n '5p')
   HELD_OUTCOME=$(printf '%s\n' "$HELD_FIELDS" | sed -n '2p')
   HELD_REASON=$(printf '%s\n' "$HELD_FIELDS" | sed -n '3p')
   HELD_MSG_ID=$(printf '%s\n' "$HELD_FIELDS" | sed -n '4p')
@@ -679,6 +681,7 @@ print(",".join(str(i) for i in ids))' 2>/dev/null)
       ;;
     pending)
       echo "HELD — not delivered yet. The server kept the original message and will deliver it itself. Do NOT resend it." >&2
+      [ "$HELD_CUSTODY" = "this-machine-only" ] && echo "  Kept on this machine only until the sending machine is reachable; if this machine goes down first, the reply is lost." >&2
       [ -n "$VERDICT_DETAIL" ] && echo "  $VERDICT_DETAIL" >&2
       echo "  Reason: ${HELD_REASON:-unknown} (operation ${HELD_OP:-unknown})" >&2
       echo "$CHECK_LINE" >&2

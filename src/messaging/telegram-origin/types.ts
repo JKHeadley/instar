@@ -179,7 +179,24 @@ export class TelegramOriginHoldError extends Error {
     super(`Telegram message held: ${reason}`);
     this.name = 'TelegramOriginHoldError';
   }
+  /** Set on a token-less hold (standby-durable-forward-without-token §9): only this
+   * machine has the reply until the sending machine is reachable. */
+  custody?: 'this-machine-only';
 }
+/** The relay failed before preparing or recording anything (holder unreachable,
+ * wrong protocol, owner mismatch at the capabilities step): no operation exists.
+ * Used only for reporting (standby-durable-forward-without-token §8, §10); the
+ * caller-facing outcome stays as on main, and native-conversation-base slice 3b
+ * owns how that outcome is worded. */
+export const RELAY_PRE_PREPARE_REASONS: ReadonlySet<string> = new Set(['origin-peer-unreachable', 'origin-peer-protocol-unavailable', 'execution-owner-mismatch']);
+/** §8 (standby-durable-forward-without-token): the producer ids of hub posts. Every one is
+ * notice-class (see `NOTICE_CLASS_PRODUCERS`), so it is never turned into a durable held reply. */
+export type HubNoticeClass = 'attention-hub-post' | 'held-expiry-report';
+
+export function relayNothingPrepared(error: unknown): boolean {
+  return error instanceof TelegramOriginHoldError && error.operationId === null && RELAY_PRE_PREPARE_REASONS.has(error.reason);
+}
+
 /** a2a-single-agent-identity §4.2 — the forward-to-holder path found, during
  * its lease-settling window, that THIS machine holds the lease after all. The
  * caller sends locally; nothing was forwarded, recorded or held. */
