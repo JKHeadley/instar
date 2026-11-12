@@ -4,7 +4,6 @@
 **Date:** `2026-11-11`
 **Author:** `echo`
 **Second-pass reviewer:** `independent reviewer subagent (see "Second-pass review" below), plus two outside reads per round: GPT-6 Astra (codex-cli:gpt-6-astra) and Fable 5.2 (claude-code:claude-fable-5-2)`
-**Reviewer:** independent second-pass reviewer subagent (claude-opus-5-5, clean context), concurred after two rounds; outside reads GPT-6 Astra and Fable 5.2, three rounds each
 
 ## Summary of the change
 
@@ -94,7 +93,7 @@ Revert the commit, or switch documents off (`documents.enabled: false`): the ver
 
 ## Second-pass review
 
-(appended below by the reviewer)
+**Reviewer:** independent second-pass reviewer subagent (claude-opus-5-5, clean context), concurred after two rounds; outside reads GPT-6 Astra and Fable 5.2, three rounds each
 
 **Round 1 (internal reviewer, 2026-11-11 18:28 PST):** Concern raised. (1) The home rule missed Telegram group keys. (2) It missed the `system` audience. (3) The artifact overstated the exemption. (4) Readers without a device lose a working signed link. (5) Test gaps. (6) The code changed mid-review. All fixed: the home rule is inverted to a positive list of places a document can't live; `system` is owner reach in both places; the 409 body and CLAUDE.md state the reader point; the per-caller route tests and system-session tests were added.
 
