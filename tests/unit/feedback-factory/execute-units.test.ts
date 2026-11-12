@@ -1360,3 +1360,13 @@ describe('related-test failure keys', () => {
     expect(unsafe.keys.size).toBe(0);
   });
 });
+
+describe('already-fixed claim in the session result', () => {
+  it('keeps a hex fixedByCommit only on not-reproducible', async () => {
+    const { parseSessionResult } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: ' ABC1234 ' }))?.fixedByCommit).toBe('abc1234');
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: 'HEAD~1' }))?.fixedByCommit).toBeUndefined();
+    expect(parseSessionResult(JSON.stringify({ outcome: 'not-reproducible', fixedByCommit: 'abc12' }))?.fixedByCommit).toBeUndefined();
+    expect(parseSessionResult(JSON.stringify({ outcome: 'gave-up', fixedByCommit: 'abc1234' }))?.fixedByCommit).toBeUndefined();
+  });
+});
