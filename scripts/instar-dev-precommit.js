@@ -36,6 +36,7 @@ import { selfActionDeclarationVerdict } from './lib/self-action-detect.mjs';
 import { isKnownInlineCodeEnumReference } from './lib/markdown-code-identifier.mjs';
 import { validateAuditReport, parseFrontmatter, responseChangedFromBase } from './write-audit-convergence.mjs';
 import { scanForSecrets } from './audit-secret-patterns.mjs';
+import { checkOpenPrOverlap } from './lib/open-pr-overlap.mjs';
 import { traceIsComplete, traceMissingCoverage, artifactSha256, MIN_ARTIFACT_CHARS as SHARED_MIN_ARTIFACT_CHARS } from './lib/instar-dev-trace.mjs';
 
 // Report-Backed Converging Audit (docs/specs/CONVERGING-AUDIT-DEFAULT.md, Part B).
@@ -150,6 +151,13 @@ if (staged.length === 0 && scopeOnlyPaths.length === 0) {
   // No staged files — nothing to check.
   process.exit(0);
 }
+
+// ─── Step 1.2: open-PR overlap signal (Echo Bugs 10000002588) ────────────
+// Every commit, in or out of the gated scope (a plan-only docs commit counts),
+// is compared against other sessions' open PRs so cross-machine overlap is
+// seen without anyone remembering to run `instar dev:claim-check`. SIGNAL
+// ONLY: prints a notice, never blocks; fails open. Off: INSTAR_PR_OVERLAP_CHECK=off.
+checkOpenPrOverlap({ stagedFiles: [...staged, ...scopeOnlyPaths], cwd: ROOT });
 
 // ─── Step 1.5: audit-convergence gate ─────────────────────────────────────
 // (audit-convergence-enforcement §2). Placed BEFORE the in-scope early-exit so
