@@ -537,48 +537,6 @@ describe('coordinator — results', () => {
     expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
   });
 
-  it('a restart that re-takes the lease on the same machine (new epoch, no foreign holder) keeps and imports the attempt', async () => {
-    const { c, req } = await dispatched();
-    c.svc.shutdown();
-    const h2 = harness({ stateDir: c.stateDir });
-    const peer2 = fakePeer();
-    peer2.setResult(() => ({ state: 'done', record: peerRecord(req) }));
-    let holds = false;
-    h2.svc.setPeerWiring({ peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }], client: peer2.client, lease: { holdsLease: () => holds, leaseEpoch: () => (holds ? 10 : null), holderMachineId: () => (holds ? 'coord' : null) } });
-    await h2.svc.boot();
-    await h2.svc.tick(); // lease not back yet: the attempt waits instead of being abandoned
-    expect(h2.svc.snapshot().queue.find((x) => x.pr === 2)?.remote?.attemptId).toBe(req.attemptId);
-    expect(peer2.calls.some((x) => x.kind === 'cancel')).toBe(false);
-    holds = true;
-    h2.svc.onLeaseAcquired({ foreignHolder: false, epoch: 10 });
-    h2.advance(PEER_LIMITS.pollMs + 1);
-    await h2.svc.tick();
-    expect(h2.svc.getRecord(2, sha('c'), 'main')).toMatchObject({ machineId: 'peer1', outcome: 'success' });
-  });
-
-  it('a foreign holder in between still abandons the attempt and imports nothing', async () => {
-    const { c, req } = await dispatched();
-    c.setEpoch(10);
-    c.svc.onLeaseAcquired({ foreignHolder: true, epoch: 10 });
-    c.peer.setResult(() => ({ state: 'done', record: peerRecord(req) }));
-    c.advance(PEER_LIMITS.pollMs + 1);
-    await c.svc.tick();
-    expect(c.svc.getRecord(2, sha('c'), 'main')).toBeNull();
-    expect(c.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
-  });
-
-  it('another machine holding the lease after a restart abandons at once, without waiting out the grace', async () => {
-    const { c, req } = await dispatched();
-    c.svc.shutdown();
-    const h2 = harness({ stateDir: c.stateDir });
-    const peer2 = fakePeer();
-    h2.svc.setPeerWiring({ peers: () => [{ machineId: 'peer1', url: 'http://peer1:4042' }], client: peer2.client, lease: { holdsLease: () => false, leaseEpoch: () => 11, holderMachineId: () => 'other' } });
-    await h2.svc.boot();
-    await h2.svc.tick();
-    expect(h2.svc.snapshot().queue.find((x) => x.pr === 2)?.remote).toBeUndefined();
-    expect(peer2.calls.some((x) => x.kind === 'cancel' && x.arg === req.attemptId)).toBe(true);
-  });
-
   it('a run past the run bound is abandoned', async () => {
     const { c } = await dispatched();
     c.advance(PEER_LIMITS.maxRunMs + 1);

@@ -2,12 +2,12 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { buildPlist, parseExit, spawnViaLaunchd, sweepStale, launchdLabelPrefix, type LaunchdSpawnSeams } from '../../src/localVerify/launchdSpawn.js';
+import { LaunchdNoFallbackError, buildPlist, parseExit, spawnViaLaunchd, sweepStale, launchdLabelPrefix, type LaunchdSpawnSeams } from '../../src/localVerify/launchdSpawn.js';
 
 function tmp(): string { return fs.mkdtempSync(path.join(os.tmpdir(), 'lv-launchd-')); }
 
 /** A fake launchd: bootstrap "starts" the job by writing its pid file (or not). */
-function fakeSeams(o: { startWritesPid?: boolean; bootstrapFails?: boolean; printOut?: string; alive?: () => boolean; list?: string } = {}) {
+function fakeSeams(o: { startWritesPid?: boolean; bootstrapFails?: boolean; bootoutFails?: boolean; printOut?: string; alive?: () => boolean; list?: string | (() => string) } = {}) {
   const calls: string[][] = [];
   let tick: (() => void) | null = null;
   const s: LaunchdSpawnSeams = {
@@ -21,7 +21,8 @@ function fakeSeams(o: { startWritesPid?: boolean; bootstrapFails?: boolean; prin
         return '';
       }
       if (args[0] === 'print') return o.printOut ?? '\tlast exit code = 0\n';
-      if (args[0] === 'list') return o.list ?? '';
+      if (args[0] === 'bootout' && o.bootoutFails) throw new Error('Boot-out failed: 5');
+      if (args[0] === 'list') return typeof o.list === 'function' ? o.list() : (o.list ?? '');
       return '';
     },
     sleepSync: () => {},
@@ -94,11 +95,37 @@ describe('launchdSpawn', () => {
     expect(fs.readdirSync(dir)).toEqual([]);
   });
 
+  it('no pid and the job cannot be stopped (still listed): refuses the plain-spawn fallback', () => {
+    const dir = tmp();
+    const label = { v: '' };
+    const f = fakeSeams({ startWritesPid: false, bootoutFails: true, list: () => `123\t0\t${label.v}\n` });
+    const orig = f.s.launchctl;
+    f.s.launchctl = (args) => { if (args[0] === 'bootstrap') label.v = String(args[2]).split('/').pop()!.replace(/\.plist$/, ''); return orig(args); };
+    expect(() => spawnViaLaunchd({ command: 'c', args: [], env: {}, logFile: '/l' }, { dir, labelPrefix: 'p', cwd: '/', seams: f.s, pidWaitMs: 1000 })).toThrow(LaunchdNoFallbackError);
+  });
+
+  it('no pid and the boot-out fails but the job is gone: an ordinary error (fallback allowed)', () => {
+    const dir = tmp();
+    const f = fakeSeams({ startWritesPid: false, bootoutFails: true, list: '' });
+    let err: unknown;
+    try { spawnViaLaunchd({ command: 'c', args: [], env: {}, logFile: '/l' }, { dir, labelPrefix: 'p', cwd: '/', seams: f.s, pidWaitMs: 1000 }); } catch (e) { err = e; }
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(LaunchdNoFallbackError);
+  });
+
   it('sweeps only this prefix and only jobs that are not running', () => {
     const dir = tmp();
     const f = fakeSeams({ list: 'PID\tStatus\tLabel\n-\t0\tpre.1\n77\t0\tpre.2\n-\t0\tother.1\n-\t0\tpreX.1\n' });
     expect(sweepStale('pre', dir, f.s)).toBe(1);
     expect(f.calls.filter((c) => c[0] === 'bootout')).toEqual([['bootout', 'gui/501/pre.1']]);
+  });
+
+  it('removes leftover plist/pid files of this prefix with no launchd job, never a live job\'s files', () => {
+    const dir = tmp();
+    for (const f of ['pre.9.plist', 'pre.9.pid', 'pre.2.plist', 'pre.2.pid', 'other.1.plist']) fs.writeFileSync(path.join(dir, f), 'x');
+    const f = fakeSeams({ list: 'PID\tStatus\tLabel\n77\t0\tpre.2\n' });
+    sweepStale('pre', dir, f.s);
+    expect(fs.readdirSync(dir).sort()).toEqual(['other.1.plist', 'pre.2.pid', 'pre.2.plist']);
   });
 
   it('gives each agent home its own label prefix', () => {

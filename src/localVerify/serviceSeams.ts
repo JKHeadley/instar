@@ -11,7 +11,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { getHostTestRunnerSemaphore, resolveCap } from '../core/hostTestRunnerSemaphore.js';
 import type { ChildHandle, LocalVerifyServiceSeams, PrView } from './LocalVerifyService.js';
-import { launchdLabelPrefix, spawnViaLaunchd } from './launchdSpawn.js';
+import { LaunchdNoFallbackError, launchdLabelPrefix, spawnViaLaunchd } from './launchdSpawn.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -120,6 +120,7 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
             cwd: process.cwd(),
           });
         } catch (e) {
+          if (e instanceof LaunchdNoFallbackError) throw e; // a launchd job may still be running: never start it twice
           pc.onFallback?.(e instanceof Error ? e.message : String(e)); // the plain spawn below still runs it
         }
       }

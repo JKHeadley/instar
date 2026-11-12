@@ -114,19 +114,39 @@ export function parseExit(print: string): { status: number | null; signal: strin
   return code !== undefined ? { status: Number(code), signal: null } : { status: null, signal: null };
 }
 
-/** Boot out jobs under this prefix that are no longer running (left over from a server that stopped mid-run). */
+/**
+ * Boot out jobs under this prefix that are no longer running (left over from a server that stopped mid-run).
+ * Called only at the start of a new run. The service runs one local verify at a time and starts the next
+ * only after the previous run's exit was read. A failed-file diagnosis job (FailedFileDiagnosisPeerService)
+ * can overlap: a live one is kept; one that exited within the last poll second may be booted out first,
+ * and its exit then reads as unknown, which that service ignores.
+ * Leftover plist/pid files with no launchd job (a crash between write and bootstrap) are removed too:
+ * a plist holds the run's environment, tokens included.
+ */
 export function sweepStale(prefix: string, dir: string, s: LaunchdSpawnSeams): number {
   let n = 0;
   let list = '';
   try { list = s.launchctl(['list']); } catch { return 0; } // @silent-fallback-ok: a sweep is housekeeping only
+  const live = new Set<string>();
   for (const line of list.split('\n')) {
     const [pid, , label] = line.trim().split(/\s+/);
-    if (!label?.startsWith(prefix + '.') || pid !== '-') continue;
+    if (!label?.startsWith(prefix + '.')) continue;
+    if (pid !== '-') { live.add(label); continue; }
     try { s.launchctl(['bootout', `gui/${s.uid()}/${label}`]); n++; } catch { /* @silent-fallback-ok: already gone */ }
     for (const ext of ['.plist', '.pid']) rm(path.join(dir, label + ext));
   }
+  let files: string[] = [];
+  try { files = fs.readdirSync(dir); } catch { files = []; } // @silent-fallback-ok: no job dir yet
+  for (const f of files) {
+    const m = /^(.*)\.(plist|pid)$/.exec(f);
+    if (!m || !m[1].startsWith(prefix + '.') || live.has(m[1])) continue;
+    rm(path.join(dir, f));
+  }
   return n;
 }
+
+/** The launchd job could not be confirmed stopped: the caller must NOT fall back to a plain spawn (it might run twice). */
+export class LaunchdNoFallbackError extends Error {}
 
 export function spawnViaLaunchd(
   a: { command: string; args: string[]; env: NodeJS.ProcessEnv; logFile: string },
@@ -164,8 +184,13 @@ export function spawnViaLaunchd(
     s.sleepSync(25);
   }
   if (!(pid > 0)) {
-    // Started (or not) without a pid we can track: stop it and let the caller use the plain spawn.
-    cleanup();
+    // Started (or not) without a pid we can track: stop it and let the caller use the plain spawn,
+    // but only when the stop is confirmed; otherwise a slow-starting job and the fallback could both run.
+    let stopped = true;
+    try { s.launchctl(['bootout', `${domain}/${label}`]); } catch { stopped = !s.launchctl(['list']).split('\n').some((l) => l.trim().endsWith(label)); }
+    rm(plistPath);
+    rm(pidPath);
+    if (!stopped) throw new LaunchdNoFallbackError('launchd job recorded no pid and could not be stopped');
     throw new Error('launchd job recorded no pid');
   }
   const exited = new Promise<{ status: number | null; signal: string | null }>((resolve) => {

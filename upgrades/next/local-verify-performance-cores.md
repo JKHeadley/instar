@@ -9,10 +9,8 @@ Before this, the run was a child of the agent server. The server lives under a t
 - Jobs left over from a server that stopped mid-run are swept before the next start.
 - `localVerify.performanceCores: false` turns it off. Linux is unchanged.
 
-- A peer machine's in-flight verify now survives the coordinator's own restart. When the coordinator takes its lease back with no other holder in between, the attempt is adopted under the new lease epoch, and its signed result is still checked against the dispatch epoch. Before, every coordinator restart cancelled the peer's run, so 12 of 30 M5 attempts were lost on 2026-11-10.
-
 ## What to Tell Your User
-Changes waiting to merge are tested faster and stop timing out when the Mac is busy, so they reach you sooner. When something is waiting to merge, I now explain the real cause from our own test queue instead of pointing at GitHub. When I restart, test runs your other machines are doing are no longer thrown away. Nothing for you to do.
+Changes waiting to merge are tested faster and stop timing out when the Mac is busy, so they reach you sooner. When something is waiting to merge, I now explain the real cause from our own test queue instead of pointing at GitHub. Nothing for you to do.
 
 ## Summary of New Capabilities
 - On macOS, Local Verify runs on the performance cores (default on, with fallback to the previous spawn).
