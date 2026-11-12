@@ -152,6 +152,8 @@ export interface OriginConfig {
    * the lease is FORWARDED to the holder (omitted ⇒ enabled). The durable held
    * state, its reason and the notice are NOT behind this switch. */
   forwardToHolder?: { enabled?: boolean };
+  /** native-conversation-base §3b — the outcome route asks the execution owner (default on; read inline). */
+  ownerRead?: { enabled?: boolean; budgetMs?: number; cacheEntries?: number };
   limits?: Partial<OriginLimits>;
 }
 export type BotParameters = { [key: string]: OriginJson };
