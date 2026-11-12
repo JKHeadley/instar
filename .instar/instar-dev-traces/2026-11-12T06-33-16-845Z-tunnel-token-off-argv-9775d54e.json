@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "tunnel-token-off-argv",
+  "sessionId": "6fe3453d-a340-423f-bf2f-db8ab16fe753",
+  "timestamp": "2026-11-12T06:33:16.845Z",
+  "artifactPath": "upgrades/side-effects/tunnel-token-off-argv.md",
+  "artifactSha256": "ecbf06bbddb80ca0fd58a743b4ee6db242fa8141ecc14ae60bfad9008a0a8a18",
+  "coveredFiles": [
+    "docs/specs/tunnel-token-off-argv.eli16.md",
+    "src/tunnel/CloudflareNamedProvider.ts",
+    "src/tunnel/TunnelManager.ts",
+    "tests/unit/cloudflare-named-token-file.test.ts",
+    "upgrades/next/tunnel-token-off-argv.md",
+    "upgrades/side-effects/tunnel-token-off-argv.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Changes how one process is started, with a fallback to the old start; a revert fully undoes it",
+  "eli16Path": "docs/specs/tunnel-token-off-argv.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/tunnel-token-off-argv.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
