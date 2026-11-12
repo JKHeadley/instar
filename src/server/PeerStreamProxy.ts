@@ -215,6 +215,7 @@ export class PeerStreamProxy {
       this.transport.send(frame);
       return true;
     } catch (e) {
+      // @silent-fallback-ok: not silent — false makes the caller answer the sender peer-stream-lost with its id
       this.log(`relay send threw: ${(e as Error)?.message ?? e}`);
       return false;
     }

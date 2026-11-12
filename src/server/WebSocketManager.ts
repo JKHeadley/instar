@@ -392,7 +392,7 @@ export class WebSocketManager {
     }
     this.inputIds.begin(session, id);
     let success = false;
-    try { success = write(); } catch { success = false; }
+    try { success = write(); } catch { success = false; /* @silent-fallback-ok: a throwing write is reported to the sender as input_ack success:false with its id, never hidden */ }
     const ack: InputAckFrame = { type: 'input_ack', session, success, clientInputId: id };
     const waiters = this.inputIds.complete(session, id, ack);
     this.send(client.ws, { ...ack });

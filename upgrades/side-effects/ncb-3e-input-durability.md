@@ -140,6 +140,7 @@ Verified sound by the reviewer: id recorded before the write and repeats answere
 - Unit: `tests/unit/console-input-model.test.ts`, `tests/unit/WebSocketManager.test.ts` (§3e block), `tests/unit/PeerStreamProxy.test.ts` (§3e block), `tests/unit/console-sessions.test.ts` (composer waits for caps, clears only on its id), `tests/unit/dashboard-input-awareness-migration.test.ts`.
 - Integration: `tests/integration/dashboard-input-durability.test.ts`.
 - E2E: `tests/e2e/dashboard-input-durability-alive.test.ts`.
+- Follow-up commit: the neighbour unit lane's `tests/unit/no-silent-fallbacks.test.ts` counted two new `catch` blocks; both report the failure to the sender (`input_ack success:false`, or `peer-stream-lost`), so they carry the `@silent-fallback-ok` marker with that reason. Comment-only.
 
 ---
 
