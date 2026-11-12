@@ -40,17 +40,19 @@ It does **not** contain an agent that is trying to get around it. Such an agent 
 
 - **Detector:** a form is about to be submitted that contains a **non-empty** input whose own label, name, placeholder or `autocomplete` value names a recovery or backup code. A heading or URL alone does not trigger it, so security-settings pages and factor pickers are not held (round-2 finding: heading matches would hold ordinary pages).
 - **Hold points:** a new self-executing init script, `account-submit-hold.js` (the existing `account-page-safety.js` is a function the wrapper calls with arguments, so it cannot be an init script). It listens on `window` in the capture phase for `submit` and for `click` on submit-type controls, and patches `HTMLFormElement.prototype.submit` and `requestSubmit`. When the form holds a filled recovery-code input, it calls `stopImmediatePropagation()` and `preventDefault()` before any site handler runs, then asks. On dismissal, no site handler sees the event, so the site sends no request. `installBrowserScripts` writes the file on every OS.
-- **What the agent sees:** a native `confirm()` dialog with the text: "instar: this submits a one-time recovery code to <origin>. Known cost: <cost from the shipped table, or 'unknown'>. Do this only if the operator approved this exact use. Check the credential's saved instructions first: a saved key or password may work." Dialogs are how the hold reaches every driver without a bearer token in the page:
+- **What the agent sees:** a native `confirm()` dialog with the text: "instar: this looks like it submits a one-time recovery code to <origin>. Known cost: <cost from the shipped table, or 'unknown'>. Do this only if the operator approved this exact use. Check the credential's saved instructions first: a saved key or password may work." Dialogs are how the hold reaches every driver without a bearer token in the page:
   - Playwright MCP reports an open dialog as a modal state that must be handled before anything else happens.
-  - Playwright scripts with no dialog listener dismiss dialogs, so the submit is cancelled. A script with a blanket `page.on('dialog', d => d.accept())` would accept silently, so the launcher always prints every dialog's text to stderr and records it (below).
+  - On the launcher route the launcher owns the decision. It registers its own `page.on('dialog')` handler before handing the page to the caller's code. For a break-glass dialog (recognised by its fixed `instar:` prefix) it prints the text to stderr and decides at once. It dismisses, unless the caller called `allowBreakGlass(origin, reason)` on the launcher for this origin beforehand, in which case it accepts. Either way it records the outcome itself. Because it settles the dialog first, a caller's blanket `d.accept()` handler finds the dialog already settled and cannot accept it. Non-instar dialogs are left to the caller.
   - `chrome-js.sh` (normal Chrome through osascript) gets no init script. There, a real modal would hang the osascript call, so that route keeps only the PR 2944 preflight.
-- **Release:** accepting the dialog lets the submit through. That is the agent's own judgment, made with the cost in front of it. No code is logged anywhere. On the launcher route, the launcher (outside the page) records an `account-break-glass` audit event from `page.on('dialog')`: origin, time, accepted or dismissed. On the MCP route the dialog text is in the MCP tool result, so the session transcript is the record.
+- **Release:** on the launcher route, `allowBreakGlass(origin, reason)` before the submit. Under MCP, `browser_handle_dialog` with accept. Either way it is the agent's own judgment, made with the cost in front of it, and the reason it gives must name the operator's approval. No code is logged anywhere. The launcher records an `account-break-glass` audit event (origin, time, outcome, reason). On the MCP route the dialog text and the agent's answer are in the session transcript, which is the record.
 - **Cost table:** `src/data/breakGlassCosts.ts`, keyed by origin. It starts with npm (72-hour publishing and token hold; npm changelog 2026-09-09, observed 2026-11-07). Unknown origins say "cost unknown".
 
 ### Guard 2. A credential's saved instructions travel with it
 
 - **What counts as instructions:** a Bitwarden custom field named `instructions`. Never an item's `notes`: on a secure-note item (type 2) the notes are the secret value, and `BitwardenProvider.set()` writes the value into `notes` on any existing item, so login-item notes can hold a secret too. This spec also fixes `set()` to write `login.password` on a login item. In the local vault, a sibling key `<key>__instructions` (a dot would nest, per `secret-get.mjs`). The Bitwarden provider gains code to read custom fields, which it does not read today.
 - **When it prints:** only when the item has instructions. Plain tokens with none (the auth token, most API keys) print nothing extra.
+- **Notes pointer:** when a Bitwarden login item has non-empty `notes` and no `instructions` field, the reader prints one stderr line, without the notes themselves: "this item has notes that may hold usage instructions; read them with `bw get item <id>` and move any instructions into an `instructions` field". On 11-11 that line would have pointed at the counter instruction.
+- **Migration of known items:** Echo moves the instructions on the npm item ("npmjs.com - jkheadley") into an `instructions` field, leaving the notes as they are. The unit test reproduces the incident: reading that item prints the counter instruction.
 - **How:** the reader writes the full text to a 0600 file under `.instar/state/credential-instructions/` and prints to stderr the path, byte count and the full text, wrapped as untrusted data (`<credential-instructions item="…" untrusted>…</credential-instructions>`), after `SecretRedactor`. Nothing is cut; the file holds the whole text even if stderr is dropped.
 - **Not authority:** instructions are data and never stand in for an approval.
 - **Readers covered:** `secret-get.mjs` and `secret-drop-retrieve.mjs` (Secret Drop has no notes, so it prints nothing), and the Bitwarden provider's `get`.
@@ -75,7 +77,7 @@ fixed-limits: none.
 
 ## Signals and what they prove (P20)
 
-- **Recovery-code input.** Symbol: a non-empty input labelled as a recovery or backup code. State claimed: this submit spends a break-glass code. Corroboration: the input is in the form being submitted and has a value. Unmeasurable, stated as known gaps: an unlabelled code field, and a single-page site that sends the code with `fetch` from a non-submit button. Neither is held; the CLAUDE.md rule remains.
+- **Recovery-code input.** Symbol: a non-empty input labelled as a recovery or backup code. State claimed: this submit may spend a break-glass code (a possible use, not proof that a code was consumed; the service decides that). Corroboration: the input is in the form being submitted and has a value; the dialog says "looks like". Unmeasurable, stated as known gaps: an unlabelled code field, and a single-page site that sends the code with `fetch` from a non-submit button. Neither is held; the CLAUDE.md rule remains.
 - **Instructions present.** Symbol: the field exists. State: the item carries usage instructions. No inference beyond that.
 
 ## Multi-machine posture
@@ -92,7 +94,10 @@ fixed-limits: none.
 
 ## Rollout and rollback
 
-- On by default. `accountSafety.pageHold: false` turns off guards 1 and 3, and doing so records a degradation.
+- Maturation ladder: first a throwaway test agent (the integration tests above), then development agents (Echo) on by default, then the fleet. The fleet step ships after one week on Echo without a wrongly held page, recorded in the maturation board.
+- The rollout to Echo starts only after the operator approves the F-B and F-D deferrals with dates (P10). That request goes out in the morning, not at night.
+
+- `accountSafety.pageHold: false` turns off guards 1 and 3, and doing so records a degradation.
 - Built-in browser scripts are overwritten on every update, so a downgrade restores the previous script.
 
 ## Follow-ups (registered as commitments when this ships)
@@ -115,6 +120,7 @@ P10 asks for principal approval for deferrals that risk recurrence. F-B (partly 
 
 - Round 0 (21:31): three flags, answered by dropping name-pattern authority and the notes cut.
 - Round 1 (22:33): two flags. Answered by covering the init-script route and holding at the submit.
+- Round 4 (23:02): three gate flags (blanket accept, symbol vs state, maturation ladder) and three GPT-6 findings (dialog ownership, instructions still in notes, deferral approval timing). Answered with a launcher-owned dialog decision, a notes pointer and migration of the npm item, "looks like" wording, the maturation ladder, and approval before rollout.
 - Round 3 (22:57): six design findings from the internal reviewer, three from GPT-6. Answered with a new init script that stops site handlers, `PLAYWRIGHT_MCP_INIT_SCRIPT`, no notes as instructions, a launcher-side audit, an honest coverage statement and the interim commitment.
 - Round 2 integration review (22:46): five places write the MCP entry, local-vault dots nest, the Bitwarden reader lacks custom fields, and secret sync is off on the fleet. Answered in guards 2 and 3 and the posture section.
 - Round 2 (22:41): five flags (unmediated programmatic submits, pattern authority, 1-hour expiry, chunks-served proof, a dark approval store). Answered by scoping to a confused agent, holding `form.submit`, and removing the approval store, expiry and chunk proof.
