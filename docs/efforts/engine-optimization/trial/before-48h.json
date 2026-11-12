@@ -1,0 +1,257 @@
+{
+ "summary": {
+  "window": [
+   "2026-11-10T04:00:00Z",
+   "2026-11-12T04:00:00Z"
+  ],
+  "runs": 24,
+  "matched": 21,
+  "success": 22,
+  "failure": 0,
+  "tokensTotal": 25670773,
+  "tokensMeanPerMatchedRun": 1222417.761904762,
+  "tokensMedian": 1122378
+ },
+ "rows": [
+  {
+   "runId": "bugs-overseer-mwa6523c-34",
+   "startedAt": "2026-11-10T04:07:00.312Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "56a0e08c-ddc0-4237-a7d1-9b6d001dd3ac",
+   "candidates": 1,
+   "tokens": 1122378
+  },
+  {
+   "runId": "bugs-overseer-mwaafdpg-x",
+   "startedAt": "2026-11-10T06:07:00.388Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "740d3127-10e0-47ac-8744-a025f60f441f",
+   "candidates": 1,
+   "tokens": 1407864
+  },
+  {
+   "runId": "bugs-overseer-mwaeppg2-2f",
+   "startedAt": "2026-11-10T08:07:00.626Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": null,
+   "candidates": 2,
+   "tokens": null
+  },
+  {
+   "runId": "bugs-overseer-mwaj00se-a",
+   "startedAt": "2026-11-10T10:07:00.350Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "2ebbdaea-aaab-4304-8cfa-c4a60fd409cd",
+   "candidates": 1,
+   "tokens": 569812
+  },
+  {
+   "runId": "bugs-overseer-mwanad3l-1s",
+   "startedAt": "2026-11-10T12:07:01.329Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "86ab78a4-0888-49ab-8211-acb596a4e72e",
+   "candidates": 1,
+   "tokens": 569461
+  },
+  {
+   "runId": "bugs-overseer-mwarknu5-39",
+   "startedAt": "2026-11-10T14:07:00.269Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "088696a1-d03b-4ecb-ac0c-ee63639f8602",
+   "candidates": 1,
+   "tokens": 971724
+  },
+  {
+   "runId": "bugs-overseer-mwavuzd5-j",
+   "startedAt": "2026-11-10T16:07:00.233Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "7a2c6d18-c6ab-44c4-af9c-6916f31aeea7",
+   "candidates": 1,
+   "tokens": 674519
+  },
+  {
+   "runId": "bugs-overseer-mwb05b40-27",
+   "startedAt": "2026-11-10T18:07:00.480Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "1d2cf8d1-14bc-4001-b958-dbbd12bb790c",
+   "candidates": 1,
+   "tokens": 982125
+  },
+  {
+   "runId": "bugs-overseer-mwb4fmhz-3r",
+   "startedAt": "2026-11-10T20:07:00.263Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "b72e13a6-b2d9-4ac9-9841-517c51e28d92",
+   "candidates": 1,
+   "tokens": 1424341
+  },
+  {
+   "runId": "bugs-overseer-mwb8py7v-s",
+   "startedAt": "2026-11-10T22:07:00.475Z",
+   "result": "pending",
+   "model": "opus",
+   "launch": null,
+   "match": "a33ca0a8-92d8-4a04-b7c9-973f9a8310b7",
+   "candidates": 1,
+   "tokens": 2893225
+  },
+  {
+   "runId": "bugs-overseer-mwbd09p8-m",
+   "startedAt": "2026-11-11T00:07:00.380Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": null,
+   "candidates": 2,
+   "tokens": null
+  },
+  {
+   "runId": "bugs-overseer-mwbhbg6m-s",
+   "startedAt": "2026-11-11T02:07:40.462Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "483b99e7-c3d8-4d66-86ee-121ed03c693b",
+   "candidates": 1,
+   "tokens": 979776
+  },
+  {
+   "runId": "bugs-overseer-mwbmc6c4-13",
+   "startedAt": "2026-11-11T04:28:12.436Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "4b8c18b1-c8c5-4fea-9267-fb6288bee6da",
+   "candidates": 1,
+   "tokens": 1442834
+  },
+  {
+   "runId": "bugs-overseer-mwbtlu4n-1",
+   "startedAt": "2026-11-11T07:51:40.487Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": null,
+   "candidates": 2,
+   "tokens": null
+  },
+  {
+   "runId": "bugs-overseer-mwbu5tib-2",
+   "startedAt": "2026-11-11T08:07:12.803Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "e958c654-1e3a-43d5-864d-4a1cac179338",
+   "candidates": 1,
+   "tokens": 794418
+  },
+  {
+   "runId": "bugs-overseer-mwbyfw2l-17",
+   "startedAt": "2026-11-11T10:07:01.149Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "71dca199-e5cd-4416-b5db-b8042ae542bd",
+   "candidates": 1,
+   "tokens": 1278282
+  },
+  {
+   "runId": "bugs-overseer-mwc2q7j1-2p",
+   "startedAt": "2026-11-11T12:07:01.021Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "978fe6c6-8e77-4e78-94b2-f03aa4c20d7a",
+   "candidates": 1,
+   "tokens": 1629145
+  },
+  {
+   "runId": "bugs-overseer-mwc70j7t-44",
+   "startedAt": "2026-11-11T14:07:01.193Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "a92a813f-d22d-4350-ab56-338350ae66cc",
+   "candidates": 1,
+   "tokens": 683756
+  },
+  {
+   "runId": "bugs-overseer-mwcbau0a-n",
+   "startedAt": "2026-11-11T16:07:00.202Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "584c1e6a-cfbf-4bc9-9ca3-0fdca392c7cb",
+   "candidates": 1,
+   "tokens": 1200013
+  },
+  {
+   "runId": "bugs-overseer-mwcflqku-28",
+   "startedAt": "2026-11-11T18:07:27.438Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "ef56fd20-7ae7-4110-a466-800b3354010c",
+   "candidates": 1,
+   "tokens": 466706
+  },
+  {
+   "runId": "bugs-overseer-mwcjvhid-3t",
+   "startedAt": "2026-11-11T20:07:00.709Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "114592f4-5185-4d16-bdbf-fa7afd6a2be0",
+   "candidates": 1,
+   "tokens": 2722700
+  },
+  {
+   "runId": "bugs-overseer-mwco5ssy-7",
+   "startedAt": "2026-11-11T22:07:00.370Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "bda08108-a251-42c8-bc2f-db73996b87cd",
+   "candidates": 1,
+   "tokens": 1448698
+  },
+  {
+   "runId": "bugs-overseer-mwcsg4eu-1q",
+   "startedAt": "2026-11-12T00:07:00.438Z",
+   "result": "success",
+   "model": "opus",
+   "launch": null,
+   "match": "3e636aa7-4e97-4d05-b25d-2e7a58413e19",
+   "candidates": 1,
+   "tokens": 2213864
+  },
+  {
+   "runId": "bugs-overseer-mwcwqgdh-1x",
+   "startedAt": "2026-11-12T02:07:00.965Z",
+   "result": "pending",
+   "model": "opus",
+   "launch": null,
+   "match": "6227c8e9-7729-48ea-98aa-644cdfdeb73a",
+   "candidates": 1,
+   "tokens": 195132
+  }
+ ]
+}
