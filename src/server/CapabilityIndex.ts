@@ -352,6 +352,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     }),
   },
   {
+    key: 'conversationMedia',
+    prefixes: ['/conversation-media'],
+    description: 'Telegram files on the machine that runs the session (docs/specs/native-conversation-base.md §3c). A photo, file, video or voice note travels by attachment id in a structured media field, never as a path in text: every path tag a person types ([image:…], [document:…], [video:…], [voice:…], [file:…]) is made inert ([typed image:…]) on Telegram, the lifeline, Slack and iMessage. The serving machine builds the file lines itself: a private copy when the file is here, [file still copying: <name>] then [file now available: <path>] when it arrives, and after 5 minutes one line saying it has not arrived yet (the wait goes on). A session on a machine without the file can fetch it: GET /conversation-media/path?conversationKey=telegram:<topicId>&platformMessageId=<id> (or &attachmentId=<id>), Bearer plus X-Instar-Bind-Token, returns {path} or 404 not-on-this-machine with the reason. GET /conversation-media/status shows this machine\'s waiting files and the observed event lag. With native media off (mobilePairing.native.media.enabled) sessions are told the file is stored on another machine.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /conversation-media/path', 'GET /conversation-media/status'],
+    }),
+  },
+  {
     key: 'attribution',
     prefixes: ['/attribution'],
     description: 'Attribution paper trail (docs/specs/attribution-paper-trail.md) — a statement credited to a person points at the logged message it came from, or says it has no source. Answers "who said this, and how did it change?". A write gate on notes, a nudge on sends, a ledger of every wording and a daily report that writes nothing to any note. Live on development agents, dark on the fleet (503). `record` refuses nothing; `enforce` is opt-in.',

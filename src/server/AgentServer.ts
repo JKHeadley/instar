@@ -391,6 +391,8 @@ import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/Burn
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { PlatformMediaForSession, getPlatformMediaForSession, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
+import { telegramDownloadDirs } from './forwardedInboundMedia.js';
 import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
 import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/MentorVisibleEcho.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
@@ -504,6 +506,8 @@ export class AgentServer {
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
+  platformMedia: PlatformMediaForSession | null = null;
   /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
   conversationUnread: ConversationUnreadService | null = null;
   private attribution: AttributionRuntime | null = null;
@@ -7299,9 +7303,36 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. A session on this machine can still read it; a session on another machine is told it has not arrived there.`);
           }
         });
+      }
+      // native-conversation-base §3c items 4 to 7: a Telegram file is readable on the machine that runs
+      // the session. File lines are built from `media[]` on the serving machine; a file that has not
+      // arrived yet gets a durable waiter that the append listener, the start-up sweep and the
+      // periodic sweep reconcile. With native media off here, sessions are told the file is on another
+      // machine (or given this machine's own download).
+      if (options.telegram) {
+        const tg = options.telegram;
+        const sm = options.sessionManager;
+        const pm = new PlatformMediaForSession({
+          service: () => (isMobileMediaEnabled(options.config) ? this.appConversations ?? null : null),
+          downloadDirs: () => telegramDownloadDirs(options.config.stateDir),
+          injectToTopic: (topicId, line) => {
+            const name = tg.getSessionForTopic(topicId);
+            if (!name || !sm.isSessionAlive(name)) return false;
+            return sm.injectMessage(name, `[telegram:${topicId}] ${line}`, { firstParty: { source: 'platform-media' } }) !== false;
+          },
+          report: (what, err) => DegradationReporter.getInstance().report({
+            feature: 'PlatformMediaForSession', primary: 'give the session a Telegram file on its own machine',
+            fallback: 'the session is told the file is still copying or on another machine',
+            reason: `${what}: ${err instanceof Error ? err.message : String(err)}`, impact: 'A file line may arrive late.',
+          }),
+        });
+        setPlatformMediaForSession(pm);
+        this.platformMedia = pm;
+        routeCtx.platformMedia = pm;
+        pm.start();
       }
       // Slack media in the app's history (media spec §4.9, the Slack half): each file the Slack
       // adapter downloads for an inbound message is also copied in, under the conversation's
@@ -9369,6 +9400,10 @@ export class AgentServer {
     this.mobilePairing?.stop();
     this.conversationUnread?.stop();
     this.appConversations?.stop();
+    if (this.platformMedia) {
+      this.platformMedia.stop();
+      if (getPlatformMediaForSession() === this.platformMedia) setPlatformMediaForSession(null);
+    }
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);

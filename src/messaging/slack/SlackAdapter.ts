@@ -25,6 +25,7 @@
 
 import path from 'node:path';
 import fs from 'node:fs';
+import { escapeTypedPathTags } from '../../core/inboundMedia.js';
 import type { IntelligenceProvider, MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
 import { DP_SLACK_STALL_CONFIRM } from '../../data/provenanceCoverage.js';
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';
@@ -1666,6 +1667,9 @@ export class SlackAdapter implements MessagingAdapter {
     if (this.botUserId) {
       cleanText = text.replace(new RegExp(`<@${this.botUserId}>\\s*`, 'g'), '').trim();
     }
+    // native-conversation-base §3c / FD-12: a path tag a person typed is inert, before this adapter
+    // adds its own tags (which keep their machine-local paths). Closes the typed-tag file read.
+    cleanText = escapeTypedPathTags(cleanText);
 
     // Download attached files (images, documents, voice/audio) and append appropriate tags
     const filePaths: string[] = [];
@@ -1708,7 +1712,8 @@ export class SlackAdapter implements MessagingAdapter {
           if (isText || isSnippet) {
             // Text-based content: try to get content directly from Slack API first
             // (url_private sometimes returns HTML instead of actual content for snippets)
-            const title = file.title as string ?? filename;
+            // A file title is set by the sender: person text (§3c), so a typed tag in it is inert.
+            const title = escapeTypedPathTags(file.title as string ?? filename);
             let textContent: string | null = null;
 
             // Method 1: Use files.info API to get the FULL content field.
@@ -1765,7 +1770,9 @@ export class SlackAdapter implements MessagingAdapter {
             }
 
             if (textContent) {
-              const truncated = textContent.length > 10000 ? textContent.slice(0, 10000) + '\n... [truncated, full content saved to ' + savedPath + ']' : textContent;
+              // A shared file's contents are person text too (§3c): typed tags in them are inert.
+              const safeContent = escapeTypedPathTags(textContent);
+              const truncated = safeContent.length > 10000 ? safeContent.slice(0, 10000) + '\n... [truncated, full content saved to ' + savedPath + ']' : safeContent;
               cleanText = cleanText
                 ? `${cleanText}\n\n[User shared "${title}"]\n\`\`\`\n${truncated}\n\`\`\``
                 : `[User shared "${title}"]\n\`\`\`\n${truncated}\n\`\`\``;
@@ -1791,7 +1798,7 @@ export class SlackAdapter implements MessagingAdapter {
             // Voice message: transcribe and inject as [voice] transcript
             try {
               const transcript = await this.transcribeVoice(savedPath);
-              cleanText = cleanText ? `${cleanText} [voice] ${transcript}` : `[voice] ${transcript}`;
+              cleanText = cleanText ? `${cleanText} [voice] ${escapeTypedPathTags(transcript)}` : `[voice] ${escapeTypedPathTags(transcript)}`;
               keepForApp('voice');
             } catch (transcribeErr) {
               console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
@@ -2021,7 +2028,7 @@ export class SlackAdapter implements MessagingAdapter {
       } else if (isAudio && this.transcribeVoice) {
         try {
           const transcript = await this.transcribeVoice(savedPath);
-          cleanText = `[voice] ${transcript}`;
+          cleanText = `[voice] ${escapeTypedPathTags(transcript)}`;
           keptAs = 'voice';
         } catch (transcribeErr) {
           console.warn(`[slack] Voice transcription failed: ${(transcribeErr as Error).message}`);
