@@ -257,6 +257,10 @@ export class JobScheduler {
   private catchUpAlertsInFlight = new Set<string>();
   private silenceCheckTimer: ReturnType<typeof setInterval> | null = null;
   private silenceAlertsInFlight = new Set<string>();
+  /** Jobs whose gate just answered "nothing to do" (a clean exit 1): a healthy check, not lost coverage. */
+  private gateNoWork = new Set<string>();
+  /** Origin for operator links (tunnel URL when up); null = the public link is not ready yet. */
+  private operatorLinkOrigin: (() => string | null) | null = null;
   private silenceAlertEpoch = new Map<string, number>();
 
   /** Retry delays in ms: 1min, 5min, 15min, 30min, 1h, 2h */
@@ -4014,7 +4018,11 @@ export class JobScheduler {
     const exitCode = errShape?.signal ?? errShape?.code ?? errShape?.status ?? null;
     const gateCmd = job.gate!.length > 200 ? job.gate!.slice(0, 200) + '…' : job.gate!;
 
-    this.skipLedger.recordSkip(job.slug, 'gate');
+    // A gate that ran and exited 1 answered "nothing to do this time" (the shell's false), which is
+    // how polling jobs work. Only an error, a timeout or another exit code means the check is broken.
+    const answeredNoWork = !errShape?.signal && errShape?.code === 1;
+    if (answeredNoWork) this.gateNoWork.add(job.slug);
+    try { this.skipLedger.recordSkip(job.slug, 'gate'); } finally { this.gateNoWork.delete(job.slug); }
     if (!this.state.readOnly) this.state.appendEvent({
       type: 'job_gate_skip',
       summary: `Job "${job.slug}" skipped — gate returned exit ${exitCode} after ${maxAttempts} attempts${stderr ? `: ${stderr.slice(0, 200)}` : ''}`,
@@ -4180,8 +4188,12 @@ export class JobScheduler {
     }
   }
 
-  /** A quiet gate or machine pin is evidence of lost job coverage, not success. */
+  /**
+   * A broken gate or a machine pin is evidence of lost job coverage. A gate that answered "nothing to
+   * do" is the job working as designed (a poller with an empty inbox), so it counts as a healthy check.
+   */
   private observeContinuitySkip(slug: string, reason: SkipReason): void {
+    if (reason === 'gate' && this.gateNoWork.has(slug)) { this.noteContinuitySuccess(slug); return; }
     if (this.state.readOnly || (reason !== 'gate' && reason !== 'machine-scope' && reason !== 'machine-too-small' && reason !== 'definition-changed')) return;
     const job = this.jobs.find((candidate) => candidate.slug === slug);
     if (!job?.enabled) return;
@@ -4194,7 +4206,11 @@ export class JobScheduler {
     if (count >= 3) {
       const detail = reason === 'machine-too-small'
         ? `${count} scheduled runs were skipped because this job is marked heavy and the machine running jobs is too small for heavy work. To run it, name this machine in the job's machines list, or let a larger machine take over running jobs`
-        : `${count} scheduled attempts were skipped (${reason})`;
+        : reason === 'gate'
+          ? `the check that decides whether it should run has failed ${count} times in a row (an error or a timeout, not "nothing to do"), so it has not run`
+          : reason === 'machine-scope'
+            ? `${count} scheduled runs were skipped because the job is set to run only on another machine, and this machine is the one running jobs`
+            : `${count} scheduled runs were skipped because its definition changed while it was due`;
       this.raiseContinuityAlert(job, detail, key);
     }
   }
@@ -4222,7 +4238,16 @@ export class JobScheduler {
     if (previous?.lastAttemptAt && now - Date.parse(previous.lastAttemptAt) < 60 * 60_000) return;
     if (this.silenceAlertsInFlight.has(key)) return;
     const topicId = job.topicId ?? this.state.get<number>('agent-attention-topic');
-    const message = `Scheduled job ${job.name} is not running as expected: ${detail}. Check its gate, machine scope and last successful run.`;
+    // Every warning carries a direct path to act (operator rule): the job's own page in the console,
+    // which shows its runs, skips and a Run now button. Wait for the public link rather than send none.
+    let link: string | null = null;
+    if (this.operatorLinkOrigin) {
+      let origin: string | null = null;
+      try { origin = this.operatorLinkOrigin(); } catch { origin = null; } // @silent-fallback-ok — an unreadable origin waits for the next five-minute check
+      if (!origin) return;
+      link = `${origin}/dashboard/console/#/work/schedule?job=${encodeURIComponent(job.slug)}`;
+    }
+    const message = `Scheduled job "${job.name}" is not running: ${detail}.${link ? `\nOpen the job (its runs, skips and Run now): ${link}` : ''}`;
     const send = this.telegram && topicId
       ? () => withNotificationEnvelope(verifiedJobEnvelope(job.slug), async () => (this.telegram!)!.sendToTopic(topicId!, message))
       : !this.telegram && this.messenger
@@ -4249,6 +4274,11 @@ export class JobScheduler {
     }).finally(() => this.silenceAlertsInFlight.delete(key));
   }
 
+  /** Where operator links point (the tunnel's public URL when up). Return null while it is not ready. */
+  setOperatorLinkOrigin(resolve: () => string | null): void {
+    this.operatorLinkOrigin = resolve;
+  }
+
   /** Check every enabled job, including machine-pinned jobs with no local cron task. */
   private checkSilentJobs(): void {
     if (!this.running || this.state.readOnly || this.paused) return;
@@ -4259,7 +4289,7 @@ export class JobScheduler {
       // Keep silence alerts focused on jobs that stopped being attempted.
       if (this.state.get(this.failureAlertStateKey(job.slug))) continue;
       if (!this.isJobScopedToThisMachine(job)) {
-        this.raiseContinuityAlert(job, 'this machine holds the scheduler but the job is pinned elsewhere', `job-silence-${job.slug}`);
+        this.raiseContinuityAlert(job, 'it is set to run only on another machine, and this machine is the one running jobs', `job-silence-${job.slug}`);
         continue;
       }
       const state = this.state.getJobState(job.slug);
@@ -4285,7 +4315,7 @@ export class JobScheduler {
         const intervalMs = next[1].getTime() - next[0].getTime();
         const graceMs = Math.max(5 * 60_000, Math.min(intervalMs * 0.5, 60 * 60_000));
         if (now > next[0].getTime() + graceMs) {
-          this.raiseContinuityAlert(job, `no successful completion after its scheduled time`, `job-silence-${job.slug}`);
+          this.raiseContinuityAlert(job, `it has not finished a run since ${new Date(last).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })}, and it was due again by now`, `job-silence-${job.slug}`);
         }
       } catch (error) {
         console.error(`[scheduler] Could not check silence for ${job.slug}:`, error);
