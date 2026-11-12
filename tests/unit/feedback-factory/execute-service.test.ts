@@ -922,6 +922,42 @@ describe('verification and publication', () => {
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'wrong', strength: 'weak', disposition: 'work' })]));
   });
 
+  it('a verified already-fixed claim holds the item after one attempt; an unverified one counts as plain not-reproducible', async () => {
+    const FULL = 'c825f2075'.padEnd(40, '0');
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    const asked: Array<[string, string]> = [];
+    h.commitInBase.fn = (commit, baseSha) => { asked.push([commit, baseSha]); return { sha: FULL, committedAt: Date.parse('2099-01-01T00:00:00Z') }; };
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'C825F2075' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(asked).toEqual([['c825f2075', BASE_SHA]]);
+    expect(h.store.get(id)).toMatchObject({ state: 'hold', reason: 'already-fixed' });
+    expect(h.execStore.attemptsFor(id)).toHaveLength(1);
+    expect(h.execStore.attemptsFor(id)[0]).toMatchObject({ state: 'not-reproducible', reason: 'already-fixed' });
+    const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8');
+    expect(audit).toContain(`"verified":"${FULL}"`);
+    h.cleanup();
+
+    h = await createExecHarness();
+    const id2 = await h.workItem('c1');
+    h.commitInBase.fn = () => null;
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'deadbeef' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(h.store.get(id2)!.state).toBe('work');
+    expect(h.execStore.attemptsFor(id2)[0]).toMatchObject({ state: 'not-reproducible', reason: 'session-claim' });
+    h.cleanup();
+
+    // A commit in the base but older than the item's first report cannot be its fix.
+    h = await createExecHarness();
+    const id3 = await h.workItem('c1');
+    h.commitInBase.fn = () => ({ sha: FULL, committedAt: Date.parse('2000-01-01T00:00:00Z') });
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'c825f2075' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(h.store.get(id3)!.state).toBe('work');
+    expect(h.execStore.attemptsFor(id3)[0]).toMatchObject({ state: 'not-reproducible', reason: 'session-claim' });
+    expect(fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8')).toContain('"afterFirstReport":false');
+  });
+
   it('after a second failure episode the executor no longer takes the item automatically; release lets it', async () => {
     h = await createExecHarness();
     const id = await h.workItem('c1');

@@ -1100,12 +1100,13 @@ export class FeedbackExecutorService {
     }
   }
 
-  /** `failed` → one retry, then hold execution-failed; `not-reproducible` twice → hold not-reproducible. */
-  private async afterFailure(row: ExecutionRow, epoch: number, kind: 'failed' | 'not-reproducible'): Promise<void> {
+  /** `failed` → one retry, then hold execution-failed; `not-reproducible` twice → hold not-reproducible; a verified `already-fixed` → hold at once. */
+  private async afterFailure(row: ExecutionRow, epoch: number, kind: 'failed' | 'not-reproducible' | 'already-fixed'): Promise<void> {
     const meta = this.itemMeta(row.initiativeId);
     if (kind === 'failed') meta.failedSince++; else meta.notReproSince++;
     let holdReason: string | null = null;
-    if (meta.failedSince >= 2) holdReason = 'execution-failed';
+    if (kind === 'already-fixed') holdReason = 'already-fixed';
+    else if (meta.failedSince >= 2) holdReason = 'execution-failed';
     else if (meta.notReproSince >= 2) holdReason = 'not-reproducible';
     if (holdReason) {
       meta.episodes++;
@@ -1114,6 +1115,7 @@ export class FeedbackExecutorService {
       // After a second episode the executor no longer takes the item automatically.
       if (meta.episodes >= 2) meta.blocked = true;
       if (holdReason === 'not-reproducible') this.gradeLatestDecision(epoch, row.initiativeId, 'executor-not-reproducible-twice', 'wrong', 'weak');
+      else if (holdReason === 'already-fixed') this.gradeLatestDecision(epoch, row.initiativeId, 'executor-already-fixed', 'wrong', 'weak');
       else this.gradeLatestDecision(epoch, row.initiativeId, 'executor-infrastructure', 'unknown', 'weak');
       await this.holdItem(epoch, row.initiativeId, holdReason);
     }
@@ -1169,8 +1171,20 @@ export class FeedbackExecutorService {
     if (!result) { this.endAttempt(row, epoch, 'failed', 'result-missing-or-invalid'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }
     this.opts.store.patch(epoch, row.attemptId, { outcome: result.outcome });
     if (result.outcome === 'not-reproducible') {
-      this.endAttempt(row, epoch, 'not-reproducible', 'session-claim');
-      await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'not-reproducible');
+      // A claim that an earlier commit already fixed it counts only when trusted code finds that commit
+      // in the attempt's base AND it was committed after the item's first report (a commit older than
+      // the report cannot be the fix for it). Then a second session would only rediscover the same
+      // fix: hold the item now. New reports bring it back, as with every hold.
+      const sourceRepo = this.opts.config().sourceRepoPath;
+      const found = result.fixedByCommit && row.baseSha && sourceRepo && this.opts.git.commitInBase
+        ? await this.opts.git.commitInBase(sourceRepo, result.fixedByCommit, row.baseSha)
+        : null;
+      const firstReport = (this.opts.processing.feedbackByCluster().get(row.clusterId) ?? [])
+        .map((r) => Date.parse(String(r.receivedAt ?? ''))).filter(Number.isFinite).reduce((min, t) => Math.min(min, t), Infinity);
+      const fixedBy = found && Number.isFinite(firstReport) && found.committedAt > firstReport ? found.sha : null;
+      if (result.fixedByCommit) this.opts.audit.append('execute:already-fixed-claim', { attemptId: row.attemptId, claimed: result.fixedByCommit, inBase: found?.sha ?? null, afterFirstReport: found ? found.committedAt > firstReport : null, verified: fixedBy });
+      this.endAttempt(row, epoch, 'not-reproducible', fixedBy ? 'already-fixed' : 'session-claim');
+      await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, fixedBy ? 'already-fixed' : 'not-reproducible');
       return;
     }
     if (result.outcome === 'gave-up') { this.endAttempt(row, epoch, 'failed', 'gave-up'); await this.afterFailure(this.opts.store.get(row.attemptId)!, epoch, 'failed'); return; }

@@ -78,6 +78,30 @@ describe('feedback GitHub explicit runtime', () => {
     expect(await gateway.viewerLogin()).toBe('fixture-agent');
   });
 
+  it('commitInBase resolves a short SHA only when the base contains it, using a real repository', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const fsm = await import('node:fs');
+    const osm = await import('node:os');
+    const pathm = await import('node:path');
+    const dir = fsm.mkdtempSync(pathm.join(osm.tmpdir(), 'commit-in-base-'));
+    try {
+      const g = (...args: string[]) => execFileSync('git', ['-c', 'user.email=t@example.test', '-c', 'user.name=T', '-c', 'commit.gpgsign=false', ...args], { cwd: dir, encoding: 'utf8' }).trim();
+      g('init', '-q', '-b', 'main');
+      g('commit', '-q', '--allow-empty', '-m', 'one');
+      const fix = g('rev-parse', 'HEAD');
+      g('commit', '-q', '--allow-empty', '-m', 'two');
+      const base = g('rev-parse', 'HEAD');
+      g('checkout', '-q', '-b', 'side', fix);
+      g('commit', '-q', '--allow-empty', '-m', 'side');
+      const side = g('rev-parse', 'HEAD');
+      const git = new SafeAttemptGit(() => null);
+      expect(await git.commitInBase(dir, fix.slice(0, 9), base)).toMatchObject({ sha: fix, committedAt: expect.any(Number) });
+      expect(await git.commitInBase(dir, side.slice(0, 9), base)).toBeNull();
+      expect(await git.commitInBase(dir, 'f'.repeat(12), base)).toBeNull();
+      expect(await git.commitInBase(dir, 'HEAD', base)).toBeNull();
+    } finally { fsm.rmSync(dir, { recursive: true, force: true }); }
+  });
+
   it('authenticates trusted fetch, publication and release lookup without putting credentials in argv', async () => {
     const f = fixture();
     const resolve = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: f.stateDir, resolveExecutable: () => f.ghPath });
