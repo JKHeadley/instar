@@ -29,6 +29,7 @@
 import type { StoreFieldSchema, StoreValidateContext, ReplicatedOp } from './ReplicatedRecordEnvelope.js';
 import type { HlcTimestamp } from './HybridLogicalClock.js';
 import { compareHlc } from './TopicPinReplicatedStore.js';
+import { resolveDevAgentGate } from './devAgentGate.js';
 
 export { compareHlc };
 
@@ -37,6 +38,18 @@ export { compareHlc };
 export const CHIEF_OF_STAFF_RECORD_KIND = 'chief-of-staff-record';
 /** The stateSync config sub-key (`multiMachine.stateSync.chiefOfStaff`). */
 export const CHIEF_OF_STAFF_STORE_KEY = 'chiefOfStaff';
+
+/**
+ * Whether this machine emits and receives `chief-of-staff-record` (spec §1.2: "the
+ * `multiMachine.stateSync.chiefOfStaff` flag is forced on whenever `chiefOfStaff.enabled` is true").
+ * It follows the feature switch alone: the Chief of Staff's state — check-ins, bindings, notes,
+ * last-tick — is the agent's, never one machine's, so there is no machine-local mode to fall back to.
+ * Echo Bugs topic 10000002562 (2026-11-11): the flag was never set, every record was refused
+ * 'disabled', and the owner's check-in was saved on no machine at all.
+ */
+export function chiefOfStaffStoreEnabled(config: { developmentAgent?: boolean; chiefOfStaff?: { enabled?: boolean } } | undefined): boolean {
+  return resolveDevAgentGate(config?.chiefOfStaff?.enabled, config);
+}
 
 export const COS_RECORD_TYPES = [
   'tree', 'binding', 'binding-lifecycle', 'check-event', 'intent', 'outcome', 'renewal', 'graduation', 'last-tick', 'note',
