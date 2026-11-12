@@ -3,7 +3,7 @@
 **Slice:** native-conversation-base §3c, "A photo is readable on the machine that runs the session (F3)", items 1 to 7, plus the counters its maturation-plan rows read.
 **Branch:** `echo/ncb-3c-media` (fresh off `origin/main` 3ae8208a6; the spec, its ELI16 and its convergence report copied in unchanged from `echo/native-conversation-base-spec`, PR #3086). Slice 3b (#3092) is not touched.
 **PR:** https://github.com/JKHeadley/instar/pull/3099
-**Local Verify:** requested on the Studio (`POST /local-verify {"pr":3099}`) at 19:57 PST 2026-11-11; it answered `queue-full`. A retry runs from the builder session (echo-ncb-build-3c, Studio) every 2 minutes for up to 2 hours; its outcome is logged on the Studio at `~/echo-test-tmp-3c/lv-retry.log`. This note is pushed before acceptance so Local Verify runs on the final head.
+**Local Verify:** requested on the Studio (`POST /local-verify {"pr":3099}`) at 19:57 PST 2026-11-11. **Not yet accepted:** every request from 19:57 to 21:59 (60 tries, every 2 minutes) answered `queue-full`; at 22:01 the queue held 12 PRs and 3099 was not among them. A detached retry (`~/echo-test-tmp-3c/lv-retry.sh` on the Studio, not tied to a session) asks every 2 minutes until 06:00 PST 2026-11-12 and stops at the first answer other than `queue-full`; every answer is logged in `~/echo-test-tmp-3c/lv-retry.log` on the Studio. If the log ends in `queue-full`, the request still needs to be made.
 **Merged:** no (by instruction).
 
 ## What is built
