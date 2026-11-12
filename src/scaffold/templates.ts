@@ -12,6 +12,7 @@ import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
  */
 
 import { signedPoolReadsAwareness } from "../core/poolSignedReads.js";
+import { transcriptCopiesAwareness } from "../core/transcriptCheckpoints.js";
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
 import { conversationsAwareness } from '../messaging/shared/conversationGraphChat.js';
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
@@ -2032,6 +2033,7 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
   content += '\n' + messageOriginAllPlatformsAwareness(port);
   content += '\n' + conversationsAwareness();
   content += '\n' + signedPoolReadsAwareness(port);
+  content += '\n' + transcriptCopiesAwareness(port);
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);

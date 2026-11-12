@@ -2193,6 +2193,15 @@ export interface RouteContext {
    * pool reads go by the bearer hop as before.
    */
   meshSignedRead?: ((machineId: string, command: import('../core/MeshRpc.js').MeshCommand, timeoutMs: number) => Promise<import('../core/MeshRpcClient.js').MeshRpcClientResult>) | null;
+  /**
+   * native-conversation-any-machine-access §3f: this machine's copies of other machines' session
+   * transcripts (and its own outbox status). Read only by the owner-only transcript route and the
+   * owner-only GET /transcript-copies; no device or team route reads it. Null/absent: dark.
+   */
+  transcriptCopies?: {
+    store: import('../core/transcriptCheckpoints.js').TranscriptCopyStore;
+    status?: () => Record<string, unknown>;
+  } | null;
   /** Every OTHER registered, non-revoked machine with a known URL — for pool-wide
    *  aggregation (GET /sessions?scope=pool). Null/absent (single-machine/dark). */
   resolvePeerUrls?:
@@ -12480,11 +12489,38 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(403).json({ error: TRANSCRIPT_AUDIENCE_SENTENCES[v.reason], reason: v.reason });
       return true;
     };
+    /**
+     * A read from this machine's copy (§3f): the rows the copy holds, the coverage it states, and the
+     * audience resolved here from the union of the conversations every held checkpoint names, with
+     * the same refusals as the live read (§3d item 2, currency refusal included). False: no copy.
+     */
+    const answerFromCopy = (origin: string | null, machine: Record<string, unknown>): boolean => {
+      const store = ctx.transcriptCopies?.store;
+      if (!store) return false;
+      const m = store.find(req.params.name, origin ?? undefined);
+      if (!m) return false;
+      // A checkpoint that could not name every conversation the session served: no audience can be read.
+      if (m.conversationsOverflow) { refuse({ ok: false, reason: 'unreadable' }); return true; }
+      if (refuse(transcriptAudience(principal, m.conversations))) return true;
+      try {
+        // The source removed its own token and PIN before the rows left it; this machine removes its own too.
+        const secrets = [ctx.config.authToken, ctx.config.dashboardPin];
+        const page = readTranscriptAnswer(store.committedCopyFile(m), { ...q, clean: (t: string) => redactForDevice(t, secrets), maxBytes: q.row || q.full ? SESSION_TRANSCRIPT_PULL_MAX_BYTES : Number.MAX_SAFE_INTEGER });
+        res.json({ ok: true, ...page, conversations: m.conversations, via: 'copy', machineId: m.sourceMachineId, copy: store.coverage(m, origin ? false : null), ...machine });
+      } catch (err) {
+        if (err instanceof RangeError) res.status(400).json({ error: `That page cannot be read: ${err.message}`, reason: err.message });
+        else res.status(500).json(storageErrorResponse({ error: `Could not read the copied record: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
+      }
+      return true;
+    };
     // A session on another machine: ask that machine (its disk holds the record).
     const machineId = typeof req.query.machineId === 'string' ? req.query.machineId : '';
     if (machineId && machineId !== ctx.meshSelfId) {
       const peer = (ctx.resolvePeerUrls?.() ?? []).find((p) => p.machineId === machineId);
-      if (!peer) { res.status(404).json({ error: 'That machine is not reachable from here', reason: 'peer-unknown' }); return; }
+      if (!peer) {
+        if (answerFromCopy(machineId, asleepEntry(machineId, 'no known address for that machine', true))) return;
+        res.status(404).json({ error: 'That machine is not reachable from here', reason: 'peer-unknown' }); return;
+      }
       type Remote = { status: number; body: Record<string, unknown> };
       const command = {
         type: 'session-transcript-pull' as const, mode: 'transcript' as const, session: req.params.name,
@@ -12522,6 +12558,8 @@ export function createRoutes(ctx: RouteContext): Router {
         } : null,
       });
       if (outcome.via === null) {
+        // §3f item 5: the machine that ran it does not answer, so answer from this machine's copy.
+        if (outcome.unreachable && answerFromCopy(machineId, asleepEntry(machineId, outcome.error, true))) return;
         res.status(502).json({ error: `The other machine did not answer: ${outcome.error}`, reason: outcome.unreachable ? 'peer-unreachable' : 'peer-refused', ...asleepEntry(machineId, outcome.error, outcome.unreachable) });
         return;
       }
@@ -12536,7 +12574,11 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const session = ctx.state.findSessionByTmux(req.params.name);
-    if (!session) { res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return; }
+    if (!session) {
+      // Not recorded here: another machine ran it. This machine's copy answers when it holds one.
+      if (answerFromCopy(null, {})) return;
+      res.status(404).json({ error: `Session "${req.params.name}" is not recorded on this machine` }); return;
+    }
     // An app conversation's session is named by its channel alias; look its key up too.
     const conversations = sessionConversations(session, [conversationRefForSession(session.tmuxSession, { platform: 'app' })]);
     if (refuse(transcriptAudience(principal, conversations))) return;
@@ -12553,6 +12595,20 @@ export function createRoutes(ctx: RouteContext): Router {
       if (err instanceof RangeError) { res.status(400).json({ error: `That page cannot be read: ${err.message}`, reason: err.message }); return; }
       res.status(500).json(storageErrorResponse({ error: `Could not read the conversation record: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
     }
+  });
+
+  // native-conversation-any-machine-access §3f: what this machine's transcript copies reach, per
+  // session, and how far its own outbox has copied. Owner only; no rows and no text, only coverage.
+  router.get('/transcript-copies', (req, res) => {
+    if ((req as unknown as { instarPrincipal?: unknown }).instarPrincipal) { res.status(403).json({ error: TRANSCRIPT_AUDIENCE_SENTENCES['not-owner'], reason: 'not-owner' }); return; }
+    const tc = ctx.transcriptCopies;
+    if (!tc) { res.status(503).json({ error: 'Transcript copies are switched off on this machine', reason: 'disabled' }); return; }
+    const copies = tc.store.list().map((m) => ({
+      sourceMachineId: m.sourceMachineId, session: m.session, sessionId: m.sessionId, rowCount: m.rowCount, withheldRows: m.withheldRows,
+      firstAt: m.firstAt, throughAt: m.throughAt, complete: m.complete, ...(m.problem ? { problem: m.problem } : {}),
+      sentence: tc.store.coverage(m, false).sentence.replace('is asleep', 'may be asleep or awake'),
+    }));
+    res.json({ enabled: true, copies, source: tc.status?.() ?? null });
   });
 
   // native-conversation-any-machine-access §3d item 5: which kinds of pool read each member machine
