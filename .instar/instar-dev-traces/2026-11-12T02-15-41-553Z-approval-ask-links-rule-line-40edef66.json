@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "approval-ask-links-rule-line",
+  "sessionId": "7aa3c18e-6565-4692-9cf1-07487414fc82",
+  "timestamp": "2026-11-12T02:15:41.553Z",
+  "artifactPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "artifactSha256": "195ef761778732a328900f721382206b2255df240811cc52bcdf428a85489557",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/ask-links-clause-interaction-family-2026-11-11.json",
+    "docs/specs/approval-ask-links-rule-line.eli16.md",
+    "docs/specs/reports/ask-links-clause-interaction-review-2026-11-11.md",
+    "docs/standards-registry-area-audits.json",
+    "src/core/PostUpdateMigrator.ts",
+    "src/scaffold/templates.ts",
+    "tests/unit/PostUpdateMigrator-askLinks.test.ts",
+    "upgrades/side-effects/approval-ask-links-rule-line.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One awareness line in the CLAUDE.md template plus its idempotent content-sniffed migration and a named registry clause; no runtime gate or state, and a revert fully undoes it.",
+  "eli16Path": "docs/specs/approval-ask-links-rule-line.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-12T02:10:40.000Z",
+  "reviewers": [
+    "echo:claude-code",
+    "independent-verifier:claude-code-opus-5-5-fresh"
+  ],
+  "findingDisposition": {
+    "noUnresolvedDesign": true,
+    "resolvedFindings": 1
+  },
+  "convergenceReport": "docs/specs/reports/ask-links-clause-interaction-review-2026-11-11.md",
+  "convergenceSha256": "518d290e27b0719c1f37b94447a1a03c561cd845ad02751565c08f474a9180e8",
+  "areas": {
+    "Interaction": {
+      "areaSha256": "74dcb5ea08699c7786e230b4ef2fd75b02aa54b28c7cbc3a9b263e08a90a0981",
+      "verdict": "accepted"
+    }
+  }
+}
