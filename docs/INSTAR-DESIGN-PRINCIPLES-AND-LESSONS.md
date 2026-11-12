@@ -1020,6 +1020,36 @@ Before any high-risk action (deploying, pushing to git, modifying files outside 
 
 **Earned from:** 2026-08-22 (topic 52224). The cross-model reviewer's context budget was 60 KB — smaller than an ordinary spec — so every referenced document was dropped in FULL on every review the machinery had ever run. Six rounds on `placement-real-capacity-scoring` were conducted with no reviewer ever seeing the parent design, the standards registry, or the lessons doc, and were reported as review. The operator named the general pattern before the cause was found: *"you tend to default to truncating data in an effort to be more data efficient — however, often it just cuts off very critical information."* The converging audit then found the same defect in its purest form in two more places only a second search angle could see: a summarizer that selected the newest 20 messages then kept the oldest of them, and a stuck-prompt detector that took the terminal's last 20 lines then cut from the top — able to discard the very prompt it exists to find and report nothing was wrong.
 
+### P25. Exhaust the Way In Before Breaking Glass (credentials carry their instructions; last-resort codes cost the account)
+
+**Statement:** Before an agent asks the operator for an account action, or uses a recovery or backup code, it must exhaust the routes it already holds:
+- every vault entry for that service,
+- each entry's stored notes,
+- saved keys and passkeys,
+- live sessions in its browser profiles.
+
+The instructions stored with a credential are part of the credential. A recovery code is break-glass: it can cost the account itself (on npm, a 72-hour suspension of publishing and token creation). Before any submit on an account page, the agent reads the whole page, and it stops on any warning about suspension, holds, locks or irreversibility. If break-glass does happen, the agent leaves a working second sign-in method behind, verified, before it signs out.
+
+**Source:** operator, topic 130715, 2026-11-11 21:25 PST ("How will we leverage this writeup to make sure this class of mistakes doesn't happen again for any instar agent?"), after the npm token episode.
+
+**Translation:**
+- "I tried and it failed" is not "it can't be done". A route that was set up deliberately usually works, and the use of it is what is wrong. Read its notes before improvising.
+- Never spend a last-resort code while another route exists. Never hand the operator a task until the routes are listed and each has a stated reason it will not work.
+- A page read cut at N characters is a partial read. A warning past the cut is still a warning.
+
+**Enforcement (structural, in progress):**
+1. Recovery and backup-code vault fields are marked break-glass; reading one needs operator approval that names the cost.
+2. Credential retrieval returns the item's notes, and shows them first.
+3. The account-page safety check reads the full page before any submit, and refuses on hold, suspension or irreversibility language.
+4. After a break-glass sign-in, sign-out is gated on a verified working second factor.
+5. Before an operator account-action ask, the agent lists what it holds for that service and why each item fails.
+6. This catalog entry, so the lessons-aware reviewer checks account-touching designs against it.
+
+**Earned from:** 2026-11-07 to 11-11, the npm token episode, written up for the operator at the time:
+- Nov 7: a stored recovery code was used after a 300-character page read missed the suspension warning. The result was a 72-hour hold; 45 merged changes were blocked and pushed to machines by hand.
+- The working signed-in session was then left without adding a usable second factor.
+- Nov 11: a saved virtual security key in Bitwarden was tried without reading its notes. Those notes required the signature counter to be set to the current unix time; a low counter was set, the key failed, and it was reported as not working. Reading the notes made it work on the first try.
+
 ## Part 4 — How the lessons-aware reviewer uses this index
 
 The 8th `/spec-converge` reviewer (see `skills/spec-converge/SKILL.md`) loads this document plus the linked `feedback_*.md` files and the principles in `CLAUDE.md`, then asks for each spec under review:
