@@ -117,6 +117,8 @@ export class TelegramOriginRuntime {
   private retentionUnavailable = false;
   private readonly retentionBatch = { fold: RETENTION_BATCHES.fold.min, compact: RETENTION_BATCHES.compact.min, purge: RETENTION_BATCHES.purge.min };
   poolAudit?: import('./OriginPoolAudit.js').OriginPoolAudit;
+  /** native-conversation-base §3b — asks the execution owner for the outcome route. Absent on a machine with no mesh. */
+  ownerReader?: import('./OriginOwnerRead.js').OriginOwnerReader;
   readonly browsers = new Map<string, { executor: OriginBrowserExecutor;
     resolvePeer: (destination: BrowserDestination) => Promise<{ [key: string]: BrowserJson }>;
     /** Typed test-group operations (docs/specs/telegram-test-groups.md); Web K profiles only. */
@@ -314,6 +316,8 @@ export class TelegramOriginRuntime {
       held: await this.heldStatusWithDurable(),
       heldForward: this.heldForwardHealth(),
       expiredHolds: this.service.expiredHeldStatus(),
+      // §3b — owner-read latency for the 2026-11-25 review; a missing counter reads unknown, never zero.
+      ownerRead: this.ownerReader?.stats() ?? { state: 'unknown', reason: 'owner-read-not-wired' },
       browsers: [...this.browsers].map(([profileId, browser]) => ({ profileId, ...browser.executor.broker.readStatus() })),
       notices: this.options.alertDestinations().map(d => this.remoteNotices.get(d.id) ?? this.notifier.getState(d.id)) };
   }

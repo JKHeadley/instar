@@ -113,6 +113,7 @@ import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
 import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
+import { chiefOfStaffStoreEnabled } from '../core/ChiefOfStaffStore.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
 import { resolveRelayUnknownSenderTrustMode } from '../threadline/relayUnknownSenderTrust.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
@@ -6230,6 +6231,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     const { isMobileNativeEnabled: _isMobileNativeEnabled, isMobileUnreadEnabled: _isMobileUnreadEnabled } = await import('../server/mobilePairingRoutes.js');
     const _appNativeOn = _isMobileNativeEnabled(config);
     const _appUnreadOn = _isMobileUnreadEnabled(config);
+    const _chiefOfStaffStoreOn = chiefOfStaffStoreEnabled(config);
     const _stateSyncStoresResolved: import('../core/ReplicatedRecordEnvelope.js').StateSyncStores | undefined = (() => {
       let s = _stateSyncStoresBase ?? {};
       s = { ...s, failureCallout: { enabled: !!coherenceJournal && resolveCorrectionLearningMode(config).failureCalloutsEnabled && (config.multiMachine?.stateSync?.failureCallout as { enabled?: boolean } | undefined)?.enabled !== false } };
@@ -6244,7 +6246,11 @@ export async function startServer(options: StartOptions): Promise<void> {
       if (_accountFollowMeEnabled) s = { ...s, subscriptionAccountMeta: { enabled: true } };
       if (_pinReplicateEnabled) s = { ...s, topicPins: { enabled: true } };
       if (_staleOwnerReleaseResolved) s = { ...s, topicClaimAnnotations: { enabled: true } };
-      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _stateSyncStoresBase ? s : _stateSyncStoresBase;
+      // Chief of Staff (docs/specs/chief-of-staff-topic.md §1.2): its records — check-ins, notes,
+      // bindings, last-tick — must be agent-wide, never machine-local. The store follows the feature
+      // switch; without it every record was refused 'disabled' and a check-in never counted anywhere.
+      if (_chiefOfStaffStoreOn) s = { ...s, chiefOfStaff: { enabled: true } };
+      return s.failureCallout?.enabled || _recommendedServicesOn || _appNativeOn || _accountFollowMeEnabled || _pinReplicateEnabled || _staleOwnerReleaseResolved || _chiefOfStaffStoreOn || _stateSyncStoresBase ? s : _stateSyncStoresBase;
     })();
 
     // WS2 send-side: the generic journal-backed record emitter (the concrete emitter
@@ -30000,6 +30006,28 @@ export async function startServer(options: StartOptions): Promise<void> {
                 if (!url) return { ok: false };
                 return meshClient.send({ machineId, url }, command, 0, { timeoutMs });
               } };
+            // native-conversation-base §3b — the outcome route asks the execution
+            // owner over the SAME signed peer sender the receipt peer uses. The
+            // switches are read live on each ask; off makes answers more cautious only.
+            {
+              const { OriginOwnerReader } = await import('../messaging/telegram-origin/OriginOwnerRead.js');
+              const { originOwnerReadConfig, originForwardToHolderEnabled } = await import('../messaging/telegram-origin/OriginConfig.js');
+              const ownerReadOrigin = (): unknown => {
+                const messaging = liveConfig.get('messaging', config.messaging) as Array<{ type?: string; config?: { messageOrigin?: unknown } }> | undefined;
+                return (Array.isArray(messaging) ? messaging.find(m => m?.type === 'telegram') : undefined)?.config?.messageOrigin;
+              };
+              const receiptPeer = originReceiptPeer;
+              originRuntime.ownerReader = new OriginOwnerReader({ selfMachineId: meshSelfId, transport: { send: receiptPeer.send },
+                leaseHolder: () => coordinator.getSyncStatus().leaseHolder ?? null,
+                enabled: () => {
+                  const origin = ownerReadOrigin();
+                  let forward = true;
+                  try { forward = originForwardToHolderEnabled(origin); } catch { forward = true; } // @silent-fallback-ok — matches the forward switch's own reading: unreadable keeps it on
+                  return forward && originOwnerReadConfig(origin).enabled;
+                },
+                budgetMs: () => originOwnerReadConfig(ownerReadOrigin()).budgetMs,
+                cacheEntries: () => originOwnerReadConfig(ownerReadOrigin()).cacheEntries });
+            }
             originRuntime.poolAudit = new OriginPoolAudit({
               operatorScopeRequired: true,
               shardIds: () => [meshSelfId, ...meshIdMgr.getActiveMachines().map(m => m.machineId).filter(id => id !== meshSelfId)],
