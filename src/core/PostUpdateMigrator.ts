@@ -84,6 +84,7 @@ import { decideNativeReporterFromConfig, readNativeHookConfigFile, type NativeRe
 // sharply rather than abolishing it: two symbols that sort adjacently can still touch.
 import {
   AGENT_CONNECT_OWNER_LINE,
+  AGENT_CONNECT_DASHBOARD_LINK_LINE,
   AGENT_CONNECT_HEADING,
   AGENT_CONNECT_HOWTO_BULLET,
   AGENT_CONNECT_HOWTO_MARKER,
@@ -12968,6 +12969,22 @@ Before I send another agent a credential, that peer must be **mutually verified*
       content = content.slice(0, ownerLineAt + 1) + AGENT_CONNECT_OWNER_LINE + '\n' + content.slice(ownerLineAt + 1);
       patched = true;
       result.upgraded.push('CLAUDE.md: pairing invites require owner info');
+    }
+
+    // Dashboard pointers in the pairing flow are direct links (topic 10000002573). Installs that
+    // already carry the section get the one line, where the scaffold puts it: just before step 6,
+    // and only inside this section. Content-sniffed on the line, so a re-run changes nothing.
+    {
+      const secAt = content.indexOf(AGENT_CONNECT_HEADING);
+      const step6At = secAt >= 0 ? content.indexOf('\n6. **Check, then say hello.**', secAt) : -1;
+      const nextHeading = secAt >= 0 ? content.indexOf('\n#', secAt + AGENT_CONNECT_HEADING.length) : -1;
+      if (step6At >= 0 && (nextHeading < 0 || step6At < nextHeading) && !content.includes(AGENT_CONNECT_DASHBOARD_LINK_LINE)) {
+        content = content.slice(0, step6At + 1) + AGENT_CONNECT_DASHBOARD_LINK_LINE + '\n' + content.slice(step6At + 1);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: pairing dashboard pointers are direct links');
+      } else {
+        result.skipped.push('CLAUDE.md: pairing dashboard-link line already present or no step 6');
+      }
     }
 
     // Step 1 of that section as first shipped asked the person to send /lifeline restart after

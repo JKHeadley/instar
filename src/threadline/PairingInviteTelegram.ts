@@ -9,7 +9,7 @@
  *     reached the server through the lifeline with the lifeline-only secret (`verified`), the
  *     ingress guard is in ENFORCE mode, the tapper is the configured owner, the chat is the
  *     agent's chat, and the button's one-time token is bound to this invite and this step.
- *     Anything else gets the dashboard (PIN) route instead.
+ *     Anything else gets the dashboard (PIN) route instead, with a direct link (pairingDashboardLink.ts).
  *
  * The agent's Bearer token can never produce a verified tap, so an agent cannot approve its own
  * pairing through here. The boundary is cooperative (spec §6.1 "Honest boundary").
@@ -23,6 +23,8 @@ import type { InviteEvent, Result } from './PairingInviteFlow.js';
 import { pairingNoticeText, type PairingNotice } from './pairingHandshake.js';
 import { isVerifiedTopicOperatorBinding } from '../users/TopicOperatorStore.js';
 import type { RestartNotice } from './PairingPendingAcceptMarkers.js';
+import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
+import { pairingDashboardLine, readPairingOrigin, PAIRING_PAGE_ROUTE, PAIRING_PASTE_ROUTE } from './pairingDashboardLink.js';
 
 export const CALLBACK_PREFIX = 'pi:';
 const TOKEN_TTL_MS = 24 * 60 * 60_000; // a button outlives no invite (24 h max)
@@ -75,6 +77,12 @@ export interface InviteTelegramDeps {
    * message so the owner sees the cause (topic 61599, 2026-10-21: PP's owner could not tell).
    */
   whyNoButtons?: () => string | null;
+  /**
+   * Where this agent's dashboard can be opened (createOperatorLinkOriginResolver: the tunnel when up,
+   * localhost only with no tunnel). Every "use the dashboard" message carries a direct link built
+   * from it, or says plainly why there is none (topic 10000002573). Missing means "unknown".
+   */
+  dashboardOrigin?: () => OperatorLinkOrigin;
   now?: () => number;
   /**
    * Invites that were waiting for approval when the server restarted (the engine keeps them in
@@ -137,7 +145,8 @@ export interface InviteCallback {
   verified: boolean;
 }
 
-const DASHBOARD_HINT = 'Open the Threadline tab on the dashboard to do this with your PIN.';
+/** A refused tap posts its dashboard link at most once per invite in this window (taps can repeat). */
+const TAP_LINK_REPOST_MS = 10 * 60_000;
 /**
  * "Owner" here is the HUMAN who may approve connections for THIS (receiving) agent, never the
  * owner an invite claims for the other agent. Neither line names anyone, and the no-owner line
@@ -145,6 +154,8 @@ const DASHBOARD_HINT = 'Open the Threadline tab on the dashboard to do this with
  */
 export const NOT_OWNER_REFUSAL = 'Only the person who approves new connections for me can do this.';
 export const NO_OWNER_REFUSAL = 'I can\'t tell who is allowed to approve new connections for me, so I can\'t approve this here.';
+/** Said to someone known NOT to be the approver: no dashboard address goes to them (it is the owner's door). */
+export const NOT_OWNER_DASHBOARD_LINE = 'The person who approves new connections for me can do it on my dashboard.';
 /** Offered next to an invite the agent posted, when Telegram approval is on (spec §11.6). */
 export const OWN_AGENT_PROMPT = 'If this invite is for another of your own agents, tap below. When that agent accepts, I\'ll finish the pairing by myself, so the only tap left is Approve on your other agent. Only tap it if you will forward the invite to your own agent.';
 export const OWN_AGENT_BUTTON = 'It\'s one of my agents';
@@ -203,6 +214,7 @@ export class PairingInviteTelegram {
   private readonly ownAgentOffered = new Set<string>();
   private readonly now: () => number;
   private deliveringRestartNotices = false;
+  private readonly tapLinkPostedAt = new Map<string, number>();
 
   constructor(private readonly deps: InviteTelegramDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -270,6 +282,33 @@ export class PairingInviteTelegram {
       : 'Approving in Telegram is off on this agent until its listener protection is fully on.';
   }
 
+  /** "<lead> on the dashboard with your PIN: <link>", or the plain reason there is no link. Never throws. */
+  private dashboardLine(lead: string, route: string): string {
+    return pairingDashboardLine(readPairingOrigin(this.deps.dashboardOrigin), lead, route);
+  }
+
+  /**
+   * A tap's toast cannot carry a link (Telegram shows it as plain text, 200 characters at most), so
+   * the link goes into the invite's topic (else the Lifeline topic), once per invite per
+   * TAP_LINK_REPOST_MS. Returns the toast's pointer to it, or the plain sentence when nothing was posted.
+   */
+  private async tapLink(iid: string | undefined, lead: string): Promise<string> {
+    const key = iid ?? '';
+    const last = this.tapLinkPostedAt.get(key);
+    if (last !== undefined && this.now() - last < TAP_LINK_REPOST_MS) return 'The dashboard link is in this chat.';
+    if (await this.post(iid, this.dashboardLine(lead, PAIRING_PAGE_ROUTE), 'dashboard link for a refused tap')) {
+      this.tapLinkPostedAt.set(key, this.now());
+      return 'I posted the dashboard link in this chat.';
+    }
+    return `${lead} on the dashboard's Other agents page with your PIN.`;
+  }
+
+  /** The tapper/forwarder is someone other than the agent's known approver (never true with no known approver). */
+  private knownNotOwner(fromUserId: unknown): boolean {
+    const owner = this.deps.ownerUserId();
+    return owner !== undefined && Number(fromUserId) !== owner;
+  }
+
   private operatorTap(fromUserId: unknown, chatId: unknown, verified: boolean, requireChat = false): string | null {
     // The cause (version, protection setup) only for the owner: a forwarded-invite refusal is posted
     // into the topic, and in a forum group other members would see it (Echo's review, 2026-10-21).
@@ -299,7 +338,8 @@ export class PairingInviteTelegram {
   async onForwardedInvite(m: ForwardedInvite): Promise<ForwardedInviteResult> {
     const refusal = this.operatorTap(m.fromUserId, m.chatId, m.verified);
     if (refusal) {
-      await this.deps.send(m.topicId, `I got a pairing invite, but I can't take it from here. ${refusal} ${DASHBOARD_HINT} Paste the invite there.`);
+      const where = this.knownNotOwner(m.fromUserId) ? NOT_OWNER_DASHBOARD_LINE : this.dashboardLine('Paste the invite', PAIRING_PASTE_ROUTE);
+      await this.deps.send(m.topicId, `I got a pairing invite, but I can't take it from here. ${refusal} ${where}`);
       return { outcome: 'refused', refused: true };
     }
     const r = await this.deps.flow.receiveInvite(m.text);
@@ -324,16 +364,17 @@ export class PairingInviteTelegram {
   async onCallback(c: InviteCallback): Promise<boolean> {
     if (typeof c.data !== 'string' || !c.data.startsWith(CALLBACK_PREFIX)) return false;
     const refusal = this.operatorTap(c.fromUserId, c.chatId, c.verified, true);
+    const id = c.data.slice(CALLBACK_PREFIX.length);
     if (refusal) {
       // Not consumed: the real owner can still tap the same button.
-      await this.deps.answer(c.callbackQueryId, `${refusal} ${DASHBOARD_HINT}`);
+      const pointer = this.knownNotOwner(c.fromUserId) ? NOT_OWNER_DASHBOARD_LINE : await this.tapLink(this.tokens.get(id)?.iid, 'Decide on this pairing');
+      await this.deps.answer(c.callbackQueryId, `${refusal} ${pointer}`);
       return true;
     }
-    const id = c.data.slice(CALLBACK_PREFIX.length);
     const p = this.tokens.get(id);
     if (!p || p.exp < this.now()) {
       this.tokens.delete(id);
-      await this.deps.answer(c.callbackQueryId, `This button has expired or was already used. ${DASHBOARD_HINT}`);
+      await this.deps.answer(c.callbackQueryId, `This button has expired or was already used. ${await this.tapLink(p?.iid, 'See where this pairing stands')}`);
       return true;
     }
     for (const s of p.siblings) this.tokens.delete(s); // one decision per prompt
@@ -420,7 +461,8 @@ export class PairingInviteTelegram {
   }
 
   private async onNotice(n: PairingNotice): Promise<void> {
-    await this.post(n.iid, pairingNoticeText(n), `pairing notice ${n.kind}`);
+    const unpairLine = n.kind === 'finishing' && n.auto ? this.dashboardLine('unpair it', PAIRING_PAGE_ROUTE) : undefined;
+    await this.post(n.iid, pairingNoticeText(n, { unpairLine }), `pairing notice ${n.kind}`);
   }
 
   private async onEvent(e: InviteEvent): Promise<void> {
@@ -433,7 +475,7 @@ export class PairingInviteTelegram {
         const t = this.mint(e.iid, ['finish', 'not-them']);
         await this.post(iid, text, 'finish prompt', [{ text: 'Finish', data: t.finish }, { text: 'Not them', data: t['not-them'] }]);
       } else {
-        await this.post(iid, `${text} ${this.offLine()} ${DASHBOARD_HINT}`, 'finish prompt');
+        await this.post(iid, `${text} ${this.offLine()} ${this.dashboardLine('Finish it', PAIRING_PAGE_ROUTE)}`, 'finish prompt');
       }
     } else if (e.kind === 'second-accept-alarm') {
       await this.post(iid, `Warning: two agents used the same pairing invite, so it got out. The second one calls itself "${e.lateClaimedAgent}". `

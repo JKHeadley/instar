@@ -15,13 +15,15 @@
  * Plus the same-owner path: "It's one of my agents" → no Finish tap.
  */
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import crypto from 'node:crypto';
 import { RelayServer } from '../../../src/threadline/relay/RelayServer.js';
 import { bootstrapThreadline } from '../../../src/threadline/ThreadlineBootstrap.js';
 import { createUnifiedTrustSystem } from '../../../src/threadline/UnifiedTrustWiring.js';
 import type { UnifiedTrustSystem } from '../../../src/threadline/UnifiedTrustWiring.js';
 import { HandshakeManager } from '../../../src/threadline/HandshakeManager.js';
 import { AgentServer } from '../../../src/server/AgentServer.js';
-import { PairingInviteTelegram, OWN_AGENT_PROMPT } from '../../../src/threadline/PairingInviteTelegram.js';
+import { PairingInviteTelegram, OWN_AGENT_PROMPT, NO_OWNER_REFUSAL } from '../../../src/threadline/PairingInviteTelegram.js';
+import { ProcessIntegrity } from '../../../src/core/ProcessIntegrity.js';
 import { PairingTopicStore } from '../../../src/threadline/PairingTopicStore.js';
 import { LifelineIngressGuard } from '../../../src/server/LifelineIngressGuard.js';
 import { TelegramAdapter } from '../../../src/messaging/TelegramAdapter.js';
@@ -30,6 +32,7 @@ import { createTempProject, createMockSessionManager } from '../../helpers/setup
 import type { TempProject } from '../../helpers/setup.js';
 import type { InstarConfig } from '../../../src/core/types.js';
 import { useHermeticHome } from '../../setup/hermetic-home.js';
+import { createInvite, inviteMessage } from '../../../src/threadline/PairingInvite.js';
 
 // HOME → temp for every test here: bootstrapThreadline() writes the user-scope
 // ~/.claude.json, and this file must never touch the operator's real one.
@@ -154,6 +157,52 @@ describe('pairing handshake — production path', () => {
     await relay?.stop();
     relayData?.cleanup();
   });
+
+  it('an agent with no owner set (Cora, Nov 11): the real server\'s refusal links straight to the paste box on its tunnel address', async () => {
+    // Topic 10000002573: the refusal said "Open the Threadline tab on the dashboard" with no link.
+    // The real AgentServer wires PairingInviteTelegram itself here (routes.ts), with no owner anywhere.
+    const project = createTempProject();
+    const auth = 'cora-auth';
+    const boot = await bootstrapThreadline({
+      agentName: 'cora', ownerName: 'Justin', stateDir: project.stateDir, projectDir: project.dir, port: 4111, relayEnabled: true, relayUrl,
+      getVerifiedPairingConfig: () => ({ enabled: true, dryRun: true, credentialShareEnforced: false }),
+    });
+    const trust = createUnifiedTrustSystem(boot.trustManager!, { stateDir: project.stateDir });
+    const sent: Array<{ topicId: number; text: string }> = [];
+    const telegram = {
+      onTopicMessage: () => {}, logInboundMessage: () => {}, dispatchAgentMessageHook: async () => false, isAuthorizedSender: () => true,
+      handleForwardedCallback: async () => {},
+      sendToTopic: async (topicId: number, text: string) => { sent.push({ topicId, text }); return {}; },
+      sendPairingPrompt: async (topicId: number, text: string) => { sent.push({ topicId, text }); return 1; },
+      answerCallback: async () => {}, getOwnerUserId: () => undefined, getChatId: () => '-100', getLifelineTopicId: () => 3,
+    };
+    // The forward route reads its version from ProcessIntegrity (frozen at boot, as in server.ts).
+    ProcessIntegrity.reset();
+    ProcessIntegrity.initialize('0.9.81', null);
+    const server = new AgentServer({
+      config: configFor(project, 'cora', auth), sessionManager: createMockSessionManager() as never, state: project.state,
+      handshakeManager: new HandshakeManager(project.stateDir, 'cora'), threadlineRelayClient: boot.relayClient!, unifiedTrust: trust, pairingInvites: boot.pairingInvites!,
+      telegram: telegram as never, tunnel: { url: 'https://cora.example.dev' } as never,
+    } as never);
+    await server.start();
+    try {
+      const invite = inviteMessage(createInvite({ identityPubHex: crypto.randomBytes(32).toString('hex'), owner: 'Carl', agent: 'Scout' }));
+      const r = await fetch(`http://127.0.0.1:${portOf(server)}/internal/telegram-forward`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth}`, [LIFELINE_SECRET_HEADER]: ensureLifelineIngressSecret(project.stateDir) },
+        body: JSON.stringify({ topicId: 4242, text: invite, fromUserId: OWNER, fromFirstName: 'Justin', messageId: 1, lifelineVersion: '0.9.81' }),
+      });
+      expect(r.status).toBe(200);
+      expect(await r.json()).toMatchObject({ ok: true, pairingInvite: true, refused: true }); // no "✓ Delivered" (#3087)
+      const reply = sent.find((m) => m.topicId === 4242)!;
+      expect(reply.text).toContain(NO_OWNER_REFUSAL);
+      expect(reply.text).toContain('Paste the invite on the dashboard with your PIN: https://cora.example.dev/dashboard/console/#/people/agents?connect=paste');
+      expect(reply.text).not.toContain('Threadline tab');
+      expect(reply.text).not.toContain('tlinv1:');
+    } finally {
+      await server.stop(); trust.shutdown(); await boot.shutdown(); project.cleanup(); ProcessIntegrity.reset();
+    }
+  }, 120_000);
 
   it('a POLLING agent (no lifeline, like PP): the Finish tap read by the real TelegramAdapter completes the pairing', async () => {
     // Luna's read of PP, 2026-10-21 13:27 PDT: 1.3.1384, no lifeline, armedBy no-lifeline-ingress.

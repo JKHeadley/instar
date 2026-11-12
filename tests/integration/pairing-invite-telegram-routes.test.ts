@@ -43,6 +43,7 @@ interface Effects {
 }
 
 interface Boot {
+  tunnelUrl?: string;
   owner?: number | undefined; operators?: TopicOperatorStore | null; polling?: boolean;
   pollingHandler?: { h: null | { onForwardedInvite(m: unknown): Promise<void | { refused: boolean }>; onCallback(c: unknown): Promise<boolean> } };
   /** The engine rejects the invite (expired, already used, malformed): `{ ok: false }`. */
@@ -97,6 +98,7 @@ function makeContext(stateDir: string, fx: Effects, extra: Record<string, unknow
     autoDispatcher: null, quotaTracker: null, publisher: null, viewer: null, tunnel: null,
     evolution: null, watchdog: null, triageNurse: null, topicMemory: null, discoveryEvaluator: null,
     startTime: new Date(),
+    ...(b.tunnelUrl ? { tunnel: { url: b.tunnelUrl } } : {}),
   } as never;
 }
 
@@ -245,6 +247,22 @@ describe('invite pairing — Telegram routes', () => {
       await forward(app, INVITE, { secret: secret(), from: 555, messageId: 11, topicId: 3 });
       expect(fx.flow).toEqual([]);
       expect(fx.sent.at(-1)?.text).toContain(NO_OWNER_REFUSAL);
+    });
+
+    it('no owner set (Cora, Nov 11): the refusal carries a direct link to the paste box on the agent\'s real address', async () => {
+      const app = boot(dev, { owner: undefined, operators: operators(), tunnelUrl: 'https://cora.example.dev' });
+      await forward(app, INVITE, { secret: secret(), from: OP });
+      expect(fx.flow).toEqual([]);
+      const text = fx.sent.at(-1)!.text;
+      expect(text).toContain(NO_OWNER_REFUSAL);
+      expect(text).toContain('Paste the invite on the dashboard with your PIN: https://cora.example.dev/dashboard/console/#/people/agents?connect=paste');
+      expect(text).not.toContain('tlinv1:');
+    });
+
+    it('no tunnel at all: the local link, and the message says it opens only on the agent\'s computer', async () => {
+      const app = boot(dev, { owner: undefined, operators: operators() });
+      await forward(app, INVITE, { secret: secret(), from: OP });
+      expect(fx.sent.at(-1)!.text).toContain('opens only on the computer it runs on: http://localhost:');
     });
 
     it('no binding at all → the "no owner set" refusal, not "Only the agent\'s owner"', async () => {

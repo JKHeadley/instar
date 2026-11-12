@@ -3902,8 +3902,13 @@ export function createRoutes(ctx: RouteContext): Router {
   } catch {
     // @silent-fallback-ok: this check only reports, so it must never stop the server's routes from loading
   }
+  // Every "use the dashboard" pairing message carries a direct link: the tunnel when up, localhost
+  // only with no tunnel, and a plain "no link yet" while a tunnel starts (topic 10000002573).
+  const pairingDashboardOrigin = createOperatorLinkOriginResolver({ port: ctx.config.port, tunnelConfigured: () => !!ctx.tunnel, tunnelUrl: () => ctx.tunnel?.url });
+  ctx.telegram?.setPairingDashboardOrigin?.(pairingDashboardOrigin);
   const pairingInviteTelegram = ctx.pairingInvites && ctx.telegram
     ? new PairingInviteTelegram({
+      dashboardOrigin: pairingDashboardOrigin,
       // Operator acts go through the handshake (spec §11): both sides are told how a pairing ended.
       flow: ctx.pairingInvites.handshake,
       events: ctx.pairingInvites.events,

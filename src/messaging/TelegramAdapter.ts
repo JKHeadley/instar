@@ -3,6 +3,8 @@ import { notificationStamper, responseNotificationStamper, withNotificationEnvel
 const stampNotification = notificationStamper('src/messaging/TelegramAdapter.ts');
 const stampResponse = responseNotificationStamper('src/messaging/TelegramAdapter.ts');
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { OperatorLinkOrigin } from '../server/dashboardPaths.js';
+import { pairingDashboardLine, readPairingOrigin, PAIRING_PASTE_ROUTE } from '../threadline/pairingDashboardLink.js';
 import { NotificationSelectivityGate, QuietRecordedError, requireTelegramDelivery, verifiedReplyEnvelope, isVerifiedReplyEnvelope, notificationContext } from './NotificationSelectivityGate.js';
 import type { OutboundEnvelope, QuietReceipt } from './NotificationSelectivityGate.js';
 import { TelegramOriginHoldError, OriginForwardSettledLocallyError } from './telegram-origin/types.js';
@@ -68,7 +70,10 @@ import {
   planAttentionSupersessions, resolveAttentionLifecycleConfig,
   type AttentionLifecycleClass, type AttentionLifecycleConfig, type ResolvedAttentionLifecycleConfig,
 } from '../core/AttentionLifecycle.js';
-const PAIRING_DASHBOARD_FALLBACK = 'I got a pairing invite, but I can\'t take it from this chat. Open the Threadline tab on the dashboard and paste it there; you approve with your PIN.';
+/** The reply to an invite this adapter cannot hand to a pairing handler: a direct link, or why there is none. */
+function pairingDashboardFallback(origin: OperatorLinkOrigin | null): string {
+  return `I got a pairing invite, but I can't take it from this chat. ${pairingDashboardLine(origin, 'Paste it', PAIRING_PASTE_ROUTE)}`;
+}
 /** What the direct-polling path hands a pairing invite or tap to (implemented by PairingInviteTelegram). */
 export interface PollingPairingHandler {
   onForwardedInvite(m: { text: string; topicId: number; fromUserId: number; chatId?: string; verified: boolean }): Promise<void | { refused: boolean }>; // what it decided; only the lifeline forward route reads it, polling ignores it
@@ -700,6 +705,9 @@ export class TelegramAdapter implements MessagingAdapter {
   private pairingHandler: PollingPairingHandler | null = null;
   setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
   hasPairingHandler(): boolean { return this.pairingHandler !== null; }
+  private pairingDashboardOrigin: (() => OperatorLinkOrigin) | null = null;
+  /** Where the dashboard opens, for the direct link in the no-handler invite reply (topic 10000002573). */
+  setPairingDashboardOrigin(resolve: (() => OperatorLinkOrigin) | null): void { this.pairingDashboardOrigin = resolve; }
   /** The desktop code is consumed before ordinary command routing or message
    * logging. This callback is reachable only after Telegram sender auth. */
   private desktopApprovalHandler: ((input: { requestId: string; code: string; topicId: number; senderUid: string }) => boolean) | null = null;
@@ -6205,12 +6213,12 @@ export class TelegramAdapter implements MessagingAdapter {
         }).catch((err: unknown) => {
           // Never leave a forwarded invite unanswered (Echo's review): fall back to the dashboard line.
           console.warn(`[telegram] pairing invite handler failed: ${err instanceof Error ? err.message : String(err)}`);
-          void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
+          void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, pairingDashboardFallback(readPairingOrigin(this.pairingDashboardOrigin)))).catch(() => {});
         });
         return;
       }
       if (this.isAuthorized(msg.from.id)) {
-        void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, PAIRING_DASHBOARD_FALLBACK)).catch(() => {});
+        void withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(msg.message_thread_id ?? GENERAL_TOPIC_ID, pairingDashboardFallback(readPairingOrigin(this.pairingDashboardOrigin)))).catch(() => {});
       }
       return;
     }
@@ -6887,7 +6895,7 @@ export class TelegramAdapter implements MessagingAdapter {
       }
       await this.apiCall('answerCallbackQuery', {
         callback_query_id: query.id,
-        text: 'Approve this on the dashboard (Threadline tab) with your PIN.',
+        text: 'Approve this on the dashboard\'s Other agents page with your PIN.',
       }).catch(() => {});
       return;
     }

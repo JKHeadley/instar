@@ -9,17 +9,18 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  PairingInviteTelegram, CALLBACK_PREFIX, resolveApprovalOwner, NO_OWNER_REFUSAL, NOT_OWNER_REFUSAL,
+  PairingInviteTelegram, CALLBACK_PREFIX, resolveApprovalOwner, NO_OWNER_REFUSAL, NOT_OWNER_REFUSAL, NOT_OWNER_DASHBOARD_LINE,
 } from '../../../src/threadline/PairingInviteTelegram.js';
 import { TopicOperatorStore } from '../../../src/users/TopicOperatorStore.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { createInvite, inviteMessage, findInviteToken, decodeInvite } from '../../../src/threadline/PairingInvite.js';
+import type { OperatorLinkOrigin } from '../../../src/server/dashboardPaths.js';
 
 const OWNER = 4242;
 const INVITE = inviteMessage(createInvite({ identityPubHex: crypto.randomBytes(32).toString('hex'), owner: 'Justin', agent: 'Scout' }));
 const IID = 'ab'.repeat(16);
 
-function setup(opts: { enforcing?: boolean; operatorTopic?: number | undefined; now?: () => number; owner?: () => number | undefined } = {}) {
+function setup(opts: { enforcing?: boolean; operatorTopic?: number | undefined; now?: () => number; owner?: () => number | undefined; dashboardOrigin?: () => OperatorLinkOrigin; topics?: Map<string, number> } = {}) {
   const calls: string[] = [];
   const sent: Array<{ topicId: number; text: string; buttons?: Array<{ text: string; data: string }> }> = [];
   const answers: string[] = [];
@@ -39,6 +40,8 @@ function setup(opts: { enforcing?: boolean; operatorTopic?: number | undefined; 
     operatorTopicId: () => ('operatorTopic' in opts ? opts.operatorTopic : 7),
     enforcing: () => enforcing,
     now: opts.now,
+    dashboardOrigin: opts.dashboardOrigin,
+    topics: opts.topics ? { get: (iid: string) => opts.topics!.get(iid), set: (iid: string, t: number) => { opts.topics!.set(iid, t); } } : undefined,
   });
   return { tg, calls, sent, answers, events, setEnforcing: (v: boolean) => { enforcing = v; } };
 }
@@ -400,5 +403,89 @@ describe('resolveApprovalOwner (who may approve when no owner id is configured)'
     await b.tg.onForwardedInvite({ ...okForward, fromUserId: 555 });
     expect(b.calls).toEqual([]);
     expect(b.sent[0].text).toContain(NOT_OWNER_REFUSAL);
+  });
+});
+
+describe('every dashboard redirect carries a direct link (topic 10000002573)', () => {
+  const PUBLIC = () => ({ kind: 'public' as const, origin: 'https://cora.example.dev' });
+  const PASTE_URL = 'https://cora.example.dev/dashboard/console/#/people/agents?connect=paste';
+  const PAGE_URL = 'https://cora.example.dev/dashboard/console/#/people/agents';
+
+  it('no owner set (Cora, Nov 11): the refusal links straight to the paste box, and the invite is not in it', async () => {
+    const { tg, sent, calls } = setup({ owner: () => undefined, dashboardOrigin: PUBLIC });
+    await tg.onForwardedInvite(okForward);
+    expect(calls).toEqual([]);
+    expect(sent[0].text).toContain(NO_OWNER_REFUSAL);
+    expect(sent[0].text).toContain(`Paste the invite on the dashboard with your PIN: ${PASTE_URL}`);
+    expect(sent[0].text).not.toContain('Threadline tab');
+    expect(sent[0].text).not.toContain(findInviteToken(INVITE)!);
+    expect(sent[0].text).not.toContain('tlinv1:');
+  });
+
+  it('no address the phone can open: says so plainly instead of a bare "open the tab"', async () => {
+    const pending = setup({ owner: () => undefined, dashboardOrigin: () => ({ kind: 'pending' }) });
+    await pending.tg.onForwardedInvite(okForward);
+    expect(pending.sent[0].text).toContain("can't give you a link yet");
+    const unknown = setup({ owner: () => undefined });
+    await unknown.tg.onForwardedInvite(okForward);
+    expect(unknown.sent[0].text).toContain("I don't know this agent's dashboard address");
+    const thrown = setup({ owner: () => undefined, dashboardOrigin: () => { throw new Error('boom'); } });
+    await thrown.tg.onForwardedInvite(okForward);
+    expect(thrown.sent[0].text).toContain("I don't know this agent's dashboard address");
+  });
+
+  it('a refused tap: the toast points at a link posted in the invite\'s topic, once per invite', async () => {
+    const { tg, sent, answers, setEnforcing } = setup({ dashboardOrigin: PUBLIC, topics: new Map() });
+    await tg.onForwardedInvite(okForward);
+    const approve = sent[0].buttons![0].data;
+    setEnforcing(false);
+    await tg.onCallback(tap(approve));
+    expect(answers.at(-1)).toContain('I posted the dashboard link in this chat.');
+    expect(sent.at(-1)).toMatchObject({ topicId: 9 });
+    expect(sent.at(-1)!.text).toBe(`Decide on this pairing on the dashboard with your PIN: ${PAGE_URL}`);
+    const before = sent.length;
+    await tg.onCallback(tap(approve));
+    expect(sent.length).toBe(before); // a repeated tap does not repeat the post
+    expect(answers.at(-1)).toContain('The dashboard link is in this chat.');
+  });
+
+  it('an expired button: the link goes to the Lifeline topic; with no topic at all the toast says where to go', async () => {
+    const { tg, sent, answers } = setup({ dashboardOrigin: PUBLIC });
+    await tg.onCallback(tap(`${CALLBACK_PREFIX}${'00'.repeat(12)}`));
+    expect(answers.at(-1)).toMatch(/expired or was already used\. I posted the dashboard link/);
+    expect(sent.at(-1)).toMatchObject({ topicId: 7, text: `See where this pairing stands on the dashboard with your PIN: ${PAGE_URL}` });
+    const none = setup({ operatorTopic: undefined, dashboardOrigin: PUBLIC });
+    await none.tg.onCallback(tap(`${CALLBACK_PREFIX}${'00'.repeat(12)}`));
+    expect(none.answers.at(-1)).toContain("Other agents page");
+  });
+
+  it('someone known not to be the approver gets no dashboard address, in the chat or the toast', async () => {
+    const { tg, sent, answers } = setup({ dashboardOrigin: PUBLIC, topics: new Map() });
+    await tg.onForwardedInvite({ ...okForward, fromUserId: 999 });
+    expect(sent[0].text).toContain(NOT_OWNER_REFUSAL);
+    expect(sent[0].text).toContain(NOT_OWNER_DASHBOARD_LINE);
+    expect(sent[0].text).not.toContain('https://');
+    await tg.onForwardedInvite(okForward);
+    const approve = sent.at(-1)!.buttons![0].data;
+    const before = sent.length;
+    await tg.onCallback(tap(approve, { fromUserId: 999 }));
+    expect(answers.at(-1)).toBe(`${NOT_OWNER_REFUSAL} ${NOT_OWNER_DASHBOARD_LINE}`);
+    expect(sent.length).toBe(before); // no link posted into the chat for them
+  });
+
+  it('a finish prompt while Telegram approval is off carries the page link', async () => {
+    const { sent, events } = setup({ enforcing: false, dashboardOrigin: PUBLIC });
+    events.emit('event', { kind: 'finish-prompt', iid: IID, claimedAgent: 'Scout', claimedOwner: 'Carl', checkCode: 'K7Q2' });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent[0].text).toContain(`Finish it on the dashboard with your PIN: ${PAGE_URL}`);
+    expect(sent[0].text).not.toContain('Threadline tab');
+  });
+
+  it('the "finishing by myself" notice links where to unpair', async () => {
+    const { sent, events } = setup({ dashboardOrigin: PUBLIC });
+    events.emit('notice', { kind: 'finishing', iid: IID, peerName: 'Scout', auto: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent[0].text).toContain(`If that isn't your agent, unpair it on the dashboard with your PIN: ${PAGE_URL}`);
+    expect(sent[0].text).not.toContain('Threadline tab');
   });
 });
