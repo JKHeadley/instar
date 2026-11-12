@@ -1,0 +1,25 @@
+{
+  "ts": "2026-11-12T00:42:35.868Z",
+  "slug": "forwarded-reply-holder-history",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 82,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/messaging/telegram-origin/ForwardedDeliveryHistory.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts"
+    ],
+    "addedLines": 82,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

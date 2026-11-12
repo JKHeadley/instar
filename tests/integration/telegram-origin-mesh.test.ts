@@ -266,6 +266,30 @@ describe('Telegram origin signed mesh HTTP pipeline', () => {
       model: { value: 'gpt-6-astra', status: 'configured' }, display: { enabled: false } });
     expect((await h.source.store.listOrigins()).records[0].operation).toBeNull();
   });
+  it('records a delivered peer reply in the holder topic history with the original text and author', async () => {
+    const h = await boot();
+    const recorded: unknown[] = [];
+    h.owner.options.onForwardedDelivered = row => { recorded.push(row); };
+    const result = await h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: '**Decision needed** from the M5', send: h.send }));
+    expect(result.messageId).toBe(321);
+    expect(recorded).toEqual([{ chatId: '-100123', threadId: 42, text: '**Decision needed** from the M5', messageId: 321, producerKind: 'session' }]);
+  });
+  it('keeps a delivered peer reply delivered when the holder history recorder throws', async () => {
+    const h = await boot();
+    h.owner.options.onForwardedDelivered = () => { throw new Error('history store down'); };
+    const result = await h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: 'Still delivered', send: h.send }));
+    expect(result.messageId).toBe(321); expect(h.botNetwork).toHaveBeenCalledOnce();
+  });
+  it('records nothing in holder history when the holder refuses the reply', async () => {
+    const h = await boot();
+    const recorded: unknown[] = [];
+    h.owner.options.onForwardedDelivered = row => { recorded.push(row); };
+    await expect(h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,
+      topicId: 42, chatId: '-100123', text: 'Open http://localhost:4042/private', send: h.send }))).rejects.toBeTruthy();
+    expect(recorded).toEqual([]);
+  });
   it('refuses a revoked source attestation before owner admission or network dispatch', async () => {
     const h = await boot(); h.revoke();
     await expect(h.source.service.runWithSessionToken(h.credential, () => relayOriginBot({ runtime: h.source,

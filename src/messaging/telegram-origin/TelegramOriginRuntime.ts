@@ -60,6 +60,9 @@ export interface TelegramOriginRuntimeOptions {
   reviewLegacyRecovery?: OriginServiceOptions['reviewLegacyRecovery'];
   /** Retire an unsent recovery reply when newer conversation has overtaken it. */
   reviewQueuedReply?: (input: { operationId: string; chatId: string | null; topicId: number; preparedAt: number }) => Promise<import('./QueuedReplySupersession.js').QueuedReplyReview>;
+  /** A peer's forwarded reply this holder just delivered: record it in this
+   * machine's topic history. History only — never a send, never a gate. */
+  onForwardedDelivered?: (row: import('./ForwardedDeliveryHistory.js').ForwardedDeliveryRow) => void;
   peerEvidence?: OriginServiceOptions['peerEvidence'];
   diagnoseUnknown: NonNullable<OriginServiceOptions['diagnoseUnknown']>;
   diagnosticMode?: OriginServiceOptions['diagnosticMode'];
