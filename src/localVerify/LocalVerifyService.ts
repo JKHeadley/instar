@@ -55,7 +55,7 @@ import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator
 import { FailedFileDiagnosisPeerService } from './FailedFileDiagnosisPeerService.js';
 import type { DiagnosisMode } from './failedFileDiagnosis.js';
 import type { DiagnosisPeerClient, DiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
-import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
+import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, decideMainRearmAfterGreen, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import { WaitingList, type Waiter } from './waitingList.js';
@@ -2836,12 +2836,30 @@ export class LocalVerifyService {
         this.audit({ event: 'run-detail', ...runDetail(rec, result) });
       }
       if (rec) this.noteFlaky(rec);
+      if (rec && rec.outcome === 'success' && f.entry.kind !== 'main') this.rearmMainAfterGreen(rec.pr);
       if (rec && rec.outcome === 'error' && !f.entry.preflightReplay) this.handleErrorRetry(f.entry, rec.errorStep);
     }
     const waiters = this.idleWaiters;
     this.idleWaiters = [];
     for (const w of waiters) w();
     this.pump();
+  }
+
+  /** A green PR run after `main`'s error retries ran out re-arms one `main` verify (see decideMainRearmAfterGreen). */
+  private rearmMainAfterGreen(pr: number): void {
+    const head = this.mainObs.head;
+    if (head === null) return;
+    const target = this.releaseAlias.get(head) ?? head;
+    const rearm = decideMainRearmAfterGreen({
+      priorRetries: this.mainErrorRetries.get(target) ?? 0,
+      mainPending: this.queue.some((e) => e.kind === 'main'),
+      mainInFlight: this.inFlight?.entry.kind === 'main' && !this.inFlight.cancelled,
+      healthState: this.health.snapshot().state,
+    });
+    if (!rearm) return;
+    this.mainErrorRetries.set(target, 0);
+    this.audit({ event: 'main-retry-rearmed-after-green', headSha: target, afterPr: pr });
+    this.enqueueMain(target, 'rerun');
   }
 
   /* @self-action-controller: local-verify-error-rerun */
