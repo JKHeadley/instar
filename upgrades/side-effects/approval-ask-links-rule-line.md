@@ -114,3 +114,7 @@ Not required at this tier. An independent reviewer read the registry clause and 
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable. This adds a new rule line; it does not fix a defect in an existing prompt, hook, config, skill or standards text, and it adds no self-triggered controller.
+
+## Release note
+
+The release-note fragment for this change is `upgrades/next/every-ask-carries-its-links.md`. It was added after this review, so it is recorded here to tie it to this review.

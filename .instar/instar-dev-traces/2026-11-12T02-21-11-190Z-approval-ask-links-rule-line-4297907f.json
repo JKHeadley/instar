@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "approval-ask-links-rule-line",
+  "sessionId": "7aa3c18e-6565-4692-9cf1-07487414fc82",
+  "timestamp": "2026-11-12T02:21:11.190Z",
+  "artifactPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "artifactSha256": "86dfa6b8835f8be8037a846adab3c038e7c8c29868134a9e20912b8f2e9fb122",
+  "coveredFiles": [
+    "docs/specs/approval-ask-links-rule-line.eli16.md",
+    "upgrades/side-effects/approval-ask-links-rule-line.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Release-note tie-in for the same Tier-1 rule-line change; text only.",
+  "eli16Path": "docs/specs/approval-ask-links-rule-line.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/approval-ask-links-rule-line.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

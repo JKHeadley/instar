@@ -19,3 +19,5 @@ Nothing checks the rule yet. No message is blocked or held because of it. It is 
 ## If it turns out wrong
 
 Reverting the change removes the line from the template. Agents that already received the line keep it until a later update takes it out, which is the same as for any other CLAUDE.md line. No data, settings or messages are touched.
+
+_Release note: upgrades/next/every-ask-carries-its-links.md._
