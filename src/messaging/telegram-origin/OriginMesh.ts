@@ -14,11 +14,15 @@ import { verify as verifySignature } from 'node:crypto';
 import { verifyPoolLinkAssertion, type PoolLinkAssertion } from '../../core/PoolLinkAssertion.js';
 import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 import { originAuditDeliveryConfirmed } from './OriginDeliveryResolution.js';
+import { sanitizeForwardContext } from './TokenlessForwardEvidence.js';
+import type { HolderEvidenceRecorder } from './TokenlessForwardEvidence.js';
+import { sanitizeHoldNotice, sanitizeOutcomes } from './TokenlessHeldDebt.js';
+import type { PeerHeldDebtStore } from './TokenlessHeldDebt.js';
 
 export const ORIGIN_MESH_PROTOCOL = 'instar-telegram-origin-v1';
 export type OriginMeshCommand = { type: 'telegram-origin'; protocol: typeof ORIGIN_MESH_PROTOCOL } & (
-  { action: 'capabilities' } | { action: 'receipt'; operationId: string } | { action: 'evidence'; record: StoredOriginInput } |
-  { action: 'submit'; operation: OriginPreparedBotOperation } | { action: 'audit'; query: OriginListQuery; operatorAssertion?: PoolLinkAssertion }
+  { action: 'capabilities'; forwardContext?: unknown } | { action: 'receipt'; operationId: string } | { action: 'evidence'; record: StoredOriginInput; tokenlessHold?: unknown } |
+  { action: 'submit'; operation: OriginPreparedBotOperation; forwardContext?: unknown } | { action: 'audit'; query: OriginListQuery; operatorAssertion?: PoolLinkAssertion }
   | { action: 'metrics'; operatorAssertion?: PoolLinkAssertion });
 export const ORIGIN_METRICS_AUDIENCE = 'telegram-origin-metrics:v1';
 
@@ -35,8 +39,18 @@ export async function handleOriginMesh(options: {
   command: OriginMeshCommand;
   authenticatedSender: string;
   resolveKey: (machineId: string) => OriginVerificationKey | null;
+  /** standby-durable-forward-without-token §10: records a token-less standby's evidence (signal only). */
+  evidence?: HolderEvidenceRecorder;
+  /** §9: open debt entries for another machine's token-less holds (metadata only). */
+  heldDebt?: PeerHeldDebtStore;
 }): Promise<unknown> {
   const { runtime, command } = options;
+  // A command-level `forwardContext` never changes how the command is handled.
+  const forwardContext = (command.action === 'capabilities' || command.action === 'submit') ? sanitizeForwardContext(command.forwardContext) : null;
+  const observe = (delivered?: { operationId: string }): string[] => {
+    if (!forwardContext || !options.evidence) return [];
+    try { return options.evidence.observe(options.authenticatedSender, forwardContext, delivered); } catch { return []; } // @silent-fallback-ok — evidence is a signal; an unwritable log only delays the ack, never the command
+  };
   if (command.protocol !== ORIGIN_MESH_PROTOCOL) return { ok: false, reason: 'origin-protocol-unsupported' };
   if (!options.resolveKey(options.authenticatedSender)) return { ok: false, reason: 'origin-peer-unavailable' };
   if (command.action === 'receipt') {
@@ -73,9 +87,17 @@ export async function handleOriginMesh(options: {
         messageIds: verdict.messageIds };
     } catch { return { ok: false, reason: 'origin-receipt-unavailable' }; }
   }
-  if (command.action === 'capabilities') return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,
-    executionOwnerMachineId: runtime.options.identity.originMachineId,
-    credentialOwner: !!runtime.options.bot.token, accountId: runtime.options.bot.token ? runtime.options.bot.accountId : null };
+  if (command.action === 'capabilities') {
+    const evidenceAck = observe();
+    // §9: the origin machine reports how its holds ended; only it can close its entries.
+    let outcomesAck: string[] = [];
+    const outcomes = sanitizeOutcomes((command.forwardContext as { outcomes?: unknown } | undefined)?.outcomes);
+    if (outcomes.length && options.heldDebt) { try { options.heldDebt.close(options.authenticatedSender, outcomes); outcomesAck = outcomes.map(o => o.rootOperationId); } catch { /* @silent-fallback-ok — unacked outcomes are resent */ } }
+    return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,
+      executionOwnerMachineId: runtime.options.identity.originMachineId,
+      credentialOwner: !!runtime.options.bot.token, accountId: runtime.options.bot.token ? runtime.options.bot.accountId : null,
+      ...(evidenceAck.length ? { evidenceAck } : {}), ...(outcomesAck.length ? { outcomesAck } : {}) };
+  }
   if (command.action === 'audit' || command.action === 'metrics') {
     const assertion = command.operatorAssertion;
     if (!assertion || assertion.userAuth !== 'pin-session') return { ok: false, reason: 'operator-audit-scope-required' };
@@ -117,7 +139,14 @@ export async function handleOriginMesh(options: {
   const verification = { envelopeDigest: stored.envelopeDigest, verifierMachineId: runtime.options.identity.originMachineId,
     keyId: key.keyId, keyEpoch: key.keyEpoch, keyFingerprint: wireDigest(key.publicKey), verifiedAt: verified.verifiedAt,
     keyStatusAtAcceptance: 'active' as const };
-  if (command.action === 'evidence') return { ok: true, receipt: await runtime.store.putVerifiedEvidence({ record: stored, verification }) };
+  if (command.action === 'evidence') {
+    const receipt = await runtime.store.putVerifiedEvidence({ record: stored, verification });
+    const notice = sanitizeHoldNotice(command.tokenlessHold);
+    if (notice && options.heldDebt && stored.machineId === options.authenticatedSender) {
+      try { options.heldDebt.add(options.authenticatedSender, notice); } catch { /* @silent-fallback-ok — the debt note is best effort; the evidence receipt stands */ }
+    }
+    return { ok: true, receipt };
+  }
   if (command.action !== 'submit' || !runtime.options.bot.token) return { ok: false, reason: 'origin-credential-owner-required' };
   if (record.executionOwnerMachineId !== runtime.options.identity.originMachineId) {
     return { ok: false, reason: 'execution-owner-mismatch', outcome: 'held' };
@@ -146,8 +175,10 @@ export async function handleOriginMesh(options: {
           networkTimeoutMs: 10_000 }, undefined, operation);
     });
     const body = await response.json() as { result?: { message_id?: number } };
+    const evidenceAck = observe({ operationId: record.operationId });
     return { ok: true, originId: record.originId, messageId: body.result?.message_id, originReceiptConfirmed: true,
-      deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
+      deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId,
+      ...(evidenceAck.length ? { evidenceAck } : {}) };
   } catch (error) {
     if (error instanceof QuietRecordedError) return { ok: true, originId: record.originId, ...error.receipt, deliveryMachineId: runtime.options.identity.originMachineId };
     if (error instanceof OriginSendPolicyRefusal) return { ok: false, reason: error.reason, outcome: 'held',

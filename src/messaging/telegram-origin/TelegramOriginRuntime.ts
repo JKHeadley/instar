@@ -27,6 +27,7 @@ import { assessOriginActivation, type OriginEnrollmentSnapshot } from './OriginA
 import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
 import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
+import { heldExpiryReportDue } from './TokenlessNoticeBrakes.js';
 
 /** How long an origin keeps full detail in the hot tables; the archive holds it after that. */
 const HOT_DETAIL_MS = 7 * 24 * 60 * 60_000;
@@ -60,6 +61,8 @@ export interface TelegramOriginRuntimeOptions {
   reviewLegacyRecovery?: OriginServiceOptions['reviewLegacyRecovery'];
   /** Retire an unsent recovery reply when newer conversation has overtaken it. */
   reviewQueuedReply?: (input: { operationId: string; chatId: string | null; topicId: number; preparedAt: number }) => Promise<import('./QueuedReplySupersession.js').QueuedReplyReview>;
+  /** A held reply was retired as overtaken (reporting only; standby-durable-forward-without-token §9). */
+  onQueuedReplyRetired?: (operationId: string) => void;
   peerEvidence?: OriginServiceOptions['peerEvidence'];
   diagnoseUnknown: NonNullable<OriginServiceOptions['diagnoseUnknown']>;
   diagnosticMode?: OriginServiceOptions['diagnosticMode'];
@@ -78,6 +81,10 @@ export interface TelegramOriginRuntimeOptions {
   /** §4.2 — recovery of a held FORWARDED operation (execution owner ≠ self).
    * Wired by the server; absent ⇒ such rows are retained, never executed here. */
   forwardRecovery?: (operation: OriginPreparedBotOperation, row: import('./StoreTypes.js').HeldOperationRow) => Promise<'resolved' | 'sent' | 'settled' | 'retained' | 'skipped'>;
+  /** standby-durable-forward-without-token §2 — ONE reachability check per recovery pass, before any
+   * per-row review or pool-history read. `false` ⇒ every forwarded row is skipped this pass with no
+   * write at all (its ladder is NOT advanced: no attempt was made). Absent ⇒ always reachable. */
+  forwardTickReachable?: () => Promise<boolean>;
   /** §4.2 — a held forward reached its deadline: report it ONCE, honestly. */
   onHeldForwardExpired?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
   /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward
@@ -376,7 +383,7 @@ export class TelegramOriginRuntime {
     try { rows = await this.store.listHeldOperations({ holdReason: 'lease-not-held', limit: 500 }); }
     catch { return; /* The last known summary stands; the store reports its own health. */ }
     const held = rows.filter(row => row.state === 'held');
-    const expired = rows.filter(row => row.state === 'expired' && row.expiryReportedAt === null);
+    const expired = rows.filter(heldExpiryReportDue);
     // Direct-path holds (sealed owner = this machine, no forward detail) are
     // reported once each; the forward path reports its own holds at hold time.
     const liveIds = new Set(held.map(row => row.operationId));
@@ -413,6 +420,7 @@ export class TelegramOriginRuntime {
     this.recovering = true;
     let processed = 0, recovered = 0;
     try {
+      const tick: { reachable?: boolean } = {};
       let due: Array<{ admission: import('./StoreTypes.js').OriginAdmission; row: import('./StoreTypes.js').HeldOperationRow }> = [];
       try { due = await this.store.heldForwardAdmissions({ now, limit: 10 }); } catch { return { processed, recovered }; }
       for (const { admission, row } of due) {
@@ -420,6 +428,7 @@ export class TelegramOriginRuntime {
         const operation = { record: parseOriginJson(admission.record.envelopeJson) as unknown as TelegramOriginRecord, admission };
         if (!operation.record.executionOwnerMachineId || operation.record.executionOwnerMachineId === this.options.identity.originMachineId) continue;
         try {
+          if (!await this.forwardTickGate(tick)) continue;
           processed++;
           if (!await this.allowQueuedRecovery(operation, row)) continue;
           const outcome = await this.options.forwardRecovery(operation, row);
@@ -539,6 +548,7 @@ export class TelegramOriginRuntime {
       }
       // Each source contributes at most ten, so a full durable batch cannot
       // permanently hide work retained only in the bounded memory hold buffer.
+      const forwardTick: { reachable?: boolean } = {};
       for (const candidate of candidates.values()) {
         if (this.closed) break;
         const { operation } = candidate;
@@ -574,6 +584,8 @@ export class TelegramOriginRuntime {
               preparedAt: audit.operation.preparedAt, deadlineAt: audit.operation.deadlineAt, executionOwnerMachineId: operation.record.executionOwnerMachineId,
               destination: { accountId: operation.record.destination.accountId, chatId: operation.record.destination.chatId, topicId: operation.record.destination.topicId },
               recovery: audit.recovery ?? null, expiryReportedAt: null, producerKind: operation.record.producerKind };
+            // §2: an unreachable holder skips the row before the reservation and the review.
+            if (!await this.forwardTickGate(forwardTick)) continue;
             if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
             processed++;
             if (!await this.allowQueuedRecovery(operation, row, audit)) continue;
@@ -666,6 +678,15 @@ export class TelegramOriginRuntime {
     return true;
   }
   /** Shared gate for direct recovery and both forward retry schedulers. */
+  /** §2 — the pass-scoped reachability answer, read once per pass on the first forwarded row. */
+  private async forwardTickGate(tick: { reachable?: boolean }): Promise<boolean> {
+    if (!this.options.forwardTickReachable) return true;
+    if (tick.reachable === undefined) {
+      try { tick.reachable = await this.options.forwardTickReachable(); }
+      catch { tick.reachable = false; } // @silent-fallback-ok — an unreachable or failed step answers "unreachable"/"unknown", never success
+    }
+    return tick.reachable;
+  }
   private async allowQueuedRecovery(operation: OriginPreparedBotOperation,
     row?: import('./StoreTypes.js').HeldOperationRow,
     knownAudit?: import('./StoreTypes.js').OriginAuditRecord): Promise<boolean> {
@@ -695,6 +716,7 @@ export class TelegramOriginRuntime {
     if (review === 'retire') {
       if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {
         console.info('[telegram-origin] retired overtaken queued reply', operation.record.operationId);
+        try { this.options.onQueuedReplyRetired?.(operation.record.operationId); } catch { /* @silent-fallback-ok — reporting only; never changes delivery */ }
       }
       return false;
     }

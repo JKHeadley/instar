@@ -10,6 +10,8 @@ import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import { submitOriginToHolder } from './OriginForwardToHolder.js';
 import { OriginSendPolicyRefusal } from './OriginSendPolicy.js';
 
+export { RELAY_PRE_PREPARE_REASONS, relayNothingPrepared } from './types.js';
+
 export async function relayOriginBot(input: {
   runtime: TelegramOriginRuntime; topicId: number; chatId: string; text: string; silent?: boolean;
   formatMode?: FormatMode;

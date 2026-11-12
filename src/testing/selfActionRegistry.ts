@@ -27,6 +27,8 @@ import { SOURCE_STATUS_RETRY_MS, sourceStatusPollGivesUp } from '../core/GraphSo
 import { WorkAdmission } from '../core/workAdmission.js';
 import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
 import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
+import { HUB_REPOST_MAX_ATTEMPTS, hubRepostDecision, noteAccountChangedTopic, heldExpiryReportDue, type HubRepostState } from '../messaging/telegram-origin/TokenlessNoticeBrakes.js';
+import { closeGoneEntries, type HeldDebtEntry } from '../messaging/telegram-origin/TokenlessHeldDebt.js';
 import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
 import { markerEmitDue, EMIT_THROTTLE_MS } from '../core/ConversationReadMarkers.js';
@@ -5353,6 +5355,128 @@ const reloginApprovalReminder: SelfActionController = {
   },
 };
 
+
+/** tokenless-hub-repost (standby-durable-forward-without-token §8): an attention hub post that
+ * found the sending machine unreachable is re-posted when it answers again. Pressure: the holder
+ * keeps answering its capabilities probe but every re-post fails. The real decision backs off
+ * (1 min, 5 min, 30 min, then every 2 h) and gives the extra hub post up after
+ * HUB_REPOST_MAX_ATTEMPTS failures; the item stays open on the dashboard. */
+const tokenlessHubRepost: SelfActionController = {
+  id: 'tokenless-hub-repost',
+  actionVerb: 'retry',
+  models: 'src/messaging/TelegramAdapter.ts (repostPendingHubPostsOnce — hubRepostDecision backoff + give-up, attempts persisted in pending-hub-reposts.json)',
+  modelsPath: 'src/messaging/TelegramAdapter.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => (SELF_ACTION_CONTROLLERS.find(c => c.id === 'tokenless-hub-repost') as SelfActionController).makeUnderPressure(f, sink) },
+  boundK: HUB_REPOST_MAX_ATTEMPTS,
+  perTargetBoundK: HUB_REPOST_MAX_ATTEMPTS,
+  ticks: 24 * 60 * 3,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const key = 'tokenless-hub-repost:item';
+    const durable = () => f.durableState.get(key) as { pending: boolean; state?: HubRepostState } | undefined;
+    if (!durable()) f.durableState.set(key, { pending: true });
+    return {
+      tick() {
+        sink.considered += 1;
+        const d = durable()!;
+        if (!d.pending) return;
+        const now = f.clock.nowMs();
+        const decision = hubRepostDecision(d.state, now);
+        if (decision === 'wait') return;
+        if (decision === 'give-up') { d.pending = false; return; }
+        sink.emit({ verb: 'retry', target: 'hub-repost:item' });
+        // The fixture's target always rejects: the attempt fails and is recorded.
+        if (f.targetAlwaysRejects()) d.state = { attempts: (d.state?.attempts ?? 0) + 1, lastAt: now };
+        else d.pending = false;
+      },
+    };
+  },
+};
+
+/** tokenless-account-changed-notice (§2): held replies sealed for one bot while the sending
+ * machine now runs another. Pressure: the same mismatch is found on every recovery pass for the
+ * same topic. The real decision raises one item per (sealed, live) pair and adds a topic only
+ * once, so a steady mismatch raises it once. */
+const tokenlessAccountChangedNotice: SelfActionController = {
+  id: 'tokenless-account-changed-notice',
+  actionVerb: 'createAttentionItem',
+  models: 'src/commands/server.ts (onAccountChanged — noteAccountChangedTopic, one item per bot pair, re-raised only for a new topic)',
+  modelsPath: 'src/commands/server.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The listed topics are held in memory, so a restart can raise the same fixed-id item once more per topic; it updates that one item, and the count stays bounded by the number of affected topics.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60 * 3,
+  tickMs: 5_000,
+  makeUnderPressure(_f, sink) {
+    const listed = new Map<string, Set<string>>();
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!noteAccountChangedTopic(listed, '111:222', '141014')) return;
+        sink.emit({ verb: 'createAttentionItem', target: 'account-changed:111:222' });
+      },
+    };
+  },
+};
+
+/** held-forward-expiry-report (§8): a held forward that passed its deadline is reported once.
+ * Pressure: the expired row stays in the store on every refresh. The real filter reports only
+ * rows whose durable expiryReportedAt marker is still null, and the marker is written after the
+ * report, so a steady expired row is reported once. */
+const heldForwardExpiryReport: SelfActionController = {
+  id: 'held-forward-expiry-report',
+  actionVerb: 'createAttentionItem',
+  models: 'src/commands/server.ts (onHeldForwardExpired) driven by TelegramOriginRuntime.refreshHeldForward (heldExpiryReportDue + markHoldExpiryReported)',
+  modelsPath: 'src/commands/server.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => (SELF_ACTION_CONTROLLERS.find(c => c.id === 'held-forward-expiry-report') as SelfActionController).makeUnderPressure(f, sink) },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60 * 3,
+  tickMs: 30_000,
+  makeUnderPressure(f, sink) {
+    const key = 'held-forward-expiry-report:row';
+    if (!f.durableState.has(key)) f.durableState.set(key, { state: 'expired', expiryReportedAt: null as number | null });
+    return {
+      tick() {
+        sink.considered += 1;
+        const row = f.durableState.get(key) as { state: string; expiryReportedAt: number | null };
+        if (!heldExpiryReportDue(row)) return;
+        sink.emit({ verb: 'createAttentionItem', target: 'held-expiry:op-1' });
+        row.expiryReportedAt = f.clock.nowMs();
+      },
+    };
+  },
+};
+
+/** held-debt-loss-notice (§9): a held reply owed by a machine the owner marked as gone is
+ * reported as a loss once. Pressure: the closure runs on every status read while the machine
+ * stays gone. The real closure deletes each entry as it reports it, so nothing is reported twice. */
+const heldDebtLossNotice: SelfActionController = {
+  id: 'held-debt-loss-notice',
+  actionVerb: 'createAttentionItem',
+  models: 'src/server/AgentServer.ts (setHeldDebtGoneCheck loss reporter) over TokenlessHeldDebt.closeGoneEntries (report, then delete)',
+  modelsPath: 'src/server/AgentServer.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => (SELF_ACTION_CONTROLLERS.find(c => c.id === 'held-debt-loss-notice') as SelfActionController).makeUnderPressure(f, sink) },
+  boundK: 2,
+  perTargetBoundK: 1,
+  ticks: 24 * 60 * 3,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const key = 'held-debt-loss-notice:entries';
+    if (!f.durableState.has(key)) {
+      const entry = (root: string): HeldDebtEntry => ({ rootOperationId: root, topicId: '141014', authoredAt: 0, originMachineId: 'm_gone', recordedAt: 0 });
+      f.durableState.set(key, { 'm_gone:op-a': entry('op-a'), 'm_gone:op-b': entry('op-b') } as Record<string, HeldDebtEntry>);
+    }
+    return {
+      tick() {
+        sink.considered += 1;
+        const all = f.durableState.get(key) as Record<string, HeldDebtEntry>;
+        closeGoneEntries(all, id => id === 'm_gone', e => sink.emit({ verb: 'createAttentionItem', target: `held-lost:${e.rootOperationId}` }));
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   graphSourceSweepCheckpointRetry,
   graphSourceStatusPollRetry,
@@ -5482,4 +5606,8 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   readMarkerCatchUpRetry,
   browserActivationEffectRetry,
   emailFallbackRetry,
+  tokenlessHubRepost,
+  tokenlessAccountChangedNotice,
+  heldForwardExpiryReport,
+  heldDebtLossNotice,
 ];
