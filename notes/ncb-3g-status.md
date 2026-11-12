@@ -66,7 +66,7 @@ Concurrence is recorded in `upgrades/side-effects/ncb-3g-forwarded-advisory.md`.
   - The first push ran the pre-push hook. Its smoke tier skipped itself because the affected-test listing timed out; CI remains the authority.
   - The docs-only PR-body push used `INSTAR_PRE_PUSH_SKIP=1`.
 - **Opening the PR:** this machine's GitHub token cannot create PRs, so a one-shot Studio session opened it. It read the body from `notes/ncb-3g-pr-body.md`.
-- **Local Verify:** requested on the Studio after this note and the final trace were pushed (see below).
+- **Local Verify: not yet queued.** `POST /local-verify {"pr":3114}` on the Studio answered `queue-full` on every try from 11:26 to 12:10 PST (log on the M5: `echo-test-tmp/lv-retry.log`). At 12:10 the queue held 11 entries (a main run and PRs 3096, 3081, 3108, 3066, 3111, 3112, 3090, 3085, 3091, 3097) with 3109 in flight, and the lane had a `verifierHold` since 12:05 PST: `verifier-mismatch` (server vh3:19dbc467…, disk vh3:c70bdbac…), which clears only when the Studio server restarts onto its current code. I did not restart the lease holder (outside this brief). The M5 session retries every 5 minutes until 13:30 PST; if still refused, request it again once the hold clears.
 
 ## Open problems
 
