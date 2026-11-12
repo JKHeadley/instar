@@ -577,6 +577,9 @@ import type { AutoDispatcher } from '../core/AutoDispatcher.js';
 import type { QuotaTracker } from '../monitoring/QuotaTracker.js';
 import type { TelegraphService } from '../publishing/TelegraphService.js';
 import { ViewsReplacedByDocumentsError, type PrivateViewer } from '../publishing/PrivateViewer.js';
+
+/** The words a refused page creation answers with (instar-document-viewer §3.9b). */
+const VIEWS_REPLACED_DETAIL = 'Documents are on for this agent, so new read-only pages are not made. Make a document instead: POST /docs with the same title and markdown. Links to existing pages keep working.';
 import type { TunnelManager } from '../tunnel/TunnelManager.js';
 import type { EvolutionManager } from '../core/EvolutionManager.js';
 import type { EvolutionStatus, EvolutionType, GapCategory } from '../core/types.js';
@@ -9132,7 +9135,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       doc = ctx.publishSystemDocument?.('Chief of Staff — first-run triage', list.markdown, typeof cosTopic === 'number' && cosTopic > 1 ? `telegram:${cosTopic}` : null) ?? null;
     } catch (err) {
-      res.status(503).json({ error: 'documents-error', detail: 'The triage list could not be saved as a document.', reason: (err instanceof Error ? err.message : String(err)).slice(0, 120) });
+      res.status(503).json({ error: 'documents-error', detail: 'The triage list could not be saved as a document.', reason: operatorError(err, res.app?.locals?.stateDir) });
       return;
     }
     if (doc) {
@@ -28836,7 +28839,7 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     try {
       view = ctx.viewer.create(title, markdown, pin, metadata, homeless ? { noDocumentHome: true } : {});
     } catch (err) {
-      if (err instanceof ViewsReplacedByDocumentsError) { res.status(409).json({ error: err.code, detail: err.message, use: '/docs' }); return; }
+      if (err instanceof ViewsReplacedByDocumentsError) { res.status(409).json({ error: 'documents-replace-views', detail: VIEWS_REPLACED_DETAIL, use: '/docs' }); return; }
       throw err;
     }
 

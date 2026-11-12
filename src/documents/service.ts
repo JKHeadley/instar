@@ -64,7 +64,7 @@ export class DocumentService {
     };
   }
 
-  private require(docId: string, caller: Caller, op: DocOp): DocFacts {
+  private requireAccess(docId: string, caller: Caller, op: DocOp): DocFacts {
     const f = this.facts(docId);
     if (!f) throw notFound();
     const d = mayDoDocument(caller.principal, f, op, this.team);
@@ -78,7 +78,7 @@ export class DocumentService {
 
   /** Metadata only: what owner-reach callers get for documents they can't read (§3.3). */
   metadata(docId: string, caller: Caller): { id: string; primary: ConversationRef; version: number | null; openComments: number; title: string | null } {
-    const f = this.require(docId, caller, 'read-metadata');
+    const f = this.requireAccess(docId, caller, 'read-metadata');
     const s = this.ownerState(docId);
     const canRead = mayDoDocument(caller.principal, f, 'read', this.team).ok;
     const latest = latestVersion(s);
@@ -88,7 +88,7 @@ export class DocumentService {
 
   /** The document as this caller may see it: latest visible complete version, its text. */
   read(docId: string, caller: Caller, versionId?: string): { id: string; title: string | null; version: VersionState | null; markdown: string | null; heads: VersionState[]; state: DocState } {
-    this.require(docId, caller, 'read');
+    this.requireAccess(docId, caller, 'read');
     const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
     const v = versionId ? s.versions.get(versionId) ?? null : latestVersion(s);
     const markdown = v ? this.versionText(docId, v) : null;
@@ -176,7 +176,7 @@ export class DocumentService {
 
   /** Write a new version (§3.5): content-defined chunks under the document's salt. */
   revise(docId: string, caller: Caller, input: { markdown: string; note?: string; addresses?: string[]; parents?: string[] }): { versionId: string; label: number } {
-    this.require(docId, caller, 'revise');
+    this.requireAccess(docId, caller, 'revise');
     const s = this.ownerState(docId);
     const docSalt = this.docSalt(docId, s);
     const parents = input.parents?.filter((p) => s.versions.has(p)) ?? versionHeads(s).map((v) => v.versionId);
@@ -205,7 +205,7 @@ export class DocumentService {
 
   /** Comment on a passage. The quote is cut from the version's projection, never sent by the page (§3.5). */
   comment(docId: string, caller: Caller, input: { commentId?: string; onVersion: string; start: number; end: number; body: string; bodyBlobs?: Blob[]; bodyHash?: string }): { key: string } {
-    this.require(docId, caller, 'comment');
+    this.requireAccess(docId, caller, 'comment');
     this.checkBody(input.body);
     const s = this.ownerState(docId);
     const v = s.versions.get(input.onVersion);
@@ -230,7 +230,7 @@ export class DocumentService {
   }
 
   reply(docId: string, caller: Caller, commentKey: string, body: string, signed?: { replyId: string; bodyBlobs: Blob[]; bodyHash: string }): { replyId: string } {
-    this.require(docId, caller, 'reply');
+    this.requireAccess(docId, caller, 'reply');
     this.checkBody(body);
     const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
     if (!s.comments.has(commentKey)) throw new DocError(404, 'unknown-comment');
@@ -245,13 +245,13 @@ export class DocumentService {
     const c = s.comments.get(commentKey);
     if (!c) throw new DocError(404, 'unknown-comment');
     const own = c.author === this.authorKey(caller);
-    this.require(docId, caller, own ? 'resolve-own' : 'resolve-any');
+    this.requireAccess(docId, caller, own ? 'resolve-own' : 'resolve-any');
     this.store.append(docId, { eventKind: resolved ? 'resolve' : 'reopen', commentKey }, this.header(caller, this.ownerState(docId).primaryRowKey));
   }
 
   /** Record which comments a Send message covered (§3.8; the message itself goes through chat). */
   recordSend(docId: string, caller: Caller, input: { batchId: string; messageRequestId: string; primaryRow?: string; commentKeysHash?: string }): { covered: string[] } {
-    this.require(docId, caller, 'send');
+    this.requireAccess(docId, caller, 'send');
     const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
     // The document moved between the message and this row (§3.8): the comments stay unsent.
     if (input.primaryRow && input.primaryRow !== s.primaryRowKey) throw new DocError(409, 'document-moved');
@@ -273,7 +273,7 @@ export class DocumentService {
    * Once shared, a document never moves back into an owner-only conversation.
    */
   setPrimary(docId: string, caller: Caller, primary: ConversationRef, docDepsSigned: Record<string, number>): void {
-    const f = this.require(docId, caller, 'move');
+    const f = this.requireAccess(docId, caller, 'move');
     if (!isConversationRef(primary)) throw new DocError(400, 'bad-primary');
     if (primary === f.primary) return;
     if (f.everShared && this.team.ownerOnly(primary)) throw new DocError(409, 'once-shared-stays-shared');
@@ -300,7 +300,7 @@ export class DocumentService {
   }
 
   link(docId: string, caller: Caller, input: { to: NodeRef; kind: LinkKind; reason?: string }, targetVisible: (to: NodeRef) => boolean): void {
-    this.require(docId, caller, 'link');
+    this.requireAccess(docId, caller, 'link');
     if (!isNodeRef(input.to) || !targetVisible(input.to)) throw notFound();
     this.store.append(docId, { eventKind: 'link', to: input.to, kind: input.kind, ...(input.reason ? { reasonHash: this.putText(docId, input.reason.slice(0, WRITE_DEFAULTS.reasonChars)) } : {}) }, this.header(caller, this.ownerState(docId).primaryRowKey));
   }
@@ -342,7 +342,7 @@ export class DocumentService {
 
   /** Edit one's own comment (a new revision; the old one stays in history). */
   editComment(docId: string, caller: Caller, commentKey: string, body: string, signed?: { bodyBlobs: Blob[]; bodyHash: string }): void {
-    this.require(docId, caller, 'comment');
+    this.requireAccess(docId, caller, 'comment');
     this.checkBody(body);
     const s = foldDocument(docId, this.store.rowsOf(docId), caller.reader);
     const c = s.comments.get(commentKey);
@@ -352,7 +352,7 @@ export class DocumentService {
 
   /** Re-attach one's own orphaned or moved comment to a new passage (§3.5). */
   reanchorComment(docId: string, caller: Caller, commentKey: string, input: { onVersion: string; start: number; end: number }): void {
-    this.require(docId, caller, 'comment');
+    this.requireAccess(docId, caller, 'comment');
     const s = this.ownerState(docId);
     const mine = foldDocument(docId, this.store.rowsOf(docId), caller.reader).comments.get(commentKey);
     if (!mine || mine.author !== this.authorKey(caller)) throw new DocError(404, 'unknown-comment');

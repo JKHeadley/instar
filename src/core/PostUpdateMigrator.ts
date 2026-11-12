@@ -20496,7 +20496,7 @@ DOCS_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
 if [ -n "\$DOCS_PORT" ] && [ -n "\$DOCS_TOKEN" ]; then
   DOCS_QUERY=""
   if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then DOCS_QUERY="?conversation=telegram:\${INSTAR_TELEGRAM_TOPIC}"; fi
-  DOCS_CTX=\$(curl -s --max-time 3 -H "Authorization: Bearer \${DOCS_TOKEN}" "http://localhost:\${DOCS_PORT}/docs/session-context\${DOCS_QUERY}" 2>/dev/null)
+  DOCS_CTX=\$(curl -s --max-time 3 -H "Authorization: Bearer \${DOCS_TOKEN}" -H "X-Instar-AgentId: \${INSTAR_AGENT_ID:-}" "http://localhost:\${DOCS_PORT}/docs/session-context\${DOCS_QUERY}" 2>/dev/null)
   DOCS_TEXT=\$(printf '%s' "\$DOCS_CTX" | python3 -c "import sys,json
 try:
     print((json.load(sys.stdin).get('text') or '').strip())
@@ -22081,6 +22081,34 @@ except Exception:
       if [ -n "\$BOOT_PW_BLOCK" ]; then
         echo ""
         echo "\$BOOT_PW_BLOCK"
+        echo ""
+      fi
+    fi
+  fi
+fi
+
+# INSTAR DOCUMENTS re-injection (instar-document-viewer §3.7 — Compaction Parity twin of the
+# session-start DOCUMENTS block): this conversation's documents. Same fail-open contract as the
+# boot fetch: switched off (503) / unreachable -> silent skip, header-only Bearer.
+if [ -f "$INSTAR_DIR/config.json" ]; then
+  DOCS_CR_PORT=\${PORT:-\$(grep -oE '"port"[[:space:]]*:[[:space:]]*[0-9]+' "$INSTAR_DIR/config.json" | head -1 | grep -oE '[0-9]+' | head -1)}
+  DOCS_CR_TOKEN="\${INSTAR_AUTH_TOKEN:-}"
+  if [ -n "\$DOCS_CR_PORT" ] && [ -n "\$DOCS_CR_TOKEN" ]; then
+    DOCS_CR_QUERY=""
+    if [ -n "\$INSTAR_TELEGRAM_TOPIC" ]; then DOCS_CR_QUERY="?conversation=telegram:\${INSTAR_TELEGRAM_TOPIC}"; fi
+    DOCS_CR_RESPONSE=\$(curl -sf --max-time 4 --connect-timeout 1 -H "Authorization: Bearer \$DOCS_CR_TOKEN" \
+      "http://localhost:\${DOCS_CR_PORT}/docs/session-context\${DOCS_CR_QUERY}" 2>/dev/null)
+    if [ -n "\$DOCS_CR_RESPONSE" ]; then
+      DOCS_CR_TEXT=\$(echo "\$DOCS_CR_RESPONSE" | python3 -c "
+import sys, json
+try:
+    print((json.load(sys.stdin).get('text') or '').strip())
+except Exception:
+    pass
+" 2>/dev/null)
+      if [ -n "\$DOCS_CR_TEXT" ]; then
+        echo ""
+        echo "\$DOCS_CR_TEXT"
         echo ""
       fi
     fi

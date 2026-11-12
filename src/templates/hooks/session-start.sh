@@ -212,7 +212,7 @@ DOCS_TOKEN="${INSTAR_AUTH_TOKEN:-}"
 if [ -n "$DOCS_PORT" ] && [ -n "$DOCS_TOKEN" ]; then
   DOCS_QUERY=""
   if [ -n "$INSTAR_TELEGRAM_TOPIC" ]; then DOCS_QUERY="?conversation=telegram:${INSTAR_TELEGRAM_TOPIC}"; fi
-  DOCS_CTX=$(curl -s --max-time 3 -H "Authorization: Bearer ${DOCS_TOKEN}" "http://localhost:${DOCS_PORT}/docs/session-context${DOCS_QUERY}" 2>/dev/null)
+  DOCS_CTX=$(curl -s --max-time 3 -H "Authorization: Bearer ${DOCS_TOKEN}" -H "X-Instar-AgentId: ${INSTAR_AGENT_ID:-}" "http://localhost:${DOCS_PORT}/docs/session-context${DOCS_QUERY}" 2>/dev/null)
   DOCS_TEXT=$(printf '%s' "$DOCS_CTX" | python3 -c "import sys,json
 try:
     print((json.load(sys.stdin).get('text') or '').strip())

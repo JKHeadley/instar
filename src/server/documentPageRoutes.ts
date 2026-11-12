@@ -203,7 +203,7 @@ export function createDocumentPageRoutes(deps: DocPageDeps): Router {
     if (!svc || !r || !isUuid(id)) { res.status(404).json({ error: 'unknown-document' }); return; }
     const deviceId = (req as Request & { instarPrincipal?: { kind: string; deviceId: string } }).instarPrincipal?.deviceId;
     if (!deviceId) { res.status(404).json({ error: 'unknown-document' }); return; }
-    try { svc.read(id, withReader(r, id)); } catch (err) { fail(res, err); return; }
+    try { svc.read(id, withReader(r, id)); } catch (err) { fail(res, err); return; } // @silent-fallback-ok — not a fallback: the refusal is answered (404 for anything the reader may not see)
     const origin = deps.stableOrigin() ?? loopbackOrigin(req);
     if (!origin) { res.status(409).json({ error: 'documents-need-a-named-tunnel', detail: 'Documents need a permanent address for your agent. Turn on a named tunnel in Settings.' }); return; }
     prune(codes);

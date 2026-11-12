@@ -30,6 +30,7 @@ const SITES: Record<string, { count: number; cls: SiteClass; why: string }> = {
   'src/server/AgentServer.ts /dashboard': { count: 1, cls: 'first-party-console', why: 'express.static of the shipped dashboard and console' },
   'src/server/dashboardEntry.ts /dashboard': { count: 2, cls: 'first-party-console', why: 'dashboard index and /dashboard/pair page files shipped with instar' },
   'src/server/dashboardPreview.ts (none)': { count: 2, cls: 'agent-served-code', why: '/dashboard/preview: agent-published console pages, by design inside the OS-user boundary' },
+  'src/server/documentPageRoutes.ts /docs/:id': { count: 1, cls: 'first-party-template', why: 'Instar Documents page shell: a fixed instar-authored HTML string with no interpolation; document text arrives as JSON text blocks the page script renders as text (instar-document-viewer §3.6)' },
   'src/server/routes.ts /mcp/approve/:requestId': { count: 6, cls: 'first-party-template', why: 'MCP approval page; interpolated values escaped' },
   'src/server/routes.ts /view/:id': { count: 6, cls: 'sandboxed', why: 'private views (marked passes raw HTML) and the relayed holder copy' },
   'src/server/routes.ts /view/:id/unlock': { count: 4, cls: 'sandboxed', why: 'unlocked view render' },

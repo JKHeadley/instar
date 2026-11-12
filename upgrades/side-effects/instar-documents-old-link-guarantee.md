@@ -91,6 +91,22 @@ Machine-local by design for the verdict: each machine decides from its own ident
 
 Revert the commit, or switch documents off (`documents.enabled: false`): the verdict becomes `documents-off`, pages are made again, B24 stops attaching. Documents already made stay readable. No data migration.
 
+## Addendum: suite ratchets on the PR head (2026-11-11 19:20 PST)
+
+A full local unit run on the head (65,552 passed, 56 failed in 11 files) found seven ratchet failures that Local Verify would also hit. Some came from this change and some from the documents branch against newer main ratchets. Fixed:
+
+- **ESM compliance**: `DocumentService.require` renamed to `requireAccess` (the ratchet reads `.require(` as CommonJS).
+- **Storage-error responses**: the triage 503 passes its error through `operatorError`; the POST /view 409 uses a fixed message, not `err.message`.
+- **No silent fallbacks**: the page read's refusal (`documentPageRoutes.ts`) is answered, not swallowed, and is marked as such.
+- **Template agent-id header**: the session-start DOCUMENTS fetch sends `X-Instar-AgentId`.
+- **HTML-site ratchet**: `/docs/:id` is classified `first-party-template`. The page shell is a fixed string with no interpolation.
+- **Compaction parity** (a real gap): the DOCUMENTS block was injected at session start only. `getCompactionRecovery()` now re-fetches `/docs/session-context` with the same fail-open contract. The rendered hook passes `bash -n`.
+- **Feature delivery completeness**: the documents CLAUDE.md section is tracked as migrator-only and switch-following.
+
+Not code: `MacDesktopHost*`/`desktop-displays` refuse to clean up inside a source-tree worktree (the destructive-target guard), and `standards-coverage-ratchet` needs CI's full-history base env. Both are environment failures on this M5 worktree, and Local Verify is the authority for them.
+
+No decision point changes. The compaction twin adds read-only context on a recovered session, so over-block and under-block are not applicable.
+
 ## Second-pass review
 
 **Reviewer:** independent second-pass reviewer subagent (claude-opus-5-5, clean context), concurred after two rounds; outside reads GPT-6 Astra and Fable 5.2, three rounds each
