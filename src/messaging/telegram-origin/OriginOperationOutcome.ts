@@ -1,5 +1,6 @@
 import type { OriginAuditRecord } from './StoreTypes.js';
 import type { UnrecordedReceiptEntry, OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
+import { readPolicyVerdict } from './OriginPolicyVerdict.js';
 
 /**
  * "Did my message arrive?" for one operation id (held-reply outcome lookup,
@@ -36,7 +37,10 @@ export interface OperationOutcomeVerdict {
 }
 
 /** native-conversation-base §3a item 9 — the closed set of suppression reasons. Anything else reads as no reason. */
-export const SUPPRESSION_REASONS = ['quiet-notification-recorded', 'duplicate-content', 'historical-notice-retired', 'recorded-by-caller', 'suppressed-at-holder'] as const;
+export const SUPPRESSION_REASONS = ['quiet-notification-recorded', 'duplicate-content', 'historical-notice-retired', 'recorded-by-caller', 'suppressed-at-holder',
+  // native-conversation-forwarded-advisory item 2 — the holder's copy ended by the outbound check:
+  // handed back to its author with an advisory, or refused outright. Neither is ever resent.
+  'tone-advisory', 'policy-refused'] as const;
 export type SuppressionReason = typeof SUPPRESSION_REASONS[number];
 /** §3a item 8 — the closed set of definite-failure causes. */
 export const FAILURE_CAUSES = ['refused', 'never-left', 'deadline'] as const;
@@ -107,6 +111,15 @@ export function classifyOperationOutcome(operationId: string, audit: OriginAudit
   if (unresolvedDispatch > 0) return { operationId, outcome: 'unknown', safeToResend: false, source: 'origin-store', messageIds, state,
     detail: 'The request went to Telegram and no answer was recorded. It may have arrived; do not resend.', unresolvedDispatch: true };
   const holdDetail = audit.operation.holdDetail ?? null;
+  // 3g item 3 — the verdict column is read first: a reply the outbound check handed back is
+  // not sent, and only its author's answer (a replacement) can send it. Never "resend".
+  const policy = readPolicyVerdict(audit.operation.policyVerdict ?? null);
+  if (policy && (state === 'held' || state === 'admitted' || state === 'suppressed')) {
+    if (policy.class === 'refused') return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state,
+      reason: 'policy-refused', failure: 'refused', detail: `Not sent: the outbound check refused it (${policy.rule}). Rewrite it before sending again.` };
+    return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state, reason: 'tone-advisory',
+      detail: `Not sent: the outbound check handed it back to the session that wrote it with a suggestion (${policy.rule}). It is sent only if that session answers.` };
+  }
   if (state === 'known-failed' || state === 'expired') {
     const failure: FailureCause = state === 'expired' ? 'deadline' : knownFailedCause(audit);
     return { operationId, outcome: 'not-delivered', safeToResend: true, source: 'origin-store', messageIds, state, failure, reason: null,
@@ -123,6 +136,10 @@ export function classifyOperationOutcome(operationId: string, audit: OriginAudit
         duplicateOfMessageId: typeof dup === 'string' && /^[1-9]\d*$/.test(dup) ? dup : typeof dup === 'number' && Number.isSafeInteger(dup) && dup > 0 ? String(dup) : null,
         detail: 'The user already has this text.' };
     }
+    if (reason === 'policy-refused') return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state, reason, failure: 'refused',
+      detail: 'Not sent: the outbound check refused it. Rewrite it before sending again.' };
+    if (reason === 'tone-advisory') return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state, reason,
+      detail: 'Not sent: the outbound check handed it back to the session that wrote it. Do not resend it as it is.' };
     if (reason && ENDED_ON_PURPOSE.has(reason)) return { operationId, outcome: 'not-delivered', safeToResend: false, source: 'origin-store', messageIds, state, reason,
       detail: 'It was ended on purpose; do not resend.' };
     if (reason === 'suppressed-at-holder' && holderReason && ENDED_ON_PURPOSE.has(holderReason)) return { operationId, outcome: 'not-delivered', safeToResend: false,

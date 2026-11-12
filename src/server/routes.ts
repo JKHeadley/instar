@@ -766,6 +766,8 @@ import { isJunkPayload } from '../core/junk-payload.js';
 import { detectLocalhostLink } from '../core/localhost-link.js';
 import { foldKeyForConversation } from '../monitoring/FoldHoldStore.js';
 import { RelayRefusedError } from '../core/TelegramRelay.js';
+import { isOperationReference } from '../messaging/telegram-origin/OriginPolicyVerdict.js';
+import { AdvisoryAnswerClosedError } from '../messaging/telegram-origin/types.js';
 import { scrubForStore } from '../core/durableSecretScrub.js';
 import { credentialGuardMessage, detectOutboundCredential } from '../messaging/outbound-credential-guard.js';
 import { registerEmailRoutes } from './emailRoutes.js';
@@ -5109,6 +5111,10 @@ export function createRoutes(ctx: RouteContext): Router {
               advisoryUnavailable: !result.decisionRef
                 ? 'no-decision-ref'
                 : 'quality-recording-not-live',
+              // native-conversation-forwarded-advisory item 1 — a reply in custody reads
+              // these to tell a verdict (a real rule, or a floor catch) from an outage.
+              ...(result.failedClosed ? { failedClosed: true } : {}),
+              ...(result.degradedToDeterministic ? { degradedToDeterministic: true } : {}),
               latencyMs: result.latencyMs,
             },
           };
@@ -5200,6 +5206,8 @@ export function createRoutes(ctx: RouteContext): Router {
             rule: result.rule,
             issue: result.issue,
             suggestion: result.suggestion,
+            ...(result.failedClosed ? { failedClosed: true } : {}),
+            ...(result.degradedToDeterministic ? { degradedToDeterministic: true } : {}),
             latencyMs: result.latencyMs,
           },
         };
@@ -20965,10 +20973,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       typeof metadata?.toneAdvisoryAckReason === 'string'
         ? metadata.toneAdvisoryAckReason.slice(0, 500)
         : undefined;
-    const toneAdvisoryDecisionRef =
+    const rawToneAdvisoryDecisionRef =
       typeof metadata?.toneAdvisoryDecisionRef === 'string'
         ? metadata.toneAdvisoryDecisionRef.slice(0, 128)
         : undefined;
+    // native-conversation-forwarded-advisory item 4 — an `op:<id>` answer reference names a handed-back reply
+    // on THIS machine. It is resolved here and never reaches the gate or the sealed policy input.
+    const toneAdvisoryDecisionRef = isOperationReference(rawToneAdvisoryDecisionRef) ? undefined : rawToneAdvisoryDecisionRef;
     const toneAdvisoryComplied =
       typeof metadata?.toneAdvisoryComplied === 'string'
         ? metadata.toneAdvisoryComplied.slice(0, 64)
@@ -21050,6 +21061,36 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     // the gate skips. Honors the existing `allowDuplicate` escape hatch; brief
     // acks are below the length floor and never suppressed. Recorded only after
     // a successful send (below), so a failed send's retry isn't lost.
+    // ── native-conversation-forwarded-advisory item 5 — the answer withdraws the original first ──
+    // One lookup for local and forwarded rows. A held match makes this send its replacement (the
+    // supersede runs at admission, after the route's own review passed). A match no longer held
+    // sends nothing and answers with the old reply's recorded outcome.
+    if (ctx.telegramOrigin?.service.hasProducerContext()) {
+      const originRuntime = ctx.telegramOrigin;
+      const producer = originRuntime.service.currentProducer();
+      if (isOperationReference(rawToneAdvisoryDecisionRef)) originRuntime.service.dropOperationReference();
+      if (producer.producerKind === 'session' && producer.sessionId) {
+        const answering = (toneAdvisoryComplied || toneAdvisoryAck) && rawToneAdvisoryDecisionRef;
+        let match: Awaited<ReturnType<typeof originRuntime.findAdvisoryAnswer>> = null;
+        if (answering) {
+          try { match = await originRuntime.findAdvisoryAnswer({ sessionId: producer.sessionId, topicId, ref: rawToneAdvisoryDecisionRef! }); }
+          catch { match = null; } // @silent-fallback-ok — an unreadable lookup sends an ordinary reply; it never sends the held one
+        }
+        if (match) {
+          originRuntime.service.setAdvisoryAnswer({ originalId: match.operationId, firstPreparedAt: match.firstPreparedAt, deadlineAt: match.deadlineAt,
+            kind: toneAdvisoryComplied ? 'complied' : 'acked', handedBackAt: match.verdict.at });
+          if (match.state !== 'held' || match.deadlineAt <= Date.now()) {
+            originRuntime.service.settleAdvisoryAnswer('closed');
+            sendOriginHoldResponse(res, new AdvisoryAnswerClosedError(match.operationId));
+            return;
+          }
+        } else {
+          const sessionId = producer.sessionId;
+          void originRuntime.hasHeldAdvisory({ sessionId, topicId }).then(held => held
+            ? originRuntime.countAdvisoryAnswer({ operationId: `session-${sessionId}`, kind: 'unmatched' }) : undefined).catch(() => undefined);
+        }
+      }
+    }
     const originOwnsContent = ctx.telegramOrigin?.service.hasProducerContext() === true;
     if (!originOwnsContent && !allowDuplicate && outboundContentDedup.isDuplicate(topicId, text)) {
       console.log(`[telegram/reply] suppressed duplicate content for ${topicRef(topicId)} (identical text within window)`);

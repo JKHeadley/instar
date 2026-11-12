@@ -23,6 +23,10 @@ import type { FailureCause, SuppressionReason } from './OriginOperationOutcome.j
 import type { OriginSendPolicyInput } from './OriginSendPolicy.js';
 import type { TelegramOriginRecord } from './types.js';
 import { LATE_REPLY_THRESHOLD_MS, lateRecoveredReplyNotice } from './SessionDeliveryNotice.js';
+import { readPolicyVerdict } from './OriginPolicyVerdict.js';
+import type { PolicyVerdict } from './OriginPolicyVerdict.js';
+import { AdvisoryAnswerClosedError } from './types.js';
+export { AdvisoryAnswerClosedError };
 
 /** Only a durable Telegram receipt may turn a recovered hold into a topic
  * history row. Follow a lease-transfer supersession to the delivered copy. */
@@ -158,7 +162,10 @@ export type HolderSubmitResult =
   | { ok: true; messageId: number; deliveryMachineId: string; receiptJson: string }
   | { ok: false; reason: string; outcome: 'held' | 'known-failed' | 'outcome-unknown'; retryable: boolean; policyRefusal?: OriginSendPolicyRefusalDecision;
       /** The holder took CUSTODY (admitted, memory-held or dispatched) before refusing: resolved at its `receipt`, never re-sent. */
-      admittedAtHolder?: boolean };
+      admittedAtHolder?: boolean;
+      /** native-conversation-forwarded-advisory item 2 — the holder ended its own copy in the same step that
+       * recorded the verdict (present only with `policyRefusal`), and the verdict it recorded. */
+      copyEnded?: true; policyVerdict?: PolicyVerdict | null };
 
 /** Refusals after which re-resolving the holder and trying again is sound:
  * the holder is not (or no longer) the lease holder, is booting, or could not
@@ -192,14 +199,22 @@ export async function submitOriginToHolder(input: {
   try { result = await input.send({ ...base, action: 'submit', operation: input.operation }); }
   catch { return { ok: false, reason: 'origin-relay-acceptance-unknown', outcome: 'outcome-unknown', retryable: false }; }
   const response = result.result as { ok?: boolean; messageId?: number; originId?: string; originReceiptConfirmed?: boolean; reason?: string;
-    outcome?: string; retryable?: boolean; deliveryMachineId?: string; operationId?: string; policyRefusal?: OriginSendPolicyDecision } | undefined;
+    outcome?: string; retryable?: boolean; deliveryMachineId?: string; operationId?: string; policyRefusal?: OriginSendPolicyDecision;
+    copyEnded?: unknown; policyVerdict?: unknown } | undefined;
   if (result.ok && response?.ok && response.originId === input.operation.record.originId &&
     (response as unknown as { recorded?: boolean }).recorded === true && typeof (response as unknown as { quietId?: string }).quietId === 'string') {
     throw new QuietRecordedError({ delivered: false, recorded: true, quietId: (response as unknown as { quietId: string }).quietId });
   }
   const policyRefusal = response?.policyRefusal;
+  // native-conversation-forwarded-advisory item 3 — a refusal is "not sent" only when the holder says it
+  // ended its own copy. An older holder keeps its row `admitted` (and may still deliver it), so its
+  // refusal is CUSTODY: resolved at its receipt, never answered "not sent" to a session.
+  if (policyRefusal && policyRefusal.ok === false && response?.copyEnded === true) {
+    return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'held', retryable: false, policyRefusal,
+      copyEnded: true, policyVerdict: readPolicyVerdict(response.policyVerdict) };
+  }
   if (policyRefusal && policyRefusal.ok === false) {
-    return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'held', retryable: false, policyRefusal };
+    return { ok: false, reason: response?.reason ?? 'send-policy-refused', outcome: 'outcome-unknown', retryable: false, admittedAtHolder: true };
   }
   if (result.ok && response?.ok && response.originId === input.operation.record.originId &&
     Number.isSafeInteger(response.messageId) && Number(response.messageId) > 0 && response.originReceiptConfirmed === true) {
@@ -256,7 +271,9 @@ export interface HeldForwardDetail {
   supersedes?: string;
   /** native-conversation-base §3a item 7 — the execution owner's classified verdict of
    * non-delivery. The row stays `held` only to keep its text; it is ended, never retried. */
-  ownerVerdict?: { outcome: 'not-delivered'; failure: FailureCause; at: number; machineId: string };
+  ownerVerdict?: { outcome: 'not-delivered'; failure: FailureCause; at: number; machineId: string;
+    /** native-conversation-forwarded-advisory item 6 — the outbound check refused it (never Telegram). */
+    refusedBy?: 'policy'; rule?: string };
   /** §3a item 7 — the owner suppressed it with no reason (an older owner, or a row from
    * before reasons). `settled`: a second reasonless ending; unresolved, not ended. */
   ownerUnstated?: { at: number; attempts: number; settled?: boolean; machineId: string };
@@ -270,7 +287,10 @@ export interface HeldForwardDetail {
 /** native-conversation-base §3a item 8 — which session line a forward that expired
  * while still held gets. Never taken from the row's state alone. Agrees with
  * §3b row 5 for the same row (an `ownerUnstated` row is uncertain, settled or not). */
-export function forwardExpiryArm(row: Pick<HeldOperationRow, 'holdDetail'>): { arm: 'uncertain' } | { arm: 'definite'; cause: FailureCause } {
+export function forwardExpiryArm(row: Pick<HeldOperationRow, 'holdDetail'> & { policyVerdict?: HeldOperationRow['policyVerdict'] }): { arm: 'uncertain' } | { arm: 'definite'; cause: FailureCause } {
+  // native-conversation-forwarded-advisory item 3 — an advisory row was handed back, not sent: its holder ended
+  // its copy before any dispatch, so its `outcome-unknown` marker is not an uncertainty.
+  if (readPolicyVerdict(row.policyVerdict ?? null)?.class === 'advisory') return { arm: 'definite', cause: 'deadline' };
   const detail = row.holdDetail as Partial<HeldForwardDetail> | null;
   if (detail?.lastAttempt === 'outcome-unknown' || detail?.lastAttempt === 'local-sent' || (detail?.ownerUnstated && typeof detail.ownerUnstated === 'object')) return { arm: 'uncertain' };
   const verdictCause = detail?.ownerVerdict && typeof detail.ownerVerdict === 'object' ? failureCause(detail.ownerVerdict.failure) : null;
@@ -289,8 +309,10 @@ export type HolderReceiptAnswer =
   | { state: 'owned-by-holder' } | { state: 'outcome-unknown' } | { state: 'unreachable' }
   /** The owner ended it and stated why (the closed reason set). */
   | { state: 'owner-ended'; reason: SuppressionReason }
-  /** The owner's classified verdict: not delivered, with its cause. */
-  | { state: 'owner-verdict'; failure: FailureCause }
+  /** The owner's classified verdict: not delivered, with its cause (`policyRule`: the outbound check refused it). */
+  | { state: 'owner-verdict'; failure: FailureCause; policyRule?: string | null }
+  /** native-conversation-forwarded-advisory item 3 — the owner handed it back with an advisory and ended its copy. */
+  | { state: 'owner-advisory'; verdict: PolicyVerdict }
   /** The owner ended it with no reason; `olderOwner` when its answer has no `outcome` field. */
   | { state: 'owner-reasonless'; olderOwner: boolean };
 
@@ -309,6 +331,12 @@ export function classifyHolderReceipt(reply: { ok: boolean; result?: unknown }, 
   const outcome = hasOutcome && typeof result.outcome === 'string' && ['delivered', 'partially-delivered', 'not-delivered', 'pending', 'unknown'].includes(result.outcome) ? result.outcome : null;
   const reason = suppressionReason(result.reason);
   const failure = failureCause(result.failure);
+  // native-conversation-forwarded-advisory item 3 — the outbound check ended the owner's copy.
+  if (state === 'suppressed' && (reason === 'tone-advisory' || reason === 'policy-refused')) {
+    const verdict = readPolicyVerdict((result as { policyVerdict?: unknown }).policyVerdict);
+    if (reason === 'tone-advisory' && verdict?.class === 'advisory') return { state: 'owner-advisory', verdict };
+    return { state: 'owner-verdict', failure: 'refused', policyRule: verdict?.rule ?? null };
+  }
   if (state === 'suppressed') {
     if (outcome !== null && reason) return { state: 'owner-ended', reason };
     return { state: 'owner-reasonless', olderOwner: outcome === null };
@@ -333,7 +361,10 @@ export interface ForwardInput { topicId: number; chatId: string; text: string; s
   /** native-conversation-base §3a item 2 — a replacement: prepared under the original's
    * stored producer record, keeping its sealed send-policy input (the content-check key)
    * and deadline, with the original draft time sealed as `firstPreparedAt`. */
-  replacement?: { record: TelegramOriginRecord; policyInput: OriginSendPolicyInput | null; firstPreparedAt: number; deadlineAt: number; maxParts: number } }
+  replacement?: { record: TelegramOriginRecord; policyInput: OriginSendPolicyInput | null; firstPreparedAt: number; deadlineAt: number; maxParts: number };
+  /** native-conversation-forwarded-advisory item 5 — this reply answers the handed-back reply `<id>`:
+   * it is made durable by superseding that row before it is forwarded. */
+  advisoryReplacementOf?: string }
 export interface ForwardDeps {
   lease: ForwardLeaseView;
   /** Prepare (and record intent for) an operation whose execution owner is `holder`. */
@@ -352,6 +383,20 @@ export interface ForwardDeps {
   now: () => number;
   settleTimeoutMs?: number;
   ladder?: { delaysMs: readonly number[] };
+  /** native-conversation-forwarded-advisory item 5 — the answer's local supersede and its settlement. */
+  advisory?: AdvisoryAnswerDeps;
+}
+export interface AdvisoryAnswerDeps {
+  /** ONE transaction: retire the held original and admit + hold the replacement (false = no longer held). */
+  supersede: (originalId: string, next: OriginPreparedBotOperation, detail: HeldForwardDetail) => Promise<boolean>;
+  resolve: (operationId: string, deliveryMachineId: string, receiptJson: string) => Promise<boolean>;
+  rehold: (operationId: string, detail: HeldForwardDetail) => Promise<boolean>;
+  /** The holder handed the replacement back too: record it on the replacement's row. */
+  markAdvisory: (operationId: string, verdict: PolicyVerdict) => Promise<boolean>;
+  /** The holder refused the replacement: its owner verdict, `refused` by policy. */
+  markRefused: (operationId: string, verdict: NonNullable<HeldForwardDetail['ownerVerdict']>) => Promise<boolean>;
+  /** The session reads this verdict synchronously (the script prints it): no line for it later. */
+  noteAnsweredInline: (operationId: string) => Promise<void>;
 }
 export type ForwardOutcome =
   | { kind: 'sent'; messageId: number; holder: string; operationId: string }
@@ -365,6 +410,7 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
   const audit = (row: Record<string, unknown>) => { try { deps.audit?.({ ts: deps.now(), topicId: input.topicId, ...row }); } catch { /* audit is observability only */ } };
   const settled = await settleLeaseRoute(deps.lease, { sleep: deps.sleep, now: deps.now, timeoutMs: deps.settleTimeoutMs });
   if (settled.kind === 'self') return { kind: 'local' };
+  if (input.advisoryReplacementOf) return forwardAdvisoryAnswer(deps, input, input.advisoryReplacementOf, settled, delays, audit);
   let operation: OriginPreparedBotOperation | null = null;
   let lastHolder: string | null = null;
   let lastAttempt: ForwardLastAttempt = 'unsettled';
@@ -409,6 +455,50 @@ export async function forwardReplyToHolder(deps: ForwardDeps, input: ForwardInpu
     ...(noticeSuppressed ? { noticeSuppressed } : {}) };
 }
 
+/** native-conversation-forwarded-advisory item 5 — the author's answer to a handed-back forward. The
+ * original is withdrawn BEFORE anything is sent: the replacement is made durable by a local supersede
+ * (`forwardSuccessor`'s order: supersede, mark `outcome-unknown`, submit), so at every instant one row
+ * carries the reply. A refused supersede (expired, already replaced) sends nothing. The holder needs
+ * nothing new: it receives an ordinary new operation and reviews it in full. */
+async function forwardAdvisoryAnswer(deps: ForwardDeps, input: ForwardInput, originalId: string, settled: SettledRoute,
+  delays: readonly number[], audit: (row: Record<string, unknown>) => void): Promise<ForwardOutcome> {
+  if (!deps.advisory) throw new AdvisoryAnswerClosedError(originalId);
+  const holder = settled.kind === 'peer' ? settled.holder : null;
+  const operation = await deps.prepare(holder ?? UNRESOLVED_LEASE_HOLDER, input);
+  const now = deps.now();
+  const detail: HeldForwardDetail = { kind: 'forward-to-holder', lastAttempt: holder ? 'outcome-unknown' : 'unsettled', machineId: holder, topicId: input.topicId, chatId: input.chatId,
+    text: input.text, authoredProducerKind: operation.record.producerKind, authoredPreparedAt: operation.record.firstPreparedAt ?? operation.admission.preparedAt,
+    ...(input.silent === undefined ? {} : { silent: input.silent }), ...(input.formatMode === undefined ? {} : { formatMode: input.formatMode }),
+    ...(input.kindMetadata === undefined ? {} : { kindMetadata: input.kindMetadata }),
+    reason: settled.kind === 'unsettled' ? `lease-settling-${settled.reason}` : 'not-attempted', at: now, noticeDelivered: false,
+    ladder: nextLadderState(undefined, now, delays), supersedes: originalId };
+  if (!await deps.advisory.supersede(originalId, operation, detail)) {
+    audit({ phase: 'advisory-answer-closed', operationId: originalId });
+    throw new AdvisoryAnswerClosedError(originalId);
+  }
+  const operationId = operation.record.operationId;
+  audit({ phase: 'advisory-answer-superseded', operationId: originalId, supersededBy: operationId, holder });
+  if (!holder) return { kind: 'held', operationId, holder: null, lastAttempt: 'unsettled', reason: detail.reason, noticeDelivered: false };
+  const result = await deps.submit(holder, operation);
+  if (result.ok) {
+    if (!await deps.advisory.resolve(operationId, result.deliveryMachineId, result.receiptJson)) audit({ phase: 'advisory-answer-resolve-refused', operationId, holder });
+    audit({ phase: 'sent', attempt: 0, holder, operationId, messageId: result.messageId });
+    return { kind: 'sent', messageId: result.messageId, holder, operationId };
+  }
+  if (result.policyRefusal && result.copyEnded) {
+    // The replacement got its own verdict, under the original's deadline (items 2 and 3).
+    const verdict = result.policyVerdict;
+    if (verdict?.class === 'advisory') await deps.advisory.markAdvisory(operationId, verdict);
+    else await deps.advisory.markRefused(operationId, { outcome: 'not-delivered', failure: 'refused', at: deps.now(), machineId: holder, refusedBy: 'policy', ...(verdict ? { rule: verdict.rule } : {}) });
+    await deps.advisory.noteAnsweredInline(operationId);
+    throw new OriginSendPolicyRefusal(result.policyRefusal, operationId);
+  }
+  const lastAttempt = attemptKind(result);
+  await deps.advisory.rehold(operationId, { ...detail, lastAttempt, reason: result.reason, at: deps.now() });
+  audit({ phase: 'refused', attempt: 0, holder, operationId, reason: result.reason, outcome: result.outcome });
+  return { kind: 'held', operationId, holder, lastAttempt, reason: result.reason, noticeDelivered: false };
+}
+
 export interface ForwardRecoveryDeps {
   lease: ForwardLeaseView;
   prepare: ForwardDeps['prepare'];
@@ -445,6 +535,11 @@ export interface ForwardRecoveryDeps {
   onOwnerUnstatedSettled?: (row: HeldOperationRow) => Promise<void> | void;
   /** §3a item 2 — a late reply that could not be marked (counted `lateUnmarked`). */
   onLateUnmarked?: (operationId: string) => Promise<void> | void;
+  /** native-conversation-forwarded-advisory item 3 — record the holder's advisory on this machine's row
+   * (keeps the text, takes it out of both delivery selections). */
+  markAdvisory?: (operationId: string, verdict: PolicyVerdict) => Promise<boolean>;
+  /** Item 4 — the advisory line, in the same pass when the session is live. */
+  onAdvisory?: (row: HeldOperationRow) => Promise<void> | void;
   audit?: (row: Record<string, unknown>) => void;
   now: () => number;
   ladder?: { delaysMs: readonly number[] };
@@ -492,6 +587,9 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
   // §3a item 7 — the owner's verdict ended this reply and its session was told
   // "will not be retried". Nothing here may deliver it, on any route.
   if (raw?.ownerVerdict && typeof raw.ownerVerdict === 'object') return 'skipped';
+  // native-conversation-forwarded-advisory item 3 — handed back to its author: only the author's answer
+  // (a replacement) sends it. No submit, no local send, no holder-change or late-mark replacement.
+  if (readPolicyVerdict(row.policyVerdict ?? null)?.class === 'advisory') return 'skipped';
   const detail: HeldForwardDetail | null = raw && raw.kind === 'forward-to-holder' && typeof raw.text === 'string' && typeof raw.chatId === 'string' && Number.isSafeInteger(raw.topicId)
     ? { ...raw as HeldForwardDetail, ladder: raw.ladder && Number.isSafeInteger(raw.ladder.attempts) ? raw.ladder : { attempts: delays.length, nextAt: null } } : null;
   const retain = async (next: Partial<HeldForwardDetail>) => {
@@ -499,13 +597,34 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     await deps.rehold(operationId, { ...detail, ...next, at: deps.now(), ladder: nextLadderState(detail.ladder, deps.now(), delays) });
   };
   /** The owner's verdict, merged without erasing the text; the definite line goes in this same pass. */
-  const recordVerdict = async (machineId: string, failure: FailureCause): Promise<ForwardRecoveryOutcome> => {
-    const verdict = { outcome: 'not-delivered' as const, failure, at: deps.now(), machineId };
-    if (!deps.mergeDetail || !await deps.mergeDetail(operationId, { ownerVerdict: verdict })) { await retain({}); audit({ outcome: 'retained-verdict-store-refused', machineId }); return 'retained'; }
-    audit({ outcome: 'owner-verdict', machineId, failure });
-    try { await deps.onOwnerVerdict?.({ ...row, holdDetail: { ...(detail ?? {}), ownerVerdict: verdict } }, verdict); } catch { /* the forward-expiry pass carries the line if this one could not */ }
+  const recordVerdict = async (machineId: string, failure: FailureCause, policyRule?: string | null, target: { row: HeldOperationRow; detail: HeldForwardDetail | null } = { row, detail }): Promise<ForwardRecoveryOutcome> => {
+    const verdict: NonNullable<HeldForwardDetail['ownerVerdict']> = { outcome: 'not-delivered' as const, failure, at: deps.now(), machineId,
+      ...(policyRule !== undefined ? { refusedBy: 'policy' as const, ...(policyRule ? { rule: policyRule } : {}) } : {}) };
+    if (!deps.mergeDetail || !await deps.mergeDetail(target.row.operationId, { ownerVerdict: verdict })) {
+      if (target.row === row) await retain({});
+      audit({ outcome: 'retained-verdict-store-refused', machineId }); return 'retained';
+    }
+    audit({ outcome: 'owner-verdict', machineId, failure, ...(policyRule !== undefined ? { refusedBy: 'policy' } : {}) });
+    try { await deps.onOwnerVerdict?.({ ...target.row, holdDetail: { ...(target.detail ?? {}), ownerVerdict: verdict } }, verdict); } catch { /* the forward-expiry pass carries the line if this one could not */ }
     return 'settled';
   };
+  /** 3g item 3 — the holder handed it back with an advisory and ended its copy. */
+  const recordAdvisory = async (machineId: string, verdict: PolicyVerdict, target: { row: HeldOperationRow; detail: HeldForwardDetail | null } = { row, detail }): Promise<ForwardRecoveryOutcome> => {
+    if (!deps.markAdvisory || !await deps.markAdvisory(target.row.operationId, verdict)) {
+      if (target.row === row) await retain({});
+      audit({ outcome: 'retained-advisory-store-refused', machineId }); return 'retained';
+    }
+    audit({ outcome: 'owner-advisory', machineId, rule: verdict.rule });
+    try {
+      await deps.onAdvisory?.({ ...target.row, holdDetail: { ...(target.detail ?? {}), lastAttempt: 'outcome-unknown', machineId, ladder: { ...(target.detail?.ladder ?? { attempts: 0 }), nextAt: null } },
+        policyVerdict: verdict as unknown as Record<string, unknown> });
+    } catch { /* the advisory scan carries the line */ }
+    return 'settled';
+  };
+  /** A submit answered `policyRefusal` with `copyEnded`: read it as the receipt would, without waiting for a poll. */
+  const recordEndedSubmit = (machineId: string, result: Extract<HolderSubmitResult, { ok: false }>, target: { row: HeldOperationRow; detail: HeldForwardDetail | null } = { row, detail }): Promise<ForwardRecoveryOutcome> =>
+    result.policyVerdict?.class === 'advisory' ? recordAdvisory(machineId, result.policyVerdict, target)
+      : recordVerdict(machineId, 'refused', result.policyVerdict?.rule ?? null, target);
   const recordEnded = async (machineId: string, reason: SuppressionReason): Promise<ForwardRecoveryOutcome> => {
     if (!detail || !deps.endAtHolder || !await deps.endAtHolder(operationId, reason, machineId, detail)) { await retain({}); audit({ outcome: 'retained-ended-store-refused', machineId }); return 'retained'; }
     audit({ outcome: 'suppressed-at-holder', machineId, holderReason: reason });
@@ -584,6 +703,12 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
       audit({ outcome: 'sent-superseding', holder, operationId: next.record.operationId, messageId: result.messageId });
       return 'sent';
     }
+    if (result.policyRefusal && result.copyEnded) {
+      const nextRow: HeldOperationRow = { ...row, operationId: next.record.operationId, originId: next.record.originId, holdDetail: nextDetail as unknown as Record<string, unknown>,
+        preparedAt: next.admission.preparedAt, deadlineAt: next.admission.deadlineAt, executionOwnerMachineId: holder, firstPreparedAt: successor.carrier.firstPreparedAt,
+        lateMarkedAt: successor.carrier.lateMarkedAt };
+      return recordEndedSubmit(holder, result, { row: nextRow, detail: { ...nextDetail, lastAttempt: 'outcome-unknown' } });
+    }
     await deps.rehold(next.record.operationId, { ...nextDetail, reason: result.reason, lastAttempt: attemptKind(result), at: deps.now() });
     audit({ outcome: 'retained-superseding', holder, operationId: next.record.operationId, reason: result.reason, resultOutcome: result.outcome });
     return 'retained';
@@ -600,7 +725,8 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
       if (!await deps.resolve(operationId, previous, answer.receiptJson)) { audit({ outcome: 'retained-receipt-store-refused', machineId: previous }); return 'retained'; }
       audit({ outcome: 'resolved-by-receipt', machineId: previous }); return 'resolved';
     }
-    if (answer.state === 'owner-verdict') return recordVerdict(previous, answer.failure);
+    if (answer.state === 'owner-advisory') return recordAdvisory(previous, answer.verdict);
+    if (answer.state === 'owner-verdict') return recordVerdict(previous, answer.failure, answer.policyRule);
     if (answer.state === 'owner-ended') return recordEnded(previous, answer.reason);
     if (answer.state === 'outcome-unknown') {
       if (await deps.settleUnknown(operationId, previous)) { audit({ outcome: 'settled-holder-outcome-unknown', machineId: previous }); return 'settled'; }
@@ -639,7 +765,8 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
     }
     // §3a item 7 — the owner stated a cause: the forwarder records it and stops.
     if (answer.state === 'owner-ended') return recordEnded(detail.machineId, answer.reason);
-    if (answer.state === 'owner-verdict') return recordVerdict(detail.machineId, answer.failure);
+    if (answer.state === 'owner-advisory') return recordAdvisory(detail.machineId, answer.verdict);
+    if (answer.state === 'owner-verdict') return recordVerdict(detail.machineId, answer.failure, answer.policyRule);
     if (answer.state === 'owner-reasonless') {
       const holder = detail.machineId;
       // A second reasonless ending (this row is already the one replacement), or a
@@ -711,6 +838,8 @@ export async function recoverForwardedHold(deps: ForwardRecoveryDeps, row: HeldO
       audit({ outcome: 'sent', holder, messageId: result.messageId });
       return 'sent';
     }
+    // 3g item 3 — the holder ended its copy with a verdict: never re-forwarded.
+    if (result.policyRefusal && result.copyEnded) return recordEndedSubmit(holder, result);
     await retain({ machineId: holder, reason: result.reason, lastAttempt: attemptKind(result) });
     audit({ outcome: 'retained', holder, reason: result.reason, resultOutcome: result.outcome });
     return 'retained';
@@ -793,7 +922,7 @@ export function handBackItem(row: HeldOperationRow): ReturnType<typeof heldExpir
   const verdict = (row.holdDetail as Partial<HeldForwardDetail> | null)?.ownerVerdict;
   if (arm.arm === 'definite' && verdict && typeof verdict === 'object') {
     const topic = row.destination.topicId ?? 'the topic';
-    const cause = arm.cause === 'refused' ? 'Telegram refused it' : arm.cause === 'never-left' ? 'it could not be sent before its attempts ran out' : 'it passed its delivery deadline';
+    const cause = arm.cause === 'refused' ? (verdict.refusedBy === 'policy' ? 'the outbound check refused it' : 'Telegram refused it') : arm.cause === 'never-left' ? 'it could not be sent before its attempts ran out' : 'it passed its delivery deadline';
     return { ...item, title: `Held reply to ${topicRef(topic)} not delivered`, summary: `My reply to ${topicRef(topic)} was not delivered (${cause}). The session that wrote it was told.` };
   }
   return item;

@@ -187,6 +187,12 @@ export class TelegramOriginHoldError extends Error {
     this.name = 'TelegramOriginHoldError';
   }
 }
+/** native-conversation-forwarded-advisory item 5 — an answer named a handed-back reply that is no
+ * longer held (it expired, or was already replaced). Nothing is admitted and nothing is sent; the
+ * caller is told to read the old reply's recorded outcome (a 409 that names its operation id). */
+export class AdvisoryAnswerClosedError extends TelegramOriginHoldError {
+  constructor(operationId: string) { super('advisory-answer-closed', operationId, 'held'); this.name = 'AdvisoryAnswerClosedError'; }
+}
 /** a2a-single-agent-identity §4.2 — the forward-to-holder path found, during
  * its lease-settling window, that THIS machine holds the lease after all. The
  * caller sends locally; nothing was forwarded, recorded or held. */

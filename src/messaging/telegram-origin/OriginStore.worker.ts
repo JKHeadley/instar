@@ -10,7 +10,7 @@ const methods = new Set([
   'claim', 'markDispatched', 'releaseUndispatchedClaim', 'renewClaim', 'recordOutcome', 'reapAbandoned', 'addMaterialization',
   'recordOperationState', 'reserveNotice', 'recordNoticeOutcome', 'archive', 'compactArchives', 'purgeArchived', 'foldMetricEvents', 'expireAudit', 'cleanupPayloads', 'diagnostics', 'getPayload', 'consumeAuditAssertion',
   'retireNoticeOwner', 'reconcileReceipt',
-  'reserveRecoveryAttempt', 'listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'markHoldExpiryReported', 'recordForwardedAcceptance', 'recordForwardedOutcomeUnknown', 'heldForwardAdmissions', 'supersedeOperation', 'supersedeWithAdmission', 'mergeHoldDetail', 'recordOperationEvent', 'hasOperationEvent',
+  'reserveRecoveryAttempt', 'listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'markHoldExpiryReported', 'recordForwardedAcceptance', 'recordForwardedOutcomeUnknown', 'heldForwardAdmissions', 'supersedeOperation', 'supersedeWithAdmission', 'mergeHoldDetail', 'recordOperationEvent', 'hasOperationEvent', 'recordOperationSum', 'markForwardAdvisory', 'listAdvisoryRows',
   'healthTransaction', 'recoverableAdmissions', 'takeRecoverableAdmissions', 'registerOwner', 'legacyCandidates', 'importLegacy', 'reserveDiagnostic', 'completeDiagnostic', 'browserRecovery', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'undiagnosedOrigins',
 ]);
 try { if (data.mode !== 'spool') backend = new OriginStoreBackend(data.options); parentPort!.postMessage({ ready: true }); }

@@ -53,7 +53,7 @@ function workerInputBytes(input: unknown, maximum: number): number {
   }
   return bytes;
 }
-const READS = new Set(['listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'hasOperationEvent']);
+const READS = new Set(['listHeldOperations', 'listSessionDeliveryExceptions', 'unresolvedHeldOperationCount', 'heldForwardAdmissions', 'getOrigin', 'getChild', 'getOperation', 'getPayload', 'listOrigins', 'lookupOriginEvidence', 'getMetrics', 'diagnostics', 'recoverableAdmissions', 'legacyCandidates', 'undiagnosedOrigins', 'getFederatedMetrics', 'getBrowserRecoveryStates', 'hasOperationEvent', 'listAdvisoryRows']);
 // Request deadlines protect an already-running worker operation. Starting a
 // fresh worker is a different boundary: under host pressure Node can defer the
 // worker bootstrap well beyond an ordinary DB request without the worker being
@@ -350,9 +350,15 @@ export class OriginStore {
   reapAbandoned(now?: number): Promise<number> { return this.call('reapAbandoned', now); }
   addMaterialization(input: DerivedMaterializationInput): Promise<boolean> { return this.call('addMaterialization', input); }
   recordOperationState(input: { operationId: string; state: 'held' | 'suppressed' | 'expired' | 'admitted'; now?: number;
-    holdReason?: string; holdDetail?: Record<string, unknown> | null }): Promise<boolean> { return this.call('recordOperationState', input); }
+    holdReason?: string; holdDetail?: Record<string, unknown> | null; policyVerdict?: Record<string, unknown> }): Promise<boolean> { return this.call('recordOperationState', input); }
   /** a2a-single-agent-identity §4.2 — durable held rows (read-only). */
-  listHeldOperations(input: { limit?: number; holdReason?: string; now?: number } = {}): Promise<HeldOperationRow[]> { return this.call('listHeldOperations', input); }
+  listHeldOperations(input: { limit?: number; holdReason?: string; now?: number; advisory?: 'include' | 'exclude' | 'only' } = {}): Promise<HeldOperationRow[]> { return this.call('listHeldOperations', input); }
+  /** native-conversation-forwarded-advisory — the author's forward row answered with an advisory. */
+  markForwardAdvisory(input: { operationId: string; verdict: Record<string, unknown> }): Promise<boolean> { return this.call('markForwardAdvisory', input); }
+  /** 3g item 5 — this machine's verdict-bearing rows for one session and topic (read-only). */
+  listAdvisoryRows(input: { originMachineId: string; sessionId: string; topicId: string | null; limit?: number }): Promise<ReturnType<import('./OriginStoreBackend.js').OriginStoreBackend['listAdvisoryRows']>> { return this.call('listAdvisoryRows', input); }
+  /** 3g item 7 — a summed counter, keyed once per event. */
+  recordOperationSum(input: { eventId: string; metric: string; amount: number }): Promise<boolean> { return this.call('recordOperationSum', input); }
   listSessionDeliveryExceptions(input: { afterPreparedAt?: number; afterOperationId?: string; limit?: number } = {}): Promise<ReturnType<import('./OriginStoreBackend.js').OriginStoreBackend['listSessionDeliveryExceptions']>> { return this.call('listSessionDeliveryExceptions', input); }
 
   /** attention-lifecycle-close-on-cause §3.3 — held `lease-not-held` operations still unresolved for a topic (read-only). */
