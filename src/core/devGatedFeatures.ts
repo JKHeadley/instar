@@ -746,6 +746,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Shadow changes no commitment verdict or tracker write. Missing Jev key, uncertain answer, oversize or unscrubbable context, model mismatch, timeout and provenance write failure all reach the incumbent; the same feature works with one provider. Jev receives only bounded secret-scrubbed text, the model is pinned, and the kill switch is read live. Fleet use requires an explicit enable and stage promotion after a held-out replay.',
   },
   {
+    name: 'jevFirstPrompt',
+    configPath: 'intelligence.jevFirstPrompt.enabled',
+    description: 'Shared Jev-first yes/no path for PromptGate\'s blocking-prompt check (jev-first-decision-path.md): shadow only — Jev is asked beside the incumbent and the scrubbed terminal tail is logged for later grading; the incumbent decides every case.',
+    justification: 'Shadow changes no PromptGate verdict, relay, or auto-approval: the incumbent call starts first, PromptGate acts only on its response, and the Jev comparison is never awaited by detection. Missing Jev key, uncertain answer, oversize or unscrubbable context, model mismatch, timeout and provenance write failure are all recorded and ignored; the feature works with one provider. Jev receives only the bounded secret-scrubbed 20-line tail, the model is pinned, the stage is clamped to shadow in code, and the kill switch is read live.',
+  },
+  {
     name: 'jevSignalLive',
     configPath: 'intelligence.jevSignalLive.enabled',
     description: 'Jev as a live advisory input to the tone gate\'s B1–B7 artefact signals (jev-signal-live.md): confident Jev answers decide a kind, unsure/missing answers and every failure fall back to the deterministic detectors.',
