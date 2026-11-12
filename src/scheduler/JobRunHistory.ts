@@ -20,6 +20,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { capacityOutcome, type CapacityEnforcementResult } from '../core/CapacityEnforcement.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import type { JobRunLaunch } from '../core/types.js';
 
 // capacity-enforcement-contract: job-run-history-row@1
 
@@ -36,6 +37,26 @@ export interface JobRunReflection {
   purposeDrift: string | null;
   /** Suggested changes to the job definition */
   suggestedChanges: string[];
+}
+
+/** The launch record (job-launch-intent-record §4); the shape lives in core/types.ts. */
+export type { JobRunLaunch } from '../core/types.js';
+
+/** Max entries kept in each of launch.applied / launch.dropped. */
+export const LAUNCH_ENTRY_CAP = 8;
+
+/** Bound a launch record to the frozen shape: first 8 entries of each array, the rest counted. */
+export function boundLaunchRecord(launch: JobRunLaunch): JobRunLaunch {
+  const applied = Array.isArray(launch.applied) ? launch.applied : [];
+  const dropped = Array.isArray(launch.dropped) ? launch.dropped : [];
+  const removed = Math.max(0, applied.length - LAUNCH_ENTRY_CAP) + Math.max(0, dropped.length - LAUNCH_ENTRY_CAP);
+  const out: JobRunLaunch = {
+    ...launch,
+    applied: applied.slice(0, LAUNCH_ENTRY_CAP),
+    dropped: dropped.slice(0, LAUNCH_ENTRY_CAP),
+  };
+  if (removed > 0) out.omitted = (launch.omitted ?? 0) + removed;
+  return out;
 }
 
 export interface JobRun {
@@ -125,6 +146,8 @@ export interface JobRun {
    * a marked run is never reconciled again; an unmarked completed run of an emailing job is.
    */
   emailOutboxId?: string;
+  /** The launch record (job-launch-intent-record §4). Optional and sheddable by the row cap. */
+  launch?: JobRunLaunch;
 }
 
 export interface JobRunStats {
@@ -188,6 +211,9 @@ const TRUNCATABLE_FIELDS = [
   'stateSnapshot',
   'handoffNotes',
   'reflection',
+  // job-launch-intent-record D9: shed LAST among the optional fields, before any essential one.
+  // A shed launch reads as "no launch record".
+  'launch',
 ] as const;
 
 export class JobRunHistory {
@@ -259,6 +285,7 @@ export class JobRunHistory {
     clampedAllowlist?: boolean;
     toolsConfined?: boolean;
     toolEnforcement?: string;
+    launch?: JobRunLaunch;
   }): string {
     const runId = `${opts.slug}-${Date.now().toString(36)}-${(runCounter++).toString(36)}`;
     const run: JobRun = {
@@ -286,9 +313,25 @@ export class JobRunHistory {
       clampedAllowlist: opts.clampedAllowlist ?? false,
       ...(opts.toolsConfined !== undefined ? { toolsConfined: opts.toolsConfined } : {}),
       ...(opts.toolEnforcement !== undefined ? { toolEnforcement: opts.toolEnforcement } : {}),
+      ...(opts.launch !== undefined ? { launch: boundLaunchRecord(opts.launch) } : {}),
     };
     this.appendLine(run);
     return runId;
+  }
+
+  /**
+   * Patch the launched CLI version onto a run (job-launch-intent-record §4, "Never waits").
+   * Copies the LATEST row for the run whole and changes only `launch.cliVersion`, so a completion
+   * (or reflection) row that landed while the probe was pending is never overwritten. Does nothing
+   * when the latest row has no `launch` (shed by the row cap, or never set) — it never invents one.
+   */
+  recordLaunchVersion(runId: string, cliVersion: string): void {
+    const run = this.findRun(runId);
+    if (!run || !run.launch) return;
+    if (run.launch.cliVersion === cliVersion) return;
+    // A failed probe never downgrades a version the start row already knew.
+    if (cliVersion === 'unknown' && run.launch.cliVersion !== 'unknown') return;
+    this.appendLine({ ...run, launch: { ...run.launch, cliVersion } });
   }
 
   /**

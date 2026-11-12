@@ -59,7 +59,7 @@ import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
-import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
+import { BUILTIN_SCHEDULE_EDIT_AWARENESS, JOB_THINKING_MODE_AWARENESS, JOB_THINKING_MODE_SNIFF } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
@@ -11571,6 +11571,18 @@ setTimeout(() => process.exit(0), 2000);
         : content + '\n' + BUILTIN_SCHEDULE_EDIT_AWARENESS;
       patched = true;
       result.upgraded.push('CLAUDE.md: documented durable built-in job schedule edits');
+    }
+
+    // Per-job thinking mode (job-launch-intent-record, Migration parity). Sniffed on the PHRASE, not
+    // the bare word `thinkingMode` (the topic-profile propose bullet already contains that). Placed
+    // right after the built-in schedule bullet when present, as in generateClaudeMd; else appended.
+    if (!content.includes(JOB_THINKING_MODE_SNIFF)) {
+      const anchor = content.indexOf(BUILTIN_SCHEDULE_EDIT_AWARENESS);
+      content = anchor !== -1
+        ? content.slice(0, anchor + BUILTIN_SCHEDULE_EDIT_AWARENESS.length) + JOB_THINKING_MODE_AWARENESS + content.slice(anchor + BUILTIN_SCHEDULE_EDIT_AWARENESS.length)
+        : content + (content.endsWith('\n') ? '' : '\n') + JOB_THINKING_MODE_AWARENESS;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: documented the per-job thinkingMode field and its launch record');
     }
 
     const coverageGuidance = applyJobMeshGuide(content, jobCoverageGuide(port));

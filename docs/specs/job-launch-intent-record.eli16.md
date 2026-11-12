@@ -34,3 +34,5 @@ Whether low effort actually saves usage without hurting quality is a separate, s
 
 Nothing new. This follows the research step's recommendation. The two open questions I sent you (a simple list instead of sentinels, and the advisor coming later) don't block this piece.
 <!-- approved 2026-11-11 by Justin (topic 141868) -->
+
+_Constitutional standard this serves: "Framework-Agnostic — and Framework-Optimizing" (docs/STANDARDS-REGISTRY.md)._

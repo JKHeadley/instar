@@ -3,6 +3,7 @@ title: "Job launch intent and launch record (per-job thinking mode)"
 slug: "job-launch-intent-record"
 author: "echo"
 parent-effort: "engine-optimization (docs/efforts/engine-optimization on the M5 agent home, topic 141868)"
+parent-principle: "Framework-Agnostic — and Framework-Optimizing"
 tier: 2
 round-cap: 3
 word-budget: 1500
