@@ -7,9 +7,11 @@
 
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { getHostTestRunnerSemaphore, resolveCap } from '../core/hostTestRunnerSemaphore.js';
 import type { ChildHandle, LocalVerifyServiceSeams, PrView } from './LocalVerifyService.js';
+import { launchdLabelPrefix, spawnViaLaunchd } from './launchdSpawn.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -36,6 +38,13 @@ export interface DefaultServiceSeamOpts {
   priorityKey?: string;
   /** The explicit per-agent GitHub environment (as MergeRunner uses); null = gh unavailable. */
   resolveGitHubEnv: () => NodeJS.ProcessEnv | null;
+  /**
+   * macOS: start each run child as its own launchd job with `ProcessType Interactive`, so the
+   * run and its lanes use the performance cores instead of the efficiency cores every
+   * session-descended process is kept on (see launchdSpawn.ts). Any failure before the run
+   * starts falls back to the plain detached spawn. Ignored on other platforms.
+   */
+  performanceCores?: { stateDir: string; onFallback?: (reason: string) => void };
 }
 
 export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<LocalVerifyServiceSeams, 'onStarved' | 'onRecord'> {
@@ -102,6 +111,18 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
       } catch { return null; } // @silent-fallback-ok: the caller falls back to per-PR reads
     },
     spawnRun(a): ChildHandle {
+      const pc = opts.performanceCores;
+      if (pc && process.platform === 'darwin') {
+        try {
+          return spawnViaLaunchd(a, {
+            dir: path.join(pc.stateDir, 'state', 'local-verify', 'launchd'),
+            labelPrefix: launchdLabelPrefix(pc.stateDir),
+            cwd: process.cwd(),
+          });
+        } catch (e) {
+          pc.onFallback?.(e instanceof Error ? e.message : String(e)); // the plain spawn below still runs it
+        }
+      }
       const fd = fs.openSync(a.logFile, 'a', 0o600);
       const child = spawn(a.command, a.args, { env: a.env, detached: true, stdio: ['ignore', fd, fd] });
       fs.closeSync(fd);

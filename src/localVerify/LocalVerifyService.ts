@@ -64,7 +64,7 @@ import type { RestartHold } from '../core/UpdateGate.js';
 import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
 import { PREFLIGHT_LIMITS } from './preflight.js';
 import {
-  PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
+  PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy, remoteLeaseDecision,
   type PeerClient, type PeerHealth, type PeerResult, type PeerRunAnswer, type PeerRunRequest, type PeerStatus, type PeerTarget, type RemoteMarker,
 } from './peer.js';
 
@@ -72,6 +72,11 @@ import {
 export interface PeerFit { eligible: boolean; reason: string; score: number | null }
 /** A peer skipped for the same reason is audited at most this often. */
 export const PEER_SKIP_AUDIT_MS = 10 * 60_000;
+/**
+ * CMT-1605: while this machine is too busy for heavy work, a queued PR verify waits this long
+ * at most for an idle peer to take it before it starts here anyway (never starved).
+ */
+export const STRAINED_PEER_PREFERENCE_MS = 10 * 60_000;
 
 /** Repeat-flake escalation (one tracked item per file, re-raised when the flake keeps recurring). */
 export const FLAKY_REPEAT = Object.freeze({ count: 3, windowMs: 7 * 24 * 60 * 60_000, keep: 20 });
@@ -532,12 +537,19 @@ interface PeerAttemptState {
 
 const PEER_RESULTS_KEPT = 20;
 
+/** The lease epoch a remote attempt belongs to now: its adoption epoch after a same-machine re-acquisition, else its dispatch epoch. */
+export function remoteEpoch(m: RemoteMarker): number | null {
+  return m.adoptedEpoch ?? m.leaseEpoch;
+}
+
+
 function isRemoteMarker(v: unknown): v is RemoteMarker {
   if (!v || typeof v !== 'object') return false;
   const m = v as RemoteMarker;
   const d = m.dispatched as unknown as Record<string, unknown> | undefined;
   return typeof m.machineId === 'string' && typeof m.attemptId === 'string' && /^[0-9a-f]{32}$/.test(m.attemptId)
     && (m.leaseEpoch === null || Number.isSafeInteger(m.leaseEpoch)) && Number.isFinite(m.sentAt)
+    && (m.adoptedEpoch === undefined || Number.isSafeInteger(m.adoptedEpoch))
     && (m.state === 'sending' || m.state === 'accepted') && !!d && isValidPr(d.pr) && isValidSha(d.headSha) && isValidSha(d.baseSha)
     && typeof d.baseRefName === 'string' && typeof d.verifierVersion === 'string' && typeof d.policyHash === 'string';
 }
@@ -718,6 +730,12 @@ export class LocalVerifyService {
   private readonly remotePolledAt = new Map<string, number>();
   /** Coordinator: last SUCCESSFUL peer contact per attempt, seeded at accept. `remotePolledAt` records tries, not successes. */
   private readonly remoteLastOkAt = new Map<string, number>();
+  /** Coordinator: reservations whose lease wait was audited (once per attempt per wait). */
+  private readonly remoteLeaseWaitAudited = new Set<string>();
+  /** Coordinator: the one PR entry (pr:head) held back for a free peer while this machine is busy, and since when. */
+  private strainDeferral: { key: string; since: number } | null = null;
+  /** Coordinator: no new strained deferral starts before this (set when a deferral expires). */
+  private strainCooldownUntil = 0;
   /** Starts true so a heartbeat left by an earlier process is removed once, then idle ticks do no file I/O. */
   private peerHoldCount = 0;
   private peerHoldFilePresent = true;
@@ -1167,6 +1185,29 @@ export class LocalVerifyService {
    */
   onLeaseAcquired(opts: { foreignHolder: boolean; epoch?: number | null }): void {
     this.health.load({ foreignHolder: opts.foreignHolder, epoch: opts.epoch });
+    // A same-machine re-acquisition (a restart, no other holder in between) keeps the remote attempts this
+    // machine dispatched: the peer is still running them for the same coordinator, and every import check
+    // (verifier, policy, head, base, signed record) still applies. A foreign holder in between abandons them.
+    if (opts.foreignHolder) {
+      // Another machine held the lease since this one last did: every reservation made under the
+      // old lease is void, even at the next epoch (the poll alone would carry a +1 move).
+      for (const e of [...this.queue]) if (e.remote) this.abandonRemote(e, 'foreign-holder', { failure: false, cancel: true });
+    } else if (typeof opts.epoch === 'number') {
+      let adopted = 0;
+      for (const e of this.queue) {
+        const m = e.remote;
+        if (!m || remoteEpoch(m) === opts.epoch) continue;
+        // Only the very next epoch proves no other machine held the lease in between (CMT-1605):
+        // `foreignHolder` is in-memory and always reads false after a restart. A gap is left to
+        // the poll, which abandons it.
+        const cur = remoteEpoch(m);
+        if (typeof cur !== 'number' || opts.epoch !== cur + 1) continue;
+        m.adoptedEpoch = opts.epoch;
+        adopted++;
+        this.audit({ event: 'peer-attempt-adopted', pr: e.pr, peer: m.machineId, attemptId: m.attemptId, fromEpoch: m.leaseEpoch, epoch: opts.epoch });
+      }
+      if (adopted > 0) this.persistQueue();
+    }
     this.mainObs.immediate = true;
     this.mainObs.handled = null;
   }
@@ -2010,6 +2051,23 @@ export class LocalVerifyService {
     }
   }
 
+  /** Coordinator: move a reservation to exactly the next epoch this machine now holds (CMT-1605). */
+  private carryRemote(entry: QueueEntry, m: RemoteMarker, epoch: number | null, via: string): void {
+    if (typeof epoch !== 'number') return;
+    const from = remoteEpoch(m);
+    m.adoptedEpoch = epoch;
+    this.audit({ event: 'peer-attempt-adopted', pr: entry.pr, peer: m.machineId, attemptId: m.attemptId, fromEpoch: from, epoch, via });
+    this.persistQueue();
+    this.writePeerHold();
+  }
+
+  /** Coordinator: a reservation waits for this machine to hold the lease again (audited once per wait). */
+  private noteRemoteLeaseWait(m: RemoteMarker): void {
+    if (this.remoteLeaseWaitAudited.has(m.attemptId)) return;
+    this.remoteLeaseWaitAudited.add(m.attemptId);
+    this.audit({ event: 'peer-attempt-lease-wait', peer: m.machineId, attemptId: m.attemptId, epoch: remoteEpoch(m) });
+  }
+
   /** Coordinator: drop a reservation. `count` = the attempt was spent; `failure` = it counts toward the peer's breaker. */
   private abandonRemote(entry: QueueEntry, reason: string, o: { failure: boolean; cancel: boolean }): void {
     const m = entry.remote;
@@ -2017,6 +2075,7 @@ export class LocalVerifyService {
     entry.remote = undefined;
     this.remotePolledAt.delete(m.attemptId);
     this.remoteLastOkAt.delete(m.attemptId);
+    this.remoteLeaseWaitAudited.delete(m.attemptId);
     this.endPeerHold(m.attemptId, 'abandoned');
     this.audit({ event: 'peer-attempt-abandoned', pr: entry.pr, peer: m.machineId, attemptId: m.attemptId, reason });
     this.writePeerHold(); // this attempt must stop holding a restart now, not on the next tick
@@ -2043,7 +2102,13 @@ export class LocalVerifyService {
         if (!m) continue;
         const now = this.now();
         const lease = this.leaseState();
-        if (!lease.holds || lease.epoch !== m.leaseEpoch) { this.abandonRemote(entry, 'lease-changed', { failure: false, cancel: true }); continue; }
+        // CMT-1605: wait (never import, never cancel) while this machine does not hold the lease and no
+        // other machine does; carry the attempt when this machine holds exactly the next epoch.
+        const leaseDecision = remoteLeaseDecision(remoteEpoch(m), m.sentAt, lease, { selfMachineId: this.cfg.machineId, now, maxRunMs: PEER_LIMITS.maxRunMs });
+        if (leaseDecision === 'wait') { this.noteRemoteLeaseWait(m); continue; }
+        if (leaseDecision === 'abandon') { this.abandonRemote(entry, 'lease-changed', { failure: false, cancel: true }); continue; }
+        this.remoteLeaseWaitAudited.delete(m.attemptId); // keep or carry: any wait has ended
+        if (leaseDecision === 'carry') this.carryRemote(entry, m, lease.epoch, 'poll');
         const peer = this.configuredPeers().find((p) => p.machineId === m.machineId);
         if (!peer || !this.peerClient) { this.abandonRemote(entry, 'peer-not-configured', { failure: false, cancel: false }); continue; }
         if (now - (this.remotePolledAt.get(m.attemptId) ?? 0) < PEER_LIMITS.pollMs) continue;
@@ -2073,11 +2138,19 @@ export class LocalVerifyService {
           continue;
         }
         // The lease is read again NOW (the result fetch awaited): a lease lost or moved meanwhile imports nothing.
+        // A move to exactly the next epoch on this machine is carried (CMT-1605); a lapse waits; anything
+        // else abandons. None of these is the peer's fault, so none counts toward its breaker.
         const leaseNow = this.leaseState();
-        const why = importRefusal(res.record, m, { repo: this.cfg.repo, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash, holdsLease: leaseNow.holds, leaseEpoch: leaseNow.epoch, coordinatorMachineId: this.cfg.machineId });
+        const after = remoteLeaseDecision(remoteEpoch(m), m.sentAt, leaseNow, { selfMachineId: this.cfg.machineId, now: this.now(), maxRunMs: PEER_LIMITS.maxRunMs });
+        if (after === 'wait') { this.remotePolledAt.delete(m.attemptId); this.noteRemoteLeaseWait(m); continue; }
+        if (after === 'abandon') { this.abandonRemote(entry, 'lease-changed', { failure: false, cancel: true }); continue; }
+        if (after === 'carry') this.carryRemote(entry, m, leaseNow.epoch, 'poll-after-fetch');
+        const why = importRefusal(res.record, m, { repo: this.cfg.repo, verifierVersion: this.cfg.verifierVersion, policyHash: this.policyHash, holdsLease: leaseNow.holds, leaseEpoch: m.adoptedEpoch !== undefined && m.adoptedEpoch === leaseNow.epoch ? m.leaseEpoch : leaseNow.epoch, coordinatorMachineId: this.cfg.machineId });
         if (why) {
           this.audit({ event: 'peer-record-rejected', pr: entry.pr, peer: peer.machineId, attemptId: m.attemptId, reason: why });
-          this.abandonRemote(entry, `rejected:${why}`, { failure: true, cancel: false });
+          // A lease fence refusal is about this coordinator's lease, not the peer's health.
+          const leaseFence = why === 'lease-epoch-changed' || why === 'not-lease-holder';
+          this.abandonRemote(entry, `rejected:${why}`, { failure: !leaseFence, cancel: false });
           continue;
         }
         if (res.record.outcome === 'error') {
@@ -2094,6 +2167,7 @@ export class LocalVerifyService {
         entry.remote = undefined;
         this.remotePolledAt.delete(m.attemptId);
         this.remoteLastOkAt.delete(m.attemptId);
+        this.remoteLeaseWaitAudited.delete(m.attemptId);
         this.endPeerHold(m.attemptId, 'imported');
         const i = this.queue.indexOf(entry);
         if (i >= 0) this.queue.splice(i, 1);
@@ -2200,7 +2274,7 @@ export class LocalVerifyService {
     return reserved.flatMap((e) => {
       const m = e.remote!;
       const lastPollOkAt = this.remoteLastOkAt.get(m.attemptId);
-      return lease.holds && lease.epoch === m.leaseEpoch && m.state === 'accepted'
+      return lease.holds && lease.epoch === remoteEpoch(m) && m.state === 'accepted'
         && lastPollOkAt !== undefined && now - lastPollOkAt <= 2 * PEER_LIMITS.pollMs
         ? [{ attemptId: m.attemptId, pr: e.pr, sentAt: m.sentAt, lastPollOkAt }] : [];
     });
@@ -2237,7 +2311,7 @@ export class LocalVerifyService {
   /** A lease change is reported as `abandoned` by the poll that follows; only a peer gone quiet under the current lease is reported here. */
   private remoteEpochCurrent(attemptId: string): boolean {
     const lease = this.leaseState();
-    return lease.holds && this.queue.some((e) => e.remote?.attemptId === attemptId && e.remote.leaseEpoch === lease.epoch);
+    return lease.holds && this.queue.some((e) => e.remote?.attemptId === attemptId && remoteEpoch(e.remote) === lease.epoch);
   }
 
   private endPeerHold(attemptId: string, reason: 'imported' | 'abandoned' | 'bound-reached' | 'bypass' | 'no-longer-qualifies'): void {
@@ -2508,6 +2582,7 @@ export class LocalVerifyService {
       this.audit({ event: 'overlap', where: 'before-start', holders: holders.map((h) => h.pid) });
       return;
     }
+    if (this.deferLocalStartToPeer(next)) return;
     if (next.kind !== 'main' && decideBaseRefresh(next, { now: this.now(), mainMovedAt: this.mainMovedAt })) {
       // The verify tests the merge with TODAY's base: re-read it right before the start, and
       // confirm the PR is still open (a PR merged or closed while it waited is dropped, not run).
@@ -2518,6 +2593,56 @@ export class LocalVerifyService {
     const [entry] = this.queue.splice(this.queue.indexOf(next), 1);
     this.lastStartWasMain = entry.kind === 'main';
     this.start(entry);
+  }
+
+  /**
+   * CMT-1605: when THIS machine is too busy for heavy work (the same fit the pool uses for a
+   * peer) and a healthy peer is free, leave the next PR entry for the peer's dispatch instead of
+   * starting it here. Never while a `main` verify is queued (main always runs here, and nothing
+   * may hold it back). One deferral at a time, bounded by STRAINED_PEER_PREFERENCE_MS; when it
+   * expires (the peer never took it) no new deferral starts for another window, so a stale "free"
+   * reading cannot hold the queue PR after PR. While deferring, the suite-slot claim is released.
+   * A signal-driven preference, never a block.
+   */
+  private deferLocalStartToPeer(next: QueueEntry): boolean {
+    const key = `${next.pr}:${next.headSha}`;
+    const end = (): false => { if (this.strainDeferral?.key === key) this.strainDeferral = null; return false; };
+    const fitFn = this.peerFitFn;
+    if (next.kind === 'main' || !fitFn || !this.peerClient || this.cfg.peerOnly) return end();
+    if (this.queue.some((e) => e.kind === 'main')) return end();
+    let selfFit: PeerFit | null = null;
+    try { selfFit = fitFn(this.cfg.machineId); } catch { selfFit = null; } // @silent-fallback-ok: an unreadable own fit keeps today's local-first start
+    if (!selfFit || selfFit.reason !== 'machine-busy') return end();
+    const now = this.now();
+    if (now < this.strainCooldownUntil) return false;
+    const lease = this.leaseState();
+    const hold = this.holdDecision();
+    const held = new Set(hold.active ? hold.heldPrs.map((x) => x.pr) : []);
+    if (!lease.holds || !this.dispatchable(next, held)) return end();
+    const freePeer = this.fitPeers(this.configuredPeers()).find((peer) => {
+      const h = this.peerHealth.get(peer.machineId);
+      if (h && !peerHealthy(h, now)) return false;
+      if (this.queue.some((e) => e.remote?.machineId === peer.machineId)) return false;
+      const st = h?.status;
+      // Unknown or stale status: the dispatch reads it fresh; a known-busy or skewed peer is not free.
+      if (!st || now - (h?.statusAt ?? 0) >= 2 * PEER_LIMITS.statusMs) return true;
+      return !st.inFlight && !st.slotBusy && st.verifierVersion === this.cfg.verifierVersion && st.policyHash === this.policyHash;
+    });
+    if (!freePeer) return end();
+    const cur = this.strainDeferral;
+    if (!cur || cur.key !== key) {
+      // A different entry is next: the previous one left (dispatched or dequeued). Start a fresh window.
+      this.strainDeferral = { key, since: now };
+      this.audit({ event: 'local-start-deferred-to-peer', pr: next.pr, headSha: next.headSha, peer: freePeer.machineId, selfLoadPerCore: selfFit.score });
+    } else if (now - cur.since > STRAINED_PEER_PREFERENCE_MS) {
+      this.strainDeferral = null;
+      this.strainCooldownUntil = now + STRAINED_PEER_PREFERENCE_MS;
+      this.audit({ event: 'local-start-deferral-expired', pr: next.pr, headSha: next.headSha, waitedMs: now - cur.since });
+      return false;
+    }
+    this.publishSuitePriority(false); // nothing starts here while deferring: ordinary suites may use the slot
+    this.scheduleDispatch();
+    return true;
   }
 
   private reconcileSuitePriority(): void {

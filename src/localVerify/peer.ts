@@ -20,6 +20,12 @@ export interface RemoteMarker {
   leaseEpoch: number | null;
   sentAt: number;
   state: 'sending' | 'accepted';
+  /**
+   * The lease epoch under which this coordinator now owns the attempt, when it was taken over across this
+   * machine's own lease re-acquisition (a server restart with no other holder in between). Absent: `leaseEpoch`.
+   * The peer's signed record still carries the dispatch epoch (`leaseEpoch`), which the import compares against.
+   */
+  adoptedEpoch?: number;
   /** Immutable snapshot of what was dispatched: every later check compares against this. */
   dispatched: DispatchedInputs;
 }
@@ -123,6 +129,32 @@ export function parsePeerRunRequest(body: unknown): PeerRunRequest | null {
   if (typeof b.coordinatorMachineId !== 'string' || !b.coordinatorMachineId || b.coordinatorMachineId.length > 200) return null;
   if (!(b.leaseEpoch === null || (typeof b.leaseEpoch === 'number' && Number.isSafeInteger(b.leaseEpoch) && b.leaseEpoch >= 0))) return null;
   return b as unknown as PeerRunRequest;
+}
+
+/**
+ * What the coordinator does with one reservation given the live lease (CMT-1605). Pure.
+ * `current` is the epoch the reservation belongs to now (its adoption epoch, else its dispatch epoch).
+ * - `keep`: the lease is held at that epoch.
+ * - `carry`: held at exactly the next epoch. Every acquisition takes epoch+1 by compare-and-swap,
+ *   so no other machine can have held the lease in between: the reservation moves to the new epoch.
+ * - `wait`: not held right now and no other machine is named holder (this server is booting, or
+ *   its lease lapsed between renewals): never import, never cancel, look again.
+ * - `abandon`: another machine holds the lease, the epoch jumped (someone else held it), or the
+ *   wait outlived the run bound.
+ */
+export function remoteLeaseDecision(
+  current: number | null,
+  sentAt: number,
+  lease: { holds: boolean; epoch: number | null; holder: string | null },
+  ctx: { selfMachineId: string; now: number; maxRunMs: number },
+): 'keep' | 'carry' | 'wait' | 'abandon' {
+  if (lease.holds) {
+    if (lease.epoch === current) return 'keep';
+    if (typeof current === 'number' && typeof lease.epoch === 'number' && lease.epoch === current + 1) return 'carry';
+    return 'abandon';
+  }
+  if (lease.holder !== null && lease.holder !== ctx.selfMachineId) return 'abandon';
+  return ctx.now - sentAt > ctx.maxRunMs ? 'abandon' : 'wait';
 }
 
 /** Why a returned peer record must NOT be imported, or null when it may be. Pure. */
