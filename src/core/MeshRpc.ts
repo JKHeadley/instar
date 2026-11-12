@@ -311,6 +311,32 @@ export type MeshCommand =
       type: 'topic-history-pull';
       topic: number;
       limit?: number;
+      // native-conversation-any-machine-access §3d item 4: the pool History shape. Whole rows with
+      // their ids, provenance and origin join, up to 100 per page, a 512 KiB cap, an older-page
+      // cursor, and the oversized-row continuation (`row` + `byteFrom`). The answer echoes `shape`.
+      shape?: 'pool';
+      before?: number;
+      beforeMessageId?: number;
+      row?: string | number;
+      byteFrom?: number;
+    }
+  | {
+      // native-conversation-any-machine-access §3d item 1. Read/observe class: a registered
+      // same-operator peer asks for one page of a session's conversation record (mode
+      // 'transcript', for a session recorded on THIS machine, never a path) or for this
+      // machine's own session list (mode 'list'). Every transcript answer names the
+      // conversations the session served, so the machine answering a person applies the audience.
+      type: 'session-transcript-pull';
+      mode: 'transcript' | 'list';
+      session?: string;
+      before?: number;
+      beforeIndex?: number;
+      limit?: number;
+      full?: boolean;
+      row?: { offset: number; index: number };
+      byteFrom?: number;
+      include?: 'all';
+      status?: string;
     }
   | {
       // Relay-path row carrier (context-budget-layered-summaries §14). Read/observe class:
@@ -600,6 +626,7 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
     case 'working-set-pull':
     case 'app-media-pull':
     case 'topic-profile-pull':
+    case 'session-transcript-pull':
     case 'topic-history-pull':
     case 'topic-row-pull':
     case 'session-live-probe':
@@ -657,6 +684,10 @@ export function checkCommandRBAC(command: MeshCommand, sender: MachineId, deps: 
       // topic-history-pull joins it (session-pool-signed-history): it serves OWN recent
       // messages for one topic, the same disclosure the bearer history route makes to
       // this agent's own machines, capped in count and size by its handler.
+      // session-transcript-pull joins it (native-conversation-any-machine-access §3d): it serves
+      // OWN session records (the reader's digest, this machine's token and PIN removed) and its own
+      // session list, the same disclosure the bearer transcript and /sessions reads made to this
+      // agent's own machines; capped by its handler. The audience is applied where a person is answered.
       // topic-row-pull joins it (context-budget §14): it serves OWN TopicMemory rows of one
       // topic (the rows this machine carried, or its recent rows), the same disclosure the
       // deliverMessage carrier already makes to the owner; capped by its handler.

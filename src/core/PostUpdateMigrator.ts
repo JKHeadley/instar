@@ -62,6 +62,7 @@ import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../mess
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { signedPoolReadsAwareness, SIGNED_POOL_READS_AWARENESS_MARKER } from './poolSignedReads.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -9965,6 +9966,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Telegram Web K drift and reviewed re-enrollment awareness');
     }
 
+    // native-conversation-any-machine-access §3d — reading another machine's sessions needs no shared token.
+    if (!content.includes(SIGNED_POOL_READS_AWARENESS_MARKER)) {
+      content += '\n' + signedPoolReadsAwareness(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added signed pool reads awareness');
+    }
+
     if (!content.includes('Held reply outcome:')) {
       content += '\n' + telegramOriginHeldOutcomeAwareness();
       patched = true;
@@ -17139,6 +17147,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [SIGNED_POOL_READS_AWARENESS_MARKER, () => signedPoolReadsAwareness(this.config.port ?? 4040)],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
