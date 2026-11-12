@@ -24,6 +24,8 @@ Reading the notes made the key work on the first try. The operator asked (topic 
 - `account-page-safety.js`, a preflight in the macOS normal-Chrome wrapper (`chrome-js.sh`). It reads the full page, raises an `account-action-review` on recovery-code or hold language, and needs `--reviewed-page <fingerprint>` before caller code runs.
 - The "Account actions: read before acting" rules (`src/data/accountActionSafety.ts`) in every agent's CLAUDE.md and browser skill.
 
+- On Echo only (not shipped): a custom PreToolUse hook, `.instar/hooks/custom/lockout-guard.cjs` (2026-11-07), blocks a Bash command that both names recovery or backup codes and reaches a credential reader or browser driver. It blocks by word match, so on 2026-11-11 it also blocked a docs commit whose message named recovery codes. This spec does not ship it to the fleet: word-matching command text is the pattern-as-authority shape the Standards gate rejected in round 0. Once guard 1 lands, Echo's copy can be retired.
+
 The 11-11 npm work ran through a hand-written Playwright script, so the preflight never ran.
 
 ## Threat model (what this spec does and does not do)
@@ -37,17 +39,17 @@ It does **not** contain an agent that is trying to get around it. Such an agent 
 ### Guard 1. The page holds a recovery-code submit and says what it costs
 
 - **Detector:** a form is about to be submitted that contains a **non-empty** input whose own label, name, placeholder or `autocomplete` value names a recovery or backup code. A heading or URL alone does not trigger it, so security-settings pages and factor pickers are not held (round-2 finding: heading matches would hold ordinary pages).
-- **Hold points:** the `submit` event (capture phase), `HTMLFormElement.prototype.submit` and `requestSubmit` (patched by the init script, since `form.submit()` fires no event), and Enter in a form field.
+- **Hold points:** a new self-executing init script, `account-submit-hold.js` (the existing `account-page-safety.js` is a function the wrapper calls with arguments, so it cannot be an init script). It listens on `window` in the capture phase for `submit` and for `click` on submit-type controls, and patches `HTMLFormElement.prototype.submit` and `requestSubmit`. When the form holds a filled recovery-code input, it calls `stopImmediatePropagation()` and `preventDefault()` before any site handler runs, then asks. On dismissal, no site handler sees the event, so the site sends no request. `installBrowserScripts` writes the file on every OS.
 - **What the agent sees:** a native `confirm()` dialog with the text: "instar: this submits a one-time recovery code to <origin>. Known cost: <cost from the shipped table, or 'unknown'>. Do this only if the operator approved this exact use. Check the credential's saved instructions first: a saved key or password may work." Dialogs are how the hold reaches every driver without a bearer token in the page:
   - Playwright MCP reports an open dialog as a modal state that must be handled before anything else happens.
-  - Playwright scripts dismiss dialogs by default, so an unhandled dialog cancels the submit.
-  - `chrome-js.sh` returns it in its result.
-- **Release:** accepting the dialog lets the submit through. That is the agent's own judgment, made with the cost in front of it. The page writes a line to the browser console and the agent's audit (`account-break-glass` event: origin, time, accepted or dismissed). No code is logged.
+  - Playwright scripts with no dialog listener dismiss dialogs, so the submit is cancelled. A script with a blanket `page.on('dialog', d => d.accept())` would accept silently, so the launcher always prints every dialog's text to stderr and records it (below).
+  - `chrome-js.sh` (normal Chrome through osascript) gets no init script. There, a real modal would hang the osascript call, so that route keeps only the PR 2944 preflight.
+- **Release:** accepting the dialog lets the submit through. That is the agent's own judgment, made with the cost in front of it. No code is logged anywhere. On the launcher route, the launcher (outside the page) records an `account-break-glass` audit event from `page.on('dialog')`: origin, time, accepted or dismissed. On the MCP route the dialog text is in the MCP tool result, so the session transcript is the record.
 - **Cost table:** `src/data/breakGlassCosts.ts`, keyed by origin. It starts with npm (72-hour publishing and token hold; npm changelog 2026-09-09, observed 2026-11-07). Unknown origins say "cost unknown".
 
 ### Guard 2. A credential's saved instructions travel with it
 
-- **What counts as instructions:** a Bitwarden custom field named `instructions`, or the `notes` of a Bitwarden **login** item (type 1). Never the `notes` of a secure-note item (type 2): there the notes are the secret value (`BitwardenProvider.ts`). In the local vault, a sibling key `<key>__instructions` (a dot would nest, per `secret-get.mjs`). The Bitwarden provider gains code to read custom fields and login-item notes, which it does not read today.
+- **What counts as instructions:** a Bitwarden custom field named `instructions`. Never an item's `notes`: on a secure-note item (type 2) the notes are the secret value, and `BitwardenProvider.set()` writes the value into `notes` on any existing item, so login-item notes can hold a secret too. This spec also fixes `set()` to write `login.password` on a login item. In the local vault, a sibling key `<key>__instructions` (a dot would nest, per `secret-get.mjs`). The Bitwarden provider gains code to read custom fields, which it does not read today.
 - **When it prints:** only when the item has instructions. Plain tokens with none (the auth token, most API keys) print nothing extra.
 - **How:** the reader writes the full text to a 0600 file under `.instar/state/credential-instructions/` and prints to stderr the path, byte count and the full text, wrapped as untrusted data (`<credential-instructions item="…" untrusted>…</credential-instructions>`), after `SecretRedactor`. Nothing is cut; the file holds the whole text even if stderr is dropped.
 - **Not authority:** instructions are data and never stand in for an approval.
@@ -55,8 +57,8 @@ It does **not** contain an agent that is trying to get around it. Such an agent 
 
 ### Guard 3. The page safety script runs on every Playwright route
 
-- **Playwright MCP:** `@playwright/mcp` supports `--init-script <path>` (README of 0.0.85). The entry is written in several places, and every one gets the flag through one shared helper used by `PostUpdateMigrator`, `init` and `setup`: `.claude/settings.json`, the project scope of `~/.claude.json`, `.mcp.json`, and the Codex `config.toml`. `PlaywrightProfileRegistry`'s arg rewrite on profile activation keeps the flag (it goes through the same helper). The migration is idempotent: it adds the flag once and changes nothing else.
-- **Agent-written scripts:** a launcher, `.instar/scripts/browser/account-browser.mjs <profile>`, opens a Playwright Profile Registry profile with the same script added through `addInitScript`. It is for Playwright profiles only; normal-Chrome profiles stay free of automation and keep `chrome-js.sh`. The npm script on 11-11 would have used it, because the browser skill and CLAUDE.md section name it as the way to open a registered profile.
+- **Playwright MCP:** `@playwright/mcp` reads `PLAYWRIGHT_MCP_INIT_SCRIPT` (documented in the README of 0.0.85, beside `--init-script`). Instar sets that variable, pointing at the agent's own copy of `account-submit-hold.js`, in the environment of every session it spawns. That covers every place the MCP entry is written (`~/.claude.json`, `.mcp.json`, the Codex `config.toml`) and survives Profile Registry arg rewrites. It also keeps per-machine paths out of git-tracked `.mcp.json`. Sessions started by hand outside instar do not get it, and the spec says so.
+- **Agent-written scripts:** a launcher, `.instar/scripts/browser/account-browser.mjs <profile>`, opens a Playwright Profile Registry profile with the hold added through `addInitScript`, and prints and records every dialog. Installing it does not make a script use it. So a PreToolUse hook on Bash raises a signal (never a block) when a command runs a script that opens a registered profile's directory with Playwright without the launcher, naming the launcher and the 11-11 incident. A script that ignores the signal is not covered, and the spec says so.
 - **`chrome-js.sh`:** unchanged, except that the hold response now prints the matched warning sentences themselves, so the load-bearing text is inside what the agent reads (P24), not only a fingerprint.
 - **Linux and Windows drivers** (`xdrive.sh`, `ndrive.sh`) have no preflight today and stay uncovered; follow-up F-D.
 
@@ -65,26 +67,28 @@ It does **not** contain an agent that is trying to get around it. Such an agent 
 | Decision point | Classification | Basis |
 | --- | --- | --- |
 | Hold a submit carrying a non-empty recovery-code input for the agent's dialog decision | judgment-candidate | Floor: the dialog fires and names the cost; an unhandled dialog cancels the submit. Arbiter: the agent, who must have an operator approval per the existing rules. |
-| Print a credential's instructions | invariant | basis: enumerable-domain; evidence: printed only for an `instructions` field, login-item notes or `<key>.instructions`; never type-2 notes. |
-| Add `--init-script` to the Playwright MCP entry | invariant | basis: external-constraint; evidence: `@playwright/mcp` documents `--init-script` as the only page hook it exposes. |
+| Print a credential's instructions | invariant | basis: enumerable-domain; evidence: printed only for a Bitwarden `instructions` field or a local `<key>__instructions`; never any `notes`. |
+| Set `PLAYWRIGHT_MCP_INIT_SCRIPT` in spawned sessions | invariant | basis: external-constraint; evidence: `@playwright/mcp` 0.0.85 documents the variable; the environment reaches every MCP entry location. |
+| Signal a direct Playwright launch of a registered profile | judgment-candidate | Floor: signal only. Arbiter: the agent. |
 
 fixed-limits: none.
 
 ## Signals and what they prove (P20)
 
-- **Recovery-code input.** Symbol: a non-empty input labelled as a recovery or backup code. State claimed: this submit spends a break-glass code. Corroboration: the input is in the form being submitted and has a value. Unmeasurable (an unlabelled code field): no hold; the existing full-page review in `chrome-js.sh` and the CLAUDE.md rule remain. Stated as a known gap.
+- **Recovery-code input.** Symbol: a non-empty input labelled as a recovery or backup code. State claimed: this submit spends a break-glass code. Corroboration: the input is in the form being submitted and has a value. Unmeasurable, stated as known gaps: an unlabelled code field, and a single-page site that sends the code with `fetch` from a non-submit button. Neither is held; the CLAUDE.md rule remains.
 - **Instructions present.** Symbol: the field exists. State: the item carries usage instructions. No inference beyond that.
 
 ## Multi-machine posture
 
-- All three guards are code shipped identically to every machine. They keep no state, apart from audit lines that stay in each machine's log.
+- All three guards are code shipped identically to every machine.
+- Audit events and instruction files stay on the machine that wrote them. machine-local-justification: physical-credential-locality. The audit describes one machine's browser profile; an instruction file is a cache of its credential, overwritten on each read and deleted with the credential.
 - Credential instructions follow their credential's existing sync rule. Bitwarden items are shared wherever Bitwarden is used. `<key>__instructions` syncs exactly when `<key>` does, so it stays off the fleet's default (secret sync off) and keys excluded by design (`google_passkey_*`) keep their instructions on the same machine as the key.
 
 ## Testing
 
 - Unit: the detector on labelled, unlabelled and empty code inputs; the headings-only pages from round 2 (GitHub security settings, Google factor picker) not held; type-2 notes never printed; instructions printed in full with redaction.
-- Integration: a local test page with a recovery-code form. A Playwright run through the launcher shows the dialog and the submit is cancelled when the dialog is dismissed. `form.submit()` and `requestSubmit()` are held too.
-- Migration: each of the four entry locations gains `--init-script` once and is otherwise unchanged; a profile activation keeps it.
+- Integration: a local test page with a recovery-code form whose submit handler sends a request, and a submit button whose click handler sends one. Through the launcher and through MCP with the variable set: dismissal produces zero requests, and `form.submit()` and `requestSubmit()` are held too. A script with a blanket accept listener still gets the dialog text printed.
+- Wiring: a spawned session's environment carries `PLAYWRIGHT_MCP_INIT_SCRIPT`, and the file it names exists on Mac and Linux.
 
 ## Rollout and rollback
 
@@ -93,8 +97,10 @@ fixed-limits: none.
 
 ## Follow-ups (registered as commitments when this ships)
 
+P10 asks for principal approval for deferrals that risk recurrence. F-B (partly covered above) and F-D go on the operator's morning list for that approval, with dates. F-A is outside the threat model, so it is not a deferral.
+
 - **F-A.** Server-held break-glass codes with an operator-approved, server-performed fill (real authority against a misbehaving agent).
-- **F-B.** A recovery obligation after any break-glass sign-in, closed by an independently observed sign-in with another factor.
+- **F-B.** A recovery obligation after any break-glass sign-in, closed by an independently observed sign-in with another factor. Until then, on the launcher route an accepted dialog also opens a commitment through the server API (from the launcher, outside the page): "prove a non-break-glass way into <origin>". It resurfaces on the normal cadence. F-B replaces it with an independent check.
 - **F-C.** Routes inventory for account handoffs, as an input to the B17 false-blocker rule.
 - **F-D.** The same page hold for the Linux and Windows drivers.
 
@@ -109,6 +115,7 @@ fixed-limits: none.
 
 - Round 0 (21:31): three flags, answered by dropping name-pattern authority and the notes cut.
 - Round 1 (22:33): two flags. Answered by covering the init-script route and holding at the submit.
+- Round 3 (22:57): six design findings from the internal reviewer, three from GPT-6. Answered with a new init script that stops site handlers, `PLAYWRIGHT_MCP_INIT_SCRIPT`, no notes as instructions, a launcher-side audit, an honest coverage statement and the interim commitment.
 - Round 2 integration review (22:46): five places write the MCP entry, local-vault dots nest, the Bitwarden reader lacks custom fields, and secret sync is off on the fleet. Answered in guards 2 and 3 and the posture section.
 - Round 2 (22:41): five flags (unmediated programmatic submits, pattern authority, 1-hour expiry, chunks-served proof, a dark approval store). Answered by scoping to a confused agent, holding `form.submit`, and removing the approval store, expiry and chunk proof.
 
