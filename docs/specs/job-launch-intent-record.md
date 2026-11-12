@@ -16,6 +16,8 @@ single-run-completable: true
 frontloaded-decisions: 9
 cheap-to-change-tags: 8
 contested-then-cleared: 0
+approved: true
+approved-by: "Justin, Telegram topic 141868, 2026-11-11 17:46 PST: '2) approve the job effort spec'"
 ---
 
 # Job launch intent and launch record
