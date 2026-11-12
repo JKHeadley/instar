@@ -8,12 +8,12 @@ In November one instar agent got the owner's npm account put on a 72-hour hold.
 
 After it read the instructions, the key worked on the first try.
 
-Telling agents to "be more careful" doesn't stick. So this change builds the lessons into the tools every instar agent uses:
+Telling agents to "be more careful" doesn't stick, because the warnings never reached the agent. This change puts the warnings where the agent cannot miss them:
 
-1. Typing a one-time recovery code into a website needs the owner's approval for that one use, and the approval screen says what it will cost (on npm, a 72-hour hold). The check sits on the website page itself, so it works whichever tool the agent uses.
-2. Whenever an agent pulls a password or key that has instructions saved with it, those instructions are shown with it, in full. They are treated as information, never as permission.
-3. On any sign-in or account page, a submit is held until the agent has read the whole page, and it stops at any warning about holds, suspensions or steps that can't be undone. This now covers hand-written browser scripts too, which is the route the npm mistake took.
-4. If an agent ever does use a recovery code, a tracked to-do opens, and it stays open until a normal way back in has been tested in a fresh browser.
-5. Before an agent hands an account task to the owner, the system lists what the agent already holds for that account, and the agent has to say why each one won't work. Asking for an approval or a 2FA code is not affected.
+1. **Recovery codes.** When an agent is about to send a one-time recovery code to a website, the page stops and shows a pop-up. The pop-up says what the code will cost (on npm, a 72-hour hold). It also reminds the agent that it needs the owner's approval and should check the saved instructions first. If the agent's script ignores the pop-up, the code is not sent.
+2. **Saved instructions.** Whenever an agent pulls a password or key that has instructions saved with it, it gets the instructions too, in full. They are treated as information, never as permission.
+3. **Every browser route.** The page check now runs in all the ways agents open web pages, including hand-written browser scripts. A hand-written script is the route the npm mistake took, and the old check never saw it.
+
+What this does not do: it stops an agent that is confused, which is what happened here. It does not stop an agent that is deliberately working around it. Locking codes away so only the server can use them is a bigger follow-up. So are a tracked to-do after any recovery-code sign-in, a check before handing account work to the owner, and the same page check on Linux and Windows. Each will be tracked when this ships.
 
 The lesson is also recorded in instar's shared lessons document, so every future design that touches accounts gets checked against it.
