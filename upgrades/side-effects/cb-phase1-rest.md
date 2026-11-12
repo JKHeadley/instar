@@ -52,6 +52,14 @@ Revert this one commit (or the squash-merge of #3072); every behaviour is dark b
 ## Evidence
 On the combined head: tsc clean; unit 254 files / 2,736 tests (the 2 sibling-adjacency assertions fixed, then all context-budget migration tests 16/16), integration 8 files, e2e 30 files / 91 tests, all green.
 
+## Local Verify round 1 fixes (2026-11-11, after the Studio's run on 8eb7303d2: unit 65,688 tests, 4 failed in 3 repo-wide ratchets)
+
+5. **CLAUDE.md core size budget (`claude-md-reference-layout`)** — main's generated core already sat at 79,082 of the 80,000-char budget, so the bundle's six per-conversation Registry-First rows (U, Anchor/ledger, backfill, H3, standing packet, Codex seed) could not fit in the core table at any useful length. They now live in their own section, "Context Budget layers per conversation", which the reference layout places in an on-demand reference file; the machine-wide entry row (compaction recovery / sentinel) and the delta-shadow row stay in the core Registry First table. The rows' wording is unchanged and still identical to what `migrateClaudeMd` inserts for existing agents (which place them after the sentinel row of their existing table, as before). The budget constant is untouched.
+6. **No silent fallbacks ratchet (494)** — the standing-packet block S10 added to the recovery-fit hook script pushed the script's `process.exit` past the scanner's 20-line window, so two existing best-effort catches (prune of old saved blocks; `saved = false`, after which the pointer tells the agent the block could not be saved) newly counted. Both are deliberate and now carry `@silent-fallback-ok` with the reason. No behaviour change.
+7. **Storage-error response ratchet** — S17's `POST /context-budget/codex-seed` 500 response passed `e.message` raw; it now goes through `operatorError` like every other caught-exception response.
+
+Over-/under-block, signal-vs-authority, multi-machine posture and rollback are unchanged by these three: one moves documentation rows, one adds comments, one routes an error string through the standard qualifier.
+
 ## Class-Closure Declaration (display-only mirror)
 
 Class `unbounded-self-action`, closure `guard`: the self-triggered controllers this commit carries — S11's `context-budget-canary-heal` and `context-budget-synthetic-press`, S17's `context-budget-adapter-suite` (the Codex suite trigger), and S7's hard-bounded backfill lane — are registered in `src/testing/selfActionRegistry.ts` (or, for the backfill lane, bounded as stated in `cb-backfill.md`) and proven to settle by `tests/unit/self-action-convergence.test.ts` (ratchet). Bundling adds no new self-action.

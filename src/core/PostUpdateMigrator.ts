@@ -21825,9 +21825,9 @@ if (dest) {
     const dir = path.dirname(dest);
     for (const f of fs.readdirSync(dir)) {
       const p = path.join(dir, f);
-      try { if (Date.now() - fs.statSync(p).mtimeMs > 7 * 86400000) fs.unlinkSync(p); } catch { /* best-effort */ }
+      try { if (Date.now() - fs.statSync(p).mtimeMs > 7 * 86400000) fs.unlinkSync(p); } catch { /* @silent-fallback-ok — best-effort prune of old saved blocks */ }
     }
-  } catch { saved = false; }
+  } catch { saved = false; /* @silent-fallback-ok — the pointer then says the block could not be saved */ }
 }
 // Known sections, each bounded by its OWN end line (a message that quotes a diff
 // header such as '--- a/file' must never end the conversation section early).

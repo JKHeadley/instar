@@ -9160,7 +9160,7 @@ export function createRoutes(ctx: RouteContext): Router {
     try {
       res.json(svc.offer({ topicId: b.topicId, sessionId: b.sessionId, transcriptPath: b.transcriptPath, framework: b.framework, promptSha256: b.promptSha256 }));
     } catch (e) {
-      res.status(500).json({ deliver: false, error: 'codex seed failed', detail: e instanceof Error ? e.message.slice(0, 200) : 'unknown' });
+      res.status(500).json({ deliver: false, error: 'codex seed failed', detail: operatorError(e, res.app?.locals?.stateDir).slice(0, 200) });
     }
   });
   router.post('/context-budget/codex-seed/ack', (req, res) => {
