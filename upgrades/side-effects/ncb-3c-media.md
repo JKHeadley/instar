@@ -82,6 +82,8 @@ The only threshold added is the 300 s tell-time, inherited from `recoverableLate
 - The lifeline → server request gains `media` (local hop only).
 - Timing: a photo message's inject now awaits a local file copy (as the app path always did); no network wait.
 
+- Contract evidence: `SlackAdapter.ts` and `imessage/inlineAttachments.ts` carry a `CONTRACT-EVIDENCE: EXEMPT` marker with its reason. The change escapes person text before the session content is built and alters no Slack or iMessage API request, response or event shape, so no live contract run applies. Remove the markers when either file's API surface next changes.
+
 ## 6b. Operator-surface quality
 
 No operator surface. `GET /conversation-media/status` is a read for the agent and the review.

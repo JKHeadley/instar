@@ -26,6 +26,9 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { escapeTypedPathTags } from '../../core/inboundMedia.js';
+// CONTRACT-EVIDENCE: EXEMPT — native-conversation-base §3c only escapes typed path tags in person text
+// (message text, a shared file's title and contents, voice transcripts) before the session content is
+// built; no Slack API request, response field or event shape changed.
 import type { IntelligenceProvider, MessagingAdapter, Message, OutgoingMessage } from '../../core/types.js';
 import { DP_SLACK_STALL_CONFIRM } from '../../data/provenanceCoverage.js';
 import { SlackApiClient, SlackApiError } from './SlackApiClient.js';

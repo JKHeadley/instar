@@ -9,6 +9,8 @@
  * only live tags are the ones added here from the adapter's own attachment list.
  */
 import { escapeTypedPathTags } from '../../core/inboundMedia.js';
+// CONTRACT-EVIDENCE: EXEMPT — a pure text helper extracted from server.ts; it reads the attachment list
+// the iMessage adapter already produced and calls no iMessage API.
 
 export interface IMessageAttachmentRef { filename?: string; mimeType?: string; path?: string }
 
