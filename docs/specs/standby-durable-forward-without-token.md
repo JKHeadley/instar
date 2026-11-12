@@ -4,7 +4,13 @@ slug: "standby-durable-forward-without-token"
 eli16-overview: standby-durable-forward-without-token.eli16.md
 author: echo
 created: 2026-11-11
-status: draft
+status: approved
+review-convergence: "2026-11-11T21:00:00Z"
+review-convergence-detail: "6 /spec-converge rounds (GPT-6 Astra, Fable 5.2 and internal reviewers each round) plus a verification round on the round-6 fixes; report docs/specs/reports/standby-durable-forward-without-token-convergence.md. The r7 cut-down after that is removals only (§3, §6, §7 handed to native-conversation-base 3a/3b); no mechanism added, so no further round."
+approved: true
+approved-by: Justin
+approved-at: "2026-11-12T02:57:38Z"
+approved-via: "Telegram topic 141014, 2026-11-11 18:57 PST: 'approved', replying to the cut-down (r7) plan summary sent at 18:55 PST, which listed the outage exception (unsent reply kept only on the authoring machine)."
 revision: "r7 cut-down (2026-11-11): §3, §6 and §7 removed after the overlap with native-conversation-base was found; see Overlap with native-conversation-base. Removals only; no mechanism added."
 origin: "Justin, 2026-11-11, topic 141014 (24-hour run: fix the stuck M5-to-Studio message route)"
 parent-principle: "No silent degradation; Verify the State, Not Its Symbol (P20); a late reply costs less than one that never arrives; Signal vs Authority"
