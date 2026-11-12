@@ -68,3 +68,64 @@ describe('Chief of Staff store wiring — 3. DARKNESS (PR 1 emits nothing)', () 
     expect(offenders).toEqual([]);
   });
 });
+
+describe('Chief of Staff store wiring — 4. the store follows the feature switch (Echo Bugs 10000002562)', () => {
+  // The flag was never set, so every record (the owner's check-in included) was refused 'disabled'
+  // on every machine and the Chief of Staff stayed paused whichever machine served the topic.
+  it('chiefOfStaffStoreEnabled follows chiefOfStaff.enabled ?? developmentAgent', async () => {
+    const { chiefOfStaffStoreEnabled } = await import('../../src/core/ChiefOfStaffStore.js');
+    expect(chiefOfStaffStoreEnabled({ developmentAgent: true })).toBe(true);
+    expect(chiefOfStaffStoreEnabled({ developmentAgent: true, chiefOfStaff: {} })).toBe(true);
+    expect(chiefOfStaffStoreEnabled({ developmentAgent: false })).toBe(false);
+    expect(chiefOfStaffStoreEnabled({})).toBe(false);
+    expect(chiefOfStaffStoreEnabled(undefined)).toBe(false);
+    expect(chiefOfStaffStoreEnabled({ developmentAgent: false, chiefOfStaff: { enabled: true } })).toBe(true);
+    expect(chiefOfStaffStoreEnabled({ developmentAgent: true, chiefOfStaff: { enabled: false } })).toBe(false);
+  });
+
+  it('server.ts forces stateSync.chiefOfStaff on in the resolved stores map the emitter and the receive advert read', () => {
+    const src = read('src/commands/server.ts');
+    expect(src).toContain('const _chiefOfStaffStoreOn = chiefOfStaffStoreEnabled(config);');
+    expect(src).toContain('if (_chiefOfStaffStoreOn) s = { ...s, chiefOfStaff: { enabled: true } };');
+    // The early-return guard must count it too, or an agent with no other stateSync store drops it.
+    expect(src).toMatch(/_staleOwnerReleaseResolved \|\| _chiefOfStaffStoreOn \|\| _stateSyncStoresBase \? s : _stateSyncStoresBase/);
+    // The emitter reads THIS map (not raw config), so the store is live wherever the feature is.
+    const at = src.indexOf('const _stateSyncStoresResolved');
+    expect(at).toBeGreaterThan(src.indexOf('const _chiefOfStaffStoreOn'));
+    expect(src.slice(at, at + 20_000)).toContain('stores: () => _stateSyncStoresResolved');
+  });
+
+  it('the real emitter + journal store a check-in renewal with the forced-on map, and refuse it with the old map', async () => {
+    const os = await import('node:os');
+    const { ReplicatedRecordEmitter } = await import('../../src/core/ReplicatedRecordEmitter.js');
+    const { HybridLogicalClock } = await import('../../src/core/HybridLogicalClock.js');
+    const { CoherenceJournal } = await import('../../src/core/CoherenceJournal.js');
+    const { SafeFsExecutor } = await import('../../src/core/SafeFsExecutor.js');
+    const { buildRenewal } = await import('../../src/core/ChiefOfStaffStore.js');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cos-store-'));
+    const journal = new CoherenceJournal({ stateDir: dir, machineId: 'm_self', flushIntervalMs: 1_000_000 });
+    journal.open();
+    try {
+      const reg = new ReplicatedKindRegistry();
+      reg.register(CHIEF_OF_STAFF_KIND_REGISTRATION);
+      journal.setReplicatedKindRegistry(reg);
+      let stores: Record<string, { enabled?: boolean }> = { preferences: { enabled: true } }; // the pre-fix map: no chiefOfStaff entry
+      const emitter = new ReplicatedRecordEmitter({
+        journal, clock: new HybridLogicalClock({ node: 'm_self', now: () => Date.now() }),
+        registry: reg, origin: 'm_self', stores: () => stores, loadWitness: () => undefined,
+      });
+      const renew = (at: string) => emitter.emit(CHIEF_OF_STAFF_STORE_KEY, `renewal:${at}:m_self`, buildRenewal({ renewedAt: at, renewedVia: 'telegram', principal: 'telegram:1', eventRef: 'telegram:141385:141871', machine: 'm_self', machineSignature: 'sig' }));
+      expect(renew('2026-11-11T18:16:11.000Z').outcome).toBe('disabled');
+      stores = { preferences: { enabled: true }, chiefOfStaff: { enabled: true } };
+      expect(renew('2026-11-11T18:17:11.000Z').outcome).toBe('emitted');
+      journal.flush();
+      const rows = journal.readTail(CHIEF_OF_STAFF_RECORD_KIND, 100).entries.map((e) => e.data as Record<string, unknown>);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].recordType).toBe('renewal');
+      expect(rows[0].renewedAt).toBe('2026-11-11T18:17:11.000Z');
+    } finally {
+      try { journal.close(); } catch { /* best-effort */ }
+      SafeFsExecutor.safeRmSync(dir, { recursive: true, force: true, operation: 'tests/unit/chief-of-staff-store-wiring.test.ts' });
+    }
+  });
+});
