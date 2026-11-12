@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "lv-integration-deadline-45",
+  "sessionId": "1d8e41fb-86b3-4a84-9b6a-1f23cb847e31",
+  "timestamp": "2026-11-12T15:42:17.176Z",
+  "artifactPath": "upgrades/side-effects/lv-integration-deadline-45.md",
+  "artifactSha256": "a1a5a65f04be9dd132472d71adb178d82113d0e15d0725c9fb236a06a2e1c4ad",
+  "coveredFiles": [
+    "docs/specs/local-verify-merge-authority.md",
+    "src/localVerify/policy.ts",
+    "upgrades/next/lv-integration-deadline-45.md",
+    "upgrades/side-effects/lv-integration-deadline-45.eli16.md",
+    "upgrades/side-effects/lv-integration-deadline-45.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One constant (integration lane deadline 30->45 min, = e2e lane), fully reverted by a revert; operator chose this option in topic 141133 2026-11-12 07:38",
+  "eli16Path": "upgrades/side-effects/lv-integration-deadline-45.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-integration-deadline-45.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
