@@ -171,3 +171,121 @@ describe('fallback record file', () => {
     expect(fs.statSync(ledger.file).mode & 0o777).toBe(0o600);
   });
 });
+
+// ── native-conversation-base §3b: reasons, and the resolution table ──────────
+import { resolveOutcome } from '../../../src/messaging/telegram-origin/OriginOperationOutcome.js';
+import type { AuthorEvidence, LocalEvidence, OperationOutcomeVerdict, OwnerEvidence } from '../../../src/messaging/telegram-origin/OriginOperationOutcome.js';
+import type { OriginAuditRecord } from '../../../src/messaging/telegram-origin/StoreTypes.js';
+
+function row(state: string, extra: { holdReason?: string; holdDetail?: Record<string, unknown> | null; attempts?: OriginAuditRecord['attempts']; childState?: string } = {}): OriginAuditRecord {
+  return { sequence: 1, record: { originId: 'origin-1', machineId: 'author', createdAt: 1, envelopeJson: '{}', envelopeDigest: 'd' } as never,
+    operation: { operationId: 'op-11111111', preparedAt: 1, deadlineAt: 2, maxAttempts: 3, state,
+      ...(extra.holdReason !== undefined || extra.holdDetail !== undefined ? { holdReason: extra.holdReason, holdDetail: extra.holdDetail ?? null } : {}) },
+    children: [{ childId: 'c-1', deliveryId: 'd-1', destinationJson: '{}', generation: 0, state: extra.childState ?? 'queued', attempts: 0 }],
+    attempts: extra.attempts ?? [] };
+}
+const attempt = (outcome: string, reason: string | null, phase = 'resolved') => ({ attemptId: `a-${Math.random()}`, childId: 'c-1', materializationId: 'm', ownerBootId: 'b',
+  deliveryMachineId: null, phase, outcome, receiptJson: null, createdAt: 1, resolvedAt: 2, reason });
+
+describe('classifier reads suppression reasons (§3b item 2)', () => {
+  it('a suppressed row with a null reason is unknown, never safe to resend', () => {
+    expect(classifyOperationOutcome('op-11111111', row('suppressed'), [])).toMatchObject({ outcome: 'unknown', safeToResend: false });
+    // A stale hold reason left on the row is not a suppression reason.
+    expect(classifyOperationOutcome('op-11111111', row('suppressed', { holdReason: 'lease-not-held', holdDetail: {} }), [])).toMatchObject({ outcome: 'unknown', safeToResend: false });
+  });
+  it('duplicate-content (own or at the holder) is delivered: the user already has this text', () => {
+    expect(classifyOperationOutcome('op-11111111', row('suppressed', { holdReason: 'duplicate-content', holdDetail: { duplicateOfMessageId: '77' } }), []))
+      .toMatchObject({ outcome: 'delivered', safeToResend: false, reason: 'duplicate-content', duplicateOfMessageId: '77' });
+    expect(classifyOperationOutcome('op-11111111', row('suppressed', { holdReason: 'suppressed-at-holder', holdDetail: { holderReason: 'duplicate-content' } }), []))
+      .toMatchObject({ outcome: 'delivered', safeToResend: false });
+  });
+  it('quiet, historical and caller endings are ended on purpose: not-delivered, not safe to resend', () => {
+    for (const reason of ['quiet-notification-recorded', 'historical-notice-retired', 'recorded-by-caller']) {
+      expect(classifyOperationOutcome('op-11111111', row('suppressed', { holdReason: reason, holdDetail: {} }), [])).toMatchObject({ outcome: 'not-delivered', safeToResend: false, reason });
+    }
+  });
+  it('known-failed names refused or never-left; expired names deadline', () => {
+    expect(classifyOperationOutcome('op-11111111', row('known-failed', { attempts: [attempt('known-failed', 'telegram-400')] }), [])).toMatchObject({ outcome: 'not-delivered', safeToResend: true, failure: 'refused' });
+    expect(classifyOperationOutcome('op-11111111', row('known-failed', { attempts: [attempt('known-failed', 'telegram-429')] }), [])).toMatchObject({ failure: 'never-left' });
+    expect(classifyOperationOutcome('op-11111111', row('known-failed', { attempts: [attempt('known-failed', 'telegram-connect-failed')] }), [])).toMatchObject({ failure: 'never-left' });
+    expect(classifyOperationOutcome('op-11111111', row('expired'), [])).toMatchObject({ outcome: 'not-delivered', failure: 'deadline' });
+  });
+  it('superseded names its successor; a held row with ownerUnstated is unknown', () => {
+    expect(classifyOperationOutcome('op-11111111', row('superseded', { holdDetail: { supersededBy: 'op-22222222' } }), [])).toMatchObject({ outcome: 'pending', supersededBy: 'op-22222222' });
+    expect(classifyOperationOutcome('op-11111111', row('held', { holdReason: 'lease-not-held', holdDetail: { ownerUnstated: { at: 1, attempts: 1 } } }), [])).toMatchObject({ outcome: 'unknown', safeToResend: false });
+  });
+});
+
+const V = (outcome: OperationOutcomeVerdict['outcome'], extra: Partial<OperationOutcomeVerdict> = {}): OperationOutcomeVerdict =>
+  ({ operationId: 'op-11111111', outcome, safeToResend: outcome === 'not-delivered', source: 'origin-store', messageIds: [], state: null, detail: 'local', ...extra });
+const L = (verdict: OperationOutcomeVerdict | null, extra: Partial<LocalEvidence> = {}): LocalEvidence => ({ verdict, isAuthor: false, ownerUnstated: false, terminalNoDispatch: false, ...extra });
+const O = (outcome: OperationOutcomeVerdict['outcome'], extra: Partial<Extract<OwnerEvidence, { kind: 'verdict' }>> = {}): OwnerEvidence =>
+  ({ kind: 'verdict', machineId: 'owner', outcome, safeToResend: outcome === 'not-delivered', messageIds: [], reason: null, failure: outcome === 'not-delivered' ? 'refused' : null, supersededBy: null, duplicateOfMessageId: null, ...extra });
+const A = (holding: boolean, supersededBy: string | null = null): AuthorEvidence => ({ kind: 'answer', holding, supersededBy, machineId: 'author' });
+const SILENT: AuthorEvidence = { kind: 'missing' };
+const answer = (step: ReturnType<typeof resolveOutcome>) => { if (step.kind !== 'answer') throw new Error(`expected an answer, got follow ${step.successor}`); return step.answer; };
+
+describe('resolveOutcome, one case per table row (§3b item 4)', () => {
+  it('row 1: a local or owner delivery stands, with message ids', () => {
+    expect(answer(resolveOutcome(L(V('delivered', { messageIds: ['5'] })), { kind: 'missing', why: 'timeout' }, SILENT, 'third'))).toMatchObject({ outcome: 'delivered', row: 1, messageIds: ['5'] });
+    expect(answer(resolveOutcome(L(V('pending')), O('partially-delivered', { messageIds: ['6'] }), SILENT, 'third'))).toMatchObject({ outcome: 'partially-delivered', source: 'execution-owner', answeredBy: 'owner', row: 1 });
+  });
+  it('row 1, author half: an author that delivered it itself outranks the owner\'s own failure', () => {
+    expect(answer(resolveOutcome(L(null), O('not-delivered'), { kind: 'answer', holding: false, supersededBy: null, machineId: 'author', delivered: { messageIds: ['9'] } }, 'third')))
+      .toMatchObject({ outcome: 'delivered', safeToResend: false, messageIds: ['9'], answeredBy: 'author', row: 1 });
+  });
+  it('row 2: a duplicate-content ending is delivered', () => {
+    expect(answer(resolveOutcome(L(V('pending')), O('not-delivered', { reason: 'duplicate-content', safeToResend: false }), A(false), 'third')))
+      .toMatchObject({ outcome: 'delivered', safeToResend: false, row: 2, detail: 'The user already has this text.' });
+  });
+  it('row 3: superseded locally, at the owner or at the author follows the successor', () => {
+    expect(resolveOutcome(L(V('pending', { supersededBy: 'op-2' })), O('pending'), A(true), 'third')).toEqual({ kind: 'follow', successor: 'op-2', via: 'local' });
+    expect(resolveOutcome(L(null), O('pending', { supersededBy: 'op-3' }), SILENT, 'third')).toEqual({ kind: 'follow', successor: 'op-3', via: 'owner' });
+    expect(resolveOutcome(L(V('pending')), O('not-delivered'), A(false, 'op-4'), 'third')).toEqual({ kind: 'follow', successor: 'op-4', via: 'author' });
+  });
+  it('row 4: the owner still has it', () => {
+    expect(answer(resolveOutcome(L(V('pending')), O('pending'), SILENT, 'third'))).toMatchObject({ outcome: 'pending', row: 4 });
+  });
+  it('row 5: owner unresolved, a local unresolved dispatch, or a local ownerUnstated row', () => {
+    expect(answer(resolveOutcome(L(V('pending')), O('unknown'), A(false), 'third'))).toMatchObject({ outcome: 'unknown', why: 'owner-unresolved', row: 5, safeToResend: false });
+    expect(answer(resolveOutcome(L(V('unknown', { unresolvedDispatch: true })), O('not-delivered'), A(false), 'third'))).toMatchObject({ why: 'owner-unresolved', row: 5, safeToResend: false });
+    expect(answer(resolveOutcome(L(V('unknown'), { ownerUnstated: true }), O('not-delivered'), A(false), 'third'))).toMatchObject({ why: 'owner-unresolved', row: 5, safeToResend: false });
+  });
+  it('row 6: owner not-delivered and the author no longer holds it', () => {
+    expect(answer(resolveOutcome(L(V('pending')), O('not-delivered'), A(false), 'third'))).toMatchObject({ outcome: 'not-delivered', safeToResend: true, source: 'execution-owner', failure: 'refused', row: 6 });
+    expect(answer(resolveOutcome(L(V('pending')), O('not-delivered', { safeToResend: false, reason: 'quiet-notification-recorded', failure: null }), A(false), 'third'))).toMatchObject({ outcome: 'not-delivered', safeToResend: false, row: 6 });
+  });
+  it('row 7: owner not-delivered while the author still holds it is pending', () => {
+    expect(answer(resolveOutcome(L(V('pending')), O('not-delivered'), A(true), 'third'))).toMatchObject({ outcome: 'pending', safeToResend: false, row: 7 });
+  });
+  it('row 8: owner not-delivered and the author silent is unknown, never safe to resend', () => {
+    expect(answer(resolveOutcome(L(V('pending')), O('not-delivered'), SILENT, 'third'))).toMatchObject({ outcome: 'unknown', why: 'author-unanswered', safeToResend: false, row: 8 });
+  });
+  it('row 9 each way, on the author\'s machine', () => {
+    const refusedExpired = V('not-delivered', { failure: 'deadline' });
+    expect(answer(resolveOutcome(L(refusedExpired, { isAuthor: true, terminalNoDispatch: true }), { kind: 'no-record', machineId: 'owner' }, A(false), 'author')))
+      .toMatchObject({ outcome: 'not-delivered', safeToResend: true, source: 'author+execution-owner', failure: 'deadline', row: 9 });
+    // A local-sent attempt (terminalNoDispatch false): unknown.
+    expect(answer(resolveOutcome(L(refusedExpired, { isAuthor: true, terminalNoDispatch: false }), { kind: 'no-record', machineId: 'owner' }, A(false), 'author')))
+      .toMatchObject({ outcome: 'unknown', safeToResend: false, why: 'owner-no-record', row: 10 });
+    // The owner silent: unknown (row 11).
+    expect(answer(resolveOutcome(L(refusedExpired, { isAuthor: true, terminalNoDispatch: true }), { kind: 'missing', why: 'timeout' }, A(false), 'author')))
+      .toMatchObject({ outcome: 'unknown', safeToResend: false, why: 'timeout', row: 11 });
+    // On a third machine: owner no-record and an author that delivered it itself (holding false) never says resend.
+    expect(answer(resolveOutcome(L(null), { kind: 'no-record', machineId: 'owner' }, A(false), 'third')))
+      .toMatchObject({ outcome: 'unknown', safeToResend: false, why: 'owner-no-record', row: 10 });
+  });
+  it('row 10: owner no-record while the author holds it is pending', () => {
+    expect(answer(resolveOutcome(L(V('pending')), { kind: 'not-admitted', machineId: 'owner' }, A(true), 'third'))).toMatchObject({ outcome: 'pending', row: 10 });
+  });
+  it('row 11: a stale local not-delivered with the owner unavailable, old, or the read off is unknown', () => {
+    for (const why of ['timeout', 'refused', 'old-version', 'owner-read-off'] as const) {
+      expect(answer(resolveOutcome(L(V('not-delivered')), { kind: 'missing', why }, A(false), 'third')))
+        .toMatchObject({ outcome: 'unknown', safeToResend: false, ownerAnswered: false, why, row: 11 });
+    }
+    expect(answer(resolveOutcome(L(V('pending')), { kind: 'missing', why: 'timeout' }, SILENT, 'third'))).toMatchObject({ outcome: 'pending', why: 'timeout', row: 11 });
+  });
+  it('an author row held with ownerVerdict reads not holding: owner not-delivered answers at once', () => {
+    expect(answer(resolveOutcome(L(V('pending')), O('not-delivered'), A(false), 'author'))).toMatchObject({ outcome: 'not-delivered', row: 6 });
+  });
+});
