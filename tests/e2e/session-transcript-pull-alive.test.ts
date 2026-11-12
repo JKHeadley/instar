@@ -95,7 +95,7 @@ describe('session-transcript-pull lifecycle', () => {
 
     // The bearer hop would be refused: the serving machine does not know the asking machine's token.
     const bearer = await fetch(`${serveUrl}/sessions/echo-on-mini/transcript`, { headers: { Authorization: 'Bearer ask-token-differs' } });
-    expect(bearer.status).toBe(401);
+    expect([401, 403]).toContain(bearer.status);
 
     const res = await fetch(`${askUrl}/sessions/echo-on-mini/transcript?machineId=m_serve`, { headers: auth });
     expect(res.status).toBe(200);

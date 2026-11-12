@@ -199,7 +199,7 @@ describe('signed pool reads between machines with different tokens', () => {
     expect((status.body.counts as { bearerReads: number }).bearerReads).toBe(0);
   });
 
-  it('an older peer (unknown verb, older advert) is reached by bearer once and remembered', async () => {
+  it('a peer without the handler (no-handler) is reached by bearer once and remembered', async () => {
     const server = await servingMachine({ verbs: 'none' });
     const a = await askingMachine({ server, peerVersion: '1.3.1700' });
     const first = await a.get(`/sessions/echo-remote/transcript?machineId=${SERVER}`);
@@ -214,11 +214,26 @@ describe('signed pool reads between machines with different tokens', () => {
   });
 
   it('claim-unauthorized from a peer advertising the new version is a refusal, never a bearer hop', async () => {
+    // An older machine's RBAC default answers an unknown verb this way; so does a real denial.
     const server = await servingMachine({ verbs: 'none' });
-    const a = await askingMachine({ server, peerVersion: '1.3.1800' });
+    const refusing = async () => ({ status: 403, ok: false, reason: 'claim-unauthorized' });
+    const a = await askingMachine({ server, peerVersion: '1.3.1800', meshSignedRead: refusing });
     const t = await a.get(`/sessions/echo-remote/transcript?machineId=${SERVER}`);
     expect(t.status).toBe(502);
     expect(t.body.reason).toBe('peer-refused');
+    expect(((await a.get('/pool/signed-reads')).body.counts as { bearerReads: number }).bearerReads).toBe(0);
+  });
+
+  it('claim-unauthorized from a peer whose version advert is older or absent permits the bearer hop', async () => {
+    const server = await servingMachine({ verbs: 'none' });
+    const refusing = async () => ({ status: 403, ok: false, reason: 'claim-unauthorized' });
+    for (const peerVersion of ['1.3.1700', null]) {
+      const a = await askingMachine({ server, peerVersion, meshSignedRead: refusing });
+      const t = await a.get(`/sessions/echo-remote/transcript?machineId=${SERVER}`);
+      // Reached by bearer, which the serving machine refuses: it does not know this machine's token.
+      expect(t.status).toBe(401);
+      expect(t.body.via).toBe('bearer');
+    }
   });
 
   it('a peer with the history verb and no transcript verb is signedCapable for history only, and stays in bearerFallbackNeededBy for transcript', async () => {
