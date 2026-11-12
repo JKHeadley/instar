@@ -44,11 +44,33 @@ export interface PrivateViewerConfig {
   viewsDir: string;
 }
 
+/**
+ * Thrown by `create` while documents replace read-only pages on this agent (the old-link
+ * guarantee, docs/specs/instar-document-viewer.md §3.9b). Existing views are still served; new
+ * pages and rewrites of existing ones are refused, so all new readable content is a document.
+ */
+export class ViewsReplacedByDocumentsError extends Error {
+  readonly code = 'documents-replace-views';
+  constructor() {
+    super('Documents are on for this agent: new read-only pages are not made. Make a document instead (POST /docs). Links to existing pages keep working.');
+    this.name = 'ViewsReplacedByDocumentsError';
+  }
+}
+
+/**
+ * `noDocumentHome`: the caller has nowhere a document could live (a session in a Slack channel,
+ * §3.9b), so the guard lets its page through. Only the /view routes set it, after checking the
+ * caller's place; a test pins every caller of create and update.
+ */
+export interface PageWriteOptions { noDocumentHome?: true }
+
 // ── Service ────────────────────────────────────────────────────────
 
 export class PrivateViewer {
   private viewsDir: string;
   private lastTimestamp = 0;
+  /** True while documents replace read-only pages (§3.9b). Read on every create, never cached. */
+  private newViewsRefused: () => boolean = () => false;
 
   constructor(config: PrivateViewerConfig) {
     this.viewsDir = config.viewsDir;
@@ -58,10 +80,27 @@ export class PrivateViewer {
   }
 
   /**
+   * The old-link guarantee's backstop (§3.9b): every caller that makes a page goes through
+   * `create`, so refusing here covers callers that do not yet know about documents. A predicate
+   * that throws counts as "not refused", so a fault in the documents check never stops pages.
+   */
+  setNewViewGuard(refused: () => boolean): void {
+    this.newViewsRefused = refused;
+  }
+
+  /** Whether `create` would refuse right now (callers check first and make a document instead). */
+  newViewsAreRefused(): boolean {
+    try { return this.newViewsRefused() === true; } catch { return false; /* @silent-fallback-ok: a broken documents check must not stop every page; the check's own health shows in GET /docs/health */ }
+  }
+
+  /**
    * Store markdown content for private viewing.
    * If a PIN is provided, the view requires PIN entry before content is shown.
+   * Throws ViewsReplacedByDocumentsError while documents replace pages (§3.9b), unless the caller
+   * has no document home (`opts.noDocumentHome`).
    */
-  create(title: string, markdown: string, pin?: string, metadata?: PrivateViewMetadata): PrivateView {
+  create(title: string, markdown: string, pin?: string, metadata?: PrivateViewMetadata, opts: PageWriteOptions = {}): PrivateView {
+    if (opts.noDocumentHome !== true && this.newViewsAreRefused()) throw new ViewsReplacedByDocumentsError();
     const id = crypto.randomUUID();
     // Ensure monotonically increasing timestamps even within same millisecond
     let now = Date.now();
@@ -89,7 +128,9 @@ export class PrivateViewer {
   /**
    * Update an existing view.
    */
-  update(id: string, title: string, markdown: string): PrivateView | null {
+  update(id: string, title: string, markdown: string, opts: PageWriteOptions = {}): PrivateView | null {
+    // Rewriting an old page is new content on an old-style link: refused the same way (§3.9b).
+    if (opts.noDocumentHome !== true && this.newViewsAreRefused()) throw new ViewsReplacedByDocumentsError();
     const existing = this.get(id);
     if (!existing) return null;
 

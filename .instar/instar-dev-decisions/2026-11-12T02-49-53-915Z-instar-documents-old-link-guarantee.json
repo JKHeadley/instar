@@ -1,0 +1,37 @@
+{
+  "ts": "2026-11-12T02:49:53.915Z",
+  "slug": "instar-documents-old-link-guarantee",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 474,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "skills/spec-converge/scripts/publish-spec-review.mjs",
+      "src/core/MessagingToneGate.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/documents/gate.ts",
+      "src/documents/readablePages.ts",
+      "src/documents/rows.ts",
+      "src/publishing/PrivateViewer.ts",
+      "src/scheduler/JobAnomalyPusher.ts",
+      "src/server/AgentServer.ts",
+      "src/server/documentRoutes.ts",
+      "src/server/routes.ts",
+      "src/templates/scripts/convergence-check.sh"
+    ],
+    "addedLines": 442,
+    "deletedLines": 32
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

@@ -69,6 +69,10 @@ export const TONE_CANDIDATE_BODY_MAX_CHARS = 4000;
  * promptId aggregates never silently mix prompt semantics. `-sigv1` marks the
  * signal-driven B1–B7 prompt shape (CMT-1793).
  */
+/** B24's rule (instar-document-viewer §3.9b), added only when documents replace pages AND the detector found an old-style link. */
+const OLD_VIEW_LINK_RULE = `An additional rule applies to this message; it may be cited like the others:
+- **B24_OLD_VIEW_LINK** — JUDGE BY MEANING. Documents are on for this agent, so anything it writes for people to read is shared as a commentable document, never as an old-style read-only page (a /view/ link). Apply B24 when the candidate gives the reader an old-style Instar page link (an address on the agent's own tunnel or dashboard whose path is /view/<id>) as the place to read something (a report, a plan, a list, a draft). A /view/ path on some other website is not an Instar page. Ownership is decided for you: ownership=this-agent means the link's signature or host proves it is this agent's page; ownership=unknown means it may be on another of the agent's machines or on some other website, so apply B24 then only when the message itself presents it as the agent's page or report. Do NOT apply B24 when the candidate only mentions or quotes an old link in passing, talks about old pages or this rule, or answers a question about where an earlier page was. When you apply it, the suggestion is: turn the page into a document (POST /docs with fromView set to the page id, or a new document) and send that link instead; when the page can't be copied (PIN-protected, or this session can't copy pages), re-send the old link with the override and say why.`;
+
 /** B22's rule, added to the prompt only for a message the detector flagged. Cite it like any other rule. */
 const SURFACE_REFERRAL_RULE = `An additional rule applies to this message; it may be cited like the others:
 - **B22_SURFACE_REFERRAL** — JUDGE BY MEANING. The candidate sends the operator to a dashboard, console or app page to look at or do something, and is missing any of: a direct link (hasLink), the exact words they will see there in quotes (hasOnScreenWords), or the agent's confirmation that it loaded that page at the operator's screen size first (renderConfirmed). Do NOT apply B22 when the candidate only mentions a page in passing, describes what changed, reports what the agent itself did on a page, answers a question about where something lives, or discusses this rule. When you apply it, the issue names what is missing and the suggestion says: include the direct link and the on-screen words, load the link at 1280x728 and 390x844, read what is on the first screen, then resend with --tone-complied B22_SURFACE_REFERRAL; or, if it cannot be loaded from here, override with the reason. Severity: favor FALSE-NEGATIVES, exactly like B15–B18.`;
@@ -536,6 +540,7 @@ export const VALID_RULES = new Set([
   'B21_USER_TASK_SUBSTITUTION',
   'B22_SURFACE_REFERRAL',
   'B23_UNSOURCED_ATTRIBUTION',
+  'B24_OLD_VIEW_LINK',
 ]);
 
 /**
@@ -596,6 +601,9 @@ export const RULE_CLASSES: Record<string, GateRuleClass> = {
   // Sends the operator to a surface without a link, on-screen words, or having looked at it first.
   B22_SURFACE_REFERRAL: 'behavioral-judgment',
   B23_UNSOURCED_ATTRIBUTION: 'behavioral-judgment',
+  // Old-style page link while documents replace pages (instar-document-viewer §3.9b). Judged by meaning,
+  // like B22: the rule joins the prompt only with its detector signal.
+  B24_OLD_VIEW_LINK: 'behavioral-judgment',
 };
 
 /**
@@ -651,6 +659,7 @@ export const RULE_DISPOSITIONS: Record<string, GateRuleDisposition> = {
   B21_USER_TASK_SUBSTITUTION: 'advisory',
   B22_SURFACE_REFERRAL: 'advisory',
   B23_UNSOURCED_ATTRIBUTION: 'advisory',
+  B24_OLD_VIEW_LINK: 'advisory',
 };
 
 /**
@@ -906,6 +915,17 @@ export interface ToneReviewSignals {
     detected: boolean;
     /** First offending path, bounded to 120 chars by the detector. */
     match?: string;
+  };
+  /**
+   * Old-style page link (instar-document-viewer §3.9b; src/documents/readablePages.ts). SIGNAL ONLY,
+   * anchors B24_OLD_VIEW_LINK. Present only while documents replace pages on this agent.
+   */
+  oldViewLink?: {
+    detected: boolean;
+    /** The address up to the page id, signature removed, bounded to 160 chars. */
+    match?: string;
+    /** Decided from facts (signature or own host): `this-agent`, or `unknown` (another machine of the agent, or another site). */
+    ownership?: 'this-agent' | 'unknown';
   };
   /**
    * Surface-referral signal (operator-needs-first-screen §6; src/core/operatorSurfaceReferral.ts).
@@ -1560,7 +1580,7 @@ export class MessagingToneGate {
   }
 
   private renderSignals(signals?: ToneReviewSignals): string {
-    if (!signals || (!signals.surfaceReferral && !signals.attributionSources && !signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak && !signals.operatorErrand?.errand && !signals.unownedHandoff?.flagged)) {
+    if (!signals || (!signals.oldViewLink && !signals.surfaceReferral && !signals.attributionSources && !signals.junk && !signals.duplicate && !signals.paraphrase && !signals.jargon && !signals.selfHeal && !signals.arcCheck && !signals.filePath && !signals.parkedOnUser && !signals.internalIdLeak && !signals.operatorErrand?.errand && !signals.unownedHandoff?.flagged)) {
       return '\n=== UPSTREAM SIGNALS ===\n(no signals reported)\n';
     }
     const lines: string[] = ['', '=== UPSTREAM SIGNALS ==='];
@@ -1599,6 +1619,11 @@ export class MessagingToneGate {
       lines.push(
         `- raw-file-path detector (signal-only, anchors B2_FILE_PATH): detected=${signals.filePath.detected}${signals.filePath.match ? ` detected path: ${JSON.stringify(signals.filePath.match.slice(0, 120))}` : ''}`,
       );
+    }
+    if (signals.oldViewLink?.detected) {
+      // SIGNAL ONLY. The match is an inert quoted token; B24 judges by meaning (§3.9b).
+      lines.push(`- old-style-page-link detector (signal-only, anchors B24_OLD_VIEW_LINK): detected=true ownership=${signals.oldViewLink.ownership ?? 'unknown'}${signals.oldViewLink.match ? ` link: ${JSON.stringify(signals.oldViewLink.match.slice(0, 160))}` : ''}`);
+      lines.push(OLD_VIEW_LINK_RULE);
     }
     if (signals.surfaceReferral) {
       // SIGNAL ONLY. The phrase is an inert quoted token; B22 judges by meaning.

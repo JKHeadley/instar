@@ -20,12 +20,13 @@ import { StateManager } from '../../src/core/StateManager.js';
 import { MachineIdentityManager } from '../../src/core/MachineIdentity.js';
 import type { InstarConfig } from '../../src/core/types.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { PrivateViewer } from '../../src/publishing/PrivateViewer.js';
 
 const AUTH = 'e2e-documents';
 const dirs: string[] = [];
 const servers: AgentServer[] = [];
 
-async function boot(extra: Record<string, unknown>) {
+async function boot(extra: Record<string, unknown>, opts: { viewer?: PrivateViewer; telegram?: unknown } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'documents-e2e-'));
   dirs.push(dir);
   const stateDir = path.join(dir, '.instar');
@@ -40,7 +41,7 @@ async function boot(extra: Record<string, unknown>) {
     messaging: [], monitoring: {}, updates: {},
     ...extra,
   } as unknown as InstarConfig;
-  const server = new AgentServer({ config, sessionManager: { listRunningSessions: () => [], getSession: () => null } as never, state: new StateManager(stateDir) });
+  const server = new AgentServer({ config, sessionManager: { listRunningSessions: () => [], getSession: () => null } as never, state: new StateManager(stateDir), ...(opts.viewer ? { viewer: opts.viewer } : {}), ...(opts.telegram ? { telegram: opts.telegram as never } : {}) });
   await server.start();
   servers.push(server);
   return { app: server.getApp(), stateDir };
@@ -107,6 +108,49 @@ describe('Instar Documents — feature is alive', () => {
     const r = await request(app).post('/docs').set(auth()).send({ title: 'x', markdown: 'y', primary: 'telegram:7' });
     expect(r.status).toBe(201);
     expect(JSON.stringify(r.body)).toContain('http://127.0.0.1:4987/docs/');
+  });
+
+  it('the old-link guarantee (§3.9b): with documents serving, POST /view refuses a new page and old pages stay served', async () => {
+    const viewsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'documents-e2e-views-')); dirs.push(viewsDir);
+    const viewer = new PrivateViewer({ viewsDir });
+    const old = viewer.create('Chief of Staff triage, redone', '# Triage');
+    const { app } = await boot(
+      { developmentAgent: true, tunnel: { enabled: false, type: 'named', hostname: 'docs-e2e.example.dev' } },
+      { viewer, telegram: { getLifelineTopicId: () => 7 } },
+    );
+    const refused = await request(app).post('/view').set(auth()).send({ title: 'New page', markdown: '# new' });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error).toBe('documents-replace-views');
+    expect(() => viewer.create('Direct', '# direct')).toThrow(/Make a document instead/);
+    expect((await request(app).get(`/view/${old.id}`).set(auth())).status).toBe(200);
+    const doc = await request(app).post('/docs').set(auth()).send({ title: 'New page', markdown: '# new' });
+    expect(doc.status).toBe(201);
+    expect(doc.body.url).toContain('https://docs-e2e.example.dev/docs/');
+    // fromView (§3.9): the old page becomes version 1 of a document in the owner's own conversation, linked supersedes.
+    const copied = await request(app).post('/docs').set(auth()).send({ fromView: old.id });
+    expect(copied.status).toBe(201);
+    expect(copied.body.supersedes).toBe(`view:${old.id}`);
+    const data = await request(app).get(`/docs/${copied.body.id}/data`).set(auth());
+    expect(data.body).toMatchObject({ title: 'Chief of Staff triage, redone', markdown: '# Triage' });
+    const graph = await request(app).get(`/docs/graph?from=doc:${copied.body.id}`).set(auth());
+    expect(graph.body.edges).toContainEqual({ from: `doc:${copied.body.id}`, to: `view:${old.id}`, kind: 'supersedes' });
+    expect(graph.body.edges).toContainEqual({ from: `doc:${copied.body.id}`, to: 'telegram:7', kind: 'primary' });
+    // An unknown page, or a copy into a shared conversation, is refused.
+    expect((await request(app).post('/docs').set(auth()).send({ fromView: '11111111-1111-4111-8111-111111111111' })).status).toBe(404);
+    expect((await request(app).post('/docs').set(auth()).send({ fromView: 'nope' })).status).toBe(400);
+    // A PIN-protected page is never copied (the document would carry its text without the PIN).
+    const pinned = (() => { viewer.setNewViewGuard(() => false); try { return viewer.create('Private', '# secret', '1234'); } finally { viewer.setNewViewGuard(() => true); } })();
+    const pinRefused = await request(app).post('/docs').set(auth()).send({ fromView: pinned.id });
+    expect(pinRefused.status).toBe(409);
+    expect(pinRefused.body.error).toBe('view-pin-protected');
+    // The verdict is visible: GET /docs/health says the guarantee is in force on this machine.
+    expect((await request(app).get('/docs/health').set(auth())).body.oldLinkGuarantee).toBe('replace');
+  });
+
+  it('the old-link guarantee changes nothing on a fleet config: POST /view still makes pages', async () => {
+    const viewsDir = fs.mkdtempSync(path.join(os.tmpdir(), 'documents-e2e-views-')); dirs.push(viewsDir);
+    const { app } = await boot({}, { viewer: new PrivateViewer({ viewsDir }), telegram: { getLifelineTopicId: () => 7 } });
+    expect((await request(app).post('/view').set(auth()).send({ title: 'Page', markdown: '# p' })).status).toBe(201);
   });
 
   it('is dark on a fleet config: 503 documents-off', async () => {

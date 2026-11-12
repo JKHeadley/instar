@@ -10,11 +10,11 @@
 import { projectText } from '../documents/projection.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import { Router, type Request, type Response } from 'express';
-import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import type { ResolvedPerson } from '../core/MobilePeople.js';
 import type { Principal } from '../documents/access.js';
 import type { Reader, ReaderGrant } from '../documents/fold.js';
 import { DocError, type Caller, type DocumentService } from '../documents/service.js';
+import { isDocumentsEnabled } from '../documents/gate.js';
 import { isConversationRef, isNodeRef, isUuid, LINK_KINDS, type Actor, type ConversationRef, type LinkKind, type NodeRef, type Vector } from '../documents/rows.js';
 import type { DocumentStore } from '../documents/store.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
@@ -35,10 +35,8 @@ export function documentsConfig(config: unknown): DocumentsConfig {
   return ((config as { documents?: DocumentsConfig } | null)?.documents) ?? {};
 }
 
-/** The dev-agent dark gate (DEV_GATED_FEATURES: documents). */
-export function isDocumentsEnabled(config: unknown): boolean {
-  return resolveDevAgentGate(documentsConfig(config).enabled, config as Parameters<typeof resolveDevAgentGate>[1]);
-}
+/** The dev-agent dark gate (DEV_GATED_FEATURES: documents), shared with the old-link guarantee. */
+export { isDocumentsEnabled } from '../documents/gate.js';
 
 export interface DocumentRouteDeps {
   config: () => unknown;
@@ -60,6 +58,10 @@ export interface DocumentRouteDeps {
   notifyDocumentAnswer?: (docId: string, commentKey: string) => void;
   /** The permanent origin people open documents on (a named tunnel), or null when there is none. Absent: not checked. */
   linkOrigin?: () => string | null;
+  /** An old read-only page on this machine, for `POST /docs { fromView }` (§3.9, §3.9b). Absent or null: unknown. */
+  viewSource?: (viewId: string) => { title: string; markdown: string; pinProtected: boolean } | null;
+  /** The old-link guarantee's verdict on this machine (§3.9b), shown in GET /docs/health. */
+  oldLinkVerdict?: () => string;
 }
 
 /** The conversation a session's place key belongs to, when it is one conversation (§3.3). */
@@ -80,11 +82,15 @@ export function resolveCaller(req: Request, res: Response, deps: DocumentRouteDe
   const session = (res.locals as Locals).memorySession;
   if (session) {
     const placeKey = session.placeKey ?? '';
-    const ownerReach = session.audience.kind === 'open' || session.audience.kind === 'owner';
+    // `system` (scheduler, lifeline, agent-to-agent) is owner reach with no person (MemoryAudience), so a
+    // scheduled job's documents land in the owner's own conversation like the bearer's (§3.9b).
+    const ownerReach = session.audience.kind === 'open' || session.audience.kind === 'owner' || session.audience.kind === 'system';
     // The session's launch-time team vector, stamped by the server, never supplied by the session.
     const ref = conversationOfPlace(placeKey);
     const sessionAccess = (ref && deps.sessionAccessFor?.(ref)) || access;
-    return { principal: { kind: 'agent', placeKey, ownerReach }, actor: { type: 'agent', placeKey }, access, sessionAccess, reader: ownerReach ? { kind: 'owner' } : { kind: 'place' } };
+    // A system session has no place: its rows are stamped like the bearer's (`owner-reach`).
+    const actorPlace = placeKey || (ownerReach ? 'owner-reach' : placeKey);
+    return { principal: { kind: 'agent', placeKey, ownerReach }, actor: { type: 'agent', placeKey: actorPlace }, access, sessionAccess, reader: ownerReach ? { kind: 'owner' } : { kind: 'place' } };
   }
   const dreq = req as DeviceReq;
   const person = dreq.instarDevicePerson;
@@ -152,7 +158,22 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
 
   router.post('/docs', (req, res) => {
     const r = ready(req, res); if (!r) return;
-    const body = (req.body ?? {}) as { title?: unknown; markdown?: unknown; primary?: unknown; derivedFrom?: unknown };
+    const body = (req.body ?? {}) as { title?: unknown; markdown?: unknown; primary?: unknown; derivedFrom?: unknown; fromView?: unknown };
+    // fromView (§3.9): an old read-only page becomes version 1 of a document, linked `supersedes` to it.
+    // Pages are the owner's own content, so only an owner-reach caller may copy one, and create()
+    // already keeps an owner-reach caller to owner-only conversations: a copy never widens.
+    let fromView: string | null = null;
+    if (body.fromView !== undefined) {
+      if (typeof body.fromView !== 'string' || !isUuid(body.fromView.replace(/^view:/, ''))) { res.status(400).json({ error: 'bad-from-view' }); return; }
+      if (!(r.caller.principal.kind === 'bearer' || (r.caller.principal.kind === 'agent' && r.caller.principal.ownerReach))) { res.status(404).json({ error: 'unknown-view', detail: 'Only the agent itself can copy a page into a document. To point someone at an existing page, send its link and give the reason when the message check asks.' }); return; }
+      fromView = body.fromView.replace(/^view:/, '');
+      const src = deps.viewSource?.(fromView) ?? null;
+      if (!src) { res.status(404).json({ error: 'unknown-view', detail: 'No read-only page with that id on this machine. If it lives on another machine, send its title and markdown instead.' }); return; }
+      // A PIN-protected page is never copied: the document would carry its text without the PIN.
+      if (src.pinProtected) { res.status(409).json({ error: 'view-pin-protected', detail: 'That page is protected by a PIN, so it is not copied into a document (and its text should not be pasted into one). Send the existing link and give the reason when the message check asks.' }); return; }
+      if (typeof body.title !== 'string') body.title = src.title;
+      if (typeof body.markdown !== 'string') body.markdown = src.markdown;
+    }
     if (typeof body.title !== 'string' || typeof body.markdown !== 'string') { res.status(400).json({ error: 'title-and-markdown-required' }); return; }
     let primary: ConversationRef | null = null;
     if (body.primary !== undefined) {
@@ -176,8 +197,12 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
         const src = r.svc.read(derived, forDoc(r.svc, r.caller, derived));
         primary = src.state.primary;
       }
-      const out = r.svc.create(r.caller, { title: body.title, markdown: body.markdown, primary: primary!, createdFrom: derived ? (`doc:${derived}` as NodeRef) : primary! });
-      res.status(201).json({ id: out.id, versionId: out.versionId, url: `${origin ?? ''}/docs/${out.id}` });
+      const out = r.svc.create(r.caller, { title: body.title as string, markdown: body.markdown as string, primary: primary!, createdFrom: derived ? (`doc:${derived}` as NodeRef) : primary! });
+      // The document exists once create returns: a failed link write still answers 201 with its id,
+      // so a retry never makes an orphan copy (the agent adds the link with POST /docs/:id/links).
+      let linkError: string | null = null;
+      if (fromView) { try { r.svc.link(out.id, forDoc(r.svc, r.caller, out.id), { to: `view:${fromView}` as NodeRef, kind: 'supersedes' }, () => true); } catch (err) { linkError = err instanceof DocError ? err.code : 'link-failed'; } }
+      res.status(201).json({ id: out.id, versionId: out.versionId, url: `${origin ?? ''}/docs/${out.id}`, ...(fromView ? { supersedes: linkError ? null : `view:${fromView}`, ...(linkError ? { linkError } : {}) } : {}) });
     } catch (err) { fail(res, err); }
   });
 
@@ -206,7 +231,7 @@ export function createDocumentRoutes(deps: DocumentRouteDeps): Router {
     const r = ready(req, res); if (!r) return;
     if (r.caller.principal.kind !== 'bearer' && !(r.caller.principal.kind === 'agent' && r.caller.principal.ownerReach)) { res.status(404).json({ error: 'unknown-document' }); return; }
     const store = deps.store();
-    res.json({ ok: true, ...(store ? store.health() : {}) });
+    res.json({ ok: true, ...(store ? store.health() : {}), ...(deps.oldLinkVerdict ? { oldLinkGuarantee: deps.oldLinkVerdict() } : {}) });
   });
 
   router.get('/docs/:id/data', (req, res) => {
@@ -413,7 +438,7 @@ function linkTargetVisible(svc: DocumentService, caller: Caller, to: NodeRef, de
     const id = to.slice(4);
     try { svc.read(id, { ...caller, reader: readerFor(caller, svc.facts(id)?.primary ?? null, deps) }); return true; } catch { return false; } // @silent-fallback-ok — an unreadable target is simply not shown
   }
-  if (to.startsWith('project:') || to.startsWith('initiative:') || to.startsWith('spec:')) {
+  if (to.startsWith('project:') || to.startsWith('initiative:') || to.startsWith('spec:') || to.startsWith('view:')) {
     return caller.principal.kind === 'bearer' || caller.principal.kind === 'owner-device' || (caller.principal.kind === 'agent' && caller.principal.ownerReach);
   }
   // Conversation nodes: the caller's own view of that conversation.

@@ -115,8 +115,8 @@ export function composeReviewMessage({ title, eli16Url, prUrl }) {
   return lines.join('\n');
 }
 
-/** POST the ELI16 markdown to /view; returns { tunnelUrl, localUrl, id }. */
-async function createView({ title, markdown }) {
+/** POST the ELI16 markdown to /view (or /docs where documents replace pages); returns { tunnelUrl, localUrl, id }. */
+export async function createView({ title, markdown }) {
   const token = process.env.INSTAR_AUTH_TOKEN;
   if (!token) throw new Error('INSTAR_AUTH_TOKEN not set — cannot authenticate to the local API');
   const res = await fetch(`http://localhost:${API_PORT}/view`, {
@@ -124,6 +124,26 @@ async function createView({ title, markdown }) {
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ title, markdown }),
   });
+  if (res.status === 409) {
+    // Where documents serve, new pages are refused (instar-document-viewer §3.9b): the overview
+    // becomes a commentable document instead, linked on the agent's permanent address.
+    const body = await res.json().catch(() => ({}));
+    if (body && body.error === 'documents-replace-views') {
+      const doc = await fetch(`http://localhost:${API_PORT}/docs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ title, markdown }),
+      });
+      if (!doc.ok) throw new Error(`/docs returned HTTP ${doc.status} (${await doc.text().catch(() => '')})`);
+      const dd = await doc.json();
+      if (!dd.url) throw new Error('document created but no url');
+      // The page shell answers 200 for any id, so prove the content itself reads back before sending.
+      const check = await fetch(`http://localhost:${API_PORT}/docs/${dd.id}/data`, { headers: { Authorization: `Bearer ${token}` } });
+      if (check.status !== 200) throw new Error(`document ${dd.id} did not read back (HTTP ${check.status})`);
+      return { tunnelUrl: dd.url, localUrl: `/docs/${dd.id}`, id: dd.id, kind: 'document' };
+    }
+    throw new Error(`/view returned HTTP 409 (${JSON.stringify(body)})`);
+  }
   if (!res.ok) throw new Error(`/view returned HTTP ${res.status} (${await res.text().catch(() => '')})`);
   const d = await res.json();
   if (!d.tunnelUrl) {

@@ -47,7 +47,7 @@ export const streamOf = (r: { origin: string; incarnation: string }): string => 
 
 /** A conversation ref as the team model writes it, or another graph node. */
 export type ConversationRef = string; // telegram:<id> | app:<uuid>
-export type NodeRef = string; // doc:<uuid> | ConversationRef | slack:… | project:<id> | initiative:<id> | spec:<path>
+export type NodeRef = string; // doc:<uuid> | view:<uuid> (an old read-only page, §3.9b) | ConversationRef | slack:… | project:<id> | initiative:<id> | spec:<path>
 
 export interface SignedOrigin {
   /** The device (phone or browser) key hash and id. */
@@ -138,7 +138,7 @@ export const DEVICES_DOC_ID = '_devices';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const CONV_REF = /^(telegram:-?[1-9]\d{0,19}|app:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/;
-const NODE_REF = /^(doc:[0-9a-f-]{36}|telegram:-?[1-9]\d{0,19}|app:[0-9a-f-]{36}|slack:[A-Za-z0-9:._-]{1,128}|project:[A-Za-z0-9._-]{1,128}|initiative:[A-Za-z0-9._-]{1,128}|spec:[A-Za-z0-9._/-]{1,240})$/;
+const NODE_REF = /^(doc:[0-9a-f-]{36}|view:[0-9a-f-]{36}|telegram:-?[1-9]\d{0,19}|app:[0-9a-f-]{36}|slack:[A-Za-z0-9:._-]{1,128}|project:[A-Za-z0-9._-]{1,128}|initiative:[A-Za-z0-9._-]{1,128}|spec:[A-Za-z0-9._/-]{1,240})$/;
 
 export const isUuid = (s: unknown): s is string => typeof s === 'string' && UUID.test(s);
 export const isHash = (s: unknown): s is string => typeof s === 'string' && HEX64.test(s);

@@ -208,6 +208,7 @@ import { FeatureEvidenceLog, featureEvidence, setFeatureEvidenceLog } from '../m
 import { COHERENCE_CRITICAL_FLAGS } from '../core/machineCoherenceManifest.js';
 import { createMaturationBoardRoutes, maturationBoardConfig, readReviewDir, resolveReviewsDir } from './maturationBoardRoutes.js';
 import { createDocumentRoutes, isDocumentsEnabled, renderSessionContext } from './documentRoutes.js';
+import { documentsReplaceViews, publishAsDocument, safeVerdict, systemDocumentLink, type ReadablePageDeps } from '../documents/readablePages.js';
 import { createDocumentPageRoutes } from './documentPageRoutes.js';
 import { stableOrigin as configuredStableOrigin } from '../core/MobilePairing.js';
 import { checkRowOrigin, deviceStoodAt, type DeviceKeyLookup } from '../documents/originCheck.js';
@@ -5986,6 +5987,9 @@ export class AgentServer {
       quotaTracker: options.quotaTracker ?? null,
       publisher: options.publisher ?? null,
       viewer: options.viewer ?? null,
+      documentsReplaceViews: () => this.documentsReplaceViews(),
+      publishSystemDocument: (title: string, markdown: string, preferred?: string | null) => this.publishSystemDocument(title, markdown, preferred),
+      systemDocumentLink: (id: string) => this.systemDocumentLink(id),
       tunnel: options.tunnel ?? null,
       evolution: options.evolution ?? null,
       undatedActionResurfacer: this.undatedActionResurfacer,
@@ -6922,7 +6926,15 @@ export class AgentServer {
         clearAttention: (conditionKey, resolution) => telegram.clearAttentionCondition({ conditionKey }, resolution),
         sendAutomationReply: options.jobAnomalySendAutomationReply,
         sendDeterministicTopic: (topicId, message) => withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(topicId, message, { provenance: 'automation' })),
-        createPrivateView: options.viewer ? (title, markdown) => ({ id: options.viewer!.create(title, markdown).id }) : undefined,
+        // Old-link guarantee (§3.9b): a job report is a document in the job's own topic while documents replace pages.
+        // The link is posted in the job's topic, so the document must live there: when that topic is
+        // shared (the agent can't place a document in it) no link is made and the sentence points at the Jobs tab.
+        createPrivateView: options.viewer ? (title, markdown, topicId) => {
+          if (!this.documentsReplaceViews()) return { id: options.viewer!.create(title, markdown).id };
+          if (typeof topicId !== 'number' || !this.documentDepsMemo) return null;
+          const doc = publishAsDocument(this.documentDepsMemo, title, markdown, `telegram:${topicId}`, { onlyPreferred: true });
+          return doc ? { id: doc.id, url: doc.url } : null;
+        } : undefined,
         viewTunnelUrl: viewId => buildViewTunnelUrl(options.tunnel, options.config.authToken, viewId),
         ensureJobTopic: job => scheduler.ensureJobTopic(job),
         requestHealAttempt: ep => triage?.requestHealAttempt({
@@ -7147,6 +7159,8 @@ export class AgentServer {
     this.app.use(createMaturationBoardRoutes({ ...routeCtx, darkFlagRegistry: this.darkFlagRegistry, maturationLadder: () => this.maturationLadder }));
     // Instar Documents (docs/specs/instar-document-viewer.md): dev-gated, 503 `documents-off` when off.
     this.app.use(createDocumentRoutes(this.documentRouteDeps(options)));
+    // Old-link guarantee backstop (§3.9b): the viewer itself refuses new pages while documents replace them.
+    options.viewer?.setNewViewGuard?.(() => this.documentsReplaceViews());
     // The document page and its device-signed writes (own auth; exempt from the bearer gate in middleware.ts).
     this.app.use(createDocumentPageRoutes(this.documentPageDeps(options)));
     // Linking a member's computer from their own phone (§3.6a), and that computer's one allowed send.
@@ -10150,7 +10164,31 @@ export class AgentServer {
   }
 
 
+  /** The document route deps once built: the old-link guarantee reads the same facts (§3.9b). */
+  private documentDepsMemo: ReadablePageDeps | null = null;
+
+  /** True while documents replace new read-only pages on this agent (§3.9b). False before the routes are built. */
+  documentsReplaceViews(): boolean {
+    return this.documentDepsMemo ? documentsReplaceViews(this.documentDepsMemo) : false;
+  }
+
+  /** A document for something the system itself writes, or null when documents do not replace pages (§3.9b). */
+  publishSystemDocument(title: string, markdown: string, preferred?: string | null): { id: string; url: string; primary: string } | null {
+    return this.documentDepsMemo ? publishAsDocument(this.documentDepsMemo, title, markdown, preferred ?? null) : null;
+  }
+
+  /** The current link to a system document that still exists, or null (§3.9b). */
+  systemDocumentLink(id: string): string | null {
+    return this.documentDepsMemo ? systemDocumentLink(this.documentDepsMemo, id) : null;
+  }
+
   private documentRouteDeps(options: { config: { stateDir: string }; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
+    const built = this.buildDocumentRouteDeps(options);
+    this.documentDepsMemo = built;
+    return built;
+  }
+
+  private buildDocumentRouteDeps(options: { config: { stateDir: string }; telegram?: { getLifelineTopicId?: () => number | null | undefined } | null }) {
     const stateDir = options.config.stateDir;
     const deps = this.documentTeamDeps();
     return {
@@ -10177,6 +10215,11 @@ export class AgentServer {
           const c = options.config as unknown as { documents?: { loopbackOrigin?: unknown }; port?: unknown };
           return c.documents?.loopbackOrigin === true && typeof c.port === 'number' ? `http://127.0.0.1:${c.port}` : null;
         })(),
+      oldLinkVerdict: () => (this.documentDepsMemo ? safeVerdict(this.documentDepsMemo) : 'documents-off'),
+      viewSource: (viewId: string) => {
+        const v = (options as { viewer?: PrivateViewer | null }).viewer?.get(viewId);
+        return v ? { title: v.title, markdown: v.markdown, pinProtected: !!v.pinHash } : null;
+      },
       notifyDocumentAnswer: (docId: string, commentKey: string) => {
         this.mobilePairing?.push?.onHubPost({ kind: 'document', itemId: docId, commentKey, dedupeKey: `doc-answer:${docId}:${commentKey}:${Math.floor(Date.now() / 65_536)}` });
       },

@@ -78,6 +78,14 @@ describe('documents routes', () => {
     expect(deps.metadata(created.body.id, { principal: { kind: 'bearer' }, actor: { type: 'agent', placeKey: 'x' }, access: {}, reader: { kind: 'owner' } }).title).toBeNull();
   });
 
+  it('a system session (scheduler, lifeline, agent-to-agent) is owner reach: its documents land in the owner conversation, never a shared one (§3.9b)', async () => {
+    const sys = app({ developmentAgent: true }, { placeKey: '', kind: 'system' });
+    const made = await request(sys.a).post('/docs').send({ title: 'Job report', markdown: '# r\n' });
+    expect(made.status).toBe(201);
+    expect(sys.service.facts(made.body.id)?.primary).toBe(OWN);
+    expect((await request(sys.a).post('/docs').send({ title: 'x', markdown: 'y', primary: SHARED })).status).toBe(409);
+  });
+
   it('session context lists documents within the line and character budget, with an overflow line', () => {
     const docs = Array.from({ length: 14 }, (_, i) => ({ id: `id-${i}`, title: `Document number ${i}`, version: 1, openComments: 14 - i }));
     const ctx = renderSessionContext(SHARED, docs);

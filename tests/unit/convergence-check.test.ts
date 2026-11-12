@@ -429,6 +429,13 @@ describe('Convergence Check', () => {
       expect(result.output).toContain('SPEC_REVIEW_LINK');
     });
 
+    it('passes when a document /docs/ link is present (documents replace pages, instar-document-viewer §3.9b)', () => {
+      const result = runCheck(
+        'Spec ready for your review at http://localhost:4040/docs/abc12345-c4e6-4636-b97f-2e6ea4e32af9 — full spec at https://github.com/JKHeadley/instar/pull/670',
+      );
+      expect(result.exitCode).toBe(0);
+    });
+
     it('passes when a rendered /view/ link is present', () => {
       // localhost is whitelisted by the URL-provenance check; the /view/ path
       // is what criterion 8 looks for.
