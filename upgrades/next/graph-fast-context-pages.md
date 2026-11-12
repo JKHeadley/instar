@@ -1,0 +1,11 @@
+<!-- internal-only -->
+
+## What Changed
+- **The multi-page historical-context repair proof runs by default again, with fewer rows.** The test file `tests/integration/conversation-graph-replication-contexts.test.ts` gains a default case that builds 112 real signed history rows instead of 300. Each row uses the longest identifiers production already accepts (an 80-character operation id and a 200-character idempotency key), so the shared proof context is expected (by an estimate, about 151 KB) to grow past the real 128 KiB page size and be sent in at least two signed pages. The case runs the same ceremony as the 300-row case: signed records, erasure, owner-signed membership change, staging on both members, witness activation, import, loss of the added member's whole source folder, restart, and repair from the signed peer. It also checks the same things: the context-capacity refusal one byte under the needed size, every record verified, the original certificate kept, the live body recovered, the erased body refused, and all records present. New checks prove the page boundary was really crossed: the imported context file is larger than 128 KiB, every served page says the context has at least two pages, and every page index was served.
+- The 300-row and 4000-row cases stay opt-in behind `GRAPH_HISTORICAL_CONTEXT_SCALE_PROOF=1`. The eight-row smoke case is unchanged. No runtime code, limit, page size, signature, auth or erasure rule changed.
+
+## Evidence (initial draft checkpoint, 2026-11-11)
+- Ordinary `npm run build` exited 0, with the four changed files unchanged by it.
+- A separate narrow typecheck (a custom config that extends the repo `tsconfig.json` and includes only this test file; not the normal build) reported the same 4 errors as the unmodified file. The edit adds none, but that check did not pass.
+- A fresh independent review agreed with the code only. It did not run the test.
+- At this checkpoint the new case had not run: one manual run waited about 18 minutes for a test slot and was stopped on purpose before starting, so it gave no result or timing. Pass/fail and per-file time come from the official Local Verify run on the PR (CMT-1637). Under 60 seconds on the Studio is the goal, not a measured result.

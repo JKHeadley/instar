@@ -1,5 +1,6 @@
 import {graphTransferContextCapacityBytes} from '../../src/core/ConversationGraphContextCapacity.js';
 import {verifyGraphHistoricalMaterialization} from '../../src/core/ConversationGraphHistoricalMaterialization.js';
+import {GRAPH_CONTEXT_PAGE_BYTES} from '../../src/core/ConversationGraphMaterializationContexts.js';
 /** Large, real source history. Fixed protocol bounds stay unchanged; the test
  * explicitly provisions a finite staging disk budget and records actual bytes. */
 import crypto from 'node:crypto';
@@ -59,18 +60,20 @@ async function serve(runtime:ConversationGraphReplicationRuntime){
  const host=Object.values(os.networkInterfaces()).flat().find(row=>row&&row.family==='IPv4'&&!row.internal&&/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(row.address))?.address;if(!host)throw new Error('private-interface-required');
  return `http://${host}:${address.port}`;
 }
-async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPages=requireLarge?25:1){
+/** wideIdentifiers: each row carries the longest ids production accepts (80-char op/event id per OP_ID_RE and
+ * EVENT_ID_RE, 200-char idempotency key per opaque()), so fewer real rows cross the real 128KiB page size. */
+async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPages=requireLarge?25:1,{wideIdentifiers=false}:{wideIdentifiers?:boolean}={}){
   const fixture=await setupGraphRuntimeFixture(),{f,runtime:origin,peer:oldPeer,service,witness,managers}=fixture;
   await origin.prepareNativeTailClosure();
   const headerId=newHeaderId(),effort={kind:'effort' as const,id:crypto.randomUUID()};let predecessorHash:string|null=null;
   for(let i=1;i<=count;i++){
    if(i===1||i%100===0)expect(await fixture.options[0].leaseCoordinator.renew()).toBe(true);
    const current=origin.actuation(),acceptedAt=new Date().toISOString();
-   const rawId='change-'+crypto.randomUUID(),coreType:GraphCoreType=i===1?'graph-event':'header-op',receiptId='owner-'+crypto.randomUUID(),salt=newTitleSalt();
+   const rawId=wideIdentifiers?'change-'+crypto.randomBytes(37).toString('hex').slice(0,73):'change-'+crypto.randomUUID(),coreType:GraphCoreType=i===1?'graph-event':'header-op',receiptId='owner-'+crypto.randomUUID(),salt=newTitleSalt();
    const common={schemaVersion:1,authority:'owner',principal:'owner',receipt:{kind:'owner-proof',id:receiptId},machineId:origin.machineId,createdAt:acceptedAt};
    const core:Record<string,unknown>=i===1?{...common,eventId:rawId,op:'create-effort',subject:effort,projectScope:[],headerId}
     :{...common,opId:rawId,kind:'set-effort-title',headerId,baseVersion:i-2,titleCommitment:titleCommitment(`private title ${i}`,salt),bundleRef:{kind:'header-source-bundle',id:'bundle-'+crypto.randomUUID()}};
-   const eventId=graphOperationKey(coreType,rawId),idempotencyKey='owner-change:'+canonicalHash(i),receipt=signGraphAuthorizationReceipt({v:1,agentId:'echo',eventId,coreHash:canonicalHash(core),actorPrincipal:'owner',authenticationMethod:'owner-device',receiptId,membershipEpoch:1,leaseEpoch:1,idempotencyKey,writerId:origin.machineId,fencedLeaseHash:canonicalHash(current.originalLease),acceptedAt},managers[0].loadSigningKey());
+   const eventId=graphOperationKey(coreType,rawId),idempotencyKey=wideIdentifiers?'owner-change:'+canonicalHash(i)+':'+crypto.createHash('sha512').update(String(i)).digest('hex').slice(0,122):'owner-change:'+canonicalHash(i),receipt=signGraphAuthorizationReceipt({v:1,agentId:'echo',eventId,coreHash:canonicalHash(core),actorPrincipal:'owner',authenticationMethod:'owner-device',receiptId,membershipEpoch:1,leaseEpoch:1,idempotencyKey,writerId:origin.machineId,fencedLeaseHash:canonicalHash(current.originalLease),acceptedAt},managers[0].loadSigningKey());
    const authorizationProof={receipt,membership:f.membership,lease:current.lease,originalLease:current.originalLease},application=i===1?{kind:'graph-owner-change',requestId:'bulk-create',requestHash:canonicalHash('bulk-create')}:{kind:'effort-header-payload',requestId:'bulk-'+i,requestHash:canonicalHash({headerId,baseVersion:i-2}),headerId,title:`private title ${i}`,salt};
    const plaintext=encodeGraphSourceEnvelope(coreType,core,authorizationProof,Buffer.from(canonicalJson(application))),encryptedSourceBundle=sealGraphBundle(plaintext,f.membership.members,{agentId:'echo',eventId});plaintext.fill(0);
    const controlCapsule=createGraphControlCapsule(coreType,core,authorizationProof),packet={coreType,controlHash:canonicalHash(controlCapsule),erasureIdentity:deriveGraphErasureIdentity(coreType,core),agentId:'echo',eventId,idempotencyKey,coreHash:canonicalHash(core),authorizationReceiptHash:canonicalHash(receipt),sourceSequence:i,predecessorHash,membershipEpoch:1,leaseEpoch:1,writerId:origin.machineId,sourceBundleHash:canonicalHash(encryptedSourceBundle)};
@@ -123,7 +126,7 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
   await new ConversationGraphReplicationTransfer({...stageOptions,directory:survivorStage,machineId:survivor.machineId,memberPrivateKey:managers[1].loadSigningKey(),memberSealingPrivateKey:managers[1].loadEncryptionKey(),verification:survivor.source}).importTransferred(stage,activated.activation).catch(error=>{throw new Error('actual-context-import:'+error.message);});
   await new ConversationGraphReplicationTransfer({...stageOptions,directory:addedStage,machineId:addedId,memberPrivateKey:added.loadSigningKey(),memberSealingPrivateKey:added.loadEncryptionKey(),verification:receiver.source}).importTransferred(stage,activated.activation).catch(error=>{throw new Error('actual-context-import:'+error.message);});
   const sourceDirectory=path.join(added.baseDir,'state','conversation-graph-source'),contexts=await fs.readdir(path.join(sourceDirectory,'contexts'));
-  expect(contexts.filter(name=>name.endsWith('.json'))).toHaveLength(1);if(requireLarge)expect((await fs.stat(path.join(sourceDirectory,'contexts',contexts[0]))).size).toBeGreaterThan(GRAPH_REPLICATION_MAX_RECORD_BYTES);
+  expect(contexts.filter(name=>name.endsWith('.json'))).toHaveLength(1);if(minPages>=2)expect((await fs.stat(path.join(sourceDirectory,'contexts',contexts[0]))).size).toBeGreaterThan(GRAPH_CONTEXT_PAGE_BYTES);if(requireLarge)expect((await fs.stat(path.join(sourceDirectory,'contexts',contexts[0]))).size).toBeGreaterThan(GRAPH_REPLICATION_MAX_RECORD_BYTES);
   if(!requireLarge){const retainedContexts=path.join(addedStage,'contexts');await fs.mkdir(retainedContexts,{recursive:true});for(const name of contexts.filter(name=>name.endsWith('.json')))await fs.copyFile(path.join(sourceDirectory,'contexts',name),path.join(retainedContexts,name));await receiver.localErasure.deny(erasure.target);const audit=new ConversationGraphReplicationTransfer({...stageOptions,directory:addedStage,machineId:addedId,memberPrivateKey:added.loadSigningKey(),memberSealingPrivateKey:added.loadEncryptionKey(),verification:receiver.source,localErasure:receiver.localErasure});expect(await audit.assertLocalErasurePurged(erasure.target)).toMatch(/^[a-f0-9]{64}$/);}
   const references=(await fs.readdir(sourceDirectory)).filter(name=>name.endsWith('.materialization.json'));expect(references).toHaveLength(count);
   let referenceBytes=0;for(const name of references){const file=path.join(sourceDirectory,name);referenceBytes+=(await fs.stat(file)).size;const reference=JSON.parse(await fs.readFile(file,'utf8'));expect(Object.keys(reference).sort()).toEqual(['contextHash','rewrapHash','v']);}expect(referenceBytes).toBeLessThan(2*1024*1024);
@@ -136,12 +139,17 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
   await receiver.close();addedBoot.journal.close();addedBoot.lock.release();
   SafeFsExecutor.safeRmSync(sourceDirectory,{recursive:true,force:true,operation:'graph-context-scale:lose-entire-added-source'});
   const restarted=await boot(added,configuration,actuation.originalLease);
-  let contextPages=0;const originalPage=survivor.source.contextPage.bind(survivor.source);
-  survivor.source.contextPage=(hash,index)=>{contextPages++;return originalPage(hash,index);};
+  let contextPages=0;const servedPages:Array<{index:number;pages:number;totalBytes:number}>=[],originalPage=survivor.source.contextPage.bind(survivor.source);
+  survivor.source.contextPage=async(hash,index)=>{contextPages++;const page=await originalPage(hash,index);servedPages.push({index:page.index,pages:page.pages,totalBytes:page.totalBytes});return page;}; // same call, same resolved page, rejections propagate unchanged
   expect(restarted.runtime.readiness().retained).toBe(false);
   const bodyRecovery=vi.spyOn(witness,'recover').mockRejectedValue(new Error('independent witness application-body endpoint unavailable'));let repairedReady=false;try{repairedReady=await restarted.runtime.refreshReadiness();}finally{bodyRecovery.mockRestore();}
   expect(repairedReady,(restarted.runtime as unknown as {lastReadinessFailure:string}).lastReadinessFailure).toBe(true);
   expect(contextPages).toBeGreaterThanOrEqual(minPages); // the context actually transferred in 128KiB signed pages
+  if(minPages>=2){ // the real production page size was crossed: every served page is part of a >=2-page, >128KiB context and all pages arrived
+   expect(servedPages.length).toBe(contextPages);
+   for(const row of servedPages){expect(row.pages).toBeGreaterThanOrEqual(2);expect(row.totalBytes).toBeGreaterThan(GRAPH_CONTEXT_PAGE_BYTES);expect(row.pages).toBe(Math.ceil(row.totalBytes/GRAPH_CONTEXT_PAGE_BYTES));}
+   expect([...new Set(servedPages.map(row=>row.index))].sort((a,b)=>a-b)).toEqual(Array.from({length:servedPages[0].pages},(_,index)=>index));
+  }
   const repaired=restarted.runtime.source.repairRecord(records[0].packet.eventId)!;
   expect(canonicalJson(repaired.certificate)).toBe(originalCertificate);
   expect(restarted.runtime.source.recordsForRepair()).toHaveLength(count);
@@ -153,7 +161,15 @@ async function exerciseHistoricalContext(count:number,requireLarge:boolean,minPa
 }
 describe('bounded shared historical proof custody',()=>{
  it('smoke: imports and repairs real eight-row history through the same native/activation/signed-peer ceremony',()=>exerciseHistoricalContext(8,false),120000);
- it('repairs a multi-page historical context across restart through the signed-peer ceremony',()=>exerciseHistoricalContext(300,false,2),600000);
+ // Default multi-page proof: the same ceremony and assertions as the 300-row case below, with 112 real rows whose
+ // ids are the longest production accepts, so the shared context still exceeds the real 128KiB page size
+ // (asserted: file bytes, >=2 pages served, every index served). Fewer rows keep it inside the lane budget.
+ it('repairs a real >128KiB two-page historical context across restart through the signed-peer ceremony',()=>exerciseHistoricalContext(112,false,2,{wideIdentifiers:true}),180000);
+ // Multi-page proof at 300 rows: about 6 minutes on the Studio (347 s on 2026-11-11). The integration lane runs files
+ // one at a time (fileParallelism: false), so this one test pushed the Studio's whole lane past its
+ // 30-minute Local Verify deadline and every main check there failed. Opt-in like the scale proof below;
+ // the eight-row smoke above still runs the same ceremony by default.
+ it.runIf(process.env.GRAPH_HISTORICAL_CONTEXT_SCALE_PROOF==='1')('repairs a multi-page historical context across restart through the signed-peer ceremony',()=>exerciseHistoricalContext(300,false,2),600000);
  // Scale proof: about 30 minutes, longer than a whole Local Verify integration shard. Opt-in like the
  // other graph scale proofs; the eight-row smoke above runs the same ceremony by default.
  it.runIf(process.env.GRAPH_HISTORICAL_CONTEXT_SCALE_PROOF==='1')('imports, restarts and signed-peer repairs a >3MiB actual historical context with one shared proof file',()=>exerciseHistoricalContext(4000,true),3600000);
