@@ -3011,6 +3011,8 @@ export function createRoutes(ctx: RouteContext): Router {
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
     verifyOperator: proof => ctx.verifyDashboardOperatorSession?.(proof) === true,
+    // native-conversation-base §3a item 6 — the reply-text route applies the topic history read's own check.
+    mayReadConversation: (req, ref) => !ctx.mobilePairingService || deviceMayUse(ctx.mobilePairingService, req, ref, 'read'),
     setupGreeting: () => {
       const configured = ctx.config.messaging?.find(item => item.type === 'telegram' && item.enabled !== false)?.config as { lifelineTopicId?: number; token?: string; chatId?: string } | undefined;
       const topicId = configured?.lifelineTopicId;

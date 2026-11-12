@@ -149,6 +149,23 @@ export class TelegramOriginService {
     if (!registered) throw new TelegramOriginHoldError('unregistered-producer');
     return this.#scope.run({ producer: structuredClone({ ...registered, ...(model ? { model } : {}) }), operations: [] }, fn);
   }
+  /** native-conversation-base §3a item 2 — re-enter the scope of a reply this
+   * machine wrote, from its stored record, so a replacement made in a recovery
+   * pass stays `producerKind: 'session'` with the original session binding
+   * (sealed as server automation it would drop out of every session reader).
+   * Refused for anything but this machine's own session reply. */
+  runAsRecordedProducer<T>(record: TelegramOriginRecord, fn: () => T): T {
+    if (record.producerKind !== 'session' || record.originMachineId !== this.options.identity.originMachineId || record.agentId !== this.options.identity.agentId || !record.sessionId) {
+      throw new TelegramOriginHoldError('recorded-producer-unavailable', record.operationId);
+    }
+    const producer: TelegramOriginProducer = { agentId: record.agentId, agentName: record.agentName, originMachineId: record.originMachineId,
+      originMachineName: record.originMachineName, sessionId: record.sessionId, sessionIncarnation: record.sessionIncarnation, turnId: record.turnId,
+      producerKind: 'session', producerId: record.producerId, harnessId: record.harnessId, harnessName: record.harnessName,
+      machine: structuredClone(record.machine), harness: structuredClone(record.harness), model: structuredClone(record.model),
+      ...(record.authorContributors ? { authorContributors: structuredClone(record.authorContributors) } : {}),
+      ...(record.omittedAuthorContributors !== undefined ? { omittedAuthorContributors: record.omittedAuthorContributors } : {}) };
+    return this.#scope.run({ producer, operations: [] }, fn);
+  }
   hasLogicalSendContext(): boolean { return !!this.#scope.getStore()?.logicalSendKey; }
   runAsUnboundAutomation<T>(producerId: string, fn: () => T): T {
     return this.runAsAuthoredAutomation(producerId, unknownAutomationAuthor(), fn);
@@ -293,7 +310,9 @@ export class TelegramOriginService {
       if (decision.reason === 'duplicate-content') {
         // A suppressed fresh operation must never become a delayed duplicate
         // when the content window expires. The outbox owns this terminal state.
-        if (!await this.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {
+        // native-conversation-base §3a item 9 — the one retirement of a reply that
+        // remains: the user already has this text. It runs on the execution owner.
+        if (!await this.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed', holdReason: 'duplicate-content' })) {
           throw new TelegramOriginHoldError('duplicate-suppression-unrecorded', operation.record.operationId);
         }
       }
@@ -418,7 +437,9 @@ export class TelegramOriginService {
     return jobSlug ? verifiedJobEnvelope(jobSlug, envelope) : envelope;
   }
   prepareBot(input: { method: string; accountId: string; params: BotParameters; operationId?: string; executionOwnerMachineId?: string;
-    attachments?: import('./OriginMultipart.js').PreparedOriginAttachments; policyInput?: OriginSendPolicyInput }): OriginPreparedBotOperation {
+    attachments?: import('./OriginMultipart.js').PreparedOriginAttachments; policyInput?: OriginSendPolicyInput;
+    /** native-conversation-base §3a item 2 — a replacement: the original's draft time (sealed in the envelope) and deadline. */
+    replacement?: { firstPreparedAt: number; deadlineAt: number } }): OriginPreparedBotOperation {
     const producer = this.currentProducer();
     let notification = this.notificationForCurrentProducer();
     const addressedTopicId = this.notificationTopicId(input.params.chat_id === undefined ? null : String(input.params.chat_id), input.params.message_thread_id === undefined ? null : String(input.params.message_thread_id));
@@ -458,13 +479,17 @@ export class TelegramOriginService {
       ...(/^(forward|copy)Messages?$/.test(input.method) && input.params.from_chat_id !== undefined
         ? { forwardedFrom: { chatId: String(input.params.from_chat_id),
           messageIds: (Array.isArray(input.params.message_ids) ? input.params.message_ids : [input.params.message_id]).map(String) } } : {}),
-      deliveryId: operationId, createdAt: now, operationKind: input.method, destination: plan.destination,
+      deliveryId: operationId, createdAt: now,
+      ...(input.replacement ? { firstPreparedAt: input.replacement.firstPreparedAt } : {}),
+      operationKind: input.method, destination: plan.destination,
       contentDigest: plan.contentDigest, planDigest: originDigest(plan.children), display };
     const record: TelegramOriginRecord = { ...unsigned, attestation: attestOrigin(unsigned, this.options.signingKey, now) };
     const envelopeJson = canonicalOrigin(record);
     const stored: StoredOriginInput = { originId, machineId: producer.originMachineId, createdAt: now,
       envelopeJson, envelopeDigest: wireDigest(envelopeJson), harnessId: producer.harnessId ?? 'automation', evidenceStatus: producer.model.status };
-    const admission: OriginAdmission = { record: stored, operationId, preparedAt: now, deadlineAt: now + this.#limits.deadlineMs,
+    if (input.replacement && (!Number.isSafeInteger(input.replacement.firstPreparedAt) || input.replacement.firstPreparedAt > now ||
+      !Number.isSafeInteger(input.replacement.deadlineAt) || input.replacement.deadlineAt <= now)) throw new TelegramOriginHoldError('invalid-replacement');
+    const admission: OriginAdmission = { record: stored, operationId, preparedAt: now, deadlineAt: input.replacement ? Math.min(input.replacement.deadlineAt, now + this.#limits.deadlineMs) : now + this.#limits.deadlineMs,
       maxAttempts: this.#limits.maxAttempts, payloadBytes: plan.children.reduce((n, child) => n + Buffer.byteLength(canonicalOrigin(child.request)), 0)
         + (input.attachments?.payloads.reduce((n, payload) => n + payload.size, 0) ?? 0),
       ...(input.attachments ? { payloads: input.attachments.payloads } : {}),
@@ -834,7 +859,8 @@ export class TelegramOriginService {
   async recordSuppressed(input: { method: string; accountId: string; params: BotParameters }, reason: string): Promise<string> {
     const operation = this.prepareBot(input);
     await this.admit(operation);
-    await this.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' });
+    await this.options.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed', holdReason: 'recorded-by-caller',
+      ...(reason ? { holdDetail: { callerReason: reason } } : {}) });
     return operation.record.originId;
   }
   /**

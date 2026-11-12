@@ -159,6 +159,19 @@ export async function handleOriginMesh(options: {
     record.destination.transport !== 'bot-api' || record.destination.accountId !== runtime.options.bot.accountId) {
     return { ok: false, reason: 'origin-plan-invalid' };
   }
+  // native-conversation-base §3a item 7 — an owner that receives a submit for an id
+  // it holds as terminal answers with that ending instead of sending. Naming the
+  // operation id makes the forwarder ask this machine's `receipt`, which carries
+  // the classified outcome, reason and failure; the old id is never sent again.
+  try {
+    const existing = await runtime.store.getOperation(record.operationId);
+    const state = existing?.operation?.state;
+    if (existing && state && ['suppressed', 'known-failed', 'expired', 'superseded'].includes(state)) {
+      const verdict = classifyOperationOutcome(record.operationId, existing, runtime.unrecordedReceipts?.forOperation(record.operationId) ?? []);
+      return { ok: false, reason: 'origin-operation-terminal', outcome: 'held', operationId: record.operationId,
+        terminal: { state, outcome: verdict.outcome, reason: verdict.reason ?? null, failure: verdict.failure ?? null } };
+    }
+  } catch { /* unreadable: the admit below refuses a conflicting replay on its own */ }
   try {
     await runtime.store.putVerifiedEvidence({ record: stored, verification });
     const response = await runtime.service.runFirstSend(record.operationId, async () => {

@@ -56,7 +56,7 @@ describe('retained origin key epochs and acceptance evidence', () => {
     const before = (await h.runtime.store.getOrigin(h.operation.record.originId))!;
     expect(before.acceptanceVerification).toMatchObject({ keyId: 'source:0', keyStatusAtAcceptance: 'active' });
     expect(before.record.envelopeJson).toBe(h.operation.admission.record.envelopeJson);
-    await h.runtime.store.recordOperationState({ operationId: h.operation.record.operationId, state: 'suppressed' });
+    await h.runtime.store.recordOperationState({ operationId: h.operation.record.operationId, state: 'suppressed', holdReason: 'recorded-by-caller' });
     await h.runtime.store.archive({ before: Date.now() + 10_000 });
     h.rotate(); h.revoke();
     const key = resolveIdentityOriginKey(new IdentityStore({ stateDir: h.stateDir }), 'source', 'echo', 0)!;

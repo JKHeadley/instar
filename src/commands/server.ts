@@ -7673,29 +7673,6 @@ export async function startServer(options: StartOptions): Promise<void> {
           const { checkToneLocally } = await import('../messaging/local-tone-check.js');
           return (await checkToneLocally(messagingToneGate ?? null, text, { channel: 'telegram' })).passed;
         },
-        reviewQueuedReply: async ({ chatId, topicId, preparedAt }) => {
-          if (!telegram) return 'hold';
-          const issuesChatId = (originTelegramConfig.config as { issuesChatId?: unknown }).issuesChatId;
-          const historyTopicId = chatId === String(issuesChatId) ? 10_000_000_000 + topicId : topicId;
-          const { queuedReplyOvertaken, reviewQueuedReplyHistory } = await import('../messaging/telegram-origin/QueuedReplySupersession.js');
-          const local = telegram.getTopicHistory(historyTopicId, 500);
-          if (queuedReplyOvertaken(preparedAt, local)) return 'retire';
-          try {
-            const response = await fetch(`http://127.0.0.1:${config.port}/telegram/topics/${historyTopicId}/messages?limit=100&scope=pool`, {
-              headers: { Authorization: `Bearer ${config.authToken ?? ''}`, 'X-Instar-AgentId': config.projectName },
-              signal: AbortSignal.timeout(6_000),
-            });
-            if (!response.ok) return 'hold';
-            const body = await response.json() as { messages?: unknown; pool?: { failed?: unknown } };
-            if (!Array.isArray(body.messages) || !Array.isArray(body.pool?.failed)) return 'hold';
-            const pooled = body.messages.filter((m): m is { timestamp: string; fromUser: boolean; provenance?: string } =>
-              !!m && typeof m === 'object' && typeof m.timestamp === 'string' && Number.isFinite(Date.parse(m.timestamp)) &&
-              typeof m.fromUser === 'boolean');
-            if (pooled.length !== body.messages.length) return 'hold';
-            return reviewQueuedReplyHistory({ preparedAt, local, pooled,
-              failedPeers: body.pool.failed.length, poolPageLimit: 100 });
-          } catch { return 'hold'; }
-        },
         diagnoseUnknown: async (originId, reason) => {
           if (!sharedIntelligence) throw new Error('origin diagnostic intelligence unavailable');
           const prompt = `Diagnose an uncertain Telegram delivery. Never authorize retries or invent receipts. Origin=${originId}; reason=${reason}. Return a brief read-only diagnostic.`;
@@ -7722,6 +7699,31 @@ export async function startServer(options: StartOptions): Promise<void> {
       }).catch(error => { releaseOriginLeaseRenewal(); throw error; });
       const enrollment = await sessionManager.enrollExistingOriginSessions();
       if (enrollment.unavailable.length) console.warn('[telegram-origin] existing sessions require origin enrollment', enrollment.unavailable);
+      // native-conversation-base §3a items 5, 7, 8 — the server types one line into the
+      // running session bound to a reply on THIS machine (the reply's author is told).
+      telegramOriginBoot.runtime.options.injectSessionLine = (binding, text) => {
+        const session = state.getSession(binding.sessionId);
+        if (!session || session.status !== 'running' || session.framework !== binding.harnessId || !session.tmuxSession) return false;
+        return sessionManager.sendInput(session.tmuxSession, text);
+      };
+      // §3a item 7 — one record-only item per topic while reasonless endings stay unresolved.
+      const unresolvedTopicCounts = new Map<string, number>();
+      telegramOriginBoot.runtime.options.syncUnresolvedTopics = async counts => {
+        if (!telegram) return;
+        for (const [topicId, count] of counts) {
+          if (unresolvedTopicCounts.get(topicId) === count) continue;
+          await telegram.upsertAttentionItem({ id: `telegram-origin-unresolved:${topicId}`, category: 'telegram-origin', priority: 'NORMAL',
+            title: `Unresolved replies in ${topicRef(topicId)}`, sourceContext: 'telegram-origin-unresolved',
+            summary: `${count} ${count === 1 ? 'reply was' : 'replies were'} ended by the machine that sends to Telegram, which runs an older version and gave no reason. The user may already have ${count === 1 ? 'it' : 'them'}.`,
+            contextTopicIds: Number.isSafeInteger(Number(topicId)) ? [Number(topicId)] : undefined }, { recordOnly: true });
+          unresolvedTopicCounts.set(topicId, count);
+        }
+        for (const topicId of [...unresolvedTopicCounts.keys()]) {
+          if (counts.has(topicId)) continue;
+          telegram.clearAttentionCondition({ id: `telegram-origin-unresolved:${topicId}` }, `cleared: no unresolved reply remains in ${topicRef(topicId)}`, { reconcile: true });
+          unresolvedTopicCounts.delete(topicId);
+        }
+      };
     }
     const { postOriginAutomationReply } = await import('../messaging/telegram-origin/OriginAutomationReply.js');
     const { originDeliveryConfirmed } = await import('../messaging/telegram-origin/OriginDeliveryResolution.js');
@@ -32614,9 +32616,20 @@ export async function startServer(options: StartOptions): Promise<void> {
                   ...(input.topicId > 1 ? { message_thread_id: input.topicId } : {}), ...(input.silent ? { disable_notification: true } : {}) },
                   (input.formatMode as import('../messaging/TelegramMarkdownFormatter.js').FormatMode | undefined) ?? tgConfig().formatMode).outgoingParams as import('../messaging/telegram-origin/types.js').BotParameters;
                 const accountId = String(originBotToken).split(':')[0];
+                // native-conversation-base §3a item 2 — a replacement keeps the original's sealed
+                // policy input (the content-check key) and deadline, seals its first draft time,
+                // and is prepared under the original's producer record so it stays a session reply.
+                const replacement = input.replacement;
                 const prepare = () => service.prepareBot({ method: 'sendMessage', accountId, params, executionOwnerMachineId: holder,
-                  ...(operationId === undefined ? {} : { operationId }), policyInput: service.currentSendPolicyInput(input.text, input.kindMetadata) });
-                const operation = service.hasProducerContext() ? prepare() : service.runAsUnboundAutomation('telegram-server', prepare);
+                  ...(operationId === undefined ? {} : { operationId }),
+                  policyInput: replacement?.policyInput ?? service.currentSendPolicyInput(input.text, input.kindMetadata),
+                  ...(replacement ? { replacement: { firstPreparedAt: replacement.firstPreparedAt, deadlineAt: replacement.deadlineAt } } : {}) });
+                const operation = replacement ? service.runAsRecordedProducer(replacement.record, prepare)
+                  : service.hasProducerContext() ? prepare() : service.runAsUnboundAutomation('telegram-server', prepare);
+                if (replacement && operation.admission.children.length > replacement.maxParts) {
+                  const { TelegramOriginHoldError } = await import('../messaging/telegram-origin/types.js');
+                  throw new TelegramOriginHoldError('replacement-part-limit', operation.record.operationId);
+                }
                 service.authorizeSendPolicyDispatch(operation.record);
                 await service.recordIntent(operation);
                 return operation;
@@ -32660,30 +32673,27 @@ export async function startServer(options: StartOptions): Promise<void> {
               runtime.options.forwardRecovery = async (operation, row) => {
                 const outcome = await originForwardMod.recoverForwardedHold({
                 lease: forwardLease, prepare: forwardDeps(runtime).prepare, submit: forwardDeps(runtime).submit, audit: heldAudit, now: Date.now,
+                // native-conversation-base §3a item 7 — the raw state is read WITH the owner's
+                // outcome, reason and failure; a reasonless `suppressed` is never folded into
+                // "not accepted", which would send a second copy.
                 receipt: async (machineId, operationId) => {
                   try {
                     const reply = await sendToHolder(machineId)({ type: 'telegram-origin', protocol: 'instar-telegram-origin-v1', action: 'receipt', operationId });
-                    const result = reply.result as { ok?: boolean; state?: string; originReceiptConfirmed?: boolean; operationId?: string; messageIds?: string[] } | undefined;
-                    if (reply.ok && result?.ok && result.operationId === operationId) {
-                      const state = String(result.state);
-                      if (state === 'accepted' && result.originReceiptConfirmed === true && result.messageIds?.length === 1 && /^[1-9]\d*$/.test(result.messageIds[0])) return { state: 'accepted', receiptJson: JSON.stringify({ messageId: result.messageIds[0], confirmedVia: 'receipt', deliveryMachineId: machineId, operationId }) };
-                      // Definite non-admission: never seen, evidence only, or terminal without delivery.
-                      if (['no-record', 'not-admitted', 'known-failed', 'expired', 'suppressed', 'superseded'].includes(state)) return { state: 'not-accepted' };
-                      // The holder has custody (its own recovery delivers it): wait, never re-forward.
-                      if (['admitted', 'held', 'partial', 'accepted'].includes(state)) return { state: 'owned-by-holder' };
-                      // The holder's own send ended unknown; it never retries or resolves it.
-                      if (state === 'outcome-unknown') return { state: 'outcome-unknown' };
-                      return { state: 'unreachable' };
-                    }
-                    // `origin-receipt-unavailable` / any refusal is an UNKNOWN (a store outage looks the same as absence to an old holder): keep waiting.
-                    return { state: 'unreachable' };
+                    return originForwardMod.classifyHolderReceipt(reply, operationId, machineId);
                   } catch { return { state: 'unreachable' }; }
                 },
                 resolve: (operationId, deliveryMachineId, receiptJson) => runtime.store.recordForwardedAcceptance({ operationId, deliveryMachineId, receiptJson }),
                 settleUnknown: (operationId, deliveryMachineId) => runtime.store.recordForwardedOutcomeUnknown({ operationId, deliveryMachineId }),
                 rehold: async (operationId, detail) => runtime.store.recordOperationState({ operationId, state: 'held', holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
-                supersede: (operationId, next, detail) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
-                  holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown> }),
+                supersede: (operationId, next, detail, carrier) => runtime.store.supersedeWithAdmission({ operationId, admission: next.admission,
+                  holdReason: originForwardMod.HOLD_REASON_LEASE_NOT_HELD, holdDetail: detail as unknown as Record<string, unknown>,
+                  ...(carrier ? { firstPreparedAt: carrier.firstPreparedAt, lateMarkedAt: carrier.lateMarkedAt } : {}) }),
+                endAtHolder: (operationId, holderReason, machineId, detail) => runtime.store.recordOperationState({ operationId, state: 'suppressed',
+                  holdReason: 'suppressed-at-holder', holdDetail: { ...(detail as unknown as Record<string, unknown>), holderReason, holderMachineId: machineId } }),
+                mergeDetail: (operationId, patch) => runtime.store.mergeHoldDetail({ operationId, patch: patch as Record<string, unknown> }),
+                onOwnerVerdict: (verdictRow, verdict) => runtime.handOwnerVerdict(verdictRow, verdict),
+                onOwnerUnstatedSettled: unstatedRow => runtime.handOwnerUnstated(unstatedRow),
+                onLateUnmarked: operationId => runtime.countLateUnmarked(operationId),
                 sendLocal: async detail => {
                   const sent = await withNotificationEnvelope(stampNotification(), async () => (telegram)!.sendToTopic(detail.topicId, detail.text, { silent: detail.silent, kindMetadata: detail.kindMetadata,
                     provenance: originForwardMod.recoveredForwardProvenance(detail, row.producerKind) }));
@@ -32729,6 +32739,13 @@ export async function startServer(options: StartOptions): Promise<void> {
                   holder: route.kind === 'peer' ? route.holder : null, ...(suppressed ? { suppressed } : {}) });
                 // The topic was already told about this hold episode: no second item either.
                 if (!noticeDelivered && suppressed !== 'already-noticed') await raiseHeldItem({ awaitsLeaseReturn: true, topicId, holder: route.kind === 'peer' ? route.holder : null, operationId: row.operationId, lastAttempt: 'refused', reason: 'lease-not-held (direct path)' });
+              };
+              // native-conversation-base §3a item 8 — the hand-back item, worded by its arm.
+              runtime.options.raiseHandBackItem = async row => {
+                const topicId = Number(row.destination.topicId);
+                heldAudit({ phase: 'handed-back', topicId: row.destination.topicId, operationId: row.operationId, arm: originForwardMod.forwardExpiryArm(row).arm });
+                if (Number.isSafeInteger(topicId)) heldCollapser.clear(topicId);
+                await telegram.createAttentionItem(originForwardMod.handBackItem(row), { hubOnly: true });
               };
               runtime.options.onHeldForwardExpired = async row => {
                 const topicId = Number(row.destination.topicId);

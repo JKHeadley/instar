@@ -48,7 +48,7 @@ describe('archive walks a cursor', () => {
     const pending = old('pending'); await store.admit(pending);
     await delivered(store, old('after-pending', 9 * DAY), 3);
     expect((await store.archive({ before: Date.now(), limit: 100 })).archived).toBe(1);
-    await store.recordOperationState({ operationId: pending.operationId, state: 'suppressed' });
+    await store.recordOperationState({ operationId: pending.operationId, state: 'suppressed', holdReason: 'recorded-by-caller' });
     expect((await store.archive({ before: Date.now(), limit: 100 })).archived).toBe(1);
     expect((await store.archive({ before: Date.now(), limit: 100 })).archived).toBe(0);
     expect((await store.getOrigin(pending.record.originId))?.operation?.state).toBe('suppressed');
