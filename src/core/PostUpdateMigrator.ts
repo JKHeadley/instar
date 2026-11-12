@@ -58,7 +58,7 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
+import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
@@ -9715,6 +9715,13 @@ setTimeout(() => process.exit(0), 2000);
       content += '\n' + conversationsAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added Conversations privacy and navigation awareness');
+    }
+
+    // conversation-graph-suggestions: the suggestion step and the Chief of Staff root.
+    if (!content.includes(CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING)) {
+      content += '\n' + conversationsSuggestionsAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Conversations suggestions awareness');
     }
 
     if (!content.includes(MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING)) {

@@ -107,6 +107,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // OFF Claude by default (Provider-Fallback Default Policy) — awareness-only
   // background summarization should never spend Anthropic quota.
   DashboardInsightEngine: 'reflector',
+  // Conversations suggestion step (docs/specs/conversation-graph-suggestions.md): one
+  // bounded grouping call per build; advice only, the owner accepts or rejects each.
+  ConversationGraphSuggestions: 'reflector',
 
   // ── Jobs (scheduled work) ──
   PipeSessionSpawner: 'job',
