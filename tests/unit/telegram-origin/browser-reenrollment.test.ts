@@ -54,6 +54,17 @@ describe('reviewed Web K build list', () => {
     expect(matchReviewedWebKBuild({ criticalAssets: ['index-Dthh6gB6.js', 'app-B3AbKbVS.js', 'apiManagerProxy-xL1OSBOW.js'], assetDigests: b687.assetDigests })?.buildId)
       .toBe('web-k-2.3-687');
     expect(webKBuildFingerprint([...b687.criticalAssets])).toBe('6809d24cb4b13c010206dea32ff726d177b500ed9180351276092efe8d3b839e');
+    // The 687 digests as literals (independent review, 2026-11-11): comparing the list with itself would pass a
+    // mistyped digest. These are the SHA-256 of the three public files, re-fetched by the reviewer.
+    const d687 = {
+      'apiManagerProxy-xL1OSBOW.js': '58a81d3e1a235bd1e171fa972b24342f64b1ba5076831c5b7e4bee4b87f7d75f',
+      'app-B3AbKbVS.js': 'ad4146645016e21cc1621fffba19d211320616d197880eedeb7ba727d8e4e160',
+      'index-Dthh6gB6.js': 'b0a0d838ea117b4b1b15a15e39862f86cc60db03ec6db19d8a4140b4db9423eb',
+    };
+    expect(b687.assetDigests).toEqual(d687);
+    expect(matchReviewedWebKBuild({ criticalAssets: Object.keys(d687), assetDigests: d687 })?.buildId).toBe('web-k-2.3-687');
+    // A 687 page with one changed file is refused.
+    expect(matchReviewedWebKBuild({ criticalAssets: Object.keys(d687), assetDigests: { ...d687, 'app-B3AbKbVS.js': '0'.repeat(64) } })).toBeUndefined();
     expect(nextSupportedBuilds(b687, [b686, b684]).map(b => b.buildId)).toEqual(['web-k-2.3-687', 'web-k-2.3-686']);
     expect(nextSupportedBuilds(b679, [b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
     expect(nextSupportedBuilds(b679, [b679, b676]).map(b => b.buildId)).toEqual(['web-k-2.2-679', 'web-k-2.2-676']);
