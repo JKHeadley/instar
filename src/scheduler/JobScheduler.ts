@@ -4225,6 +4225,7 @@ export class JobScheduler {
       this.state.delete(key);
     } catch (error) {
       // Alert bookkeeping must never turn a completed job into a failed run.
+      // @silent-fallback-ok — logged; the next success retries the close
       console.error(`[scheduler] Could not close silence alert for ${slug}:`, error);
     }
   }
@@ -4243,7 +4244,7 @@ export class JobScheduler {
     let link: string | null = null;
     if (this.operatorLinkOrigin) {
       let origin: string | null = null;
-      try { origin = this.operatorLinkOrigin(); } catch { origin = null; } // @silent-fallback-ok — an unreadable origin waits for the next five-minute check
+      try { origin = this.operatorLinkOrigin(); } catch { /* @silent-fallback-ok — an unreadable origin waits for the next five-minute check */ origin = null; }
       if (!origin) return;
       link = `${origin}/dashboard/console/#/work/schedule?job=${encodeURIComponent(job.slug)}`;
     }

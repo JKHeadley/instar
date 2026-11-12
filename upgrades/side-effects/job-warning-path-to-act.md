@@ -40,3 +40,7 @@ Continuity alerts are raised only by the machine holding the scheduler (unchange
 
 ## 8. Rollback cost
 Plain revert. No state migration; `job-silence-*` and `job-last-success-*` keys keep their shapes.
+
+## Follow-up: fallback marker placement
+
+The no-silent-fallbacks ratchet reads the exemption marker only inside the catch braces. The origin lookup's catch had its marker after the closing brace, so the ratchet counted it as a new silent fallback (495 against a baseline of 494). The marker now sits inside the braces, and the logged catch that closes a silence alert carries its own in-brace marker. Behaviour is unchanged.

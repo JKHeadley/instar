@@ -12,3 +12,5 @@ What changes:
 A second fix came from the same screenshot. Justin tapped "ask the agent" about a security warning in the app, and the message failed with "This agent has no Telegram owner to speak as." Luna was set up without the setting that names its owner, though Instar already knows exactly one verified operator for it: Justin. The app now uses that verified operator, the same check Instar already uses for owner-only buttons, so his message goes through. An agent with no verified operator still refuses, as before.
 
 What the operator needs to do: nothing. Fewer false warnings arrive, and each real one comes with a link.
+
+Follow-up: two code comments that excuse a logged error moved inside the error blocks, where the code check that guards against hidden failures reads them. Nothing about how jobs or warnings behave changed.
