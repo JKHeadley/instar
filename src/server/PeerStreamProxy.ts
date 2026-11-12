@@ -88,6 +88,14 @@ export class PeerStreamProxy {
   private idleTimer: TimerHandle | null = null;
   private reconnectTimer: TimerHandle | null = null;
   private reconnectUsed = false;
+  /** native-conversation-any-machine-access §3e item 1: the last `input_caps`
+   *  per session for the CURRENT link, replayed to a client that subscribes
+   *  after the link is active. Cleared whenever the link or the session's
+   *  upstream subscription goes away. */
+  private readonly caps = new Map<string, Record<string, unknown>>();
+  /** Sessions whose upstream `subscribe` has been sent on the current link and
+   *  whose serving machine has not yet said what it can do. */
+  private readonly awaitingCaps = new Set<string>();
 
   constructor(private readonly d: PeerStreamProxyDeps) {}
 
@@ -157,7 +165,7 @@ export class PeerStreamProxy {
     if (this.state === 'active') {
       // Link is live → forward only when this is the first client for the
       // session (the upstream is already streaming it for any later client).
-      if (firstForSession) this.transport?.send({ type: 'subscribe', session });
+      if (firstForSession) this.sendSubscribe(session);
       return;
     }
     // connecting → the sub is now in `subs`; onUpstreamOpen resubscribes from
@@ -171,16 +179,28 @@ export class PeerStreamProxy {
     set.delete(clientId);
     if (set.size === 0) {
       this.subs.delete(session);
+      this.caps.delete(session);
+      this.awaitingCaps.delete(session);
       if (this.state === 'active') this.transport?.send({ type: 'unsubscribe', session });
     }
     if (this.refCount === 0) this.scheduleIdleClose();
   }
 
-  /** Forward an input/key frame for a session (caller already gated allowRemoteInput). */
-  relayInput(frame: Record<string, unknown>): void {
-    this.relayFrame(frame);
-    // Not active → input is dropped (caller's terminal shows the live state);
-    // we never queue keystrokes across a reconnect (stale input is worse than none).
+  /** Forward an input/key frame for a session (the SERVING machine gates
+   *  allowRemoteInput). Returns false when the frame was not sent: the link is
+   *  not active, so the input is dropped (we never queue keystrokes across a
+   *  reconnect — stale input is worse than none) and the caller answers
+   *  `peer-stream-lost` to the sender (§3e item 3). */
+  relayInput(frame: Record<string, unknown>): boolean {
+    return this.relayFrame(frame);
+  }
+
+  /** The serving machine's last `input_caps` for this session on the current
+   *  link, for replay to a client that subscribes after the link is active.
+   *  Null while the link is not active or the machine has not answered yet. */
+  inputCaps(session: string): Record<string, unknown> | null {
+    if (this.state !== 'active' && this.state !== 'idle-scheduled') return null;
+    return this.caps.get(session) ?? null;
   }
 
   /** Forward a read-only request frame (e.g. a `history` scrollback fetch) to
@@ -189,8 +209,23 @@ export class PeerStreamProxy {
    *  tmux. Dropped unless the link is active (a request racing a reconnect is
    *  simply re-issued by the user's next scroll; stale queued requests are
    *  worse than none). */
-  relayFrame(frame: Record<string, unknown>): void {
-    if (this.state === 'active') this.transport?.send(frame);
+  relayFrame(frame: Record<string, unknown>): boolean {
+    if (this.state !== 'active' || !this.transport) return false;
+    try {
+      this.transport.send(frame);
+      return true;
+    } catch (e) {
+      this.log(`relay send threw: ${(e as Error)?.message ?? e}`);
+      return false;
+    }
+  }
+
+  /** Send the upstream subscribe and start waiting for the serving machine's
+   *  `input_caps` for this session on this link. */
+  private sendSubscribe(session: string): void {
+    this.caps.delete(session);
+    this.awaitingCaps.add(session);
+    this.transport?.send({ type: 'subscribe', session });
   }
 
   // ── connection lifecycle ───────────────────────────────────────────────
@@ -227,7 +262,9 @@ export class PeerStreamProxy {
     // Resubscribe from `subs` (the source of truth) — this naturally includes
     // any subscribe that arrived mid-connect and excludes any mid-connect
     // unsubscribe. No stale snapshot to lose.
-    for (const session of this.subs.keys()) this.transport?.send({ type: 'subscribe', session });
+    this.caps.clear();
+    this.awaitingCaps.clear();
+    for (const session of this.subs.keys()) this.sendSubscribe(session);
     // If nothing is subscribed anymore (all unsubscribed during connect), idle-close.
     if (this.refCount === 0) this.scheduleIdleClose();
   }
@@ -237,6 +274,22 @@ export class PeerStreamProxy {
     if (!session) return; // peer frames without a session are not fan-out-able
     // Only fan out to sessions we still have local subscribers for.
     if (!this.subs.has(session)) return;
+    if (frame.type === 'input_caps') {
+      // A current serving machine says what it can do, first, for each subscribe.
+      this.awaitingCaps.delete(session);
+      const caps = { type: 'input_caps', session, inputAck: frame.inputAck === 2 ? 2 : 1, remoteInput: frame.remoteInput === true ? true : frame.remoteInput === false ? false : null };
+      this.caps.set(session, caps);
+      this.d.onFrameToClients(session, caps);
+      return;
+    }
+    if (this.awaitingCaps.has(session) && frame.type === 'subscribed') {
+      // An older serving machine answers the subscribe without `input_caps`: it
+      // cannot acknowledge by id or recognise a repeat, so say so for it.
+      this.awaitingCaps.delete(session);
+      const caps = { type: 'input_caps', session, inputAck: 1, remoteInput: null };
+      this.caps.set(session, caps);
+      this.d.onFrameToClients(session, caps);
+    }
     this.d.onFrameToClients(session, frame);
   }
 
@@ -246,6 +299,8 @@ export class PeerStreamProxy {
       return;
     }
     this.transport = null;
+    this.caps.clear();
+    this.awaitingCaps.clear();
     // Nothing subscribed → just go idle, no reconnect.
     if (this.refCount === 0) {
       this.state = 'idle';
@@ -298,6 +353,8 @@ export class PeerStreamProxy {
   }
 
   private teardownTransport(): void {
+    this.caps.clear();
+    this.awaitingCaps.clear();
     if (this.reconnectTimer) {
       this.d.clearTimer(this.reconnectTimer);
       this.reconnectTimer = null;

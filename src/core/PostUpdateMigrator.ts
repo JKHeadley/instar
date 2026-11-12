@@ -63,6 +63,7 @@ import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
 import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
+import { dashboardInputAwareness, DASHBOARD_INPUT_AWARENESS_MARKER } from '../server/dashboardInputAwareness.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
 import os from 'node:os';
@@ -9971,6 +9972,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    // native-conversation-any-machine-access §3e — the dashboard reply box and its session line.
+    if (!content.includes(DASHBOARD_INPUT_AWARENESS_MARKER)) {
+      content += '\n' + dashboardInputAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard reply box awareness');
+    }
+
     if (!content.includes('Telegram test groups:')) {
       content += '\n' + telegramOriginTestGroupsAwareness();
       patched = true;
@@ -17139,6 +17147,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [DASHBOARD_INPUT_AWARENESS_MARKER, dashboardInputAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],

@@ -10888,6 +10888,18 @@ export function createRoutes(ctx: RouteContext): Router {
     }
   });
 
+  // native-conversation-any-machine-access §3e: the dashboard reply box's
+  // counters (seen input ids evicted, flagged retries refused as unknown,
+  // repeats answered from the record). Privacy-safe: no text, no ids. Read by
+  // the 2026-11-25 maturation check; machine-local by design.
+  router.get('/sessions/dashboard-input-status', (_req, res) => {
+    if (!ctx.wsManager) {
+      res.json({ available: false, reason: 'the live dashboard socket is not running yet' });
+      return;
+    }
+    res.json({ available: true, ...ctx.wsManager.inputDurabilityStats() });
+  });
+
   router.get('/sessions/inbound-delivery-status', (_req, res) => {
     const status = ctx.sessionManager.inboundDeliveryStatus();
     res.json({

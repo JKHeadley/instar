@@ -11,6 +11,7 @@ import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
  * When augmenting an existing project, only missing files are created.
  */
 
+import { dashboardInputAwareness } from "../server/dashboardInputAwareness.js";
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
 import { conversationsAwareness } from '../messaging/shared/conversationGraphChat.js';
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
@@ -2030,6 +2031,8 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
   // message-origin-all-platforms: every agent (app and Slack record origin without Telegram).
   content += '\n' + messageOriginAllPlatformsAwareness(port);
   content += '\n' + conversationsAwareness();
+  // native-conversation-any-machine-access §3e: the dashboard reply box and its session line.
+  content += '\n' + dashboardInputAwareness();
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);

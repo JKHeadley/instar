@@ -247,3 +247,49 @@ describe('PeerStreamProxy — read-only frame relay (history, §2.2)', () => {
     ]);
   });
 });
+
+describe('PeerStreamProxy — input capabilities and relay result (native-conversation-any-machine-access §3e)', () => {
+  it('relayInput says whether the frame was sent: false while connecting, true when active', () => {
+    const h = harness();
+    h.proxy.subscribe('s1', 'c1');
+    expect(h.proxy.relayInput({ type: 'input', session: 's1', text: 'x' })).toBe(false);
+    h.last().handlers.onOpen();
+    expect(h.proxy.relayInput({ type: 'input', session: 's1', text: 'x' })).toBe(true);
+    expect(h.last().sent).toContainEqual({ type: 'input', session: 's1', text: 'x' });
+  });
+
+  it('keeps the serving machine\'s input_caps for replay, normalised, and forgets it when the link drops', () => {
+    const h = harness();
+    h.proxy.subscribe('s1', 'c1');
+    h.last().handlers.onOpen();
+    expect(h.proxy.inputCaps('s1')).toBeNull();
+    h.last().handlers.onFrame({ type: 'input_caps', session: 's1', inputAck: 2, remoteInput: true, extra: 'dropped' });
+    expect(h.proxy.inputCaps('s1')).toEqual({ type: 'input_caps', session: 's1', inputAck: 2, remoteInput: true });
+    expect(h.framesToClients.at(-1)).toEqual({ session: 's1', frame: { type: 'input_caps', session: 's1', inputAck: 2, remoteInput: true } });
+    h.last().handlers.onClose();
+    expect(h.proxy.inputCaps('s1')).toBeNull();
+    // After the reconnect the machine must say it again; an older one gets inputAck 1 on its `subscribed`.
+    h.last().handlers.onOpen();
+    h.last().handlers.onFrame({ type: 'subscribed', session: 's1' });
+    expect(h.proxy.inputCaps('s1')).toEqual({ type: 'input_caps', session: 's1', inputAck: 1, remoteInput: null });
+  });
+
+  it('does not synthesise caps from frames other than the subscribe answer', () => {
+    const h = harness();
+    h.proxy.subscribe('s1', 'c1');
+    h.last().handlers.onOpen();
+    h.last().handlers.onFrame({ type: 'output', session: 's1', data: 'straggler' });
+    expect(h.proxy.inputCaps('s1')).toBeNull();
+    h.last().handlers.onFrame({ type: 'input_caps', session: 's1', inputAck: 2, remoteInput: false });
+    expect(h.proxy.inputCaps('s1')).toMatchObject({ inputAck: 2, remoteInput: false });
+  });
+
+  it('forgets a session\'s caps when its last client leaves', () => {
+    const h = harness();
+    h.proxy.subscribe('s1', 'c1');
+    h.last().handlers.onOpen();
+    h.last().handlers.onFrame({ type: 'input_caps', session: 's1', inputAck: 2, remoteInput: true });
+    h.proxy.unsubscribe('s1', 'c1');
+    expect(h.proxy.inputCaps('s1')).toBeNull();
+  });
+});

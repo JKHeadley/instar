@@ -10,8 +10,8 @@
  *   { type: 'subscribe', session: 'session-name' }
  *   { type: 'unsubscribe', session: 'session-name' }
  *   { type: 'history', session: 'session-name', lines: 5000 }
- *   { type: 'input', session: 'session-name', text: 'some input' }
- *   { type: 'key', session: 'session-name', key: 'C-c' }
+ *   { type: 'input', session: 'session-name', text: 'some input', clientInputId?, retry? }
+ *   { type: 'key', session: 'session-name', key: 'C-c', clientInputId? }
  *   { type: 'ping' }
  *
  * Server → Client:
@@ -21,7 +21,8 @@
  *   { type: 'session_ended', session: 'session-name' }
  *   { type: 'subscribed', session: 'session-name' }
  *   { type: 'unsubscribed', session: 'session-name' }
- *   { type: 'input_ack', session: 'session-name', success: true }
+ *   { type: 'input_caps', session, inputAck: 2, remoteInput: boolean }   (first, per subscribe)
+ *   { type: 'input_ack', session: 'session-name', success: true, clientInputId? }
  *   { type: 'pong' }
  *   { type: 'error', message: '...' }
  */
@@ -45,6 +46,7 @@ import type { DesktopMeshBroker } from './DesktopMeshBroker.js';
 import { DesktopMeshStreamRelay } from './DesktopMeshStreamRelay.js';
 import { machineAuthMiddleware, type MachineAuthDeps, type MachineAuthContext } from './machineAuth.js';
 import { isLoopbackPeer } from '../core/desktopTransport.js';
+import { InputIdLedger, CLIENT_INPUT_ID, type InputAckFrame } from './InputIdLedger.js';
 import type { Request as ExpressRequest, Response as ExpressResponse } from 'express';
 
 /** Pool Dashboard Streaming §2.1: only tmux-safe session names ever reach tmux. */
@@ -100,6 +102,14 @@ export class WebSocketManager {
   /** One multiplexed upstream proxy per peer machine (requesting side). */
   private peerProxies = new Map<string, PeerStreamProxy>();
   private resolveSessionPlatform?: (tmuxSession: string) => SessionPlatformInfo;
+  /** §3e item 3 (serving side): seen input ids per session. */
+  private readonly inputIds = new InputIdLedger<ClientState>();
+  /** §3e item 3 (relay side): which browser client sent each pending relayed
+   *  id, keyed `${machineId}::${session}::${id}`, so the serving machine's
+   *  answer goes to that client alone. Entries leave on the answer, when the
+   *  client disconnects or drops that remote subscription, and past the bound. */
+  private readonly pendingRelayedInputs = new Map<string, { client: ClientState; outstanding: number }>();
+  private static readonly PENDING_RELAYED_MAX = 4096;
 
   constructor(options: {
     server: HttpServer;
@@ -292,6 +302,7 @@ export class WebSocketManager {
 
     // Broadcast session list periodically
     this.sessionBroadcastInterval = setInterval(() => {
+      this.pruneInputIds();
       this.broadcastSessionList();
     }, 5_000);
     this.sessionBroadcastInterval.unref();
@@ -333,21 +344,117 @@ export class WebSocketManager {
    *  - PEER client + remote input disabled → input-not-allowed (§2.3 default-off);
    *  - session not running locally → session-not-found (never relay to tmux blind).
    */
-  private gateWrite(client: ClientState, session: string): boolean {
+  private gateWrite(client: ClientState, session: string, clientInputId?: string): boolean {
+    const id = clientInputId ? { clientInputId } : {};
     if (!this.isValidSessionName(session)) {
-      this.send(client.ws, { type: 'error', code: 'invalid-session', session });
+      this.send(client.ws, { type: 'error', code: 'invalid-session', session, ...id });
       return false;
     }
     if (client.isPeer && !this.poolStreamAllowRemoteInput) {
-      this.send(client.ws, { type: 'error', code: 'input-not-allowed', session });
+      this.send(client.ws, { type: 'error', code: 'input-not-allowed', session, ...id });
       return false;
     }
     const exists = this.sessionManager.listRunningSessions().some((s) => s.tmuxSession === session);
     if (!exists) {
-      this.send(client.ws, { type: 'error', code: 'session-not-found', session });
+      this.send(client.ws, { type: 'error', code: 'session-not-found', session, ...id });
       return false;
     }
     return true;
+  }
+
+  /** §3e item 1: what this machine can do for input into `session`, said first
+   *  on every subscribe. A peer link learns whether this machine accepts remote
+   *  input; a local browser may always type into a local session. */
+  private inputCapsFrame(client: ClientState, session: string): Record<string, unknown> {
+    return { type: 'input_caps', session, inputAck: 2, remoteInput: client.isPeer ? this.poolStreamAllowRemoteInput : true };
+  }
+
+  /**
+   * §3e item 3: a write that carries a `clientInputId`. The id is recorded
+   * before the write; a repeated id gets the original acknowledgement on the
+   * connection it came in on, without writing again; a flagged retry whose id
+   * is not known is refused and not typed (the server cannot tell a first try
+   * that never arrived from one it has forgotten).
+   */
+  private writeWithId(client: ClientState, session: string, id: string, retry: boolean, write: () => boolean): void {
+    if (!this.isValidSessionName(session)) {
+      this.send(client.ws, { type: 'error', code: 'invalid-session', session, clientInputId: id });
+      return;
+    }
+    const known = this.inputIds.lookup(session, id);
+    if (known.kind === 'done') { this.send(client.ws, { ...known.ack }); return; }
+    if (known.kind === 'pending') { known.addWaiter(client); return; }
+    if (!this.gateWrite(client, session, id)) return;
+    if (retry) {
+      this.inputIds.noteRetryUnknown(session);
+      this.send(client.ws, { type: 'error', code: 'input-retry-unknown', session, clientInputId: id });
+      return;
+    }
+    this.inputIds.begin(session, id);
+    let success = false;
+    try { success = write(); } catch { success = false; }
+    const ack: InputAckFrame = { type: 'input_ack', session, success, clientInputId: id };
+    const waiters = this.inputIds.complete(session, id, ack);
+    this.send(client.ws, { ...ack });
+    for (const w of waiters) this.send(w.ws, { ...ack });
+  }
+
+  /** Read the optional id of an input/key frame. `undefined` = none (legacy,
+   *  id-less path); `null` = present but malformed (refused, never echoed). */
+  private readInputId(msg: Record<string, unknown>): string | null | undefined {
+    if (msg.clientInputId === undefined || msg.clientInputId === null) return undefined;
+    return typeof msg.clientInputId === 'string' && CLIENT_INPUT_ID.test(msg.clientInputId) ? msg.clientInputId : null;
+  }
+
+  /** Relay an input/key frame to the serving machine; the answer for its id
+   *  goes back to this client alone. Not sent → `peer-stream-lost` with the id. */
+  private relayWrite(client: ClientState, machineId: string, session: string, frame: Record<string, unknown>, id: string | undefined): void {
+    const pendingKey = id ? `${machineId}::${session}::${id}` : null;
+    if (pendingKey) {
+      // A repeat of an id still waiting (a retry before the first answer) waits for its own answer too.
+      const prev = this.pendingRelayedInputs.get(pendingKey);
+      this.pendingRelayedInputs.delete(pendingKey);
+      this.pendingRelayedInputs.set(pendingKey, { client, outstanding: prev && prev.client === client ? prev.outstanding + 1 : 1 });
+      while (this.pendingRelayedInputs.size > WebSocketManager.PENDING_RELAYED_MAX) {
+        this.pendingRelayedInputs.delete(this.pendingRelayedInputs.keys().next().value as string);
+      }
+    }
+    const sent = this.peerProxies.get(machineId)?.relayInput(frame) ?? false;
+    if (!sent) {
+      if (pendingKey) this.settlePending(pendingKey);
+      this.send(client.ws, { type: 'error', code: 'peer-stream-lost', session, machineId, ...(id ? { clientInputId: id } : {}) });
+    }
+  }
+
+  /** One answer (or one unsent frame) settles one outstanding send of that id; returns its tab. */
+  private settlePending(pendingKey: string): ClientState | undefined {
+    const p = this.pendingRelayedInputs.get(pendingKey);
+    if (!p) return undefined;
+    if (--p.outstanding <= 0) this.pendingRelayedInputs.delete(pendingKey);
+    return p.client;
+  }
+
+  /** Forget ids of sessions that are no longer running here (§3e Left behind 16). */
+  private pruneInputIds(): void {
+    try {
+      this.inputIds.prune(new Set(this.sessionManager.listRunningSessions().map((s) => s.tmuxSession)));
+    } catch { /* @silent-fallback-ok: pruning is housekeeping; ids stay bounded per session */ }
+  }
+
+  /** §3e counters for the 2026-11-25 maturation check (serving side), plus the
+   *  relay's count of answers still waiting. Privacy-safe: no text, no ids. */
+  inputDurabilityStats(): Record<string, unknown> {
+    const s = this.inputIds.stats();
+    return {
+      inputAck: 2,
+      allowRemoteInput: this.poolStreamAllowRemoteInput,
+      idsPerSession: s.idsPerSession,
+      inputIdsEvicted: s.totals.evicted,
+      inputRetryUnknown: s.totals.retryUnknown,
+      inputIdsRepeated: s.totals.repeated,
+      sessions: s.sessions,
+      relayPendingAnswers: this.pendingRelayedInputs.size,
+    };
   }
 
   // ── Requesting side (§2.2): route a remote session through a peer proxy ──
@@ -400,6 +507,14 @@ export class WebSocketManager {
   /** Fan a peer frame out to every LOCAL client subscribed to (machineId, session). */
   private fanRemoteFrame(machineId: string, session: string, frame: Record<string, unknown>): void {
     const key = `${machineId}::${session}`;
+    // §3e item 3: an answer that carries an input id goes to the client that
+    // sent that id, and to no one else. An unknown id (its sender left) is dropped.
+    if ((frame.type === 'input_ack' || frame.type === 'error') && typeof frame.clientInputId === 'string') {
+      const pendingKey = `${key}::${frame.clientInputId}`;
+      const sender = this.settlePending(pendingKey);
+      if (sender && this.clients.has(sender.ws)) this.send(sender.ws, { ...frame, machineId });
+      return;
+    }
     for (const c of this.clients.values()) {
       if (c.remoteSubs?.has(key)) this.send(c.ws, { ...frame, machineId });
     }
@@ -408,6 +523,10 @@ export class WebSocketManager {
   /** Surface an honest error to every local client subscribed to (machineId, session). */
   private sendRemoteError(machineId: string, session: string, code: string): void {
     const key = `${machineId}::${session}`;
+    // The link to that machine dropped: answers for ids sent on it will not come back here,
+    // so their pending entries leave now (the tab keeps its draft and decides; §3e).
+    const prefix = `${key}::`;
+    for (const k of this.pendingRelayedInputs.keys()) if (k.startsWith(prefix)) this.pendingRelayedInputs.delete(k);
     for (const c of this.clients.values()) {
       if (c.remoteSubs?.has(key)) this.send(c.ws, { type: 'error', code, session, machineId });
     }
@@ -415,6 +534,7 @@ export class WebSocketManager {
 
   /** Tear down a client's remote subscriptions (on unsubscribe-all / close). */
   private dropRemoteSubsForClient(client: ClientState): void {
+    for (const [k, p] of this.pendingRelayedInputs) if (p.client === client) this.pendingRelayedInputs.delete(k);
     if (!client.remoteSubs) return;
     const clientId = this.clientId(client);
     for (const key of client.remoteSubs) {
@@ -444,11 +564,18 @@ export class WebSocketManager {
         const subMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
         if (this.isRemoteTarget(subMachine, session)) {
           (client.remoteSubs ??= new Set()).add(`${subMachine}::${session}`);
-          this.peerProxyFor(subMachine!).subscribe(session, this.clientId(client));
+          const proxy = this.peerProxyFor(subMachine!);
+          proxy.subscribe(session, this.clientId(client));
           this.send(client.ws, { type: 'subscribed', session, machineId: subMachine });
+          // §3e item 1: the link is shared, so a client that subscribes after
+          // the serving machine said what it can do gets that answer replayed.
+          const caps = proxy.inputCaps(session);
+          if (caps) this.send(client.ws, { ...caps, machineId: subMachine });
           break;
         }
         client.subscriptions.add(session);
+        // §3e item 1: say what this machine can do for input, before anything else.
+        this.send(client.ws, this.inputCapsFrame(client, session));
         // Send current output immediately — use large capture for initial load
         const output = this.sessionManager.captureOutput(session, 2000);
         if (output) {
@@ -464,6 +591,8 @@ export class WebSocketManager {
         const unsubMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
         if (unsubMachine && client.remoteSubs?.has(`${unsubMachine}::${session}`)) {
           client.remoteSubs.delete(`${unsubMachine}::${session}`);
+          const prefix = `${unsubMachine}::${session}::`;
+          for (const [k, p] of this.pendingRelayedInputs) if (p.client === client && k.startsWith(prefix)) this.pendingRelayedInputs.delete(k);
           this.peerProxies.get(unsubMachine)?.unsubscribe(session, this.clientId(client));
           this.send(client.ws, { type: 'unsubscribed', session, machineId: unsubMachine });
           break;
@@ -481,11 +610,26 @@ export class WebSocketManager {
           this.send(client.ws, { type: 'error', message: 'Missing session or text' });
           return;
         }
+        const inputId = this.readInputId(msg);
+        if (inputId === null) {
+          this.send(client.ws, { type: 'error', code: 'invalid-input-id', session });
+          return;
+        }
+        const retry = inputId !== undefined && msg.retry === true;
         const inMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
         if (inMachine && client.remoteSubs?.has(`${inMachine}::${session}`)) {
           // Relay to the peer; the SERVING machine enforces its allowRemoteInput
-          // gate and replies input_ack / input-not-allowed, which we fan back.
-          this.peerProxies.get(inMachine)?.relayInput({ type: 'input', session, text });
+          // gate and answers input_ack / an error with the id, which goes back
+          // to this client alone (fanRemoteFrame).
+          this.relayWrite(client, inMachine, session, {
+            type: 'input', session, text,
+            ...(inputId ? { clientInputId: inputId } : {}),
+            ...(retry ? { retry: true } : {}),
+          }, inputId);
+          break;
+        }
+        if (inputId) {
+          this.writeWithId(client, session, inputId, retry, () => this.sessionManager.sendInput(session, text));
           break;
         }
         if (!this.gateWrite(client, session)) return;
@@ -501,9 +645,20 @@ export class WebSocketManager {
           this.send(client.ws, { type: 'error', message: 'Missing session or key' });
           return;
         }
+        // §3e item 7: a key gets an id and an answer, and is never retried
+        // (a repeated Enter or Ctrl-C is an action), so `retry` is ignored here.
+        const keyId = this.readInputId(msg);
+        if (keyId === null) {
+          this.send(client.ws, { type: 'error', code: 'invalid-input-id', session });
+          return;
+        }
         const keyMachine = typeof msg.machineId === 'string' ? msg.machineId : undefined;
         if (keyMachine && client.remoteSubs?.has(`${keyMachine}::${session}`)) {
-          this.peerProxies.get(keyMachine)?.relayInput({ type: 'key', session, key });
+          this.relayWrite(client, keyMachine, session, { type: 'key', session, key, ...(keyId ? { clientInputId: keyId } : {}) }, keyId);
+          break;
+        }
+        if (keyId) {
+          this.writeWithId(client, session, keyId, false, () => this.sessionManager.sendKey(session, key));
           break;
         }
         if (!this.gateWrite(client, session)) return;
