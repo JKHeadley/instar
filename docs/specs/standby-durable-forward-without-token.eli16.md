@@ -14,10 +14,14 @@ That happened twice on November 11, both times from the M5, while the Studio was
 2. **If the sending machine can't be reached, the reply is saved anyway.** It gets a "number to be filled in" placeholder. When a sending machine answers again (the same one, or another that has taken over the role), the saved reply is sealed with the real number and sent, once.
 3. **If the sending machine is suddenly using a different bot** from the one a reply was sealed for, the reply is not sent automatically. You get a dashboard item naming both bots, so a misconfigured machine can never post your conversation through the wrong bot.
 4. **If the sending role briefly moves to a machine without the login,** which can't send, the reply waits instead of getting stuck.
-5. **No more false "don't resend".** If a reply really wasn't saved, the agent is told "not sent, safe to send again".
-6. **Several replies saved during one outage never cancel each other out.** A saved reply is only set aside if a newer, live reply from the agent reached you first. A message from you, or another saved reply, never sets it aside.
-7. **"Your reply is delayed" notices aren't saved for later.** So you never get a stale delay notice after the reply itself. They're re-posted once a sending machine is reachable again, if still relevant.
-8. **The other machines are told.** While a reply is saved only on the machine that wrote it, that machine tells every other machine it can still reach, with no message text, just "a reply is pending here". If that machine were lost for good, the others would show it as lost instead of it vanishing.
+5. **"Your reply is delayed" notices aren't saved for later.** So you never get a stale delay notice after the reply itself. They're re-posted once a sending machine is reachable again, if still relevant.
+6. **The other machines are told.** While a reply is saved only on the machine that wrote it, that machine tells every other machine it can still reach, with no message text, just "a reply is pending here". If that machine were lost for good, the others would show it as lost instead of it vanishing.
+
+## What this plan no longer covers
+
+On November 11 we found that the Conversation Robustness work (running on the Mama PC) changes the same delivery code. So this plan was cut down to the one piece only it covers: a machine without the login saves and retries a reply instead of dropping it. Two things moved to the robustness work:
+- Whether a later message can cancel a waiting reply. The robustness work removes that rule entirely, so a waiting reply is never cancelled by a newer message. This plan has to land after that change, or together with it.
+- What the agent is told about whether a reply arrived and whether it's safe to send again.
 
 ## Safeguards
 
@@ -28,7 +32,7 @@ That happened twice on November 11, both times from the M5, while the Studio was
 
 It's switched on for my development setup first, and goes to every agent only after the usual rollout review sees it working: at least one real recovered reply, and no losses.
 
-It's tested with a pretend sending machine that goes offline and comes back, plus the lost-answer, role-flapping and two-replies cases. Then it's tested on the real machines: the Studio is briefly cut off, and a reply from the M5 has to arrive afterwards with no manual resend.
+It's tested with a pretend sending machine that goes offline and comes back, plus the lost-answer and role-flapping cases. Then it's tested on the real machines: the Studio is briefly cut off, and a reply from the M5 has to arrive afterwards with no manual resend.
 
 ## What you need to decide
 
