@@ -2299,6 +2299,14 @@ export interface MachineRegistryEntry {
    */
   nickname?: string;
   /**
+   * Where `nickname` came from. `user`: typed by a person (never replaced automatically).
+   * `auto-self`: the machine's own friendly name (macOS ComputerName / Linux pretty hostname).
+   * `auto-derived`: derived from another machine's view of the hostname (e.g. at pairing); the
+   * machine itself upgrades it to its own friendly name on boot. Absent on older registries:
+   * treated like `user` (never replaced) when a nickname is present.
+   */
+  nicknameSource?: 'user' | 'auto-self' | 'auto-derived';
+  /**
    * Self-attested static hardware properties (Session Pool §L2) — captured by
    * the machine from `os` and recorded into ITS OWN registry entry, then synced
    * to peers via the registry. Surfaced on the Machines dashboard tab + GET /pool.
