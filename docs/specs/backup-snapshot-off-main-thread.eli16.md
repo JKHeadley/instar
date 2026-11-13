@@ -44,3 +44,5 @@ The hourly snapshot's heavy part (copying the files, writing the manifest, delet
 Nothing. This is a small, reversible change (a revert restores the old behaviour, and no stored data changes shape). It removes one known cause of the server being killed under load; it is not the only cause, and the others are tracked under the same commitment (CMT-1718).
 
 The two places where the clean-up of leftover working folders skips a folder it cannot read are each marked with the reason, so the project-wide check for quietly swallowed errors stays at its agreed count.
+
+After main gained a neighbouring change, the two were merged; both are kept and the checks were run again on the result.

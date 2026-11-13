@@ -90,3 +90,7 @@ Moves a 400 MB synchronous copy and a recursive delete off the server's main thr
 ## Scanner follow-up (2026-11-13)
 
 The staging sweep's two catch blocks (unreadable backups directory, staging directory gone mid-sweep) now carry `@silent-fallback-ok` reasons. Comment-only; no behaviour change. Found by Local Verify (`tests/unit/no-silent-fallbacks`, 496 over a 494 baseline).
+
+## Merge with main (2026-11-13)
+
+Main gained PR 3136 (usage-ledger scan), which adds an import on the line next to this change's import in `src/server/AgentServer.ts`. Both imports are kept; nothing else conflicted. Type check clean; the 35 unit tests of this change and the fallback scanner pass on the merged tree.
