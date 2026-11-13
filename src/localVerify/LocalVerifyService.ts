@@ -347,13 +347,17 @@ export type MergeHandoff = (record: LocalVerifyRecord, ctx: MergeHandoffContext)
 /**
  * Should a PR entry re-read its base head before it starts? Yes when `main` moved
  * after the entry's base was resolved (a merge landed, or the reconcile loop saw a
- * new head), or when the entry has waited `baseRefreshAfterMs` since then. Pure.
+ * new head), or when the entry has waited `baseRefreshAfterMs` since then, or when the
+ * entry was restored after a restart (`baseResolvedAt: 0`): what merged while the server was
+ * down is unknown. Pure.
  */
 export function decideBaseRefresh(
   entry: { baseRefName: string; firstQueuedAt: number; baseResolvedAt?: number },
   i: { now: number; mainMovedAt: number | null },
   limits: { baseRefreshAfterMs: number } = MERGE_LINE,
 ): boolean {
+  // 0 = restored from the durable queue and not resolved by this process yet: always re-read.
+  if (entry.baseResolvedAt === 0) return true;
   const resolvedAt = entry.baseResolvedAt ?? entry.firstQueuedAt;
   if (i.mainMovedAt !== null && entry.baseRefName === 'main' && i.mainMovedAt > resolvedAt) return true;
   return i.now - resolvedAt >= limits.baseRefreshAfterMs;
@@ -1128,8 +1132,13 @@ export class LocalVerifyService {
       if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput) + 1) { drops['queue-full']++; continue; }
       const entry: QueueEntry = {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
+        // The saved base, never the PR view's `baseRefOid`: that is the base as of the PR's last
+        // update and can be hours or days stale (see LocalVerifyServiceSeams.baseHead). Restoring it
+        // put two runs on a main from seven hours earlier (2026-11-13 18:50Z, PRs 3137 and 3096:
+        // both failed, one on a flake fixed on main that morning). The saved base is the newest this
+        // service resolved, and the pre-start refresh below re-reads today's head before any run.
         // A reserved entry keeps the base it was dispatched with (the marker's snapshot decides import).
-        baseSha: e.remote ? e.baseSha : (view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha),
+        baseSha: e.baseSha,
         baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.firstRefusedAt !== undefined ? { firstRefusedAt: e.firstRefusedAt } : {}),
@@ -1137,7 +1146,11 @@ export class LocalVerifyService {
         priority: restoredPriority,
         files: view ? viewFiles(view) : null, text: view ? prMatchText(view.title, view.body) : '',
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
-        ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
+        // A reserved entry keeps when its base was resolved (it is not re-read: see above). Any other
+        // entry comes back as "never resolved" (0), so decideBaseRefresh re-reads its base before it
+        // starts, whatever its branch: this process cannot know what merged while it was down. The
+        // next resolution (a pre-start refresh or a new request) writes a real time.
+        ...(e.remote ? (e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}) : { baseResolvedAt: 0 }),
         ...(e.remote ? { remote: e.remote } : {}),
         ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
         ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
