@@ -7,7 +7,9 @@
  * nothing broken. End-to-end tests that run beside a full suite failed unrelated changes that
  * way (2026-11-12/13). Defaults are unchanged; these tests pin both sides of each budget.
  */
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { generateKeyPairSync } from 'node:crypto';
 import { OriginStore } from '../../../src/messaging/telegram-origin/OriginStore.js';
 import { OriginSessionRegistry } from '../../../src/messaging/telegram-origin/OriginSessionRegistry.js';
@@ -15,6 +17,7 @@ import { RuntimeOriginObserver } from '../../../src/messaging/telegram-origin/Ru
 import {
   ORIGIN_STAGE_DEADLINE_MAX_MS, ORIGIN_STAGE_DEADLINES_MS, TelegramOriginService, type OriginStageDeadlines,
 } from '../../../src/messaging/telegram-origin/TelegramOriginService.js';
+import { resolveOriginStageDeadline, setOriginStageDeadlineProcessDefaults } from '../../../src/messaging/telegram-origin/OriginStageDeadlines.js';
 import { compileOriginWorker, temporaryState, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../../helpers/telegramOriginStore.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
 
@@ -35,6 +38,9 @@ const ALL_GENEROUS: OriginStageDeadlines = { storeEvidenceMs: GENEROUS, spoolEvi
 const defaultOnlyFor = (stage: keyof OriginStageDeadlines): Partial<OriginStageDeadlines> => {
   const rest: Partial<OriginStageDeadlines> = { ...ALL_GENEROUS }; delete rest[stage]; return rest;
 };
+// The suite's setup file lifts this process's default budgets for every test file. This file
+// is about the production budgets themselves, so it puts them back for its own run.
+beforeEach(() => { setOriginStageDeadlineProcessDefaults(null); });
 
 async function harness(stageDeadlines?: Partial<OriginStageDeadlines>) {
   const stateDir = temporaryState();
@@ -160,5 +166,59 @@ describe('a bad value never widens or removes a budget', () => {
     h.slow('putEvidence', 100);
     await expect(h.send()).rejects.toMatchObject({ reason: 'all-durable-recording-sinks-unavailable' });
     expect(h.spoolEvidence).toHaveBeenCalledOnce();
+  });
+});
+
+describe('process-wide defaults (what the suite setup file uses)', () => {
+  it('a process default applies to a service that sets no budget of its own', async () => {
+    setOriginStageDeadlineProcessDefaults({ ...ALL_GENEROUS });
+    const h = await harness();
+    h.slow('putEvidence', 600);
+    await h.send();
+    expect(h.spoolEvidence).not.toHaveBeenCalled();
+    expect(h.network).toHaveBeenCalledOnce();
+  });
+
+  it("a service's own budget wins over the process default", async () => {
+    setOriginStageDeadlineProcessDefaults({ ...ALL_GENEROUS });
+    const h = await harness({ storeEvidenceMs: ORIGIN_STAGE_DEADLINES_MS.storeEvidenceMs });
+    h.slow('putEvidence', 600);
+    await expect(h.send()).rejects.toMatchObject({ reason: 'all-durable-recording-sinks-unavailable' });
+  });
+
+  it('null restores the production budgets, and invalid fields are ignored stage by stage', () => {
+    setOriginStageDeadlineProcessDefaults({ storeEvidenceMs: 5000, spoolEvidenceMs: 0, admitMs: ORIGIN_STAGE_DEADLINE_MAX_MS + 1,
+      peerEvidenceMs: Number.NaN, verifiedEvidenceMs: '9000' as unknown as number });
+    expect(resolveOriginStageDeadline('storeEvidenceMs')).toBe(5000);
+    expect(resolveOriginStageDeadline('spoolEvidenceMs')).toBe(500);
+    expect(resolveOriginStageDeadline('admitMs')).toBe(1000);
+    expect(resolveOriginStageDeadline('peerEvidenceMs')).toBe(1250);
+    expect(resolveOriginStageDeadline('verifiedEvidenceMs')).toBe(1000);
+    setOriginStageDeadlineProcessDefaults(null);
+    expect(resolveOriginStageDeadline('storeEvidenceMs')).toBe(250);
+  });
+
+  it('nothing under src/ calls the process-default setter: production keeps its budgets', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!/\.(ts|tsx|js|mjs)$/.test(entry.name) || full.endsWith(path.join('telegram-origin', 'OriginStageDeadlines.ts'))) continue;
+        if (fs.readFileSync(full, 'utf8').includes('setOriginStageDeadlineProcessDefaults')) offenders.push(path.relative(process.cwd(), full));
+      }
+    };
+    walk(path.resolve('src'));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the budgets module imports nothing: the suite setup file loads it before any vi.mock applies', () => {
+    // tests/vitest-setup.ts imports this module in every test file. An import here would be
+    // cached ahead of that file's vi.mock calls (the incident recorded in
+    // scripts/lint-no-direct-destructive.js: a src import in the setup file cached
+    // node:child_process and turned three suites red).
+    const source = fs.readFileSync(path.resolve('src/messaging/telegram-origin/OriginStageDeadlines.ts'), 'utf8');
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    expect(code).not.toMatch(/\bimport\b|\brequire\s*\(/);
   });
 });

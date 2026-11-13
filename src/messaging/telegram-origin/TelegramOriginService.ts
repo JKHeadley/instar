@@ -1,3 +1,4 @@
+import { resolveOriginStageDeadline, type OriginStageDeadlines } from './OriginStageDeadlines.js';
 import { categoryForProducer } from '../notificationCategories.js';
 import { NotificationSelectivityGate, QuietRecordedError, notificationContext, verifiedReplyEnvelope, isVerifiedReplyEnvelope, verifiedJobEnvelope, isVerifiedJobEnvelope } from '../NotificationSelectivityGate.js';
 import type { OutboundEnvelope } from '../NotificationSelectivityGate.js';
@@ -100,24 +101,7 @@ export interface OriginServiceOptions {
   stageDeadlines?: Partial<OriginStageDeadlines>;
   now?: () => number;
 }
-/** Per-stage budgets, in milliseconds. */
-export interface OriginStageDeadlines {
-  /** Evidence into the store. A miss falls to the spool. */
-  storeEvidenceMs: number;
-  /** Evidence into the local spool. A miss falls to the peer, when one is wired. */
-  spoolEvidenceMs: number;
-  /** Evidence to a peer machine. A miss holds the send: all-durable-recording-sinks-unavailable. */
-  peerEvidenceMs: number;
-  /** Verified evidence into the store, before admission. A miss holds: execution-admission-unavailable. */
-  verifiedEvidenceMs: number;
-  /** Admission of the sealed plan. A miss holds: execution-admission-unavailable. */
-  admitMs: number;
-}
-export const ORIGIN_STAGE_DEADLINES_MS: Readonly<OriginStageDeadlines> = Object.freeze({
-  storeEvidenceMs: 250, spoolEvidenceMs: 500, peerEvidenceMs: 1250, verifiedEvidenceMs: 1000, admitMs: 1000,
-});
-/** The largest budget a caller may set for one stage. */
-export const ORIGIN_STAGE_DEADLINE_MAX_MS = 60_000;
+export { ORIGIN_STAGE_DEADLINES_MS, ORIGIN_STAGE_DEADLINE_MAX_MS, type OriginStageDeadlines } from './OriginStageDeadlines.js';
 interface OriginScope { producer: TelegramOriginProducer; operations: string[]; policy?: OriginSendPolicyInput; policyReviewed?: boolean;
   logicalSendKey?: string; logicalOrdinal?: number; }
 export interface OriginPreparedBotOperation { record: TelegramOriginRecord; admission: OriginAdmission; }
@@ -514,13 +498,12 @@ export class TelegramOriginService {
   }
   /**
    * The budget for one stage: the caller's value when it is a whole number of milliseconds
-   * from 1 to ORIGIN_STAGE_DEADLINE_MAX_MS, otherwise the default. A bad value never widens or
+   * from 1 to ORIGIN_STAGE_DEADLINE_MAX_MS, otherwise the process default, otherwise the
+   * production budget (resolveOriginStageDeadline). A bad value never widens or
    * removes a deadline.
    */
   #stageDeadline(stage: keyof OriginStageDeadlines): number {
-    const set = this.options.stageDeadlines?.[stage];
-    return typeof set === 'number' && Number.isSafeInteger(set) && set >= 1 && set <= ORIGIN_STAGE_DEADLINE_MAX_MS
-      ? set : ORIGIN_STAGE_DEADLINES_MS[stage];
+    return resolveOriginStageDeadline(stage, this.options.stageDeadlines);
   }
   async #recordEvidence(record: StoredOriginInput): Promise<void> {
     try { await within(this.options.store.putEvidence(record), this.#stageDeadline('storeEvidenceMs')); return; } catch { /* Inert evidence only; a late commit cannot send. */ }
