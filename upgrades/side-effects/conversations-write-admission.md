@@ -35,3 +35,7 @@ This fixes a machine-dependent feature: write admission now resolves the same on
 
 ## 8. Rollback cost
 Revert the commit. Machines go back to the dev-agent gate and Conversations returns to pending on fleet multi-machine agents. Rollback needs no state repair, because dry-run rows are logs only. An agent can also set `multiMachine.writeAdmission.enabled: false`.
+
+## Follow-up: Local Verify finding (2026-11-13)
+
+`topic-ref-ratchet` failed: `untitledConversationName` rendered a bare `Topic ${id}`, which the operator rule (2026-11-02) forbids: a topic id is never shown without its name. It now returns the verified registry name through `topicNameFor` when one exists, else `TopicRef(id)` ("Topic N (name unresolved)"). Search still finds it by number. The resolver is the one wired at server boot; with none set, the honest "name unresolved" form is used. Tests: `tests/unit/conversation-graph.test.ts` (unresolved form, and the verified name when the registry has one).

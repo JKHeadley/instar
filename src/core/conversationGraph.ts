@@ -42,6 +42,7 @@
  *  5. THE PROJECTION filters by viewer FIRST, then counts, searches, paths and pages.
  */
 import crypto from 'node:crypto';
+import { topicNameFor, TopicRef } from '../messaging/shared/topicRef.js';
 
 export const GRAPH_EVENT_SCHEMA_VERSION = 1;
 export const MAX_GRAPH_EVENT_BYTES = 16 * 1024;
@@ -58,7 +59,9 @@ export type NodeRef = EffortRef | ConversationRef;
 /** The name a conversation with no title shows: the same "Topic N" the chat list
  * uses for a Telegram topic, so an untitled row is never just "Conversation". */
 export function untitledConversationName(ref: ConversationRef): string {
-  if (ref.platform === 'telegram') return `Topic ${ref.topicId}`;
+  // The verified name from the topic registry when there is one, else "Topic N (name unresolved)":
+  // a topic id is never shown without its name or an honest note that the name is unknown.
+  if (ref.platform === 'telegram') return topicNameFor(ref.topicId) ?? TopicRef(ref.topicId);
   if (ref.platform === 'slack') return ref.threadTs ? 'Slack thread' : 'Slack channel';
   return 'App conversation';
 }

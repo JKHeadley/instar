@@ -11,3 +11,5 @@
 **Safeguards.** Nothing new can block anything. Watch-only mode cannot refuse a write. Undoing the change is a plain revert, with no data to repair.
 
 **What to decide.** Nothing. This is a small fix, and it was already shown working live on Echo's five machines by switching the same setting on by hand.
+
+**Update, 13 November.** An untitled topic now shows its real name when the agent knows it from the topic list. When it does not, the row says "Topic 141868 (name unresolved)" rather than a bare number.
