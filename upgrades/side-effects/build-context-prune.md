@@ -82,4 +82,4 @@ Bounded retention for a store that had none, using the store's own existing age 
 ## Evidence pointers
 
 - Studio `state/session-build-context-m_03b3….json`, 2026-11-13 16:04Z: 32,378 rows, 8,209,026 bytes, 32,288 past six hours, oldest 2,078 h; after a manual prune 90 rows, 24,458 bytes (copy of the original kept beside the throughput scripts).
-- Freeze and profile captures in `logs/server-freeze/` (15:31Z, 15:38Z, 15:56Z): `get <- readAll <- record <- recordBuildContextAsync` as the top JS frame group.
+- Freeze captures in `logs/server-freeze/` (15:38Z: 6.4% of samples; 15:56Z: 10.5%) and a quiet 45-second profile at 14:32Z (about 5%): `get <- readAll <- record <- recordBuildContextAsync` is the top JS frame group in each. In the 15:31Z capture it was third, behind synchronous tmux calls.
