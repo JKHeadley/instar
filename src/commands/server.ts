@@ -14810,6 +14810,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // The per-poll check of every session goes through the non-blocking tmux
+          // path where that path is on (the same gate as the rest of the async hot path).
+          ...(_tmuxAsyncEnabled ? {
+            isSessionAliveAsync: (name: string) => sessionManager.isSessionAliveNonBlocking(name),
+            captureSessionOutputAsync: (name: string, lines: number) => sessionManager.captureOutputAsync(name, lines),
+          } : {}),
           isSessionStarting: (topicId) => {
             const slackKey = slackProxyChannelMap.get(topicId);
             if (slackKey) {
