@@ -2494,6 +2494,24 @@ describe('a run that finished just before the server stopped (2026-11-13: PR 310
     }
   });
 
+  it('a result file that parses to something other than an object is a crash record, not a thrown exit handler', async () => {
+    // Before: '"done"' or '0' parsed fine, and the exit handler's `'degradations' in result`
+    // threw a TypeError out of the exit promise (an unhandled rejection in the server).
+    for (const junk of ['"done"', '0', 'true', '[1,2]']) {
+      const s = setup({ views: { 1: view() } });
+      await s.svc.request(1);
+      await s.svc.tick();
+      fs.writeFileSync(s.spawned[0].resultPath, junk);
+      s.alive.delete(s.spawned[0].pid);
+      await s.finish(0, null);
+      const events = auditEvents(s);
+      expect(events, junk).not.toContain('settled-at-shutdown');
+      // The exit handler ran to its end: the run is recorded as an error and retried.
+      expect(events, junk).toContain('run-error');
+      expect(events, junk).toContain('record');
+    }
+  });
+
   it('is not settled when the verifier on disk changed: the next verifier would ignore the record, so the entry keeps its place', async () => {
     const s = setup({ views: { 1: view() } });
     await s.svc.request(1);

@@ -89,3 +89,8 @@ Nits applied: the result must be an object with a string `kind`; the doc comment
 
 **Reviewer concurred:** yes (both rounds).
 
+---
+
+## Addendum, 2026-11-13: non-object result files
+
+`readResult` now returns `null` unless the file parses to a JSON object (not an array). Before, a bare string, number or boolean reached the exit handler, whose `'degradations' in result` threw out of the exit promise (unhandled rejection, run never recorded). The exit handler's existing no-result branch now handles it: an `error` record with step `crash`, then the ordinary error retry. No decision point changes: a file that is not a result object was never a verdict. Over-block: none (no valid result is a non-object). Rollback: revert. This was the cause of this PR's own Local Verify failure at 16:51Z (all tests passed, one unhandled rejection from the junk-file test added here).
