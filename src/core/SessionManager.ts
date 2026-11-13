@@ -27,7 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SessionLivenessOracle, type SessionLivenessOracleConfig } from './SessionLivenessOracle.js';
-import { JOB_FAILURE_FILE_ENV, jobDeclaredFailureDir, jobDeclaredFailurePath } from '../scheduler/jobDeclaredFailure.js';
+import { JOB_FAILURE_FILE_ENV, JOB_SKIP_FILE_ENV, jobDeclaredFailureDir, jobDeclaredFailurePath, jobDeclaredSkipPath } from '../scheduler/jobDeclaredFailure.js';
 import { resolveGhTokenFromVault } from './ghToken.js';
 import type { ReapGuard, ReapKeepReason } from './ReapGuard.js';
 import { DRAINED_CLOSE_BYPASSED_REASONS, drainProcessShape, analyseTranscriptSinceBoundary } from './standDownDrain.js';
@@ -1591,7 +1591,10 @@ export class SessionManager extends EventEmitter {
       // @silent-fallback-ok — the job's own write then fails visibly in its
       // transcript; spawning must never depend on this directory.
     }
-    return ['-e', `${JOB_FAILURE_FILE_ENV}=${jobDeclaredFailurePath(this.vaultStateDir, tmuxSession)}`];
+    return [
+      '-e', `${JOB_FAILURE_FILE_ENV}=${jobDeclaredFailurePath(this.vaultStateDir, tmuxSession)}`,
+      '-e', `${JOB_SKIP_FILE_ENV}=${jobDeclaredSkipPath(this.vaultStateDir, tmuxSession)}`,
+    ];
   }
 
   private ghTokenEnvFlags(): string[] {
