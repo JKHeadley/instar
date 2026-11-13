@@ -9418,6 +9418,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -9558,6 +9559,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -14808,6 +14810,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // The per-poll check of every session goes through the non-blocking tmux
+          // path where that path is on (the same gate as the rest of the async hot path).
+          ...(_tmuxAsyncEnabled ? {
+            isSessionAliveAsync: (name: string) => sessionManager.isSessionAliveNonBlocking(name),
+            captureSessionOutputAsync: (name: string, lines: number) => sessionManager.captureOutputAsync(name, lines),
+          } : {}),
           isSessionStarting: (topicId) => {
             const slackKey = slackProxyChannelMap.get(topicId);
             if (slackKey) {
