@@ -43,7 +43,7 @@ function fixture(routingKey = 'C0BA4F4E0FP:1700000000.000100') {
     startTime: new Date(),
   } as unknown as RouteContext;
   const app = express(); app.use(express.json()); app.use('/', createRoutes(ctx));
-  return { app, calls, id: minted.id, bindAuth };
+  return { app, calls, id: minted.id, bindAuth, registry };
 }
 
 describe('POST /slack/session-reply', () => {
@@ -124,7 +124,7 @@ describe('POST /slack/session-reply → real SlackAdapter participant mentions',
   it('a bound reply tags a member and keeps an outsider and a broadcast literal, with no flag', async () => {
     const f = realAdapterFixture();
     const app = express(); app.use(express.json());
-    const registry = new ConversationRegistry({ stateDir: dir, machineId: () => 'm-local' });
+    const registry = f.registry;
     const ctx = {
       config: { projectName: 'test', projectDir: dir, stateDir: dir, port: 0, users: [], sessions: {}, scheduler: {} },
       sessionManager: { listRunningSessions: () => [] }, state: { getJobState: () => null, getSession: () => null },
