@@ -13,7 +13,46 @@ import { shortTmpDir } from './ConfinedRunner.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { SafeFsExecutor } from '../../core/SafeFsExecutor.js';
 
-/** Remove `target` (a directory or file the executor created). Missing targets are a no-op. */
+/**
+ * Parked trees waiting for their background delete, and the chain that deletes them one at a time.
+ *
+ * A check clone is a full copy of the source with its dependencies: hundreds of thousands of files.
+ * Deleting one with a synchronous recursive remove holds the server's only thread for the whole
+ * delete: 5 to 20 seconds on an idle disk, and 128 s + 59 s on 2026-11-13 while a test run was
+ * writing, which got the server restarted by its supervisor. The move into the trash is one rename
+ * and is all a caller needs (the path is free the moment it returns), so the delete itself runs
+ * off the event loop. One tree at a time and one filesystem call at a time (safeRmTreeSerial), so
+ * cleanup never multiplies the disk load and never fills the threadpool the rest of the server's
+ * file reads and DNS lookups share.
+ */
+const pendingTrash = new Set<string>();
+let trashDrain: Promise<void> = Promise.resolve();
+
+function deleteParkedInBackground(parked: string, operation: string): boolean {
+  if (pendingTrash.has(parked)) return false;
+  pendingTrash.add(parked);
+  trashDrain = trashDrain
+    .then(() => SafeFsExecutor.safeRmTreeSerial(parked, { operation }))
+    .catch(() => { /* @silent-fallback-ok: SafeFsExecutor audited the failure; sweepTrash retries the leftover */ })
+    .finally(() => { pendingTrash.delete(parked); });
+  return true;
+}
+
+/** Resolves when every background delete queued so far has finished. For tests. */
+export function attemptTrashSettled(): Promise<void> {
+  const seen = trashDrain;
+  return seen.then(() => (seen === trashDrain ? undefined : attemptTrashSettled()));
+}
+
+/** How many parked trees are still waiting for, or in, their background delete. */
+export function attemptTrashPending(): number {
+  return pendingTrash.size;
+}
+
+/**
+ * Remove `target` (a directory or file the executor created). Missing targets are a no-op.
+ * `target` is gone when this returns; the bytes are reclaimed in the background.
+ */
 export function removeAttemptTree(target: string, trashRoot: string, operation: string): void {
   let exists = false;
   try { fs.lstatSync(target); exists = true; } catch { exists = false; } // @silent-fallback-ok: an already-absent tree needs no removal
@@ -29,7 +68,7 @@ export function removeAttemptTree(target: string, trashRoot: string, operation: 
     SafeFsExecutor.safeRmSync(target, { recursive: true, force: true, operation });
     return;
   }
-  SafeFsExecutor.safeRmSync(parked, { recursive: true, force: true, operation });
+  deleteParkedInBackground(parked, operation);
 }
 
 /** Basename shape of an attempt's short temp directory (see shortAttemptTmpDir). */
@@ -98,13 +137,17 @@ export function shortTmpRealRoot(): string {
   try { return fs.realpathSync(candidate); } catch { return candidate; } // @silent-fallback-ok: an unresolvable root is still the shortest available
 }
 
-/** Empty the trash directory (leftovers from a crash between move and delete). Bounded. */
+/**
+ * Queue the trash directory's leftovers (a crash between move and delete) for background delete.
+ * Bounded; returns how many were newly queued. Entries already queued are not queued twice.
+ */
 export function sweepTrash(trashRoot: string, operation: string, limit = 20): number {
   let names: string[] = [];
   try { names = fs.readdirSync(trashRoot); } catch { return 0; } // @silent-fallback-ok: no trash directory yet
-  let removed = 0;
-  for (const name of names.slice(0, limit)) {
-    try { SafeFsExecutor.safeRmSync(path.join(trashRoot, name), { recursive: true, force: true, operation }); removed++; } catch { /* @silent-fallback-ok: retried on the next sweep */ }
+  let queued = 0;
+  for (const name of names) {
+    if (queued >= limit || pendingTrash.size >= limit) break;
+    if (deleteParkedInBackground(path.join(trashRoot, name), operation)) queued++;
   }
-  return removed;
+  return queued;
 }
