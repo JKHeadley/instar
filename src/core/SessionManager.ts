@@ -1679,7 +1679,14 @@ export class SessionManager extends EventEmitter {
       // A definitive negative: the tmux server answered and named the session
       // absent. Treated as a SUCCESSFUL probe for latency (the call returned fast
       // with a real answer; it is not a slow/degraded call).
-      if (/can't find session|no such session|no server running|session not found/i.test(msg)) {
+      // "error connecting to <socket> (No such file or directory)" is the same
+      // definitive negative from one step earlier: there is no socket, so there
+      // is no tmux server and no session (what tmux prints after a reboot or a
+      // cleaned temp directory; "no server running" is what it prints when the
+      // socket file is still there). Only that errno: a socket that exists but
+      // cannot be reached (permission denied, connection refused mid-start) says
+      // nothing about the session and stays indeterminate.
+      if (/can't find session|no such session|no server running|session not found|error connecting to .*\(No such file or directory\)/i.test(msg)) {
         this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, 'success');
         return { state: 'definitely-absent', reason: msg.slice(0, 120) };
       }
@@ -5748,6 +5755,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
   }
 
   /**
+   * isSessionAlive() for a caller that runs on a timer and must not hold the
+   * event loop: the same two tmux reads, awaited instead of blocking. The
+   * answer is tri-state. `'indeterminate'` means tmux did not answer in time,
+   * or the pane ended in a way that does not prove the session is finished;
+   * the synchronous check reports the second case as alive and the first as
+   * dead after its 5 s timeout. A caller that used the synchronous check
+   * should treat `'indeterminate'` as alive: a slow tmux is not a dead session.
+   */
+  isSessionAliveNonBlocking(tmuxSession: string): Promise<boolean | 'indeterminate'> {
+    return this.isSessionAliveAsync(tmuxSession);
+  }
+
+  /**
    * Check if a session is still running by checking tmux AND verifying
    * that the Claude process is running inside (async version).
    * Used by the monitoring loop to avoid blocking the event loop.
@@ -6384,7 +6404,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Footer leg (the extended-think discriminator: a long think shows the
     // footer but spawns no child process and writes nothing to JSONL).
     let footer: 'working' | 'idle' | 'indeterminate';
-    const cap = await this.tmuxExecCoalesced('capture-pane', tmuxSession, [
+    const cap = await this.tmuxExecCoalesced('capture-pane:30', tmuxSession, [
       'capture-pane',
       '-t',
       `=${tmuxSession}:`,
@@ -6563,7 +6583,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * version's catch — the caller's null handling is byte-for-byte preserved.
    */
   async captureOutputAsync(tmuxSession: string, lines: number = 100): Promise<string | null> {
-    const out = await this.tmuxExecCoalesced('capture-pane', tmuxSession, [
+    // The line count is part of the single-flight key: two callers that want
+    // different depths of the same pane must not be handed each other's capture
+    // (a 12-line caller joining a 200-line read, or the reverse).
+    const out = await this.tmuxExecCoalesced(`capture-pane:${lines}`, tmuxSession, [
       'capture-pane',
       '-t',
       `=${tmuxSession}:`,
