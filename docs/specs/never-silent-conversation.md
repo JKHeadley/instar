@@ -9,6 +9,15 @@ sibling-principles: "Intelligent Prompts — An LLM Gate Must Not String-Match; 
 lessons-engaged: "CMT-1008 interactive login-expired swap (2026-10-25, Luna); rerouted login-expired slot hold (2026-10-18, #2200); framework-stall-coverage-matrix (stall classes discovered one incident at a time); relogin-last-resort-model (the repair of the only account cannot run on the dead account); skill-driven-signin-repair (pool health from the CLI's own login status; claude auth status can say loggedIn:true for an expired login); codex-device-limit-tripwire (Jev judge on a DIFFERENT account, bounded, content-free log); confined-spawn-subscription-reroute D2 (reworded dialog lands in dialog-unknown); Justin 2026-10-25 'mechanical checks are inputs only'; Justin 2026-11-12 'judge hung vs slow, not dumb timers'"
 origin: "Operator directive 2026-11-13 10:36 + 10:40 PST, topic 33890 (Inspec silent login expiry)"
 eli16-overview: "never-silent-conversation.eli16.md"
+review-convergence: "2026-11-13T18:56:10.213Z"
+review-iterations: 6
+review-completed-at: "2026-11-13T18:56:10.213Z"
+review-report: "docs/specs/reports/never-silent-conversation-convergence.md"
+cross-model-review: "codex-cli:gpt-6-astra"
+single-run-completable: true
+frontloaded-decisions: 4
+cheap-to-change-tags: 1
+contested-then-cleared: 0
 ---
 
 # Never-Silent Conversation
@@ -75,167 +84,357 @@ unconditional and does not depend on the judge, the pool, or the stuck engine be
 
 ### 3.1 Trigger — behaviour, not wording
 
-The trigger is the existing inbound ledger + StallDetector fact: *an inbound message was injected
-into session S at time T, and no outbound reply for that conversation has been recorded since.*
-That already exists per platform (Telegram, Slack, app). This spec adds no new wording detector.
+**The unit is the inbound message, tracked until a terminal outcome.** Each inbound message
+accepted for a conversation-bound session (Telegram, Slack, app) gets an *obligation record* in the
+existing durable inbound store at acceptance time, with a **notice deadline** set then (the
+conversation's existing PresenceProxy first-standby tier — already tuned for "a person is
+waiting" — not a new constant). States: `pending → answered | told-pending → answered | released`.
 
-When to look is judged, not timed (operator rule 2026-11-12, "judge hung vs slow"):
+- **answered** — SessionManager records which inbound ids each turn consumed (the injection it
+  performed and the turn that took it in, including mid-turn input the CLI folds into the running
+  turn). A substantive outbound reply from that turn, *confirmed delivered* (platform message id),
+  closes every inbound id that turn consumed. Progress notes, standby messages and Instar's own
+  notices never answer. **Honest limit:** "answered" means "the turn that took the message in
+  delivered a reply", not "the reply addressed every point"; grading reply content is out of scope.
+- **told-pending** — the §3.4 notice for that message was delivered; the obligation stays under
+  watch so the real reply still closes it.
+- **released** — the session was deliberately ended by the user or operator.
 
-- **Fast path (seconds).** The turn ENDED without an outbound send: the session went from
-  "working" back to idle-at-prompt (SessionActivityVerdict) within N seconds of injection, with no
-  tool calls and no outbound send. A session that answers a user in 1–4 s with zero tool calls and no
-  reply has not answered. This is a structural fact, not a text match, and is what all three Inspec
-  panes showed ("Baked for 4s · done").
-- **Slow path.** Still working with no reply: the existing hung-vs-slow evidence (activity verdict,
-  tool-call progress, transcript growth) decides when to escalate to the judge, as today's triage
-  does. A fixed minute count is only a backstop.
-- **Startup path.** A session spawned or respawned for a pending inbound message that has not
-  reached a ready prompt within its startup budget (covers the Codex trust dialog).
+**Overdue sweep — independent of the session.** A reconciler over the durable store (run at boot
+and on the existing monitor tick) finds every obligation past its notice deadline, whatever the
+session did or did not do. This covers `input-not-draining` (an idle session that never starts a
+turn, so no transition ever fires), lost injections, and server restarts. Being overdue opens
+judgment and the §3.4 notice; elapsed time alone never authorizes a recovery action.
 
-Counts and timers are inputs to the judge; none of them is an action by itself.
+**When the judge looks** — on the overdue sweep above, and on every *state change* of a session
+holding an open obligation:
+
+- **turn ended without a reply** (SessionActivityVerdict: working → idle-at-prompt) — any turn,
+  any duration, any tool count. All three Inspec panes showed this ("Baked for 4s · done");
+- **not ready** — a session spawned/respawned for an open obligation has not reached a ready
+  prompt within its existing startup budget (covers the Codex trust dialog);
+- **still working, no reply** — the existing hung-vs-slow evidence (activity verdict, tool-call
+  progress, transcript growth) marks a stall; the existing stall backstop timer is only the last
+  deterministic rung;
+- **session exited** with an open obligation.
+
+A `working-slow` verdict does not close anything: the obligation stays open and the next state
+change re-opens judgment. Counts and timers are inputs to the judge; none of them acts by itself.
 
 ### 3.2 Judge — an LLM referee that does not share the failing engine
 
-A new `ConversationSilenceJudge` (authority; the detectors in §3.1 and the hints below are its
-signals). It follows the Jev pattern already proven by `CodexDeviceLimitJudge` + `JevCascade`:
-Jev first, Luna referee (Codex fast tier) when Jev is unsure or on audit.
+A new `ConversationSilenceJudge` (the authority; §3.1 detectors and the hints below are its
+signals). It reuses the Jev pattern proven by `CodexDeviceLimitJudge` + `JevCascade`: Jev first,
+the Luna referee (Codex fast tier) when Jev is unsure or on audit.
 
-**Engine independence (the load-bearing rule).** The judge's call must not run on the stuck
-session's framework+account. Selection order: (1) Jev (local, no subscription); (2) a signed-in
-account on a DIFFERENT framework (Codex for a stuck Claude session, Claude for a stuck Codex one);
-(3) a different signed-in account on the same framework; (4) the operator's repair-specific API key
-(`ReloginLastResortProvider`, existing consent and caps). The chosen route is named in every
-verdict record.
+**Engine independence (the load-bearing rule).** A judge call never runs on the stuck session's
+framework+account. Route order: (1) Jev; (2) a signed-in account on a DIFFERENT framework (Codex
+for a stuck Claude session and vice versa); (3) a different signed-in account on the same
+framework; (4) the operator's repair-specific API key (`ReloginLastResortProvider`, existing
+consent and caps). The stuck framework+account is excluded because its health is the question
+being asked; when no other route exists, a bounded one-shot probe call on the stuck account is
+made instead, and its own result (answers / refuses with an auth error / times out) is passed to
+the deterministic floor as evidence — the probe never judges. The route used is recorded on every
+verdict. The same selector is offered to
+StallTriageNurse / TriageOrchestrator / PresenceProxy diagnosis calls (Phase 2) so the existing
+watchers stop sharing the dead engine too.
 
-**Inputs** (prepared snippet, capped, secret-scrubbed and PII-masked exactly like the device-limit
-judge):
-- the pane tail (last ~40 non-empty lines, with lead glyphs preserved) and startup pane if any;
-- the engine's own structured auth answer for the session's config home: `claude auth status`
-  JSON (`loggedIn`, `authMethod`, `loginExpiresAt`) or `codex login status` verdict;
-- pool state for the session's account (status, loginCheck, last reading age, statusCause, limits
-  and reset times) and whether any other account on each framework is healthy;
-- timing facts: injected at, turn end, tool-call count, outbound sends since;
-- **hints**: the existing regex classifiers (`classifyLoginExpired`, `StuckSignatureClassifier`,
-  `classifyConfinedStartupPane`, usage-wall detectors) run and their verdicts are passed in as
-  labelled hints. They never decide; the prompt says so (Intelligent Prompts standard), and a
-  hint-free run must still classify correctly (tested with today's unmatched wording).
+**Inputs.** Prepared exactly like the device-limit judge's snippet (secret-scrubbed, PII and
+provider ids masked):
+- the pane since the message was injected (visible screen + scrollback since injection), and the
+  startup pane if any. **Never silently cut:** the snippet budget is the referee transport's
+  measured budget; if the since-injection pane exceeds it, the judge is told in-band
+  (`truncated: true`, lines dropped, which end kept — the latest screen plus the first screen after
+  injection, where errors and dialogs appear), and a truncated input cannot produce an acting
+  verdict above the floor — it is capped at `told`;
+- the engine's own structured auth answer for the session's config home (`claude auth status`
+  JSON: `loggedIn`, `authMethod`, `loginExpiresAt`; or the `codex login status` verdict);
+- pool state for the session's account (status, loginCheck, last reading age, statusCause,
+  limits and resets) and which accounts on each framework are healthy;
+- timing facts: injected at, each turn start/end, tool-call count, outbound sends since;
+- **hints:** the existing classifiers (`classifyLoginExpired`, `StuckSignatureClassifier`,
+  `classifyConfinedStartupPane`, usage-wall detectors) run and their outputs are passed as labelled
+  hints. The prompt states the intent it judges and treats hints and example phrasings as
+  illustrative, never necessary (Intelligent Prompts standard; the
+  `gate-prompts-judge-by-meaning` ratchet covers this prompt).
 
 **Output** (closed schema): `class` ∈ {`engine-login`, `usage-or-subscription-wall`,
-`startup-dialog`, `crashed`, `working-slow`, `message-not-delivered`, `other`}, `confidence`
-(0–1), `evidence` (which inputs decided it, quoted ≤160 chars each), and for `startup-dialog` the
-dialog's question and the option the judge believes is the safe, intended answer.
+`startup-dialog`, `crashed`, `working-slow`, `message-not-delivered`, `other`}, `confidence`,
+`evidence` (which inputs decided it, ≤160-char quotes), and for `startup-dialog` the dialog's
+question and the option the judge believes is safe.
 
-**Judge unavailable** (no route, all calls fail, caps hit): the outcome is `undetermined`, which
-still runs §3.4 (tell the user) with the honest wording "your message was not answered and I could
-not yet work out why", plus an operator attention item. Never silent.
+**Account evidence is shared; verdicts are not.** Account-scoped facts (CLI auth status, pool
+state, a prior `engine-login` verdict on that account) are gathered once per account incident and
+passed as inputs to every affected session's judgment, so a fleet-wide expiry costs one auth read,
+not one per session. Each session still gets its own verdict (Jev first; on a matching account
+incident Jev is usually confident, so the referee is rarely called) bound to its own generation,
+turn and obligations, and each action is authorized per session. A startup dialog, crash or
+delivery failure is never inferred from another session.
+
+**Verdicts are bound to what was observed.** Each verdict carries the session generation (spawn
+id), the turn id and the obligation ids it judged. Recovery for one conversation is serialized;
+immediately before any action the policy re-reads the session and obligations, and discards the
+verdict if the generation changed, the obligation closed, or the observed state is gone (for
+example the dialog is no longer on screen). A discarded verdict is logged, never acted on.
+
+**Judgment scheduling is evidence-gated.** At most one judgment is in flight per session; all of its
+open obligations are coalesced into it. Each verdict is cached against an *evidence revision* (a
+digest of the pane since injection, the auth answer, the pool state, the session generation, the
+current turn id, the open obligation ids and the latest activity-verdict transition). A
+`working-slow` verdict additionally expires at the activity verdict's next hung-vs-slow
+reassessment, so an unchanged pane that turns into a hang is judged again.
+A trigger whose evidence revision is unchanged reuses the cached verdict and makes no call; only
+new evidence buys a new judgment. Failed calls retry with the referee transport's existing backoff.
+
+**Bounded calls.** Every judge/referee call carries a deadline (the referee transport's existing
+timeout). A call that does not return by its deadline is a failed call. Judge unavailable (no
+route, all calls failed, spend cap reached) ⇒ verdict `undetermined`.
 
 ### 3.3 Act — existing funnels only
 
 The judge decides the class; a deterministic policy maps class → action through funnels that
-already exist and already carry their own brakes:
+already exist and keep their own refusals and brakes:
 
 | Class | Action |
 |---|---|
-| `engine-login` | (a) `QuotaPoller.observeCliLoginExpired` marks the account needs-reauth (judge verdict ≥ confidence floor counts as the corroborating sighting, replacing the regex). (b) `QuotaAwareScheduler.onQuotaPressure` swap to a signed-in account on the same framework. (c) If none: **framework fallback** — the topic-profile write path (`TopicProfileOrchestrator`) switches the conversation to another framework with a healthy account, marked `intendedProfile`/`parked` so it returns when the original login is repaired. (d) Open the assisted sign-in repair (§3.5). |
+| `engine-login` | (a) `QuotaPoller.observeCliLoginExpired` — a judge verdict at or above the floor counts as the sighting (replacing the regex as the trigger). (b) `QuotaAwareScheduler.onQuotaPressure` swap to a signed-in account on the same framework. (c) If none: **framework fallback** through the topic-profile write path (`TopicProfileOrchestrator`) to a framework whose door is `available` and which has a pool account with loginCheck `ok`, recorded as `intendedProfile` so the conversation returns when the original login is repaired. Pinned conversations are asked instead (Frontloaded Decision 2). (d) Open the assisted sign-in repair (§3.5). |
 | `usage-or-subscription-wall` | Existing UsageWallRescue / swap; same cross-framework fallback when no account on this framework has room. |
-| `startup-dialog` | Answer only when the judge is confident AND the dialog is a known-safe class (workspace trust for the session's own registered cwd; decline optional features). The keypress goes through a per-framework dialog policy that extends `confinedStartupDialogs` to Codex. Otherwise: tell the user and the operator. |
+| `startup-dialog` | Keypress only inside a fixed per-framework action space, and only while the session has not yet started its first turn (so no user text can be on screen to steer the judge): answer the workspace-trust dialog for the session's own registered cwd, or decline an optional feature offer. Extends `confinedStartupDialogs` with a Codex policy. Anything else ⇒ tell. |
 | `crashed` / `message-not-delivered` | Existing respawn / re-inject paths (TriageOrchestrator actions). |
-| `working-slow` | No action; a progress note to the user only if the slow-path wait passes the existing standby tier. |
-| `other` / `undetermined` | Tell + attention item. |
+| `working-slow` | No action; obligation stays open (§3.1). |
+| `other` / `undetermined` | Tell (§3.4); operator attention per §3.4's rule. |
 
-Framework fallback is new as an automatic action but uses the existing switch: it is the same
-restart-with-history the operator route performs. It is allowed only to a framework whose door
-`/topic-profile/options` reports `available: true` and that has a pool account with loginCheck `ok`.
+**Replay boundary — one policy for every path that can repeat work** (swap, framework fallback,
+crash respawn, re-inject). Automatic recovery is allowed only when the transcript since injection
+is readable and shows no side-effecting tool call (zero tool calls, or read-only ones only — the
+Inspec case: zero). A missing, unreadable or incomplete transcript is `unknown`, never "zero".
+A replacement session does not reconstruct the original operation identities, so a completed
+external-operation record does not make a repeat safe; durable cross-session operation identity is
+out of scope (Left behind). Therefore, if any side-effecting call ran, or the record is `unknown`,
+recovery is not automatic: the person
+is told what happened and asked, and the resumed session's preamble lists the prior tool calls
+with their recorded outcomes and an instruction not to repeat them. Reuse of operation
+idempotency keys stays with the existing external-operation gate.
 
-### 3.4 Tell — unconditional, plain, in the conversation
+**One recovery owner per conversation.** Every recovery producer — this policy, CMT-1008's
+InteractiveLoginExpiredRecovery, UsageWallRescue, TriageOrchestrator and StallTriageNurse actions —
+acquires the same per-conversation recovery lease (held in the existing SessionRefresh in-flight
+gate) and validates the session generation before acting; a producer that cannot take the lease
+does nothing and logs it. Phase 2 moves the existing producers onto the lease.
 
-Every judged silence produces, in the affected conversation, one plain message sent by Instar's
-own notification path (not the stuck session, not an LLM): what happened, what was done, what (if
-anything) the person must do. Templates per class, e.g.:
+**Execution fence.** Before any recovery that replaces or re-drives a session, the original
+executor is quiesced through the existing SessionRefresh in-flight-work gate (interrupt, wait for
+the CLI to return to its prompt or exit, else stop it); only then is the transcript re-read and
+the replay boundary evaluated, and execution ownership passes to the replacement. A tool call that
+started during recovery is therefore seen by the re-read.
+
+**Brakes (No Unbounded Loops).** A framework fallback that itself goes silent is a new incident on
+the new engine; the policy never moves a conversation back to a framework whose incident is still
+open, and once every framework with an account has an open incident for that conversation, the
+only remaining action is tell. Re-attempts follow the existing swap funnel's anti-thrash
+observation and refresh rate guard (no new counters). Protected sessions are never moved.
+
+### 3.4 Tell — an obligation with a deadline, independent of the judge
+
+**User notices (conversation) — two kinds, each deduplicated on its own.**
+- *Waiting notice:* every obligation still open at its notice deadline gets one. A confirmed
+  delivery of the existing PresenceProxy standby message for that obligation *is* the waiting
+  notice (moves it to `told-pending`), so a slow but working session costs the person exactly the
+  standby line they get today.
+- *Status notice:* sent when the situation materially changes for open obligations — a judged
+  failure class, recovery started, recovery succeeded, refused or exhausted. Deduped per incident
+  plus *state revision* (class + action + outcome), so diagnosis → recovery started → recovery
+  exhausted on the same unanswered message produces three notices, and a repeat of the same state
+  produces none. A standby line never satisfies it.
+
+Scheduling: a waiting notice goes at its deadline; a status notice goes at the material change
+itself. If diagnosis or recovery is still pending at the deadline, the waiting notice uses the
+"not answered yet, still working on it" template. Both are sent at the earlier of (a) the action finishing, or (b) the obligation's
+notice deadline (set at acceptance, §3.1) — whether or not the judge or the action has returned. It is sent by Instar's deterministic notification path (no LLM, not the stuck session),
+from fixed per-class templates, persisted and retried with the existing delivery retry. **Notices are batched per conversation**: each
+delivered notice records the obligation ids it covered and covers every open, uncovered obligation
+at send time ("your last 3 messages weren't answered…"). A message that arrives later and goes
+overdue while the incident is still open gets its own later batched notice; covered obligations are
+never re-noticed for the same kind; a fleet-wide incident is
+also one operator item (Bounded Notification Surface). Examples:
 
 > "Your message didn't get an answer: the Claude sign-in this conversation uses ran out. I've moved
 > this conversation to Codex so it can answer now, and started the Claude sign-in repair."
 
-Plus one operator attention item per account/incident (deduped by condition key, closed on cause),
-so a fleet-wide expiry is one item, not one per conversation. The send uses the deterministic
-notification path that does not need any LLM, so it works when every model route is down.
+> "Your message hasn't been answered yet and I couldn't tell why. I'm still on it and will tell you
+> here when it's answered."
+
+The notice is sent only when the person is actually affected: the conversation went unanswered
+past the deadline, or its engine/account was changed (a visible change they should know about). A
+session judged `working-slow` sends nothing new beyond the existing standby tier, satisfying
+Near-Silent Notifications: every notice carries a consequence the reader needs.
+
+**Operator attention (Self-Heal Before Notify).** This watcher's escalation is reachable only
+after self-heal: `selfHealAttempted && selfHealExhausted`. Exhaustion is a recorded *evaluation*,
+not a wait for another session event: the policy records `no-eligible-recovery` when no healthy
+account exists on any framework, the repair needs an operator action (approval/2FA), recovery was
+refused by the replay boundary, or the verdict is `undetermined`. Independently — as Standard B itself
+requires ("a recoverable watcher MUST tell the operator even while self-heal is still running once
+this ceiling passes") — the overdue sweep enforces the latency ceiling from the obligation's acceptance time: an obligation still open at
+`recoverableLatencyCeiling` escalates whether or not self-heal is still running. Declared per Standard B:
+- remediation-actions: swap (idempotent via the swap funnel's in-flight gate), framework fallback
+  (idempotent: the topic-profile write is a set, compensation = restore `intendedProfile`),
+  dialog keypress (single key, startup-only), repair open (existing orchestrator dedupe);
+- brakes: max-attempts per the swap funnel's existing rate guard; breaker = the §3.3 "every
+  framework has an open incident" stop; flapping = an account re-entering `engine-login` after a
+  repair reported success escalates as critical at once (the repair did not hold — Distrust
+  Temporary Success); dedupe-key = account + class;
+- max-notification-latency: `standards.selfHealBeforeNotify.recoverableLatencyCeiling` (the
+  registry value; missing ⇒ escalate sooner);
+- class: `recoverable` (the message is preserved in the inbound store; replay is bounded by the
+  §3.3 replay boundary, so no side effect is repeated automatically); audit-location: the
+  incidents log (§4).
+The in-conversation user notice is a direct obligation to the person who wrote, not an operator
+escalation, so it is not gated on self-heal exhaustion.
 
 ### 3.5 Repair — any engine can drive it
 
-The assisted sign-in repair's model calls (step supervisor, navigator) select their engine with the
-same independence rule as §3.2: a stuck Claude login is repaired by a Codex-driven helper when no
-Claude account is healthy (and vice versa). This generalises ReloginLastResortProvider from "one API
-key" to "any healthy engine". Operator approval rules for the repair are unchanged.
+The assisted sign-in repair's model calls (step supervisor, navigator) choose their engine with
+the §3.2 independence selector: a dead Claude login is repaired by a Codex-driven helper when no
+Claude account is healthy (and vice versa). This generalises ReloginLastResortProvider from "one
+API key" to "any healthy engine". Operator approval rules for the repair are unchanged.
 
 ### 3.6 Pool health uses the CLI's own answer (asymmetric)
 
 The pool must not report `active` while the CLI says signed out. Measured: `claude auth status`
 can say `loggedIn: true` for an expired login (skill-driven-signin-repair), so a YES is not proof;
-but `loggedIn: false` for an account's config home is a trustworthy NO. Rule: on each poll, and on
-any judged `engine-login`, the poller reads `claude auth status --json` for the account's home. A
-`loggedIn: false` answer, once confirmed by the existing canary (the check has been proven able to
-say no on an empty home), moves the account to `needs-reauth` with cause `cli-auth-status-signed-out`
-— no two-session rule needed. `loggedIn: true` changes nothing (the OAuth usage read stays the
-positive signal). A usage reading older than its staleness bound reads `stale`, never `active`, on
-the dashboard.
+`loggedIn: false` for an account's config home is a trustworthy NO once the empty-home canary has
+proven the check can say no. Rule: on each poll, and on any judged `engine-login`, the poller reads
+`claude auth status` for the account's home. Canary-backed `loggedIn: false` moves the account to
+`needs-reauth` with cause `cli-auth-status-signed-out`. `loggedIn: true` changes nothing (the OAuth
+usage read remains the positive signal). Unreadable ⇒ `unknown`, status unchanged. A usage reading
+older than its staleness bound renders `stale` on the dashboard, never `active`.
 
-### 3.7 Brakes, switches, rollout
+### 3.7 Switches, spend, rollout
 
-- Kill switch `monitoring.neverSilent.enabled` (live config). Per-action switches:
-  `.frameworkFallback`, `.answerStartupDialogs`, `.judge` (off ⇒ every silence is `undetermined` and
-  told — telling cannot be switched off while the feature is on).
-- Per-conversation: one judge run per inbound message; one framework fallback per conversation per
-  6 h; dialog answers max 2 per session.
-- Spend: daily judge-call cap shared with the device-limit judge's counter style; over cap ⇒
-  `undetermined` + told.
-- Dev-gated: live on development agents (Echo), dark on the fleet until the graduation proof;
-  registered in `devGatedFeatures.ts` with justification.
-- Protected sessions are never moved; they are still told.
+- Kill switch `monitoring.neverSilent.enabled` (live config). Per-action switches
+  `.frameworkFallback`, `.answerStartupDialogs`, `.judge` (judge off ⇒ every opened obligation is
+  `undetermined` and told). Telling cannot be switched off while the feature is on.
+- Spend: judge + referee calls count against the agent's existing LLM daily spend cap (LlmQueue),
+  in a dedicated lane; over cap ⇒ `undetermined` + told. No new numeric cap.
+- **Acting requires measured reliability.** Phase 3 runs the real judge in shadow (verdicts
+  logged, users told, no actions) over (a) a held-out corpus of real panes — every login,
+  usage-wall, dialog and stall pane collected in incident history, with rewordings never shown to
+  the prompt author — and (b) healthy and slow-but-working counterexamples. Actions turn on per
+  class only when that class's measured false-action rate on the corpus is zero and its recall
+  beats the regex hints. The confidence floor starts at 0.8 and is recalibrated from that
+  measurement (Frontloaded Decision 1).
+- Maturation path: throwaway test agent first (the §6 live proof and the judge corpus run), then
+  dev-gated live on development agents (Echo), then the fleet on graduation; registered in
+  `devGatedFeatures.ts` with justification.
 
 ### 3.8 Migration Parity
 
-ConfigDefaults for `monitoring.neverSilent` via `migrateConfig()` (only missing keys). CLAUDE.md
-template: a Registry First row ("why did a conversation go quiet?" → `GET /never-silent/incidents`)
-and a proactive trigger. No hook changes.
+ConfigDefaults for `monitoring.neverSilent` via `migrateConfig()` (only missing keys).
+CLAUDE.md awareness reaches existing agents through `migrateClaudeMd()` with a content-sniffing
+guard (a Registry First row "why did a conversation go quiet?" → `GET /never-silent/incidents`,
+and a proactive trigger), and through `generateClaudeMd()` for new agents. No hook changes.
 
-## 4. Observability
+## 4. Observability and provenance
 
-`GET /never-silent/incidents` — per incident: conversation, injected at, trigger path, judge route,
-class, confidence, action taken and its outcome, user message sent (messageId). Feature metrics for
-every judge call. The incident log is content-free beyond the capped evidence quotes.
+`GET /never-silent/incidents` — per obligation: conversation, injected at, trigger, judge route,
+class, confidence, action and outcome, notice sent (messageId), terminal state. The full scrubbed
+judge input and raw verdict are kept in the machine-local provenance file (mode 0600, 14-day
+retention, the device-limit judge's pattern), so every verdict can be audited. Two
+records are kept apart: the *recovery outcome* (was the conversation answered afterwards) is an
+operational fact, never a correctness label; *diagnosis/action correctness* is graded by Decision
+Provenance & Outcome Review — an independent referee read of the stored input plus a sampled
+operator review — and only those grades feed recalibration (§3.7).
 
 ## 5. Phases
 
-0. **Verify the hypothesis in §1.4** from Inspec's logs (did StallTriage/PresenceProxy fire 06:01–10:40,
-   and on which engine?) and record it here before building.
-1. §3.6 pool rule (smallest, independently valuable).
-2. §3.4 Tell for the existing CMT-1008 failure outcomes (closes failure 3 immediately).
-3. §3.1 fast-path trigger + §3.2 judge (shadow: verdicts logged and told, no actions).
-4. §3.3 actions incl. framework fallback; Codex startup dialog policy.
-5. §3.5 cross-engine repair driver.
+0. Verify the §1.4 hypothesis from Inspec's logs (did StallTriage/PresenceProxy fire 06:01–10:40,
+   on which engine, with what outcome?) and record the answer here before building.
+1. §3.6 pool rule.
+2. Obligation records + §3.4 telling (judge-off ⇒ `undetermined` notices) — closes "nothing" as
+   an outcome on its own; route existing CMT-1008 failure outcomes into it; independence selector
+   for the existing watchers.
+3. Judge in shadow + the held-out corpus measurement (§3.7).
+4. Actions per class as each passes its measurement; Codex startup-dialog policy.
+5. Cross-engine repair driver (§3.5).
 
-## 6. Tests (three tiers)
+## 6. Tests (three tiers + live proof)
 
-- **Unit:** judge prompt-builder (hints labelled, never required); engine-independence selector
-  (never picks the stuck framework+account); class→action policy table, both sides of every
-  boundary; asymmetric auth-status rule (false ⇒ needs-reauth after canary; true ⇒ no change);
-  fixture: today's "Login reached its time limit" pane with ALL regex hints returning negative must
-  classify `engine-login` via the judge stub; Codex trust-dialog fixture.
-- **Integration:** HTTP — `/never-silent/incidents`; an injected message + turn-end-without-reply
-  produces exactly one in-conversation notice even when the judge route throws.
-- **E2E:** production init path, feature alive (200 not 503); a throwaway agent with one expired
-  Claude account and one Codex account: message in → conversation answered on Codex + notice +
-  attention item + repair opened.
-- **Live proof:** Live-User-Channel Proof on a throwaway agent + demo Telegram group, never the
-  operator's channel.
+- **Unit:** a standby line followed by a judged login failure still produces the status notice;
+  an unchanged evidence revision makes no judge call; a tool call started during recovery is caught by the post-fence re-read; a message
+  arriving after a notice gets its own later notice; a session with a different failure on the
+  same account is not acted on from the account incident; verdict discarded on generation change / closed obligation / vanished dialog; one notice
+  for three open messages in one conversation; a continuously working session crossing the deadline
+  gets only its standby line; obligation state machine (answered only by a delivered reply from the turn that consumed
+  that inbound id; mid-turn consumption; two producers racing for one conversation — only the lease
+holder acts; status notices for diagnosis → recovery started → exhausted; overlapping messages; progress/notice never answers;
+  told-pending closes on a later reply); overdue sweep catches an idle session that never starts a
+  turn and an obligation that survived a restart; replay boundary refuses an automatic move after a
+  side-effecting tool call;
+  engine-independence selector never picks the stuck framework+account; truncation disclosure
+  caps the verdict at tell; class→action table both sides of every boundary; asymmetric
+  auth-status rule; startup-dialog keypress refused once a turn has started; fallback breaker.
+- **Integration (HTTP):** `/never-silent/incidents`; an injected message + turn end without reply
+  yields exactly one notice when the judge (a) throws, (b) never returns, (c) returns
+  `undetermined`; the action never blocks the notice deadline.
+- **E2E:** production init path, feature alive (200 not 503); throwaway agent with one expired
+  Claude account and one Codex account: message in → answered on Codex + notice + repair opened.
+- **Judge evaluation (not a stub):** the held-out corpus run of §3.7 with the real referee route,
+  reporting precision/recall per class and false-action count; a stub test alone never enables an
+  action.
+- **Live-User-Channel Proof:** throwaway agent through the real Telegram demo group AND the Slack
+  test workspace AND the app, never the operator's channels.
 
-## 7. Open questions
+## Maturation plan
 
-1. Confidence floor for acting on `engine-login` without any regex hint (proposed 0.8; Jev band
-   0.3–0.7 escalates to Luna).
-2. Is automatic framework fallback acceptable for every conversation, or should a topic be able to
-   opt out (e.g. a topic pinned to a specific model for quality)? Proposed: pinned topics are told
-   and asked, unpinned topics fall back automatically.
-3. Whether the fast-path "turn ended with no send" needs a per-framework allow-list for sessions
-   that legitimately end without replying (job sessions, internal helpers) — proposed: the trigger
-   applies only to conversation-bound sessions with a pending inbound.
+- **test-agent-live:** a throwaway agent with one deliberately expired Claude account and one
+  signed-in Codex account, driven through the real Telegram demo group, the Slack test workspace
+  and the app: a message in → waiting notice, judged `engine-login`, conversation answered on Codex,
+  status notice, repair opened. Also an idle-at-prompt session that never starts a turn (overdue
+  sweep) and a Codex trust dialog at startup.
+- **dev-agent-live:** Phases 1–2 (pool rule, obligations + telling) live on Echo from merge; Phase 3
+  judge in shadow on Echo; each action class turns on only after its held-out measurement passes.
+- **fleet:** obligations + telling + pool rule first (they only add notices and an honest status);
+  judge actions per class after graduation on Echo.
+- **graduation criterion:** per action class, the held-out corpus shows zero false actions and
+  recall above the regex hints, AND on Echo at least one real silence of that class was judged,
+  acted on and closed by a delivered reply, with no outcome-review grade of `wrong`. A zero count is
+  not a pass.
+- **dark-window:** at most 30 days from merge to the fleet decision for telling; action classes that
+  have not met the criterion by then get the reason and a new date recorded on the tracking action —
+  never left dark silently.
+- **ladder:** monitoring.never-silent
+
+## 7. Decision points touched
+
+| Decision point | Classification | Floor / justification |
+|---|---|---|
+| Is this inbound message still owed an answer? (obligation state) | invariant; basis: enumerable-domain; evidence: an obligation has four recorded states (pending, answered, told-pending, released) set by structured send/turn records, not by text | Detector only; it never acts by itself — it opens judgment and the §3.4 notice deadline. |
+| When to judge (state changes of a session holding an open obligation) | judgment-candidate | Floor: SessionActivityVerdict transitions + existing hung-vs-slow evidence; arbiter: the judge; ladder ends at the existing stall backstop timer (deterministic rung). |
+| Why is it silent? (class) | judgment-candidate | Arbiter: ConversationSilenceJudge (Jev → Luna referee). Bounded action space: the closed class enum. Conservative default: `undetermined` (tell, attention item, no automatic move). Fallback ladder: Jev → other-framework account → other same-framework account → repair API key → `undetermined`. |
+| Which engine runs the judge | invariant; basis: irreversible-consequence; evidence: a call on the stuck framework+account is asking the broken thing whether it is broken — with a dead login it cannot answer at all (2026-11-13 Inspec: `claude auth status` loggedIn false on the only Claude account). Whether the existing watchers actually failed this way is the §1.4 hypothesis, verified in Phase 0; the rule stands as a design precaution either way | Never the stuck framework+account. |
+| Act on a class (swap / framework fallback / dialog answer / respawn) | judgment-candidate | Floor: the class→action table, confidence floor, per-action switches and brakes in §3.7; arbiter: the judge's verdict; each action through its existing funnel, which keeps its own refusals. Below floor ⇒ tell only. |
+| Answer a startup dialog | judgment-candidate | Floor: fixed per-framework action space (workspace-trust for the session's own registered cwd; decline optional features), only before the first turn; arbiter: judge verdict at or above the floor; else tell. |
+| Operator attention | judgment-candidate | Floor: Self-Heal Before Notify — reachable only after self-heal exhaustion (§3.4), flapping escalates as critical; arbiter: the exhaustion predicate over the funnels' recorded outcomes. |
+| Enable actions for a class | invariant; basis: irreversible-consequence; evidence: an automatic engine/account move or keypress is a user-visible change that cannot be unsent; acting on an unmeasured judge is the failure the Intelligent Prompts standard names | Per class, only after the §3.7 held-out measurement shows zero false actions. |
+| Tell the user | invariant; basis: irreversible-consequence; evidence: an unanswered person with no notice is the harm this spec exists to prevent (Justin 2026-11-13 10:36) | Always, via the deterministic notification path; not switchable while the feature is on. |
+| Pool status from `claude auth status` loggedIn:false | invariant; basis: external-constraint; evidence: the CLI's own structured answer; measured asymmetric reliability (false is trustworthy after the empty-home canary, true is not — skill-driven-signin-repair) | false ⇒ needs-reauth; true ⇒ no change; unreadable ⇒ no change, `unknown`. |
+
+## 8. Multi-machine posture
+
+- Silence detection and judging: `unified` through the existing session ownership — the machine that holds the session (and its inbound ledger) runs the trigger and judge; on topic transfer the pending-inbound record moves with the existing durable inbound queue.
+- Incidents log (`/never-silent/incidents`): proxied-on-read via `?scope=pool`, the same merged-read pattern as `/jobs?scope=pool`.
+- Pool auth-status reads: machine-local-justification: physical-credential-locality — a Claude/Codex login lives in one machine's config home; the resulting account status already replicates through the existing subscription-pool sync.
+- User notices: one-voice — sent only by the machine that owns the conversation's session (existing notice ownership).
+- Operator attention items: deduped by condition key across machines through the existing attention-condition clear/raise path.
+
+## 9. Frontloaded Decisions
+
+1. **Confidence floor for acting:** starts at 0.8 after the cascade (Jev's 0.3–0.7 band escalates to the Luna referee) and is recalibrated per class from the §3.7 held-out measurement. Cheap-to-change-after: a live config value; actions are off until that measurement passes, and the feature is dev-gated.
+2. **Automatic framework fallback scope:** conversations with NO topic-profile pin fall back automatically; a conversation with an explicit framework or model pin is told and asked (the notice carries a one-tap "move to Codex" proposal through the existing topic-profile propose route), because the pin is an operator choice. The automatic move is recorded as `intendedProfile` so the conversation returns to its original framework once the original login is repaired.
+3. **Fast-path trigger scope:** only conversation-bound sessions (Telegram, Slack, app) with a pending inbound message. Job sessions and internal helpers are out of scope — they have their own rerouted-session login handling.
+4. **Notice wording owner:** fixed per-class templates in code (no LLM), reviewed in the PR; the judge's evidence is not shown to the user.
+
+## 10. Open questions
+
+*(none)*
