@@ -19,5 +19,10 @@
   "eli16Path": "docs/specs/worktree-create-off-event-loop.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/worktree-create-off-event-loop.md",
   "secondPass": "true",
-  "reviewerConcurred": true
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one git child per workspace-creation request (session spawn or HTTP route), killed at most once at its own time limit; no timer, retry, respawn or re-drive; concurrent requests for a topic are joined into one creation"
+  }
 }
