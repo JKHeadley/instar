@@ -273,6 +273,13 @@ export class QuotaManager extends EventEmitter {
       });
 
       this.migrator.on('enforced_resume', (ev) => {
+        if (ev?.trigger === 'max-duration') {
+          this.enqueueNotification(
+            `✅ [QUOTA ENFORCEMENT] Scheduler resumed — enforcement pause reached its maximum duration ` +
+            `(paused since ${ev.pausedSince}). Per-job quota gating still applies; enforcement re-engages if quota is still high.`
+          );
+          return;
+        }
         this.enqueueNotification(
           `✅ [QUOTA ENFORCEMENT] Scheduler resumed — quota recovered ` +
           `(5-hour rate: ${ev.fiveHourPercent ?? 'unknown'}%, weekly: ${ev.weeklyPercent}%).`
@@ -332,7 +339,7 @@ export class QuotaManager extends EventEmitter {
       sendKey: (tmuxSession, key) => sm.sendKey(tmuxSession, key),
       killSession: (sessionId) => sm.killSession(sessionId),
       isSessionAlive: (tmuxSession) => sm.isSessionAlive(tmuxSession),
-      pauseScheduler: () => sched.pause(),
+      pauseScheduler: (reason) => sched.pause(reason),
       resumeScheduler: () => sched.resume(),
       respawnJob: async (slug) => {
         // Resume scheduler momentarily to allow the trigger
@@ -366,6 +373,12 @@ export class QuotaManager extends EventEmitter {
       // want to grant grace when we cannot confirm we're below the ceiling —
       // SE-9 fail-closed posture).
       quotaUsagePercent: () => this.tracker.getState()?.usagePercent ?? 100,
+      // Bounded enforcement-pause recovery rechecks the tracker on its own
+      // timer, so a stalled/failing collection can't hold the scheduler.
+      getQuotaSnapshot: () => {
+        const s = this.tracker.getState();
+        return s ? { percentUsed: s.usagePercent, fiveHourPercent: s.fiveHourPercent ?? null } : null;
+      },
     });
 
     // Recover from any in-progress migration that was interrupted

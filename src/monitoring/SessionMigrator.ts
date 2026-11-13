@@ -106,8 +106,8 @@ export interface SessionMigratorDeps {
   killSession: (sessionId: string) => boolean;
   /** Check if a session is still alive */
   isSessionAlive: (tmuxSession: string) => boolean;
-  /** Pause the scheduler to prevent new spawns */
-  pauseScheduler: () => void;
+  /** Pause the scheduler to prevent new spawns (reason is surfaced in scheduler status) */
+  pauseScheduler: (reason?: string) => void;
   /** Resume the scheduler */
   resumeScheduler: () => void;
   /** Respawn a job by slug */
@@ -153,6 +153,23 @@ export interface SessionMigratorDeps {
    * final authority cannot be undermined when usage is already near 100%.
    */
   quotaUsagePercent?: () => number;
+  /**
+   * Latest known quota reading, used by the enforcement-pause recovery timer
+   * to recheck quota WITHOUT waiting for a QuotaManager collection (which may
+   * be failing or stalled). Return null when no reading is available.
+   */
+  getQuotaSnapshot?: () => { percentUsed: number; fiveHourPercent?: number | null } | null;
+}
+
+/** Why, since when, and until when the scheduler is held by quota enforcement. */
+export interface EnforcementPauseInfo {
+  result: 'enforced_pause' | 'enforced_kill';
+  reason: string;
+  fiveHourPercent: number;
+  /** ISO time the pause was set (refreshed on each re-enforcement). */
+  since: string;
+  /** ISO time after which the pause lifts even with no recovered reading. */
+  expiresAt: string;
 }
 
 export interface SessionMigratorConfig {
@@ -160,6 +177,13 @@ export interface SessionMigratorConfig {
   stateDir: string;
   /** Migration thresholds (all optional, has defaults) */
   thresholds?: Partial<MigrationThresholds>;
+  /** Bounded recovery for quota-enforcement scheduler pauses (optional, has defaults). */
+  enforcementRecovery?: {
+    /** How often the pause rechecks quota on its own. Default 5 minutes. */
+    recheckMs?: number;
+    /** Hard upper bound on a single enforcement pause. Default 5 hours (one 5-hour window). */
+    maxPauseMs?: number;
+  };
 }
 
 // ── Events ───────────────────────────────────────────────────────────
@@ -198,6 +222,14 @@ const DEFAULT_THRESHOLDS: MigrationThresholds = {
 const LOCK_STALE_MS = 10 * 60 * 1000; // 10 minutes
 /** Points below the 5-hour migration threshold before an enforcement pause lifts. */
 export const RESUME_HYSTERESIS_POINTS = 5;
+/** Default interval at which an enforcement pause rechecks quota on its own. */
+export const DEFAULT_ENFORCEMENT_RECHECK_MS = 5 * 60 * 1000;
+/**
+ * Default hard bound on one enforcement pause. The 5-hour window has fully
+ * rolled over by then, so the pause cannot outlive the condition that set it.
+ * If quota is still hot, the next collection simply re-enforces.
+ */
+export const DEFAULT_MAX_ENFORCEMENT_PAUSE_MS = 5 * 60 * 60 * 1000;
 const MAX_HISTORY = 50;
 const ACCOUNT_SETTLE_MS = 2000; // Brief pause after account switch
 
@@ -217,11 +249,32 @@ export class SessionMigrator extends EventEmitter {
    * every scheduled job until the next server restart (2026-09-23/24: ~12h of
    * silence after quota had long recovered). In-memory on purpose: a restart
    * already starts the scheduler unpaused, so there is nothing to carry over.
+   *
+   * The pause is BOUNDED: while set, a recovery timer rechecks quota via
+   * deps.getQuotaSnapshot every `recheckMs`, and lifts the pause outright once
+   * `maxPauseMs` has elapsed — so recovery never depends solely on a later
+   * QuotaManager collection succeeding (2026-08-03/04: ~11.6h outage).
    */
-  private enforcementPaused = false;
+  private enforcementPause: EnforcementPauseInfo | null = null;
+  private enforcementRecoveryTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly enforcementRecheckMs: number;
+  private readonly maxEnforcementPauseMs: number;
+
+  private get enforcementPaused(): boolean {
+    return this.enforcementPause != null;
+  }
+
+  /** Clearing the flag (any resume path) drops the reason and stops the recovery timer. */
+  private set enforcementPaused(value: boolean) {
+    if (value) throw new Error('use beginEnforcementPause() to set an enforcement pause');
+    this.enforcementPause = null;
+    this.stopEnforcementRecovery();
+  }
 
   constructor(config: SessionMigratorConfig) {
     super();
+    this.enforcementRecheckMs = config.enforcementRecovery?.recheckMs ?? DEFAULT_ENFORCEMENT_RECHECK_MS;
+    this.maxEnforcementPauseMs = config.enforcementRecovery?.maxPauseMs ?? DEFAULT_MAX_ENFORCEMENT_PAUSE_MS;
     this.stateDir = config.stateDir;
     this.thresholds = mergeDefaults(DEFAULT_THRESHOLDS, config.thresholds);
     this.lockPath = path.join(this.stateDir, 'migration.lock');
@@ -300,6 +353,90 @@ export class SessionMigrator extends EventEmitter {
   /** Whether the scheduler is currently held by a quota-enforcement pause. */
   isEnforcementPaused(): boolean {
     return this.enforcementPaused;
+  }
+
+  /** Why the scheduler is held by quota enforcement (null when it is not). */
+  getEnforcementPause(): EnforcementPauseInfo | null {
+    return this.enforcementPause ? { ...this.enforcementPause } : null;
+  }
+
+  /** Stop the enforcement-pause recovery timer (shutdown / tests). Idempotent. */
+  stopEnforcementRecovery(): void {
+    if (this.enforcementRecoveryTimer) {
+      clearInterval(this.enforcementRecoveryTimer);
+      this.enforcementRecoveryTimer = null;
+    }
+  }
+
+  /** Pause the scheduler for quota enforcement, recording why and arming bounded recovery. */
+  private beginEnforcementPause(
+    result: EnforcementPauseInfo['result'],
+    reason: string,
+    fiveHourPercent: number,
+  ): void {
+    const now = Date.now();
+    this.enforcementPause = {
+      result,
+      reason,
+      fiveHourPercent,
+      since: new Date(now).toISOString(),
+      expiresAt: new Date(now + this.maxEnforcementPauseMs).toISOString(),
+    };
+    this.deps!.pauseScheduler(`quota ${result}: ${reason}`);
+    this.armEnforcementRecovery();
+  }
+
+  private armEnforcementRecovery(): void {
+    this.stopEnforcementRecovery();
+    const timer = setInterval(() => this.runEnforcementRecoveryCheck(), this.enforcementRecheckMs);
+    timer.unref?.();
+    this.enforcementRecoveryTimer = timer;
+  }
+
+  /** One bounded-recovery tick: lift on the hard bound, else recheck quota. */
+  private runEnforcementRecoveryCheck(): void {
+    const pause = this.enforcementPause;
+    if (!pause || !this.deps) {
+      this.stopEnforcementRecovery();
+      return;
+    }
+    if (this.isMigrating()) return;
+    try {
+      if (Date.now() >= new Date(pause.expiresAt).getTime()) {
+        this.forceReleaseEnforcementPause();
+        return;
+      }
+      const snapshot = this.deps.getQuotaSnapshot?.() ?? null;
+      if (snapshot) this.releaseEnforcementPauseIfRecovered(snapshot);
+    } catch (err) {
+      // @silent-fallback-ok — the timer retries on the next tick and the hard bound still applies
+      console.error('[SessionMigrator] Enforcement-pause recovery check failed:', err);
+    }
+  }
+
+  /** Lift an enforcement pause that has reached its hard bound. */
+  private forceReleaseEnforcementPause(): void {
+    if (!this.enforcementPause || !this.deps) return;
+    const pause = this.enforcementPause;
+    try {
+      this.deps.resumeScheduler();
+    } catch (err) {
+      DegradationReporter.getInstance().report({
+        feature: 'SessionMigrator.releaseEnforcementPause',
+        primary: 'Lift a quota-enforcement scheduler pause at its maximum duration',
+        fallback: 'Scheduler stays paused; the release is retried on the next recovery tick',
+        reason: `resumeScheduler threw: ${err instanceof Error ? err.message : String(err)}`,
+        impact: 'Scheduled jobs remain paused until a later release succeeds',
+      });
+      return;
+    }
+    this.enforcementPaused = false;
+    this.emit('enforced_resume', {
+      fiveHourPercent: null,
+      weeklyPercent: null,
+      trigger: 'max-duration',
+      pausedSince: pause.since,
+    });
   }
 
   /**
@@ -409,8 +546,7 @@ export class SessionMigrator extends EventEmitter {
           event.completedAt = new Date().toISOString();
           event.durationMs = Date.now() - startTime;
 
-          this.deps!.pauseScheduler();
-          this.enforcementPaused = true;
+          this.beginEnforcementPause('enforced_kill', reason, fiveHourPercent);
           const killed = await this.haltRunningSessions();
           event.sessionsHalted = killed.map(s => s.jobSlug || s.name);
 
@@ -437,8 +573,7 @@ export class SessionMigrator extends EventEmitter {
             } catch { /* @silent-fallback-ok — best-effort signal, session will be killed at 95% if still running */ }
           }
 
-          this.deps!.pauseScheduler();
-          this.enforcementPaused = true;
+          this.beginEnforcementPause('enforced_pause', reason, fiveHourPercent);
 
           this.emit('enforced_pause', {
             reason,
@@ -973,6 +1108,8 @@ export class SessionMigrator extends EventEmitter {
     lastMigration: MigrationEvent | null;
     history: MigrationEvent[];
     config: MigrationThresholds;
+    /** Why the scheduler is held by quota enforcement; null when it is not. */
+    enforcementPause: EnforcementPauseInfo | null;
   } {
     const history = this.loadHistory();
     return {
@@ -984,6 +1121,7 @@ export class SessionMigrator extends EventEmitter {
       lastMigration: history.lastMigration,
       history: history.migrations,
       config: { ...this.thresholds },
+      enforcementPause: this.getEnforcementPause(),
     };
   }
 

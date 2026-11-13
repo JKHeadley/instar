@@ -610,6 +610,67 @@ describe('Quota Enforcement Tiers', () => {
     });
   });
 
+  describe('bounded enforcement-pause recovery (no reliance on a later quota collection)', () => {
+    afterEach(() => {
+      migrator.stopEnforcementRecovery?.();
+      vi.useRealTimers();
+    });
+
+    it('rechecks quota on its own timer and resumes the scheduler when quota permits', async () => {
+      vi.useFakeTimers();
+      let snapshot: { percentUsed: number; fiveHourPercent: number | null } | null = { percentUsed: 50, fiveHourPercent: 91 };
+      const deps = createMockDeps({
+        getAccountStatuses: vi.fn(() => []),
+        getQuotaSnapshot: vi.fn(() => snapshot),
+      } as Partial<SessionMigratorDeps>);
+      migrator.setDeps(deps);
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 91, activeAccountEmail: 'a@test.io' });
+      expect(deps.pauseScheduler).toHaveBeenCalledTimes(1);
+
+      // Still hot at the first recheck → stays paused.
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect(deps.resumeScheduler).not.toHaveBeenCalled();
+
+      // Quota drops; no QuotaManager collection ever calls back in.
+      snapshot = { percentUsed: 50, fiveHourPercent: 20 };
+      vi.advanceTimersByTime(5 * 60 * 1000);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+      expect(migrator.isEnforcementPaused()).toBe(false);
+    });
+
+    it('lifts the pause once the max bound elapses even with no quota reading at all', async () => {
+      vi.useFakeTimers();
+      const deps = createMockDeps({
+        getAccountStatuses: vi.fn(() => []),
+        getQuotaSnapshot: vi.fn(() => null),
+      } as Partial<SessionMigratorDeps>);
+      migrator.setDeps(deps);
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 91, activeAccountEmail: 'a@test.io' });
+      vi.advanceTimersByTime(4 * 60 * 60 * 1000);
+      expect(deps.resumeScheduler).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(60 * 60 * 1000 + 5 * 60 * 1000);
+      expect(deps.resumeScheduler).toHaveBeenCalledTimes(1);
+      expect(migrator.isEnforcementPaused()).toBe(false);
+    });
+
+    it('exposes the pause reason in migration status while paused and clears it on resume', async () => {
+      const deps = createMockDeps({ getAccountStatuses: vi.fn(() => []) });
+      migrator.setDeps(deps);
+      await migrator.checkAndMigrate({ percentUsed: 50, fiveHourPercent: 96, activeAccountEmail: 'a@test.io' });
+      const status = migrator.getMigrationStatus() as any;
+      expect(status.enforcementPause).toMatchObject({
+        result: 'enforced_kill',
+        fiveHourPercent: 96,
+      });
+      expect(status.enforcementPause.reason).toContain('5-hour rate limit at 96%');
+      expect(typeof status.enforcementPause.since).toBe('string');
+      expect(typeof status.enforcementPause.expiresAt).toBe('string');
+
+      migrator.releaseEnforcementPauseIfRecovered({ percentUsed: 30, fiveHourPercent: 10 });
+      expect((migrator.getMigrationStatus() as any).enforcementPause).toBeNull();
+    });
+  });
+
   describe('resilience', () => {
     it('enforced_pause continues if sendKey throws for one session', async () => {
       const sessions = [
