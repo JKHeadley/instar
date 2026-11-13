@@ -1138,6 +1138,12 @@ export class SessionManager extends EventEmitter {
    * is enabled, so it is a strict no-op by default). Returns null per-call when
    * no eligible account exists. */
   private spawnAccountResolver?: () => { configHome: string; accountId: string } | null;
+  /**
+   * Codex placement for a NEW headless `codex-cli` spawn (fb-39e55b95-f00): the
+   * account with room to launch under, a refusal when every pool Codex account
+   * is at its wall, or null for the default login as before. Unset → today.
+   */
+  private codexSpawnAccountResolver?: () => { configHome: string; accountId: string } | { refused: string } | null;
   /** Memory privacy (docs/specs/memory-privacy.md). Unwired means today's behaviour. */
   private memoryPrivacyWiring?: {
     privacy: MemoryPrivacy;
@@ -2143,6 +2149,26 @@ rm()  { "${shimRunner}" rm  "$@"; }
 
   setSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | null): void {
     this.spawnAccountResolver = resolver;
+  }
+
+  setCodexSpawnAccountResolver(resolver: () => { configHome: string; accountId: string } | { refused: string } | null): void {
+    this.codexSpawnAccountResolver = resolver;
+  }
+
+  /**
+   * Pool placement for a new headless Codex session. Returns the account to
+   * launch under (the session is tagged with it), or null for the default
+   * login. Throws a `codex-accounts-walled` refusal — before any tmux session
+   * exists — when every pool Codex account is at its wall.
+   */
+  private codexHeadlessPlacement(): { configHome: string; accountId: string } | null {
+    const decision = this.codexSpawnAccountResolver?.() ?? null;
+    if (decision && 'refused' in decision) {
+      const err = new Error(decision.refused) as Error & { code?: string };
+      err.code = 'codex-accounts-walled';
+      throw err;
+    }
+    return decision;
   }
 
   /**
@@ -4828,7 +4854,9 @@ rm()  { "${shimRunner}" rm  "$@"; }
       ? options.accountPin
       : headlessFramework === 'claude-code'
         ? (this.spawnAccountResolver?.() ?? null)
-        : null;
+        : headlessFramework === 'codex-cli'
+          ? this.codexHeadlessPlacement()
+          : null;
     if (pinnedAccount) {
       // Census #6: pin to the account's CURRENT slot per the ledger gate, not its enrollment home.
       const pinnedHome = this.resolvePinnedSpawnHome(pinnedAccount);
