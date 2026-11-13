@@ -20,5 +20,10 @@
   "eli16Path": "docs/specs/conversation-graph-suggestions.eli16.md",
   "sideEffectsPath": "upgrades/side-effects/conversation-graph-suggestions.md",
   "secondPass": "not-required",
-  "reviewerConcurred": null
+  "reviewerConcurred": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "user-driven: a suggestion build starts only when the owner opens the suggestions list (at most once per 24 h) or taps Refresh (at most once per 10 min, single-flight); nothing re-triggers it"
+  }
 }
