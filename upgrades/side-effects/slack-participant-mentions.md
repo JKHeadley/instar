@@ -80,6 +80,7 @@ The change restores the operator's expectation (mentions of people in the conver
 
 - Unit: `tests/unit/slack-mrkdwn-formatter.test.ts` (72 passed), `tests/unit/slack-mrkdwn-wireup.test.ts` (25 passed after the review follow-ups), `tests/unit/slack-mentions-awareness.test.ts` (3 passed).
 - Integration: `tests/integration/slack-session-reply-route.test.ts` — bound reply route with a real SlackAdapter.
+- Slack API contract suite against the test workspace bot (dcprooftest, channel C0CG1C62HUL): 11 passed (the upload test skips itself for a missing files:write scope). Release-note wording was made plain afterwards (no inline code in the user-facing section); no behavior change.
 - Live: test workspace T0CEF50NAR1, channel `#dcproof-test` C0CG1C62HUL, bot U0CFSCA24JZ, message `1794535933.184259`. Readback blocks: a `user` element for member U0CFA03N5QF (Echo's test person Gear Test); outsider U0CFJ95JMFS, the bot itself, `<!here>` and a code example came back as text.
 
 ## Class-Closure Declaration (display-only mirror)
