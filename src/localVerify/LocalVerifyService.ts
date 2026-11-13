@@ -157,10 +157,15 @@ export function prPriority(view: Pick<PrView, 'labels'> | null | undefined): num
   return Array.isArray(labels) && labels.some((l) => !!l && l.name === MERGE_THROUGHPUT_LABEL) ? QUEUE_PRIORITY.mergeThroughput : QUEUE_PRIORITY.ordinary;
 }
 
-/** The priority the queue is sorted by: stored priority, raised to the throughput level once an ordinary PR has aged. Pure. */
-export function effectivePriority(e: { priority: number; kind?: 'main'; firstQueuedAt: number; pausedMs?: number }, now: number, agingMs: number = THROUGHPUT_AGING_MS): number {
+/**
+ * The priority the queue is sorted by: stored priority, raised to the throughput level once an
+ * ordinary PR has aged. The wait counts from its first queue-full refusal when it had one, so a
+ * PR that already waited outside the queue is not made to wait the window again inside it. Pure.
+ */
+export function effectivePriority(e: { priority: number; kind?: 'main'; firstQueuedAt: number; firstRefusedAt?: number; pausedMs?: number }, now: number, agingMs: number = THROUGHPUT_AGING_MS): number {
   if (e.kind === 'main') return e.priority;
-  const waited = now - e.firstQueuedAt - (e.pausedMs ?? 0);
+  const since = e.firstRefusedAt !== undefined ? Math.min(e.firstRefusedAt, e.firstQueuedAt) : e.firstQueuedAt;
+  const waited = now - since - (e.pausedMs ?? 0);
   return waited >= agingMs ? Math.max(e.priority, QUEUE_PRIORITY.mergeThroughput) : e.priority;
 }
 
@@ -1527,7 +1532,13 @@ export class LocalVerifyService {
       const hold = this.holdDecision();
       const repair = hold.active && repairVerdict({ files: prFiles, text: prText }, hold.failingFiles).candidate;
       // A merge-throughput PR gets a bounded overflow (LOCAL_VERIFY_LIMITS.throughputOverflow).
-      const throughput = !replayPriority && !repair && requestedPriority === QUEUE_PRIORITY.mergeThroughput
+      // An ordinary PR that has waited THROUGHPUT_AGING_MS since its first refusal shares that
+      // overflow, the rule effectivePriority already applies inside the queue: without it a steady
+      // stream of labelled PRs keeps every ordinary waiter out for good (2026-11-13: PR 3108 waited
+      // 18 h while ten labelled PRs opened after it were admitted).
+      const agedWaiter = !replayPriority && !repair && requestedPriority !== QUEUE_PRIORITY.mergeThroughput
+        && this.waiterAged(pr);
+      const throughput = !replayPriority && !repair && (requestedPriority === QUEUE_PRIORITY.mergeThroughput || agedWaiter)
         && this.prQueueLength() < capFor(QUEUE_PRIORITY.mergeThroughput);
       if (!repair && !throughput) {
         // fb-7fde7f49-8ee: the refusal keeps a place in line (replays keep their own durable admission).
@@ -1537,7 +1548,7 @@ export class LocalVerifyService {
         return { ok: false, code: 'queue-full' };
       }
       if (repair) this.audit({ event: 'queue-full-repair-admitted', pr, headSha, redHead: hold.active ? hold.redHead : null });
-      else this.audit({ event: 'queue-full-throughput-admitted', pr, headSha });
+      else this.audit({ event: 'queue-full-throughput-admitted', pr, headSha, ...(agedWaiter ? { agedWaiter: true } : {}) });
     } else if (!keptPlace && !replayPriority && !opts.rerunAfterGreen && requestedPriority !== QUEUE_PRIORITY.mergeThroughput) {
       // fb-7fde7f49-8ee: below the cap, the PRs refused earlier go first. Only LIVE waiters
       // (offered within WAITING_LIST_LIMITS.staleAfterMs) reserve a slot, only while `main` is
@@ -1575,6 +1586,12 @@ export class LocalVerifyService {
     const position = this.queue.indexOf(entry);
     this.pump();
     return { ok: true, status: 'queued', position, ...this.holdFor(pr) };
+  }
+
+  /** A waiting PR first refused at least THROUGHPUT_AGING_MS ago (it then shares the throughput overflow). */
+  private waiterAged(pr: number): boolean {
+    const w = this.waiting.get(pr);
+    return !!w && this.now() - w.firstRefusedAt >= THROUGHPUT_AGING_MS;
   }
 
   /** A `recorded` answer: the PR has nothing left to queue for this head, so it leaves the waiting list. */

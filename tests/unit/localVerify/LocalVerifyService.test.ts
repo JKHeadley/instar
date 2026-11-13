@@ -618,6 +618,9 @@ describe('merge-throughput label priority', () => {
     expect(effectivePriority({ priority: 0, firstQueuedAt: t0 }, t0 + THROUGHPUT_AGING_MS)).toBe(QUEUE_PRIORITY.mergeThroughput);
     expect(effectivePriority({ priority: 0, firstQueuedAt: t0, pausedMs: 10 * MIN }, t0 + THROUGHPUT_AGING_MS)).toBe(0);
     expect(effectivePriority({ priority: QUEUE_PRIORITY.mergeThroughput, firstQueuedAt: t0 }, t0 + 10 * THROUGHPUT_AGING_MS)).toBe(QUEUE_PRIORITY.mergeThroughput);
+    // A PR that waited outside the queue (first refused earlier) ages from that refusal.
+    expect(effectivePriority({ priority: 0, firstQueuedAt: t0, firstRefusedAt: t0 - THROUGHPUT_AGING_MS }, t0)).toBe(QUEUE_PRIORITY.mergeThroughput);
+    expect(effectivePriority({ priority: 0, firstQueuedAt: t0, firstRefusedAt: t0 - 1 }, t0)).toBe(0);
     expect(effectivePriority({ priority: QUEUE_PRIORITY.main, kind: 'main', firstQueuedAt: t0 }, t0)).toBe(QUEUE_PRIORITY.main);
     // The bound sits well inside the starved alarm, which is unchanged.
     expect(THROUGHPUT_AGING_MS).toBeLessThan(LOCAL_VERIFY_LIMITS.starvedAfterMs);
