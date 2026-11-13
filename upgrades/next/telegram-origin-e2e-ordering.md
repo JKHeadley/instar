@@ -1,0 +1,31 @@
+# Two Telegram-origin e2e tests no longer depend on which timer fires first
+
+<!-- bump: patch -->
+
+## What Changed
+
+Test-only. No production code changes.
+
+`tests/e2e/telegram-origin-notice-policy.test.ts`, "the production observer suppresses after … without consulting the failed workers": it waited for the notifier's CURRENT state to read `suppressed`. For a destination that is still listed but opted out or no longer owned, that state does not rest there while recording is healthy: the next five-second maintenance pass runs `recordingRecovered`, which clears the spent reservation and records `unavailable` / `destination-policy`. The case now reads the decision from the history of states the notifier reported (`onNoticeState`, already collected by the harness, now append-only): a `suppressed` state was reported after the hold notice was requested and no state since was an attempt. It then asserts the resting state per variant (`suppressed` for `unreadable`; `suppressed` or `unavailable`, reason `destination-policy`, for `opt-out` and `ownership`).
+
+`tests/e2e/telegram-origin-runtime-lifecycle.test.ts`, the `admission-unavailable` variant of "reconciles historical … without another notice": it asserted exactly one network call after the recovery pass. In that fixture recording is healthy and only admission fails, so a recovery pass can re-arm the notifier and the failed re-admission then raises a second hub alert 100 ms after the first; whether there were one or two calls depended on timing. The case now asserts exactly one call BEFORE the recovery pass, one or two after it, and for every call where it went (the operator hub, thread 7848) and what it said (the fixed recording-outage text). The `unknown-outcome` variant still asserts exactly one call, to thread 42. The session-notice and hub-send assertions are unchanged.
+
+## What to Tell Your User
+
+Nothing changes in the product. Two automated tests that failed at random on a busy machine, and blocked unrelated changes from merging, now check the same behaviour in a way that does not depend on timing.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| None (test-only) | — |
+
+## Evidence
+
+Local Verify records, 2026-11-12/13: `telegram-origin-notice-policy` failed PRs 3126 and 3124 with `expected 'unavailable' to be 'suppressed'` and was flaky-retried on 3107; `telegram-origin-runtime-lifecycle` failed PR 3124, and PR 3106's isolation re-run, with `expected "spy" to be called once, but got 2 times` (line 83). None of those PRs touched the Telegram-origin code. A session re-ran both files alone on PR 3124's head: 55 of 55 passed.
+
+Both changed files run alone on the M5 with this change: 55 of 55 pass (39 lifecycle, 16 notice-policy), 2026-11-13 17:16Z. That run was on a quiet machine, so it shows the new assertions hold; the timing dependence itself was removed by reasoning from the code, not reproduced under load.
+
+Mechanism by code reading on main at 9218f7e31: `TelegramOriginOutageNotifier.ts` 110-146 and 150-196 (`recordingRecovered`, `requestHoldNotice`, the 100 ms notice spacing at 166-171), `TelegramOriginBoot.ts` 367-383 (the five-second maintenance pass), `TelegramOriginRuntime.ts` 192-204, 531 and 597 (hold, recovery confirmation, re-admission).
+
+Not covered by this change, filed as fb-de7ee113-bc8: the product questions the two tests exposed (a second hub alert per recovery pass; `suppressed` overwritten after five seconds), and the 250 ms / 500 ms recording budgets behind the other failures in this family (`all-durable-recording-sinks-unavailable`), which need a seam in production code.
