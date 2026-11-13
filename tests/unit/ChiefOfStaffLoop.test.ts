@@ -188,7 +188,7 @@ describe('ChiefOfStaffLoop — verdicts → actions (lease live)', () => {
     const w = world({ bundle: { doneItems: { pr: 'pass' } } }); renew(w, T0 - H);
     bind(w, { doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }, { id: 'ok', kind: 'judgment', text: 'Owner happy' }] });
     await loop(w).tick();
-    expect(checks(w)).toEqual(['waiting-on-user']); expect(w.mirrored).toEqual([]); expect(w.notes.join('\n')).toMatch(/1 project looks finished and needs your OK/); expect(w.notes.join('\n')).toContain('"Owner happy"'); expect(w.noteActions[0]).toEqual([{ label: 'Done: Ship the thing', id: `cos:confirm-done:${CK}` }]);
+    expect(checks(w)).toEqual(['waiting-on-user']); expect(w.mirrored).toEqual([]); expect(w.notes.join('\n')).toMatch(/1 project looks finished and needs your OK/); expect(w.notes.join('\n')).toContain('"Owner happy"'); expect(w.noteActions[0]).toEqual([{ label: 'Done: 1 · Ship the thing', id: `cos:confirm-done:${CK}` }]);
   });
   it('claims-done with a failing deterministic item ⇒ redirect; a second refutation ⇒ needs-you', async () => {
     const w = live({ judge: { verdict: 'claims-done', citedIds: ['run'], reason: 'says done' } }); const l = loop(w);
@@ -491,7 +491,7 @@ describe('ChiefOfStaffLoop — the note a person can read (operator report 2026-
     expect(note.startsWith('4 projects look finished and need your OK')).toBe(true);
     expect(note).not.toContain("Confirm it's done?");
     expect(note.match(/every automatic check passes/g)).toBeNull();
-    for (const t of ["Emily Ghosh's affiliate intelligence project", 'Get Monroe AI ready for public launch', 'Keep AI spend under control and accounted for', "Keep Paul's requests and AI policy decisions moving"]) expect(note).toContain(`\n${t}\n`);
+    ["Emily Ghosh's affiliate intelligence project", 'Get Monroe AI ready for public launch', 'Keep AI spend under control and accounted for', "Keep Paul's requests and AI policy decisions moving"].forEach((t, i) => expect(note).toContain(`\n${i + 1}. ${t}\n`));
     expect(note).toContain('All 2 automatic checks pass.'); expect(note).toContain('All 5 automatic checks pass.');
     for (const j of JUDGMENT) expect(note).toContain(`"${j}"`);
     expect(note).toContain('Details: https://cos.example/dashboard/console/#/work/chats?c=telegram%3A2');
@@ -499,7 +499,7 @@ describe('ChiefOfStaffLoop — the note a person can read (operator report 2026-
     expect(note).not.toMatch(/\w…/); // no title cut mid-word
     const actions = w.noteActions[0];
     expect(actions.map((a) => a.id)).toEqual(['telegram:1', 'telegram:2', 'telegram:3', 'telegram:4'].map((k) => `cos:confirm-done:${k}`));
-    expect(actions.map((a) => a.label)).toEqual(["Done: Emily Ghosh's affiliate…", 'Done: Get Monroe AI ready for…', 'Done: Keep AI spend under control…', "Done: Keep Paul's requests and AI…"]);
+    expect(actions.map((a) => a.label)).toEqual(["Done: 1 · Emily Ghosh's affiliate…", 'Done: 2 · Get Monroe AI ready for…', 'Done: 3 · Keep AI spend under control…', "Done: 4 · Keep Paul's requests and AI…"]);
     for (const a of actions) { expect(Buffer.byteLength(a.id)).toBeLessThanOrEqual(64); expect(a.label.length).toBeLessThanOrEqual(48); }
     expect(new Set(actions.map((a) => a.label)).size).toBe(4);
     // Printed for the PR description.
@@ -515,8 +515,8 @@ describe('ChiefOfStaffLoop — the note a person can read (operator report 2026-
   it('a real project title (initiative / conversation name) wins over the goal', async () => {
     const w = world({ hour: 8 }); renew(w, T0 - H); fourFinished(w);
     await loop(w, {}, { projectTitle: (p) => (p.conversationKey === 'telegram:2' ? 'Monroe launch' : null) }).tick();
-    expect(w.notes[0]).toContain('\nMonroe launch\n');
-    expect(w.noteActions[0].map((a) => a.label)).toContain('Done: Monroe launch');
+    expect(w.notes[0]).toContain('\n2. Monroe launch\n');
+    expect(w.noteActions[0].map((a) => a.label)).toContain('Done: 2 · Monroe launch');
   });
   it('more finished projects than the cap: the extra ones are counted with the page link, and only shown projects get buttons', async () => {
     const w = world({ hour: 8 }); renew(w, T0 - H); fourFinished(w);

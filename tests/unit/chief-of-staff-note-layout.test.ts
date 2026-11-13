@@ -64,6 +64,11 @@ describe('confirmButtonLabel', () => {
     expect(long).toBe("Done: Keep Paul's requests and AI…");
     expect(long.length).toBeLessThanOrEqual(36);
   });
+  it('with a block number the button matches its block even when the name is cut', () => {
+    expect(confirmButtonLabel("Emily Ghosh's affiliate intelligence project", 1)).toBe("Done: 1 · Emily Ghosh's affiliate…");
+    expect(confirmButtonLabel('Monroe launch', 2)).toBe('Done: 2 · Monroe launch');
+    expect(confirmButtonLabel('x'.repeat(200), 5).length).toBeLessThanOrEqual(48);
+  });
 });
 
 describe('composeNote — grouped "looks finished" blocks', () => {
@@ -73,14 +78,15 @@ describe('composeNote — grouped "looks finished" blocks', () => {
       confirm('AI spend', 1, [], null),
     ], 5, 'https://cos.example/cos', null)!;
     expect(t.split('\n')[0]).toBe('2 projects look finished and need your OK');
-    expect(t).toContain('Monroe launch\nAll 5 automatic checks pass.\nYour call:\n  "The launch checklist reads complete to you"\nDetails: https://cos.example/p/1');
-    expect(t).toContain('AI spend\nIts one automatic check passes.');
+    expect(t).toContain('1. Monroe launch\nAll 5 automatic checks pass.\nYour call:\n  "The launch checklist reads complete to you"\nDetails: https://cos.example/p/1');
+    expect(t).toContain('2. AI spend\nIts one automatic check passes.');
     expect(t).not.toContain('Needs you');
-    expect(t).toContain('Tap the matching "Done" button below');
+    expect(t).toContain('Tap the "Done" button with the same number');
   });
   it('singular headline; several judgment items are quoted and the overflow is counted', () => {
     const t = composeNote([confirm('X', 2, ['a', 'b', 'c'], null)], 5, null, null)!;
     expect(t.startsWith('1 project looks finished and needs your OK')).toBe(true);
+    expect(t).toContain('1. X\n'); expect(t).toContain('Tap "Done: 1" below');
     expect(t).toContain('Your calls:\n  "a"\n  "b"\n  +1 more on its page');
   });
   it('other Needs-you items follow under "Also needs you"', () => {

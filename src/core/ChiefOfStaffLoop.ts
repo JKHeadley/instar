@@ -240,9 +240,10 @@ export function shortProjectTitle(goal: string, max = 60): string {
   return cutAtWord(m && m[1].length <= max ? m[1] : g, max);
 }
 
-/** The label on a project's Confirm button: names the project, short enough for one phone-width row. */
-export function confirmButtonLabel(title: string): string {
-  return `Done: ${cutAtWord(title, 30)}`;
+/** The label on a project's Confirm button: the block's number (so a cut name still matches its block)
+ *  and the project's name, short enough for one phone-width row. Without a number, the name alone. */
+export function confirmButtonLabel(title: string, n?: number): string {
+  return typeof n === 'number' ? `Done: ${n} · ${cutAtWord(title, 28)}` : `Done: ${cutAtWord(title, 30)}`;
 }
 
 const JUDGMENT_SHOWN = 2;
@@ -251,9 +252,9 @@ const JUDGMENT_CHARS = 140;
 function renderConfirmBlocks(blocks: NoteItem[], cap: number, statusUrl: string | null): string {
   const n = blocks.length;
   const head = n === 1 ? '1 project looks finished and needs your OK' : `${n} projects look finished and need your OK`;
-  const shown = blocks.slice(0, cap).map((i) => {
+  const shown = blocks.slice(0, cap).map((i, idx) => {
     const c = i.confirm!;
-    const lines = [c.title];
+    const lines = [`${idx + 1}. ${c.title}`];
     lines.push(c.checksPassed > 1 ? `All ${c.checksPassed} automatic checks pass.` : c.checksPassed === 1 ? 'Its one automatic check passes.' : 'No automatic checks for this one.');
     if (c.judgment.length) {
       lines.push(c.judgment.length === 1 ? 'Your call:' : 'Your calls:');
@@ -264,7 +265,7 @@ function renderConfirmBlocks(blocks: NoteItem[], cap: number, statusUrl: string 
     return lines.join('\n');
   });
   const more = n > cap ? `\n\n+${n - cap} more${statusUrl ? `: ${statusUrl}` : ' on the Chief of Staff page'}` : '';
-  const tail = '\n\nTap the matching "Done" button below for each one you agree is finished.';
+  const tail = n === 1 ? '\n\nTap "Done: 1" below if you agree it is finished.' : '\n\nTap the "Done" button with the same number for each one you agree is finished.';
   return `${head}\n\n${shown.join('\n\n')}${more}${tail}\n\n`;
 }
 
@@ -424,13 +425,13 @@ export class ChiefOfStaffLoop {
   }
 
   /** §5: one row per bound project (no evidence text; titles are the owner's). */
-  projectsSummary(): Array<{ conversationKey: string; goal: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; nextCheckAt: string | null; restartsWithoutProgress: number; parked: boolean; breakerTripped: boolean; nextActionAllowedAt: string | null }> {
+  projectsSummary(): Array<{ conversationKey: string; goal: string; title: string; lastVerdict: CosVerdict | null; lastCheckAt: string | null; nextCheckAt: string | null; restartsWithoutProgress: number; parked: boolean; breakerTripped: boolean; nextActionAllowedAt: string | null }> {
     let union: UnionEntry[] = [];
     try { union = this.d.journal.loadUnion(); } catch { /* @silent-fallback-ok: an unreadable union lists no projects; the loop health shows lastError */ return []; }
     const cfg = this.d.config(); const now = new Date(this.d.now());
     return boundProjects(union).map((p) => {
       const st = foldProjectCheckState(union, p.conversationKey, { checkCadenceHours: Math.max(cfg.minCadenceHours, p.checkCadenceHours || cfg.defaultCadenceHours), maxRestartsWithoutProgress: cfg.maxRestartsWithoutProgress, breakerRestartsPerWeek: cfg.breakerRestartsPerWeek }, now, p.binding);
-      return { conversationKey: p.conversationKey, goal: p.goal, lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, nextCheckAt: st.nextCheckAt, restartsWithoutProgress: st.restartsWithoutProgress, parked: st.parked, breakerTripped: st.breakerTripped, nextActionAllowedAt: st.nextActionAllowedAt };
+      return { conversationKey: p.conversationKey, goal: p.goal, title: this.label(p), lastVerdict: st.lastVerdict, lastCheckAt: st.lastCheckAt, nextCheckAt: st.nextCheckAt, restartsWithoutProgress: st.restartsWithoutProgress, parked: st.parked, breakerTripped: st.breakerTripped, nextActionAllowedAt: st.nextActionAllowedAt };
     });
   }
 
@@ -698,7 +699,8 @@ export class ChiefOfStaffLoop {
     if (!text) { this.recordNote('note', [], now); return; }
     if (this.lastNoteFallbackAt !== null && now - this.lastNoteFallbackAt < cfg.noteCadenceHours * 3_600_000 - cfg.tickMinutes * 60_000) return; // a note went out but its record was refused: do not resend every tick
     // Buttons follow the note's reading order: one per project block shown (within the cap), then the other Needs-you taps.
-    const confirmActions = items.filter((i) => i.confirm && i.action).slice(0, cfg.noteSectionCap).map((i) => i.action!);
+    // Each Done button carries its block's number, so the button matches its block even when the name is cut.
+    const confirmActions = items.filter((i) => i.confirm && i.action).slice(0, cfg.noteSectionCap).map((i, idx) => ({ ...i.action!, label: confirmButtonLabel(i.confirm!.title, idx + 1) }));
     const otherActions = items.filter((i) => !i.confirm && i.action).map((i) => i.action!);
     const actions = [...confirmActions, ...otherActions].slice(0, 8);
     let sent = false;
