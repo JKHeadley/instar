@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-11T21:52:49.689Z",
+  "slug": "webk-687-enroll",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 12,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/telegram-origin/ReviewedWebKBuilds.ts"
+    ],
+    "addedLines": 11,
+    "deletedLines": 1
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
