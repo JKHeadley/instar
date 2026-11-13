@@ -1,9 +1,17 @@
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { FollowMeCompletionWatcher, type FollowMeCompletionSnapshot } from '../core/FollowMeCompletionWatcher.js';
 import { recordPostCompact } from '../monitoring/PostCompactStore.js';
+import { pressTargetRefusal, pressTopicKey } from '../monitoring/syntheticPress.js';
 import { collectAgentLiveSecrets } from '../monitoring/contextLayers/liveSecrets.js';
 import { listChunks, readChunk, isSafeChunkTopic, isSafeChunkKey } from '../monitoring/contextLayers/chunkLookup.js';
+import { userCorpusView } from '../monitoring/contextLayers/userCorpus.js';
+import { anchorLedgerView } from '../monitoring/contextLayers/anchorLedger.js';
+import { standingPacketView } from '../monitoring/contextLayers/standingPacket.js';
+import { CodexSeedService } from '../monitoring/contextLayers/codexSeed.js';
+import { packetRowSource } from '../monitoring/contextLayers/standingPacketBoot.js';
 import { computeContextBudgetMetrics, parseMetricsQuery } from '../monitoring/contextBudgetMetrics.js';
+import { h3SummarizeView } from '../monitoring/contextLayers/h3Builder.js';
+import { TopicSummaryTable, H3_OWNS_REASON } from '../memory/TopicSummaryTable.js';
 import { createRecoverySetupRoutes } from './recoverySetupRoutes.js';
 import { currentRecoveryStatus } from '../recovery/RecoveryRuntime.js';
 import { topicGoalContext } from '../core/TopicGoalContext.js';
@@ -1305,6 +1313,8 @@ export interface RouteContext {
   contextLayers?: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null;
   /** context-budget-layered-summaries §6.5/§9.5: chunk (C) and range (C2) builds; null when the layers are off. */
   chunkBuilder?: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder | null;
+  /** H3, the long-term view and the topic summary table's single writer (§6, §6.5; Phase 1 S9). */
+  h3Builder?: import('../monitoring/contextLayers/h3Builder.js').H3Builder | null;
   /** The coalescing audit sink for stand-down transitions. */
   standDownAudit?: import('../core/StandDownAudit.js').StandDownAudit | null;
   /** SubscriptionPool (multi-account subscription registry, P1.1 of the
@@ -7030,7 +7040,14 @@ export function createRoutes(ctx: RouteContext): Router {
       return;
     }
     const tgTopic = ctx.telegram?.getTopicForSession?.(session.tmuxSession) ?? session.telegramTopicId ?? null;
-    const topicKey = tgTopic != null ? String(tgTopic) : session.slackChannelId ? `slack-${session.slackChannelId}` : null;
+    // A throwaway synthetic-press target (§9.1: the canary's positive control) files its
+    // record under its own press key, so the canary can match its PostCompact artifact.
+    const topicKey = tgTopic != null ? String(tgTopic) : session.slackChannelId ? `slack-${session.slackChannelId}`
+      : pressTargetRefusal(session, {
+        channelFor: (t) => ctx.telegram?.getTopicForSession?.(t) ?? null,
+        isProtected: (t) => ((ctx.sessionManager as unknown as { getProtectedSessions?: () => string[] }).getProtectedSessions?.() ?? []).includes(t),
+      }) === null ? pressTopicKey(session.id) : null;
+    const isPressTarget = topicKey !== null && tgTopic == null && !session.slackChannelId;
     if (!topicKey) {
       res.status(200).json({ recorded: false, reason: 'no-topic' });
       return;
@@ -7056,7 +7073,8 @@ export function createRoutes(ctx: RouteContext): Router {
     const recoveryOn = (ctx.liveConfig?.get<boolean | undefined>('contextBudget.compactionRecovery.enabled', undefined)
       ?? (ctx.config as { contextBudget?: { compactionRecovery?: { enabled?: boolean } } }).contextBudget?.compactionRecovery?.enabled) !== false;
     const chunkBuilder = ctx.chunkBuilder;
-    if (result.recorded && ctx.contextLayers && chunkBuilder && recoveryOn) {
+    // A throwaway press target's span is never archived or chunked: it is not a conversation.
+    if (result.recorded && ctx.contextLayers && chunkBuilder && recoveryOn && !isPressTarget) {
       // The hook's own session id names the transcript that just compacted (the stored one can be stale after a resume).
       const engineSessionId = claudeSessionId || session.claudeSessionId || '';
       const framework = session.framework ?? 'claude-code';
@@ -8991,7 +9009,7 @@ export function createRoutes(ctx: RouteContext): Router {
       res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
       return;
     }
-    res.json({ ...ctx.contextLayers.status(), chunks: ctx.chunkBuilder?.status() ?? null });
+    res.json({ ...ctx.contextLayers.status(), chunks: ctx.chunkBuilder?.status() ?? null, h3: ctx.h3Builder?.status() ?? null });
   });
   // context-budget-layered-summaries §7.6: chunk (C) and range (C2) records of
   // one conversation, with sizes, status and each span's archive state.
@@ -9022,6 +9040,141 @@ export function createRoutes(ctx: RouteContext): Router {
     const r = readChunk(ctx.contextLayers.store, ctx.contextLayers.archive, topicKey, key);
     if (!r) { res.status(404).json({ error: 'no such chunk' }); return; }
     res.json(r);
+  });
+  // context-budget-layered-summaries §6 row U, §8: the protected user corpus
+  // for one topic — sizes (tokens and messages) per label, the protected
+  // class, pasted-artifact flags and referent-stub coverage. Labels and sizes
+  // only: the operator's words are never served here (owner-only rendering
+  // arrives with the standing packet). Bearer only; 503 when the layers are off.
+  router.get('/topic/:id/user-corpus', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const raw = String(req.params.id ?? '');
+    if (!/^-?\d{1,15}$/.test(raw)) {
+      res.status(400).json({ error: 'topic id must be an integer' });
+      return;
+    }
+    const uc = ctx.contextLayers.userCorpus();
+    const q = Number.parseInt(String(req.query.limit ?? ''), 10);
+    const limit = Number.isFinite(q) ? Math.max(0, Math.min(q, 500)) : 50;
+    const view = userCorpusView(ctx.contextLayers.store, raw, limit);
+    res.json({
+      topicId: Number(raw),
+      ...view.measure,
+      entries: view.entries,
+      builder: uc ? { wired: true, ...uc.status(), topicBackfilling: uc.backfilling(Number(raw)) } : { wired: false },
+    });
+  });
+  // context-budget-layered-summaries §6 rows A and G, §6.1, §6.2: one topic's
+  // Anchor and decisions/evolutions ledger — the Anchor's row references (message
+  // ids, lengths, times) or `no-anchor`, every ledger entry's type, cause,
+  // effect signal, status and supersedes links, the live-set selection, and
+  // the evolution confirmation queue's shape. Row references, labels and
+  // statuses only: never message text. Bearer only; 503 when the layers are off.
+  router.get('/topic/:id/anchor', (req, res) => {
+    if (!ctx.contextLayers) {
+      res.status(503).json({ error: 'context-budget layers not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const raw = String(req.params.id ?? '');
+    if (!/^-?\d{1,15}$/.test(raw)) {
+      res.status(400).json({ error: 'topic id must be an integer' });
+      return;
+    }
+    const q = Number.parseInt(String(req.query.limit ?? ''), 10);
+    const limit = Number.isFinite(q) ? Math.max(0, Math.min(q, 500)) : 50;
+    let intent: ReturnType<NonNullable<typeof ctx.topicIntentStore>['read']> | null = null;
+    try { intent = ctx.topicIntentStore ? ctx.topicIntentStore.read(Number(raw)) : null; } catch { intent = null; /* @silent-fallback-ok — without the topic-intent file the view reports no phase, no re-references and an unknown queue */ }
+    const al = ctx.contextLayers.anchorLedger();
+    res.json({
+      topicId: Number(raw),
+      ...anchorLedgerView(ctx.contextLayers.store, raw, intent, { limit }),
+      builder: al ? { wired: true, ...al.status() } : { wired: false },
+    });
+  });
+  // context-budget-layered-summaries §9.5 (Phase 1 S10): one topic's standing
+  // packet as it would be built now — delivered and full sizes against the
+  // hook budget, which sections are present or absent, whether it was reduced
+  // and how much it left out, the verifier's verdict and problems, and what is
+  // staged for the compaction hook. Sizes, sections and verdicts only: never
+  // the words. Bearer only; 503 when the layers (or TopicMemory) are off.
+  router.get('/topic/:id/standing-packet', (req, res) => {
+    const stager = ctx.contextLayers?.standingPacket() ?? null;
+    if (!ctx.contextLayers || !stager || !ctx.topicMemory) {
+      res.status(503).json({ error: 'context-budget standing packet not enabled on this agent', enableWith: 'contextBudget.enabled' });
+      return;
+    }
+    const raw = String(req.params.id ?? '');
+    if (!/^\d{1,15}$/.test(raw)) {
+      res.status(400).json({ error: 'topic id must be a non-negative integer' });
+      return;
+    }
+    let intent: ReturnType<NonNullable<typeof ctx.topicIntentStore>['read']> | null = null;
+    try { intent = ctx.topicIntentStore ? ctx.topicIntentStore.read(Number(raw)) : null; } catch { intent = null; /* @silent-fallback-ok — without the topic-intent file the live set has no phase and no re-references (the anchor route's behaviour) */ }
+    try {
+      res.json({ topicId: Number(raw), ...standingPacketView(stager, ctx.config.stateDir, raw, packetRowSource(ctx.topicMemory), intent, ctx.contextLayers.store) });
+    } catch (e) { // @silent-fallback-ok — reported to the caller as a 500 with its reason
+      res.status(500).json({ error: 'standing packet view failed', detail: operatorError(e, ctx.config.stateDir).slice(0, 200) });
+    }
+  });
+  // context-budget-layered-summaries §9.6 Codex column (Phase 1 S17): the Codex
+  // next-prompt seed. The per-prompt hook asks, on a Codex prompt naming a topic,
+  // whether this is the first prompt after a compaction (the rollout's newest
+  // `compacted` entry; its window_id is the context epoch) not yet seeded; if so
+  // the topic's standing packet is built, verified and returned in its disclosure
+  // marker. The hook prints it, then acknowledges (the ack writes the seeded
+  // marker, a record only); "already seeded" is read from the rollout itself,
+  // so a delivery Codex dropped is retried once. An unverified packet is never returned. Bearer only; 503 when the
+  // layers are off.
+  let codexSeedSvc: { stager: unknown; svc: import('../monitoring/contextLayers/codexSeed.js').CodexSeedService } | null = null;
+  const codexSeed = () => {
+    const stager = ctx.contextLayers?.standingPacket() ?? null;
+    if (!ctx.contextLayers || !stager) return null;
+    if (!codexSeedSvc || codexSeedSvc.stager !== stager) {
+      codexSeedSvc = {
+        stager,
+        svc: new CodexSeedService({
+          stateDir: ctx.config.stateDir,
+          // Only the topic's own live Codex session on this machine is offered its packet.
+          sessionBound: (topicId, sessionId) => {
+            try {
+              return (ctx.sessionManager?.listRunningSessions?.() ?? []).some((s: { telegramTopicId?: number; framework?: string; claudeSessionId?: string }) =>
+                s.telegramTopicId === topicId && s.framework === 'codex-cli' && s.claudeSessionId === sessionId);
+            } catch { return false; } // @silent-fallback-ok — an unreadable session list offers nothing (today's output)
+          },
+          stageNow: (topic) => {
+            const r = stager.stageNow(topic);
+            return r.ok ? { ok: true, delivered: r.packet.delivered, sha256: r.pointer.sha256 } : { ok: false, reason: r.reason };
+          },
+        }),
+      };
+    }
+    return codexSeedSvc.svc;
+  };
+  router.post('/context-budget/codex-seed', (req, res) => {
+    const svc = codexSeed();
+    if (!svc) { res.status(503).json({ error: 'context-budget standing packet not enabled on this agent', enableWith: 'contextBudget.enabled' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    try {
+      res.json(svc.offer({ topicId: b.topicId, sessionId: b.sessionId, transcriptPath: b.transcriptPath, framework: b.framework, promptSha256: b.promptSha256 }));
+    } catch (e) {
+      res.status(500).json({ deliver: false, error: 'codex seed failed', detail: operatorError(e, res.app?.locals?.stateDir).slice(0, 200) });
+    }
+  });
+  router.post('/context-budget/codex-seed/ack', (req, res) => {
+    const svc = codexSeed();
+    if (!svc) { res.status(503).json({ error: 'context-budget standing packet not enabled on this agent', enableWith: 'contextBudget.enabled' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const r = svc.ack({ sessionId: b.sessionId, epoch: b.epoch, carrier: b.carrier, transcriptPath: b.transcriptPath });
+    if (!r.ok) { res.status(409).json(r); return; }
+    res.json({ ok: true, epoch: r.marker.epoch, carrier: r.marker.carrier, seededAt: r.marker.seededAt });
+  });
+  router.get('/context-budget/codex-seed', (_req, res) => {
+    const svc = codexSeed();
+    if (!svc) { res.status(503).json({ error: 'context-budget standing packet not enabled on this agent', enableWith: 'contextBudget.enabled' }); return; }
+    res.json({ delivery: 'next-prompt', ...svc.status() });
   });
   // context-budget-layered-summaries §11: the measurement backend — cost-weighted
   // tokens per request per session and topic, live context size, rework (pending
@@ -31637,6 +31790,13 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
+    // Context budget §6: with the layers on the table is written by H3 only.
+    // Return the H3 text (`writer: h3`) and never ask the caller to write one.
+    if (ctx.contextLayers) {
+      res.json(h3SummarizeView(ctx.contextLayers.store, ctx.topicMemory, topicId));
+      return;
+    }
+
     const needsUpdate = ctx.topicMemory.needsSummaryUpdate(topicId, 1);
     const messagesSince = ctx.topicMemory.getMessagesSinceSummary(topicId);
     const currentSummary = ctx.topicMemory.getTopicSummary(topicId);
@@ -31673,7 +31833,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       return;
     }
 
-    ctx.topicMemory.saveTopicSummary(topicId, summary, messageCount ?? 0, lastMessageId ?? 0, purpose ?? null);
+    // The single-writer funnel (context budget §6): with the layers on, H3 owns
+    // the table and this second writer is refused with a plain reason.
+    const table = new TopicSummaryTable(ctx.topicMemory, () => !!ctx.contextLayers);
+    const saved = table.write('post-topic-summary', topicId, summary, messageCount ?? 0, lastMessageId ?? 0, purpose ?? null);
+    if (!saved.written) {
+      res.status(409).json({ error: 'summary-written-by-h3', reason: H3_OWNS_REASON, topicId });
+      return;
+    }
     res.json({ saved: true, topicId });
   });
 

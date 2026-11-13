@@ -51,7 +51,7 @@ function computeHeadHash(filePath: string, size: number): string {
   } catch {
     return 'unreadable';
   } finally {
-    if (fd != null) try { fs.closeSync(fd); } catch { /* ignore */ }
+    if (fd != null) try { fs.closeSync(fd); } catch { /* @silent-fallback-ok — closing a read-only fd; nothing to recover */ }
   }
 }
 

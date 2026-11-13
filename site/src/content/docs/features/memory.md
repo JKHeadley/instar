@@ -79,6 +79,14 @@ curl localhost:4040/topic/summary
 curl -X POST localhost:4040/topic/summarize
 ```
 
+### Context layers (development agents)
+
+With the context layers on, each topic keeps a layered memory. Read-only views report sizes, statuses and verdicts, never the words: `GET /topic/:id/user-corpus` (the operator's own messages), `GET /topic/:id/anchor` (the topic's Anchor and decisions), `GET /topic/:id/chunks` and `GET /topic/:id/chunks/:k` (chunk summaries), and `GET /topic/:id/standing-packet` (what a session is re-seeded with after a compaction). `GET /context-budget/layers` and `GET /context-budget/metrics` show the layers' status and cost, and `GET /context-budget/sentinel` shows the compaction canary and the adapter verification suite's recorded results.
+
+### Codex sessions after a compaction
+
+Codex has no hook that runs right after it compacts a conversation, so a Codex topic session gets its context back on the next prompt instead. The per-prompt hook asks `POST /context-budget/codex-seed`. If this is the first prompt since a compaction, the answer is the topic's verified standing packet, and it is printed in place of the usual briefing. The hook then confirms with `POST /context-budget/codex-seed/ack`, which records that compaction as recovered. Each compaction is seeded once. A packet that fails verification is never sent; that prompt gets the usual briefing. `GET /context-budget/codex-seed` shows the counts. All three return 503 while the context layers are off.
+
 ## Index Management
 
 ```bash
@@ -114,3 +122,28 @@ curl -H "Authorization: Bearer $AUTH" localhost:4040/topic/141133/chunks/3
 | `GET /topic/:id/chunks/:k` | One chunk: its summary, the message range it covers, what the sampler left out, and its author and as-of time. |
 
 Everything written to the summary store is scrubbed of secrets first, and the operator's own words are never copied into it: the store only keeps a pointer to the original message and a fingerprint of it.
+
+## Context Budget (layered summaries)
+
+The context budget keeps a long conversation's context in layers and restores it after a compaction. Every route needs the bearer token.
+
+- `GET /context-budget/sentinel` — the ContextBudgetSentinel's status: the compaction canary per machine and engine, the heal ladder's recent decisions (cause, action, outcome) and its breaker, and the synthetic press's last outcome. `503` while `contextBudget.sentinel.enabled` is off.
+- `POST /hooks/post-compact` — where the PostCompact hook sends Claude's `compact_summary`; stored scrubbed under the session's topic (a throwaway synthetic-press session files under its own press key).
+- `GET /context-budget/layers` — the layer store's status, including the standing packet's counters.
+- `GET /context-budget/metrics` — the context-budget card's numbers.
+- `GET /topic/:id/anchor` — a topic's Anchor and its decisions and evolutions ledger.
+- `GET /topic/:id/chunks` — a topic's chunk summaries; `GET /topic/:id/chunks/:k` reads one.
+- `GET /topic/:id/user-corpus` — the size of a topic's operator corpus.
+- `GET /topic/:id/standing-packet` — a topic's standing packet: sizes, sections and the verifier's verdict, never the words.
+
+```bash
+curl -H "Authorization: Bearer $AUTH" localhost:4040/context-budget/sentinel
+curl -H "Authorization: Bearer $AUTH" localhost:4040/context-budget/layers
+curl -H "Authorization: Bearer $AUTH" localhost:4040/context-budget/metrics
+curl -H "Authorization: Bearer $AUTH" localhost:4040/topic/TOPIC_ID/anchor
+curl -H "Authorization: Bearer $AUTH" localhost:4040/topic/TOPIC_ID/chunks
+curl -H "Authorization: Bearer $AUTH" localhost:4040/topic/TOPIC_ID/user-corpus
+curl -H "Authorization: Bearer $AUTH" localhost:4040/topic/TOPIC_ID/standing-packet
+```
+
+The canary's heal ladder acts by cause, through bounded brakes: a missing hook re-runs the hook migration; a compaction whose briefing never reached the session gets its standing packet re-delivered once at an idle prompt; anything else is recorded only. Its positive control is a compaction the sentinel presses on a throwaway session (name starting `cb-press-`, bound to no channel), never on a live conversation.

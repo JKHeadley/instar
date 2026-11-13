@@ -78,6 +78,18 @@ export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
     description: 'Context Budget sentinel: reconciles quarantined context folds and escalates torn fold records; off ⇒ no fold can begin.',
   },
   {
+    // Context Budget backfill lane (docs/specs/context-budget-layered-summaries.md §6.1, decision 9, S7):
+    // rebuilds existing topics' Anchor and ledger from TopicMemory on the topic's owner, at most 20 topics
+    // a day, entries backfilled-unconfirmed. Ships dark; built with the layers and ticked always, it does
+    // no work while off (no runtime registration).
+    key: 'contextBudget.backfill', kind: 'config',
+    configPath: 'contextBudget.backfill.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 600_000, process: 'server', expectRuntime: false, liveConfig: true,
+    component: 'BackfillLane',
+    description: 'Context Budget backfill lane: rebuilds existing conversations\' purpose and decisions from history as unconfirmed entries; off ⇒ no work.',
+  },
+  {
     key: 'scheduler.jobCoverage', kind: 'code-default', defaultEnabled: true,
     expectedTickMs: 300_000, process: 'server', expectRuntime: false,
     component: 'JobCoverageMonitor',

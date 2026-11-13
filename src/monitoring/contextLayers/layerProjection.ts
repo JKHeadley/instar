@@ -81,7 +81,7 @@ export function projectAwareness(store: LayerStore, topicKey: string, a: TopicAw
         && prev.data.trend === arc.layer.trend && JSON.stringify(prev.data.themes) === JSON.stringify(arc.layer.themes);
       if (same) { out.h2 = 'written'; }
       else {
-        const r = store.writeDerived(topicKey, 'h2', 'current', layerData(arc.layer, ctx, { arcId: arc.arcId, startedTurn: arc.startedTurn, sequence: arc.sequence }), { author, asOf, status: 'live' });
+        const r = store.writeDerived(topicKey, 'h2', 'current', layerData(arc.layer, ctx, { arcId: arc.arcId, startedTurn: arc.startedTurn, sequence: arc.sequence, ...(arc.boundaryMessageId ? { boundaryMessageId: arc.boundaryMessageId } : {}) }), { author, asOf, status: 'live' });
         out.h2 = r.written ? 'written' : 'failed';
       }
     } else {

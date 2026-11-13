@@ -187,6 +187,14 @@ export const NEVER_BACKUP_PATH_SEGMENTS: readonly string[] = Object.freeze([
   '_delta-shadow',
   // Saved full recovery blocks (context-budget §9.1): per-session, transient.
   '_recovery',
+  // Staged standing packets (context-budget §9.5, §9.7): re-rendered from the
+  // layers on every commit; they quote the operator's rows, which TopicMemory
+  // (already backed up) holds. A restored one would seed a stale packet.
+  '_standing',
+  // PreCompact keep-instructions (context-budget §9.5): per-session carriers that
+  // quote operator rows (TopicMemory, backed up, holds them); a restored one
+  // would steer a compaction with stale words.
+  '_keep',
 ]);
 
 /**

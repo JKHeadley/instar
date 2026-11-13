@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-12T00:26:25.826Z",
+  "slug": "cb-phase1-rest",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 25,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/scaffold/templates.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 16,
+    "deletedLines": 9
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "S11: context-budget-canary-heal and context-budget-synthetic-press registered in selfActionRegistry (heal <=3 attempts per machine.session.epoch in a 30-min window, <=3 runs per session per 24 h, same-cause breaker; press <=3 per machine per day, 1 h apart). S17: context-budget-adapter-suite registered (one run per unrecorded engine+version, 24 h retry floor, 3 attempts then give-up). S7: backfill lane hard-bounded (2 topics per 10-min tick, 20 per day, parked after 3 failures). All settle in the convergence test."
+    }
+  },
+  "verdict": "pass"
+}

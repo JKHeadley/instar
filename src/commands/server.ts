@@ -1023,11 +1023,16 @@ let _inboundIdLedger: import('../threadline/InboundIdLedger.js').InboundIdLedger
 let _foldCoordinator: import('../monitoring/FoldCoordinator.js').FoldCoordinator | null = null;
 /** The ContextBudgetSentinel (context-budget §7.8): dev-gated; its heartbeat is a fold precondition. */
 let _contextBudgetSentinel: import('../monitoring/ContextBudgetSentinel.js').ContextBudgetSentinel | null = null;
+/** The CompactionSentinel, for the canary heal ladder's idle-gated re-inject (built later in boot than the ContextBudgetSentinel). */
+let _compactionSentinelForHeal: import('../monitoring/CompactionSentinel.js').CompactionSentinel | null = null;
+/** True once the canary heal ladder is built on this boot (a staged heal re-seed resumes only then). */
+let _canaryHealWired = false;
 let _contextLayers: import('../monitoring/contextLayers/contextLayersBoot.js').ContextLayers | null = null;
 let _layerTicker: { stop(): void } | null = null;
 let _chunkBuilder: import('../monitoring/contextLayers/chunkBuilder.js').ChunkBuilder | null = null;
 /** The ContextBudgetSentinel's layer-rebuild seam (§17 stale layers), bound once the capture loop is wired (it is built after the sentinel). */
 let _layerReproject: ((topicId: number) => import('../monitoring/ContextBudgetSentinel.js').LayerRebuildOutcome) | null = null;
+let _h3Builder: import('../monitoring/contextLayers/h3Builder.js').H3Builder | null = null;
 /** context-budget-layered-summaries §10: the egress fold hold, checked at the shared outbound chokepoints. */
 let _foldHolds: import('../monitoring/FoldHoldStore.js').FoldHoldStore | null = null;
 /** True while the listener daemon owns inbound relay handling (no capability then). */
@@ -1610,7 +1615,9 @@ export async function spawnSessionForTopic(
   let usedFallback = false;
   if (!silentStart && !contextContent && topicMemory?.isReady()) {
     try {
-      contextContent = topicMemory.formatContextForSession(topicId, 50);
+      // Context budget §6 (S10): with the layers on, the verified standing packet takes the summary's place.
+      const standingPacket = _contextLayers?.standingPacket()?.packetForSession(topicId) ?? null;
+      contextContent = topicMemory.formatContextForSession(topicId, 50, { standingPacket });
     } catch (err) {
       // @silent-fallback-ok — TopicMemory format, JSONL fallback
       console.error(`[telegram→session] TopicMemory context failed, falling back to JSONL:`, err);
@@ -13462,6 +13469,33 @@ export async function startServer(options: StartOptions): Promise<void> {
           });
         }
       }
+      // ── Context budget standing packet (§9.5; Phase 1 S10): re-rendered and
+      // verified on every layer commit, staged for the compaction hook, read by
+      // the spawn path and the compaction-resume path. Off (or no store) ⇒ any
+      // packet a previous run staged is removed, so recovery is exactly today's.
+      {
+        const { clearStagedStandingPackets } = await import('../monitoring/contextLayers/standingPacket.js');
+        if (_contextLayers && topicMemory) {
+          try {
+            const { wireStandingPacket } = await import('../monitoring/contextLayers/standingPacketBoot.js');
+            wireStandingPacket({
+              layers: _contextLayers, stateDir: config.stateDir, topicMemory,
+              intent: (t) => topicIntentStore.read(t),
+              sessions: () => sessionManager.listRunningSessions(),
+            });
+          } catch (err) {
+            DegradationReporter.getInstance().report({
+              feature: 'contextBudget.standingPacket',
+              primary: 'After a compaction the conversation is re-seeded from its verified standing packet',
+              fallback: 'Compaction recovery prints today\'s condensed recovery block on this machine until the next restart',
+              reason: `Wiring the standing packet failed: ${err instanceof Error ? err.message : String(err)}`,
+              impact: 'Conversations on this machine recover from a compaction the way they did before the context layers.',
+            });
+          }
+        } else {
+          try { clearStagedStandingPackets(config.stateDir); } catch { /* @silent-fallback-ok — a leftover pointer is still bounded by the hook's 7-day age and hash checks */ }
+        }
+      }
       // ── ContextBudgetSentinel (§7.8; Phase 0 core): quarantine reconciliation,
       // torn-record escalation, the checkpoint grace pass. Ships DARK
       // (`contextBudget.sentinel.enabled`, default false): it can end a session,
@@ -13469,7 +13503,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // never by the dev-agent default. Dark ⇒ no heartbeat ⇒ no fold can begin.
       if (liveConfig.get<boolean>('contextBudget.sentinel.enabled', false) === true) {
         const { ContextBudgetSentinel } = await import('../monitoring/ContextBudgetSentinel.js');
-        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, codexHomeForTmuxSession, productionLiveTopics, productionHoldCarriers } = await import('../monitoring/contextBudgetSentinelBoot.js');
+        const { productionSentinelSessionDeps, productionCanarySessions, productionAdapterSuite, codexHomeForTmuxSession, productionLiveTopics, productionHoldCarriers, productionPressChecks } = await import('../monitoring/contextBudgetSentinelBoot.js');
         const { CompactionCanary } = await import('../monitoring/compactionCanary.js');
         const { FoldRecordStore } = await import('../monitoring/FoldCoordinator.js');
         const { governor: sentinelGovernor, consumeAdmissionToken: sentinelConsume } = await import('../monitoring/selfaction/governor.js');
@@ -13477,6 +13511,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         const poolLiveNow = () => { const p = livePool(); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; };
         const sessionDeps = productionSentinelSessionDeps({ sessions: sessionManager, projectDir: config.projectDir, tmuxPath: config.sessions.tmuxPath });
         // §9.6 Codex adapter (S16): Codex sessions join the canary under the contextBudget.enabled dev gate, read live each tick.
+        const codexBinForSuite = (await import('../core/Config.js')).detectCodexPath();
         const codexCanaryOn = () => contextLayersEnabled(config as { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined));
         // The §17 rows (Phase 1 S12). Freshness needs the layers (off ⇒ `unavailable: layers-off`)
         // and reads TopicMemory lazily; its rebuild request goes through the capture loop's
@@ -13496,6 +13531,52 @@ export async function startServer(options: StartOptions): Promise<void> {
             degradation: (r: { feature: string; primary: string; fallback: string; reason: string; impact: string }) => DegradationReporter.getInstance().report(r),
           },
         };
+        const canaryInstance = new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() });
+        const sentinelAttention = async (n: { id: string; title: string; summary: string; priority: 'NORMAL' | 'HIGH' | 'URGENT' }) => {
+          if (!telegram) throw new Error('no attention channel'); // kept in the sentinel's durable outbox and retried
+          await telegram.createAttentionItem({ ...n, category: 'context-budget', sourceContext: 'context-budget-sentinel' });
+        };
+        // §9.1 heal ladder by cause + the synthetic press (the canary's positive control). Dev-gated
+        // twice: the sentinel's own switch (above) AND the context-budget layers (`contextBudget.enabled`,
+        // whose standing packet is what rung 2 re-seeds); the sentinel ticks them only while
+        // `contextBudget.compactionRecovery.enabled` is on. Off ⇒ nothing acts.
+        const healAndPress = contextLayersEnabled(config as { developmentAgent?: boolean; contextBudget?: { enabled?: boolean } }, liveConfig.get<boolean | undefined>('contextBudget.enabled', undefined))
+          ? await (async () => {
+            const { productionCanaryHealAndPress } = await import('../monitoring/contextBudgetSentinelBoot.js');
+            const { readSeedMarkerFile: readMarkerForHeal } = await import('../monitoring/compactionSeedMarker.js');
+            const { healReseedText } = await import('../monitoring/contextBudgetSentinelBoot.js');
+            const { PostUpdateMigrator: HealMigrator } = await import('../core/PostUpdateMigrator.js');
+            const healHandle = sentinelGovernor.for('context-budget-canary-heal');
+            const pressHandle = sentinelGovernor.for('context-budget-synthetic-press');
+            return productionCanaryHealAndPress({
+              stateDir: config.stateDir, projectDir: config.projectDir, machineId: built.holderId, canary: canaryInstance,
+              sessions: sessionManager,
+              topicForSession: (t) => telegram?.getTopicForSession(t) ?? null,
+              poolLive: poolLiveNow,
+              compactionSentinel: () => _compactionSentinelForHeal,
+              reseedText: (topicId) => {
+                const packet = _contextLayers?.standingPacket()?.packetForSession(topicId) ?? null;
+                if (!packet) return null;
+                const block = topicMemory?.isReady() ? topicMemory.formatContextForSession(topicId, 20, { standingPacket: packet }) : packet;
+                return healReseedText(topicId, block);
+              },
+              repairHooks: () => new HealMigrator({
+                projectDir: config.projectDir, stateDir: config.stateDir, port: config.port,
+                hasTelegram: config.messaging?.some((m: { type?: string }) => m.type === 'telegram') ?? false,
+                projectName: config.projectName,
+                claudeCodePath: config.sessions?.frameworkBinaryPaths?.['claude-code'] ?? config.sessions?.claudePath ?? null,
+                host: config.host,
+              }).repairCompactionRecoveryHooks(),
+              readMarker: (cid) => readMarkerForHeal(config.stateDir, cid),
+              attention: sentinelAttention,
+              healAdmit: (target, opts) => healHandle.admit(target, opts),
+              pressAdmit: (target, opts) => pressHandle.admit(target, opts),
+              consumeToken: sentinelConsume,
+              audit: (e) => console.log(pc.dim(`  [context-budget-heal] ${e.event}${e.reason ? `: ${e.reason}` : ''}`)),
+            });
+          })()
+          : null;
+        _canaryHealWired = healAndPress !== null;
         _contextBudgetSentinel = new ContextBudgetSentinel({
           ...sentinelRows,
           stateDir: config.stateDir,
@@ -13507,17 +13588,16 @@ export async function startServer(options: StartOptions): Promise<void> {
           ownsFold: (rec) => poolLiveNow() ? 'unknown' : (sessionDeps.candidates(rec.topicKey).length > 0 || rec.machineId === built.holderId),
           ownsTopic: () => poolLiveNow() ? 'unknown' : true,
           ...sessionDeps,
-          attention: async (n) => {
-            if (!telegram) throw new Error('no attention channel'); // kept in the sentinel's durable outbox and retried
-            await telegram.createAttentionItem({ ...n, category: 'context-budget', sourceContext: 'context-budget-sentinel' });
-          },
+          attention: sentinelAttention,
           admit: (target, opts) => sentinelHandle.admit(target, opts),
           consumeToken: sentinelConsume,
           // The standing compaction canary (§9.1): observation only; its state rides GET /context-budget/sentinel.
+          ...(healAndPress ? { heal: healAndPress.heal, press: healAndPress.press } : {}),
           canary: {
-            instance: new CompactionCanary({ stateDir: config.stateDir, machineId: built.holderId, engineInScope: (e) => e !== 'codex-cli' || codexCanaryOn() }),
+            instance: canaryInstance,
             sessions: productionCanarySessions({
               sessions: sessionManager, projectDir: config.projectDir,
+              pressChecks: productionPressChecks({ topicForSession: (t) => telegram?.getTopicForSession(t) ?? null, protectedSessions: () => sessionManager.getProtectedSessions() }),
               // §9.6 Codex adapter: Codex topic sessions join the canary (their rollout's `compacted`
               // entry is the detection; the scan also drives trackContextUsage and the post-compaction
               // producer) under the contextBudget.enabled dev gate, read live.
@@ -13532,6 +13612,11 @@ export async function startServer(options: StartOptions): Promise<void> {
           // version. Its own switch (it spends model calls), default off.
           ...(liveConfig.get<boolean>('contextBudget.adapterSuite.enabled', false) === true
             ? { adapterSuite: productionAdapterSuite({ stateDir: config.stateDir, machine: built.holderId, claudePath: config.sessions.claudePath }) }
+            : {}),
+          // The Codex adapter's suite (§9.6, Phase 1 S17): the same switch, and only where the
+          // Codex adapter is live (the contextBudget.enabled dev gate) and a codex binary is found.
+          ...(liveConfig.get<boolean>('contextBudget.adapterSuite.enabled', false) === true && codexCanaryOn() && codexBinForSuite
+            ? { codexAdapterSuite: productionAdapterSuite({ stateDir: config.stateDir, machine: built.holderId, claudePath: codexBinForSuite, engine: 'codex-cli' }) }
             : {}),
           audit: (e) => { if (e.event !== 'gate:attempt-finished') console.log(pc.dim(`  [context-budget-sentinel] ${e.event}${e.reason ? `: ${e.reason}` : ''}`)); },
         });
@@ -14071,8 +14156,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       }
       // On a codex-only agent without a built Codex provider, summaryIntelligence
       // stays null — topic summaries are skipped rather than run on Claude.
-      if (summaryIntelligence) {
-      const summarizer = new TopicSummarizer(summaryIntelligence, topicMemory);
+      // Context budget §6: with the layers on, H3 is the summary table's single
+      // writer and this writer is disabled (refused through the same funnel).
+      if (_contextLayers) {
+        console.log(pc.dim('  Topic auto-summarization handed to H3 (context layers on; the rolling summarizer is off)'));
+      } else if (summaryIntelligence) {
+      const { TopicSummaryTable: LegacySummaryTable } = await import('../memory/TopicSummaryTable.js');
+      const summarizer = new TopicSummarizer(summaryIntelligence, topicMemory, undefined, new LegacySummaryTable(topicMemory, () => _contextLayers !== null));
 
       sessionManager.on('sessionComplete', (session) => {
         // Find the topic linked to this session
@@ -15857,7 +15947,13 @@ export async function startServer(options: StartOptions): Promise<void> {
       let contextBlock = '';
       if (topicMemory?.isReady()) {
         try {
-          contextBlock = topicMemory.formatContextForSession(topicId, 20);
+          // Context budget §9.1/§9.5 (S10): the server-side recovery carries the same verified
+          // standing packet — only with compaction recovery on (§9.1: every reseed is
+          // conditioned on that switch on this machine; off ⇒ today's block exactly).
+          const standingPacket = liveConfig.get<boolean>('contextBudget.compactionRecovery.enabled', true) !== false
+            ? (_contextLayers?.standingPacket()?.packetForSession(topicId) ?? null)
+            : null;
+          contextBlock = topicMemory.formatContextForSession(topicId, 20, { standingPacket });
         } catch (err) {
           console.warn(`[CompactionResume] (${triggerLabel}) topicMemory failed, falling back to inline history:`, err);
           // @silent-fallback-ok — the inline JSONL history below carries the same recent messages (the session-spawn precedence)
@@ -15905,7 +16001,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // calls that used to live here. Dedupes across the three triggers and
     // vetoes zombie cleanup while a recovery is in flight.
     const { CompactionSentinel } = await import('../monitoring/CompactionSentinel.js');
-    const { readSeedMarkerFile } = await import('../monitoring/compactionSeedMarker.js');
+    const { readSeedMarkerFile, writeSeedMarkerFile } = await import('../monitoring/compactionSeedMarker.js');
     const { createCompactionFallbackDeps } = await import('../monitoring/compactionFallbackStore.js');
     const { PendingInjectStore } = await import('../core/PendingInjectStore.js');
     // A session is a legitimate recovery target ONLY while it is in the running
@@ -15947,6 +16043,17 @@ export async function startServer(options: StartOptions): Promise<void> {
             config.stateDir,
             sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId,
           ),
+        // §9.1/§7.7: after the idle-gated path delivered a compaction's context, the server
+        // writes the seeded marker for that epoch (the compact-boundary id, the shared derivation).
+        isHealEnabled: () => _canaryHealWired,
+        writeSeedMarker: (sessionName: string, boundaryUuid: string, source: 'server-fallback' | 'heal') => {
+          const at = Date.now();
+          return writeSeedMarkerFile(
+            config.stateDir,
+            sessionManager.listRunningSessions().find(s => s.tmuxSession === sessionName)?.claudeSessionId,
+            { boundaryUuid, source, seededAt: at },
+          ) ? at : null;
+        },
         // §9.1: the fallback after a missed seed is staged durably in
         // PendingInjectStore and released only at an idle, ready prompt.
         fallback: createCompactionFallbackDeps({
@@ -15962,6 +16069,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // Defaults are production-sensible; override here only if needed.
       {},
     );
+    _compactionSentinelForHeal = compactionSentinel;
     // ── RateLimitSentinel ─────────────────────────────────────────────
     // Rides out Anthropic's server-side capacity throttle ("Server is
     // temporarily limiting requests · not your usage limit") with
@@ -18837,18 +18945,46 @@ export async function startServer(options: StartOptions): Promise<void> {
                 return before.length ? Math.max(...before.map((m) => m.messageId)) : null;
               },
               onEvent: (e) => {
+                // §6.5: H3 rebuilds (debounced per topic) on chunk creation.
+                if (e.kind === 'closed' || e.kind === 'c2') _h3Builder?.request(e.topicKey, e.kind === 'c2' ? 'c2' : 'chunk');
                 if (e.kind === 'closed' || e.kind === 'c2' || e.kind === 'pre-layer') featureEvidence.recordAtMostEvery(CONTEXT_LAYERS_FEATURE_ID, `${e.topicKey}:${e.kind}`, 10 * 60_000, { kind: 'fired', reason: `${CHUNK_COMPONENT} ${e.kind}`, context: { topicKey: e.topicKey } });
                 else if (e.kind === 'archive-failed' || e.kind === 'read-failed' || e.kind === 'error') featureEvidence.record(CONTEXT_LAYERS_FEATURE_ID, { kind: 'error', reason: `${CHUNK_COMPONENT} ${e.kind}${e.detail ? `: ${e.detail}` : ''}`.slice(0, 300), context: { topicKey: e.topicKey } });
               },
             });
             console.log(pc.green('  Context layers: chunk builder wired (PostCompact → archive → chunk, C2 ranges)'));
+            // ── H3 (§6 row H3, §6.5; Phase 1 S9): the long-term view, rebuilt
+            // from a bounded selection of chunks and C2 ranges, and the topic
+            // summary table's ONLY writer while the layers are on (the
+            // TopicSummarizer and POST /topic/summary are refused through the
+            // same single-writer funnel). Same queued shared intelligence and
+            // LayerUpdate budget as the chunks.
+            const { H3Builder, H3_COMPONENT } = await import('../monitoring/contextLayers/h3Builder.js');
+            const { TopicSummaryTable } = await import('../memory/TopicSummaryTable.js');
+            const chunksRef = _chunkBuilder;
+            _h3Builder = new H3Builder({
+              store: layersRef.store, budget: layersRef.budget,
+              intelligence: sharedIntelligence ? queuedForChunks(sharedIntelligence, (lane, fn, costCents) => sharedLlmQueue.enqueue(lane, fn, costCents)) : null,
+              table: topicMemory ? new TopicSummaryTable(topicMemory, () => _contextLayers !== null) : null,
+              readSummary: (topicId) => topicMemory?.getTopicSummary(topicId) ?? null,
+              countMessagesAfter: (topicId, messageId) => topicMemory?.countMessagesAfter(topicId, messageId) ?? null,
+              messageCount: (topicId) => topicMemory?.getMessageCount(topicId) ?? 0,
+              requestRangeClose: (topicKey) => chunksRef.maybeCloseRange(topicKey),
+              machine: _meshSelfId ?? 'local',
+              onEvent: (e) => {
+                if (e.kind === 'written' || e.kind === 'legacy-retired') featureEvidence.recordAtMostEvery(CONTEXT_LAYERS_FEATURE_ID, `${e.topicKey}:h3-${e.kind}`, 10 * 60_000, { kind: 'fired', reason: `${H3_COMPONENT} ${e.kind}`, context: { topicKey: e.topicKey } });
+                else if (e.kind === 'error' || e.kind === 'refused' || e.kind === 'table-refused') featureEvidence.record(CONTEXT_LAYERS_FEATURE_ID, { kind: 'error', reason: `${H3_COMPONENT} ${e.kind}${e.detail ? `: ${e.detail}` : ''}`.slice(0, 300), context: { topicKey: e.topicKey } });
+                // A floor past the hard ceiling stalls H3 for the topic until its phase moves: never only an in-memory counter.
+                else if (e.kind === 'floor-over-budget' || (e.kind === 'deferred' && (e.detail ?? '').startsWith('floor-over-ceiling'))) featureEvidence.recordAtMostEvery(CONTEXT_LAYERS_FEATURE_ID, `${e.topicKey}:h3-${e.kind}`, 60 * 60_000, { kind: 'error', reason: `${H3_COMPONENT} ${e.kind}${e.detail ? `: ${e.detail}` : ''}`.slice(0, 300), context: { topicKey: e.topicKey } });
+              },
+            });
+            console.log(pc.green('  Context layers: H3 wired (bounded chunk/C2 selection; the topic summary table\'s single writer)'));
           } catch (err) {
             DegradationReporter.getInstance().report({
               feature: 'contextBudget.layers.chunks',
               primary: 'Compactions archive the pre-compaction span and build its chunk summary',
-              fallback: 'No chunk builder on this machine until the next restart',
-              reason: `Chunk builder wiring failed: ${err instanceof Error ? err.message : String(err)}`,
-              impact: 'Spans compacted away on this machine are not archived or summarized; compaction recovery itself is unchanged.',
+              fallback: 'No chunk builder and no H3 on this machine until the next restart',
+              reason: `Chunk builder / H3 wiring failed: ${err instanceof Error ? err.message : String(err)}`,
+              impact: 'Spans compacted away on this machine are not archived or summarized, and the long-term topic summary is not rewritten here (the rolling summarizer stays off while the layers are on); compaction recovery itself is unchanged.',
             });
           }
         }
@@ -18897,6 +19033,13 @@ export async function startServer(options: StartOptions): Promise<void> {
               ? (await import('../monitoring/contextLayers/layerCaptureWiring.js')).wireLayerCapture({
                   layers: _contextLayers, store: topicIntentStore, sessions: sessionManager as unknown as import('../monitoring/contextLayers/layerCaptureWiring.js').LayerSessionSource,
                   machine: _meshSelfId ?? 'local', projectDir: config.projectDir,
+                  // §6 row U, §8: the protected user corpus from TopicMemory sender rows, bound to the operator through memory privacy.
+                  topicMemory: topicMemory ?? null,
+                  isOperator: ({ senderKey, userId }) => _memoryPrivacyWired.isOperator(senderKey) || _memoryPrivacyWired.isOwnerSender(senderKey, userId),
+                  bindingFingerprint: () => _memoryPrivacyWired.operatorBindingFingerprint(),
+                  // §6.1 S7: the Anchor/ledger backfill (history entries backfilled-unconfirmed, one
+                  // confirmation folded into a reply). Its own switch, default off, read live.
+                  backfillEnabled: () => liveConfig.get<boolean>('contextBudget.backfill.enabled', false) === true,
                 })
               : null;
             if (layerWiring) onLayerExtractUsage = layerWiring.onExtractUsage;
@@ -18933,6 +19076,38 @@ export async function startServer(options: StartOptions): Promise<void> {
                 shouldShed: () => { const r = quotaTracker?.getRecommendation(); return r === 'critical' || r === 'stop'; },
               }, { liveSecrets: () => _contextLayers?.liveSecrets() ?? [] });
               console.log(pc.green('  Context layers: H1/H2 projection + transcript-growth ticks wired'));
+              if (layerWiring.userCorpus) console.log(pc.green('  Context layers: U (protected user corpus) + referent stubs wired'));
+              if (layerWiring.anchorLedger) console.log(pc.green('  Context layers: A (Anchor) + G (decisions/evolutions ledger) wired'));
+              // §6.1 S7: the backfill lane, on the topic's owner only (a single machine owns every topic;
+              // with pool placement live, the ownership record must name this machine — unknown never reads as yes).
+              if (topicMemory) {
+                const tm = topicMemory;
+                const backfillLane = layerWiring.startBackfillLane({
+                  stateDir: config.stateDir,
+                  topics: () => tm.listTopics().map((t) => ({ topicId: t.topicId, lastActivity: t.lastActivity })),
+                  isOwner: (await import('../monitoring/contextLayers/backfillLane.js')).topicOwnerCheck({
+                    poolPlacementLive: () => { const p = liveConfig.get<{ enabled?: boolean; stage?: string } | undefined>('multiMachine.sessionPool', undefined); return p?.enabled === true && !!p.stage && p.stage !== 'dark'; },
+                    // Count the pool's machines when the list exists; without it, no mesh identity means a single-machine agent.
+                    multiMachine: () => (_listPoolMachines ? _listPoolMachines().length > 1 : !_meshSelfId ? false : 'unknown'),
+                    // Read at call time: the registry is built later in boot than this wiring. §14: the record must be active.
+                    ownerOf: (k) => { const r = sessionOwnershipRegistry?.read(k); return r && r.status === 'active' ? r.ownerMachineId : null; },
+                    selfId: () => _meshSelfId,
+                  }),
+                  // The last row in insertion order: the order the ledger's history rule compares by.
+                  latestMessageId: (topicId) => tm.lastMessageIdByRow(topicId),
+                  shouldShed: () => { const r = quotaTracker?.getRecommendation(); return r === 'critical' || r === 'stop'; },
+                  onDegraded: (e) => DegradationReporter.getInstance().report({
+                    feature: 'contextBudget.backfill',
+                    primary: 'Existing conversations get their purpose and decisions rebuilt from history in the background',
+                    fallback: e.kind === 'topic-failed' ? `Stopped rebuilding conversation ${e.topicId ?? '?'} after repeated failures`
+                      : e.kind === 'topic-stalled' ? `Stopped rebuilding conversation ${e.topicId ?? '?'}: reading its history never finished`
+                        : e.kind === 'state-unreadable' ? 'Restarted the rebuild bookkeeping (each step is safe to redo)' : 'Kept rebuilding without saving progress (a restart may redo work)',
+                    reason: e.reason,
+                    impact: e.kind === 'topic-failed' || e.kind === 'topic-stalled' ? 'That conversation keeps no rebuilt purpose or decisions; it behaves as before.' : 'Some rebuild work may be repeated; nothing is lost.',
+                  }),
+                });
+                if (backfillLane) console.log(pc.green(`  Context layers: Anchor/ledger backfill lane wired (${liveConfig.get<boolean>('contextBudget.backfill.enabled', false) === true ? 'on' : 'off until contextBudget.backfill.enabled'})`));
+              }
             }
             // Anti-"shipped-but-asleep" marker for the wiring-integrity test.
             (globalThis as Record<string, unknown>).__instarTopicIntentCaptureWired = true;
@@ -34150,7 +34325,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // Only now: a retry must see the session router, spawn admission and the operator routes.
     _slackRefusedHold?.start();
     activeUsageLimitWatch()?.start();
-    const server = new AgentServer({ config, getConversationGraphDelegation, conversationGraphDelegationRemoteRuntime:conversationGraphRemoteDelegationRuntime, conversationGraphDelegationRuntime, conversationGraphReplicationRuntime: conversationGraphDefault?undefined:conversationGraphReplicationRuntime ?? undefined, conversationGraphDefault, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx, chunkBuilder: _chunkBuilder ?? undefined, contextLayers: _contextLayers ?? undefined}); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
+    const server = new AgentServer({ config, getConversationGraphDelegation, conversationGraphDelegationRemoteRuntime:conversationGraphRemoteDelegationRuntime, conversationGraphDelegationRuntime, conversationGraphReplicationRuntime: conversationGraphDefault?undefined:conversationGraphReplicationRuntime ?? undefined, conversationGraphDefault, reachablePeople: _reachablePeople ?? undefined, ecosystemLedger: _ecosystemLedger ?? undefined, recommendedServicesLedger: _recommendedServicesLedger ?? undefined, singleInstanceLock, agentIdentity: _agentIdentityDeps, terminateSessionAuthority: terminateWithAuthority, subscriptionEmailBinding: credentialLocationLedger, subscriptionEmailBarrier, subscriptionIdentityOracle, sessionManager, llmQueue: sharedLlmQueue, state, scheduler, telegram, telegramOrigin: telegramOriginBoot?.runtime, relationships, feedback, feedbackAnomalyDetector, dispatches, updateChecker, autoUpdater, autoDispatcher, quotaTracker, quotaManager, publisher, viewer, jobAnomalySendAutomationReply: sendAutomationReply, tunnel, evolution, watchdog, topicMemory, triageNurse, projectMapper, cartographerRoots: cartographerRoots ?? undefined, coherenceGate: scopeVerifier, contextHierarchy, canonicalState, operationGate, sentinel, adaptiveTrust, memoryMonitor, orphanReaper, coherenceMonitor, commitmentTracker, subscriptionPool, accountFollowMePeerViews: async () => { const nickById = new Map((_listPoolMachines?.() ?? []).map((m) => [m.machineId, verifiedEntityName(m.machineId, m.nickname) ?? ''])); let peers = (_resolvePeerUrls?.() ?? []).map((p) => ({ machineId: p.machineId, nickname: nickById.get(p.machineId) ?? '', url: p.url })); if (peers.length === 0) { peers = (_listPoolMachines?.() ?? []).filter((m) => m.machineId !== _meshSelfId && !!m.lastKnownUrl).map((m) => ({ machineId: m.machineId, nickname: verifiedEntityName(m.machineId, m.nickname) ?? '', url: m.lastKnownUrl as string })); } if (peers.length === 0) return []; const { fetchPeerSubscriptionViews } = await import('../core/fetchPeerSubscriptionViews.js'); return fetchPeerSubscriptionViews({ peers: () => peers, fetchImpl: fetch as unknown as Parameters<typeof fetchPeerSubscriptionViews>[0]['fetchImpl'], authToken: config.authToken ?? '' }); }, quotaPoller, quotaAwareScheduler: _quotaAwareScheduler ?? undefined, proactiveSwapMonitor: _proactiveSwapMonitor ?? undefined, usageWallRescue: _usageWallRescue ?? undefined, inUseAccountResolver, enrollmentWizard, accountFollowMeRevocation, credentialRepointing, semanticMemory, activitySentinel, rateLimitSentinel, releaseReadinessSentinel: releaseReadinessSentinel ?? undefined, greenPrAutoMerger: greenPrAutoMerger ?? undefined, localVerify: localVerifyService ?? undefined, localVerifyStatus: localVerifyStatus ?? undefined, guardLatchStore: guardLatchStore ?? undefined, agentStopSurfacer: agentStopSurfacer ?? undefined, messageRouter, summarySentinel, spawnManager, systemReviewer, capabilityMapper, selfKnowledgeTree, coverageAuditor, topicResumeMap: _topicResumeMap ?? undefined, topicProfile: _topicProfileCtx ?? undefined, sessionRefresh: _sessionRefresh ?? undefined, autonomyManager, trustElevationTracker, autonomousEvolution, coordinator: coordinator.enabled ? coordinator : undefined, meshBindActive: coordinator.managers.identityManager.hasIdentity() && config.multiMachine?.meshTransport?.enabled !== false, localSigningKeyPem, leaseTransport, peerEndpointRecorder, getSelfMeshEndpoints, onLeasePullRequest: () => leaseCoordinatorRef?.currentLease() ?? null, liveTailReceiver, handoffWireTransport, onHandoffBegin, onHandoffInitiate: handoffInitiate, handoffInProgress: handoffSentinelInProgress, messageLedger, currentInboundByTopic, replyMarkerTransport, onReplyMarker: messageLedger ? (marker: unknown) => { const m = marker as { dedupeKey: string; platform: string; replyIdempotencyKey: string; epoch: number; topic?: string | null }; messageLedger!.applyRemoteReplyMarker(m.dedupeKey, { platform: m.platform, replyIdempotencyKey: m.replyIdempotencyKey, epoch: m.epoch, topic: m.topic ?? null }); } : undefined, whatsapp: whatsappAdapter, slack: slackAdapter, imessage: imessageAdapter, conversationRegistry, conversationBindAuth, appConversations: _appConversationService ?? undefined, readMarkers: _readMarkerStore ?? undefined, readMarkersHlcNowMs: replicatedHlcClock ? (() => replicatedHlcClock!.current().physical) : undefined, slackInboundDispatch: () => _slackInboundDispatch, conversationFollowThrough, whatsappBusinessBackend, messageBridge, hookEventReceiver, worktreeMonitor, subagentTracker, instructionsVerifier, handshakeManager: threadlineHandshake, threadlineRouter, conversationStore, threadLog, threadMessageRecorder, warrantsReplyGate, collaborationSurfacer, peerHomebaseRelay, threadResumeMap, topicLinkageHandler: topicLinkageHandler ?? undefined, threadlineRelayClient, pairingInvites: threadlinePairingInvites, getLastRelayEvent: threadlineGetLastRelayEvent, a2aRelayForward: _a2aRelayForwardCtx ?? undefined, threadlineReplyWaiters, threadlineMcpHttp, memoryPrivacy: _memoryPrivacyWired ?? undefined, listenerManager: listenerManager ?? undefined, a2aDeliveryTracker: a2aDeliveryTracker ?? undefined, requiredAck: _requiredAckService ?? undefined, relayVerdictCounters: threadlineRelayClient ? (() => ({ ...threadlineRelayClient!.relayVerdictCounters, expiredMismatchIgnored: a2aDeliveryTracker?.expiredMismatchIgnored ?? 0 })) : undefined, inboundIdLedger: _inboundIdLedger ?? undefined, inboundIdLedgerDaemonDeferred: () => _inboundIdLedgerDaemonDeferred, responseReviewGate, reviewCanaryBattery, messagingToneGate, outboundDedupGate, telemetryHeartbeat, pasteManager, featureRegistry, discoveryEvaluator, completionEvaluator, unifiedTrust, liveConfig, sharedStateLedger, ledgerSessionRegistry, worktreeManager, oidcEnrolledRepos: parallelDevConfig?.oidcEnrolledRepos, initiativeTracker, projectRoundRunner, projectDriftChecker, machineHeartbeat, machinePoolRegistry, ropeHealthMonitor, writeAdmission: writeAdmission ?? undefined, getInboundQueue: () => _inboundQueue, getMachineCoherence: () => _machineCoherenceSentinel, getSingleMachineFailoverGap: () => _singleMachineFailoverGap, getMissingLoginSession: () => _missingLoginSession, getSessionPoolFailoverRunner: () => _sessionPoolFailoverRunnerDriver?.status() ?? null, sessionPoolPromotionActivation: _sessionPoolPromotionActivation, meshRpcDispatcher, deliverA2aToMachine: _deliverA2aToMachine ?? undefined, workingSetPullCoordinator, workingSetArtifactManager, orchestratorPoller, commitmentReplicaStore, preferenceReplicaStore, replicatedRecordEmitter, replicatedStoreReconciler, conflictStore, rollbackUnmerge, droppedOriginRegistry, preferencesUnionReader, jevMemoryPicker, forwardCommitmentMutate, sessionOwnershipRegistry, sendDrain: _sendDrain ?? undefined, claimTopicOwnershipOnSpawn: (topicId: number) => _claimOwnershipForAutonomousSpawn ? _claimOwnershipForAutonomousSpawn(topicId) : 'unwired', topicPinStore: _topicPinStore ?? undefined, topicPinSkewQuarantine: _topicPinSkewQuarantine ?? undefined, topicPinFoldView: _topicPinFoldView ?? undefined, ownershipReconciler: _ownershipReconciler ?? undefined, staleOwnerEngine: _staleOwnerEngine ?? undefined, duplicateReconciler: _duplicateReconciler ?? undefined, ownerDarkLadder: _ownerDarkLadder ?? undefined, spawnAdmission: _spawnAdmission ?? undefined, judgmentProvenance: _judgmentProvenance ?? undefined, leaseHandback: _leaseHandbackCtx ?? undefined, streamTicketStore: _streamTicketStore ?? undefined, poolStreamAllowRemoteInput: (config as { dashboard?: { poolStream?: { allowRemoteInput?: boolean } } }).dashboard?.poolStream?.allowRemoteInput ?? false, poolStreamConnector: _poolStreamConnector ?? undefined, secretSync: _secretSyncHandle ?? undefined, meshSelfId: _meshSelfId ?? undefined, resolveRouterUrl: _resolveRouterUrl ?? undefined, resolvePeerUrls: _resolvePeerUrls ?? undefined, recordRopeResult: _recordRopeResult ?? undefined, guardRegistry, listPoolMachines: _listPoolMachines ?? undefined, deliverMandateToMachine: _deliverMandateToMachine ?? undefined, passkeyRevokeOutbox: _passkeyRevokeOutbox ? () => _passkeyRevokeOutbox! : undefined, passkeyPeerOnline: _passkeyPeerOnline, passkeyPoolReader: _passkeyPoolReader ? () => _passkeyPoolReader! : undefined, passkeyProofBrowser: async (profileDir: string) => { const { ChromeCdpReloginBrowser } = await import('../core/ChromeCdpReloginBrowser.js'); return new ChromeCdpReloginBrowser({ userDataDir: profileDir, passkeyMode: true, headless: true, launchTimeoutMs: 30_000, operationTimeoutMs: 20_000 }); }, poolLink: _poolLink ?? undefined, poolPollCache: _poolPollCache ?? undefined, sessionPoolE2EResultStore, proxyCoordinator, topicIntentStore, topicIntentArcCheck, usherSignalStore, intelligence: sharedIntelligence ?? undefined, telegramBridgeConfig, telegramBridge: telegramBridge ?? undefined, threadlineObservability, briefDeps, workingMemory, taskFlowRegistry, threadlineFlowBridge, sessionReaper, agentWorktreeReaper, diskSteward: _diskStewardRoutes, externalHogSentinel, orphanedWorkSentinel, mcpProcessReaper, codexArmSessionSweeper, geminiLoopRunner, sleepController, agentActivityState, reapLog, resumeQueue, resumeDrainer, autonomousLivenessReconciler, chiefOfStaffLoop: _cosLoop ?? undefined, chiefOfStaffProtocol: _cosProtocol ?? undefined, enforcedTerminationStatus: () => enforcedTerminationWatchdog?.guardStatus() ?? null, prHandLease: prHandLease ?? undefined, standDownRegistry: _standDownRegistry ?? undefined, standDownAudit: _standDownAudit ?? undefined, foldHolds: _foldHolds ?? undefined, contextBudgetSentinel: _contextBudgetSentinel ?? undefined, operatorStopRecorder: recordOperatorStop, sleepWakeDetector, unjustifiedStopGate, stopGateDb, stopNotifier, liveTestGate, liveTestGateMode, liveTestRunnerCtx, chunkBuilder: _chunkBuilder ?? undefined, h3Builder: _h3Builder ?? undefined, contextLayers: _contextLayers ?? undefined}); if (_pendingCompactionEvidence) featureEvidence.record('multiMachine.coherenceJournal.replication.compaction', _pendingCompactionEvidence);
     conversationGraphReplicationRuntime?.start();
     // Unread (mobile-unread-messages §3.3): the retry and gc timers, and the boot catch-up from any reachable
     // peer once the pool registry has had a moment to name them. Phones get no baseline until it settles.

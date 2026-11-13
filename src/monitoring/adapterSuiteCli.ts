@@ -4,6 +4,7 @@
  * synchronously for ~30 s, so the server runs it here, in its own process,
  * never on its event loop. Usage:
  *   node adapterSuiteCli.js <stateDir> <machine> [claudeBin]
+ *   node adapterSuiteCli.js <stateDir> <machine> --engine=codex-cli [--codex-bin=codex] [--codex-home=<dir>]
  * Writes `state/context-budget/adapter-suite/<engine>-<version>.json` and
  * prints one JSON line `{ ok, version, file }` (or `{ ok: false, error }`).
  * The throwaway project lives in an OS temp directory (outside any repository or
@@ -17,13 +18,17 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runClaudeCodeAdapterSuite, writeSuiteResult, adapterSuiteDir } from './adapterVerificationSuite.js';
+import { runCodexAdapterSuite, removeThrowawayProjectTrust, CODEX_ENGINE } from './codexAdapterSuite.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 
 /** Work directories older than this (a killed run's leftovers) are swept at the next run. */
 const STALE_WORK_MS = 60 * 60_000;
 const WORK_PREFIX = 'instar-adapter-suite-';
 
-export function runAdapterSuiteCli(argv: string[], tmpRoot: string = os.tmpdir()): { ok: true; version: string; file: string } | { ok: false; error: string } {
+export function runAdapterSuiteCli(argvIn: string[], tmpRoot: string = os.tmpdir()): { ok: true; version: string; file: string } | { ok: false; error: string } {
+  const flag = (name: string) => argvIn.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+  const argv = argvIn.filter((a) => !a.startsWith('--'));
+  const engine = flag('engine') ?? 'claude-code';
   const [stateDir, machine, claudeBin = 'claude'] = argv;
   if (!stateDir || !machine) return { ok: false, error: 'usage: adapterSuiteCli <stateDir> <machine> [claudeBin]' };
   // Sweep leftovers of killed runs (the kill skips this process's own cleanup).
@@ -36,12 +41,22 @@ export function runAdapterSuiteCli(argv: string[], tmpRoot: string = os.tmpdir()
   const work = fs.mkdtempSync(path.join(tmpRoot, WORK_PREFIX));
   const project = path.join(work, 'project');
   fs.mkdirSync(project, { mode: 0o700 });
+  // One last-run file per engine (Claude Code keeps the original name).
+  const lastRunName = engine === CODEX_ENGINE ? `last-run-${CODEX_ENGINE}.json` : 'last-run.json';
   const lastRun = (body: Record<string, unknown>) => {
     const dir = adapterSuiteDir(stateDir); fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(dir, 'last-run.json'), JSON.stringify({ at: Date.now(), ...body }, null, 2), { mode: 0o600 });
+    fs.writeFileSync(path.join(dir, lastRunName), JSON.stringify({ at: Date.now(), engine, ...body }, null, 2), { mode: 0o600 });
   };
+  const codexHome = flag('codex-home') || process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
   try {
-    const { result } = runClaudeCodeAdapterSuite({
+    const { result } = engine === CODEX_ENGINE ? runCodexAdapterSuite({
+      workDir: project, machine, codexHome,
+      run: (args, o) => {
+        // lint-allow-sync-spawn: runs in the suite's OWN child process (adapterSuiteCli), never on the server's event loop
+        const r = spawnSync(flag('codex-bin') || 'codex', args, { cwd: o.cwd, env: o.env, encoding: 'utf-8', timeout: o.timeoutMs, input: '' });
+        return { status: r.error ? null : r.status, stdout: r.stdout ?? '', stderr: r.error ? String(r.error.message) : (r.stderr ?? '') };
+      },
+    }) : runClaudeCodeAdapterSuite({
       workDir: project, stateDir: path.join(work, 'state'), machine,
       run: (args, o) => {
         // lint-allow-sync-spawn: runs in the suite's OWN child process (adapterSuiteCli), never on the server's event loop
@@ -63,6 +78,8 @@ export function runAdapterSuiteCli(argv: string[], tmpRoot: string = os.tmpdir()
     try { lastRun({ ok: false, error }); } catch { /* @silent-fallback-ok — the exit code still reports it */ }
     return { ok: false, error };
   } finally {
+    // Codex persists a trust table for the throwaway directory: removed with it (that table only).
+    if (engine === CODEX_ENGINE) { try { removeThrowawayProjectTrust(codexHome, path.resolve(project)); } catch { /* @silent-fallback-ok — a leftover table names a deleted directory; harmless */ } }
     SafeFsExecutor.safeRmSync(work, { recursive: true, force: true, operation: 'src/monitoring/adapterSuiteCli.ts:cleanup' });
   }
 }

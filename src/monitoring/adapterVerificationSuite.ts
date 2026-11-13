@@ -39,7 +39,8 @@ export interface CapabilityResult { state: CapabilityState; evidence: string }
 
 export interface AdapterSuiteResult {
   schema: 'adapter-suite/1';
-  engine: 'claude-code';
+  /** The engine measured (Claude Code: this module; Codex: `codexAdapterSuite.ts`). */
+  engine: 'claude-code' | 'codex-cli';
   version: string;
   machine: string;
   ranAt: number;

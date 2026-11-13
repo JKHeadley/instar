@@ -465,6 +465,19 @@ itself is the operator's manual click; there is no fire-cutover route by design.
 - `GET /context/dispatch`
 - `GET /context/working-memory`
 
+## /context-budget (context layers, dev-gated)
+- `GET /context-budget/sentinel` — the Context Budget sentinel: the compaction canary per machine, engine and version, quarantined folds, and the adapter verification suite's recorded results
+- `GET /context-budget/layers` — the context layers' status (store, archive, budget, builders)
+- `GET /context-budget/metrics` — the measurement backend (tokens per request, live context size, rework, layer spend)
+- `POST /context-budget/codex-seed` — the Codex next-prompt seed: the first Codex prompt after a compaction gets the topic's verified standing packet
+- `POST /context-budget/codex-seed/ack` — the hook's acknowledgement; writes the seeded marker for that compaction epoch
+- `GET /context-budget/codex-seed` — the seed's counts
+- `GET /topic/:id/standing-packet` — what a topic's session is re-seeded with after a compaction (sizes and verdicts only)
+- `GET /topic/:id/user-corpus` — the operator's own messages for a topic (sizes and labels only)
+- `GET /topic/:id/anchor` — the topic's Anchor and decisions ledger (references and statuses only)
+- `GET /topic/:id/chunks` — the topic's chunk and range summaries
+- `GET /topic/:id/chunks/:k` — one chunk
+
 ## /decision-quality
 - `GET /decision-quality`
 - `POST /decision-quality/grade-pass`

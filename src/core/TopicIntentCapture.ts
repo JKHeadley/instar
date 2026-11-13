@@ -27,7 +27,7 @@
 
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import type { TopicIntentStore, EstablishedRef, ProjectionResult } from './TopicIntent.js';
-import type { TopicIntentExtractor, ExtractorInput } from './TopicIntentExtractor.js';
+import type { TopicIntentExtractor, ExtractorInput, ReferentCandidate, ReferentStubProposal } from './TopicIntentExtractor.js';
 import type { MessageProvenance } from '../messaging/shared/MessageProvenance.js';
 
 // ── Pre-filter (deterministic state-detector, fail-open) ──────────────────
@@ -68,6 +68,11 @@ const TRIVIAL_MAX_CHARS = 16;
  * bare acknowledgements. Everything else passes to the LLM, which makes the
  * real significance call with broader context.
  */
+/** True when an agent line is a machine-emitted status/heartbeat/proxy line, never conversation. */
+export function isAgentSentinelLine(text: string): boolean {
+  return AGENT_SENTINEL_RE.test(text.trim());
+}
+
 export function isSubstantiveTurn(text: string | undefined | null, fromUser: boolean): boolean {
   if (typeof text !== 'string') return false;
   const t = text.trim();
@@ -210,6 +215,31 @@ export interface CaptureLoopDeps {
    */
   onCaptured?: (topicId: number, entry: CaptureTurnEntry) => void;
   /**
+   * Context-budget §6 row U (layers on only): refresh the topic's protected
+   * user corpus from its sender rows on every turn, offer an operator
+   * message's referent candidates to the SAME extractor call, and hand the
+   * call's stub back for deterministic validation. Absent ⇒ the extractor
+   * input carries no candidate field at all (byte-identical prompt).
+   */
+  /**
+   * Context-budget §6.1/§6.2 (layers on only): the Anchor and the
+   * decisions/evolutions ledger, re-derived after every turn of a topic from
+   * the refs this turn's extraction wrote, U's labels and the referent stubs.
+   * An automated agent message is not a natural reply, so it never surfaces
+   * an evolution. Absent ⇒ nothing runs. Never affects the outcome.
+   */
+  anchorLedger?: {
+    afterTurn(topicId: number, entry: { messageId: string | number; fromUser: boolean; automated?: boolean; timestamp?: string | number }): void;
+  };
+  userCorpus?: {
+    refresh(topicId: number, opts?: { messageId?: number }): unknown;
+    /** null = not a protected operator row; [] = an operator row with no agent message to name. */
+    stubCandidates(topicId: number, messageId: number): ReferentCandidate[] | null;
+    acceptStub(topicId: number, messageId: number, userText: string, proposal: ReferentStubProposal | null | undefined): unknown;
+    /** An operator row that got no stub, and why (coverage stays interpretable). */
+    noteNoStub(reason: NoStubReason): void;
+  };
+  /**
    * Measurement only (context budget §11): told how every capture attempt that
    * reached the layer path ended — a turn past the pre-filter or a tick — and
    * by which trigger. Never affects capture; a throw is swallowed.
@@ -217,6 +247,9 @@ export interface CaptureLoopDeps {
   onLayerOutcome?: (topicId: number, trigger: 'turn' | 'tick', outcome: CaptureOutcome) => void;
   now?: () => number;
 }
+
+/** Why an operator row got no stub request. */
+export type NoStubReason = 'no-candidates' | 'skipped-prefilter' | 'skipped-automation' | 'skipped-shed' | 'skipped-rate' | 'deferred-budget' | 'degraded';
 
 /** The capture statuses that reached the layer path (a turn past every pre-LLM skip, or a tick). */
 const LAYER_PATH_STATUSES: ReadonlySet<CaptureStatus> = new Set(['captured', 'deferred-budget', 'skipped-shed', 'degraded']);
@@ -305,6 +338,11 @@ export async function captureTurn(
 ): Promise<CaptureOutcome> {
   const outcome = await captureTurnInner(deps, entry, rateState);
   noteLayerOutcome(deps, typeof entry.topicId === 'number' ? entry.topicId : undefined, 'turn', outcome);
+  if (deps.anchorLedger && typeof entry.topicId === 'number') {
+    try {
+      deps.anchorLedger.afterTurn(entry.topicId, { messageId: entry.messageId, fromUser: entry.fromUser, automated: entry.provenance === 'automation', ...(entry.timestamp !== undefined ? { timestamp: entry.timestamp } : {}) });
+    } catch { /* @silent-fallback-ok — the ledger is a derived layer that counts its own failures; capture's outcome is unaffected */ }
+  }
   return outcome;
 }
 
@@ -315,9 +353,35 @@ async function captureTurnInner(
 ): Promise<CaptureOutcome> {
   const now = deps.now ?? (() => Date.now());
   let topicId: number | undefined;
+  let stubOnDegrade: (() => void) | null = null;
   try {
     topicId = typeof entry.topicId === 'number' ? entry.topicId : undefined;
     if (topicId === undefined) return { status: 'no-topic' };
+
+    // U lists every sender row, trivial or automated ones included, before any
+    // gate. Its file work runs after a yield, never on the caller's synchronous
+    // stack (the Telegram onMessageLogged callback is the delivery path).
+    let candidates: ReferentCandidate[] | null = null;
+    if (deps.userCorpus) {
+      await new Promise<void>((r) => setImmediate(r));
+      const mid = Number(entry.messageId);
+      try { deps.userCorpus.refresh(topicId, Number.isSafeInteger(mid) ? { messageId: mid } : {}); } catch (err) {
+        // @silent-fallback-ok — the corpus refresh never affects capture; it is retried on the next turn and the failure is logged
+        console.warn(`[TopicIntentCapture] user corpus refresh failed (topic ${topicId}): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // The referent stub rides this message's own call (§6.4): candidates only for a protected operator row.
+      if (entry.fromUser) {
+        try { candidates = deps.userCorpus.stubCandidates(topicId, mid); } catch { candidates = null; /* @silent-fallback-ok — no candidates means no stub is requested; the message is captured as before */ }
+      }
+    }
+    const operatorRow = candidates !== null;
+    const stubbable = !!candidates && candidates.length > 0;
+    const noStub = (reason: NoStubReason) => {
+      if (!operatorRow) return;
+      try { deps.userCorpus?.noteNoStub(reason); } catch { /* @silent-fallback-ok — coverage metering never affects capture */ }
+    };
+    if (operatorRow && !stubbable) noStub('no-candidates');
+    if (stubbable) stubOnDegrade = () => noStub('degraded');
 
     // Count every user turn before any capture gate. Awareness freshness must
     // age honestly when a turn is trivial, shed, rate-limited, or extraction
@@ -337,18 +401,24 @@ async function captureTurnInner(
     // context.
     if (entry.provenance === 'automation') {
       deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, prefilter_skipped: 1 });
+      if (stubbable) noStub('skipped-automation');
       return { status: 'skipped-automation' };
     }
 
-    // Pre-filter — deterministic, fail-open.
-    if (!isSubstantiveTurn(entry.text, entry.fromUser)) {
+    // Pre-filter — deterministic, fail-open. The pre-filter is a substance
+    // filter, not a brake: an operator's bare "yes" right after an agent
+    // question is exactly what a referent stub is for, so with U on it still
+    // reaches the extractor (the shed, rate and budget brakes below still apply).
+    if (!isSubstantiveTurn(entry.text, entry.fromUser) && !(stubbable && (entry.text ?? '').trim().length > 0)) {
       deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, prefilter_skipped: 1 });
+      if (stubbable) noStub('skipped-prefilter');
       return { status: 'skipped-prefilter' };
     }
 
     // Load-shedding under quota pressure.
     if (deps.shouldShed?.()) {
       deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, degraded_shed: 1 });
+      if (stubbable) noStub('skipped-shed');
       return { status: 'skipped-shed' };
     }
 
@@ -360,6 +430,7 @@ async function captureTurnInner(
       if (recent.length >= maxPerWindow) {
         rateState.set(topicId, recent);
         deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, rate_limited: 1 });
+        if (stubbable) noStub('skipped-rate');
         return { status: 'skipped-rate' };
       }
       recent.push(tNow);
@@ -390,13 +461,16 @@ async function captureTurnInner(
       rollingSummary,
       existingAwareness: topicFile.awareness,
     };
+    if (stubbable && candidates) input.referentCandidates = candidates;
 
     // Layer brakes: estimate the prompt from its variable parts and reserve it.
     if (deps.layerBudget) {
-      const est = Math.ceil(((entry.text ?? '').length + (rollingSummary ?? '').length + JSON.stringify(existingRefs).length + JSON.stringify(topicFile.awareness ?? {}).length) / 4) + 1_500;
+      const stubChars = input.referentCandidates ? JSON.stringify(input.referentCandidates).length + 1_200 : 0;
+      const est = Math.ceil(((entry.text ?? '').length + (rollingSummary ?? '').length + JSON.stringify(existingRefs).length + JSON.stringify(topicFile.awareness ?? {}).length + stubChars) / 4) + 1_500;
       const v = deps.layerBudget.admit(String(topicId), est);
       if (!v.ok) {
         deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, budget_deferred: 1 });
+        if (stubbable) noStub('deferred-budget');
         return { status: 'deferred-budget' };
       }
     }
@@ -414,6 +488,10 @@ async function captureTurnInner(
       at,
       result.createdRefs.map(r => r.kind),
     );
+    stubOnDegrade = null;
+    if (input.referentCandidates && deps.userCorpus) {
+      try { deps.userCorpus.acceptStub(topicId, Number(entry.messageId), entry.text ?? '', result.referentStub ?? null); } catch { /* @silent-fallback-ok — a stub is a derived signal; its validator counts its own rejections and the message is unaffected */ }
+    }
     if (result.awarenessUpdated) {
       try { deps.onCaptured?.(topicId, entry); } catch { /* @silent-fallback-ok — the projection hook never affects capture; it counts its own failures */ }
     }
@@ -421,6 +499,7 @@ async function captureTurnInner(
   } catch (err) {
     // Best-effort: a capture failure must NEVER surface on the message path.
     console.error(`[TopicIntentCapture] captureTurn failed (topic ${topicId ?? '?'}): ${err}`);
+    try { stubOnDegrade?.(); } catch { /* metering best-effort */ }
     try {
       if (topicId !== undefined) {
         deps.store.bumpCaptureCounters(topicId, { turns_seen: 1, degraded_cap_or_error: 1 });

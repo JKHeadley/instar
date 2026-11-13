@@ -1,0 +1,44 @@
+{
+  "ts": "2026-11-11T17:40:48.142Z",
+  "slug": "cb-backfill",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 15,
+  "loc": 907,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/TopicIntent.ts",
+      "src/core/TopicIntentBriefing.ts",
+      "src/core/TopicIntentPendingConfirm.ts",
+      "src/data/feature-ladders.json",
+      "src/memory/TopicMemory.ts",
+      "src/monitoring/contextBudgetMetrics.ts",
+      "src/monitoring/contextLayers/anchorLedger.ts",
+      "src/monitoring/contextLayers/backfillLane.ts",
+      "src/monitoring/contextLayers/contextLayersBoot.ts",
+      "src/monitoring/contextLayers/layerCaptureWiring.ts",
+      "src/monitoring/guardManifest.ts",
+      "src/scaffold/templates.ts",
+      "src/server/CapabilityIndex.ts"
+    ],
+    "addedLines": 853,
+    "deletedLines": 54
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "The matched emit is UserCorpus.refresh(), a bounded read of TopicMemory rows into local derived U records, not an external self-action. The backfill lane that calls it sends nothing, restarts or kills nothing, and is hard-bounded: at most 2 topics per 10-minute tick, at most 20 topics started per UTC day (persisted), at most 5 pages per topic per tick, a topic parked after 3 failures or 40 ticks with one report, and done topics never redone. It cannot amplify under sustained pressure: an always-failing topic yields at most 3 attempts and then stops."
+  },
+  "verdict": "pass"
+}

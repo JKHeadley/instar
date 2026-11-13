@@ -79,6 +79,27 @@ export function buildCompactionResumePayload(contextBlock: string): string {
 }
 
 /**
+ * The heal ladder's re-seed (context-budget-layered-summaries §9.1, rung 2):
+ * the post-compaction briefing did NOT reach this session when it compacted,
+ * so its standing packet is delivered now, minutes later, at an idle prompt.
+ * Unlike the resume preamble it must not make the session answer anything or
+ * tell anyone: the user may have been answered already.
+ */
+export const HEAL_RESEED_PREAMBLE =
+  [
+    'Your context was compacted a few minutes ago and the briefing that should have followed did not reach you. Here it is now: the conversation\'s standing context, re-delivered by the server.',
+    '',
+    'How to use it:',
+    '1. Read it and carry on with whatever you were doing. Do NOT send a message about this re-delivery, and do NOT repeat an answer you already gave.',
+    '2. Only if the user\'s most recent message in it is still unanswered, answer it.',
+  ].join('\n');
+
+export function buildHealReseedPayload(contextBlock: string): string {
+  const trimmed = contextBlock.trim();
+  return trimmed ? `${HEAL_RESEED_PREAMBLE}\n\n${trimmed}` : HEAL_RESEED_PREAMBLE;
+}
+
+/**
  * File-threshold: payloads over this get written to disk and replaced with
  * a file-reference stub. Matches the spawnSessionForTopic bootstrap pattern.
  * Bracketed paste in tmux handles larger content in principle, but keeping
@@ -117,5 +138,31 @@ export function prepareInjectionText(
     `1. Your FIRST sentence must be a brief, calm statement that your session paused for context compaction and has now resumed. Do NOT say you "lost track," "got lost," "got confused," or "lost your place" — you did not. Compaction is a routine pause; narrate it as one.\n` +
     `2. Then respond directly to the user's MOST RECENT message in the preserved context. If it was a question, answer it. If it was a directive or a decision the user handed back to you ("your call", "you decide", "proceed as you see fit"), make the decision and act on it — do NOT reconstruct a generic status summary, re-offer options the user already delegated, or hand the choice back to them.\n` +
     `3. Assume full continuity. Any work-in-progress, open commitments, or next steps recorded in the preserved context are still yours to carry forward.`
+  );
+}
+
+/**
+ * The heal re-seed's injected text (context-budget-layered-summaries §9.1,
+ * heal rung 2). Like `prepareInjectionText` a large payload goes to a file, but
+ * the stub carries the HEAL instructions — never the resume stub's "announce
+ * the pause and answer the latest message", which would make a session re-answer
+ * minutes after the fact. The file is 0600.
+ */
+export function prepareHealInjectionText(
+  payload: string,
+  identifier: string | number,
+  opts?: { tmpDir?: string; threshold?: number },
+): string {
+  const threshold = opts?.threshold ?? COMPACTION_RESUME_FILE_THRESHOLD;
+  if (payload.length <= threshold) return payload;
+  const tmpDir = opts?.tmpDir ?? path.join('/tmp', 'instar-compaction-resume');
+  fs.mkdirSync(tmpDir, { recursive: true, mode: 0o700 });
+  const filepath = path.join(tmpDir, `heal-${identifier}-${Date.now()}-${randomUUID().slice(0, 8)}.txt`);
+  fs.writeFileSync(filepath, payload, { mode: 0o600 });
+  return (
+    `Your context was compacted a few minutes ago and the briefing that should have followed did not reach you. ` +
+    `The conversation's standing context has been saved at ${filepath}. Read that file now and carry on with whatever you were doing.\n\n` +
+    `Do NOT send a message about this re-delivery, and do NOT repeat an answer you already gave. ` +
+    `Only if the user's most recent message in it is still unanswered, answer it.`
   );
 }

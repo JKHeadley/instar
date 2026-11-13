@@ -16,6 +16,9 @@ import type { ContextBudgetSentinelDeps, FoldCandidate, HoldCarrierEntry, HoldCa
 import { MALFORMED_HOLD_FOLD, type FoldHoldStore } from './FoldHoldStore.js';
 import { foldMarkerCarrier, listFoldMarkers, removeFoldMarkers, TORN_MARKER_KEY } from './foldMarker.js';
 import type { CanarySession } from './compactionCanary.js';
+import { RECOVERY_MARKER } from './compactionCanary.js';
+import { buildHealReseedPayload, prepareHealInjectionText } from '../messaging/shared/compactionResumePayload.js';
+import { pressTargetRefusal, pressTopicKey, type PressCandidate, type PressTargetChecks } from './syntheticPress.js';
 
 /**
  * Is a tmux session alive? `true` / `false` only on a definite answer; a
@@ -131,6 +134,8 @@ export function makeCodexRolloutFinder(o: { now?: () => number; fullWalk?: (sess
  */
 export function productionCanarySessions(o: {
   sessions: SentinelSessionSource; projectDir: string;
+  /** §9.1 synthetic press: throwaway Claude sessions the press may target also join the canary. */
+  pressChecks?: PressTargetChecks;
   codex?: { enabled: () => boolean; homeForSession?: (tmuxSession: string) => string | undefined; findRollout?: (sessionId: string, codexHome: string, projectDir: string) => string };
 }): () => CanarySession[] {
   const findRollout = o.codex?.findRollout ?? makeCodexRolloutFinder();
@@ -149,19 +154,65 @@ export function productionCanarySessions(o: {
   return () => {
     const codexOn = o.codex?.enabled() === true;
     return o.sessions.listRunningSessions()
-      .filter((s) => typeof s.telegramTopicId === 'number' && !!s.claudeSessionId && (s.framework === 'claude-code' || (codexOn && s.framework === 'codex-cli')))
-      .map((s) => {
+      .filter((s) => !!s.claudeSessionId && (s.framework === 'claude-code' || (codexOn && s.framework === 'codex-cli')))
+      .map((s): CanarySession | null => {
         const projectDir = (s as { cwd?: string }).cwd ?? o.projectDir;
         if (s.framework === 'codex-cli') {
+          // Codex: topic-bound sessions only (the synthetic press targets Claude throwaways).
+          if (typeof s.telegramTopicId !== 'number') return null;
           const home = homeFor(s.tmuxSession, s.claudeSessionId as string);
           return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath: findRollout(s.claudeSessionId as string, home, projectDir), engine: 'codex-cli' };
         }
+        // In scope (§9.1): topic-bound sessions, plus the throwaway sessions the synthetic press targets.
+        const topicKey = typeof s.telegramTopicId === 'number' ? String(s.telegramTopicId)
+          : pressTargetRefusal(s as PressCandidate, o.pressChecks ?? {}) === null ? pressTopicKey(s.id) : null;
+        if (!topicKey) return null;
         const configHome = typeof o.sessions.configHomeForSession === 'function' ? o.sessions.configHomeForSession(s.tmuxSession) : undefined;
         const transcriptPath = resolveFrameworkTranscriptPath({ framework: 'claude-code', sessionId: s.claudeSessionId as string, projectDir, ...(configHome ? { configHome } : {}) });
-        return { topicKey: String(s.telegramTopicId), claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: 'claude-code' };
+        return { topicKey, claudeSessionId: s.claudeSessionId as string, transcriptPath, engine: 'claude-code' };
       })
-      .filter((x) => x.transcriptPath !== '');
+      .filter((x): x is CanarySession => x !== null && x.transcriptPath !== '');
   };
+}
+
+/**
+ * Is the compaction hook family installed (§9.1 heal ladder, rung 1's cause)?
+ * The settings entries that run Instar's SessionStart(compact) and PostCompact
+ * hooks, and the current scripts behind them: the session-start hook with its
+ * seeded-marker writer and the output fitter, the recovery script that prints
+ * the recovery marker, the fitter itself and the PostCompact script.
+ */
+export function compactionHookInstallCheck(projectDir: string, stateDir: string): { installed: boolean; missing: string[] } {
+  const missing: string[] = [];
+  const hooksDir = path.join(stateDir, 'hooks', 'instar');
+  const read = (f: string): string | null => { try { return fs.readFileSync(path.join(hooksDir, f), 'utf-8'); } catch { return null; } }; // @silent-fallback-ok — an unreadable script counts as missing
+  const ss = read('session-start.sh');
+  if (ss === null) missing.push('session-start.sh');
+  else {
+    if (!ss.includes("'_seeded'")) missing.push('session-start.sh: seeded-marker writer');
+    if (!ss.includes('fit-recovery-output.mjs')) missing.push('session-start.sh: output fitter call');
+  }
+  const cr = read('compaction-recovery.sh');
+  if (cr === null || !cr.includes(RECOVERY_MARKER)) missing.push('compaction-recovery.sh');
+  if (read('fit-recovery-output.mjs') === null) missing.push('fit-recovery-output.mjs');
+  if (read('post-compact.sh') === null) missing.push('post-compact.sh');
+  let hooks: Record<string, unknown> = {};
+  try { hooks = ((JSON.parse(fs.readFileSync(path.join(projectDir, '.claude', 'settings.json'), 'utf-8')) as { hooks?: Record<string, unknown> }).hooks ?? {}); } catch { missing.push('.claude/settings.json'); } // @silent-fallback-ok — unreadable settings counts as not installed
+  const runs = (event: string, script: string, matchers: Array<string | undefined>): boolean => {
+    const entries = Array.isArray(hooks[event]) ? hooks[event] as Array<{ matcher?: string; hooks?: Array<{ command?: unknown }> }> : [];
+    return entries.some((e) => matchers.includes(e.matcher ?? undefined) && Array.isArray(e.hooks) && e.hooks.some((h) => typeof h.command === 'string' && h.command.includes(script)));
+  };
+  if (!runs('SessionStart', 'session-start.sh', ['compact', '', undefined])) missing.push('settings: SessionStart(compact) → session-start.sh');
+  if (!runs('PostCompact', 'post-compact.sh', ['', undefined, 'auto', 'manual'])) missing.push('settings: PostCompact → post-compact.sh');
+  return { installed: missing.length === 0, missing };
+}
+
+/** The running sessions as synthetic-press candidates (the press itself refuses all but a throwaway). */
+export function productionPressCandidates(sessions: SentinelSessionSource): () => PressCandidate[] {
+  return () => sessions.listRunningSessions().map((s) => ({
+    id: s.id, name: s.name, tmuxSession: s.tmuxSession, framework: s.framework,
+    telegramTopicId: s.telegramTopicId, slackChannelId: s.slackChannelId, jobSlug: s.jobSlug, claudeSessionId: s.claudeSessionId,
+  }));
 }
 
 /**
@@ -172,6 +223,8 @@ export function productionCanarySessions(o: {
  */
 export function productionAdapterSuite(o: {
   stateDir: string; machine: string; claudePath: string; now?: () => number;
+  /** The engine measured (default Claude Code). Codex (S17): `claudePath` is then the codex binary. */
+  engine?: 'claude-code' | 'codex-cli';
   /** The command that runs the suite entry (default: this Node with the compiled `adapterSuiteCli.js` beside this module). */
   cli?: string[];
 }): NonNullable<ContextBudgetSentinelDeps['adapterSuite']> {
@@ -195,7 +248,10 @@ export function productionAdapterSuite(o: {
     run: () => new Promise<void>((resolve, reject) => {
       const cmd = o.cli ?? [process.execPath, fileURLToPath(new URL('./adapterSuiteCli.js', import.meta.url))];
       // Its own process GROUP (detached), so the 10-minute kill also ends the engine calls under it.
-      const child = spawn(cmd[0], [...cmd.slice(1), o.stateDir, o.machine, o.claudePath], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: applyClaudeChildAuth({ ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' }) });
+      const codex = o.engine === 'codex-cli';
+      const args = codex ? [o.stateDir, o.machine, '--engine=codex-cli', `--codex-bin=${o.claudePath}`] : [o.stateDir, o.machine, o.claudePath];
+      const env = codex ? { ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' } : applyClaudeChildAuth({ ...process.env, INSTAR_ADAPTER_SUITE_CLI: '1' });
+      const child = spawn(cmd[0], [...cmd.slice(1), ...args], { stdio: ['ignore', 'pipe', 'pipe'], detached: true, env });
       let out = ''; let err = '';
       child.stdout.on('data', (b: Buffer) => { out += b.toString(); });
       child.stderr.on('data', (b: Buffer) => { err = (err + b.toString()).slice(-2_000); });
@@ -252,4 +308,102 @@ export function productionHoldCarriers(o: { stateDir: string; holds: FoldHoldSto
     release: (topicKey, foldId) => removeFoldMarkers(o.stateDir, topicKey, foldId),
   });
   return out;
+}
+
+/** What the production heal ladder and synthetic press need from the server (one place, shared with the e2e test). */
+export interface HealAndPressWiring {
+  stateDir: string;
+  projectDir: string;
+  machineId: string;
+  canary: import('./compactionCanary.js').CompactionCanary;
+  sessions: SentinelSessionSource & {
+    getProtectedSessions?(): string[];
+    isSessionActivelyWorking?(tmuxSession: string): boolean;
+    classifyPaneState?(tmuxSession: string): string | null;
+    injectInternalControlCommand?(tmuxSession: string, conversationId: string, command: '/compact' | '/clear'): boolean;
+  };
+  /** The Telegram topic the adapter maps to a tmux session, if any. */
+  topicForSession?(tmuxSession: string): number | null | undefined;
+  /** Pool placement live ⇒ ownership is the pool's to decide (the ladder refuses: `unknown`). */
+  poolLive(): boolean;
+  compactionSentinel(): Pick<import('./CompactionSentinel.js').CompactionSentinel, 'healReinject'> | null;
+  /** The topic's re-staged, verified standing packet as the session would get it, or null. */
+  reseedText(topicId: number): string | null;
+  /** Re-run the hook and settings migration (PostUpdateMigrator.repairCompactionRecoveryHooks). */
+  repairHooks(): { upgraded: string[]; errors: string[] };
+  readMarker(claudeSessionId: string): import('./compactionSeedMarker.js').SeedMarker | null;
+  attention: import('./canaryHealLadder.js').CanaryHealDeps['attention'];
+  healAdmit: import('../core/SelfHealGate.js').SelfHealGateDeps['admit'];
+  pressAdmit: import('../core/SelfHealGate.js').SelfHealGateDeps['admit'];
+  consumeToken: import('../core/SelfHealGate.js').SelfHealGateDeps['consumeToken'];
+  audit?: (e: { event: string; reason?: string }) => void;
+}
+
+/**
+ * The production heal ladder (§9.1) and synthetic press, built from the
+ * server's own pieces. Both are inert unless the sentinel ticks them, which it
+ * does only while compaction recovery is on.
+ */
+export async function productionCanaryHealAndPress(w: HealAndPressWiring): Promise<{ heal: import('./canaryHealLadder.js').CanaryHealLadder; press: import('./syntheticPress.js').SyntheticPress }> {
+  const { CanaryHealLadder } = await import('./canaryHealLadder.js');
+  const { SyntheticPress } = await import('./syntheticPress.js');
+  const checks: PressTargetChecks = {
+    channelFor: (t) => w.topicForSession?.(t) ?? null,
+    isProtected: (t) => (w.sessions.getProtectedSessions?.() ?? []).includes(t),
+  };
+  const byEngine = (cid: string) => w.sessions.listRunningSessions().find((s) => s.claudeSessionId === cid);
+  const idle = (t: string) => w.sessions.isSessionActivelyWorking?.(t) === false && w.sessions.classifyPaneState?.(t) === 'ready';
+  const heal = new CanaryHealLadder({
+    stateDir: w.stateDir, machineId: w.machineId, canary: w.canary,
+    installCheck: () => compactionHookInstallCheck(w.projectDir, w.stateDir),
+    rerunMigration: () => { const r = w.repairHooks(); return { ok: r.errors.length === 0, ...(r.errors.length ? { detail: r.errors.join('; ').slice(0, 300) } : {}) }; },
+    ready: () => w.compactionSentinel() !== null,
+    liveSession: (cid) => {
+      const s = byEngine(cid);
+      if (!s) return null;
+      const topic = typeof s.telegramTopicId === 'number' ? s.telegramTopicId : (w.topicForSession?.(s.tmuxSession) ?? null);
+      if (typeof topic === 'number' && topic > 0) return { tmuxSession: s.tmuxSession, topicKey: String(topic), reseedable: true };
+      return { tmuxSession: s.tmuxSession, topicKey: s.slackChannelId ? `slack-${s.slackChannelId}` : (pressTopicKey(s.id) ?? ''), reseedable: false };
+    },
+    ownsSession: (cid) => (w.poolLive() ? 'unknown' : !!byEngine(cid)),
+    readMarker: (cid) => w.readMarker(cid),
+    reinject: async (t) => {
+      const cs = w.compactionSentinel();
+      if (!cs) return 'unsupported';
+      const topicId = Number(t.topicKey);
+      const text = Number.isInteger(topicId) && topicId > 0 ? w.reseedText(topicId) : null;
+      if (!text) return 'no-packet';
+      return cs.healReinject(t.tmuxSession, { epoch: t.epoch, boundaryAt: t.boundaryAt, text });
+    },
+    attention: w.attention,
+    admit: w.healAdmit, consumeToken: w.consumeToken,
+    audit: w.audit,
+  });
+  const press = new SyntheticPress({
+    stateDir: w.stateDir, machineId: w.machineId, canary: w.canary,
+    switchOn: () => true, // the sentinel ticks it only with compaction recovery on
+    candidates: productionPressCandidates(w.sessions),
+    checks,
+    isIdle: idle,
+    // The adapter's control-command path: the closed `/compact | /clear` union, fenced and pane-locked.
+    press: (t) => w.sessions.injectInternalControlCommand?.(t, t, '/compact') === true,
+    admit: w.pressAdmit, consumeToken: w.consumeToken,
+    audit: w.audit,
+  });
+  return { heal, press };
+}
+
+/** The press-target checks the canary scope uses (same as the press's own). */
+export function productionPressChecks(o: { topicForSession?(tmuxSession: string): number | null | undefined; protectedSessions?(): string[] }): PressTargetChecks {
+  return { channelFor: (t) => o.topicForSession?.(t) ?? null, isProtected: (t) => (o.protectedSessions?.() ?? []).includes(t) };
+}
+
+/**
+ * The heal re-seed's text as typed into the session (§9.1 heal rung 2): the
+ * heal preamble + the conversation's standing context, filed when large under a
+ * HEAL stub (never the resume stub that tells a session to answer the latest
+ * message), tagged with its topic so InputGuard accepts it.
+ */
+export function healReseedText(topicId: number, contextBlock: string, opts?: { tmpDir?: string }): string {
+  return `[telegram:${topicId}] ${prepareHealInjectionText(buildHealReseedPayload(contextBlock), topicId, opts)}`;
 }

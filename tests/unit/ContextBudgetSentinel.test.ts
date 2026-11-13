@@ -399,6 +399,34 @@ describe('ContextBudgetSentinel', () => {
       v = '2.1.322'; await s.tick(); expect(run).not.toHaveBeenCalled();
       v = '2.1.330'; await s.tick(); expect(run).toHaveBeenCalledTimes(1);
     });
+
+    it('Codex (S17): its own trigger, scoped by ENGINE — a Claude Code result of the same version never satisfies it; one run at a time across engines', async () => {
+      const { writeSuiteResult } = await import('../../src/monitoring/adapterVerificationSuite.js');
+      writeSuiteResult(stateDir, result('0.167.1')); // a claude-code result that happens to share the number
+      let finishCodex!: () => void;
+      const codexRun = vi.fn(() => new Promise<void>((r) => { finishCodex = () => { writeSuiteResult(stateDir, { ...result('0.167.1'), engine: 'codex-cli' }); r(); }; }));
+      let finishClaude!: () => void;
+      const claudeRun = vi.fn(() => new Promise<void>((r) => { finishClaude = () => { writeSuiteResult(stateDir, result('2.1.400')); r(); }; }));
+      const s = make({ adapterSuite: { currentVersion: () => '2.1.400', run: claudeRun }, codexAdapterSuite: { currentVersion: () => '0.167.1', run: codexRun } });
+      await s.tick();
+      // Claude Code's unrecorded version starts first; while it runs the Codex run waits (one at a time).
+      expect(claudeRun).toHaveBeenCalledTimes(1);
+      expect(codexRun).not.toHaveBeenCalled();
+      finishClaude(); await new Promise((r) => setTimeout(r, 5));
+      await s.tick();
+      expect(codexRun).toHaveBeenCalledTimes(1);
+      expect(s.status().adapterSuite.attempts).toMatchObject({ 'codex-cli@0.167.1': { count: 1 } });
+      expect(s.status().adapterSuite.codex).toMatchObject({ wired: true, engineVersion: '0.167.1' });
+      finishCodex(); await new Promise((r) => setTimeout(r, 5));
+      advance(25 * 60 * 60_000); await s.tick();
+      expect(codexRun).toHaveBeenCalledTimes(1); // recorded for codex-cli 0.167.1
+    });
+
+    it('Codex unwired: no Codex run and the status says so', async () => {
+      const s = make({});
+      await s.tick();
+      expect(s.status().adapterSuite.codex).toEqual({ wired: false, engineVersion: null, lastRun: null });
+    });
   });
 
   it('runs the checkpoint grace pass each tick', async () => {

@@ -27,7 +27,8 @@
  * positive control). A detection still inside its artifact grace is
  * `pending` and counts toward nothing yet.
  *
- * Observation only: the heal ladder by cause is a later slice.
+ * Observation only. The heal ladder by cause (`canaryHealLadder.ts`) reads
+ * `divergences()` and acts through the sentinel.
  *
  * ENGINES (§9.6). Each engine supplies its transcript channel and a profile:
  *  - Claude Code: the compact-boundary entry; both artifacts verifiable.
@@ -38,10 +39,17 @@
  *    post-compaction event (`synthesized`), and each `token_count` usage
  *    reading is fed to the adapter's `trackContextUsage` (the synthesized
  *    85%-of-window pre-compaction signal, counted but NEVER a detection).
- *    No recovery artifact is verifiable yet (the next-prompt seed is a later
- *    slice), so a Codex group reads `counted`, never `diverged`/`healthy`,
- *    and its profile says it is never healed by injection (Codex has no
- *    control-command inject).
+ *    Recovery (S17) is the NEXT-PROMPT SEED (§9.6). Its recovery artifact is
+ *    transcript evidence: the seed's header in a developer message after the
+ *    `compacted` entry (Codex records hook output as model input), never the
+ *    marker the same path writes. A Codex detection waits for its next TOPIC
+ *    prompt as long as it takes, and is settled `CODEX_SEED_GRACE_MS` after
+ *    that prompt: seed seen ⇒ complete, none ⇒ diverged. A compaction followed
+ *    by another before any topic prompt is `superseded` (no carrier ever
+ *    came) and judged neither way. Codex has no control-command inject, so no
+ *    synthetic positive control can be pressed: the group stops at
+ *    `accruing` (never `healthy`) and is never healed by injection. An engine
+ *    with no profile still reads `counted`.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -73,6 +81,11 @@ export const RECOVERY_MARKER = '=== IDENTITY RECOVERY (post-compaction) ===';
 export function isTruncatedHookOutput(out: string): boolean {
   return /^\s*<persisted-output>/.test(out);
 }
+/**
+ * Codex: after the first topic prompt that follows a compaction, how long the
+ * seed may take to appear in the rollout as model input (within seconds).
+ */
+export const CODEX_SEED_GRACE_MS = 2 * 60_000;
 /** A known transcript untouched this long stops being scanned. */
 const KNOWN_IDLE_MS = 24 * 60 * 60_000;
 const MAX_DETECTIONS = 500;
@@ -103,16 +116,31 @@ export interface EngineCanaryProfile {
   recoveryVerifiable: boolean;
   /** §9.1: an engine without a control-command inject (or only synthesized evidence) is never healed by injection. */
   healByInjection: boolean;
+  /**
+   * The recovery artifacts a complete detection needs. Claude Code: the
+   * PostCompact record AND the recovery block (§9.1). Codex: the next-prompt seed
+   * as recorded in the rollout (model input) after the compaction (§9.6: Codex exposes no
+   * post-compaction summary to record, so the PostCompact record is not one).
+   */
+  recoveryArtifacts: 'post-compact-and-recovery-block' | 'next-prompt-seed';
+  /**
+   * Whether a synthetic positive control can be pressed on this engine (§9.1
+   * `healthy` needs one). Codex has no control-command inject, so its group
+   * reaches `accruing` at most until a press path exists.
+   */
+  positiveControl: boolean;
 }
 
 export const ENGINE_CANARY_PROFILES: Readonly<Record<string, EngineCanaryProfile>> = Object.freeze({
-  'claude-code': { detection: 'supported', postCompactEvent: 'supported', preCompactSignal: 'supported', recoveryVerifiable: true, healByInjection: true },
-  'codex-cli': { detection: 'supported', postCompactEvent: 'synthesized', preCompactSignal: 'synthesized', recoveryVerifiable: false, healByInjection: false },
+  'claude-code': { detection: 'supported', postCompactEvent: 'supported', preCompactSignal: 'supported', recoveryVerifiable: true, healByInjection: true, recoveryArtifacts: 'post-compact-and-recovery-block', positiveControl: true },
+  // S17: the next-prompt seed, as recorded in the rollout, makes Codex recovery verifiable; the 85% pre-compaction
+  // signal and the post-compaction event stay synthesized (the group's marking says so).
+  'codex-cli': { detection: 'supported', postCompactEvent: 'synthesized', preCompactSignal: 'synthesized', recoveryVerifiable: true, healByInjection: false, recoveryArtifacts: 'next-prompt-seed', positiveControl: false },
 });
 
 function profileOf(engine: string): EngineCanaryProfile {
   // An engine with no profile is unverifiable and never healed: the conservative reading.
-  return ENGINE_CANARY_PROFILES[engine] ?? { detection: 'synthesized', postCompactEvent: 'synthesized', preCompactSignal: 'synthesized', recoveryVerifiable: false, healByInjection: false };
+  return ENGINE_CANARY_PROFILES[engine] ?? { detection: 'synthesized', postCompactEvent: 'synthesized', preCompactSignal: 'synthesized', recoveryVerifiable: false, healByInjection: false, recoveryArtifacts: 'post-compact-and-recovery-block', positiveControl: false };
 }
 
 /** The engine side-channels the transcript scan drives (defaults: the Codex adapter's own). */
@@ -160,6 +188,12 @@ export interface CanaryDetection {
   /** The matched PostCompact record's receivedAt (each record counts for one boundary). */
   postCompactAt?: number;
   synthetic: boolean;
+  /** Codex: when the first real user prompt after the compaction was written (the seed's carrier turn). */
+  promptAfterAt?: number;
+  /** Codex: the delivered seed's carrier as recorded in the rollout (e.g. `packet:1a2b3c4d`). */
+  seededCarrier?: string;
+  /** Codex: a later compaction came before any topic prompt, so this epoch never had a seed carrier. */
+  superseded?: boolean;
 }
 
 interface CanaryLedger {
@@ -278,7 +312,7 @@ export class CompactionCanary {
     const claimed = new Set(l.detections.filter((d) => d.postCompactAt !== undefined).map((d) => `${d.sessionId}@${d.postCompactAt}`));
     for (let i = 0; i < l.detections.length; i++) {
       const d = l.detections[i];
-      if (d.postCompact || !profileOf(d.engine).recoveryVerifiable) continue;
+      if (d.postCompact || profileOf(d.engine).recoveryArtifacts !== 'post-compact-and-recovery-block' || !profileOf(d.engine).recoveryVerifiable) continue;
       if (!byTopic.has(d.topicKey)) byTopic.set(d.topicKey, listPostCompactRecords(this.o.stateDir, d.topicKey));
       // The NEXT boundary of the same session in transcript order (timestamps can tie).
       const next = l.detections.slice(i + 1).find((x) => x.sessionId === d.sessionId);
@@ -374,6 +408,21 @@ export class CompactionCanary {
       if (!c) continue;
       // The first meta before any usage (a fork's own, not its inherited parent's); after usage, the latest (a resume under a newer Codex).
       if (c.kind === 'meta') { if (c.version && (!st.version || st.usageSeen)) st.version = c.version; continue; }
+      if (c.kind === 'prompt' || c.kind === 'seed') {
+        const open = l.open[s.transcriptPath];
+        const d = open ? l.detections.find((x) => x.boundaryUuid === open) : undefined;
+        if (!d) continue;
+        // The first TOPIC prompt after a compaction is the seed's carrier (§9.6; the per-prompt
+        // hook seeds only prompts that name a topic): it starts the detection's settle grace.
+        if (c.kind === 'prompt') { if (c.topic && d.promptAfterAt === undefined) d.promptAfterAt = c.at ?? this.now(); continue; }
+        // The RECOVERY ARTIFACT is the seed as the model received it: the hook's output recorded by
+        // Codex as a developer message after the compaction — transcript evidence, independent of
+        // the marker the same hook-and-route path writes.
+        d.recoveryBlock = true;
+        if (c.nonce) d.seededCarrier = `packet:${c.nonce}`;
+        delete l.open[s.transcriptPath];
+        continue;
+      }
       if (c.kind === 'usage') {
         st.usageSeen = true;
         if (c.contextUsed === null || st.armed === false) continue;
@@ -395,7 +444,13 @@ export class CompactionCanary {
         topicKey: s.topicKey, sessionId: s.claudeSessionId, boundaryUuid: c.windowId, at: c.at ?? this.now(), trigger: 'unknown',
         recoveryBlock: false, postCompact: false, synthetic: false,
       };
+      // A compaction that follows an earlier one before any topic prompt supersedes it: that
+      // earlier epoch never had a prompt to carry its seed, so it is neither recovered nor diverged.
+      const prevOpen = l.open[s.transcriptPath];
+      const prev = prevOpen ? l.detections.find((x) => x.boundaryUuid === prevOpen) : undefined;
+      if (prev && !prev.recoveryBlock && prev.promptAfterAt === undefined) prev.superseded = true;
       l.detections.push(d);
+      l.open[s.transcriptPath] = c.windowId;
       st.armed = true;
       if (this.now() - d.at > CHANNEL_FRESH_MS) { // a historical compaction is counted and re-arms, never announced
         try { this.hooks.onRearm(s); } catch { /* @silent-fallback-ok — re-arm is best-effort; the durable flag is set */ }
@@ -403,6 +458,45 @@ export class CompactionCanary {
       }
       try { this.hooks.onCompaction(s, d, c.tokensBefore); } catch { /* @silent-fallback-ok — the producer's subscriber failed; the detection is recorded regardless */ }
     }
+  }
+
+  /**
+   * The heal ladder's input (§9.1): every SETTLED detection in the current
+   * verification epoch that lacks either artifact (past its grace, or a
+   * truncated delivery, which settles at once). Oldest first.
+   */
+  divergences(): CanaryDetection[] {
+    const l = this.load();
+    const now = this.now();
+    return l.detections.filter((d) => d.at >= l.epochStartedAt
+      && !(d.recoveryBlock && d.postCompact)
+      && (d.recoveryTruncated === true || now - d.at > CANARY_ARTIFACT_GRACE_MS));
+  }
+
+  /** The compact-boundary entries recorded for one session (the epoch derivation's input). */
+  boundariesOf(sessionId: string): Array<{ uuid: string; at: number }> {
+    return this.load().detections.filter((d) => d.sessionId === sessionId).map((d) => ({ uuid: d.boundaryUuid, at: d.at }));
+  }
+
+  /**
+   * Presses that no boundary followed within the match window: a "detection"
+   * with no real compaction (§9.1: record only). Removed as they are returned,
+   * so each is recorded once.
+   */
+  takeUnmatchedPresses(): Array<{ sessionId: string; at: number }> {
+    const l = this.load();
+    const now = this.now();
+    const stale = l.presses.filter((p) => now - p.at > SYNTHETIC_MATCH_MS + CLOCK_SKEW_MS);
+    if (stale.length === 0) return [];
+    l.presses = l.presses.filter((p) => !stale.includes(p));
+    this.save(l);
+    return stale;
+  }
+
+  /** Is a press still waiting for its boundary (so another would double-count)? */
+  pressPending(): boolean {
+    const now = this.now();
+    return this.load().presses.some((p) => now - p.at <= SYNTHETIC_MATCH_MS + CLOCK_SKEW_MS);
   }
 
   report(switchOn: boolean): CanaryReport {
@@ -431,17 +525,24 @@ export class CompactionCanary {
         out.push({ machine, engine, version, state: !switchOn ? 'n/a' : ds.length === 0 ? 'uninitialized' : 'counted', detected: ds.length, complete: 0, pending: 0, synthetic: 0, marking, profile, synthesizedSignals: signals.get(k) ?? 0 });
         continue;
       }
-      const complete = ds.filter((d) => d.recoveryBlock && d.postCompact);
+      const seedCarried = profile.recoveryArtifacts === 'next-prompt-seed';
+      const isComplete = (d: CanaryDetection) => seedCarried ? d.recoveryBlock : d.recoveryBlock && d.postCompact;
+      const judged = seedCarried ? ds.filter((d) => d.superseded !== true) : ds;
+      const complete = judged.filter(isComplete);
       // A truncated delivery is settled at once: it is a known divergence, not a pending one.
-      const settled = ds.filter((d) => (d.recoveryBlock && d.postCompact) || d.recoveryTruncated === true || now - d.at > CANARY_ARTIFACT_GRACE_MS);
-      const pending = ds.length - settled.length;
+      // Codex: a compaction waits for its next prompt (the seed's carrier) as long as it takes;
+      // it settles once that prompt is past the seed grace without a marker.
+      const settled = judged.filter((d) => isComplete(d) || d.recoveryTruncated === true
+        || (seedCarried ? d.promptAfterAt !== undefined && now - d.promptAfterAt > CODEX_SEED_GRACE_MS : now - d.at > CANARY_ARTIFACT_GRACE_MS));
+      const pending = judged.length - settled.length;
       const synthetic = complete.filter((d) => d.synthetic).length;
       let state: CanaryState;
       if (!switchOn) state = 'n/a';
       else if (settled.length === 0) state = 'uninitialized';
-      else if (settled.some((d) => !(d.recoveryBlock && d.postCompact))) state = 'diverged';
+      else if (settled.some((d) => !isComplete(d))) state = 'diverged';
       // "all with both artifacts": a compaction still pending its artifacts holds healthy back.
-      else if (complete.length >= healthyMin && synthetic >= 1 && pending === 0) state = 'healthy';
+      // An engine with no positive-control path (Codex) stops at accruing: §9.1 healthy needs one.
+      else if (profile.positiveControl && complete.length >= healthyMin && synthetic >= 1 && pending === 0) state = 'healthy';
       else state = 'accruing'; // every settled detection is complete, but not yet N of them or no synthetic positive
       out.push({ machine, engine, version, state, detected: ds.length, complete: complete.length, pending, synthetic, marking, profile, synthesizedSignals: signals.get(k) ?? 0, truncated: ds.filter((d) => d.recoveryTruncated === true).length });
     }
