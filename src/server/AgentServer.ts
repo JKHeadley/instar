@@ -6431,6 +6431,23 @@ export class AgentServer {
         if (!run) return null;
         return { value: run.state === 'succeeded' || run.state === 'no-op' ? 1 : 0, samples: 1 };
       });
+      // The fleet bar for the drain: the share of finished drain runs in the last 7 days that
+      // succeeded, read from the durable run table so it survives restarts (CMT-1613).
+      // `ran` is the count of finished runs; the share is a quality bar, so a real 0% reads as a
+      // hold rather than as no data.
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.finished-runs-7d', () => {
+        const store = this.feedbackDrain?.store;
+        if (!store) return null;
+        const { finished } = store.runOutcomes(Date.now() - 7 * 86_400_000);
+        return { value: finished, samples: finished };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.run-success-share-7d', () => {
+        const store = this.feedbackDrain?.store;
+        if (!store) return null;
+        const { succeeded, finished } = store.runOutcomes(Date.now() - 7 * 86_400_000);
+        if (finished === 0) return null;
+        return { value: succeeded / finished, samples: finished };
+      });
       this.blockerLifecycleService.registerMaturationProjection('autonomous-throughput.observed-runs', () => {
         const runs = routeCtx.autonomousThroughputFloor?.status().runs.length ?? 0;
         return { value: runs, samples: runs };

@@ -15,7 +15,7 @@ import {
   EVIDENCE_FILE, RESULT_FILE, attemptBranch, buildClaudeSandboxSettings, buildSandboxRuntimeSettings, confinedEnv, credentialReadDenies, isToolingPath, nodeInstallReadAllows,
   pathSlug, resolveExecuteConfig, systemTempDenies, testRunnerSemaphoreFiles, CANARY_PROBE_DETAIL_BUDGET, CLAUDE_CONFINED_PERMISSION_ARGS, clampProbeDetail, confinedCacheEnv, effectiveLatchUntil, CANARY_VERSION,
 } from '../../../src/feedback-factory/execute/executePolicy.js';
-import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
+import { ChangeSetError, applyChangeSet, buildChangeSet, claudeDirBreach, checkSpecDraft, credentialShaped, secretGate, readBaseFile, addsCredentialShape, sourcePaths, testEntries, toolingPathsTouched } from '../../../src/feedback-factory/execute/changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, parseSessionResult, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount } from '../../../src/feedback-factory/execute/executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, deriveApprover, mapSafeMergeExit } from '../../../src/feedback-factory/execute/reviewGate.js';
 import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript, linkEffectChecks, prepareCanaryFixture, prepareSessionLinkProbe, runRunnerCanary, sessionCanaryPrompt, sessionReadTargets, sessionToolTargets, transcriptChecks, verdictOf, canaryStamp, canaryLinkPaths, PROBE_TAIL_CHARS, SESSION_CANARY_STEPS } from '../../../src/feedback-factory/execute/confinementCanary.js';
@@ -332,6 +332,60 @@ describe('change set', () => {
     await expect(buildChangeSet(t4.ws, t4.pub)).rejects.toThrow(/binary content above 4 MiB/);
     write(t4.ws, 'src/binary.dat', Buffer.concat([Buffer.from([0xff]), Buffer.alloc(4 * 1024 * 1024, 0x61)]));
     await expect(buildChangeSet(t4.ws, t4.pub)).rejects.toThrow(/non-UTF-8 content above 4 MiB/);
+  });
+
+  describe('secret gate judges a modified file on what it adds', () => {
+    const TOKEN = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+    const clean = { notes: 'clean', prTitle: 't', prBody: 'b' };
+    const modified = (text: string) => ({ entries: [{ path: 'src/a.ts', kind: 'modified' as const, bytes: Buffer.from(text) }], totalBytes: text.length });
+    const base = `const old = '${TOKEN}';\nconst keep = 1;\n`;
+    it('holds nothing for a credential shape already in the base', () => {
+      expect(secretGate(modified(`${base}const added = 2;\n`), clean, () => Buffer.from(base))).toEqual([]);
+    });
+    it('holds a new credential in a file that already matched', () => {
+      expect(secretGate(modified(`${base}const added = '${TOKEN.replace('a1', 'z9')}';\n`), clean, () => Buffer.from(base))).toEqual(['src/a.ts']);
+    });
+    it('holds a value on a new line whose label was already in the base, across blank lines', () => {
+      const value = `Zx9${'q7W2e'.repeat(6)}`;
+      expect(addsCredentialShape(`password:\n\n\n${value}\n`, 'password:\n\n\n')).toBe(true);
+    });
+    it('holds a new value placed against a known one, which the scrub alone would mask as an overlap', () => {
+      const known = `password=abc.${'1'.repeat(12)}`;
+      const added = `ghp_${'a1B2c3D4e5'.repeat(4)}`;
+      expect(addsCredentialShape(`${known}:${added}\n`, `${known}\n`)).toBe(true);
+    });
+    it('holds a PEM body added under a BEGIN line the base already had, split by blank lines', () => {
+      const begin = '-----BEGIN RSA PRIVATE KEY-----', end = '-----END RSA PRIVATE KEY-----';
+      const body = 'MIIEvQ'.repeat(40);
+      expect(addsCredentialShape(`${begin}\n\n\n${body}\n${end}\n`, `${begin}\nnot a key\n`)).toBe(true);
+    });
+    it('sees a PEM block straddling a chunk boundary, even in an added file', () => {
+      const pem = `-----BEGIN RSA PRIVATE KEY-----\n${'MIIEvQ'.repeat(400)}\n-----END RSA PRIVATE KEY-----`;
+      expect(credentialShaped(`${'x '.repeat(32_000 - 600)}\n${pem}\n`)).toBe(true);
+    });
+    it('holds on any match when the base is unavailable, has a NUL byte, or no reader is given', () => {
+      const text = `${base}const added = 2;\n`;
+      expect(secretGate(modified(text), clean, () => null)).toEqual(['src/a.ts']);
+      expect(secretGate(modified(text), clean, () => Buffer.from(`${base}\0`))).toEqual(['src/a.ts']);
+      expect(secretGate(modified(text), clean)).toEqual(['src/a.ts']);
+    });
+    it('holds an added file on any match, whatever the reader returns', () => {
+      const entries = [{ path: 'src/new.ts', kind: 'added' as const, bytes: Buffer.from(base) }];
+      expect(secretGate({ entries, totalBytes: base.length }, clean, () => Buffer.from(base))).toEqual(['src/new.ts']);
+    });
+    it('readBaseFile refuses a path outside the clone, a symlink and a missing file', () => {
+      const { pub } = trees();
+      write(pub, 'src/real.ts', 'x');
+      fs.symlinkSync(path.join(pub, 'src/real.ts'), path.join(pub, 'src/link.ts'));
+      expect(readBaseFile(pub, 'src/real.ts')?.toString()).toBe('x');
+      expect(readBaseFile(pub, '../outside.ts')).toBeNull();
+      expect(readBaseFile(pub, 'src/link.ts')).toBeNull();
+      expect(readBaseFile(pub, 'src/none.ts')).toBeNull();
+    });
+    it('the executor passes the publish clone to the gate', () => {
+      const source = fs.readFileSync(path.join(process.cwd(), 'src/feedback-factory/execute/FeedbackExecutorService.ts'), 'utf-8');
+      expect(source).toContain('publishClone ? (rel) => readBaseFile(publishClone, rel) : undefined');
+    });
   });
 
   it('diff gate and secret gate (names only)', async () => {
@@ -1217,5 +1271,27 @@ describe('canary: a failing probe names what it observed', () => {
     const noisy = await gitProbe({ '9': "git: error: couldn't create cache file '/var/folders/x/T/xcrun_db-A' (errno=Operation not permitted)" });
     expect(noisy.ok).toBe(true);
     expect(noisy.detail).toContain('xcrun_db');
+  });
+});
+
+describe('related-test failure keys', () => {
+  it('reads failed tests, failed suites and unhandled-error origins, relative to the clone', async () => {
+    const { vitestFailureKeys, failuresAllPreexisting } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    const json = JSON.stringify({ testResults: [
+      { name: '/c/head/tests/a.test.ts', status: 'failed', assertionResults: [{ fullName: 'a > breaks', status: 'failed' }, { fullName: 'a > ok', status: 'passed' }] },
+      { name: '/c/head/tests/b.test.ts', status: 'failed', assertionResults: [] },
+      { name: '/c/head/tests/c.test.ts', status: 'passed', assertionResults: [{ fullName: 'c', status: 'passed' }] },
+    ] });
+    const out = '\u001b[31mThis error originated in "\u001b[1mtests/d.test.ts\u001b[22m" test file.';
+    const head = vitestFailureKeys(json, out.replace(/\u001b\[[0-9;]*m/g, ''), '/c/head');
+    expect([...head.keys].sort()).toEqual(['tests/a.test.ts::a > breaks', 'tests/b.test.ts::<suite>', 'tests/d.test.ts::<unhandled>']);
+    expect(head.files).toEqual(['tests/a.test.ts', 'tests/b.test.ts', 'tests/d.test.ts']);
+    const base = vitestFailureKeys(json.replaceAll('/c/head/', '/c/base/'), out, '/c/base');
+    expect(failuresAllPreexisting(head.keys, base.keys)).toBe(true);
+    expect(failuresAllPreexisting(head.keys, new Set(['tests/a.test.ts::a > breaks']))).toBe(false);
+    expect(failuresAllPreexisting(new Set(), base.keys)).toBe(false);
+    expect(vitestFailureKeys('not json', '', '/c').keys.size).toBe(0);
+    const unsafe = vitestFailureKeys(null, 'originated in "../x.test.ts" test file. originated in "/etc/y.test.ts" test file. originated in "--config=z" test file.', '/c');
+    expect(unsafe.keys.size).toBe(0);
   });
 });

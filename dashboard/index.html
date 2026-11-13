@@ -2598,6 +2598,11 @@
     #originsTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
     #phonesTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
     #phonesTab .phone-approval, #phonesTab .phone-row { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); margin-bottom: 10px; overflow-wrap: anywhere; }
+    #phonesTab .phone-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+    #phonesTab .phone-row-words { display: flex; flex-direction: column; min-width: 0; }
+    #phonesTab .phone-row-name { font-weight: 600; }
+    #phonesTab .phone-row-detail { color: var(--text-dim); font-size: 0.9em; }
+    #phonesTab .phone-row .action-btn { white-space: nowrap; }
     #phonesTab .phone-code { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; margin: 8px 0; }
     #phonesTab [role=status]:empty { display: none; }
     #originsTab .glance-root:has(> .glance-drilldown:not([hidden])) > .glance-layer { display: none; }
