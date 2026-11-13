@@ -52,9 +52,12 @@ describe('teamSwitchSummary', () => {
     expect(line).toEqual({ setting: 'memory-privacy', on: false, offOn: ['mama'], action: 'turn-on-everywhere', requested: ['mama'] });
   });
 
-  it('knows its two settings and nothing else', () => {
+  it('knows its three settings and nothing else', () => {
     expect(isTeamSwitchSetting('memory-privacy')).toBe(true);
     expect(isTeamSwitchSetting('app-conversations')).toBe(true);
+    // Files in app conversations: the one-tap path the app's "Files are turned off" notice uses.
+    expect(isTeamSwitchSetting('files')).toBe(true);
+    expect(isTeamSwitchSetting('mobilePairing.native.media.enabled')).toBe(false);
     expect(isTeamSwitchSetting('build')).toBe(false);
     expect(isTeamSwitchSetting('memoryPrivacy.enabled')).toBe(false);
   });
