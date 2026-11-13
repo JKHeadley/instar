@@ -110,6 +110,45 @@ describe('RuntimeOriginObserver native file controls', () => {
     await observer.refresh('instar-session');
     expect(observer.get('instar-session')?.model.status).toBe('configured');
   });
+  // Operator report 2026-11-12: a Claude Code footer read "unknown" model. One transcript record larger
+  // than a single read (a screenshot or a big tool result) used to poison the whole session as
+  // "malformed-native-record" forever, and a send-time read of a backlog answered "unknown".
+  const claudeRow = (row: Record<string, unknown>) => JSON.stringify({ sessionId: native, ...row }) + '\n';
+  it('a Claude record larger than one read is joined across reads, not treated as malformed', async () => {
+    observer.stop(); observer = new RuntimeOriginObserver({ maxBytesPerRefresh: 1024 });
+    const file = await enroll('claude-code', 'claude.jsonl');
+    for (let i = 0; i < 4; i++) await observer.refresh('instar-session');
+    const big = 'x'.repeat(10_000);
+    await appendFile(file, claudeRow({ type: 'user', uuid: 'tool-big', message: { role: 'user', content: [{ type: 'tool_result', content: big }] } }) +
+      claudeRow({ type: 'assistant', uuid: 'answer-c', message: { role: 'assistant', model: 'claude-after-big-record', content: [] } }));
+    for (let i = 0; i < 20; i++) await observer.refresh('instar-session');
+    expect(observer.get('instar-session')?.model).toMatchObject({ status: 'observed', value: 'claude-after-big-record' });
+    expect(observer.get('instar-session')?.model.reason).toBeUndefined();
+  });
+  it('a record over the per-record bound is skipped; the next turn is observed again', async () => {
+    observer.stop(); observer = new RuntimeOriginObserver({ maxBytesPerRefresh: 1024, maxRecordBytes: 4096 });
+    const file = await enroll('claude-code', 'claude.jsonl');
+    await appendFile(file, claudeRow({ type: 'user', uuid: 'tool-huge', message: { role: 'user', content: [{ type: 'tool_result', content: 'y'.repeat(20_000) }] } }) +
+      claudeRow({ type: 'assistant', uuid: 'answer-d', message: { role: 'assistant', model: 'same-turn-after-skip', content: [] } }));
+    await observer.refresh('instar-session', { catchUp: true });
+    // What the skipped record held is unseen, so this turn reads configured, never a guessed observation.
+    expect(observer.get('instar-session')?.model).toMatchObject({ status: 'configured', value: 'requested-only' });
+    await appendFile(file, claudeRow({ type: 'user', uuid: 'user-e', message: { role: 'user', content: 'Next prompt' } }) +
+      claudeRow({ type: 'assistant', uuid: 'answer-e', message: { role: 'assistant', model: 'claude-next-turn', content: [] } }));
+    await observer.refresh('instar-session', { catchUp: true });
+    expect(observer.get('instar-session')?.model).toMatchObject({ status: 'observed', value: 'claude-next-turn' });
+  });
+  it('a send-time catch-up refresh reads the whole backlog in one call; the poll step stays bounded', async () => {
+    observer.stop(); observer = new RuntimeOriginObserver({ maxBytesPerRefresh: 256 });
+    observer.track(binding('claude-code'), { path: path.join(directory, 'claude-backlog.jsonl'), nativeSessionId: native });
+    const rows = [claudeRow({ type: 'user', uuid: 'u1', message: { role: 'user', content: 'Prompt' } })];
+    for (let i = 0; i < 40; i++) rows.push(claudeRow({ type: 'assistant', uuid: `a${i}`, message: { role: 'assistant', model: 'claude-opus-5-5', content: [] } }));
+    await writeFile(path.join(directory, 'claude-backlog.jsonl'), rows.join(''));
+    await observer.refresh('instar-session');
+    expect(observer.get('instar-session')?.model.reason).toBe('source-backlog-or-partial-record');
+    await observer.refresh('instar-session', { catchUp: true });
+    expect(observer.get('instar-session')?.model).toMatchObject({ status: 'observed', value: 'claude-opus-5-5' });
+  });
   it('unknown stays explicit without configuration and expired observations degrade', async () => {
     let now = 100_000;
     observer.stop(); observer = new RuntimeOriginObserver({ now: () => now, freshnessMs: 100 });

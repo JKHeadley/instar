@@ -205,7 +205,7 @@ export class TelegramOriginService {
     const verified = this.options.sessions.verify(token);
     if (!verified.ok) throw new TelegramOriginHoldError(verified.reason);
     const b = verified.binding;
-    await this.options.observer.refresh(b.sessionId);
+    await this.options.observer.refresh(b.sessionId, { catchUp: true });
     const current = this.options.sessions.verify(token);
     if (!current.ok || current.binding.sessionIncarnation !== b.sessionIncarnation) {
       throw new TelegramOriginHoldError('session-no-longer-authorized');
@@ -340,7 +340,7 @@ export class TelegramOriginService {
     let binding: ReturnType<OriginSessionRegistry['attributeVerifier']>;
     try { binding = this.options.sessions.attributeVerifier(snapshot.originSessionDigest); } catch { return unattributed; }
     if (!binding) return unattributed;
-    try { await this.options.observer.refresh(binding.sessionId); } catch { /* A stale or missing observation leaves the model unknown. */ }
+    try { await this.options.observer.refresh(binding.sessionId, { catchUp: true }); } catch { /* A stale or missing observation leaves the model unknown. */ }
     const observation = this.options.observer.get(binding.sessionId);
     const current = observation && observation.sessionIncarnation === binding.sessionIncarnation ? observation : null;
     return { machine, session: { sessionId: binding.sessionId, sessionIncarnation: binding.sessionIncarnation,

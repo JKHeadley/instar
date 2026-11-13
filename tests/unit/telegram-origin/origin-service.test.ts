@@ -477,7 +477,10 @@ describe('origin service durable delivery', () => {
         const machineOnly = h.service.prepareImportedLegacy(snapshot, 'bot-1', '-100123', await h.service.attributeLegacy(snapshot));
         expect(machineOnly.record).toMatchObject({ sessionId: null, machine: { status: 'observed', value: 'Mac Studio' },
           harness: { status: 'unknown' }, model: { status: 'unknown' } });
-        expect(machineOnly.admission.children[0].materializations[0].requestJson).toContain('Echo · Mac Studio · unknown · unknown');
+        // Unknown harness and model are left out of the footer, never printed as "unknown".
+        const requestJson = machineOnly.admission.children[0].materializations[0].requestJson;
+        expect(requestJson).toContain('Echo · Mac Studio');
+        expect(requestJson).not.toContain('unknown');
         expect(await h.store.importLegacy({ snapshot, admission: machineOnly.admission })).toBe(true);
       }
     } finally { queue.close(); }

@@ -51,7 +51,9 @@ interface ParserState extends Turn {
   waitForUser: boolean;
   branches: Map<string, Turn>;
 }
-interface Cursor { offset: number; partial: Buffer; inode: number | null; mtime: number; line: number }
+/** `parts` holds an incomplete record across reads (joined once, when its newline arrives); `skipping` discards
+ * the rest of a record larger than the per-record bound, up to its newline, then reading resumes. */
+interface Cursor { offset: number; parts: Buffer[]; partialBytes: number; skipping: boolean; inode: number | null; mtime: number; line: number }
 interface Tracked {
   binding: OriginSessionBinding;
   source?: RuntimeOriginSource;
@@ -66,7 +68,7 @@ interface Tracked {
 }
 const emptyTurn = (): Turn => ({ turnId: null, model: null, ref: null, at: null });
 const newParser = (): ParserState => ({ ...emptyTurn(), verified: false, invalid: null, waitForUser: false, branches: new Map() });
-const newCursor = (): Cursor => ({ offset: 0, partial: Buffer.alloc(0), inode: null, mtime: 0, line: 0 });
+const newCursor = (): Cursor => ({ offset: 0, parts: [], partialBytes: 0, skipping: false, inode: null, mtime: 0, line: 0 });
 const cleanString = (value: unknown): string | null =>
   typeof value === 'string' && value.length > 0 && value.length <= 512 && !/[\x00-\x1f\x7f]/.test(value) ? value : null;
 type RecordValue = Record<string, any>;
@@ -186,8 +188,14 @@ export class RuntimeOriginObserver {
   private readonly bytes: number;
   private readonly snapshotBytes: number;
   private readonly freshnessMs: number;
+  private readonly recordBytes: number;
+  private readonly catchUpBytes: number;
   constructor(private readonly options: {
     maxBytesPerRefresh?: number;
+    /** One native record may exceed a single read: Claude Code keeps screenshots and large tool output on one line. */
+    maxRecordBytes?: number;
+    /** A send-time refresh ({ catchUp: true }) reads up to this much before answering, so a backlog is not "unknown". */
+    maxCatchUpBytes?: number;
     maxSnapshotBytes?: number;
     maxSessions?: number;
     freshnessMs?: number;
@@ -198,7 +206,9 @@ export class RuntimeOriginObserver {
     this.bytes = options.maxBytesPerRefresh ?? 256 * 1024;
     this.snapshotBytes = options.maxSnapshotBytes ?? 8 * 1024 * 1024;
     this.freshnessMs = options.freshnessMs ?? 30_000;
-    for (const n of [this.bytes, this.snapshotBytes, this.freshnessMs, options.maxSessions ?? 1000, options.pollIntervalMs ?? 250]) {
+    this.recordBytes = options.maxRecordBytes ?? 16 * 1024 * 1024;
+    this.catchUpBytes = options.maxCatchUpBytes ?? 16 * 1024 * 1024;
+    for (const n of [this.bytes, this.snapshotBytes, this.freshnessMs, this.recordBytes, this.catchUpBytes, options.maxSessions ?? 1000, options.pollIntervalMs ?? 250]) {
       if (!Number.isSafeInteger(n) || n <= 0) throw new Error('Invalid runtime observation bound');
     }
   }
@@ -271,12 +281,14 @@ export class RuntimeOriginObserver {
     return { ...proof };
   }
 
-  refresh(sessionId: string): Promise<void> {
+  /** `catchUp` is for send time: read the whole unread backlog (bounded by maxCatchUpBytes) before answering,
+   * instead of one bounded poll step. The background poll keeps the one-step bound. */
+  refresh(sessionId: string, options: { catchUp?: boolean } = {}): Promise<void> {
     const t = this.sessions.get(sessionId);
     if (!t || this.stopped) return Promise.resolve();
-    if (t.busy) return t.busy;
+    if (t.busy) return options.catchUp ? t.busy.then(() => this.refresh(sessionId, options)) : t.busy;
     const generation = t.generation;
-    t.busy = this.refreshTracked(t, generation).catch(() => {
+    t.busy = this.refreshTracked(t, generation, options.catchUp === true).catch(() => {
       if (this.sessions.get(sessionId) === t && generation === t.generation) t.unavailable = 'source-unreadable';
     }).finally(() => { t.busy = undefined; });
     return t.busy;
@@ -299,7 +311,7 @@ export class RuntimeOriginObserver {
     for (const t of this.sessions.values()) { t.generation++; t.unavailable = 'observer-stopped'; }
   }
 
-  private async refreshTracked(t: Tracked, generation: number): Promise<void> {
+  private async refreshTracked(t: Tracked, generation: number, catchUp = false): Promise<void> {
     const current = (): boolean => this.sessions.get(t.binding.sessionId) === t && generation === t.generation && !this.stopped;
     const nativeId = t.binding.nativeSessionId;
     if (!nativeId) { t.unavailable = 'native-session-unbound'; return; }
@@ -357,9 +369,16 @@ export class RuntimeOriginObserver {
         t.cursor.inode = before.ino; t.cursor.offset = before.size; t.cursor.mtime = before.mtimeMs;
       } finally { await handle.close(); }
     } else {
-      const done = await this.readJsonl(t, source.path, t.cursor,
-        (row, ref) => consume(t.parser, t.binding.harnessId, nativeId, row, ref, new Date(this.now()).toISOString()), current);
-      if (!current()) return;
+      // One bounded step for the poll; at send time keep reading (still bounded) until caught up.
+      const steps = catchUp ? Math.max(1, Math.ceil(this.catchUpBytes / this.bytes)) : 1;
+      let done = false;
+      for (let step = 0; step < steps && !done; step++) {
+        const offset = t.cursor.offset;
+        done = await this.readJsonl(t, source.path, t.cursor,
+          (row, ref) => consume(t.parser, t.binding.harnessId, nativeId, row, ref, new Date(this.now()).toISOString()), current);
+        if (!current()) return;
+        if (!done && t.cursor.offset === offset) break; // nothing new arrived: a record still being written
+      }
       if (!done) { t.unavailable = 'source-backlog-or-partial-record'; return; }
     }
     if (current()) {
@@ -383,24 +402,29 @@ export class RuntimeOriginObserver {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, cursor.offset);
       if (!current()) return false;
       cursor.offset += bytesRead; cursor.mtime = before.mtimeMs;
-      const data = Buffer.concat([cursor.partial, buffer.subarray(0, bytesRead)]);
+      const data = buffer.subarray(0, bytesRead);
       let begin = 0; let count = 0;
       for (let end = data.indexOf(10); end >= 0; end = data.indexOf(10, begin)) {
-        const line = data.subarray(begin, end).toString('utf8'); begin = end + 1; cursor.line++;
+        const piece = data.subarray(begin, end); begin = end + 1; cursor.line++;
+        if (cursor.skipping) { cursor.skipping = false; continue; } // the oversized record ends here
+        const line = (cursor.partialBytes ? Buffer.concat([...cursor.parts, piece]) : piece).toString('utf8');
+        cursor.parts = []; cursor.partialBytes = 0;
         if (line.trim()) {
           try { accept(JSON.parse(line), `${t.binding.nativeSessionId}:line:${cursor.line}`); }
           catch { t.parser.invalid = 'malformed-native-record'; resetTurn(t.parser, null); }
         }
         if (++count % 64 === 0) { await new Promise<void>(resolve => setImmediate(resolve)); if (!current()) return false; }
       }
-      cursor.partial = Buffer.from(data.subarray(begin));
-      if (cursor.partial.length > this.bytes) {
-        // Never allow a hostile/changed native record to accumulate an unbounded buffer.
-        cursor.partial = Buffer.alloc(0); t.parser.invalid = 'native-record-size-limit';
-        return false;
+      const rest = data.subarray(begin);
+      if (rest.length && !cursor.skipping) {
+        if (cursor.partialBytes + rest.length > this.recordBytes) {
+          // Never accumulate an unbounded buffer. Skip this one record to its newline instead of poisoning the
+          // whole session: whatever it held is unseen, so the current turn's model is unknown until the next turn.
+          cursor.parts = []; cursor.partialBytes = 0; cursor.skipping = true; resetTurn(t.parser, null);
+        } else { cursor.parts.push(Buffer.from(rest)); cursor.partialBytes += rest.length; }
       }
       const after = await handle.stat();
-      return cursor.offset === after.size && before.mtimeMs === after.mtimeMs && cursor.partial.length === 0;
+      return cursor.offset === after.size && before.mtimeMs === after.mtimeMs && cursor.partialBytes === 0 && !cursor.skipping;
     } finally { await handle.close(); }
   }
 
