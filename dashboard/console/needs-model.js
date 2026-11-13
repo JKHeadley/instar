@@ -12,6 +12,7 @@ import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
 import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
+import { workBoardNeedRows } from './work-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
@@ -83,6 +84,9 @@ export const NEED_SOURCES = [
   // Chief of Staff (chief-of-staff-topic.md §5): what its projects need from the owner. 503 = feature off = nothing waiting.
   { id: 'chief-of-staff', page: 'work/chats', reads: { cos: '/chief-of-staff' },
     rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
+  // Work board (work-board-asks.md §7 Home, Detectors "Waiting on you"): one row per card waiting on the owner. 503 = feature off = nothing waiting.
+  { id: 'workBoard', page: 'work/board', reads: { wb: '/work-board' },
+    rows: ({ wb }, now) => { const rows = workBoardNeedRows(wb, now); return rows === null ? UNREADABLE : rows.map((r) => row(r.key, r.main, r.sub, r.href)); } },
   { id: 'secrets', page: 'people/secrets', reads: { pending: '/secrets/pending' },
     // Never the card's own key or link: both carry the one-time drop token.
     rows: ({ pending }, now) => {

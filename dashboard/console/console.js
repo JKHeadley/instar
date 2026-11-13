@@ -33,6 +33,7 @@ import { renderFiles } from './files.js';
 import { renderSessions } from './sessions.js';
 import { renderMaturation, maturationTile } from './maturation-board.js';
 import { renderIdeas, ideasTile } from './ideas.js';
+import { renderWork } from './work.js';
 import { renderConversations, conversationsTile } from './conversations.js';
 import { paceCard } from './pace.js';
 import { takeTicket, signInAtBoot } from './ticket-model.js';
@@ -711,6 +712,7 @@ const NATIVE = {
   'work/development': renderDevelopment,
   'work/maturation': renderMaturation,
   'work/ideas': renderIdeas,
+  'work/board': renderWork,
   'work/sessions': renderSessions,
   'work/chats': renderChats,
   'capacity/machines': renderMachines,

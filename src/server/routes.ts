@@ -45,6 +45,9 @@ import { mountUsageRoutes } from './usageRoutes.js';
 import { mountMobilePlansPeopleRoutes, type PeerList as PlansPeoplePeerList } from './mobilePlansPeopleRoutes.js';
 import { mountMobilePhonesMessagesRoutes, MAX_PEERS as MAX_PHONE_PEERS } from './mobilePhonesMessagesRoutes.js';
 import { mountMobilePermissionsRoutes, actionsState as mobileActionsState } from './mobilePermissionsRoutes.js';
+import { registerWorkBoardRoutes, performOwnerTap, type WorkBoardRouteDeps } from './workBoardRoutes.js';
+import { workBoardEnabled } from '../core/WorkCardStore.js';
+import { resolveWorkBoardSettings } from '../core/WorkBoardService.js';
 import { mountMobileSessionControlsRoutes, runSessionAction, type RouteAnswer } from './mobileSessionControlsRoutes.js';
 import { mountMobileAttentionChoiceRoutes } from './mobileAttentionChoiceRoutes.js';
 import { redactDeep, redactForDevice } from './mobileSessionTerminalRoutes.js';
@@ -284,6 +287,7 @@ import { discardPrepared, prepareReplyFiles } from '../core/appMediaReplyFiles.j
 import { MEDIA_PATH_WAIT_MS } from '../core/AppMediaReplicator.js';
 import { isNeverServed } from './fileRoutes.js';
 import { isMobileMediaEnabled } from './mobilePairingRoutes.js';
+import { appOwnerName } from './mobileConversationRoutes.js';
 import { mountMobileOpsRoutes, machineKey, summarizeMachines } from './mobileOpsRoutes.js';
 import { mountOwnerPresenceRoutes, mountPhoneSessionBinding } from './mobileOwnerPresenceRoutes.js';
 import { joinTelegramHistory, withTelegramMediaForDevice } from './mobileConversationRoutes.js';
@@ -1996,6 +2000,9 @@ export interface RouteContext {
   agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper | null;
   /** Disk Steward (docs/specs/disk-steward.md); null when turned off. Read lazily. */
   diskSteward?: (() => DiskStewardRouteDeps | null) | null;
+  /** Work Board (docs/specs/work-board-asks.md): the runtime, null while off. Read lazily. */
+  workBoard?: (() => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null) | null;
+  workBoardLate?: { ledgerNote: ((cardId: string, causeId: string) => void) | null; ownerPersonKey: (() => string | null) | null; displayName: ((personKey: string) => string) | null } | null;
   /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel. Null when not wired
    *  (dev-gated dark). Powers GET /external-hog + the PIN-gated arm/disarm routes (CMT-1901). */
   externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel | null;
@@ -3008,6 +3015,61 @@ export function createRoutes(ctx: RouteContext): Router {
   }
   mountNotificationRoutes(router, ctx, headers => lifelineIngressGuard.evaluate(headers as import('node:http').IncomingHttpHeaders, 'telegram-forward').verified);
   mountDiskStewardRoutes(router, () => ctx.diskSteward?.() ?? null);
+  // ── Work Board, phase 1 (docs/specs/work-board-asks.md §4/§7) ──
+  const workBoardOwnerKey = (): string | null => {
+    // The one person the team record names as owner; with no team record, the registry's owner, else `owner`.
+    const fromTeam = ctx.mobilePairingService?.teamLog()?.state().ownerPersonKey ?? null;
+    return fromTeam ?? ctx.sessionManager.memoryPrivacyStatus?.().ownerUserId ?? 'owner';
+  };
+  const workBoardName = (personKey: string): string => {
+    const named = ctx.mobilePairingService?.teamLog()?.state().people.get(personKey)?.name;
+    if (named) return named;
+    return personKey === workBoardOwnerKey() ? appOwnerName(ctx.config) : 'someone';
+  };
+  if (ctx.workBoardLate) { ctx.workBoardLate.ownerPersonKey = workBoardOwnerKey; ctx.workBoardLate.displayName = workBoardName; }
+  const workBoardRequirePin = createMandatePinCheck({ dashboardPin: () => ctx.config.dashboardPin, pinAttemptStore: () => ctx.pinAttemptStore });
+  const workBoardRouteDeps: WorkBoardRouteDeps = {
+    // Read live, so turning the feature off takes effect without a restart; the boot value is the fallback.
+    enabled: () => {
+      const boot = (ctx.config as { workBoard?: { enabled?: boolean } }).workBoard?.enabled;
+      let live: boolean | undefined;
+      try { live = ctx.liveConfig?.get<boolean | undefined>('workBoard.enabled', undefined); } catch { live = undefined; /* @silent-fallback-ok: an unreadable live value falls back to the boot value */ }
+      return workBoardEnabled({ developmentAgent: (ctx.config as { developmentAgent?: boolean }).developmentAgent, workBoard: { enabled: live ?? boot } });
+    },
+    svc: () => ctx.workBoard?.()?.svc ?? null,
+    controller: () => ctx.workBoard?.()?.controller ?? null,
+    settings: () => ctx.workBoard?.()?.settings() ?? resolveWorkBoardSettings((ctx.config as { workBoard?: unknown }).workBoard),
+    caller: (req) => {
+      const session = (req.res?.locals as { memorySession?: { placeKey: string | null } } | undefined)?.memorySession;
+      if (session) return { kind: 'session', conversationKey: session.placeKey?.startsWith('app:') ? session.placeKey.slice(4) : null };
+      const person = devicePersonOf(req);
+      if (person) {
+        const pairing = ctx.mobilePairingService;
+        return {
+          kind: 'device', personKey: person.role === 'owner' ? workBoardOwnerKey() : (person.userId ?? null), isOwner: person.role === 'owner',
+          // The shared conversation check, on the card's one conversation (the card does not exist for a person it refuses).
+          mayRead: (conversationKey) => !!pairing && deviceMayUse(pairing, req, `app:${conversationKey}`, 'read'),
+        };
+      }
+      return { kind: 'bearer' };
+    },
+    ownerPersonKey: workBoardOwnerKey,
+    requirePin: (req, res, message) => workBoardRequirePin(req, res, { message }),
+    displayName: workBoardName,
+    appendLine: async (conversationKey, lineId, text) => { ctx.workBoard?.()?.appendLine(conversationKey, lineId, text); },
+    ensureConversation: async (cardId) => { ctx.workBoard?.()?.ensureConversation(cardId); },
+    removeConversation: async (conversationKey) => { ctx.workBoard?.()?.removeConversation(conversationKey); },
+    behind: () => ctx.workBoard?.()?.behind() ?? null,
+    lastWrittenOn: (v) => ctx.workBoard?.()?.lastWrittenOn(v) ?? null,
+    repliedAfterQuestion: (v) => ctx.workBoard?.()?.repliedAfterQuestion(v) ?? false,
+    brokenAttachments: (v) => ctx.workBoard?.()?.brokenAttachments(v) ?? [],
+    when: (iso) => ctx.workBoard?.()?.when(iso) ?? iso,
+    afterPolicy: async (data, ids) => { await ctx.workBoard?.()?.notePolicyChange(data, ids); },
+    holdsLease: () => ctx.workBoard?.()?.holdsLease() ?? true,
+    saveSettings: (patch) => ctx.workBoard?.()?.saveSettingsPatch(patch) ?? false,
+    log: (event, detail) => console.log(`[work-board] ${event} ${JSON.stringify(detail)}`),
+  };
+  registerWorkBoardRoutes(router, workBoardRouteDeps);
   mountOriginDisplayPreferences(router, ctx);
   mountTelegramOriginRoutes(router, { runtime: () => ctx.telegramOrigin,
     verifyOperator: proof => ctx.verifyDashboardOperatorSession?.(proof) === true,
@@ -40410,6 +40472,14 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
       // Start a fresh account sign-in (account-sign-in-face-id): start-cell's own core after its PIN check.
       // Add a Claude or Codex account and start its sign-in here (account-add-face-id).
       addAccount: (input) => runAddAccountSignIn(input),
+      // A tap on a work card (work-board-asks §4): the write gate proved the owner's phone and Face ID.
+      workCardTap: async (cardId, tap) => {
+        const svc = workBoardRouteDeps.enabled() ? workBoardRouteDeps.svc() : null;
+        if (!svc) return { status: 503, body: { error: 'work-board-disabled' } };
+        const owner = workBoardOwnerKey();
+        if (!owner) return { status: 409, body: { error: 'no-team-owner' } };
+        return performOwnerTap(workBoardRouteDeps, svc, cardId, tap as unknown as Record<string, unknown>, { kind: 'person', personKey: owner, proof: 'presence', isOwner: true });
+      },
       // The order is start-cell's: its write barrier, its preconditions, then (with Face ID standing in for the PIN) its core.
       startAccountSignIn: async (accountId, machineId, req) => {
         const refusal = subscriptionPoolWriteRefusal('POST /subscription-pool/matrix/start-cell');

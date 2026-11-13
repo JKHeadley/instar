@@ -1462,3 +1462,21 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
   .usage-row { grid-template-columns: minmax(0, 1fr) auto; }
   .usage-row-bar { grid-column: 1 / -1; order: 3; }
 }
+
+/* Work board (work.js) */
+.work-page .work-lane { margin-top: var(--s-4); }
+.work-card { gap: var(--s-1); margin: var(--s-2) 0; }
+.work-card p, .work-card .need-sub { margin: 0; }
+.work-card .work-open { text-align: left; align-self: flex-start; font-size: 15.5px; color: var(--text-strong); min-height: 32px; }
+.work-card .work-note { color: var(--attn, var(--text-muted)); }
+.work-actions, .work-answer { justify-content: flex-start; margin-top: var(--s-2); }
+.work-answer .reason-input { flex: 1 1 200px; min-width: 0; }
+.work-actions .work-answer { margin-top: 0; display: contents; }
+.work-card [role="status"]:empty { display: none; }
+.work-pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.work-items { padding-left: 1.1em; margin: 0; display: grid; gap: var(--s-2); }
+.work-settings summary { cursor: pointer; }
+.work-policies { border: 0; padding: 0; margin: var(--s-3) 0; display: grid; gap: var(--s-2); }
+.work-policy { display: flex; gap: var(--s-2); align-items: flex-start; }
+.work-settings-grid { display: grid; gap: var(--s-3); grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); margin-bottom: var(--s-3); }
+.work-setting { display: grid; gap: var(--s-1); }

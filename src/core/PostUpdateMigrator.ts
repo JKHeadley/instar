@@ -18312,6 +18312,30 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       if (added) { config.chiefOfStaff = cos; patched = true; result.upgraded.push('config.json: Chief of Staff defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
     }
 
+    // Work Board (docs/specs/work-board-asks.md, Migration and rollout): the owner-tunable defaults,
+    // each added only when missing. `enabled` is deliberately NOT written: omitted follows the
+    // dev-agent gate (live on a development agent, dark on the fleet).
+    {
+      const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      const defaults: Record<string, unknown> = {
+        softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+      };
+      let added = false;
+      for (const [k, v] of Object.entries(defaults)) {
+        if (wb[k] === undefined) { wb[k] = v; added = true; continue; }
+        if (v && typeof v === 'object' && wb[k] && typeof wb[k] === 'object' && !Array.isArray(wb[k])) {
+          const cur = wb[k] as Record<string, unknown>;
+          for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) { if (cur[k2] === undefined) { cur[k2] = v2; added = true; } }
+        }
+      }
+      if (added) { config.workBoard = wb; patched = true; result.upgraded.push('config.json: Work Board defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+      // `multiMachine.stateSync.workBoard` is NOT written here: the runtime forces the store on with the
+      // feature (server.ts, as for the Chief of Staff), so no flag in the file turns replication on, and
+      // a migration that touched `multiMachine` would not be a no-op on its second run.
+    }
+
     // An already-configured verifier gets the explicit dark diagnosis default;
     // installs without Local Verify remain untouched. Never override a host choice.
     {

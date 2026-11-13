@@ -46,6 +46,8 @@ export const GROUPS = [
       { id: 'jobs', label: 'Schedule', icon: 'clock', desc: 'What runs on its own, and whether it actually ran: late, failing and running-long jobs first.' },
       { id: 'commitments', label: 'Promises', icon: 'check', desc: 'Every promise I made, what it is waiting on, and whether it was kept.' },
       { id: 'projects', label: 'Plans', icon: 'layers', desc: 'Longer work and multi-round plans: how each is going, what needs your OK, and what is in the way.' },
+      // Shown only when GET /work-board answers 200 (the work board is switched on): the probe.
+      { id: 'work-board', label: 'Work board', icon: 'check', desc: 'Cards you and the agent agreed on: what waits for your OK, an answer or a sign-off, and what the agent is doing.', probe: '/work-board' },
     ],
   },
   {
@@ -101,13 +103,14 @@ export function allTabIds() {
 
 /** Features rebuilt natively in the console, by legacy tab id. */
 /** Tiles with no legacy dashboard tab: new pages are built in the console only. */
-export const CONSOLE_ONLY_TABS = ['reach', 'chats'];
+export const CONSOLE_ONLY_TABS = ['reach', 'chats', 'work-board'];
 
 export const NATIVE_PAGES = {
   commitments: '#/work/promises',
   jobs: '#/work/schedule',
   sessions: '#/work/sessions',
   chats: '#/work/chats',
+  'work-board': '#/work/board',
   // Sending text or files now happens in each session's own message box.
   dropzone: '#/work/sessions',
   projects: '#/work/plans',
@@ -170,6 +173,7 @@ export const PHONE_PAGE_ALIASES = {
   development: 'work/development',
   maturation: 'work/maturation',
   ideas: 'work/ideas',
+  board: 'work/board',
   sessions: 'work/sessions',
   chats: 'work/chats',
   pace: 'work/pace',

@@ -41,10 +41,21 @@ export interface AppDispatchInput {
   notes?: string[];
   /** Memory privacy: the phone's person, `null` for the owner's own phone. */
   memoryPersonId?: string | null;
+  /**
+   * Work Board §6: a brief the infrastructure wrote, not a person. The tag says so
+   * (`system:<source>` in place of `from <owner>`), a spawn it makes is admitted as `automatic`
+   * (never the slot kept for a person), and a stuck session is left alone, not replaced.
+   */
+  origin?: 'system';
+  systemSource?: 'work-board';
 }
 
 export type AppDispatchOutcome = 'delivered' | 'refused';
-export type AppInboundDispatch = (input: AppDispatchInput) => Promise<AppDispatchOutcome>;
+/** The structured result (Work Board §6): how the message reached a session, or why it did not. */
+export type AppDispatchResult = { outcome: 'injected' } | { outcome: 'spawned' } | { outcome: 'refused'; reason: string };
+/** Existing callers read `injected` and `spawned` as delivered. */
+export function dispatchResultToOutcome(r: AppDispatchResult): AppDispatchOutcome { return r.outcome === 'refused' ? 'refused' : 'delivered'; }
+export type AppInboundDispatch = ((input: AppDispatchInput) => Promise<AppDispatchOutcome>) & { detailed?: (input: AppDispatchInput) => Promise<AppDispatchResult> };
 
 /** The SessionManager slice the dispatch needs. */
 export interface AppDispatchSessions {
@@ -52,7 +63,7 @@ export interface AppDispatchSessions {
   waitForClaudeReady?(tmuxSession: string, timeoutMs?: number): Promise<boolean>;
   injectMessage(tmuxSession: string, text: string, opts?: { conversationId?: string }): boolean;
   killSession?(sessionId: string): boolean;
-  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[]; framework?: string; defaultModel?: string; thinkingMode?: string; effort?: string; triggeredBy?: string }): Promise<string>;
+  spawnInteractiveSession(initialMessage?: string, name?: string, options?: { memoryPlaceKey?: string; bootstrapConversationIds?: number[]; framework?: string; defaultModel?: string; thinkingMode?: string; effort?: string; triggeredBy?: string; admissionKind?: 'automatic' | 'operator' }): Promise<string>;
 }
 
 export interface AppDispatchAdmission {
@@ -150,8 +161,10 @@ function toSpawnOptions(p: AppProfile | null): SpawnEngine {
 const HISTORY = 30;
 
 /** The injection tag. Title and owner name are re-cleaned here (defense in depth). */
-export function appInjectionTag(alias: number, title: string, ownerName: string, verdict: AppDispatchInput['originVerdict'], client: DeviceClient = 'phone'): string {
+export function appInjectionTag(alias: number, title: string, ownerName: string, verdict: AppDispatchInput['originVerdict'], client: DeviceClient = 'phone', system?: 'work-board'): string {
   const t = cleanConversationTitle(title) ?? 'Untitled';
+  // A system brief never renders as a person speaking (Work Board §6, Truthful Provenance).
+  if (system) return `[app:${alias} "${t}" system:${system}]`;
   const o = cleanConversationTitle(ownerName) ?? 'Operator';
   return `[app:${alias} "${t}" from ${o}${verdict === 'verified' ? ` ${signedTag(client)}` : ''}]`;
 }
@@ -224,16 +237,17 @@ function writeContext(deps: AppInboundDispatchDeps, input: Pick<AppDispatchInput
 
 export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInboundDispatch {
   const log = deps.log ?? (() => undefined);
-  return async (input) => {
+  const detailed = async (input: AppDispatchInput): Promise<AppDispatchResult> => {
+    const system = input.origin === 'system' ? (input.systemSource ?? 'work-board') : undefined;
     if (deps.memoryInbound && !(await deps.memoryInbound(input))) {
       log('[app→session] refused: this conversation needs private memory, which is not available here');
-      return 'refused';
+      return { outcome: 'refused', reason: 'private memory is not available for this conversation here' };
     }
     // A switch under way restarts this conversation's session: wait for it rather than start a
     // second one beside it (spec §3.1). If it was refused, this message starts the session below.
     await waitForStart(deps, `app:${input.conversationKey}`);
     const channelKey = String(input.alias);
-    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict, input.originClient ?? 'phone');
+    const tag = appInjectionTag(input.alias, input.title, input.ownerName, input.originVerdict, input.originClient ?? 'phone', system);
     const { ctxPath, contextData, fileFor } = writeContext(deps, input);
     const full = `${tag} ${input.text} (IMPORTANT: Read ${ctxPath} for conversation history and app relay instructions — you MUST relay your response back.)`;
     let bootstrap = full;
@@ -251,8 +265,10 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
         const ready = deps.sessions.waitForClaudeReady ? await deps.sessions.waitForClaudeReady(existing, deps.readyTimeoutMs ?? 15_000) : true;
         if (ready) {
           const ok = deps.sessions.injectMessage(existing, bootstrap, { conversationId: String(input.alias) });
-          if (ok) { log(`[app→session] injected into ${existing}`); return 'delivered'; }
+          if (ok) { log(`[app→session] injected into ${existing}`); return { outcome: 'injected' }; }
         }
+        // A system brief never replaces a session a person may be using; it is retried by its own controller.
+        if (system) return { outcome: 'refused', reason: 'the session is busy or did not take the message' };
         // Stuck or the inject failed: replace the session rather than lose the message.
         try { deps.sessions.killSession?.(alive.id); } catch { /* @silent-fallback-ok — a dead session is respawned below */ }
       }
@@ -261,36 +277,39 @@ export function createAppInboundDispatch(deps: AppInboundDispatchDeps): AppInbou
     const relay = deps.relayReady?.() ?? { ready: true as const };
     if (!relay.ready) {
       log(`[app→session] spawn refused: app reply relay not ready (${relay.reason})`);
-      return 'refused';
+      return { outcome: 'refused', reason: `the app reply relay is not ready (${relay.reason})` };
     }
     const admission = deps.spawnAdmission?.();
     if (admission) {
       try {
         const d = admission.admit({ sessionKey: `app:${input.conversationKey}`, callsite: 'app-inbound-spawn' });
-        if (!d.allow) { log(`[app→session] spawn refused by admission: ${d.reason}`); return 'refused'; }
+        if (!d.allow) { log(`[app→session] spawn refused by admission: ${d.reason}`); return { outcome: 'refused', reason: `another machine serves this conversation (${d.reason})` }; }
       } catch (err) { // @silent-fallback-ok — admission errors fail open toward reachability, as the Slack callsite does
         log(`[app→session] admission error (fail-open): ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    return withStartLock(deps, input.conversationKey, async () => {
+    return withStartLock(deps, input.conversationKey, async (): Promise<AppDispatchResult> => {
       // A start that finished while this message waited: hand the message to that session.
       const started = liveSession(deps, input.alias);
       if (started) {
         const ready = deps.sessions.waitForClaudeReady ? await deps.sessions.waitForClaudeReady(started, deps.readyTimeoutMs ?? 15_000) : true;
         if (ready && deps.sessions.injectMessage(started, bootstrap, { conversationId: String(input.alias) })) {
           log(`[app→session] injected into ${started} (started while this message waited)`);
-          return 'delivered' as const;
+          return { outcome: 'injected' };
         }
       }
       const engine = engineOptions(deps, input.conversationKey);
-      const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias], memoryPlaceKey: `app:${input.conversationKey}`, ...engine });
-      if (!name) return 'refused' as const;
+      const name = await deps.sessions.spawnInteractiveSession(bootstrap, undefined, { bootstrapConversationIds: [input.alias], memoryPlaceKey: `app:${input.conversationKey}`, ...engine, ...(system ? { admissionKind: 'automatic' as const, triggeredBy: `system:${system}` } : {}) });
+      if (!name) return { outcome: 'refused', reason: 'no session could be started' };
       deps.channels.register(channelKey, name, input.title);
       reportSpawned(deps, input.conversationKey, name, engine);
       log(`[app→session] spawned ${name} for app conversation ${input.alias}`);
-      return 'delivered' as const;
+      return { outcome: 'spawned' };
     });
   };
+  const dispatch = (async (input: AppDispatchInput) => dispatchResultToOutcome(await detailed(input))) as AppInboundDispatch;
+  dispatch.detailed = detailed;
+  return dispatch;
 }
 
 /** Tell the orchestrator what landed, except while its own start is under way (it records that one). */

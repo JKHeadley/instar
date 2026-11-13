@@ -139,6 +139,8 @@ export function historyModel(data, source) {
     at: typeof m.at === 'string' ? m.at : typeof m.timestamp === 'string' ? m.timestamp : '',
     fromUser: m.fromUser === true || m.role === 'operator',
     senderName: typeof m.senderName === 'string' ? m.senderName : '',
+    // A line the work board wrote (work-board-asks §2): shown as the board's, not as the agent's own words.
+    fromWorkBoard: m.systemSource === 'work-board',
     attachmentCount: Array.isArray(m.attachments) ? m.attachments.length : 0,
     messageId: Number.isSafeInteger(m.messageId) ? m.messageId : null,
   }));

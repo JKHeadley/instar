@@ -104,6 +104,23 @@ The recorded releaser is always `agent` — the holder of the bearer token. A na
 
 The read route returns the same 400, 409 `read-only-standby`, 503 `Scheduler not running` and 500 errors. On a 409 `cause-unsettled`, inspect the listed runs instead of retrying with a different reason; the release will keep being refused until the check passes.
 
+## Work Board
+
+A card for every decision, answer or sign-off the agent needs from a person. Off unless `workBoard.enabled` is on (on by default for a development agent); when off every route answers `503 work-board-disabled`. See [Work Board](/architecture/work-board/).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/work-board` | The lanes, each card's derived status and what is needed, pending pickups and `behind`. |
+| GET | `/work-board/cards/:id` | One card. A card a person may not read answers 404. |
+| POST | `/work-board/cards` | Create a card: `title`, `need`, at least one `doneWhen` item, `outward`. With the dashboard `pin` the card is the owner's; without it, the agent's. |
+| POST | `/work-board/cards/:id/records` | `kind`: `edited`, `waiting-on`, `evidence` or `claimed-done`. A `waiting-on` names who must act: `principal: "owner"` (the server resolves the team owner) with a `question`, or `"agent"`. Pickup, policy and tap records are refused here. |
+| POST | `/work-board/cards/:id/tap` | A person's tap (`action` plus what it binds to, and the dashboard `pin`). The agent's token alone is refused `person-required`. |
+| POST | `/work-board/settings` | The owner's limits and the approval `policy`, with the dashboard `pin`. `{ preview: true, policy }` says how many waiting cards would start. |
+| GET | `/work-board/graduation` | The pilot's measurement from the card records, and which day-7 / day-14 records are due. |
+| POST | `/work-board/graduation/pass` | Write each due graduation record (the lease holder only). |
+| GET | `/mobile/work-board` | The cards a paired phone's person may see. |
+| POST | `/mobile/work-board/cards/:id/tap` | A tap from the owner's phone, signed with Face ID over the exact action line. |
+
 ## Relationships
 
 | Method | Path | Description |
