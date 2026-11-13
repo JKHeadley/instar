@@ -61,6 +61,8 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
   const spawned: Spawned[] = [];
   const alive = new Set<number>();
   const stubborn = new Set<number>();
+  /** Leaders that died while something else in their group lives on (the group stays in `alive`). */
+  const deadLeaders = new Set<number>();
   const kills: Array<{ pgid: number; signal: string }> = [];
   const procArgs = new Map<number, string>();
   const timers: Array<() => void> = [];
@@ -92,6 +94,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
       return { pid: p, exited };
     },
     isGroupAlive: (g) => alive.has(g),
+    isPidAlive: (p) => alive.has(p) && !deadLeaders.has(p),
     killGroup: (g, s) => { kills.push({ pgid: g, signal: s }); if (!stubborn.has(g)) alive.delete(g); },
     readProcessArgs: async (p) => procArgs.get(p) ?? null,
     foreignSuiteHolders: () => holders.map((pid) => ({ pid })),
@@ -122,7 +125,7 @@ function setup(opts: { views?: Record<number, PrView>; open?: Record<number, boo
     await flush();
   };
   return {
-    svc, stateDir, views, open, spawned, alive, stubborn, kills, procArgs, timers, starved, records, signals, degradations, priorities, intentPath,
+    svc, stateDir, views, open, spawned, alive, stubborn, deadLeaders, kills, procArgs, timers, starved, records, signals, degradations, priorities, intentPath,
     setHolders: (h: number[]) => { holders = h; },
     setDiskVersion: (v: string | null) => { diskVersion = v; },
     advance: (ms: number) => { t += ms; },
@@ -2532,5 +2535,369 @@ describe('a run that finished just before the server stopped (2026-11-13: PR 310
     expect(auditEvents(s)).toContain('interrupted');
     expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
     await s.finish(0, null);
+  });
+});
+
+describe('a run still alive after the server was killed is kept, not killed and re-run (2026-11-13: every server kill cost the run in flight)', () => {
+  /**
+   * Start PR 1 on a first service, then "kill the server": no shutdown runs. A second service
+   * boots on the same state directory and finds the run's process group alive, with the run's
+   * token in its arguments (what `ps` shows for the real child).
+   */
+  const killServerMidRun = async (opts: { second?: Parameters<typeof setup>[0]; alive?: boolean; confirm?: boolean; queueSecond?: boolean; beforeBoot?: (s2: ReturnType<typeof setup>, run: Spawned) => void } = {}) => {
+    const s1 = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    await s1.svc.request(1);
+    if (opts.queueSecond) await s1.svc.request(2);
+    await s1.svc.tick();
+    const run = s1.spawned[0];
+    const s2 = setup({ stateDir: s1.stateDir, views: { 1: view(), 2: view({ headRefOid: sha('c') }) }, ...(opts.second ?? {}) });
+    if (opts.alive !== false) s2.alive.add(run.pid);
+    if (opts.confirm !== false) s2.procArgs.set(run.pid, `/usr/bin/node /opt/instar/dist/localVerify/runVerifyMain.js --input x --result y --attempt-token ${run.token}`);
+    opts.beforeBoot?.(s2, run);
+    await s2.svc.boot();
+    return { s1, s2, run };
+  };
+  const events = (s: ReturnType<typeof setup>): string[] =>
+    fs.readFileSync(s.svc.auditPath, 'utf-8').trim().split('\n').map((line) => (JSON.parse(line) as { event: string }).event);
+  const endRun = async (s2: ReturnType<typeof setup>, run: Spawned, result: VerifyRunResult | null) => {
+    if (result) fs.writeFileSync(run.resultPath, JSON.stringify(result));
+    s2.alive.delete(run.pid);
+    await s2.svc.tick();
+    await s2.flush();
+  };
+
+  it('keeps the run: nothing is killed, nothing new starts, the entry is in flight and not interrupted', async () => {
+    const { s2, run } = await killServerMidRun({ queueSecond: true });
+    expect(s2.kills).toEqual([]);
+    expect(s2.spawned).toHaveLength(0);
+    const snap = s2.svc.snapshot();
+    expect(snap.inFlight).toMatchObject({ pr: 1, headSha: sha('a') });
+    expect(snap.blocked).toBe(false);
+    expect(snap.queue.map((entry) => entry.pr)).toEqual([2]);
+    const seen = events(s2).slice(events(s2).indexOf('orphan-adoptable'));
+    expect(seen).toContain('adopted');
+    expect(seen).not.toContain('queue-restore-unclean');
+    expect(seen).not.toContain('orphan-reaped');
+    // A tick while it runs starts nothing and leaves it alone.
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(0);
+    expect(s2.kills).toEqual([]);
+    // The in-flight marker is still there, so a planned restart is still held for this run.
+    expect(JSON.parse(fs.readFileSync(s2.intentPath, 'utf-8'))).toMatchObject({ pr: 1, attemptToken: run.token, pid: run.pid });
+    expect(s2.svc.restartHolds(4 * 3_600_000).map((hold) => hold.name)).toEqual(['local-verify:pr-1']);
+    s2.svc.shutdown();
+  });
+
+  it('when the kept run ends green its verdict is recorded and the next PR starts', async () => {
+    const { s2, run } = await killServerMidRun({ queueSecond: true });
+    await endRun(s2, run, ok(record({ outcome: 'success' })));
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    expect(events(s2)).toContain('adopted-run-ended');
+    expect(s2.spawned).toHaveLength(1); // PR 2
+    expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 2 });
+    s2.svc.shutdown();
+  });
+
+  it('a red verdict from a kept run is recorded as red', async () => {
+    const { s2, run } = await killServerMidRun();
+    await endRun(s2, run, ok(record({ outcome: 'failure' })));
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('failure');
+    expect(s2.spawned).toHaveLength(0);
+    s2.svc.shutdown();
+  });
+
+  it('a kept run that dies without a result is an error with one retry, as for any crashed run', async () => {
+    const { s2, run } = await killServerMidRun();
+    await endRun(s2, run, null);
+    expect(events(s2)).toContain('run-error');
+    expect(s2.spawned).toHaveLength(1); // the error retry
+    expect(s2.spawned[0].token).not.toBe(run.token);
+    s2.svc.shutdown();
+  });
+
+  it('the end of a kept run is handled once, however many ticks follow', async () => {
+    const { s2, run } = await killServerMidRun();
+    await endRun(s2, run, ok(record({ outcome: 'success' })));
+    await s2.svc.tick();
+    await s2.svc.tick();
+    expect(events(s2).filter((event) => event === 'adopted-run-ended')).toHaveLength(1);
+    expect(events(s2).filter((event) => event === 'run-error')).toEqual([]);
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    s2.svc.shutdown();
+  });
+
+  it('a clean stop while a kept run is still going interrupts it like any other run', async () => {
+    const { s2, run } = await killServerMidRun();
+    s2.svc.shutdown();
+    expect(s2.kills).toEqual([{ pgid: run.pid, signal: 'SIGTERM' }]);
+    expect(events(s2)).toContain('interrupted');
+  });
+
+  it('a clean stop after a kept run wrote its result settles the verdict', async () => {
+    const { s2, run } = await killServerMidRun();
+    fs.writeFileSync(run.resultPath, JSON.stringify(ok(record({ outcome: 'success' }))));
+    s2.alive.delete(run.pid);
+    s2.svc.shutdown();
+    expect(events(s2)).toContain('settled-at-shutdown');
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+  });
+
+  describe('is NOT kept, and is stopped and re-run as before, when', () => {
+    const expectStopped = (s2: ReturnType<typeof setup>, run: Spawned, reason: string) => {
+      expect(s2.kills).toContainEqual({ pgid: run.pid, signal: 'SIGKILL' });
+      const rows = fs.readFileSync(s2.svc.auditPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as { event: string; reason?: string });
+      expect(rows.filter((row) => row.event === 'orphan-not-adopted').map((row) => row.reason)).toEqual([reason]);
+      expect(rows.map((row) => row.event)).not.toContain('adopted');
+      expect(s2.svc.snapshot().inFlight).toBeNull();
+    };
+
+    it('the switch is off', async () => {
+      const { s2, run } = await killServerMidRun({ beforeBoot: (s) => s.svc.setAdoptRunningRunEnabled(() => false) });
+      expectStopped(s2, run, 'switched-off');
+      expect(s2.svc.snapshot().queue[0]).toMatchObject({ pr: 1, interruptions: 1, resumeFirst: true });
+    });
+
+    it('the run was built for a different verifier than this server', async () => {
+      const { s2, run } = await killServerMidRun({ second: { verifierVersion: '2.0.0' } });
+      expectStopped(s2, run, 'verifier-or-policy-differs');
+    });
+
+    it('the verifier on disk has changed since', async () => {
+      const { s2, run } = await killServerMidRun({ beforeBoot: (s) => s.setDiskVersion('vh3:changed') });
+      expectStopped(s2, run, 'verifier-changed-on-disk');
+    });
+
+    it('its input file is missing or does not describe this run', async () => {
+      const gone = await killServerMidRun({ beforeBoot: (_s, run) => SafeFsExecutor.safeUnlinkSync(run.args[run.args.indexOf('--input') + 1], { operation: 'LocalVerifyService.test.ts:adopt-input-missing' }) });
+      expectStopped(gone.s2, gone.run, 'input-unreadable');
+      const other = await killServerMidRun({ beforeBoot: (_s, run) => {
+        const inputPath = run.args[run.args.indexOf('--input') + 1];
+        fs.writeFileSync(inputPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(inputPath, 'utf-8')), headSha: sha('e') }));
+      } });
+      expectStopped(other.s2, other.run, 'input-does-not-match-marker');
+    });
+
+    it('it started longer ago than a whole run may take', async () => {
+      const { s2, run } = await killServerMidRun({ beforeBoot: (s) => s.advance(10 * 3_600_000) });
+      expectStopped(s2, run, 'past-run-ceiling');
+    });
+
+    it('its PR was closed, or its head moved, while the server was down', async () => {
+      const closed = await killServerMidRun({ second: { open: { 1: false } } });
+      expectStopped(closed.s2, closed.run, 'no-matching-queue-entry');
+      const moved = await killServerMidRun({ second: { views: { 1: view({ headRefOid: sha('f') }) } } });
+      expectStopped(moved.s2, moved.run, 'no-matching-queue-entry');
+      expect(moved.s2.svc.snapshot().blocked).toBe(false);
+    });
+  });
+
+  describe('the end of a kept run', () => {
+    it('is noticed as soon as its result is written, even while a straggler keeps the group alive', async () => {
+      const { s2, run } = await killServerMidRun();
+      fs.writeFileSync(run.resultPath, JSON.stringify(ok(record({ outcome: 'success' }))));
+      await s2.svc.tick(); // the group is still alive
+      await s2.flush();
+      expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+      expect(s2.kills).toEqual([{ pgid: run.pid, signal: 'SIGKILL' }]); // the leftover is swept, as after any run
+      const rows = fs.readFileSync(s2.svc.auditPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as { event: string; why?: string });
+      expect(rows.find((row) => row.event === 'adopted-run-ended')?.why).toBe('result-written');
+      s2.svc.shutdown();
+    });
+
+    it('is not waited on for ever: past the run ceiling and a grace period the group is stopped and the run handled as crashed', async () => {
+      const { s2, run } = await killServerMidRun();
+      s2.advance(3 * 3_600_000 - 60_000); // inside the ceiling plus grace: still waiting
+      await s2.svc.tick();
+      expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+      expect(s2.kills).toEqual([]);
+      s2.advance(3 * 3_600_000); // far past it
+      await s2.svc.tick();
+      await s2.flush();
+      expect(s2.kills).toContainEqual({ pgid: run.pid, signal: 'SIGKILL' });
+      const rows = fs.readFileSync(s2.svc.auditPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as { event: string; why?: string });
+      expect(rows.find((row) => row.event === 'adopted-run-ended')?.why).toBe('past-run-ceiling');
+      expect(rows.map((row) => row.event)).toContain('run-error');
+      s2.svc.shutdown();
+    });
+
+    it('is noticed when the leader is gone and only a straggler keeps the group alive', async () => {
+      const { s2, run } = await killServerMidRun();
+      s2.deadLeaders.add(run.pid); // no such process; the group is still alive
+      await s2.svc.tick();
+      await s2.flush();
+      const rows = fs.readFileSync(s2.svc.auditPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as { event: string; why?: string });
+      expect(rows.find((row) => row.event === 'adopted-run-ended')?.why).toBe('leader-gone');
+      expect(rows.map((row) => row.event)).toContain('run-error');
+      expect(s2.kills).toContainEqual({ pgid: run.pid, signal: 'SIGKILL' }); // the straggler is swept
+      s2.svc.shutdown();
+    });
+
+    it('is noticed when the leader pid now belongs to another program', async () => {
+      const { s2, run } = await killServerMidRun();
+      s2.procArgs.set(run.pid, '/usr/bin/some-other-program --flag');
+      await s2.svc.tick();
+      await s2.flush();
+      const rows = fs.readFileSync(s2.svc.auditPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as { event: string; why?: string });
+      expect(rows.find((row) => row.event === 'adopted-run-ended')?.why).toBe('leader-pid-reused');
+      expect(rows.map((row) => row.event)).toContain('run-error');
+      s2.svc.shutdown();
+    });
+
+    it('a process listing that cannot be read ends nothing: a live run is never ended on a ps timeout', async () => {
+      const { s2, run } = await killServerMidRun();
+      s2.procArgs.delete(run.pid); // readProcessArgs now answers null, as a timed-out ps does
+      for (let tick = 0; tick < 5; tick++) await s2.svc.tick();
+      expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+      expect(s2.kills).toEqual([]);
+      expect(events(s2)).not.toContain('adopted-run-ended');
+      await endRun(s2, run, ok(record({ outcome: 'success' })));
+      expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+      s2.svc.shutdown();
+    });
+
+    it('a record for a different head than the entry it was kept for is not journaled', async () => {
+      const { s2, run } = await killServerMidRun();
+      await endRun(s2, run, ok(record({ outcome: 'success', headSha: sha('e') })));
+      expect(events(s2)).toContain('adopted-record-mismatch');
+      expect(s2.svc.getRecord(1, sha('e'), 'main')).toBeNull();
+      expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('error');
+      s2.svc.shutdown();
+    });
+  });
+
+  it('a kept run that is cancelled (its head moved) is cleared once its group is gone, and the new head starts', async () => {
+    const { s2, run } = await killServerMidRun();
+    s2.views[1] = view({ headRefOid: sha('c') });
+    s2.stubborn.add(run.pid); // SIGTERM takes a moment
+    await s2.svc.request(1);
+    expect(s2.kills).toContainEqual({ pgid: run.pid, signal: 'SIGTERM' });
+    await s2.svc.tick(); // still shutting down: nothing ends, nothing starts
+    expect(s2.spawned).toHaveLength(0);
+    expect(events(s2)).not.toContain('adopted-run-ended');
+    s2.stubborn.delete(run.pid);
+    s2.alive.delete(run.pid);
+    await s2.svc.tick();
+    await s2.flush();
+    expect(events(s2)).toContain('cancelled');
+    expect(s2.spawned).toHaveLength(1);
+    const input = JSON.parse(fs.readFileSync(s2.spawned[0].args[s2.spawned[0].args.indexOf('--input') + 1], 'utf-8')) as { headSha: string };
+    expect(input.headSha).toBe(sha('c'));
+    s2.svc.shutdown();
+  });
+
+  it('a cancelled kept run whose group never goes away is still ended, at the ceiling', async () => {
+    const { s2, run } = await killServerMidRun();
+    s2.views[1] = view({ headRefOid: sha('c') });
+    s2.stubborn.add(run.pid);
+    await s2.svc.request(1);
+    s2.advance(6 * 3_600_000);
+    await s2.svc.tick();
+    await s2.flush();
+    const rows = fs.readFileSync(s2.svc.auditPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as { event: string; why?: string });
+    expect(rows.find((row) => row.event === 'adopted-run-ended')?.why).toBe('past-run-ceiling');
+    expect(s2.svc.snapshot().inFlight?.headSha).not.toBe(sha('a'));
+    s2.svc.shutdown();
+  });
+
+  it('a second server kill while a kept run is still going: the next boot keeps it again', async () => {
+    const { s2, run } = await killServerMidRun();
+    // No shutdown: the second server is killed too.
+    const s3 = setup({ stateDir: s2.stateDir, views: { 1: view() } });
+    s3.alive.add(run.pid);
+    s3.procArgs.set(run.pid, `/usr/bin/node runVerifyMain.js --attempt-token ${run.token}`);
+    await s3.svc.boot();
+    expect(s3.kills).toEqual([]);
+    expect(s3.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
+    expect(s3.svc.snapshot().queue).toEqual([]);
+    await endRun(s3, run, ok(record({ outcome: 'success' })));
+    expect(s3.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    s3.svc.shutdown();
+  });
+
+  describe('only the boot may keep a run', () => {
+    it('identity unreadable at boot, readable at the next tick: the run is stopped then, never kept, and the queue moves', async () => {
+      const { s2, run } = await killServerMidRun({ confirm: false });
+      expect(s2.svc.snapshot().blocked).toBe(true);
+      s2.procArgs.set(run.pid, `/usr/bin/node runVerifyMain.js --attempt-token ${run.token}`);
+      await s2.svc.tick();
+      await s2.flush();
+      expect(s2.kills).toContainEqual({ pgid: run.pid, signal: 'SIGKILL' });
+      expect(events(s2)).not.toContain('adopted');
+      expect(events(s2)).not.toContain('orphan-adoptable');
+      expect(s2.svc.snapshot().blocked).toBe(false);
+      expect(s2.spawned).toHaveLength(1); // the re-queued entry runs again
+      s2.svc.shutdown();
+    });
+
+    it('a run that could not be matched and survives its first SIGKILL is killed again at the next tick, not kept', async () => {
+      const { s2, run } = await killServerMidRun({ second: { open: { 1: false } }, beforeBoot: (s, r) => s.stubborn.add(r.pid) });
+      expect(s2.svc.snapshot().blocked).toBe(true);
+      expect(s2.kills.filter((kill) => kill.signal === 'SIGKILL')).toHaveLength(1);
+      await s2.svc.tick();
+      expect(events(s2)).not.toContain('adopted');
+      expect(s2.kills.filter((kill) => kill.signal === 'SIGKILL')).toHaveLength(2);
+      expect(s2.svc.snapshot().blocked).toBe(true);
+      s2.stubborn.delete(run.pid);
+      await s2.svc.tick();
+      expect(s2.svc.snapshot().blocked).toBe(false);
+      s2.svc.shutdown();
+    });
+
+    it('a boot that fails between the reap and the queue restore stops the run and leaves nothing waiting on it', async () => {
+      let booted: ReturnType<typeof setup> | null = null;
+      let pid = 0;
+      const failing = killServerMidRun({ beforeBoot: (s, r) => {
+        booted = s; pid = r.pid;
+        (s.svc as unknown as { rebuildIndex: () => Promise<never> }).rebuildIndex = async () => { throw new Error('journal unreadable'); };
+      } });
+      await expect(failing).rejects.toThrow('journal unreadable');
+      const s2 = booted as unknown as ReturnType<typeof setup>;
+      expect(s2.kills).toEqual([{ pgid: pid, signal: 'SIGKILL' }]);
+      expect(s2.svc.snapshot().blocked).toBe(false);
+      expect(s2.svc.snapshot().inFlight).toBeNull();
+      expect(fs.existsSync(s2.intentPath)).toBe(false);
+      const rows = fs.readFileSync(s2.svc.auditPath, 'utf-8').trim().split('\n').map((line) => JSON.parse(line) as { event: string; reason?: string });
+      expect(rows.filter((row) => row.event === 'orphan-not-adopted').map((row) => row.reason)).toEqual(['boot-did-not-finish']);
+    });
+  });
+
+  it('a hand-off from another machine is not kept (its coordinator re-dispatches it)', async () => {
+    const { s2, run } = await killServerMidRun({ beforeBoot: (_s, r) => {
+      const inputPath = r.args[r.args.indexOf('--input') + 1];
+      fs.writeFileSync(inputPath, JSON.stringify({ ...JSON.parse(fs.readFileSync(inputPath, 'utf-8')), attempt: { id: 'abc' } }));
+    } });
+    expect(s2.kills).toContainEqual({ pgid: run.pid, signal: 'SIGKILL' });
+    expect(events(s2)).not.toContain('adopted');
+    s2.svc.shutdown();
+  });
+
+  it('the live switch is wired to the config key', async () => {
+    const { wireLocalVerifySwitches } = await import('../../../src/localVerify/localVerifyWiring.js');
+    const s = setup({});
+    const asked: string[] = [];
+    wireLocalVerifySwitches(s.svc, { get: <T,>(key: string, fallback: T): T => { asked.push(key); return (key === 'monitoring.localVerify.adoptRunningRun' ? false : fallback) as T; } });
+    expect((s.svc as unknown as { adoptOn(): boolean }).adoptOn()).toBe(false);
+    expect(asked).toContain('monitoring.localVerify.adoptRunningRun');
+  });
+
+  it('a live group whose identity cannot be confirmed is never kept: it blocks, as before', async () => {
+    const { s2, run } = await killServerMidRun({ confirm: false });
+    expect(events(s2)).toContain('orphan-reap-incomplete');
+    expect(events(s2)).not.toContain('adopted');
+    expect(s2.svc.snapshot().blocked).toBe(true);
+    expect(s2.kills).toEqual([]);
+    expect(s2.spawned).toHaveLength(0);
+    s2.alive.delete(run.pid);
+    await s2.svc.tick();
+    expect(s2.svc.snapshot().blocked).toBe(false);
+    s2.svc.shutdown();
+  });
+
+  it('a group that is already gone at boot is not adopted (the run is re-queued as an unclean stop)', async () => {
+    const { s2 } = await killServerMidRun({ alive: false });
+    expect(events(s2)).toContain('orphan-gone');
+    expect(events(s2)).not.toContain('adopted');
+    expect(s2.svc.snapshot().queue[0]).toMatchObject({ pr: 1, interruptions: 1 });
+    s2.svc.shutdown();
   });
 });

@@ -200,6 +200,12 @@ export interface LocalVerifyServiceSeams {
   /** Spawn the run child DETACHED (its own process group); stdio to `logFile`. */
   spawnRun(a: { command: string; args: string[]; env: NodeJS.ProcessEnv; logFile: string }): ChildHandle;
   isGroupAlive(pgid: number): boolean;
+  /**
+   * Is this one process alive? `false` only on a definite "no such process"; a process that
+   * exists but cannot be signalled is alive. Optional: without it, an adopted run whose leader
+   * died is noticed by its other signs only (see checkAdoptedRun()).
+   */
+  isPidAlive?(pid: number): boolean;
   killGroup(pgid: number, signal: 'SIGTERM' | 'SIGKILL'): void;
   /** The live process's argv, or null if it cannot be read. */
   readProcessArgs(pid: number): Promise<string | null>;
@@ -488,6 +494,9 @@ export interface InFlightIntent {
   pgid: number | null;
 }
 
+/** How long past its run ceiling an adopted run is waited on before it is stopped and handled as crashed. */
+const ADOPTED_RUN_GRACE_MS = 5 * 60_000;
+
 /** Why a queued PR is not starting yet (GET /local-verify `mainRedHold`, the POST answer's `hold`). */
 export interface MainRedHoldInfo {
   reason: 'main-red';
@@ -521,6 +530,11 @@ interface InFlight {
   preflightAllowanceMs: number;
   /** Latched once this run's exit has been handled, so it is handled exactly once (see shutdown()). */
   settled?: boolean;
+  /**
+   * This process did not start the run: it found it alive after a restart and kept it (see
+   * whyNotAdoptable() and adopt()). There is no child handle, so its end is noticed by tick().
+   */
+  adopted?: boolean;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -893,6 +907,16 @@ export class LocalVerifyService {
     try { return this.failFastEnabled ? this.failFastEnabled() !== false : true; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (every lane runs, today's behaviour)
   }
 
+  /**
+   * The live switch for keeping a run that survived a server restart
+   * (`monitoring.localVerify.adoptRunningRun`; absent ⇒ on). Read at boot.
+   */
+  setAdoptRunningRunEnabled(fn: (() => boolean) | null): void { this.adoptRunningRunEnabled = fn; }
+  private adoptRunningRunEnabled: (() => boolean) | null = null;
+  private adoptOn(): boolean {
+    try { return this.adoptRunningRunEnabled ? this.adoptRunningRunEnabled() !== false : true; } catch { return false; } // @silent-fallback-ok: an unreadable switch reads as off (the run is stopped and re-run, the behaviour before this feature)
+  }
+
   setPreflightMode(fn: (() => unknown) | null): void { this.preflightModeSetting = fn; }
 
   private preflightMode(): 'off' | 'observe' | 'enforce' {
@@ -1030,12 +1054,19 @@ export class LocalVerifyService {
     this.mainObs.immediate = true; // the boot-time `main` verify skips the debounce
     // Order matters: the orphan reap runs first, and a still-blocked reap keeps every
     // restored entry waiting (pump refuses while blockedBy is set).
-    await this.reapOrphan();
-    this.loadPeerState(); // after the reap: an interrupted peer attempt is tombstoned, never resumed
-    await this.rebuildIndex();
-    if (!this.cfg.peerOnly) await this.reconcilePreflightReplays();
-    if (!this.cfg.peerOnly) this.waiting.load();
-    if (!this.cfg.peerOnly) await this.restoreQueue();
+    await this.reapOrphan({ allowAdopt: true });
+    try {
+      this.loadPeerState(); // after the reap: an interrupted peer attempt is tombstoned, never resumed
+      await this.rebuildIndex();
+      if (!this.cfg.peerOnly) await this.reconcilePreflightReplays();
+      if (!this.cfg.peerOnly) this.waiting.load();
+      if (!this.cfg.peerOnly) await this.restoreQueue();
+    } finally {
+      // The restore normally settles a live run the reap decided to keep (kept, or stopped when
+      // nothing in the saved queue claims it). If the boot did not get that far, the run is
+      // stopped as before this feature: nothing may stay waiting on it.
+      if (this.adoptable) this.stopUnadopted(this.adoptable, 'boot-did-not-finish');
+    }
     this.scheduleReplayAdmission();
   }
 
@@ -1146,6 +1177,14 @@ export class LocalVerifyService {
         ...(e.interruptions ? { interruptions: e.interruptions } : {}),
         ...(e.resumeFirst ? { resumeFirst: true as const } : {}),
       };
+      const live = this.adoptable;
+      if (e.inFlight && live && live.pr === e.pr && live.headSha === e.headSha && live.baseRefName === e.baseRefName) {
+        // Its run is still going: the entry is in flight again, not interrupted and not re-queued.
+        // The run keeps the base it was started against.
+        entry.baseSha = live.baseSha;
+        this.adopt(entry, live);
+        continue;
+      }
       if (e.inFlight) {
         // The server stopped without a clean shutdown while this ran: also an interruption.
         entry.interruptions = (entry.interruptions ?? 0) + 1;
@@ -1171,6 +1210,9 @@ export class LocalVerifyService {
     // A restored entry the restarts have already killed twice alarms NOW, before anything
     // can start it (a `main` observation pumps the queue before the first tick).
     for (const e of this.queue) if (e.kind !== 'main') this.raiseStarvedIfDue(e);
+    // A live run nothing in the saved queue claimed (its PR closed, its head moved, it was already
+    // recorded, or the queue file was lost) is of no use: stop it, as before.
+    if (this.adoptable) this.stopUnadopted(this.adoptable, 'no-matching-queue-entry');
     const dropped = Object.values(drops).reduce((a, b) => a + b, 0);
     this.audit({ event: 'queue-restored', restored, dropped, drops });
     return { restored, dropped };
@@ -1260,8 +1302,116 @@ export class LocalVerifyService {
     this.pump();
   }
 
+  /** A live run of this service found at boot, waiting for the queue restore to match it to its entry. */
+  private adoptable: InFlightIntent | null = null;
+
+  /**
+   * Why a live, identity-confirmed run from before the restart must NOT be kept, or null when
+   * it may be. A run is kept only when all of this holds:
+   *   - the switch is on, and this service is a coordinator (a peer attempt belongs to a
+   *     hand-off whose coordinator has its own timeout and re-dispatch; it is not adopted);
+   *   - it is a PR run (a `main` run has no durable queue entry to match);
+   *   - its input was written for exactly this verifier and policy, and the verifier on disk
+   *     has not changed since (a record from another verifier is ignored by this one);
+   *   - it started less than one full run ceiling ago (an older process is not a run in progress).
+   * The identity check itself (the process's own arguments carry this run's token) is the
+   * caller's, and is the same check that authorizes killing it.
+   */
+  private whyNotAdoptable(rec: InFlightIntent): string | null {
+    if (!this.adoptOn()) return 'switched-off';
+    if (this.cfg.peerOnly) return 'peer-role';
+    if (!(rec.pr > 0)) return 'not-a-pr-run';
+    if (this.verifierChangedOnDisk()) return 'verifier-changed-on-disk';
+    let input: { verifierVersion?: unknown; policyHash?: unknown; repo?: unknown; pr?: unknown; headSha?: unknown; baseSha?: unknown; baseRefName?: unknown; attempt?: unknown; preflightMode?: unknown } | null = null;
+    try { input = JSON.parse(fs.readFileSync(path.join(this.runsDir, `${rec.attemptToken}.input.json`), 'utf-8')); } catch { input = null; } // @silent-fallback-ok: an unreadable input means the run cannot be vouched for; it is stopped as before
+    if (!input || typeof input !== 'object') return 'input-unreadable';
+    if (input.verifierVersion !== this.cfg.verifierVersion || input.policyHash !== this.policyHash) return 'verifier-or-policy-differs';
+    if (input.attempt !== undefined && input.attempt !== null) return 'peer-attempt'; // a hand-off from another machine: its coordinator re-dispatches
+    if (input.repo !== this.cfg.repo || input.pr !== rec.pr || input.headSha !== rec.headSha
+        || input.baseSha !== rec.baseSha || input.baseRefName !== rec.baseRefName) return 'input-does-not-match-marker';
+    const age = this.now() - rec.startedAt;
+    const allowance = input.preflightMode && input.preflightMode !== 'off' ? PREFLIGHT_LIMITS.totalMs : 0;
+    if (!(age >= 0) || this.now() >= restartHoldUntil(rec.startedAt, this.now(), Number.MAX_SAFE_INTEGER, allowance)) return 'past-run-ceiling';
+    return null;
+  }
+
+  /** Stop a live run found at boot that could not be matched to a queue entry (the pre-adoption behaviour). */
+  private stopUnadopted(rec: InFlightIntent, reason: string): void {
+    this.adoptable = null;
+    this.audit({ event: 'orphan-not-adopted', pr: rec.pr, headSha: rec.headSha, pgid: rec.pgid, reason });
+    if (rec.pgid !== null) this.seams.killGroup(rec.pgid, 'SIGKILL');
+    if (rec.pgid === null || !this.seams.isGroupAlive(rec.pgid)) {
+      this.audit({ event: 'orphan-reaped', pr: rec.pr, headSha: rec.headSha, pgid: rec.pgid });
+      this.clearInFlight();
+      this.blockedBy = null;
+      return;
+    }
+    // The kill did not take yet: keep the record and stay blocked; tick() re-checks.
+    this.audit({ event: 'orphan-reap-incomplete', pr: rec.pr, headSha: rec.headSha, pgid: rec.pgid });
+    this.blockedBy = rec;
+  }
+
+  /**
+   * An adopted run has no child handle, so its end is noticed here, from tick(). It has ended when
+   *   - its result file holds a result object (the child's last act; anything still alive in the
+   *     group is a leftover, swept by the exit handling as after any run), or
+   *   - its process group is gone, or
+   *   - its leader is definitely gone (no such process), or its pid now belongs to another
+   *     program: the leader died without a result, a crashed run. An unreadable `ps` decides nothing.
+   * And it is not waited on for ever: past the run ceiling plus a grace period the group is
+   * stopped and the run handled as crashed, so the queue cannot be held by a process that is
+   * not, or is no longer, the run.
+   */
+  private async checkAdoptedRun(): Promise<void> {
+    const f = this.inFlight;
+    if (!f?.adopted || f.settled) return;
+    const groupAlive = this.seams.isGroupAlive(f.pgid);
+    let why: string | null = null;
+    if (!groupAlive) why = 'group-gone';
+    else if (this.now() >= restartHoldUntil(f.startedAt, this.now(), Number.MAX_SAFE_INTEGER, f.preflightAllowanceMs) + ADOPTED_RUN_GRACE_MS) why = 'past-run-ceiling';
+    // A cancelled run is being stopped (SIGTERM, then the cancel's own SIGKILL timer). No exit
+    // event will come for it either, so its end is noticed here too: when the group is gone, or
+    // at the ceiling above if it never goes.
+    else if (f.cancelled) return;
+    else if (this.isResultObject(this.readResult(f.resultPath))) why = 'result-written';
+    // The leader is definitely gone (no such process) and left no result: a crashed run whose
+    // stragglers keep the group alive. A run this process started ends on the leader's exit too.
+    else if (this.seams.isPidAlive && !this.seams.isPidAlive(f.pgid)) why = 'leader-gone';
+    else {
+      const args = await this.seams.readProcessArgs(f.pgid).catch(() => null);
+      if (this.inFlight !== f || f.settled || f.cancelled) return; // settled or cancelled while ps ran
+      // Only a readable answer that names another program decides anything (the pid was reused,
+      // so the leader is gone). No answer is also what a `ps` that timed out on a loaded machine
+      // gives, and a live run must never be ended on that: it waits for one of the other signs.
+      if (typeof args === 'string' && !args.includes(`--attempt-token ${f.token}`)) why = 'leader-pid-reused';
+    }
+    if (why === null) return;
+    this.audit({ event: 'adopted-run-ended', pr: f.entry.pr, headSha: f.entry.headSha, why, ranMs: this.now() - f.startedAt });
+    this.onExit(f, { status: null, signal: null });
+  }
+
+  private isResultObject(result: unknown): boolean {
+    return !!result && typeof result === 'object' && typeof (result as { kind?: unknown }).kind === 'string';
+  }
+
+  /** Make a run found alive at boot the in-flight run of this process. */
+  private adopt(entry: QueueEntry, rec: InFlightIntent): void {
+    const token = rec.attemptToken;
+    let preflightMode: unknown = 'off';
+    try { preflightMode = (JSON.parse(fs.readFileSync(path.join(this.runsDir, `${token}.input.json`), 'utf-8')) as { preflightMode?: unknown }).preflightMode; } catch { /* @silent-fallback-ok: no allowance; whyNotAdoptable already read this file */ }
+    this.inFlight = {
+      entry, token, pgid: rec.pgid!, cancelled: false, startedAt: rec.startedAt, adopted: true,
+      inputPath: path.join(this.runsDir, `${token}.input.json`),
+      resultPath: path.join(this.runsDir, `${token}.result.json`),
+      preflightAllowanceMs: preflightMode && preflightMode !== 'off' ? PREFLIGHT_LIMITS.totalMs : 0,
+    };
+    this.adoptable = null;
+    this.blockedBy = null;
+    this.audit({ event: 'adopted', pr: entry.pr, headSha: entry.headSha, baseSha: entry.baseSha, pgid: rec.pgid, attempt: entry.attempts, ranMs: this.now() - rec.startedAt });
+  }
+
   /** The two-phase in-flight protocol's boot half. */
-  async reapOrphan(): Promise<'none' | 'cleared-pidless' | 'gone' | 'reaped' | 'incomplete'> {
+  async reapOrphan(opts: { allowAdopt?: boolean } = {}): Promise<'none' | 'cleared-pidless' | 'gone' | 'reaped' | 'incomplete' | 'adoptable'> {
     const rec = this.readInFlight();
     if (!rec) { this.blockedBy = null; return 'none'; }
     if (rec.pid === null || rec.pgid === null) {
@@ -1280,6 +1430,19 @@ export class LocalVerifyService {
     }
     const args = await this.seams.readProcessArgs(rec.pid).catch(() => null);
     if (args && args.includes(`--attempt-token ${rec.attemptToken}`)) {
+      // Only the boot may keep a run: the queue restore that follows it is what matches the run to
+      // its entry (or stops it). A later reap from tick() has no such step, so it always stops.
+      const why = opts.allowAdopt ? this.whyNotAdoptable(rec) : 'not-at-boot';
+      if (why === null) {
+        // The run is this service's own (same token), alive, and built for this verifier:
+        // killing it only to run the same thing again throws away up to a whole run. Keep it.
+        // Nothing may start until the queue restore has matched it to its entry (or failed to).
+        this.audit({ event: 'orphan-adoptable', pr: rec.pr, headSha: rec.headSha, pgid: rec.pgid, ranMs: this.now() - rec.startedAt });
+        this.adoptable = rec;
+        this.blockedBy = rec;
+        return 'adoptable';
+      }
+      if (opts.allowAdopt) this.audit({ event: 'orphan-not-adopted', pr: rec.pr, headSha: rec.headSha, pgid: rec.pgid, reason: why });
       this.seams.killGroup(rec.pgid, 'SIGKILL');
       if (!this.seams.isGroupAlive(rec.pgid)) {
         this.audit({ event: 'orphan-reaped', pr: rec.pr, headSha: rec.headSha, pgid: rec.pgid });
@@ -2165,6 +2328,9 @@ export class LocalVerifyService {
     this.notePause();
     this.writePeerHold();
     if (this.blockedBy) await this.reapOrphan();
+    // Only when there is an adopted run: with none, this must add no await before the heartbeat
+    // and the peer poll below (a hanging poll must not be delayed by an idle check).
+    if (this.inFlight?.adopted) await this.checkAdoptedRun();
     if (this.verifierHold) this.recheckVerifierHold();
     this.checkStarved();
     this.health.noteUnverifiedAge(this.mainObs.oldestUnverifiedAt);
@@ -2346,8 +2512,7 @@ export class LocalVerifyService {
    */
   private finishedResultAtShutdown(f: InFlight): boolean {
     if (this.verifierChangedOnDisk()) return false;
-    const result = this.readResult(f.resultPath) as { kind?: unknown } | null;
-    return !!result && typeof result === 'object' && typeof result.kind === 'string';
+    return this.isResultObject(this.readResult(f.resultPath));
   }
 
   // ---- internals ----
@@ -2841,7 +3006,20 @@ export class LocalVerifyService {
     // The restart hold this run held is gone: let a waiting update restart now, not at its next re-check.
     // (also when the settling marker could not be written: nothing would announce the end later)
     if (!settling || this.mergeHoldFile === null) { try { this.runEnded?.(); } catch { /* @silent-fallback-ok: the updater's own re-check still runs within 5 minutes */ } }
-    const result = this.readResult(f.resultPath);
+    let result = this.readResult(f.resultPath);
+    if (f.adopted && result && 'kind' in result && result.kind === 'record') {
+      // This process did not write the run's input, so the record is held to the entry it was
+      // adopted for and to this server's verifier and policy before it can be journaled.
+      const r = result.record;
+      const matches = r && r.repo === this.cfg.repo && r.pr === f.entry.pr && r.headSha === f.entry.headSha
+        && r.baseSha === f.entry.baseSha && r.baseRefName === f.entry.baseRefName
+        && r.verifierVersion === this.cfg.verifierVersion && r.policyHash === this.policyHash;
+      if (!matches) {
+        this.audit({ event: 'adopted-record-mismatch', pr: f.entry.pr, headSha: f.entry.headSha, baseSha: f.entry.baseSha,
+          record: r ? { repo: r.repo, pr: r.pr, headSha: r.headSha, baseSha: r.baseSha, baseRefName: r.baseRefName, verifierVersion: r.verifierVersion, policyHash: r.policyHash, outcome: r.outcome } : null });
+        result = { kind: 'crash', detail: 'the adopted run wrote a record for a different PR, head, base, verifier or policy' };
+      }
+    }
     this.removeRunFiles(f);
     for (const d of (result && 'degradations' in result && Array.isArray(result.degradations)) ? result.degradations : []) {
       try { this.seams.onDegradation?.(d); } catch { /* @silent-fallback-ok: the run log still carries the event */ }
