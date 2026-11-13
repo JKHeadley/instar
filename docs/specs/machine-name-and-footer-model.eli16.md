@@ -22,6 +22,7 @@ The part of Instar that reads a session's transcript to learn which model wrote 
 
 - A long line is now kept across reads and read whole, up to 16 MB per line. A line larger than that is skipped on its own, and only the current turn reads as not known; the next turn is read normally again. A session is never poisoned for good.
 - At the moment a reply is sent, the reader catches up on the whole unread part of the transcript (bounded at 16 MB) before answering. The background poll keeps its small step.
+- Three more ways the reader lost a session were fixed. A session's very first reply could come before Claude Code had told Instar which transcript belongs to it; the send now looks that up from Claude Code's own small per-process file. Sessions working inside a topic worktree keep their transcript in a folder named after that worktree, and after a server restart Instar looked in the agent's home folder instead and never looked again; the spawn record now remembers the worktree, the reader looks in neighboring folders for the session's own file name, and a missing file is searched for again. Codex keeps thousands of old session files, and the search gave up before reaching today's; it now looks at the newest days first.
 - When a field still truly cannot be known, the footer leaves it out instead of printing "unknown", on Telegram and Slack alike. The record behind the footer still says exactly what was unknown and why.
 
 ## What a reader needs to decide

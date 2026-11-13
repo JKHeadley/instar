@@ -3387,6 +3387,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
     try { this.claudeSessionBoundSink?.(session, claudeSessionId); } catch (err) { console.warn('[SessionManager] usage binding sink failed:', err); }
   }
 
+  /**
+   * The Claude Code session id of a running instar session, for origin evidence at send time.
+   * A session's first reply can arrive before any hook has reported the id (seen live: Luna's
+   * first reply 13 s after spawn read "native-session-unbound"), so the model reader had no
+   * transcript to read. Claude Code's own per-process record (`<config home>/sessions/<pid>.json`,
+   * matched by tmux pane and a live pid) names it; binding it is what the next hook would do.
+   * Also re-tells the origin observer when the id is already known. Null when it cannot be found.
+   */
+  resolveOriginNativeSession(instarSessionId: string): string | null {
+    const session = this.state.listSessions({ status: 'running' }).find(s => s.id === instarSessionId);
+    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return null;
+    if (session.claudeSessionId) {
+      this.originLifecycle?.bindNative(instarSessionId, session.claudeSessionId);
+      return session.claudeSessionId;
+    }
+    const configHome = this.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true });
+    const found = configHome ? claudeSessionIdFromPidFiles(configHome, session.tmuxSession) : null;
+    if (found) this.setClaudeSessionId(instarSessionId, found);
+    return found;
+  }
+
   private claudeSessionBoundSink: ((session: Session, claudeSessionId: string) => void) | null = null;
 
   /** Register the observer told about each new Claude session id (unified usage ledger). */
@@ -4997,6 +5018,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       model: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       framework: headlessFramework,
       prompt: options.prompt,
+      // The spawn tree (a topic worktree, when one was resolved). Server-restart re-enrollment reads
+      // it as the origin binding's projectDir; without it the transcript folder was looked up under
+      // the agent home and never found ("source-unreadable").
+      cwd: resolvedCwd,
       maxDurationMinutes: options.maxDurationMinutes,
       // Subscription-pool pinning: tag the session with the account it launched
       // under, so auto-swap can move it when that account hits a quota wall.
@@ -5437,6 +5462,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       model: resolveModelForFramework('claude-code', launchModel) ?? launchModel,
       framework: 'claude-code',
       prompt: options.prompt,
+      cwd: resolvedCwd, // the spawn tree; see the headless record above
       maxDurationMinutes: options.maxDurationMinutes,
       ...(reroutedConfined ? { confinedTools: reroutedConfined } : {}),
       // Subscription-pool pinning: tag with the account this launched under, so

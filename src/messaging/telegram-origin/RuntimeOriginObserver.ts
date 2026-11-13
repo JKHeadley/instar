@@ -9,7 +9,7 @@
  *   Hook carrier proof does not prove current-model extraction; separate live-model
  *   canary enrollment and per-harness limits are recorded in the detector registry.
  */
-import { open, opendir } from 'node:fs/promises';
+import { access, open, opendir } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import type { OriginHarness, OriginSessionBinding } from './OriginSessionRegistry.js';
@@ -288,8 +288,12 @@ export class RuntimeOriginObserver {
     if (!t || this.stopped) return Promise.resolve();
     if (t.busy) return options.catchUp ? t.busy.then(() => this.refresh(sessionId, options)) : t.busy;
     const generation = t.generation;
-    t.busy = this.refreshTracked(t, generation, options.catchUp === true).catch(() => {
-      if (this.sessions.get(sessionId) === t && generation === t.generation) t.unavailable = 'source-unreadable';
+    t.busy = this.refreshTracked(t, generation, options.catchUp === true).catch((error: NodeJS.ErrnoException) => {
+      if (this.sessions.get(sessionId) !== t || generation !== t.generation) return;
+      t.unavailable = 'source-unreadable';
+      // A missing file means the cached path is wrong (or not written yet): look again, throttled,
+      // instead of reading the same missing path for the rest of the session.
+      if (error?.code === 'ENOENT') { t.source = undefined; t.parser = newParser(); t.cursor = newCursor(); t.events = newCursor(); }
     }).finally(() => { t.busy = undefined; });
     return t.busy;
   }
@@ -433,9 +437,25 @@ export class RuntimeOriginObserver {
     const nativeId = b.nativeSessionId!;
     if (!/^[A-Za-z0-9_-]+$/.test(nativeId)) return undefined;
     const home = this.options.homeDir ?? os.homedir();
-    if (b.harnessId === 'claude-code') return {
-      path: path.join(b.configHome ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, '.claude'), 'projects', b.projectDir.replace(/[\\/.]/g, '-'), `${nativeId}.jsonl`), nativeSessionId: nativeId,
-    };
+    if (b.harnessId === 'claude-code') {
+      const projects = path.join(b.configHome ?? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, '.claude'), 'projects');
+      const expected = path.join(projects, b.projectDir.replace(/[\\/.]/g, '-'), `${nativeId}.jsonl`);
+      if (await access(expected).then(() => true, () => false)) return { path: expected, nativeSessionId: nativeId };
+      // Claude Code names the folder after the directory it started in, which is not always the
+      // recorded project dir (a topic worktree, or a binding re-enrolled after a restart with the
+      // agent home). The file name is the session's own UUID, and the parser still verifies the
+      // sessionId inside every record, so finding it in a sibling folder is exact, not a guess.
+      let directory;
+      try { directory = await opendir(projects); } catch { return undefined; }
+      let visited = 0;
+      for await (const entry of directory) {
+        if (++visited > 5000) break;
+        if (!entry.isDirectory()) continue;
+        const candidate = path.join(projects, entry.name, `${nativeId}.jsonl`);
+        if (await access(candidate).then(() => true, () => false)) return { path: candidate, nativeSessionId: nativeId };
+      }
+      return undefined;
+    }
     if (b.harnessId === 'grok-build') {
       const dir = path.join(b.configHome ?? process.env.GROK_HOME ?? path.join(home, '.grok'), 'sessions', encodeURIComponent(b.projectDir), nativeId);
       return { path: path.join(dir, 'chat_history.jsonl'), eventsPath: path.join(dir, 'events.jsonl'), nativeSessionId: nativeId };
@@ -445,23 +465,30 @@ export class RuntimeOriginObserver {
       : b.harnessId === 'gemini-cli'
         ? path.join(b.configHome ?? path.join(home, '.gemini'), 'tmp')
         : b.configHome ?? path.join(b.projectDir, '.instar', 'state', 'pi-sessions');
-    const queue: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+    // Newest first, depth first. Codex keeps sessions/YYYY/MM/DD/rollout-…-<id>.jsonl, and a busy
+    // home holds thousands of them (5,039 to 8,083 on the Mac Studio, 2026-11-12). The old
+    // breadth-first walk spent its 5,000-entry budget on old days and never reached today's
+    // folder, so new Codex sessions read "native-source-unavailable". Names sort by date.
+    const matches = (name: string): boolean => b.harnessId === 'codex-cli' ? name.endsWith(`-${nativeId}.jsonl`)
+      : b.harnessId === 'gemini-cli' ? new RegExp(`-${nativeId.replace(/-/g, '').slice(0, 8)}\\.jsonl?$`, 'i').test(name)
+        : name.endsWith(`${nativeId}.jsonl`);
     let visited = 0;
-    while (queue.length && visited < 5000) {
-      const item = queue.shift()!;
+    const walk = async (dir: string, depth: number): Promise<RuntimeOriginSource | undefined> => {
+      const files: string[] = []; const dirs: string[] = [];
       let directory;
-      try { directory = await opendir(item.dir); } catch { continue; }
+      try { directory = await opendir(dir); } catch { return undefined; }
       for await (const entry of directory) {
         if (++visited > 5000) return undefined;
-        const file = path.join(item.dir, entry.name);
-        if (entry.isDirectory() && item.depth < 3) queue.push({ dir: file, depth: item.depth + 1 });
-        if (!entry.isFile()) continue;
-        const matches = b.harnessId === 'codex-cli' ? entry.name.endsWith(`-${nativeId}.jsonl`)
-          : b.harnessId === 'gemini-cli' ? new RegExp(`-${nativeId.replace(/-/g, '').slice(0, 8)}\\.jsonl?$`, 'i').test(entry.name)
-            : entry.name.endsWith(`${nativeId}.jsonl`);
-        if (matches) return { path: file, nativeSessionId: nativeId, format: file.endsWith('.json') ? 'snapshot' : 'jsonl' };
+        if (entry.isDirectory() && depth < 3) dirs.push(entry.name);
+        else if (entry.isFile() && matches(entry.name)) files.push(entry.name);
       }
-    }
-    return undefined;
+      if (files.length) { const file = path.join(dir, files.sort().reverse()[0]); return { path: file, nativeSessionId: nativeId, format: file.endsWith('.json') ? 'snapshot' : 'jsonl' }; }
+      for (const name of dirs.sort().reverse()) {
+        const found = await walk(path.join(dir, name), depth + 1);
+        if (found || visited > 5000) return found;
+      }
+      return undefined;
+    };
+    return walk(root, 0);
   }
 }

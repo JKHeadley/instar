@@ -865,3 +865,31 @@ describe('origin service durable delivery', () => {
     expect(h.network).not.toHaveBeenCalled();
   });
 });
+
+describe('origin service binds the native session at send time', () => {
+  // Live 2026-11-12: a session's first reply (13 s after spawn) read "native-session-unbound"
+  // because no hook had reported the Claude session id yet. The send path now asks the server's
+  // session records (Claude Code's own per-process record) for it before reading the model.
+  it('a reply before any hook reported the id still gets the observed model', async () => {
+    const h = await harness();
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    const pathMod = await import('node:path');
+    const native = '33333333-3333-4333-8333-333333333333';
+    const configHome = pathMod.join(h.stateDir, 'claude-home');
+    const folder = pathMod.join(configHome, 'projects', h.stateDir.replace(/[\\/.]/g, '-'));
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(pathMod.join(folder, `${native}.jsonl`),
+      JSON.stringify({ type: 'user', sessionId: native, uuid: 'u1', message: { role: 'user', content: 'Hello' } }) + '\n' +
+      JSON.stringify({ type: 'assistant', sessionId: native, uuid: 'a1', message: { role: 'assistant', model: 'claude-opus-5-5', content: [] } }) + '\n');
+    const token = await h.service.options.sessions.issue({ sessionId: 'first-reply', harnessId: 'claude-code', projectDir: h.stateDir, configHome });
+    h.service.options.observer.track(h.service.options.sessions.getBinding('first-reply')!);
+    expect((await h.service.sessionProducer(token)).model).toMatchObject({ status: 'unknown', reason: 'native-session-unbound' });
+    const asked: string[] = [];
+    h.service.resolveNativeSession = id => { asked.push(id); h.service.options.observer.bindNative(id, native); return native; };
+    expect((await h.service.sessionProducer(token)).model).toMatchObject({ status: 'observed', value: 'claude-opus-5-5' });
+    expect(asked).toEqual(['first-reply']);
+    // Once bound, the resolver is not asked again.
+    await h.service.sessionProducer(token);
+    expect(asked).toEqual(['first-reply']);
+  });
+});

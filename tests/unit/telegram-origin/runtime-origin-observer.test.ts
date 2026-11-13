@@ -1,6 +1,6 @@
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { appendFile, copyFile, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, mkdtemp, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { RuntimeOriginObserver } from '../../../src/messaging/telegram-origin/RuntimeOriginObserver.js';
@@ -148,6 +148,62 @@ describe('RuntimeOriginObserver native file controls', () => {
     expect(observer.get('instar-session')?.model.reason).toBe('source-backlog-or-partial-record');
     await observer.refresh('instar-session', { catchUp: true });
     expect(observer.get('instar-session')?.model).toMatchObject({ status: 'observed', value: 'claude-opus-5-5' });
+  });
+  // Live 2026-11-12 (Mac Studio): sessions spawned in a topic worktree, then re-enrolled after a
+  // server restart with the agent home as projectDir, read "source-unreadable" for life: Claude Code
+  // keeps the transcript under the worktree folder, and the missing path was never looked up again.
+  it('finds a Claude transcript in a sibling project folder, and looks again after a missing file', async () => {
+    let now = 1_000_000;
+    observer.stop(); observer = new RuntimeOriginObserver({ now: () => now });
+    const home = path.join(directory, 'claude-home');
+    const b = { ...binding('claude-code'), configHome: home, projectDir: '/agents/echo' };
+    observer.track(b);
+    await observer.refresh(b.sessionId);
+    expect(observer.get(b.sessionId)?.model).toMatchObject({ status: 'configured', reason: 'native-source-unavailable' });
+    const folder = path.join(home, 'projects', '-agents-echo--instar-worktrees-topic-42');
+    await mkdir(folder, { recursive: true });
+    await copyFile(path.join(fixtures, 'claude.jsonl'), path.join(folder, `${native}.jsonl`));
+    now += 6_000; // past the discovery throttle
+    await observer.refresh(b.sessionId, { catchUp: true });
+    expect(observer.get(b.sessionId)?.model).toMatchObject({ status: 'observed', value: 'claude-native-second' });
+  });
+  it('a cached path that disappears is rediscovered instead of read forever', async () => {
+    let now = 1_000_000;
+    observer.stop(); observer = new RuntimeOriginObserver({ now: () => now });
+    const home = path.join(directory, 'claude-home-2');
+    const exact = path.join(home, 'projects', '-agents-echo');
+    await mkdir(exact, { recursive: true });
+    await copyFile(path.join(fixtures, 'claude.jsonl'), path.join(exact, `${native}.jsonl`));
+    const b = { ...binding('claude-code'), configHome: home, projectDir: '/agents/echo' };
+    observer.track(b);
+    await observer.refresh(b.sessionId);
+    expect(observer.get(b.sessionId)?.model.status).toBe('observed');
+    const moved = path.join(home, 'projects', '-agents-echo-moved');
+    await mkdir(moved, { recursive: true });
+    await rename(path.join(exact, `${native}.jsonl`), path.join(moved, `${native}.jsonl`));
+    await appendFile(path.join(moved, `${native}.jsonl`), '');
+    now += 1;
+    await observer.refresh(b.sessionId);
+    expect(observer.get(b.sessionId)?.model.reason).toBe('source-unreadable');
+    now += 6_000;
+    await observer.refresh(b.sessionId, { catchUp: true });
+    expect(observer.get(b.sessionId)?.model).toMatchObject({ status: 'observed', value: 'claude-native-second' });
+  });
+  // Live 2026-11-12: Codex homes on the Mac Studio hold 5,039 to 8,083 rollout files. The old
+  // breadth-first walk spent its 5,000-entry budget on old days, so new sessions read
+  // "native-source-unavailable".
+  it('finds today\'s Codex rollout in a home with more old rollouts than the walk budget', async () => {
+    const home = path.join(directory, 'codex-home');
+    const old = path.join(home, 'sessions', '2025', '01', '01');
+    await mkdir(old, { recursive: true });
+    await Promise.all(Array.from({ length: 5200 }, (_, i) => writeFile(path.join(old, `rollout-2025-01-01T00-00-00-old-${i}.jsonl`), '')));
+    const today = path.join(home, 'sessions', '2026', '11', '12');
+    await mkdir(today, { recursive: true });
+    await copyFile(path.join(fixtures, 'codex.jsonl'), path.join(today, `rollout-2026-11-12T10-00-00-${native}.jsonl`));
+    const b = { ...binding('codex-cli'), configHome: home };
+    observer.track(b);
+    await observer.refresh(b.sessionId, { catchUp: true });
+    expect(observer.get(b.sessionId)?.model).toMatchObject({ status: 'observed', value: 'gpt-native-second' });
   });
   it('unknown stays explicit without configuration and expired observations degrade', async () => {
     let now = 100_000;
