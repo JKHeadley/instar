@@ -793,13 +793,13 @@ export class BackupManager {
   sweepStaleStaging(olderThanMs = 60 * 60 * 1000, now = Date.now()): number {
     let removed = 0;
     let names: string[];
-    try { names = fs.readdirSync(this.backupsDir); } catch { return 0; }
+    try { names = fs.readdirSync(this.backupsDir); } catch { /* @silent-fallback-ok: no readable backups directory means nothing to sweep; the next snapshot sweeps again */ return 0; }
     for (const name of names) {
       if (!name.startsWith(STAGING_DIR_PREFIX)) continue;
       const dir = path.join(this.backupsDir, name);
       try {
         if (now - fs.statSync(dir).mtimeMs < olderThanMs) continue;
-      } catch { continue; }
+      } catch { /* @silent-fallback-ok: a staging directory that vanished mid-sweep needs no removal */ continue; }
       this.removeStaging(dir);
       removed++;
     }

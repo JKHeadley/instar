@@ -86,3 +86,7 @@ Moves a 400 MB synchronous copy and a recursive delete off the server's main thr
 **Round 3: Concur.** The reviewer verified each round-2 item in the code and this document, and raised only two wording items (this section's round count, and the test count in the release note), both corrected.
 
 **Reviewer concurred:** yes (round 3).
+
+## Scanner follow-up (2026-11-13)
+
+The staging sweep's two catch blocks (unreadable backups directory, staging directory gone mid-sweep) now carry `@silent-fallback-ok` reasons. Comment-only; no behaviour change. Found by Local Verify (`tests/unit/no-silent-fallbacks`, 496 over a 494 baseline).
