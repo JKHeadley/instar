@@ -3214,7 +3214,14 @@ export class LocalVerifyService {
   }
 
   private readResult(p: string): (VerifyRunResult | { kind: 'crash'; detail: string }) | null {
-    try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+    // Only a JSON object can be a result. A file holding a bare string, number or `null` parses
+    // without error, and the exit handler's `'degradations' in result` then threw on it: an
+    // unhandled rejection in the server, and no record for the run.
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as VerifyRunResult | { kind: 'crash'; detail: string } : null;
+    } catch { return null; } // @silent-fallback-ok: an absent or unparseable result file is "no result"; the caller records the crash
   }
 
   private removeRunFiles(f: InFlight): void {

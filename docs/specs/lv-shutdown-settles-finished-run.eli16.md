@@ -40,3 +40,9 @@ If the server is killed outright instead of being asked to stop, this check neve
 ## What you actually need to decide
 
 Nothing. This is a small, reversible change in how the test line shuts down: no stored data or setting changes, and a revert restores the old behaviour.
+
+## One more repair in the same change
+
+A finished test run leaves a small result file for the server to read. If that file ever held something that is not a result (a stray word or number instead of the expected record), the server did not treat it as "no result". It tripped over it, and the run was never written down as passed or failed. Now anything that is not a proper result counts as no result: the run is recorded as crashed and tried again, which is what already happened for a missing or unreadable file.
+
+This was found the honest way: a test added in this change fed the server such a file, and the trip showed up as a stray error after every test had passed. That stray error is why this change failed its own first run in the test line.
