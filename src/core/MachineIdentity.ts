@@ -640,7 +640,11 @@ export class MachineIdentityManager {
    */
   ensureNicknames(selfMachineId?: string | null): string[] {
     const registry = this.loadRegistry();
-    const self = selfMachineId ?? (this.hasIdentity() ? (() => { try { return this.loadIdentity().machineId; } catch { return null; } })() : null);
+    let self: string | null = selfMachineId ?? null;
+    if (!self && this.hasIdentity()) {
+      try { self = this.loadIdentity().machineId; }
+      catch { /* @silent-fallback-ok — an unreadable identity names no machine as "self": peers are still named from their hostnames, and this machine is named on the next boot that can read it */ self = null; }
+    }
     const named: string[] = [];
     const taken = (exceptId: string): string[] => Object.entries(registry.machines)
       .filter(([id]) => id !== exceptId).map(([, e]) => e.nickname)

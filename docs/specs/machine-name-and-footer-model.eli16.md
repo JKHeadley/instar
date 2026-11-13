@@ -12,6 +12,7 @@ Instar already gives a machine a nickname when it registers itself, but only at 
 
 - When a machine sets itself up (init, setup, or the first boot after pairing), it now takes the name its owner already gave the computer: on a Mac, the name from Sharing settings (for example "Justin's MacBook Pro"); on Linux, the pretty hostname; otherwise a tidied hostname. No question is asked, and the owner can rename it at any time.
 - Every boot and every update fills in a name for any machine that has none. A name a person typed is never replaced. A name another machine guessed from our hostname at pairing is upgraded to our own computer name the next time we boot.
+- Tests that check a footer give the machine a fixed computer name, so they pass the same way on any machine that runs them.
 - Names travel to the other machines through the same registry sync that already carries them.
 
 ## Why the model said "unknown"
