@@ -8,7 +8,7 @@ A Slack mention an agent writes as `<@USERID>` is now sent as a real tag when th
 
 ## What to Tell Your User
 
-When I mention someone who is in our Slack conversation, Slack now tags them properly instead of showing a code like `<@U0C62ABNDK8>`. I still cannot ping the whole channel, and I will not tag people who are not part of the conversation unless I mean to.
+When I mention someone who is in our Slack conversation, Slack now tags them properly instead of showing a raw code. I still cannot ping the whole channel, and I will not tag people who are not part of the conversation unless I mean to.
 
 ## Summary of New Capabilities
 
