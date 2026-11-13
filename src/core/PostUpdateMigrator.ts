@@ -61,7 +61,7 @@ import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -9978,6 +9978,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    // native-conversation-base §3b — the outcome route gives the execution owner's verdict.
+    if (!content.includes(OWNER_READ_AWARENESS_MARKER)) {
+      content += '\n' + telegramOriginOwnerReadAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added owner-read outcome awareness');
+    }
+
     if (!content.includes('Telegram test groups:')) {
       content += '\n' + telegramOriginTestGroupsAwareness();
       patched = true;
@@ -17146,6 +17153,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
@@ -24255,6 +24263,10 @@ process.stdin.on('end', async () => {
     // A reply queued while the server booted carried no session identity, so
     // recovery sent it labelled "unknown · unknown · unknown".
     '4b19226d06a99514cf53e92b0aa764705289002a0fd183990cbf4f5d827a4a8c',
+    // Queued-row origin digest version, shipped immediately BEFORE the owner-read
+    // outcome (native-conversation-base §3b). It printed "safe to send it again"
+    // for every `not-delivered`, including one ended on purpose (safeToResend false).
+    '7aaf8cdaf71049a3a0a190e6c7d7ae3a84c046b5ff4e3427efadb661a41a4d3f',
   ]);
 
   /**

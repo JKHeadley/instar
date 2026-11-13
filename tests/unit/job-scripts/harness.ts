@@ -180,7 +180,7 @@ export function writeStubProber(dir: string, name: string, p: { exitCode?: numbe
  * outside canary mode, loopback-only URL), no server, a hanging server, and the
  * canary-writes-nothing rule.
  */
-export function sharedContractCases(slug: string, ok: StubHandler, opts: { timeoutResult?: RegExp } = {}): void {
+export function sharedContractCases(slug: string, ok: StubHandler, opts: { timeoutResult?: RegExp; timeoutExitCode?: number } = {}): void {
   describe(`${slug}: shared script contract`, () => {
     let cwd: string;
     let home: string;
@@ -234,7 +234,7 @@ export function sharedContractCases(slug: string, ok: StubHandler, opts: { timeo
       try {
         const r = await runScript(slug, { serverUrl: stub.url, cwd, env: { INSTAR_SCRIPT_HTTP_TIMEOUT_MS: '300' } });
         expect(r.resultLine).toMatch(opts.timeoutResult ?? /^JOB_RESULT failed [a-z-]+-timeout$/);
-        expect(r.exitCode).toBe(1);
+        expect(r.exitCode).toBe(opts.timeoutExitCode ?? 1);
       } finally { await stub.close(); }
     });
 

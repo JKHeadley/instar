@@ -1900,6 +1900,75 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(s2.svc.snapshot().mergeLine.lastOutcome).toBe('error:watcher down');
   });
 
+  it('a planned restart waits for the merge: the hold marker is there before the run marker goes, and it ends with the hand-off', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+    const holdFile = path.join(s.stateDir, 'state', 'local-verify', 'merge-hold.json');
+    const phase = () => (fs.existsSync(holdFile) ? (JSON.parse(fs.readFileSync(holdFile, 'utf-8')) as { v: number; phase: string }).phase : null);
+    const seen: Array<{ run: boolean; hold: string | null }> = [];
+    s.svc.setRunEndedListener(() => { seen.push({ run: fs.existsSync(s.intentPath), hold: phase() }); });
+    let answer!: (r: MergeHandoffResult) => void;
+    s.svc.setMergeHandoff(() => new Promise((r) => { answer = r; }));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.finish(0, ok(record()));
+    // The run child is gone and the hand-off is open: the restart guard still has a marker, and
+    // nothing told a waiting restart to go in between.
+    expect(fs.existsSync(s.intentPath)).toBe(false);
+    expect(phase()).toBe('handoff');
+    expect(seen).toEqual([]);
+    expect(s.svc.restartHolds(3_600_000).map((h) => h.name)).toEqual(['local-verify:merge-pr-1']);
+    s.advance(10 * 60_000); // bounded: ten minutes after the hand-off opened the updater stops waiting
+    expect(s.svc.restartHolds(3_600_000)).toEqual([]);
+    answer({ acted: true, reason: 'merged' });
+    await s.flush();
+    // PR 2 started in the same tick the hold ended, so its own run marker is what holds now.
+    expect(seen[0]).toMatchObject({ hold: null });
+    expect(s.spawned).toHaveLength(2);
+    expect(s.svc.restartHolds(3_600_000).map((h) => h.name)).toEqual(['local-verify:pr-2']);
+  });
+
+  it('a red run, a refused hand-off and a detached watcher leave no merge hold behind', async () => {
+    const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('d') }) } });
+    const holdFile = path.join(s.stateDir, 'state', 'local-verify', 'merge-hold.json');
+    let ended = 0;
+    s.svc.setRunEndedListener(() => { ended++; });
+    s.svc.setMergeHandoff(async () => ({ acted: false, reason: 'refused:needs-independent-review' }));
+    await s.svc.request(1);
+    await s.svc.request(2);
+    await s.svc.request(3);
+    await s.finish(0, ok(record({ outcome: 'failure' }))); // red: settling ends at once
+    expect(fs.existsSync(holdFile)).toBe(false);
+    expect(ended).toBe(1);
+    await s.finish(1, ok(record({ pr: 2, headSha: sha('c') }))); // green, the watcher refuses
+    await s.flush();
+    expect(fs.existsSync(holdFile)).toBe(false);
+    expect(ended).toBe(2);
+    s.svc.setMergeHandoff(null);
+    await s.finish(2, ok(record({ pr: 3, headSha: sha('d') }))); // no merge line: exactly the old behavior
+    expect(fs.existsSync(holdFile)).toBe(false);
+    expect(ended).toBe(3);
+  });
+
+  it('a merge-hold marker left by the previous process is removed at boot, and a marker that cannot be written still lets a waiting restart go', async () => {
+    const s = setup({ views: { 1: view() } });
+    const holdFile = path.join(s.stateDir, 'state', 'local-verify', 'merge-hold.json');
+    fs.writeFileSync(holdFile, JSON.stringify({ v: 1, phase: 'handoff', since: Date.now() }));
+    s.svc.shutdown();
+    const restarted = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await restarted.svc.boot();
+    expect(fs.existsSync(holdFile)).toBe(false);
+    // The marker path is a directory: every write fails. A red run must still announce its end.
+    fs.mkdirSync(holdFile);
+    let ended = 0;
+    restarted.svc.setRunEndedListener(() => { ended++; });
+    restarted.svc.setMergeHandoff(async () => ({ acted: false, reason: 'handoff-not-eligible:held' }));
+    await restarted.svc.request(1);
+    await restarted.finish(0, ok(record({ outcome: 'failure' })));
+    expect(ended).toBe(1);
+    expect(auditLines(restarted).some((l) => l.event === 'merge-hold-write-failed')).toBe(true);
+    SafeFsExecutor.safeRmSync(holdFile, { recursive: true, force: true, operation: 'LocalVerifyService.test.ts:merge-hold-unwritable' });
+  });
+
   it('with no watcher attached (or detached again) records are left to the watcher\'s ticks and nothing is held', async () => {
     const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
     s.svc.setMergeHandoff(async () => ({ acted: true, reason: 'merged' }));
@@ -2303,6 +2372,18 @@ describe('lane shard setting (monitoring.localVerify.laneShards)', () => {
     s.svc.setLaneShards(() => ({ integration: 1, e2e: 7 }));
     await s.svc.request(1);
     expect(inputOf(s).laneShards).toEqual({ integration: 1 });
+  });
+  it('a per-machine unit worker count passes through when 1..12; anything else is dropped', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => ({ unitWorkers: 8 }));
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toEqual({ unitWorkers: 8 });
+    for (const bad of [0, 13, 2.5, '8']) {
+      const t = setup({ views: { 1: view() } });
+      t.svc.setLaneShards(() => ({ unitWorkers: bad }));
+      await t.svc.request(1);
+      expect(inputOf(t).laneShards).toBeUndefined();
+    }
   });
   it('an unreadable setting means the defaults', async () => {
     const s = setup({ views: { 1: view() } });

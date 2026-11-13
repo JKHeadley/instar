@@ -13,7 +13,7 @@
  *     invalidation, TTL).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import {
@@ -61,8 +61,31 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   let home: string;
   let codexHome: string;
 
+  // The archive that is larger than the sync budget (25 partitions x 1000 rollouts) is built ONCE
+  // and shared by the tests that only read it. Each of them used to create and delete its own
+  // 25,000 files (about 6 minutes of this file's run under load, 2026-11-12). A test that adds a
+  // rollout to it removes that rollout again; lookup state is reset before every test.
+  const BEYOND_BUDGET_PER_PARTITION = 1000;
+  const BEYOND_BUDGET_PARTITIONS = Math.ceil(SYNC_SCAN_NAME_BUDGET / BEYOND_BUDGET_PER_PARTITION) + 5; // ≈ 25k names > budget
+  let freshHome: string;
+  let shared: { home: string; partitions: string[] } | null = null;
+  const useBeyondBudgetArchive = (): { partitions: number; perPartition: number; names: string[] } => {
+    if (!shared) {
+      const sharedHome = makeFakeHome();
+      const built = buildLargeArchive(sharedHome, { partitions: BEYOND_BUDGET_PARTITIONS, perPartition: BEYOND_BUDGET_PER_PARTITION });
+      shared = { home: sharedHome, partitions: built.partitions };
+    }
+    home = shared.home;
+    codexHome = codexHomeOf(home);
+    return { partitions: BEYOND_BUDGET_PARTITIONS, perPartition: BEYOND_BUDGET_PER_PARTITION, names: shared.partitions };
+  };
+  const removeRollout = (file: string): void => {
+    SafeFsExecutor.safeRmSync(file, { force: true, operation: 'tests/unit/codexRolloutLookup-bounded.test.ts:shared-archive-restore' });
+  };
+
   beforeEach(() => {
-    home = makeFakeHome();
+    freshHome = makeFakeHome();
+    home = freshHome;
     codexHome = codexHomeOf(home);
     resetRolloutLookupState();
   });
@@ -70,7 +93,12 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   afterEach(() => {
     resetRolloutLookupState();
     vi.useRealTimers();
-    SafeFsExecutor.safeRmSync(home, { recursive: true, force: true, operation: 'tests/unit/codexRolloutLookup-bounded.test.ts:cleanup' });
+    SafeFsExecutor.safeRmSync(freshHome, { recursive: true, force: true, operation: 'tests/unit/codexRolloutLookup-bounded.test.ts:cleanup' });
+  });
+
+  afterAll(() => {
+    if (shared) SafeFsExecutor.safeRmSync(shared.home, { recursive: true, force: true, operation: 'tests/unit/codexRolloutLookup-bounded.test.ts:shared-archive-cleanup' });
+    shared = null;
   });
 
   it('finds a present dated rollout through its partition hint — no scan, one confirming stat', () => {
@@ -133,9 +161,7 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   });
 
   it('a MISSING undated (Claude v4) id on an archive beyond the sync budget: bounded sync scan, no per-file stat, bounded async remainder', async () => {
-    const perPartition = 1000;
-    const partitions = Math.ceil(SYNC_SCAN_NAME_BUDGET / perPartition) + 5; // 25 partitions ≈ 25k names > budget
-    buildLargeArchive(home, { partitions, perPartition });
+    const { partitions, perPartition } = useBeyondBudgetArchive();
     const uuid = uuidV4Like(77);
 
     const t0 = performance.now();
@@ -160,17 +186,18 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   });
 
   it('a PRESENT undated rollout beyond the sync budget: first call is an honest miss, the async enumeration finds it, the next call answers exactly', async () => {
-    const perPartition = 1000;
-    const partitions = Math.ceil(SYNC_SCAN_NAME_BUDGET / perPartition) + 5;
-    const archive = buildLargeArchive(home, { partitions, perPartition });
+    const archive = useBeyondBudgetArchive();
     const uuid = uuidV4Like(5);
-    const expected = writeRollout(home, uuid, archive.partitions[0]); // the OLDEST partition — past the budget
-
-    expect(findRolloutFileSync(uuid, codexHome)).toBeNull();
-    const found = await pendingRolloutLookup(uuid, codexHome);
-    expect(found).toBe(expected);
-    expect(findRolloutFileSync(uuid, codexHome)).toBe(expected);
-    expect(rolloutLookupStats().positiveHits).toBe(1);
+    const expected = writeRollout(home, uuid, archive.names[0]); // the OLDEST partition — past the budget
+    try {
+      expect(findRolloutFileSync(uuid, codexHome)).toBeNull();
+      const found = await pendingRolloutLookup(uuid, codexHome);
+      expect(found).toBe(expected);
+      expect(findRolloutFileSync(uuid, codexHome)).toBe(expected);
+      expect(rolloutLookupStats().positiveHits).toBe(1);
+    } finally {
+      removeRollout(expected);
+    }
   });
 
   it('a PRESENT undated rollout within the sync budget is found synchronously on the first call', () => {
@@ -183,9 +210,7 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   });
 
   it('the event loop stays responsive while the async enumeration covers a large archive', async () => {
-    const perPartition = 1000;
-    const partitions = Math.ceil(SYNC_SCAN_NAME_BUDGET / perPartition) + 5;
-    buildLargeArchive(home, { partitions, perPartition });
+    useBeyondBudgetArchive();
     expect(ASYNC_YIELD_EVERY_NAMES).toBeLessThanOrEqual(5000);
     const uuid = uuidV4Like(123);
 
@@ -240,14 +265,16 @@ describe('findRolloutFileSync — bounded, never a per-file stat walk', () => {
   });
 
   it('an async lookup joins an enumeration the sync path started instead of repeating its cheap-path miss', async () => {
-    const perPartition = 1000;
-    const partitions = Math.ceil(SYNC_SCAN_NAME_BUDGET / perPartition) + 5;
-    const archive = buildLargeArchive(home, { partitions, perPartition });
+    const archive = useBeyondBudgetArchive();
     const uuid = uuidV4Like(66);
-    const expected = writeRollout(home, uuid, archive.partitions[0]); // past the sync budget
-    expect(findRolloutFileSync(uuid, codexHome)).toBeNull(); // cheap-path miss recorded, enumeration started
-    expect(await findRolloutFile(uuid, codexHome)).toBe(expected); // joined, not "absent for 60 s"
-    expect(rolloutLookupStats().asyncEnumerations).toBe(1);
+    const expected = writeRollout(home, uuid, archive.names[0]); // past the sync budget
+    try {
+      expect(findRolloutFileSync(uuid, codexHome)).toBeNull(); // cheap-path miss recorded, enumeration started
+      expect(await findRolloutFile(uuid, codexHome)).toBe(expected); // joined, not "absent for 60 s"
+      expect(rolloutLookupStats().asyncEnumerations).toBe(1);
+    } finally {
+      removeRollout(expected);
+    }
   });
 
   it('drops a remembered hit whose file is gone instead of returning a stale path', () => {
