@@ -10,7 +10,7 @@ import { verifyOriginAttestation } from './OriginAttestation.js';
 import type { InstarConfig } from '../../core/types.js';
 import type { OriginSessionBinding, OriginSessionLifecycle } from './OriginSessionRegistry.js';
 import { TelegramOriginRuntime } from './TelegramOriginRuntime.js';
-import { resolveOriginDisplay } from './OriginPresentation.js';
+import { resolveOriginDisplay, publicMachineName as publicMachineNameFor } from './OriginPresentation.js';
 import type { OriginDisplaySettings } from './types.js';
 import type { OutageNoticeState } from './TelegramOriginOutageNotifier.js';
 import { validateProfileFields } from '../../core/topicProfileValidation.js';
@@ -95,7 +95,8 @@ export async function bootTelegramOrigin(options: {
   const identity = identities.loadIdentity();
   const originIdentityStore = new IdentityStore({ stateDir: config.stateDir });
   const resolveOriginKey = (machineId: string, epoch?: number) => resolveIdentityOriginKey(originIdentityStore, machineId, config.projectName, epoch);
-  const publicMachineName = identities.loadRegistry().machines[identity.machineId]?.nickname ?? `Machine ${identity.machineId.slice(0, 8)}`;
+  const ownEntry = identities.loadRegistry().machines[identity.machineId];
+  const publicMachineName = publicMachineNameFor({ machineId: identity.machineId, nickname: ownEntry?.nickname, registryName: ownEntry?.name, identityName: identity.name });
   const demo = (config as InstarConfig & { liveTest?: { demo?: { telegramBotToken?: string; telegramChatId?: string | number } } }).liveTest?.demo;
   const additionalBots = demo?.telegramBotToken && demo.telegramChatId != null
     ? [{ token: demo.telegramBotToken, accountId: demo.telegramBotToken.split(':')[0], producerId: 'telegram-demo' }] : [];

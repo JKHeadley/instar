@@ -205,17 +205,83 @@ export function planDue(projects: BoundProject[], states: Map<string, ProjectChe
 
 // ── note (§3) ────────────────────────────────────────────────────────────────
 
-export interface NoteItem { kind: 'needs-you' | 'result' | 'cant-see'; text: string; action?: { label: string; id: string } }
+/** A project that looks finished and needs the owner's OK. Rendered as its own block; all of them share one headline. */
+export interface ConfirmBlock {
+  /** Short project name (word-boundary cut, never mid-word). */
+  title: string;
+  /** How many automatic (deterministic) checks passed; every one did, or this block would not exist. */
+  checksPassed: number;
+  /** The judgment items the owner is asked to judge, quoted from the done definition. */
+  judgment: string[];
+  /** A link to the project that opens on a phone, or null when no public link exists yet. */
+  url: string | null;
+}
 
-export function composeNote(items: NoteItem[], cap: number, statusUrl: string, leaseExpiresInMs: number | null): string | null {
-  const section = (kind: NoteItem['kind'], title: string) => {
-    const list = items.filter((i) => i.kind === kind);
+export interface NoteItem { kind: 'needs-you' | 'result' | 'cant-see'; text: string; action?: { label: string; id: string }; confirm?: ConfirmBlock }
+
+/** Collapse whitespace and cut at a word boundary (never mid-word), with an ellipsis when anything was cut. */
+export function cutAtWord(text: string, max: number): string {
+  const t = String(text ?? '').replace(/\s+/g, ' ').trim();
+  if (t.length <= max) return t;
+  const room = t.slice(0, Math.max(1, max - 1));
+  // When the cut lands right before a space, the last word is whole and stays.
+  const sp = t[room.length] === ' ' ? room.length : room.lastIndexOf(' ');
+  // A single very long word is the only case cut inside a word.
+  const base = (sp >= Math.floor(max / 3) ? room.slice(0, sp) : room).replace(/[\s,;:.\-–—(]+$/, '');
+  return `${base}…`;
+}
+
+/** A short project name from its goal. A goal written "Name: what done means" (or "Name — …", or a first
+ *  sentence) leads with its name, so that lead is the title; otherwise the goal is cut at a word boundary. */
+export function shortProjectTitle(goal: string, max = 60): string {
+  const g = String(goal ?? '').replace(/\s+/g, ' ').trim();
+  if (!g) return 'Untitled project';
+  const m = /^(.{3,}?)(?::\s|\s[—–-]\s|[.!?]\s)/.exec(g);
+  return cutAtWord(m && m[1].length <= max ? m[1] : g, max);
+}
+
+/** The label on a project's Confirm button: names the project, short enough for one phone-width row. */
+export function confirmButtonLabel(title: string): string {
+  return `Done: ${cutAtWord(title, 30)}`;
+}
+
+const JUDGMENT_SHOWN = 2;
+const JUDGMENT_CHARS = 140;
+
+function renderConfirmBlocks(blocks: NoteItem[], cap: number, statusUrl: string | null): string {
+  const n = blocks.length;
+  const head = n === 1 ? '1 project looks finished and needs your OK' : `${n} projects look finished and need your OK`;
+  const shown = blocks.slice(0, cap).map((i) => {
+    const c = i.confirm!;
+    const lines = [c.title];
+    lines.push(c.checksPassed > 1 ? `All ${c.checksPassed} automatic checks pass.` : c.checksPassed === 1 ? 'Its one automatic check passes.' : 'No automatic checks for this one.');
+    if (c.judgment.length) {
+      lines.push(c.judgment.length === 1 ? 'Your call:' : 'Your calls:');
+      for (const j of c.judgment.slice(0, JUDGMENT_SHOWN)) lines.push(`  "${cutAtWord(j, JUDGMENT_CHARS)}"`);
+      if (c.judgment.length > JUDGMENT_SHOWN) lines.push(`  +${c.judgment.length - JUDGMENT_SHOWN} more on its page`);
+    }
+    if (c.url) lines.push(`Details: ${c.url}`);
+    return lines.join('\n');
+  });
+  const more = n > cap ? `\n\n+${n - cap} more${statusUrl ? `: ${statusUrl}` : ' on the Chief of Staff page'}` : '';
+  const tail = '\n\nTap the matching "Done" button below for each one you agree is finished.';
+  return `${head}\n\n${shown.join('\n\n')}${more}${tail}\n\n`;
+}
+
+export function composeNote(items: NoteItem[], cap: number, statusUrl: string | null, leaseExpiresInMs: number | null): string | null {
+  const section = (list: NoteItem[], title: string) => {
     if (list.length === 0) return '';
     const shown = list.slice(0, cap).map((i) => `• ${i.text}`);
-    const more = list.length > cap ? `\n• +${list.length - cap} more: ${statusUrl}` : '';
+    const more = list.length > cap ? `\n• +${list.length - cap} more${statusUrl ? `: ${statusUrl}` : ' on the Chief of Staff page'}` : '';
     return `${title}\n${shown.join('\n')}${more}\n\n`;
   };
-  const body = section('needs-you', 'Needs you') + section('result', 'Results') + section('cant-see', "Can't see");
+  // Projects that look finished are grouped under one headline (one block each), never one repeated sentence per line.
+  const confirms = items.filter((i) => i.kind === 'needs-you' && i.confirm);
+  const otherNeeds = items.filter((i) => i.kind === 'needs-you' && !i.confirm);
+  const body = (confirms.length ? renderConfirmBlocks(confirms, cap, statusUrl) : '')
+    + section(otherNeeds, confirms.length ? 'Also needs you' : 'Needs you')
+    + section(items.filter((i) => i.kind === 'result'), 'Results')
+    + section(items.filter((i) => i.kind === 'cant-see'), "Can't see");
   if (body.trim().length === 0) {
     // Nothing changed and nothing needs the operator ⇒ no note, except the one actionable line before a pause.
     if (leaseExpiresInMs !== null && leaseExpiresInMs > 0 && leaseExpiresInMs <= 24 * 3_600_000) {
@@ -251,7 +317,12 @@ export interface ChiefOfStaffLoopDeps {
   /** The note; `actions` are the one-tap buttons for the Needs-you items (`cos:<action>:<key>` ids), in order. */
   sendNote: (text: string, actions: Array<{ label: string; id: string }>) => Promise<void>;
   sendImmediate: (text: string) => Promise<void>;
-  statusUrl: () => string;
+  /** The Chief of Staff page as a link that opens on a phone (the public tunnel), or null when none exists. Never a localhost link. */
+  statusUrl: () => string | null;
+  /** One project's page as a phone-openable link, or null (no public link yet / not a linkable conversation). */
+  projectUrl?: (conversationKey: string) => string | null;
+  /** A real short name for a project (its initiative title or conversation name), or null to derive one from the goal. */
+  projectTitle?: (project: BoundProject) => string | null;
   /** Hours in the agent's timezone (0–23) for the note time. */
   localHour: (nowMs: number) => number;
   /** Sign a renewal canonical with this machine's key (§4: the receiving machine signs the record). Required for `checkIn`. */
@@ -521,23 +592,23 @@ export class ChiefOfStaffLoop {
         if (leaseLive) {
           this.d.journal.emit(`lifecycle:${p.conversationKey}:${now}`, buildLifecycleEvent(p.conversationKey, 'closed', p.binding.bindingHlc!, 'chief-of-staff', new Date(now).toISOString()));
           if (p.initiativeId) this.safe(() => { this.d.mirrorInitiativeStatus(p.initiativeId!, 'completed'); return true; }, false);
-          this.pendingNote.push({ kind: 'result', text: `Finished and verified: ${label(p)}.` });
+          this.pendingNote.push({ kind: 'result', text: `Finished and verified: ${this.label(p)}.` });
         } else {
-          this.pendingNote.push({ kind: 'needs-you', text: `${label(p)} looks finished (every check passes) but I'm paused; check in here and I'll close it.` });
+          this.pendingNote.push({ kind: 'needs-you', text: `${this.label(p)} looks finished (every check passes) but I'm paused; check in here and I'll close it.` });
         }
       } else {
-        this.pendingNote.push({ kind: 'needs-you', text: `${label(p)}: every automatic check passes. Confirm it's done?`, action: { label: 'Confirm done', id: `cos:confirm-done:${p.conversationKey}` } });
+        this.pendingNote.push(this.confirmItem(p, deterministic.length));
       }
     } else if (verdict === 'claims-done') {
       const n = (this.refuted.get(p.conversationKey) ?? 0) + 1; this.refuted.set(p.conversationKey, n);
       const missing = deterministic.filter((i) => bundle.doneItems[i.id] !== 'pass').map((i) => i.text).join('; ');
-      if (n >= 2) this.pendingNote.push({ kind: 'needs-you', text: `${label(p)} says it is done but these checks still fail: ${missing}.` });
+      if (n >= 2) this.pendingNote.push({ kind: 'needs-you', text: `${this.label(p)} says it is done but these checks still fail: ${missing}.` });
       else if (leaseLive && restartsThisTick < cfg.restartsPerTick && !prev?.parked) { const r = await this.d.protocol.claim({ conversationKey: p.conversationKey, action: 'redirect', payload: { text: `Your done claim was checked: still missing — ${missing}. Goal: ${p.goal}` } }); restarted = outcomeStarted(r); }
     } else if (verdict === 'stalled' || verdict === 'drifting') {
       if (prev?.parked || prev?.breakerTripped) {
-        this.pendingNote.push({ kind: 'needs-you', text: `${label(p)} is parked after ${prev.restartsWithoutProgress} restarts without progress${prev.breakerTripped ? ' (breaker)' : ''}. Unpark?`, action: { label: 'Unpark', id: `cos:unpark:${p.conversationKey}` } });
+        this.pendingNote.push({ kind: 'needs-you', text: `${this.label(p)} is parked after ${prev.restartsWithoutProgress} restarts without progress${prev.breakerTripped ? ' (breaker)' : ''}. Unpark?`, action: { label: `Unpark: ${cutAtWord(this.label(p), 30)}`, id: `cos:unpark:${p.conversationKey}` } });
       } else if (!leaseLive) {
-        this.pendingNote.push({ kind: 'needs-you', text: `${label(p)} is ${verdict} but I'm paused; check in here and I'll restart it.` });
+        this.pendingNote.push({ kind: 'needs-you', text: `${this.label(p)} is ${verdict} but I'm paused; check in here and I'll restart it.` });
       } else if (restartsThisTick >= cfg.restartsPerTick) {
         this.dirty.add(p.conversationKey); // try next tick
       } else {
@@ -549,11 +620,11 @@ export class ChiefOfStaffLoop {
         try { r = await this.d.protocol.claim({ conversationKey: p.conversationKey, action, payload: { text, durationHours: cfg.maxRunHours } }); } catch (e) { /* @silent-fallback-ok: a throwing claim is recorded as a rejected intent with its reason and logged */ r = { outcome: 'rejected', reason: 'executor-failed' }; this.d.log?.(`[chief-of-staff] claim threw: ${(e as Error)?.message}`); }
         restarted = outcomeStarted(r);
         const rejection = rejectionReason(r);
-        if (rejection === 'executor-failed') this.pendingNote.push({ kind: 'result', text: `Restart of ${label(p)} failed; I'll retry on the next cadence.` });
-        else if (rejection) this.pendingNote.push({ kind: 'cant-see', text: `${label(p)}: could not act (${rejection}); I'll retry on the next cadence.` });
+        if (rejection === 'executor-failed') this.pendingNote.push({ kind: 'result', text: `Restart of ${this.label(p)} failed; I'll retry on the next cadence.` });
+        else if (rejection) this.pendingNote.push({ kind: 'cant-see', text: `${this.label(p)}: could not act (${rejection}); I'll retry on the next cadence.` });
       }
     } else if (verdict === 'waiting-on-user') {
-      this.pendingNote.push({ kind: 'needs-you', text: `${label(p)}: ${floored.reason}` });
+      this.pendingNote.push({ kind: 'needs-you', text: `${this.label(p)}: ${floored.reason}` });
     }
     if (decisionRef && this.d.gradeDecision && restarted) { /* graded on the next check when progress is observed; see settle */ }
     return { restarted };
@@ -588,16 +659,17 @@ export class ChiefOfStaffLoop {
     const out: NoteItem[] = [];
     for (const p of projects) {
       const st = states.get(p.conversationKey); if (!st) continue;
-      if (st.parked || st.breakerTripped) out.push({ kind: 'needs-you', text: `${label(p)} is parked after ${st.restartsWithoutProgress} restarts without progress${st.breakerTripped ? ' (breaker)' : ''}. Unpark?`, action: { label: 'Unpark', id: `cos:unpark:${p.conversationKey}` } });
+      if (st.parked || st.breakerTripped) out.push({ kind: 'needs-you', text: `${this.label(p)} is parked after ${st.restartsWithoutProgress} restarts without progress${st.breakerTripped ? ' (breaker)' : ''}. Unpark?`, action: { label: `Unpark: ${cutAtWord(this.label(p), 30)}`, id: `cos:unpark:${p.conversationKey}` } });
       else if (st.lastVerdict === 'waiting-on-user') {
         const det = p.doneDefinition.filter((i) => i.kind === 'deterministic');
         const allPass = det.length === 0 || (st.lastDoneItems !== null && det.every((i) => st.lastDoneItems![i.id] === 'pass'));
         const canConfirm = allPass && p.doneDefinition.some((i) => i.kind === 'judgment');
-        out.push({ kind: 'needs-you', text: canConfirm ? `${label(p)}: every automatic check passes. Confirm it's done?` : `${label(p)} is waiting on you.`, ...(canConfirm ? { action: { label: 'Confirm done', id: `cos:confirm-done:${p.conversationKey}` } } : {}) });
+        if (canConfirm) out.push(this.confirmItem(p, det.length));
+        else { const url = this.projectUrl(p.conversationKey); out.push({ kind: 'needs-you', text: `${this.label(p)} is waiting on you.${url ? ` ${url}` : ''}` }); }
       }
-      else if (!leaseLive && (st.lastVerdict === 'stalled' || st.lastVerdict === 'drifting')) out.push({ kind: 'needs-you', text: `${label(p)} is ${st.lastVerdict} but I'm paused; check in here and I'll restart it.` });
+      else if (!leaseLive && (st.lastVerdict === 'stalled' || st.lastVerdict === 'drifting')) out.push({ kind: 'needs-you', text: `${this.label(p)} is ${st.lastVerdict} but I'm paused; check in here and I'll restart it.` });
       const unknowns = trailingUnknownChecks(union, p.conversationKey);
-      if (unknowns >= cfg.unknownStreakForNote) out.push({ kind: 'cant-see', text: `${label(p)}: ${unknowns} checks in a row could not see enough evidence.` });
+      if (unknowns >= cfg.unknownStreakForNote) out.push({ kind: 'cant-see', text: `${this.label(p)}: ${unknowns} checks in a row could not see enough evidence.` });
     }
     if (this.safe(() => this.d.ownerResolvable?.() ?? true, true) === false) out.unshift({ kind: 'needs-you', text: 'No owner id is configured for this agent, so I can never be checked in and will stay paused until one is set.' });
     return out;
@@ -621,10 +693,14 @@ export class ChiefOfStaffLoop {
     const seen = new Set<string>(); const items: NoteItem[] = [];
     for (const i of [...derived, ...transient]) { const k = i.action?.id ?? i.text; if (seen.has(k) || seen.has(i.text)) continue; seen.add(k); seen.add(i.text); items.push(i); }
     const expiresIn = lease.expiresAt ? Date.parse(lease.expiresAt) - now : null;
-    const text = composeNote(items, cfg.noteSectionCap, this.d.statusUrl(), expiresIn);
+    const statusUrl = this.safe(() => this.d.statusUrl(), null);
+    const text = composeNote(items, cfg.noteSectionCap, typeof statusUrl === 'string' && /^https:\/\//.test(statusUrl) ? statusUrl : null, expiresIn);
     if (!text) { this.recordNote('note', [], now); return; }
     if (this.lastNoteFallbackAt !== null && now - this.lastNoteFallbackAt < cfg.noteCadenceHours * 3_600_000 - cfg.tickMinutes * 60_000) return; // a note went out but its record was refused: do not resend every tick
-    const actions = items.filter((i) => i.action).map((i) => i.action!).slice(0, 8);
+    // Buttons follow the note's reading order: one per project block shown (within the cap), then the other Needs-you taps.
+    const confirmActions = items.filter((i) => i.confirm && i.action).slice(0, cfg.noteSectionCap).map((i) => i.action!);
+    const otherActions = items.filter((i) => !i.confirm && i.action).map((i) => i.action!);
+    const actions = [...confirmActions, ...otherActions].slice(0, 8);
     let sent = false;
     try { await this.d.sendNote(text, actions); sent = true; } catch (e) { /* @silent-fallback-ok: the transient items are re-queued for the next cadence (the derived ones recompute) and the failure is logged */ this.pendingNote.unshift(...transient); this.d.log?.(`[chief-of-staff] note send failed: ${(e as Error)?.message}`); }
     if (sent) this.recordNote('note', items.map((i) => i.text), now);
@@ -676,7 +752,7 @@ export class ChiefOfStaffLoop {
     try { bundle = await this.d.gather(project, prev); } catch { /* @silent-fallback-ok: an unreadable checklist cannot certify a close (P20); the tap is ignored and the note keeps the Confirm-done item */ return 'ignored'; }
     const deterministic = project.doneDefinition.filter((i) => i.kind === 'deterministic');
     const failing = deterministic.filter((i) => bundle.doneItems[i.id] !== 'pass');
-    if (failing.length) { this.pendingNote.push({ kind: 'result', text: `${label(project)}: not closed — these checks still fail: ${failing.map((i) => i.text).join('; ')}.` }); return 'ignored'; }
+    if (failing.length) { this.pendingNote.push({ kind: 'result', text: `${this.label(project)}: not closed — these checks still fail: ${failing.map((i) => i.text).join('; ')}.` }); return 'ignored'; }
     const verified = this.recordCheck(project, 'done-verified', 'owner-confirmed', evidenceHash(bundle), bundle.items.filter((i) => !i.unknown).map((i) => i.id).slice(0, 64), false, prev.netDiffHighWater, this.d.now(), bundle.doneItems);
     if (verified === undefined) return 'ignored'; // the verified close must be on record BEFORE the project closes
     this.d.journal.emit(`lifecycle:${conversationKey}:${this.d.now()}`, buildLifecycleEvent(conversationKey, 'closed', bs.bindingHlc, 'owner-tap', at));
@@ -685,15 +761,35 @@ export class ChiefOfStaffLoop {
     return 'ok';
   }
 
+  /** The project's short name: its real title when one exists, else the goal's lead cut at a word boundary. */
+  private label(p: BoundProject): string {
+    const t = this.safe(() => this.d.projectTitle?.(p) ?? null, null);
+    return typeof t === 'string' && t.trim() ? cutAtWord(t, 60) : shortProjectTitle(p.goal, 60);
+  }
+
+  /** A project link only when it opens on a phone (https); a localhost or missing link is no link. */
+  private projectUrl(conversationKey: string): string | null {
+    const u = this.safe(() => this.d.projectUrl?.(conversationKey) ?? null, null);
+    return typeof u === 'string' && /^https:\/\//.test(u) ? u : null;
+  }
+
+  /** One "looks finished, needs your OK" item: the project's name, what passed, the judgment item(s) quoted, its link, and a button that names it. */
+  private confirmItem(p: BoundProject, checksPassed: number): NoteItem {
+    const title = this.label(p);
+    const judgment = p.doneDefinition.filter((i) => i.kind === 'judgment').map((i) => String(i.text ?? '').trim()).filter(Boolean);
+    return {
+      kind: 'needs-you', text: `${title}: every automatic check passes; needs your OK.`,
+      action: { label: confirmButtonLabel(title), id: `cos:confirm-done:${p.conversationKey}` },
+      confirm: { title, checksPassed, judgment, url: this.projectUrl(p.conversationKey) },
+    };
+  }
+
   private safe<T>(fn: () => T, fallback: T): T { try { return fn(); } catch { /* @silent-fallback-ok: loop deps resolve to the safe side (disabled / not holder / no mirror) */ return fallback; } }
 }
 
 /** §2.5 bundle bound: cost-driven (see the spec's derivation). */
 export const JUDGE_BUNDLE_BYTES = 48 * 1024;
 
-function label(p: BoundProject): string {
-  return p.goal.length > 60 ? `${p.goal.slice(0, 57)}…` : p.goal;
-}
 
 /** Deterministic ±10% jitter seed per conversation (so due times spread without state). */
 function jitterFor(conversationKey: string): number {

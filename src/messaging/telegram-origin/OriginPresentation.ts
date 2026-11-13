@@ -63,3 +63,17 @@ export function escapeOriginFooter(text: string, parseMode?: string): string {
 export function originDisplayVariant(display: OriginDisplaySettings): number {
   return display.enabled ? (Number(display.machine) * 4 + Number(display.harness) * 2 + Number(display.model)) : 0;
 }
+/**
+ * The machine name a message footer shows. The pool nickname first, then the machine's own name from
+ * pairing or identity (its hostname), and the raw id only when no name exists at all — a footer reading
+ * "Machine m_b7f06b" tells the operator nothing. A name must be one printable line the footer accepts.
+ */
+export function publicMachineName(input: { machineId: string; nickname?: string | null; registryName?: string | null; identityName?: string | null }): string {
+  const usable = (v: string | null | undefined): string | null => {
+    const n = typeof v === 'string' ? v.trim() : '';
+    if (!n || n.length > 64 || /[\r\n\u0000-\u001f\u007f]/.test(n)) return null;
+    if (n === input.machineId || /^m_[0-9a-f]{6,}$/i.test(n) || /^Machine (m_)?[0-9a-f]{6,}$/i.test(n)) return null; // an id, not a name
+    return n;
+  };
+  return usable(input.nickname) ?? usable(input.registryName) ?? usable(input.identityName) ?? `Machine ${input.machineId.slice(0, 8)}`;
+}

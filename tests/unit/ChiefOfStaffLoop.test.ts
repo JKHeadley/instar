@@ -32,7 +32,7 @@ interface World {
   j: FakeJournal; now: number; holds: boolean; enabled: boolean;
   bundle: Partial<EvidenceBundle>; judge: JudgeOutput | null | 'throw';
   claims: Array<{ conversationKey: string; action: string; text?: string }>; claimOutcome: 'started' | 'rejected';
-  notes: string[]; immediates: string[]; mirrored: Array<[string, string]>; hour: number; settled: string[];
+  notes: string[]; noteActions: Array<Array<{ label: string; id: string }>>; immediates: string[]; mirrored: Array<[string, string]>; hour: number; settled: string[];
 }
 
 function bundle(w: World): EvidenceBundle {
@@ -40,10 +40,10 @@ function bundle(w: World): EvidenceBundle {
 }
 
 function world(over: Partial<World> = {}): World {
-  return { j: new FakeJournal(), now: T0, holds: true, enabled: true, bundle: {}, judge: null, claims: [], claimOutcome: 'started', notes: [], immediates: [], mirrored: [], hour: 8, settled: [], ...over };
+  return { j: new FakeJournal(), now: T0, holds: true, enabled: true, bundle: {}, judge: null, claims: [], claimOutcome: 'started', notes: [], noteActions: [], immediates: [], mirrored: [], hour: 8, settled: [], ...over };
 }
 
-function loop(w: World, cfg: Partial<typeof CHIEF_OF_STAFF_LOOP_DEFAULTS> = {}): ChiefOfStaffLoop {
+function loop(w: World, cfg: Partial<typeof CHIEF_OF_STAFF_LOOP_DEFAULTS> = {}, extra: Partial<ChiefOfStaffLoopDeps> = {}): ChiefOfStaffLoop {
   const config = clampLoopConfig({ ...CHIEF_OF_STAFF_LOOP_DEFAULTS, ...cfg });
   const deps: ChiefOfStaffLoopDeps = {
     now: () => w.now, machineId: 'm_a', enabled: () => w.enabled, holdsLease: () => w.holds, config: () => config,
@@ -58,10 +58,11 @@ function loop(w: World, cfg: Partial<typeof CHIEF_OF_STAFF_LOOP_DEFAULTS> = {}):
       operatorLeaseLive: () => true,
     } as unknown as ChiefOfStaffLoopDeps['protocol'],
     mirrorInitiativeStatus: (id, s) => { w.mirrored.push([id, s]); },
-    sendNote: async (t) => { w.notes.push(t); },
+    sendNote: async (t, a) => { w.notes.push(t); w.noteActions.push(a); },
     sendImmediate: async (t) => { w.immediates.push(t); },
     statusUrl: () => 'https://x/chief-of-staff',
     localHour: () => w.hour,
+    ...extra,
   };
   return new ChiefOfStaffLoop(deps);
 }
@@ -187,7 +188,7 @@ describe('ChiefOfStaffLoop — verdicts → actions (lease live)', () => {
     const w = world({ bundle: { doneItems: { pr: 'pass' } } }); renew(w, T0 - H);
     bind(w, { doneDefinition: [{ id: 'pr', kind: 'deterministic', text: 'PR merged' }, { id: 'ok', kind: 'judgment', text: 'Owner happy' }] });
     await loop(w).tick();
-    expect(checks(w)).toEqual(['waiting-on-user']); expect(w.mirrored).toEqual([]); expect(w.notes.join('\n')).toMatch(/Confirm it's done/);
+    expect(checks(w)).toEqual(['waiting-on-user']); expect(w.mirrored).toEqual([]); expect(w.notes.join('\n')).toMatch(/1 project looks finished and needs your OK/); expect(w.notes.join('\n')).toContain('"Owner happy"'); expect(w.noteActions[0]).toEqual([{ label: 'Done: Ship the thing', id: `cos:confirm-done:${CK}` }]);
   });
   it('claims-done with a failing deterministic item ⇒ redirect; a second refutation ⇒ needs-you', async () => {
     const w = live({ judge: { verdict: 'claims-done', citedIds: ['run'], reason: 'says done' } }); const l = loop(w);
@@ -464,5 +465,63 @@ describe('ChiefOfStaffLoop.bindProject (the owner tap that binds a project)', ()
     (l as unknown as { d: { rootConversationKey?: () => string | null } }).d.rootConversationKey = () => 'telegram:9';
     l.bindProject({ conversationKey: 'telegram:3', goal: 'Sub', doneDefinition: [{ id: 'd', kind: 'judgment', text: 'ok' }], parentConversationKey: 'telegram:1' });
     expect(w.j.entries.find((e) => e.data.recordType === 'tree' && e.data.conversationKey === 'telegram:3')?.data).toMatchObject({ parentConversationKey: 'telegram:1', role: 'sub-topic' });
+  });
+});
+
+describe('ChiefOfStaffLoop — the note a person can read (operator report 2026-11-12)', () => {
+  const GOALS = [
+    "Emily Ghosh's affiliate intelligence project: confirm the weekly affiliate report reaches Emily and she can act on it",
+    'Get Monroe AI ready for public launch: DNS, chat rate limits, and the signup page all live',
+    'Keep AI spend under control and accounted for: model costs tracked per client every week',
+    "Keep Paul's requests and AI policy decisions moving: each request answered within two days",
+  ];
+  const JUDGMENT = ['Emily says the report is useful', 'The launch checklist reads complete to you', 'The spend report matches the invoices', 'Paul is happy with the pace'];
+  function fourFinished(w: World) {
+    GOALS.forEach((goal, i) => w.j.emit('m_a')(`binding:telegram:${i + 1}`, buildBindingPut({ conversationKey: `telegram:${i + 1}`, goal, checkCadenceHours: 24, doneDefinition: [
+      ...Array.from({ length: i + 2 }, (_, k) => ({ id: `d${k}`, kind: 'deterministic' as const, text: `check ${k}` })),
+      { id: 'j', kind: 'judgment', text: JUDGMENT[i] },
+    ], linked: { repos: ['o/r'], branches: ['b'] }, confirmedBy: 'owner', confirmedAt: new Date(T0 - H).toISOString() } as never)));
+    w.bundle = { doneItems: Object.fromEntries(Array.from({ length: 6 }, (_, k) => [`d${k}`, 'pass' as const])) };
+  }
+  it('four finished projects: one headline, one block per project with its passed count, the quoted judgment item and a phone link; buttons name their project', async () => {
+    const w = world({ hour: 8 }); renew(w, T0 - H); fourFinished(w);
+    await loop(w, {}, { statusUrl: () => 'https://cos.example/dashboard/console/#/work/chats', projectUrl: (k) => `https://cos.example/dashboard/console/#/work/chats?c=${encodeURIComponent(k)}` }).tick();
+    expect(w.notes).toHaveLength(1);
+    const note = w.notes[0];
+    expect(note.startsWith('4 projects look finished and need your OK')).toBe(true);
+    expect(note).not.toContain("Confirm it's done?");
+    expect(note.match(/every automatic check passes/g)).toBeNull();
+    for (const t of ["Emily Ghosh's affiliate intelligence project", 'Get Monroe AI ready for public launch', 'Keep AI spend under control and accounted for', "Keep Paul's requests and AI policy decisions moving"]) expect(note).toContain(`\n${t}\n`);
+    expect(note).toContain('All 2 automatic checks pass.'); expect(note).toContain('All 5 automatic checks pass.');
+    for (const j of JUDGMENT) expect(note).toContain(`"${j}"`);
+    expect(note).toContain('Details: https://cos.example/dashboard/console/#/work/chats?c=telegram%3A2');
+    expect(note).not.toMatch(/localhost/);
+    expect(note).not.toMatch(/\w…/); // no title cut mid-word
+    const actions = w.noteActions[0];
+    expect(actions.map((a) => a.id)).toEqual(['telegram:1', 'telegram:2', 'telegram:3', 'telegram:4'].map((k) => `cos:confirm-done:${k}`));
+    expect(actions.map((a) => a.label)).toEqual(["Done: Emily Ghosh's affiliate…", 'Done: Get Monroe AI ready for…', 'Done: Keep AI spend under control…', "Done: Keep Paul's requests and AI…"]);
+    for (const a of actions) { expect(Buffer.byteLength(a.id)).toBeLessThanOrEqual(64); expect(a.label.length).toBeLessThanOrEqual(48); }
+    expect(new Set(actions.map((a) => a.label)).size).toBe(4);
+    // Printed for the PR description.
+    console.log(`--- rendered note ---\n${note}\n--- buttons ---\n${actions.map((a) => `[${a.label}]`).join('\n')}`);
+  });
+  it('no public link (no tunnel): no links at all, never a localhost one; every project is still named', async () => {
+    const w = world({ hour: 8 }); renew(w, T0 - H); fourFinished(w);
+    await loop(w, {}, { statusUrl: () => 'http://localhost:4042/chief-of-staff', projectUrl: () => null }).tick();
+    const note = w.notes[0];
+    expect(note).not.toContain('Details:'); expect(note).not.toMatch(/https?:\/\//);
+    expect(note).toContain('Get Monroe AI ready for public launch');
+  });
+  it('a real project title (initiative / conversation name) wins over the goal', async () => {
+    const w = world({ hour: 8 }); renew(w, T0 - H); fourFinished(w);
+    await loop(w, {}, { projectTitle: (p) => (p.conversationKey === 'telegram:2' ? 'Monroe launch' : null) }).tick();
+    expect(w.notes[0]).toContain('\nMonroe launch\n');
+    expect(w.noteActions[0].map((a) => a.label)).toContain('Done: Monroe launch');
+  });
+  it('more finished projects than the cap: the extra ones are counted with the page link, and only shown projects get buttons', async () => {
+    const w = world({ hour: 8 }); renew(w, T0 - H); fourFinished(w);
+    await loop(w, { noteSectionCap: 2 }, { statusUrl: () => 'https://cos.example/dashboard/console/#/work/chats' }).tick();
+    expect(w.notes[0]).toContain('+2 more: https://cos.example/dashboard/console/#/work/chats');
+    expect(w.noteActions[0]).toHaveLength(2);
   });
 });

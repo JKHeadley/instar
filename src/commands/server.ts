@@ -29842,7 +29842,18 @@ export async function startServer(options: StartOptions): Promise<void> {
                 gather, judge, protocol,
                 mirrorInitiativeStatus: (id, status) => { try { (initiativeTracker as unknown as { update?: (id: string, patch: Record<string, unknown>) => unknown }).update?.(id, { status }); } catch { /* @silent-fallback-ok: the binding is the authority; the mirror retries next tick (§1.2) */ } },
                 sendNote: sendToCos, sendImmediate: sendToCos,
-                statusUrl: () => `http://localhost:${config.port}/chief-of-staff`,
+                // §3 links open on a phone: the public tunnel origin into the console's Chief of Staff page, never localhost.
+                // No public link yet (no tunnel, or not up) ⇒ no link; the note still names every project.
+                statusUrl: () => { const o = operatorLinkOrigin(); return o.kind === 'public' ? `${o.origin}/dashboard/console/#/work/chats` : null; },
+                projectUrl: (conversationKey) => { const o = operatorLinkOrigin(); return o.kind === 'public' && /^(app|telegram|slack):[A-Za-z0-9-]+$/.test(conversationKey) ? `${o.origin}/dashboard/console/#/work/chats?c=${encodeURIComponent(conversationKey)}` : null; },
+                // A real short name: the linked initiative's title, else the conversation's own name, else (null) the loop derives one from the goal.
+                projectTitle: (p) => {
+                  const fromInitiative = p.initiativeId ? initiativeTracker.get(p.initiativeId)?.title : undefined;
+                  if (typeof fromInitiative === 'string' && fromInitiative.trim()) return fromInitiative;
+                  const t = /^telegram:(\d+)$/.exec(p.conversationKey);
+                  const fromTopic = t ? telegram?.getTopicName(Number(t[1])) ?? null : null;
+                  return typeof fromTopic === 'string' && fromTopic.trim() ? fromTopic : null;
+                },
                 localHour: (ms) => { try { return Number(new Intl.DateTimeFormat('en-US', { hour: 'numeric', hour12: false, timeZone: (config as { timezone?: string }).timezone || undefined }).format(new Date(ms))) % 24; } catch { /* @silent-fallback-ok: an invalid timezone falls back to the machine's local hour */ return new Date(ms).getHours(); } },
                 sign: (c) => idMod.sign(c, localSigningKeyPem),
                 ownerResolvable: () => telegram?.getVerifiedOwner() !== undefined,

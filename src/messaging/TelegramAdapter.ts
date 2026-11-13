@@ -2458,7 +2458,9 @@ export class TelegramAdapter implements MessagingAdapter {
         text: escaped,
         parse_mode: 'HTML',
         _formatMode: 'html',
-        ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
+        // A yes/no pair shares one row; three or more (one per project in a Chief of Staff note) get a row each,
+        // so every button keeps its full name on a phone instead of being squeezed into one line.
+        ...(buttons.length ? { reply_markup: { inline_keyboard: buttons.length > 2 ? buttons.map((b) => [{ text: b.text, callback_data: b.data }]) : [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
       })) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
