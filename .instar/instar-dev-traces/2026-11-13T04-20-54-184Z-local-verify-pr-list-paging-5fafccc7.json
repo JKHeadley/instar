@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "local-verify-pr-list-paging",
+  "sessionId": "ea641dd0-778e-475a-9d38-33fe607de300",
+  "timestamp": "2026-11-13T04:20:54.184Z",
+  "artifactPath": "upgrades/side-effects/local-verify-pr-list-paging.md",
+  "artifactSha256": "d8f678f22c43f2fe0c79fdf580720047fdbbe19252087650d04e639e1194d488",
+  "coveredFiles": [
+    "docs/specs/local-verify-pr-list-paging.eli16.md",
+    "src/localVerify/reconcilerSeams.ts",
+    "tests/e2e/local-verify-lifecycle.test.ts",
+    "tests/integration/local-verify-routes.test.ts",
+    "tests/unit/localVerify/reconcilerSeams-listOpenPrs.test.ts",
+    "upgrades/next/local-verify-pr-list-paging.md",
+    "upgrades/side-effects/local-verify-pr-list-paging.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow bug fix to one GitHub read in the Local Verify reconciler; output shape unchanged; a revert fully undoes it.",
+  "eli16Path": "docs/specs/local-verify-pr-list-paging.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-pr-list-paging.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
