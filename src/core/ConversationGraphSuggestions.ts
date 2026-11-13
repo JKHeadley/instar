@@ -106,7 +106,10 @@ export function buildSuggestionPrompt(inputs: readonly SuggestionInput[]): strin
 function extractJson(text: string): unknown {
   const start = text.indexOf('{'), end = text.lastIndexOf('}');
   if (start < 0 || end <= start) return null;
-  try { return JSON.parse(text.slice(start, end + 1)); } catch { return null; }
+  try { return JSON.parse(text.slice(start, end + 1)); } catch {
+    // @silent-fallback-ok: unparseable model output means "no suggestions", exactly like an empty answer.
+    return null;
+  }
 }
 
 /**

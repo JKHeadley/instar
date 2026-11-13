@@ -97,7 +97,10 @@ export class ConversationGraphReadModel {
   /** The root conversation, validated, or null. A throwing lookup reads as "none". */
   rootRef(): ConversationRef | null {
     let raw: ConversationRef | null = null;
-    try { raw = this.rootConversation(); } catch { return null; }
+    try { raw = this.rootConversation(); } catch {
+      // @silent-fallback-ok: no readable Chief of Staff topic means no root row; the Overview is exactly as before.
+      return null;
+    }
     const ref = raw ? validateNodeRef(raw) : null;
     return ref && ref.kind === 'conversation' ? ref : null;
   }

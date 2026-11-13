@@ -108,3 +108,10 @@ Ship. Suggestions are advice, written changes go through the existing owner pipe
 { "defectClass": "unbounded-self-action", "closure": "n/a",
   "reason": "user-driven: a suggestion build starts only when the owner opens the suggestions list (at most once per 24 h) or taps Refresh (at most once per 10 min, single-flight); nothing re-triggers it" }
 ```
+
+## Follow-up: Local Verify findings (2026-11-13)
+
+Local Verify failed on three repo ratchets, all fixed in a follow-up commit:
+- `provenance-coverage-ratchet`: `ConversationGraphSuggestions` is declared `pending:backlog:decision-quality-enrolment` in `src/data/provenanceCoverage.ts` (pinned in the test). It is graded meanwhile by the owner's Accept/Reject.
+- `no-silent-fallbacks`: the evidence lookup and a damaged state file now report through `DegradationReporter` (a damaged file would forget rejections, so it is never silently replaced). The unparseable-model-output, failed-build and unreadable-root catches carry in-block `@silent-fallback-ok` with the reason: each is either surfaced to the owner or equivalent to "no root / no suggestions".
+- Docs Coverage passes after merging current main.

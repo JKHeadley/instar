@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "conversation-graph-suggestions",
+  "sessionId": "fbc8e152-6aec-4c68-a544-c102e4be354d",
+  "timestamp": "2026-11-13T13:04:33.337Z",
+  "artifactPath": "upgrades/side-effects/conversation-graph-suggestions.md",
+  "artifactSha256": "e84e0e66e42b3a7e86de6bd4d45863a2e84d129e65047ccf7ed0a6469a1b160c",
+  "coveredFiles": [
+    "docs/specs/conversation-graph-suggestions.eli16.md",
+    "src/core/ConversationGraphSuggestions.ts",
+    "src/core/conversationGraphRead.ts",
+    "src/data/provenanceCoverage.ts",
+    "src/server/ConversationGraphSuggestionService.ts",
+    "tests/unit/provenance-coverage-ratchet.test.ts",
+    "upgrades/side-effects/conversation-graph-suggestions.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Ratchet follow-ups for the suggestion step: provenance census entry and degradation reporting on catches; revert-safe",
+  "eli16Path": "docs/specs/conversation-graph-suggestions.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversation-graph-suggestions.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

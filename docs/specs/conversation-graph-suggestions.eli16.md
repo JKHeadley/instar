@@ -16,3 +16,5 @@
 **What is not covered yet.** Rejections are remembered on the machine that served the page, not yet shared with your other machines. The phone app still shows the plain list. Both are tracked.
 
 **What you need to decide.** Nothing. You approved building this on 11 November. Try it on the Conversations page and accept or reject what it proposes.
+
+**Update, 13 November.** The final test run caught three bookkeeping gaps: the new model call was not yet listed in the register of decision points, and three error paths did not say why they were safe. They now report problems properly, and a damaged suggestion file is flagged instead of quietly forgetting your rejections.

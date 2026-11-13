@@ -16,6 +16,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { IntelligenceProvider } from '../core/types.js';
+import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { nodeKey, type ConversationRef, type ProjectionItem } from '../core/conversationGraph.js';
 import {
   buildSuggestionPrompt, parseSuggestionReply, offerableSuggestions, SUGGESTION_LIMITS,
@@ -95,8 +96,15 @@ export class ConversationGraphSuggestionService {
     this.autoRebuildMs = deps.autoRebuildMs ?? 24 * 60 * 60_000;
   }
 
+  // E2E-PAIRING: EXEMPT — this commit only adds degradation reporting to two catches; the route behavior is unchanged and covered by tests/e2e/conversation-graph-suggestions-alive.test.ts.
   private load(): SuggestionState {
-    try { return validState(JSON.parse(fs.readFileSync(this.file, 'utf8'))) ?? empty(); } catch { return empty(); }
+    if (!fs.existsSync(this.file)) return empty();
+    try { return validState(JSON.parse(fs.readFileSync(this.file, 'utf8'))) ?? empty(); } catch {
+      // A damaged file would forget rejections, so it is reported, never silently replaced.
+      DegradationReporter.getInstance().report({ feature: 'Conversations.suggestions', primary: 'Saved suggestions and rejections',
+        fallback: 'Start from an empty suggestion list', reason: 'suggestion-state-unreadable', impact: 'Rejected suggestions may be offered again', internalOnly: true });
+      return empty();
+    }
   }
 
   private save(state: SuggestionState): void {
@@ -205,7 +213,10 @@ export class ConversationGraphSuggestionService {
     return rows.map((item) => {
       const ref = item.ref as ConversationRef;
       let ev: { project: string | null; text: string } = { project: null, text: '' };
-      try { ev = this.deps.evidence(ref); } catch { /* no evidence for this one: title only */ }
+      try { ev = this.deps.evidence(ref); } catch {
+        DegradationReporter.getInstance().report({ feature: 'Conversations.suggestions', primary: 'Topic summary, goals and project as suggestion evidence',
+          fallback: 'Suggest from the conversation title alone', reason: 'suggestion-evidence-unreadable', impact: 'That conversation is grouped by its title only', internalOnly: true });
+      }
       return { key: nodeKey(ref), ref, title: item.title, project: ev.project, evidence: ev.text };
     });
   }
@@ -221,6 +232,7 @@ export class ConversationGraphSuggestionService {
         });
         groups = parseSuggestionReply(reply, inputs, { rejected: new Set(Object.keys(this.load().rejected)) });
       } catch {
+        // @silent-fallback-ok: the failure is stored and shown to the owner on the suggestions page ("did not finish, tap Refresh").
         failure = 'build-failed';
       }
     }
