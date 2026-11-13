@@ -210,7 +210,7 @@ import { registerAgent, unregisterAgent, startHeartbeat, isFetchBlockedPort } fr
 import { TelegraphService } from '../publishing/TelegraphService.js';
 import { PrivateViewer } from '../publishing/PrivateViewer.js';
 import { TunnelManager } from '../tunnel/TunnelManager.js';
-import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, SLACK_MENTIONS_SESSION_LINE } from '../core/PostUpdateMigrator.js';
 import { UpgradeGuideProcessor } from '../core/UpgradeGuideProcessor.js';
 import { EvolutionManager } from '../core/EvolutionManager.js';
 import { TopicMemory } from '../memory/TopicMemory.js';
@@ -11183,7 +11183,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           contextLines.push("cat <<'EOF' | .instar/scripts/slack-reply.sh");
           contextLines.push('Your response text here');
           contextLines.push('EOF');
-          contextLines.push('To deliberately notify one person or render an authored channel/link, add --native-reference ID (or URL) for EACH intended target to the relay command. Example: slack-reply.sh --native-reference U1234567890. Other reference syntax stays literal.');
+          contextLines.push(SLACK_MENTIONS_SESSION_LINE);
           if (replyThreadTs) {
             contextLines.push('');
             contextLines.push('(This is a THREAD conversation — the session binding keeps the reply in this exact thread.)');
@@ -14623,6 +14623,7 @@ export async function startServer(options: StartOptions): Promise<void> {
               lines.push("cat <<'EOF' | .instar/scripts/slack-reply.sh");
               lines.push('Your response text here');
               lines.push('EOF');
+              lines.push(SLACK_MENTIONS_SESSION_LINE);
 
               const tmpDir = '/tmp/instar-slack';
               fs.mkdirSync(tmpDir, { recursive: true });
