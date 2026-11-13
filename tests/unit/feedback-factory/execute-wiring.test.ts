@@ -26,7 +26,7 @@ import type { SessionManager } from '../../../src/core/SessionManager.js';
 const dirs: string[] = [];
 afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-wiring.test.ts' }); });
 
-function build(opts: { sessionManager?: SessionManager | null; execute?: Record<string, unknown>; localVerifyNeedsRestart?: () => boolean } = {}) {
+function build(opts: { sessionManager?: SessionManager | null; execute?: Record<string, unknown>; localVerifyNeedsRestart?: () => boolean; canonicalOwner?: boolean } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'execute-wiring-'));
   dirs.push(dir);
   const drain = new FeedbackDrainStore({ dbPath: ':memory:', db: new Database(':memory:'), tokenHmacKey: 'k'.repeat(32) });
@@ -40,7 +40,7 @@ function build(opts: { sessionManager?: SessionManager | null; execute?: Record<
   });
   const ctx = buildFeedbackExecutor({
     config, drainStore: drain, triage, processing, initiativeTracker: tracker, sessionManager: opts.sessionManager ?? null, selfMachineId: 'm1',
-    ownerMachineId: () => 'm1', ownerEpoch: () => 3, isCanonicalOwner: () => true, enabled: () => true, quotaShedding: () => false, updatePending: () => false,
+    ownerMachineId: () => 'm1', ownerEpoch: () => 3, isCanonicalOwner: () => opts.canonicalOwner ?? true, enabled: () => true, quotaShedding: () => false, updatePending: () => false,
     raiseAttention: async () => {}, tunnelUrl: () => null,
     ...(opts.localVerifyNeedsRestart ? { localVerifyNeedsRestart: opts.localVerifyNeedsRestart } : {}),
   });
@@ -177,5 +177,19 @@ describe('the update-pending admission brake', () => {
     // No (or an unparseable) detection time keeps the brake: the safe direction.
     expect(executorUpdatePending(pending(null), now)).toBe(true);
     expect(executorUpdatePending(pending('not a date'), now)).toBe(true);
+  });
+
+  it('a live executor asks the session manager to reserve a confined reroute slot, and only while enabled, not dry-run and owning the queue', () => {
+    let reserve: (() => boolean) | null = null;
+    const sm = { setConfinedRerouteReserve: (fn: () => boolean) => { reserve = fn; } } as unknown as SessionManager;
+    build({ sessionManager: sm, execute: { dryRun: false } });
+    expect(reserve).not.toBeNull();
+    expect(reserve!()).toBe(true);
+    let dry: (() => boolean) | null = null;
+    build({ sessionManager: { setConfinedRerouteReserve: (fn: () => boolean) => { dry = fn; } } as unknown as SessionManager });
+    expect(dry!()).toBe(false);
+    let standby: (() => boolean) | null = null;
+    build({ sessionManager: { setConfinedRerouteReserve: (fn: () => boolean) => { standby = fn; } } as unknown as SessionManager, execute: { dryRun: false }, canonicalOwner: false });
+    expect(standby!()).toBe(false);
   });
 });

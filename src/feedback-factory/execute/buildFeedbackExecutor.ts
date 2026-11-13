@@ -196,6 +196,12 @@ export function buildFeedbackExecutor(input: {
   const github = input.overrides?.github ?? new GhGateway({ resolveRuntime: githubRuntime, cwd: config.stateDir, safeMergeScript: path.join(resolveConfig().sourceRepoPath ?? agentHome, 'scripts', 'safe-merge.mjs') });
 
   const sm = input.sessionManager;
+  // While the executor is enabled, live and owns the queue on this machine, ordinary rerouted spawns leave a slot for its confined
+  // sessions (docs/specs/confined-spawn-subscription-reroute.md, Cap contention, amended 2026-11-12).
+  if (sm && typeof sm.setConfinedRerouteReserve === 'function' && !input.overrides?.sessions) {
+    // Only the queue owner starts confined sessions, so a standby machine reserves nothing.
+    sm.setConfinedRerouteReserve(() => input.enabled() && !resolveConfig().dryRun && input.isCanonicalOwner());
+  }
   let cachedFrameworkVersion: { value: string | null; at: number } | null = null;
   const sessions: ConfinedSessionPort = input.overrides?.sessions ?? {
     async spawnConfined(spawn) {
