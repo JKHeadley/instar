@@ -510,9 +510,15 @@ export class FeedbackExecutorService {
       const triage = this.opts.triageStore.get(row.initiativeId);
       const awayFromWork = !triage || triage.state === 'hold' || triage.state === 'ignored';
       if (row.ownerEpoch < epoch) {
-        acted.add(row.attemptId);
-        if (!(await this.disarm(row, epoch, 'stale-epoch'))) continue;
-        if (row.state === 'merge-armed') this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, reason: 'disarmed:stale-epoch', disarmFailed: false });
+        // An armed PR under an older epoch is a stop: disarm it and leave re-gating to the next tick.
+        // A PR that was never armed is not a stop. Its disarm is a no-op kept as a safety net, and the
+        // PR goes on to its review this tick. The epoch moves on every server restart, and on a night
+        // of frequent restarts a PR that waited a tick each time was never reviewed (2026-11-13: #3129
+        // sat unreviewed for 5 hours under 9 restarts).
+        const armed = row.state === 'merge-armed';
+        if (armed) acted.add(row.attemptId);
+        if (!(await this.disarm(row, epoch, 'stale-epoch'))) { acted.add(row.attemptId); continue; }
+        if (armed) this.opts.store.patch(epoch, row.attemptId, { state: 'pr-open', approvedSha: null, mergeDeadlineAt: null, reason: 'disarmed:stale-epoch', disarmFailed: false });
         row = this.opts.store.adopt(epoch, row.attemptId);
       }
       if (awayFromWork) {

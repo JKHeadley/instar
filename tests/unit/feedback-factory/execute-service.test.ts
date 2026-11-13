@@ -1025,6 +1025,27 @@ describe('review gate and merge', () => {
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'right', strength: 'weak' })]));
   });
 
+  it('a never-armed PR under an older epoch is reviewed in the same tick, so epoch churn cannot starve it', async () => {
+    h = await createExecHarness();
+    h.review.outcomes = [];
+    const { initiativeId } = await toPrOpen();
+    expect(h.execStore.latestFor(initiativeId)!.state).toBe('pr-open');
+    h.review.outcomes = PASS();
+    // Every tick under a new epoch, as on a night of frequent restarts: each tick still reaches the
+    // review gate (before, a stale-epoch tick only disarmed and skipped it).
+    for (let e = 2; e <= 4; e++) {
+      const before = h.review.calls.length;
+      h.epoch.value = e;
+      h.now.value += 25 * HOUR; // past the daily re-ask of an unavailable reviewer family
+      await h.exec.tick();
+      expect(h.execStore.latestFor(initiativeId)!.ownerEpoch).toBe(e);
+      if (h.execStore.latestFor(initiativeId)!.state === 'merge-armed') break;
+      expect(h.review.calls.length).toBeGreaterThan(before);
+    }
+    expect(h.execStore.latestFor(initiativeId)).toMatchObject({ state: 'merge-armed', reviewVerdict: 'pass' });
+    expect(h.merges).toEqual([{ pr: 100, sha: HEAD_SHA }]);
+  });
+
   it('re-reviews a same-head pass recorded before the feedback model policy', async () => {
     h = await createExecHarness();
     const { initiativeId, row } = await toPrOpen();
