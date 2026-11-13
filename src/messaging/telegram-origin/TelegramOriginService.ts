@@ -117,6 +117,9 @@ export class TelegramOriginService {
   public notificationJobSession: (sessionId: string | null) => boolean = () => false;
   /** The job this local session runs, from the session record. A caller's claim never reaches here. */
   public notificationJobSlug: (sessionId: string | null) => string | undefined = () => undefined;
+  /** The native (Claude Code) session id of a running session from the server's session records,
+   * for a reply sent before any hook reported it. Binds it on the observer as a side effect. */
+  public resolveNativeSession: (sessionId: string) => string | null = () => null;
   readonly #scope = new AsyncLocalStorage<OriginScope>();
   readonly #producers = new Map<string, TelegramOriginProducer>();
   readonly #automationCredentials = new Map<string, { producer: TelegramOriginProducer; bodyDigest: string; topicId: number; expiresAt: number; logicalSendKey?: string }>();
@@ -205,7 +208,10 @@ export class TelegramOriginService {
     const verified = this.options.sessions.verify(token);
     if (!verified.ok) throw new TelegramOriginHoldError(verified.reason);
     const b = verified.binding;
-    await this.options.observer.refresh(b.sessionId);
+    if (!this.options.observer.get(b.sessionId)?.nativeSessionId) {
+      try { this.resolveNativeSession(b.sessionId); } catch { /* @silent-fallback-ok — an unresolved id leaves the model unknown, never a guess */ }
+    }
+    await this.options.observer.refresh(b.sessionId, { catchUp: true });
     const current = this.options.sessions.verify(token);
     if (!current.ok || current.binding.sessionIncarnation !== b.sessionIncarnation) {
       throw new TelegramOriginHoldError('session-no-longer-authorized');
@@ -340,7 +346,7 @@ export class TelegramOriginService {
     let binding: ReturnType<OriginSessionRegistry['attributeVerifier']>;
     try { binding = this.options.sessions.attributeVerifier(snapshot.originSessionDigest); } catch { return unattributed; }
     if (!binding) return unattributed;
-    try { await this.options.observer.refresh(binding.sessionId); } catch { /* A stale or missing observation leaves the model unknown. */ }
+    try { await this.options.observer.refresh(binding.sessionId, { catchUp: true }); } catch { /* A stale or missing observation leaves the model unknown. */ }
     const observation = this.options.observer.get(binding.sessionId);
     const current = observation && observation.sessionIncarnation === binding.sessionIncarnation ? observation : null;
     return { machine, session: { sessionId: binding.sessionId, sessionIncarnation: binding.sessionIncarnation,

@@ -1,0 +1,39 @@
+{
+  "ts": "2026-11-13T03:34:52.413Z",
+  "slug": "machine-name-and-footer-model",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 11,
+  "loc": 297,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MachineIdentity.ts",
+      "src/core/MultiMachineCoordinator.ts",
+      "src/core/NicknameAssigner.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/friendlyMachineName.ts",
+      "src/core/types.ts",
+      "src/messaging/messageOrigin.ts",
+      "src/messaging/telegram-origin/OriginPresentation.ts",
+      "src/messaging/telegram-origin/RuntimeOriginObserver.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/monitoring/TriageOrigin.ts"
+    ],
+    "addedLines": 259,
+    "deletedLines": 38
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "no self-triggered action added: the observer refresh change bounds an existing per-send read (catch-up, max 16 MB) and the nickname backfill is a one-shot idempotent write at boot/update that writes nothing on a second run"
+  },
+  "verdict": "blocked"
+}

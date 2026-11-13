@@ -108,6 +108,7 @@ import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/Feedba
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
 import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
+import { createUsageLedgerTick } from '../monitoring/usageLedgerTick.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
 import { buildEcosystemIdeas } from '../ecosystem/buildEcosystemIdeas.js';
 import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, executorUpdatePending, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
@@ -2637,22 +2638,28 @@ export class AgentServer {
           fromPeer: (machineId, route) => peerGet(machineId, route),
           bearerOk: () => true,
         } as import('./usageRoutes.js').UsageRouteDeps;
-        let ticks = 0;
-        this.usageLedgerTimer = setInterval(() => {
-          try {
-            const rep = this.usageLedger?.scanTick();
-            // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
-            if (rep) featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending } });
-            if (++ticks % 60 === 0) {
-              this.usageLedger?.prune();
-              this.usageLedger?.dropMissingCheckpoints();
-              this.usageLedger?.writeSnapshot(snapshotPath);
-            }
-          } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
+        // The listing of every transcript file runs off the event loop (scanTickAsync):
+        // done synchronously here it held the main thread for over a minute on a
+        // contended disk and the supervisor killed the server (2026-11-13). The tick's
+        // rules (one at a time, a stuck listing is reported) are in usageLedgerTick.ts.
+        const usageTick = createUsageLedgerTick({
+          getLedger: () => this.usageLedger,
+          snapshotPath,
+          // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
+          onTick: (rep, tickMs) => {
+            if (tickMs > 60_000) console.warn(`[instar] usage-ledger tick took ${Math.round(tickMs / 1000)} s (files read ${rep.filesRead}, pending ${rep.pending})`);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending, tickMs } });
+          },
+          onError: (err) => { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
             console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
             featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
-          }
-        }, 60_000);
+          },
+          onStuck: (skipped, runningMs) => {
+            console.warn(`[instar] usage-ledger tick has been running ${Math.round(runningMs / 60000)} min; ${skipped} ticks skipped behind it`);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick-stuck', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-stuck', context: { skipped, runningMs } });
+          },
+        });
+        this.usageLedgerTimer = setInterval(() => { void usageTick(); }, 60_000);
         if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();
       }
     } catch (err) { /* @silent-fallback-ok: a dev-gated observational store; the server runs fully without it. */
