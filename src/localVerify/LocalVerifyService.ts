@@ -55,13 +55,13 @@ import { FailedFileDiagnosisCoordinator } from './FailedFileDiagnosisCoordinator
 import { FailedFileDiagnosisPeerService } from './FailedFileDiagnosisPeerService.js';
 import type { DiagnosisMode } from './failedFileDiagnosis.js';
 import type { DiagnosisPeerClient, DiagnosisPeerRequest } from './failedFileDiagnosisPeer.js';
-import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHealthSnapshot } from './mainHealth.js';
+import { MainHealth, MAIN_VERIFY_LIMITS, releaseCollapsesInto, type CommitInfo, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, decideMainRearmAfterGreen, type MainHealthSnapshot } from './mainHealth.js';
 import { isMergeEligible } from '../../scripts/local-verify-floor.mjs';
 import { LOCAL_VERIFY_DEADLINES, LOCAL_VERIFY_LIMITS, computePolicyHash } from './policy.js';
 import { WaitingList, type Waiter } from './waitingList.js';
 import { decideMainRedHold, holdReasonText, mainFailureFromRunDetail, prMatchText, repairVerdict, type MainFailureDetail, type MainRedHoldDecision, type RepairCandidate } from './mainRedHold.js';
 import type { RestartHold } from '../core/UpdateGate.js';
-import { MAX_LANE_SHARDS, type FailureDetail, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
+import { MAX_LANE_SHARDS, MAX_UNIT_WORKERS, type FailureDetail, type VerifyRunInput, type VerifyRunResult, type RunDegradation } from './orchestrator.js';
 import { PREFLIGHT_LIMITS } from './preflight.js';
 import {
   PEER_LIMITS, importRefusal, noteFailure, noteSuccess, parsePeers, peerHealthy,
@@ -868,15 +868,19 @@ export class LocalVerifyService {
   /** The live setting for processes per slow lane (read at each start; invalid values are ignored). */
   setLaneShards(fn: (() => unknown) | null): void { this.laneShardsSetting = fn; }
 
-  private laneShards(): { integration?: number; e2e?: number } | null {
+  private laneShards(): { integration?: number; e2e?: number; unitWorkers?: number } | null {
     let v: unknown;
     try { v = this.laneShardsSetting ? this.laneShardsSetting() : null; } catch { return null; } // @silent-fallback-ok: an unreadable setting means the policy defaults
     if (!v || typeof v !== 'object') return null;
-    const out: { integration?: number; e2e?: number } = {};
+    const out: { integration?: number; e2e?: number; unitWorkers?: number } = {};
     for (const k of ['integration', 'e2e'] as const) {
       const n = (v as Record<string, unknown>)[k];
       if (typeof n === 'number' && Number.isInteger(n) && n >= 1 && n <= MAX_LANE_SHARDS) out[k] = n;
     }
+    // Per-machine unit-lane worker count (hardware differs; 2026-11-12 the M5 sat 45-90 % idle
+    // while its 4-worker unit lane hit the 20-min deadline). Which files run never changes.
+    const u = (v as Record<string, unknown>).unitWorkers;
+    if (typeof u === 'number' && Number.isInteger(u) && u >= 1 && u <= MAX_UNIT_WORKERS) out.unitWorkers = u;
     return Object.keys(out).length ? out : null;
   }
 
@@ -2856,6 +2860,7 @@ export class LocalVerifyService {
         this.audit({ event: 'run-detail', ...runDetail(rec, result) });
       }
       if (rec) this.noteFlaky(rec);
+      if (rec && rec.outcome === 'success' && f.entry.kind !== 'main') this.rearmMainAfterGreen(rec.pr);
       if (rec && rec.outcome === 'error' && !f.entry.preflightReplay) this.handleErrorRetry(f.entry, rec.errorStep);
     }
     // No hand-off was opened for this run (red, error, re-queued, or the line held by another
@@ -2865,6 +2870,23 @@ export class LocalVerifyService {
     this.idleWaiters = [];
     for (const w of waiters) w();
     this.pump();
+  }
+
+  /** A green PR run after `main`'s error retries ran out re-arms one `main` verify (see decideMainRearmAfterGreen). */
+  private rearmMainAfterGreen(pr: number): void {
+    const head = this.mainObs.head;
+    if (head === null) return;
+    const target = this.releaseAlias.get(head) ?? head;
+    const rearm = decideMainRearmAfterGreen({
+      priorRetries: this.mainErrorRetries.get(target) ?? 0,
+      mainPending: this.queue.some((e) => e.kind === 'main'),
+      mainInFlight: this.inFlight?.entry.kind === 'main' && !this.inFlight.cancelled,
+      healthState: this.health.snapshot().state,
+    });
+    if (!rearm) return;
+    this.mainErrorRetries.set(target, 0);
+    this.audit({ event: 'main-retry-rearmed-after-green', headSha: target, afterPr: pr });
+    this.enqueueMain(target, 'rerun');
   }
 
   /** The restart guard's view of a merge in progress (`PlannedRestartVerifyGuard`): a short, bounded marker. */

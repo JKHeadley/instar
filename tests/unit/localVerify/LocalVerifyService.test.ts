@@ -2373,6 +2373,18 @@ describe('lane shard setting (monitoring.localVerify.laneShards)', () => {
     await s.svc.request(1);
     expect(inputOf(s).laneShards).toEqual({ integration: 1 });
   });
+  it('a per-machine unit worker count passes through when 1..12; anything else is dropped', async () => {
+    const s = setup({ views: { 1: view() } });
+    s.svc.setLaneShards(() => ({ unitWorkers: 8 }));
+    await s.svc.request(1);
+    expect(inputOf(s).laneShards).toEqual({ unitWorkers: 8 });
+    for (const bad of [0, 13, 2.5, '8']) {
+      const t = setup({ views: { 1: view() } });
+      t.svc.setLaneShards(() => ({ unitWorkers: bad }));
+      await t.svc.request(1);
+      expect(inputOf(t).laneShards).toBeUndefined();
+    }
+  });
   it('an unreadable setting means the defaults', async () => {
     const s = setup({ views: { 1: view() } });
     s.svc.setLaneShards(() => { throw new Error('nope'); });

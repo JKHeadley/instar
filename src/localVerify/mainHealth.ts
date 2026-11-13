@@ -202,6 +202,26 @@ export function decideMainErrorRetry(
   return { retries, requeue: retries <= limits.errorRetries && !i.mainPending, notBefore: i.now + limits.errorBackoffMs * retries };
 }
 
+/**
+ * A green PR verify on this machine after `main`'s own error retries ran out: re-arm one
+ * `main` verify (throughput brainstorm 2026-11-12; the waiting-line wedge). Without this,
+ * four deadline errors on one `main` head left `main` unverified with nothing queued, so
+ * main health stayed suspect and the merge watcher offered no PR at all (2026-11-12
+ * 12:34Z onward). "Something changed" is this machine just completing a full green run.
+ * Bounded by green PR runs (each re-arms at most once), never by the clock, so the
+ * always-erroring worst case of the main-schedule model is unchanged.
+ */
+export function decideMainRearmAfterGreen(i: {
+  priorRetries: number;
+  mainPending: boolean;
+  mainInFlight: boolean;
+  healthState: MainHealthSnapshot['state'];
+}, limits: { errorRetries: number } = MAIN_VERIFY_LIMITS): boolean {
+  if (i.healthState === 'healthy' || i.healthState === 'main-red') return false;
+  if (i.mainPending || i.mainInFlight) return false;
+  return i.priorRetries > limits.errorRetries;
+}
+
 export class MainHealth {
   private snap: MainHealthSnapshot;
   private readonly file: string;
