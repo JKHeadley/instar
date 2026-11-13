@@ -1,0 +1,18 @@
+# The test-runner probe no longer records a zero-length window
+
+<!-- internal-only -->
+<!-- bump: patch -->
+
+## What Changed
+
+`tests/fixtures/test-runner-bound/tests/fixture-helpers.ts` `runProbe()`: a probe now stays open for `PROBE_DWELL_MS` (150 ms) after its barrier opens before it stamps its end.
+
+The last probe to start sees every start file at once and stamped its end in the same millisecond as its start. The harness (`maxOverlap` in `tests/integration/test-runner-bound-meta.test.ts`) processes ends before starts at equal timestamps, so a zero-length window is never counted as open, and five workers that ran together measured as 4. Check `(d2) own suite` (added by PR 3112 on 2026-11-12) asserts more than 4 and failed intermittently.
+
+## Evidence
+
+Studio, 2026-11-13 12:09Z, Local Verify of PR 3053 (unrelated change): `file-failed:tests/integration/test-runner-bound-meta.test.ts`, message `own-suite child still capped at 4 workers; windows [["probe-1.json",52],["probe-2.json",59],["probe-3.json",59],["probe-4.json",52],["probe-5.json",0]]`. The same check failed 1 run in 8 when it was written on 2026-11-12; the guard added then (first stamp wins) addressed a different, unobserved cause.
+
+After the fix: `tests/integration/test-runner-bound-meta.test.ts` passes (16 tests, one full run on the Studio), and a direct run of the five probes recorded windows of 150, 152, 201, 203 and 205 ms with a measured overlap of 5; before, the last probe's window was 0 ms.
+
+Why the fix does not weaken the capped checks: under a cap of C < N workers, the (C+1)th probe's start is written only after one of the first C ended, so its window begins after that end whatever the dwell.
