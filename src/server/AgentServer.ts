@@ -107,6 +107,7 @@ import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/Fe
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
+import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
 import { createUsageLedgerTick } from '../monitoring/usageLedgerTick.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
 import { buildEcosystemIdeas } from '../ecosystem/buildEcosystemIdeas.js';
@@ -4287,7 +4288,19 @@ export class AgentServer {
         if (options.config.developmentAgent === true && sourceCheckout) {
           const backupTick = () => {
             if (!isCanonicalOwner()) return;
-            backupCadence.maybeHourly(() => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch));
+            // The bulk copy runs in a worker thread: on a disk busy with a test run the
+            // synchronous copy held the event loop for over a minute and the supervisor
+            // killed the server (2026-11-13). The checkpoint and the staging of the
+            // database files stay here, back to back, on this thread.
+            const tick = backupCadence.maybeHourlyOffThread(
+              (trigger) => createBackupSnapshotInWorker({ stateDir: options.config.stateDir, config: options.config.backup, trigger }),
+              () => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch),
+            );
+            if (tick.started) {
+              tick.done.catch((error) => { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); });
+            } else if (tick.reason === 'in-flight' && tick.runningMs >= 30 * 60 * 1000) {
+              console.warn(`[feedback-factory] hourly checkpoint has been copying for ${Math.round(tick.runningMs / 60000)} minutes; no new one starts until it ends`);
+            }
           };
           setImmediate(() => { try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
           this.feedbackDrainBackupTimer = setInterval(() => {
