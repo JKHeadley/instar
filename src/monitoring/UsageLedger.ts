@@ -435,11 +435,26 @@ export type SnapshotImport = {
   detail?: string;
 };
 
+type ScanQueue = { r: { root: string; origin: string }; kind: 'claude' | 'codex'; files: string[] };
+
+/** How many stats one directory's files may have in flight at once in the non-blocking walk. */
+const ASYNC_STAT_BATCH = 32;
+
+/** Run `fn` over `items`, at most `ASYNC_STAT_BATCH` at a time, keeping order. */
+async function mapInBatches<T, R>(items: readonly T[], fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let i = 0; i < items.length; i += ASYNC_STAT_BATCH) {
+    out.push(...await Promise.all(items.slice(i, i + ASYNC_STAT_BATCH).map(fn)));
+  }
+  return out;
+}
+
 export class UsageLedger {
   private readonly db: BetterSqliteDatabase;
   private readonly opts: Required<Omit<UsageLedgerOptions, 'databaseFactory' | 'otherAgentHomes'>> & { otherAgentHomes: string[] };
   private readonly roots: { root: string; origin: string }[] = [];
   private rootCursor = 0;
+  private scanInFlight: Promise<ScanReport> | null = null;
   private readonly coverage = new Map<string, CoverageRoot>();
   private readonly upsertStmts: Record<'hour' | 'day' | 'sessionDay', Database.Statement>;
   private closed = false;
@@ -643,12 +658,135 @@ export class UsageLedger {
     return out.sort();
   }
 
+  /** dirMayHoldMembers() with the directory read off the event loop. Same rule. */
+  private async dirMayHoldMembersAsync(dirName: string, dirPath: string): Promise<boolean> {
+    for (const h of this.opts.agentHomes) {
+      if (dirName.startsWith(encodeClaudeProjectDir(path.resolve(h)))) return true;
+    }
+    let entries: string[];
+    try { entries = await fs.promises.readdir(dirPath); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return false; }
+    if (this.closed) return false;
+    const stmt = this.db.prepare('SELECT 1 FROM session_bindings WHERE session_id = ? LIMIT 1');
+    return entries.some(e => e.endsWith('.jsonl') && stmt.get(e.slice(0, -'.jsonl'.length)) !== undefined);
+  }
+
+  /**
+   * listRootFiles() with every directory read and stat off the event loop. The
+   * rules are the same line for line (depth, symlinks, window, which project
+   * directories are in), and a parity test holds the two to the same answer.
+   */
+  private async listRootFilesAsync(root: string): Promise<string[]> {
+    const cov = this.coverage.get(root)!;
+    const projects = path.join(root, 'projects');
+    const out: string[] = [];
+    let dirs: fs.Dirent[];
+    try { dirs = await fs.promises.readdir(projects, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return out; }
+    const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
+    let skippedDirs = 0, outOfWindow = 0, tooDeep = 0;
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      let entries: fs.Dirent[];
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
+      const files: string[] = [];
+      for (const e of entries) {
+        if (e.isSymbolicLink()) continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) {
+          if (depth + 1 > this.opts.maxDepth) { tooDeep++; continue; }
+          await walk(p, depth + 1);
+        } else if (e.isFile() && e.name.endsWith('.jsonl')) {
+          files.push(p);
+        }
+      }
+      const mtimes = await mapInBatches(files, async (p) => {
+        try { return (await fs.promises.stat(p)).mtimeMs; } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ return null; }
+      });
+      files.forEach((p, i) => {
+        const mtime = mtimes[i];
+        if (mtime === null) return;
+        if (mtime < cutoff) { outOfWindow++; return; }
+        out.push(p);
+      });
+    };
+    for (const d of dirs) {
+      if (this.closed) return [];
+      if (!d.isDirectory() || d.isSymbolicLink()) continue;
+      const dp = path.join(projects, d.name);
+      if (!await this.dirMayHoldMembersAsync(d.name, dp)) { skippedDirs++; continue; }
+      await walk(dp, 1);
+    }
+    cov.filesSkippedDirs = skippedDirs;
+    cov.filesOutOfWindow = outOfWindow;
+    cov.filesTooDeep = tooDeep;
+    return out.sort();
+  }
+
+  /** fileChanged() over a list, with the stats off the event loop. Same rule. */
+  private async filterChangedAsync(files: string[]): Promise<string[]> {
+    const keep = await mapInBatches(files, async (file) => {
+      if (this.closed) return false;
+      const cp = this.db.prepare('SELECT inode, offset FROM checkpoints WHERE path = ?').get(file) as { inode: number; offset: number } | undefined;
+      if (!cp) return true;
+      try {
+        const st = await fs.promises.stat(file);
+        return st.ino !== cp.inode || st.size !== cp.offset;
+      } catch { /* @silent-fallback-ok: filesystem race: the file is re-examined on the next tick */ return false; }
+    });
+    return files.filter((_, i) => keep[i]);
+  }
+
   /**
    * One scan tick: a shared file budget consumed round-robin across roots (spec: Slice 1).
    * Unchanged files (same inode, size equal to the checkpoint offset) cost nothing.
    */
   scanTick(): ScanReport {
     const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
+    if (!this.beginScanTick()) return report;
+    return this.consumeScanQueues([
+      ...this.roots.map(r => ({ r, kind: 'claude' as const, files: this.listRootFiles(r.root).filter(f => this.fileChanged(f)) })),
+      ...this.codexRoots.map(r => ({ r, kind: 'codex' as const, files: this.listCodexFiles(r.root).filter(f => this.fileChanged(f)) })),
+    ], report);
+  }
+
+  /**
+   * The same tick with the enumeration off the event loop. Listing every
+   * transcript under every root is tens of thousands of directory reads and
+   * stats (about 4,000 project folders and 50,000 files on a development
+   * machine with a dozen config homes). Done synchronously once a minute, on a
+   * contended disk it held the server's main thread for over a minute and the
+   * supervisor killed the server (2026-11-13 02:36 PST). Here every directory
+   * read and stat goes through fs.promises, so the loop keeps turning between
+   * them. Only the listing moved: ingesting the changed files (up to
+   * `filesPerTick`), the one-off detail rescan after a snapshot import, and the
+   * hourly prune and snapshot are still synchronous, as before.
+   *
+   * One scan at a time: a call while one is running returns that run's promise.
+   */
+  scanTickAsync(): Promise<ScanReport> {
+    if (this.scanInFlight) return this.scanInFlight;
+    const run = (async (): Promise<ScanReport> => {
+      const report: ScanReport = { filesRead: 0, rowsInserted: 0, rowsCounted: 0, pending: 0 };
+      if (!this.beginScanTick()) return report;
+      const queues: ScanQueue[] = [];
+      // Roots one after another: the walk inside a root already overlaps its stats.
+      for (const r of [...this.roots]) {
+        queues.push({ r, kind: 'claude', files: await this.filterChangedAsync(await this.listRootFilesAsync(r.root)) });
+      }
+      for (const r of [...this.codexRoots]) {
+        queues.push({ r, kind: 'codex', files: await this.filterChangedAsync(await this.listCodexFilesAsync(r.root)) });
+      }
+      if (this.closed) return report;
+      // The listing took time: a one-shot that finished meanwhile needs its binding before its transcript is read.
+      try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
+      return this.consumeScanQueues(queues, report);
+    })();
+    this.scanInFlight = run;
+    const clear = (): void => { if (this.scanInFlight === run) this.scanInFlight = null; };
+    run.then(clear, clear);
+    return run;
+  }
+
+  /** Work every tick does before listing. False when there is nothing to scan. */
+  private beginScanTick(): boolean {
     // Bindings from queued one-shots must exist before their transcripts are scanned.
     try { this.flushInvocations(); } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries */ console.warn('[UsageLedger] invocation flush failed:', err); }
     if (this.pendingDetailRescan) {
@@ -658,11 +796,12 @@ export class UsageLedger {
         try { this.ingestClaudeFile(root, p, { rescanForDetail: true }); } catch { /* @silent-fallback-ok: a detail rescan miss leaves totals intact; only per-request detail is absent */ }
       }
     }
-    if (this.roots.length === 0 && this.codexRoots.length === 0) return report;
-    const queues = [
-      ...this.roots.map(r => ({ r, kind: 'claude' as const, files: this.listRootFiles(r.root).filter(f => this.fileChanged(f)) })),
-      ...this.codexRoots.map(r => ({ r, kind: 'codex' as const, files: this.listCodexFiles(r.root).filter(f => this.fileChanged(f)) })),
-    ];
+    return this.roots.length > 0 || this.codexRoots.length > 0;
+  }
+
+  /** Ingest from the listed queues under the shared file budget, round-robin across roots. */
+  private consumeScanQueues(queues: ScanQueue[], report: ScanReport): ScanReport {
+    if (queues.length === 0) return report;
     let budget = this.opts.filesPerTick;
     let progressed = true;
     while (budget > 0 && progressed) {
@@ -1110,6 +1249,39 @@ export class UsageLedger {
       }
     };
     walk(base, 0);
+    cov.filesOutOfWindow = outOfWindow;
+    return out.sort();
+  }
+
+  /** listCodexFiles() with every directory read and stat off the event loop. Same rules. */
+  private async listCodexFilesAsync(root: string): Promise<string[]> {
+    const cov = this.coverage.get(root)!;
+    const base = path.join(root, 'sessions');
+    const cutoff = this.opts.now() - this.opts.maxFileAgeMs;
+    const out: string[] = [];
+    let outOfWindow = 0;
+    const walk = async (dir: string, depth: number): Promise<void> => {
+      if (this.closed) return;
+      let entries: fs.Dirent[];
+      try { entries = await fs.promises.readdir(dir, { withFileTypes: true }); } catch { /* @silent-fallback-ok: an unreadable directory holds no readable usage; the scan continues */ return; }
+      const files: string[] = [];
+      for (const e of entries) {
+        if (e.isSymbolicLink()) continue;
+        const p = path.join(dir, e.name);
+        if (e.isDirectory() && depth < 3) await walk(p, depth + 1);
+        else if (e.isFile() && e.name.startsWith('rollout-') && e.name.endsWith('.jsonl')) files.push(p);
+      }
+      const mtimes = await mapInBatches(files, async (p) => {
+        try { return (await fs.promises.stat(p)).mtimeMs; } catch { /* @silent-fallback-ok: a file that vanished mid-scan has nothing to ingest */ return null; }
+      });
+      files.forEach((p, i) => {
+        const mtime = mtimes[i];
+        if (mtime === null) return;
+        if (mtime < cutoff) { outOfWindow++; return; }
+        out.push(p);
+      });
+    };
+    await walk(base, 0);
     cov.filesOutOfWindow = outOfWindow;
     return out.sort();
   }
@@ -1590,6 +1762,24 @@ export class UsageLedger {
     const del = this.db.prepare('DELETE FROM checkpoints WHERE path = ?');
     let n = 0;
     for (const { path: p } of rows) if (!fs.existsSync(p)) { del.run(p); n++; }
+    return n;
+  }
+
+  /**
+   * dropMissingCheckpoints() with the existence checks off the event loop: one
+   * per checkpoint, tens of thousands on a machine with a dozen config homes.
+   * Same rule, including which files count as missing.
+   */
+  async dropMissingCheckpointsAsync(): Promise<number> {
+    if (this.closed) return 0;
+    const rows = this.db.prepare('SELECT path FROM checkpoints').all() as { path: string }[];
+    const present = await mapInBatches(rows, async ({ path: p }) => {
+      try { await fs.promises.stat(p); return true; } catch { /* @silent-fallback-ok: unreachable means there is no file to resume from, the same reading existsSync gives */ return false; }
+    });
+    if (this.closed) return 0;
+    const del = this.db.prepare('DELETE FROM checkpoints WHERE path = ?');
+    let n = 0;
+    rows.forEach(({ path: p }, i) => { if (!present[i]) { del.run(p); n++; } });
     return n;
   }
 
