@@ -80,7 +80,13 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
   };
   const diagnostics = () => JSON.stringify({ noticeStates, sources: current.runtime.options.readDetectorHealth!().sources,
     policy: current.runtime.options.getAlertPolicy('operator-attention-hub') });
-  return { ...current, wire, failRecording, stateDir, config, diagnostics, loseOwnership: () => { ownsLease = false; }, revoke: () => { policy = null; }, optOut: () => { policy = { ...policy!, optedOut: true }; } };
+  // The live state is not a record of what happened: the 5 s production tick
+  // re-reserves after a suppression and, while the policy still forbids a
+  // notice, overwrites 'suppressed' with 'unavailable'/'destination-policy'.
+  // Assert a suppression on the emitted history, never by polling the state.
+  const suppressedSince = (from: number) => noticeStates.some(s => s.updatedAt >= from &&
+    s.notificationOutcome === 'suppressed' && !s.notificationAttempted);
+  return { ...current, wire, failRecording, stateDir, config, diagnostics, suppressedSince, loseOwnership: () => { ownsLease = false; }, revoke: () => { policy = null; }, optOut: () => { policy = { ...policy!, optedOut: true }; } };
 }
 describe('production bootstrap outage authority separation', () => {
   it('rechecks notice permission after a capacity grant without consuming a revoked notice', async () => {
@@ -161,8 +167,9 @@ describe('production bootstrap outage authority separation', () => {
     // File-watch delivery is asynchronous; allow the production five-second
     // refresh plus its bounded two-second source read to observe the rotation.
     await vi.waitFor(() => expect(h.runtime.options.getAlertPolicy('operator-attention-hub')).toBeNull(), { timeout: 7500 });
+    const requestedAt = Date.now();
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
-    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('suppressed'));
+    await vi.waitFor(() => expect(h.suppressedSince(requestedAt), h.diagnostics()).toBe(true));
     await expect(telegramFetch('https://api.telegram.org/bot123:notice-fixture/sendMessage', { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: 42, text: 'Must not use revoked credential authority' }) })).rejects.toThrow();
     expect(h.wire).not.toHaveBeenCalled();
@@ -189,8 +196,9 @@ describe('production bootstrap outage authority separation', () => {
         expect(reason === 'unreadable' ? current === null : current?.optedOut).toBe(true);
       }, { timeout: reason === 'unreadable' ? 7000 : 20_000 });
     }
+    const requestedAt = Date.now();
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
-    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('suppressed'));
+    await vi.waitFor(() => expect(h.suppressedSince(requestedAt), h.diagnostics()).toBe(true));
     expect(h.wire).not.toHaveBeenCalled();
   }, 35_000);
   it.each(['missing-topic', 'unknown'] as const)('never retries a notice after a concrete %s network outcome', async outcome => {
