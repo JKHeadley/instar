@@ -10094,12 +10094,19 @@ export async function startServer(options: StartOptions): Promise<void> {
           await topicMemory.open();
         }
 
-        const jsonlPath = path.join(config.stateDir, 'telegram-messages.jsonl');
-        if (fs.existsSync(jsonlPath)) {
-          const imported = await topicMemory.importFromJsonl(jsonlPath);
-          if (imported > 0) {
-            console.log(pc.green(`  TopicMemory: imported ${imported} messages from JSONL`));
-          }
+        // Replay EVERY message log in the state dir, not only the Telegram one:
+        // slack-messages.jsonl carries real Slack history the importer could not
+        // read a line of until topicMemoryKeyForLogEntry, because Slack entries
+        // key on channelId and the admission test demanded topicId. The first
+        // startup after this change recovers that history; every later one lands
+        // nothing (a replayed Slack row is a keyed duplicate).
+        const { total: imported, perSource } = await topicMemory.importAllLogs();
+        if (imported > 0) {
+          const breakdown = Object.entries(perSource)
+            .filter(([, n]) => n > 0)
+            .map(([name, n]) => `${n} from ${name}`)
+            .join(', ');
+          console.log(pc.green(`  TopicMemory: imported ${imported} messages from JSONL (${breakdown})`));
         }
 
         const tmStats = topicMemory.stats();

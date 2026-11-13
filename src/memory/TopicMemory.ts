@@ -25,6 +25,8 @@ import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { NativeModuleHealer } from './NativeModuleHealer.js';
 import { registerSqliteHandle } from '../core/SqliteRegistry.js';
 import { formatLocalTimestamp } from '../utils/localTime.js';
+import { deriveRowKey } from './topicRowWriter.js';
+import { candidateIdForRoutingKey } from '../core/conversationIdentity.js';
 
 // Dynamic import for better-sqlite3
 type Database = import('better-sqlite3').Database;
@@ -133,6 +135,204 @@ export interface TopicContext {
 const SCHEMA_VERSION = '6';
 
 /**
+ * The Slack message log, a sibling of the Telegram log in the state dir.
+ *
+ * A rebuild has to replay EVERY log that feeds this store, not only the one it
+ * was handed: `rebuild()` deletes every row and then imports, so a log it does
+ * not read is a log whose rows it destroys and cannot restore.
+ */
+const SLACK_LOG_BASENAME = 'slack-messages.jsonl';
+
+/** The fields of a logged message that decide which row it becomes. */
+export interface LoggedMessageKeySource {
+  messageId?: number | string;
+  topicId?: number | null;
+  channelId?: number | string | null;
+  platform?: string;
+}
+
+/** A logged message's row key, or why it has none. */
+export type LoggedMessageKey =
+  /** A Slack entry keyed by the §14 key rule, with its channel id kept verbatim. */
+  | { kind: 'slack'; topicId: number; messageId: number; channelMessageId: string }
+  /** An entry that carries its own topic id (Telegram): unchanged, legacy path. */
+  | { kind: 'topic'; topicId: number; messageId: number }
+  /** No key: not a Slack shape and no topic id. */
+  | { kind: 'none' }
+  /** A Slack entry the key rule REFUSED, with the rule's own reason. */
+  | { kind: 'refused'; detail: string };
+
+/**
+ * The row key for one logged message, derived exactly as the LIVE write path
+ * derives it — which is the entire requirement here, not merely having some
+ * numeric key.
+ *
+ * `importFromJsonl` admits an entry only when it carries `entry.topicId`.
+ * Slack's logger writes `channelId` and never `topicId`
+ * (`MessageLogger.LogEntry`: "topic ID for Telegram, chat JID for WhatsApp"),
+ * so every line of slack-messages.jsonl failed that test and was counted as
+ * missing fields. That is why Slack history is unreplayable: the log is intact,
+ * with real `ts` values, and the importer cannot read a line of it.
+ *
+ * Both halves of the key come from the functions the live path uses, called
+ * rather than copied:
+ *
+ *   - `message_id` and `channel_message_id` from `deriveRowKey` in
+ *     topicRowWriter — the §14 key rule. For Slack that is `ts × 1e6` read
+ *     exactly, and for an id that is NOT a `ts` (a standalone file share) a
+ *     deterministic key in the fallback range above 2^52. Re-deriving "ts times
+ *     a million" here instead would agree with the rule on the common case and
+ *     disagree on exactly that fallback, which is the divergence a second copy
+ *     always produces.
+ *   - `topic_id` from `candidateIdForRoutingKey(channelId)`, the governed
+ *     32-bit sum-shift mint candidate. The live Slack dual-write passes
+ *     `topicIdFor: slackChannelToSyntheticId`, and topicRowCarrier's
+ *     `slackSyntheticTopicId` is the same call with a Slack-specific name; it
+ *     is not imported here because topicRowCarrier imports a VALUE from this
+ *     module (`coerceTopicRowOrigin`) and that would be a runtime cycle.
+ *     Measured against a live store: the five negative `topic_id` values in
+ *     sagemind's topic-memory.db are exactly this function's output for the
+ *     five channels in its slack-messages.jsonl.
+ *
+ * Two mistakes this shape exists to refuse, both pinned by tests:
+ *   - Keying on the raw `channelId` string (the shorthand "topicId ?? channelId")
+ *     puts TEXT in an INTEGER column and files every recovered message under a
+ *     SECOND topic per channel, beside the rows the live path already wrote.
+ *   - The routing key is the channel ALONE. `LogEntry.threadTs` exists and
+ *     `routingKeyForTuple` would fold it in, but the live dual-write hashes
+ *     `channelId` only, so a thread-aware key here would split a thread's
+ *     history away from the rows that path keeps writing.
+ *
+ * A refusal from the key rule is returned as a refusal, never as a guessed key.
+ */
+export function topicMemoryKeyForLogEntry(entry: LoggedMessageKeySource): LoggedMessageKey {
+  // An entry carrying its own topic id is already keyed — unchanged behaviour,
+  // and tested first so no Telegram row can take the Slack branch.
+  if (entry.topicId != null) {
+    return { kind: 'topic', topicId: entry.topicId as number, messageId: entry.messageId as number };
+  }
+
+  const channelId = entry.channelId == null ? '' : String(entry.channelId);
+  if (!channelId) return { kind: 'none' };
+  if (entry.platform != null && entry.platform !== 'slack') return { kind: 'none' };
+  // Slack channel / DM / group ids, the shape conversationIdentity clamps on.
+  if (!/^[CDG][A-Z0-9]+$/.test(channelId)) return { kind: 'none' };
+
+  const key = deriveRowKey({ channel: 'slack', ts: String(entry.messageId ?? '') });
+  if ('error' in key) return { kind: 'refused', detail: key.error };
+
+  return {
+    kind: 'slack',
+    topicId: candidateIdForRoutingKey(channelId),
+    messageId: key.messageId,
+    channelMessageId: key.channelMessageId,
+  };
+}
+
+/** What one line of a message log turned out to be. */
+type ParsedLogLine =
+  /** A Slack row: inserted under the key rule, so a clash is counted not dropped. */
+  | { kind: 'keyed'; msg: TopicMessage & { channelMessageId: string } }
+  /** A row carrying its own topic id: the legacy batched insert, unchanged. */
+  | { kind: 'message'; msg: TopicMessage }
+  /** Not JSON at all. */
+  | { kind: 'malformed' }
+  /** Valid JSON with no text, or no key this store can use. */
+  | { kind: 'missing-fields' }
+  /** A Slack entry the key rule refused. */
+  | { kind: 'unkeyed'; detail: string };
+
+/**
+ * Parse one JSONL line into the row it should become.
+ *
+ * ONE predicate, shared by `importFromJsonl` and by the pre-flight scan
+ * `rebuild()` runs BEFORE it deletes anything. Two copies of this decision
+ * would let the scan promise a restore the import does not perform — the same
+ * class of bug being fixed here, one layer up.
+ */
+function parseLogLine(line: string): ParsedLogLine {
+  let entry: any;
+  try {
+    entry = JSON.parse(line);
+  } catch {
+    // @silent-fallback-ok — JSONL parse error; counted and surfaced by the caller.
+    return { kind: 'malformed' };
+  }
+
+  if (!entry || !entry.text) return { kind: 'missing-fields' };
+
+  const key = topicMemoryKeyForLogEntry(entry);
+  if (key.kind === 'none') return { kind: 'missing-fields' };
+  if (key.kind === 'refused') return { kind: 'unkeyed', detail: key.detail };
+
+  const body: TopicMessage = {
+    messageId: key.messageId,
+    topicId: key.topicId,
+    text: entry.text,
+    fromUser: entry.fromUser ?? false,
+    timestamp: entry.timestamp,
+    sessionName: entry.sessionName ?? null,
+    senderName: entry.senderName ?? undefined,
+    senderUsername: entry.senderUsername ?? undefined,
+    telegramUserId: entry.telegramUserId ?? undefined,
+    userId: entry.userId ?? undefined,
+    privacyScope: entry.privacyScope ?? undefined,
+    forwarded: entry.forwarded == null ? undefined : entry.forwarded === true,
+    origin: coerceTopicRowOrigin(entry.rowOrigin),
+  };
+
+  if (key.kind === 'slack') {
+    return { kind: 'keyed', msg: { ...body, channelMessageId: key.channelMessageId } };
+  }
+  return { kind: 'message', msg: body };
+}
+
+/**
+ * Counters from one import, or summed across a rebuild's sources.
+ *
+ * The keyed outcomes exist because the §14 rule is that a key already held by a
+ * DIFFERENT channel message is a COUNTED refusal and never a silent drop. A
+ * Slack row goes through `insertKeyedMessage` for exactly that reason: the
+ * batched `INSERT OR IGNORE` the Telegram path uses would swallow a collision.
+ */
+export interface TopicImportStats {
+  /** New rows that landed. */
+  imported: number;
+  malformed: number;
+  missingFields: number;
+  /** Slack entries the key rule refused (no key was guessed for them). */
+  unkeyed: number;
+  /** The same channel message was already stored — a replay, nothing changed. */
+  duplicate: number;
+  /** A legacy row under this key had no channel id; this import filled it in. */
+  adopted: number;
+  /** Refused: the integer key is held by a different channel message. */
+  collision: number;
+  /** Refused: this channel message is stored under a different integer key. */
+  keyMismatch: number;
+}
+
+/** A zeroed counter set. */
+function emptyImportStats(): TopicImportStats {
+  return { imported: 0, malformed: 0, missingFields: 0, unkeyed: 0, duplicate: 0, adopted: 0, collision: 0, keyMismatch: 0 };
+}
+
+/** What the most recent `rebuild()` call did, including a refusal to do anything. */
+export interface TopicRebuildReport {
+  /** True when the rebuild declined to delete: nothing could have restored it. */
+  refused: boolean;
+  reason: 'no-source-log' | 'sources-hold-no-restorable-message' | null;
+  /** The logs the rebuild read, in order. */
+  sources: string[];
+  /** Rows in the store before the rebuild. */
+  existingMessages: number;
+  /** Rows the pre-flight scan found across every source. */
+  restorable: number;
+  deleted: number;
+  restored: number;
+}
+
+/**
  * Map a raw SQLite row to a TopicMessage with proper type coercion.
  */
 function mapRow(row: any): TopicMessage {
@@ -168,7 +368,9 @@ export class TopicMemory {
   /** Set after corruption auto-recovery — caller should reimport from JSONL */
   private _needsRebuild = false;
   /** Stats from the most recent importFromJsonl() / rebuild() call */
-  private _lastImportStats: { imported: number; malformed: number; missingFields: number } | null = null;
+  private _lastImportStats: TopicImportStats | null = null;
+  /** What the most recent rebuild() call did — including a refusal. */
+  private _lastRebuild: TopicRebuildReport | null = null;
   /** insertKeyedMessage's statements, prepared once per open handle. */
   private keyedStmts: { db: Database; byKey: import('better-sqlite3').Statement; byChannel: import('better-sqlite3').Statement; adopt: import('better-sqlite3').Statement; fillOrigin: import('better-sqlite3').Statement } | null = null;
 
@@ -994,9 +1196,7 @@ export class TopicMemory {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    let count = 0;
-    let malformed = 0;
-    let missingFields = 0;
+    const tally = emptyImportStats();
     const BATCH_SIZE = 500;
     let batch: TopicMessage[] = [];
 
@@ -1012,7 +1212,7 @@ export class TopicMemory {
             msg.forwarded == null ? null : (msg.forwarded ? 1 : 0),
             msg.channelMessageId ?? null, msg.origin ?? null,
           );
-          if (result.changes > 0) count++;
+          if (result.changes > 0) tally.imported++;
         }
       });
       tx();
@@ -1026,34 +1226,43 @@ export class TopicMemory {
 
     for await (const line of rl) {
       if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (entry.topicId != null && entry.text) {
-          batch.push({
-            messageId: entry.messageId,
-            topicId: entry.topicId,
-            text: entry.text,
-            fromUser: entry.fromUser ?? false,
-            timestamp: entry.timestamp,
-            sessionName: entry.sessionName ?? null,
-            senderName: entry.senderName ?? undefined,
-            senderUsername: entry.senderUsername ?? undefined,
-            telegramUserId: entry.telegramUserId ?? undefined,
-            userId: entry.userId ?? undefined,
-            privacyScope: entry.privacyScope ?? undefined,
-            forwarded: entry.forwarded == null ? undefined : entry.forwarded === true,
-            origin: coerceTopicRowOrigin(entry.rowOrigin),
-          });
-          if (batch.length >= BATCH_SIZE) {
-            flushBatch();
+      // parseLogLine is the single admission decision, shared with the
+      // pre-flight scan in rebuild(). A Slack entry reaches a key here through
+      // topicMemoryKeyForLogEntry; before that it fell into `missing-fields`.
+      const parsed = parseLogLine(line);
+      switch (parsed.kind) {
+        case 'message':
+          batch.push(parsed.msg);
+          if (batch.length >= BATCH_SIZE) flushBatch();
+          break;
+        case 'keyed': {
+          // A Slack row goes through the keyed insert, not the batch: the §14
+          // rule is that a key held by a DIFFERENT channel message is a counted
+          // refusal, and `INSERT OR IGNORE` cannot tell that from a replay.
+          // Ordering: flush first, so a batched row and a keyed row written in
+          // log order stay in log order if they ever share a topic.
+          flushBatch();
+          const r = this.insertKeyedMessage(parsed.msg);
+          switch (r.outcome) {
+            case 'inserted': tally.imported++; break;
+            case 'duplicate': tally.duplicate++; break;
+            case 'adopted': tally.adopted++; break;
+            case 'collision': tally.collision++; break;
+            case 'key-mismatch': tally.keyMismatch++; break;
+            case 'not-ready': return tally.imported;
           }
-        } else {
-          // Valid JSON but missing the fields we need — count separately from malformed JSON.
-          missingFields++;
+          break;
         }
-      } catch {
-        // @silent-fallback-ok — JSONL parse error; count so we can surface it at end.
-        malformed++;
+        case 'malformed':
+          tally.malformed++;
+          break;
+        case 'unkeyed':
+          tally.unkeyed++;
+          break;
+        default:
+          // Valid JSON but missing the fields we need — counted separately from
+          // malformed JSON.
+          tally.missingFields++;
       }
     }
 
@@ -1065,14 +1274,17 @@ export class TopicMemory {
 
     // Surface parse / schema problems at end of import so operators can
     // diagnose corrupted JSONL without tailing logs during the hot path.
-    if (malformed > 0 || missingFields > 0) {
+    if (tally.malformed > 0 || tally.missingFields > 0 || tally.unkeyed > 0
+        || tally.collision > 0 || tally.keyMismatch > 0) {
       console.warn(
-        `[TopicMemory] importFromJsonl(${jsonlPath}): imported=${count} malformed_json=${malformed} missing_fields=${missingFields}`,
+        `[TopicMemory] importFromJsonl(${jsonlPath}): imported=${tally.imported} ` +
+        `malformed_json=${tally.malformed} missing_fields=${tally.missingFields} unkeyed=${tally.unkeyed} ` +
+        `duplicate=${tally.duplicate} adopted=${tally.adopted} collision=${tally.collision} key_mismatch=${tally.keyMismatch}`,
       );
     }
 
-    this._lastImportStats = { imported: count, malformed, missingFields };
-    return count;
+    this._lastImportStats = tally;
+    return tally.imported;
   }
 
   /**
@@ -1080,22 +1292,175 @@ export class TopicMemory {
    * Useful for tests and /topic/rebuild endpoints that want to surface
    * parse-error counts in the API response.
    */
-  getLastImportStats(): { imported: number; malformed: number; missingFields: number } | null {
+  getLastImportStats(): TopicImportStats | null {
     return this._lastImportStats;
   }
 
+  /** What the most recent rebuild() call did, or null if none has run. */
+  getLastRebuildReport(): TopicRebuildReport | null {
+    return this._lastRebuild;
+  }
+
+  /** Rows currently in the messages table. */
+  private countMessages(): number {
+    if (!this.db) return 0;
+    const row = this.db.prepare('SELECT COUNT(*) as c FROM messages').get() as { c: number };
+    return row?.c ?? 0;
+  }
+
   /**
-   * Full rebuild — drop all data and reimport from JSONL.
+   * The message logs a rebuild or a full import should replay, in read order:
+   * the log the caller named, plus the Slack log beside it.
+   *
+   * Resolved from the named log's own directory rather than from `stateDir`, so
+   * a caller handing over a log somewhere else still gets that log's siblings
+   * and never this store's. Non-existent paths are dropped.
+   */
+  private replayableLogs(primaryJsonlPath: string): string[] {
+    const candidates = [
+      primaryJsonlPath,
+      path.join(path.dirname(primaryJsonlPath), SLACK_LOG_BASENAME),
+    ];
+    const seen = new Set<string>();
+    return candidates.filter((p) => {
+      if (seen.has(p)) return false;
+      seen.add(p);
+      return fs.existsSync(p);
+    });
+  }
+
+  /**
+   * Count the rows a set of logs could restore, WITHOUT writing anything.
+   *
+   * Streams every line through the same `parseLogLine` the importer uses, so
+   * the number it returns is the number the import would land in an empty
+   * store. This is `rebuild()`'s pre-flight: the decision to delete has to be
+   * made from what the sources actually hold, and the only way to know that
+   * before deleting is to read them first. One extra streaming pass on a rare,
+   * manual, destructive operation is the price of not guessing.
+   */
+  private async countRestorable(sources: string[]): Promise<number> {
+    let restorable = 0;
+    for (const src of sources) {
+      const rl = readline.createInterface({
+        input: fs.createReadStream(src, { encoding: 'utf-8' }),
+        crlfDelay: Infinity,
+      });
+      for await (const line of rl) {
+        if (!line) continue;
+        const kind = parseLogLine(line).kind;
+        if (kind === 'message' || kind === 'keyed') restorable++;
+      }
+    }
+    return restorable;
+  }
+
+  /**
+   * Import every replayable log beside `primaryJsonlPath` — non-destructive and
+   * idempotent (a Slack row already stored is a keyed `duplicate`, a Telegram
+   * row an ignored insert).
+   *
+   * This is the recovery path for Slack history that was logged but never
+   * importable: `importFromJsonl` could not read a Slack entry at all, so
+   * slack-messages.jsonl holds rows this store has never contained. Running
+   * this once replays them; running it again lands nothing.
+   *
+   * Defaults to the Telegram log in this store's own state dir, which is what
+   * every current caller passes.
+   */
+  async importAllLogs(primaryJsonlPath?: string): Promise<{ total: number; perSource: Record<string, number> }> {
+    const primary = primaryJsonlPath ?? path.join(this.stateDir, 'telegram-messages.jsonl');
+    const perSource: Record<string, number> = {};
+    let total = 0;
+    if (!this.db) return { total, perSource };
+
+    const totals = emptyImportStats();
+    for (const src of this.replayableLogs(primary)) {
+      const imported = await this.importFromJsonl(src);
+      perSource[path.basename(src)] = imported;
+      total += imported;
+      const st = this._lastImportStats;
+      if (st) {
+        totals.malformed += st.malformed;
+        totals.missingFields += st.missingFields;
+        totals.unkeyed += st.unkeyed;
+        totals.duplicate += st.duplicate;
+        totals.adopted += st.adopted;
+        totals.collision += st.collision;
+        totals.keyMismatch += st.keyMismatch;
+      }
+    }
+    totals.imported = total;
+    // Stats for the whole run, not just the last source read: a caller that
+    // reports parse errors from one file of several reports a smaller number
+    // than actually occurred.
+    this._lastImportStats = totals;
+    return { total, perSource };
+  }
+
+  /**
+   * Full rebuild — drop every message and reimport from the logs.
+   *
+   * Two properties this did not have, both measured against live stores:
+   *
+   *  1. It replays EVERY log beside the one it is given, not just that one.
+   *     Before this, a rebuild deleted all rows and then read
+   *     telegram-messages.jsonl alone, so every Slack row was destroyed and
+   *     none restored.
+   *  2. It REFUSES to delete when nothing it can read could restore what is
+   *     there. On an agent with no Telegram log, the old order (delete, then
+   *     import from a file that does not exist) emptied the store and returned
+   *     success. A rebuild with no source is not a rebuild; it is a wipe.
+   *
+   * What it still does NOT promise, stated rather than implied: a message older
+   * than its log's retention window is in no source, so a rebuild still loses
+   * it. That has always been true for Telegram and is now equally true for
+   * Slack. The counts are reported (`getLastRebuildReport()`) and a shortfall is
+   * logged, so the loss is visible instead of silent — the destructive contract
+   * itself is unchanged and remains the caller's to invoke.
+   *
+   * Summaries are kept either way: they are LLM-generated and expensive.
    */
   async rebuild(jsonlPath: string): Promise<number> {
     if (!this.db) return 0;
+
+    const sources = this.replayableLogs(jsonlPath);
+    const existingMessages = this.countMessages();
+    const restorable = await this.countRestorable(sources);
+
+    if (existingMessages > 0 && restorable === 0) {
+      const reason = sources.length === 0 ? 'no-source-log' : 'sources-hold-no-restorable-message';
+      console.warn(
+        `[TopicMemory] rebuild REFUSED (${reason}): ${existingMessages} message(s) in the store and ` +
+        `0 restorable from ${sources.length} source(s) [${sources.map((p) => path.basename(p)).join(', ') || 'none'}]. ` +
+        `Nothing deleted. Check that the log you expect is where this store is looking.`,
+      );
+      this._lastRebuild = {
+        refused: true, reason, sources, existingMessages, restorable, deleted: 0, restored: 0,
+      };
+      this._lastImportStats = emptyImportStats();
+      return 0;
+    }
 
     this.db.exec('DELETE FROM messages');
     this.db.exec('DELETE FROM topic_meta');
     // Keep summaries — they're LLM-generated and expensive to recreate
     this.db.exec(`INSERT INTO messages_fts(messages_fts) VALUES ('rebuild')`);
 
-    return this.importFromJsonl(jsonlPath);
+    const { total: restored } = await this.importAllLogs(jsonlPath);
+
+    this._lastRebuild = {
+      refused: false, reason: null, sources, existingMessages, restorable,
+      deleted: existingMessages, restored,
+    };
+    if (restored < existingMessages) {
+      console.warn(
+        `[TopicMemory] rebuild restored ${restored} of ${existingMessages} message(s) — ` +
+        `${existingMessages - restored} were in the store and are in no source log ` +
+        `(older than its retention window, or written by a path that never logged them).`,
+      );
+    }
+    return restored;
   }
 
   /**

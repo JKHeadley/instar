@@ -31690,10 +31690,26 @@ document.getElementById('mcpForm').addEventListener('submit', async function (e)
     const jsonlPath = path.join(ctx.config.stateDir, 'telegram-messages.jsonl');
     const imported = await ctx.topicMemory.rebuild(jsonlPath);
     const importStats = ctx.topicMemory.getLastImportStats();
+    const report = ctx.topicMemory.getLastRebuildReport();
+    // `rebuilt: true` was unconditional, so a rebuild that deleted every row
+    // and restored none answered exactly like one that worked. It now reports
+    // what happened, including a refusal to delete.
     res.json({
-      rebuilt: true,
+      rebuilt: !report?.refused,
+      refused: report?.refused ? report.reason : null,
       messagesImported: imported,
-      parseErrors: importStats ? { malformed: importStats.malformed, missingFields: importStats.missingFields } : null,
+      sources: report?.sources.map((p) => path.basename(p)) ?? [],
+      deleted: report?.deleted ?? 0,
+      restored: report?.restored ?? imported,
+      parseErrors: importStats
+        ? {
+          malformed: importStats.malformed,
+          missingFields: importStats.missingFields,
+          unkeyed: importStats.unkeyed,
+          collision: importStats.collision,
+          keyMismatch: importStats.keyMismatch,
+        }
+        : null,
       stats: ctx.topicMemory.stats(),
     });
   });
