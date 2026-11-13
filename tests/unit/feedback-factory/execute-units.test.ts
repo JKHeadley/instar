@@ -1219,3 +1219,25 @@ describe('canary: a failing probe names what it observed', () => {
     expect(noisy.detail).toContain('xcrun_db');
   });
 });
+
+describe('related-test failure keys', () => {
+  it('reads failed tests, failed suites and unhandled-error origins, relative to the clone', async () => {
+    const { vitestFailureKeys, failuresAllPreexisting } = await import('../../../src/feedback-factory/execute/executorSession.js');
+    const json = JSON.stringify({ testResults: [
+      { name: '/c/head/tests/a.test.ts', status: 'failed', assertionResults: [{ fullName: 'a > breaks', status: 'failed' }, { fullName: 'a > ok', status: 'passed' }] },
+      { name: '/c/head/tests/b.test.ts', status: 'failed', assertionResults: [] },
+      { name: '/c/head/tests/c.test.ts', status: 'passed', assertionResults: [{ fullName: 'c', status: 'passed' }] },
+    ] });
+    const out = '\u001b[31mThis error originated in "\u001b[1mtests/d.test.ts\u001b[22m" test file.';
+    const head = vitestFailureKeys(json, out.replace(/\u001b\[[0-9;]*m/g, ''), '/c/head');
+    expect([...head.keys].sort()).toEqual(['tests/a.test.ts::a > breaks', 'tests/b.test.ts::<suite>', 'tests/d.test.ts::<unhandled>']);
+    expect(head.files).toEqual(['tests/a.test.ts', 'tests/b.test.ts', 'tests/d.test.ts']);
+    const base = vitestFailureKeys(json.replaceAll('/c/head/', '/c/base/'), out, '/c/base');
+    expect(failuresAllPreexisting(head.keys, base.keys)).toBe(true);
+    expect(failuresAllPreexisting(head.keys, new Set(['tests/a.test.ts::a > breaks']))).toBe(false);
+    expect(failuresAllPreexisting(new Set(), base.keys)).toBe(false);
+    expect(vitestFailureKeys('not json', '', '/c').keys.size).toBe(0);
+    const unsafe = vitestFailureKeys(null, 'originated in "../x.test.ts" test file. originated in "/etc/y.test.ts" test file. originated in "--config=z" test file.', '/c');
+    expect(unsafe.keys.size).toBe(0);
+  });
+});
