@@ -36,7 +36,7 @@ import {
   buildClaudeSandboxSettings, buildSandboxRuntimeSettings, clampProbeDetail, confinedCacheEnv, confinedEnv, effectiveLatchUntil, pathSlug, publishFork, safeSlug, type ConfinementPaths, type ExecuteLiveConfig,
 } from './executePolicy.js';
 import {
-  ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
+  ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, readBaseFile, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
 import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, vitestFailureKeys, failuresAllPreexisting, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
@@ -1429,7 +1429,10 @@ export class FeedbackExecutorService {
 
   private async gateAndPublish(row: ExecutionRow, epoch: number, changeSet: ChangeSet, result: SessionResult, kind: 'fix' | 'spec', slug: string, approver: string, relatedInconclusive: RelatedInconclusive = false): Promise<void> {
     const text = this.prText(row, kind, result, relatedInconclusive);
-    const secrets = secretGate(changeSet, { notes: result.notes, prTitle: text.title, prBody: text.body });
+    // The publish clone holds the base here and the session cannot reach it. A crash mid-publish can leave
+    // already-gated bytes in it on re-verify, which exposes nothing new.
+    const publishClone = row.publishClone;
+    const secrets = secretGate(changeSet, { notes: result.notes, prTitle: text.title, prBody: text.body }, publishClone ? (rel) => readBaseFile(publishClone, rel) : undefined);
     if (secrets.length > 0) {
       const ref = this.saveHeldChangeSet(row, changeSet, result, kind);
       this.endAttempt(row, epoch, 'held', 'needs-review-secret-shape');
@@ -1801,7 +1804,7 @@ export class FeedbackExecutorService {
       outcome = { ...judgeRoutedFeedbackReview(reviewers, lead), reviewers };
     }
     this.opts.audit.append('execute:independent-review', { attemptId: row.attemptId, pr: prNumber, head: headSha, pass: outcome.pass, reason: outcome.reason,
-      reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict })) });
+      reviewers: outcome.reviewers.map((r) => ({ family: r.family, model: r.model, status: r.status, verdict: r.verdict, reason: r.reason })) });
     if (outcome.pass) {
       this.opts.store.patch(epoch, row.attemptId, { reviewSha: headSha, reviewVerdict: 'pass', reviewReason: outcome.reason, reviewedAt: this.now(), reviewRetries: retries });
       this.gradeLatestDecision(epoch, row.initiativeId, 'executor-independent-review-passed', 'right', 'weak');

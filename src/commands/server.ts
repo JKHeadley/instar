@@ -17,7 +17,7 @@ import { resolveFailureReplicationTransport, isFailureReplicationKindAllowed, fi
  * the boot-time TCC-protected path detection + /guards row (see the
  * TccProtectedPathGuard block beside the worktree detector).
  */
-import { configureClaudeChildAuth, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
+import { configureClaudeChildAuth, configureClaudeReviewerLogin, sweepClaudeAuthEnvFiles } from '../core/claudeChildAuth.js';
 import { resolveCorrectionLearningMode } from '../core/correctionLearningMode.js';
 import { holdAllSetups, holdSetupForSession } from '../recommended/setupState.js';
 import { SlackPrincipalResolver } from '../permissions/SlackPrincipalResolver.js';
@@ -24372,13 +24372,18 @@ export async function startServer(options: StartOptions): Promise<void> {
       // the default login, exactly as before.
       if (config.subscriptionPool?.pinSessionsToPool === true) {
         const { selectAccount } = await import('../core/QuotaAwareScheduler.js');
-        sessionManager.setSpawnAccountResolver(() => {
+        const pinnedAccount = () => {
           const acct = selectAccount(subscriptionPool.list(), { nowMs: Date.now(), framework: 'claude-code' });
           return acct ? { configHome: acct.configHome, accountId: acct.id } : null;
-        });
+        };
+        sessionManager.setSpawnAccountResolver(pinnedAccount);
+        // A locked-down reviewer call gets the account a new session would get: otherwise it runs on
+        // the default login, which is signed out on a machine whose logins all live in the pool.
+        configureClaudeReviewerLogin(() => pinnedAccount()?.configHome ?? null);
         console.log(pc.green('  Subscription-pool session pinning enabled'));
       } else {
         sessionManager.setSpawnAccountResolver(() => wallRescue.spawnAccount());
+        configureClaudeReviewerLogin(() => wallRescue.spawnAccount()?.configHome ?? null);
       }
       // Codex placement for new headless codex-cli spawns (fb-39e55b95-f00):
       // never launch on a Codex account the pool reads at its wall; tag the
