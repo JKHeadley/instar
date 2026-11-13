@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-13T19:30:37.700Z",
+  "slug": "updater-drop-satisfied-restart-deferral",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 29,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/AutoUpdater.ts"
+    ],
+    "addedLines": 29,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
