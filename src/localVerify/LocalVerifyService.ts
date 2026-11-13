@@ -1588,10 +1588,16 @@ export class LocalVerifyService {
     return { ok: true, status: 'queued', position, ...this.holdFor(pr) };
   }
 
-  /** A waiting PR first refused at least THROUGHPUT_AGING_MS ago (it then shares the throughput overflow). */
+  /**
+   * A live waiting PR first refused at least THROUGHPUT_AGING_MS ago, with no older live aged
+   * waiter ahead of it: it then shares the throughput overflow. Oldest first among aged waiters,
+   * and a stale waiter (no longer offered) never counts. The wait outside the queue is not
+   * reduced for update pauses, so it can only overcount: the PR reaches the overflow sooner.
+   */
   private waiterAged(pr: number): boolean {
     const w = this.waiting.get(pr);
-    return !!w && this.now() - w.firstRefusedAt >= THROUGHPUT_AGING_MS;
+    const aged = (x: Waiter) => this.now() - x.firstRefusedAt >= THROUGHPUT_AGING_MS;
+    return !!w && this.waiting.isLive(w) && aged(w) && !this.waiting.liveAhead(pr).some(aged);
   }
 
   /** A `recorded` answer: the PR has nothing left to queue for this head, so it leaves the waiting list. */

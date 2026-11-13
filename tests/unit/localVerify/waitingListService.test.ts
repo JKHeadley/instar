@@ -335,6 +335,26 @@ describe('Local Verify waiting list (fb-7fde7f49-8ee)', () => {
     expect(await s.svc.request(51, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
   });
 
+  it('among aged waiters the oldest live one takes the overflow; a stale one never counts as aged', async () => {
+    const s = setup({ views: views(50, 51, 52) });
+    await fill(s);
+    expect(await s.svc.request(52, { explicit: false })).toEqual({ ok: false, code: 'queue-full' }); // refused once, then not offered
+    s.advance(MIN);
+    await s.svc.request(50, { explicit: false });
+    s.advance(MIN);
+    await s.svc.request(51, { explicit: false });
+    for (let i = 0; i < THROUGHPUT_AGING_MS / MIN / 10 - 1; i++) { // up to 82 min: neither aged yet
+      s.advance(10 * MIN);
+      await s.svc.request(50, { explicit: false }); await s.svc.request(51, { explicit: false });
+    }
+    // Both 50 and 51 are aged; 51 asks first but 50 was refused earlier, so 51 waits.
+    s.advance(10 * MIN);
+    expect(await s.svc.request(51, { explicit: false })).toEqual({ ok: false, code: 'queue-full' });
+    // 52 is older than both but stale (not offered for the stale window): it does not hold 50 back.
+    expect(await s.svc.request(50, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
+    expect(await s.svc.request(51, { explicit: false })).toMatchObject({ ok: true, status: 'queued' });
+  });
+
   it('a keptPlace re-queue (a pushed head of a queued PR) is never refused or made to wait', async () => {
     const v = views(50);
     const s = setup({ views: v });
