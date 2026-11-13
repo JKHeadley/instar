@@ -87,8 +87,37 @@ export interface OriginServiceOptions {
   diagnoseUnknown?: (originId: string, reason: string) => Promise<string | void>;
   diagnosticMode?: 'local' | 'delegate';
   limits?: Partial<OriginLimits>;
+  /**
+   * How long each recording stage may take before the service gives up on it. Absent fields
+   * keep the defaults (ORIGIN_STAGE_DEADLINES_MS). Read at call time, so a value set on
+   * `service.options` after construction takes effect, as `peerEvidence` does.
+   *
+   * These are real waits on disk commits (the evidence spool opens a SQLite file with
+   * synchronous FULL and fsyncs its directory). On a saturated disk a healthy commit can
+   * outlast a sub-second budget; tests running beside a full suite set generous values so a
+   * slow commit is not reported as a recording outage.
+   */
+  stageDeadlines?: Partial<OriginStageDeadlines>;
   now?: () => number;
 }
+/** Per-stage budgets, in milliseconds. */
+export interface OriginStageDeadlines {
+  /** Evidence into the store. A miss falls to the spool. */
+  storeEvidenceMs: number;
+  /** Evidence into the local spool. A miss falls to the peer, when one is wired. */
+  spoolEvidenceMs: number;
+  /** Evidence to a peer machine. A miss holds the send: all-durable-recording-sinks-unavailable. */
+  peerEvidenceMs: number;
+  /** Verified evidence into the store, before admission. A miss holds: execution-admission-unavailable. */
+  verifiedEvidenceMs: number;
+  /** Admission of the sealed plan. A miss holds: execution-admission-unavailable. */
+  admitMs: number;
+}
+export const ORIGIN_STAGE_DEADLINES_MS: Readonly<OriginStageDeadlines> = Object.freeze({
+  storeEvidenceMs: 250, spoolEvidenceMs: 500, peerEvidenceMs: 1250, verifiedEvidenceMs: 1000, admitMs: 1000,
+});
+/** The largest budget a caller may set for one stage. */
+export const ORIGIN_STAGE_DEADLINE_MAX_MS = 60_000;
 interface OriginScope { producer: TelegramOriginProducer; operations: string[]; policy?: OriginSendPolicyInput; policyReviewed?: boolean;
   logicalSendKey?: string; logicalOrdinal?: number; }
 export interface OriginPreparedBotOperation { record: TelegramOriginRecord; admission: OriginAdmission; }
@@ -483,11 +512,21 @@ export class TelegramOriginService {
     sealOriginAdmission(operation, this.options.signingKey, now);
     return operation;
   }
+  /**
+   * The budget for one stage: the caller's value when it is a whole number of milliseconds
+   * from 1 to ORIGIN_STAGE_DEADLINE_MAX_MS, otherwise the default. A bad value never widens or
+   * removes a deadline.
+   */
+  #stageDeadline(stage: keyof OriginStageDeadlines): number {
+    const set = this.options.stageDeadlines?.[stage];
+    return typeof set === 'number' && Number.isSafeInteger(set) && set >= 1 && set <= ORIGIN_STAGE_DEADLINE_MAX_MS
+      ? set : ORIGIN_STAGE_DEADLINES_MS[stage];
+  }
   async #recordEvidence(record: StoredOriginInput): Promise<void> {
-    try { await within(this.options.store.putEvidence(record), 250); return; } catch { /* Inert evidence only; a late commit cannot send. */ }
-    try { await within(this.options.spoolEvidence(record), 500); return; } catch { /* Distinct local path can share the same physical disk. */ }
+    try { await within(this.options.store.putEvidence(record), this.#stageDeadline('storeEvidenceMs')); return; } catch { /* Inert evidence only; a late commit cannot send. */ }
+    try { await within(this.options.spoolEvidence(record), this.#stageDeadline('spoolEvidenceMs')); return; } catch { /* Distinct local path can share the same physical disk. */ }
     if (this.options.peerEvidence) {
-      try { await within(this.options.peerEvidence(record), 1250); return; } catch { /* Peer evidence is inert; all failures hold below. */ }
+      try { await within(this.options.peerEvidence(record), this.#stageDeadline('peerEvidenceMs')); return; } catch { /* Peer evidence is inert; all failures hold below. */ }
     }
     throw new TelegramOriginHoldError('all-durable-recording-sinks-unavailable');
   }
@@ -570,9 +609,9 @@ export class TelegramOriginService {
         await within(this.options.store.putVerifiedEvidence({ record: operation.admission.record,
           verification: { envelopeDigest: operation.admission.record.envelopeDigest, verifierMachineId: attestingMachine,
             keyId: key.keyId, keyEpoch: key.keyEpoch, keyFingerprint: wireDigest(key.publicKey), verifiedAt: verified.verifiedAt,
-            keyStatusAtAcceptance: 'active' } }), 1000);
+            keyStatusAtAcceptance: 'active' } }), this.#stageDeadline('verifiedEvidenceMs'));
       }
-      await within(this.options.store.admit(operation.admission), 1000);
+      await within(this.options.store.admit(operation.admission), this.#stageDeadline('admitMs'));
     }
     catch { return this.#hold(operation, 'execution-admission-unavailable'); }
   }

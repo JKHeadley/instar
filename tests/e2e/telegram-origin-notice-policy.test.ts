@@ -5,7 +5,7 @@ import { bootTelegramOrigin } from '../../src/messaging/telegram-origin/Telegram
 import type { OriginNoticeDestinationPolicy } from '../../src/messaging/telegram-origin/OriginNoticePolicy.js';
 import { RECORDING_OUTAGE_TEXT } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
-import { compileOriginWorker, compileOriginConfigWorker } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, compileOriginConfigWorker, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { migrateSecrets } from '../../src/core/SecretMigrator.js';
 import { SecretStore } from '../../src/core/SecretStore.js';
@@ -43,6 +43,7 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
     workerUrl: worker, configWorkerUrl: configWorker, holdsLease: () => ownsLease, diagnoseUnknown: async () => undefined,
     onNoticeState: state => { noticeStates.push(state); if (noticeStates.length > 16) noticeStates.shift(); },
     ...(withAuthority ? { readAlertDestinationPolicy: () => policy } : {}) });
+  allowSlowOriginRecording(current.runtime.service);
   const bootReturnedAt = Date.now();
   let storageFailed = false;
   cleanups.push(async () => {

@@ -11,7 +11,7 @@ import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin
 import type { OutagePolicyProjection } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 import { RECORDING_OUTAGE_TEXT } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
-import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, temporaryState, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
 import { captureOriginAttachments } from '../../src/messaging/telegram-origin/OriginMultipart.js';
 import { NotificationBatcher } from '../../src/messaging/NotificationBatcher.js';
 import { originDeliveryConfirmed } from '../../src/messaging/telegram-origin/OriginDeliveryResolution.js';
@@ -21,6 +21,7 @@ let worker: URL;
 const runtimes: TelegramOriginRuntime[] = [];
 const privateKey = generateKeyPairSync('ed25519').privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
 function allowFixtureSends(runtime: TelegramOriginRuntime): void {
+  allowSlowOriginRecording(runtime.service);
   runtime.attachSendPolicy({ review: async () => ({ ok: true }), authorizeDispatch: () => ({ ok: true }), ...fixtureOriginContentDedup(runtime.options.storage.stateDir, runtime.options.bot.chatId) });
 }
 beforeAll(async () => { worker = await compileOriginWorker(); });

@@ -7,6 +7,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { OriginAdmission } from '../../src/messaging/telegram-origin/StoreTypes.js';
 
 export const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
+/**
+ * Give a real origin service generous recording budgets (20 s a stage, where production has
+ * 250 ms to 1250 ms). For end-to-end and integration fixtures that run beside a full suite: on
+ * a saturated disk a healthy SQLite commit outlasts the production budgets, and the send is
+ * then held as a recording outage that never happened. A sink that REJECTS still fails at
+ * once, and the store's own two-second request deadline still bounds a hung one, so tests of
+ * real outages keep their meaning; only "slow but working" stops counting as broken.
+ */
+export function allowSlowOriginRecording(service: { options: { stageDeadlines?: Partial<Record<'storeEvidenceMs' | 'spoolEvidenceMs' | 'peerEvidenceMs' | 'verifiedEvidenceMs' | 'admitMs', number>> } }): void {
+  service.options.stageDeadlines = { storeEvidenceMs: 20_000, spoolEvidenceMs: 20_000, peerEvidenceMs: 20_000, verifiedEvidenceMs: 20_000, admitMs: 20_000 };
+}
 export const temporaryState = (): string => fs.mkdtempSync(path.join(os.tmpdir(), 'instar-origin-store-'));
 // Confined feedback verification mounts node_modules read-only. Keep generated
 // workers in the writable, ignored test cache under the repo: native imports
