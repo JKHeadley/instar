@@ -41,7 +41,8 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
   const noticeStates: OutageNoticeState[] = [];
   const current = await bootTelegramOrigin({ config: config as never, token: '123:notice-fixture', noticeOwner: true,
     workerUrl: worker, configWorkerUrl: configWorker, holdsLease: () => ownsLease, diagnoseUnknown: async () => undefined,
-    onNoticeState: state => { noticeStates.push(state); if (noticeStates.length > 16) noticeStates.shift(); },
+    // Append-only: `noticeMark()` is an index into this history, so nothing is ever dropped from it.
+    onNoticeState: state => { noticeStates.push(state); },
     ...(withAuthority ? { readAlertDestinationPolicy: () => policy } : {}) });
   allowSlowOriginRecording(current.runtime.service);
   const bootReturnedAt = Date.now();
@@ -81,7 +82,23 @@ async function boot(withAuthority: boolean, allowOrdinary = false, vault = false
   };
   const diagnostics = () => JSON.stringify({ noticeStates, sources: current.runtime.options.readDetectorHealth!().sources,
     policy: current.runtime.options.getAlertPolicy('operator-attention-hub') });
-  return { ...current, wire, failRecording, stateDir, config, diagnostics, loseOwnership: () => { ownsLease = false; }, revoke: () => { policy = null; }, optOut: () => { policy = { ...policy!, optedOut: true }; } };
+  // Whether the notifier decided "suppressed" for the hub at any point since `since`, read from
+  // the states it reported, with nothing attempted since then. For a destination that is still
+  // listed but opted out or no longer owned, `suppressed` is not where the state rests while
+  // recording is healthy: the next five-second maintenance pass clears the spent reservation
+  // and records `unavailable` / `destination-policy`
+  // (TelegramOriginOutageNotifier.recordingRecovered). Reading the current state there passed
+  // only when a poll landed before that pass; on a loaded machine it landed after
+  // (PRs 3126 and 3124 failed on it, 3107 was retried, 2026-11-13). When the policy is unreadable
+  // or the credential was rotated the destination is not listed at all, nothing re-arms, and
+  // `suppressed` is the resting state.
+  const noticeMark = () => noticeStates.length;
+  const suppressedSince = (since: number) => {
+    const seen = noticeStates.slice(since);
+    return { suppressed: seen.some(state => state.notificationOutcome === 'suppressed'),
+      attempted: seen.some(state => state.notificationAttempted), outcomes: seen.map(state => `${state.notificationOutcome}:${state.reason}`) };
+  };
+  return { ...current, wire, failRecording, stateDir, config, diagnostics, noticeMark, suppressedSince, loseOwnership: () => { ownsLease = false; }, revoke: () => { policy = null; }, optOut: () => { policy = { ...policy!, optedOut: true }; } };
 }
 describe('production bootstrap outage authority separation', () => {
   it('rechecks notice permission after a capacity grant without consuming a revoked notice', async () => {
@@ -163,7 +180,7 @@ describe('production bootstrap outage authority separation', () => {
     // refresh plus its bounded two-second source read to observe the rotation.
     await vi.waitFor(() => expect(h.runtime.options.getAlertPolicy('operator-attention-hub')).toBeNull(), { timeout: 7500 });
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
-    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('suppressed'));
+    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome, h.diagnostics()).toBe('suppressed'));
     await expect(telegramFetch('https://api.telegram.org/bot123:notice-fixture/sendMessage', { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ chat_id: '-100123', message_thread_id: 42, text: 'Must not use revoked credential authority' }) })).rejects.toThrow();
     expect(h.wire).not.toHaveBeenCalled();
@@ -190,8 +207,17 @@ describe('production bootstrap outage authority separation', () => {
         expect(reason === 'unreadable' ? current === null : current?.optedOut).toBe(true);
       }, { timeout: reason === 'unreadable' ? 7000 : 20_000 });
     }
+    const mark = h.noticeMark();
     h.runtime.notifier.requestHoldNotice('operator-attention-hub');
-    await vi.waitFor(() => expect(h.runtime.notifier.getState('operator-attention-hub').notificationOutcome).toBe('suppressed'));
+    await vi.waitFor(() => expect(h.suppressedSince(mark), h.diagnostics()).toMatchObject({ suppressed: true, attempted: false }));
+    // Where the state rests afterwards: `suppressed` when the policy is unreadable; `suppressed`
+    // or, after the next maintenance pass, `unavailable` / `destination-policy` when the
+    // destination is opted out or no longer owned. Never an attempt, never a send.
+    const resting = h.runtime.notifier.getState('operator-attention-hub');
+    if (reason === 'unreadable') expect(resting.notificationOutcome, h.diagnostics()).toBe('suppressed');
+    else expect([['suppressed', 'destination-policy'], ['unavailable', 'destination-policy']], h.diagnostics())
+      .toContainEqual([resting.notificationOutcome, resting.reason]);
+    expect(resting.notificationAttempted).toBe(false);
     expect(h.wire).not.toHaveBeenCalled();
   }, 35_000);
   it.each(['missing-topic', 'unknown'] as const)('never retries a notice after a concrete %s network outcome', async outcome => {
