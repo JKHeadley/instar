@@ -38,7 +38,7 @@ import {
 import {
   ChangeSetError, applyChangeSet, buildChangeSet, checkSpecDraft, secretGate, sourcePaths, testEntries, toolingPathsTouched, type ChangeEntry, type ChangeSet,
 } from './changeSet.js';
-import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
+import { buildExecutorPrompt, classifyBaseFailure, readSessionResult, filesNamingTest, relativeImports, shq, testNamePattern, vitestPassedTestCount, type SessionResult } from './executorSession.js';
 import { approvedAtHead, approvedSha, approverIndependence, codeownersOutsideApprover, codeownersOwned, deriveApprover, mapSafeMergeExit, type AgentIdentityFacts } from './reviewGate.js';
 import { FEEDBACK_REVIEW_PASS_PREFIX, REVIEW_DIFF_MAX_BYTES, buildExecutorReviewPrompt, feedbackReviewLead, isSpecReviewHead, judgeRoutedFeedbackReview, renderCloseComment, renderReviewComment, reviewFindingsText, reviewRefusalIsAboutTheChange, type FeedbackReviewLead, type IndependentReviewVerdict, type ReviewCommentNext, type ReviewerOutcome } from './independentReview.js';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
@@ -217,6 +217,8 @@ function attemptTmpDirFor(agentHome: string, row: Pick<ExecutionRow, 'initiative
   return shortAttemptTmpDir(row.initiativeId, row.attempt, shortTmpRealRoot(), path.resolve(agentHome));
 }
 
+/** Re-verifications allowed after restarts interrupt an attempt's checks (the session is not re-run). */
+export const MAX_REVERIFY_AFTER_RESTART = 3;
 /** Vitest's marks for a failed test in the output a killed run leaves behind. */
 const RELATED_FAILURE_OUTPUT = /(^|\s)(FAIL|×)\s|\b\d+ failed\b/m;
 
@@ -1034,11 +1036,16 @@ export class FeedbackExecutorService {
       }
     }
     const intact = (row.workspace && fs.existsSync(row.workspace)) || fs.existsSync(this.attemptPaths(row).reviewDir);
-    if (row.state === 'verifying' && row.reason !== 'reverify-after-restart' && intact && row.publishClone && fs.existsSync(row.publishClone)) {
-      // Verification interrupted by a restart with the workspace intact: verify again once (an
-      // infrastructure interruption is not the item's failure).
+    const reverifies = this.metaJson<{ n: number }>(`exec:reverify:${row.attemptId}`)?.n ?? (row.reason === 'reverify-after-restart' ? 1 : 0);
+    if (row.state === 'verifying' && reverifies < MAX_REVERIFY_AFTER_RESTART && intact && row.publishClone && fs.existsSync(row.publishClone)) {
+      // Verification interrupted by a restart with the workspace intact: verify again, up to
+      // MAX_REVERIFY_AFTER_RESTART times (an infrastructure interruption is not the item's failure).
+      // The session's work is already done; only the trusted checks run again. The hold that would
+      // defer a restart yields to Local Verify, and on a busy day updates restart the server about
+      // hourly, so one re-check was often lost to the next restart (2026-11-12/13).
+      this.setMeta(epoch, `exec:reverify:${row.attemptId}`, { n: reverifies + 1 });
       this.opts.store.patch(epoch, row.attemptId, { state: 'running', reason: 'reverify-after-restart' });
-      this.opts.audit.append('execute:reverify', { attemptId: row.attemptId });
+      this.opts.audit.append('execute:reverify', { attemptId: row.attemptId, n: reverifies + 1 });
       return;
     }
     if (row.state === 'claimed' || row.state === 'verifying') {
@@ -1264,7 +1271,13 @@ export class FeedbackExecutorService {
     // --no-cache: vitest's results cache lives in node_modules, which is the read-only dependency cache here.
     // One vitest run per config: the unit config collects only unit files, so an
     // integration or e2e test file needs its own lane config or it runs nothing.
-    const testCmd = groupTestFilesByConfig(result.testFiles)
+    // Only the listed files that contain the named test: the named test must pass in every run, and
+    // a listed file without it runs nothing under -t (2026-11-13, 54c2a4aa:a2 failed a working fix on
+    // an extra integration file). The bytes come from the change set the checks publish; when no
+    // listed file names the test, every listed file runs, as before.
+    const testFiles = filesNamingTest(result.testFiles, result.testName, (f) => changeSet.entries.find((e) => e.path === f)?.bytes?.toString('utf8') ?? null);
+    if (testFiles.length !== result.testFiles.length) this.opts.audit.append('execute:test-files-narrowed', { attemptId: row.attemptId, listed: result.testFiles, kept: testFiles });
+    const testCmd = groupTestFilesByConfig(testFiles)
       .map((g) => `./node_modules/.bin/vitest run --no-cache --config ${shq(g.config)} ${g.files.map(shq).join(' ')} -t ${shq(testNamePattern(result.testName))}`)
       .join(' && ');
     const diskOk = async (clone: string) => await treeBytes(clone, WORKSPACE_DISK_CAP_BYTES) + await treeBytes(p.tmpDir, WORKSPACE_DISK_CAP_BYTES) <= WORKSPACE_DISK_CAP_BYTES;

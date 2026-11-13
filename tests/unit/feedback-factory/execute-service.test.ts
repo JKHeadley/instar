@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
+import { MAX_REVERIFY_AFTER_RESTART } from '../../../src/feedback-factory/execute/FeedbackExecutorService.js';
 import { BASE_SHA, HEAD_SHA, createExecHarness, defaultRun, finishSessions, isBaseState, type ExecHarness } from '../../fixtures/feedbackExecuteHarness.js';
 import { DrainConflictError } from '../../../src/feedback-factory/drain/FeedbackDrainStore.js';
 import { CANARY_PROBE_DETAIL_BUDGET, CANARY_VERSION, CONFINED_COMMAND_TIMEOUT_MS, CONFINED_RELATED_TIMEOUT_MS, EVIDENCE_FILE, RESULT_FILE, SANDBOX_RUNTIME_VERSION, pathSlug } from '../../../src/feedback-factory/execute/executePolicy.js';
@@ -1597,15 +1598,33 @@ describe('second-pass review regressions', () => {
     expect(h.execStore.latestFor(initiativeId)!.state).toBe('running');
     await h.exec.tick();
     expect(h.execStore.latestFor(initiativeId)!.state).toBe('pr-open');
-    // Interrupted twice → stopped (infrastructure), not failed.
+    // Interrupted again during each re-verify: re-verified up to MAX_REVERIFY_AFTER_RESTART times,
+    // then stopped (infrastructure), never failed.
     h.cleanup();
     h = await createExecHarness();
     const b = await startOne();
     const r2 = h.execStore.latestFor(b.initiativeId)!;
+    finishSessions(h);
+    for (let i = 1; i <= MAX_REVERIFY_AFTER_RESTART; i++) {
+      h.execStore.patch(1, r2.attemptId, { state: 'verifying', reason: i === 1 ? '' : 'reverify-after-restart' });
+      await h.exec.tick();
+      expect(h.execStore.get(r2.attemptId)).toMatchObject({ state: 'running', reason: 'reverify-after-restart' });
+    }
     h.execStore.patch(1, r2.attemptId, { state: 'verifying', reason: 'reverify-after-restart' });
     await h.exec.tick();
     expect(h.execStore.attemptsFor(b.initiativeId)[0]).toMatchObject({ state: 'stopped', reason: 'interrupted' });
     expect(h.store.get(b.initiativeId)!.state).toBe('work');
+    const reverifies = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8').split('\n').filter((l) => l.includes('"execute:reverify"'));
+    expect(reverifies).toHaveLength(MAX_REVERIFY_AFTER_RESTART);
+    // A row recorded before this change (reason set, no counter) counts as one re-verify already used.
+    h.cleanup();
+    h = await createExecHarness();
+    const c = await startOne();
+    const r3 = h.execStore.latestFor(c.initiativeId)!;
+    finishSessions(h);
+    h.execStore.patch(1, r3.attemptId, { state: 'verifying', reason: 'reverify-after-restart' });
+    await h.exec.tick();
+    expect(fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8')).toContain('"execute:reverify","attemptId":"' + r3.attemptId + '","n":2');
   });
 
   it('an epoch change while a finished fix waits for its re-verify does not discard it', async () => {
@@ -1876,6 +1895,27 @@ describe('focused review round regressions', () => {
     gh().disableAuto = async () => false;
     await expect(h.exec.stopItem(c.initiativeId)).resolves.toEqual({ stopped: 0 });
     expect(h.execStore.latestFor(c.initiativeId)).toMatchObject({ state: 'merge-armed', disarmFailed: true });
+  });
+
+  it('the base and head checks run only the listed test files that contain the named test', async () => {
+    h = await createExecHarness();
+    await h.workItem('c1');
+    h.fixWith({
+      'src/thing.ts': 'export const thing = 2;\n',
+      'tests/fix.test.ts': "import { it } from 'vitest';\nit('fixes it', () => {});\n",
+      'tests/integration/other.test.ts': "import { it } from 'vitest';\nit('something else', () => {});\n",
+    }, { testFiles: ['tests/fix.test.ts', 'tests/integration/other.test.ts'] });
+    await h.exec.tick();
+    finishSessions(h);
+    h.now.value += 60_000;
+    await h.exec.tick();
+    const checks = h.runs.filter((r) => /-(base|head)$/.test(r.cwd) && /vitest run/.test(r.command));
+    expect(checks.length).toBeGreaterThan(0);
+    for (const r of checks) {
+      expect(r.command).toContain('tests/fix.test.ts');
+      expect(r.command).not.toContain('tests/integration/other.test.ts');
+    }
+    expect(fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8')).toContain('execute:test-files-narrowed');
   });
 
   it('a related-tests run that hits its time limit is inconclusive and the fix still reaches a PR', async () => {
