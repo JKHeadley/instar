@@ -11,7 +11,7 @@ import type { OriginSessionLifecycle } from '../../src/messaging/telegram-origin
 import type { OutagePolicyProjection } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 import { RECORDING_OUTAGE_TEXT } from '../../src/messaging/telegram-origin/TelegramOriginOutageNotifier.js';
 import { telegramFetch } from '../../src/messaging/telegram-egress.js';
-import { compileOriginWorker, temporaryState, allowSlowOriginRecording } from '../helpers/telegramOriginStore.js';
+import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../helpers/telegramOriginStore.js';
 import { captureOriginAttachments } from '../../src/messaging/telegram-origin/OriginMultipart.js';
 import { NotificationBatcher } from '../../src/messaging/NotificationBatcher.js';
 import { originDeliveryConfirmed } from '../../src/messaging/telegram-origin/OriginDeliveryResolution.js';
@@ -42,7 +42,7 @@ async function boot(onSessionDeliveryHeld?: import('../../src/messaging/telegram
       chat: { id: Number(params.chat_id) }, message_thread_id: Number(params.message_thread_id) } }));
   });
   vi.stubGlobal('fetch', network);
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo' },
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir: temporaryState(), agentId: 'echo', requestTimeoutMs: SLOW_DISK_STORE_REQUEST_TIMEOUT_MS },
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Mac Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token, accountId: 'bot-1' },
     isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
