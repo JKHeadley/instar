@@ -1148,6 +1148,7 @@ describe('interrupted runs (2026-10-26: restarts killed PR 2350 four times with 
     await s2.svc.boot();
     await s2.svc.tick();
     expect(s2.starved).toHaveLength(0);
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1); // it resumed
     s2.svc.shutdown();
     await s2.finish(0, null);
@@ -1167,6 +1168,7 @@ describe('interrupted runs (2026-10-26: restarts killed PR 2350 four times with 
     s2.svc.noteMainHead(sha('9'));
     await s2.svc.settle();
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
     expect(s2.spawned[0].args.join(' ')).not.toContain(sha('9'));
     expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
@@ -1203,6 +1205,7 @@ describe('interrupted runs (2026-10-26: restarts killed PR 2350 four times with 
     const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
     await s2.svc.boot();
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
     const saved = JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8'));
     expect(saved.entries[0].resumeFirst).toBeUndefined();
@@ -1218,6 +1221,7 @@ describe('interrupted runs (2026-10-26: restarts killed PR 2350 four times with 
     expect(JSON.parse(fs.readFileSync(s3.svc.queuePath, 'utf-8')).entries[0]).toMatchObject({ pr: 1, starvedRaised: true });
     s3.svc.noteMainHead(sha('9')); // pumps at once: the interrupted PR starts before any tick
     await s3.svc.settle();
+    await s3.flush(); // a restored entry re-reads its base before it starts
     expect(s3.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
     await s3.svc.tick();
     expect(s3.starved).toHaveLength(1); // once
@@ -1228,6 +1232,7 @@ describe('interrupted runs (2026-10-26: restarts killed PR 2350 four times with 
     const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
     await s2.svc.boot();
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.svc.snapshot().inFlight).toMatchObject({ pr: 1 });
     // Simulate the count crossing the threshold while it runs (a second interruption recorded on the live entry).
     const live = (s2.svc as unknown as { inFlight: { entry: { interruptions?: number } } }).inFlight.entry;
@@ -1281,6 +1286,7 @@ describe('durable queue', () => {
     expect(q).toEqual([[1, sha('a')], [2, sha('c')]]); // 3 head moved, 4 closed
     expect(s2.svc.snapshot().queue[0].firstQueuedAt).toBe(saved.entries[0].firstQueuedAt);
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
     expect(s2.spawned[0].args.join(' ')).toContain('--input');
   });
@@ -1293,11 +1299,13 @@ describe('durable queue', () => {
     s2.alive.add(pgid); // the old group still runs; its identity is unconfirmed
     await s2.svc.boot();
     await s2.svc.tick();
+    await s2.flush(); // a restored start is async now: without this the next line could not fail
     expect(s2.svc.snapshot().blocked).toBe(true);
     expect(s2.svc.snapshot().queue.map((e) => e.pr)).toEqual([1]);
     expect(s2.spawned).toHaveLength(0);
     s2.alive.delete(pgid);
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
   });
 
@@ -1620,6 +1628,9 @@ describe('merge line (CMT-980): queue place, pre-start base refresh, merge hand-
     expect(decideBaseRefresh(e, { now: 6_000, mainMovedAt: 5_500 })).toBe(true);  // moved after
     expect(decideBaseRefresh({ ...e, baseRefName: 'dev' }, { now: 6_000, mainMovedAt: 5_500 })).toBe(false); // main is not its base
     expect(decideBaseRefresh(e, { now: 5_000 + MERGE_LINE.baseRefreshAfterMs, mainMovedAt: null })).toBe(true); // waited long enough
+    // Restored after a restart (never resolved by this process): always, even on a clock near zero and on any base branch.
+    expect(decideBaseRefresh({ ...e, baseResolvedAt: 0 }, { now: 1, mainMovedAt: null })).toBe(true);
+    expect(decideBaseRefresh({ ...e, baseRefName: 'dev', baseResolvedAt: 0 }, { now: 1, mainMovedAt: null })).toBe(true);
     expect(decideBaseRefresh({ baseRefName: 'main', firstQueuedAt: 1_000 }, { now: 1_000 + MERGE_LINE.baseRefreshAfterMs - 1, mainMovedAt: null })).toBe(false); // falls back to firstQueuedAt
     const base = { outcome: 'success' as const, wired: true, stopped: false, holdOpen: false };
     expect(decideMergeHandoff(base)).toEqual({ handoff: true });
@@ -2055,6 +2066,61 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s.svc.snapshot().records).toBe(0);
   });
 
+  describe('a restored entry is never tested on the PR view\'s stale base (2026-11-13: two runs on a 7-hour-old main)', () => {
+    type Seams = { seams: { baseHead?: (b: string) => Promise<string | null> } };
+    const inputOf = (s: ReturnType<typeof setup>, i = 0) => JSON.parse(fs.readFileSync(s.spawned[i].args[s.spawned[i].args.indexOf('--input') + 1], 'utf-8')) as { pr: number; baseSha: string };
+    const savedQueue = async (currentMain: string) => {
+      // PR 1 runs; PR 2 waits in the queue with the base this service resolved: today's main.
+      const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }) } });
+      (s.svc as unknown as Seams).seams.baseHead = async () => currentMain;
+      await s.svc.request(1);
+      await s.svc.request(2);
+      expect(queueOnDisk(s.stateDir).find((e) => e.pr === 2)).toMatchObject({ baseSha: currentMain });
+      s.svc.shutdown();
+      return s;
+    };
+
+    it('restore keeps the saved base, and the pre-start refresh reads today\'s head even though the base was resolved seconds before the restart', async () => {
+      const s = await savedQueue(sha('e'));
+      // GitHub's view of both PRs still carries the base from when they were opened (sha('b')).
+      const s2 = setup({ stateDir: s.stateDir, views: s.views });
+      const reads: string[] = [];
+      (s2.svc as unknown as Seams).seams.baseHead = async (b) => { reads.push(b); return sha('f'); }; // main moved again while the server was down
+      await s2.svc.boot();
+      for (const e of s2.svc.snapshot().queue) expect(e.baseSha, `PR ${e.pr} restored on the PR view's stale base`).not.toBe(sha('b'));
+      await s2.svc.tick();
+      await s2.flush(); // a restored entry re-reads its base before it starts
+      expect(s2.spawned).toHaveLength(1);
+      expect(reads).toContain('main');
+      expect(inputOf(s2).baseSha).toBe(sha('f'));
+      expect(audit(s.stateDir).map((l) => l.event)).toContain('base-refreshed');
+    });
+
+    it('when today\'s head cannot be read, the run uses the saved base, not the PR view\'s', async () => {
+      const s = await savedQueue(sha('e'));
+      const s2 = setup({ stateDir: s.stateDir, views: s.views });
+      (s2.svc as unknown as Seams).seams.baseHead = async () => null;
+      await s2.svc.boot();
+      await s2.svc.tick();
+      await s2.flush(); // a restored entry re-reads its base before it starts
+      expect(s2.spawned).toHaveLength(1);
+      expect(inputOf(s2).baseSha).toBe(sha('e'));
+      expect(audit(s.stateDir).map((l) => l.event)).toContain('base-refresh-failed');
+    });
+
+    it('the "never resolved" marker is not written to the durable queue, and a later request records a real resolution time', async () => {
+      const s = await savedQueue(sha('e'));
+      const s2 = setup({ stateDir: s.stateDir, views: s.views });
+      (s2.svc as unknown as Seams).seams.baseHead = async () => sha('e');
+      await s2.svc.boot();
+      const onDisk = () => JSON.parse(fs.readFileSync(s2.svc.queuePath, 'utf-8')) as { entries: Array<{ pr: number; baseResolvedAt?: number }> };
+      for (const e of onDisk().entries) expect(e.baseResolvedAt ?? null, `PR ${e.pr}`).toBeNull();
+      s2.advance(1_000);
+      await s2.svc.request(2, { explicit: false });
+      expect(onDisk().entries.find((e) => e.pr === 2)?.baseResolvedAt).toBeGreaterThan(0);
+    });
+  });
+
   it('(b) after the restart the restored queue runs again, in order, on the new verifier version', async () => {
     const s = setup({ views: { 1: view(), 2: view({ headRefOid: sha('c') }), 3: view({ headRefOid: sha('e') }) } });
     await s.svc.request(1);
@@ -2070,6 +2136,7 @@ describe('verifier changed on disk: a verifier-mismatch holds the queue for the 
     expect(s2.svc.snapshot().queue.map((e) => [e.pr, e.attempts])).toEqual([[1, 0], [2, 0], [3, 0]]); // nothing dropped as already-recorded
     expect(audit(s.stateDir).filter((l) => l.event === 'queue-restored').pop()).toMatchObject({ restored: 3, dropped: 0 });
     await s2.svc.tick();
+    await s2.flush(); // a restored entry re-reads its base before it starts
     expect(s2.spawned).toHaveLength(1);
     expect(JSON.parse(fs.readFileSync(s2.spawned[0].args[s2.spawned[0].args.indexOf('--input') + 1], 'utf-8'))).toMatchObject({ pr: 1, verifierVersion: 'vh2:new' });
     await s2.finish(0, ok(record({ verifierVersion: 'vh2:new' })));
