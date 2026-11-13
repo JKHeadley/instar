@@ -2278,8 +2278,11 @@ describe('a deferred restart is a pending update (the applied-but-not-restarted 
       expect(fs.readFileSync(s.svc.auditPath, 'utf-8')).toContain('"event":"update-pause"');
       expect(s.svc.restartHolds(4 * 3_600_000)).toEqual([]);
       await gated(); // the 5-minute retry: nothing holds it now
-      await new Promise((r) => setTimeout(r, 50));
-      expect(fs.existsSync(path.join(tmp, 'state', 'restart-requested.json'))).toBe(true);
+      // The request file is written a moment after the gate opens. Wait for the file, not for a
+      // fixed 50 ms: on a loaded machine that was sometimes too short (seen 2026-11-13).
+      const requestFile = path.join(tmp, 'state', 'restart-requested.json');
+      for (let waited = 0; waited < 5000 && !fs.existsSync(requestFile); waited += 25) await new Promise((r) => setTimeout(r, 25));
+      expect(fs.existsSync(requestFile)).toBe(true);
       // The old process still runs stale code, so the new marker keeps the queue
       // paused until a fresh process replaces its updater and restarts admission.
       await s.svc.tick();
@@ -2393,5 +2396,162 @@ describe('lane shard setting (monitoring.localVerify.laneShards)', () => {
     s.svc.setLaneShards(() => { throw new Error('nope'); });
     await s.svc.request(1);
     expect(inputOf(s).laneShards).toBeUndefined();
+  });
+});
+
+describe('a run that finished just before the server stopped (2026-11-13: PR 3107 cancelled 121 ms after its verdict)', () => {
+  /** Start PR 1, let its child write a result, and stop the server BEFORE the exit event is handled. */
+  const stopAfterResult = async (result: VerifyRunResult, opts: { childStillAlive?: boolean } = {}) => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    const run = s.spawned[0];
+    fs.writeFileSync(run.resultPath, JSON.stringify(result));
+    if (!opts.childStillAlive) s.alive.delete(run.pid);
+    s.svc.shutdown();
+    return { s, run };
+  };
+  const auditEvents = (s: ReturnType<typeof setup>): string[] =>
+    fs.readFileSync(s.svc.auditPath, 'utf-8').trim().split('\n').map((line) => (JSON.parse(line) as { event: string }).event);
+
+  it('keeps a green verdict: recorded, not counted as an interruption, not re-queued', async () => {
+    const { s } = await stopAfterResult(ok(record({ outcome: 'success' })));
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    const events = auditEvents(s);
+    expect(events).toContain('settled-at-shutdown');
+    expect(events).not.toContain('interrupted');
+    expect(events).not.toContain('cancel');
+    expect(s.kills).toEqual([]); // the group was already gone: nothing to signal
+    // The next boot finds the record and does not run the PR again.
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    expect(s2.svc.snapshot().queue.filter((entry) => entry.pr === 1)).toEqual([]);
+    expect(s2.spawned).toHaveLength(0);
+    s2.svc.shutdown();
+  });
+
+  it('keeps a red verdict too, which is the case that was lost', async () => {
+    const { s } = await stopAfterResult(ok(record({ outcome: 'failure' })));
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('failure');
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    await s2.svc.tick();
+    expect(s2.spawned).toHaveLength(0);
+    expect(s2.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('failure');
+    s2.svc.shutdown();
+  });
+
+  it('the exit event that arrives after the stop does not replace the verdict with a crash', async () => {
+    const { s, run } = await stopAfterResult(ok(record({ outcome: 'success' })));
+    run.resolve({ status: 0, signal: null });
+    await s.flush();
+    await s.flush();
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    const events = auditEvents(s);
+    expect(events.filter((event) => event === 'run-error')).toEqual([]);
+    expect(events.filter((event) => event === 'settled-at-shutdown')).toHaveLength(1);
+  });
+
+  it('whatever is left of the group is swept as after any finished run, and the next boot is not blocked by it', async () => {
+    const { s, run } = await stopAfterResult(ok(record({ outcome: 'success' })), { childStillAlive: true });
+    expect(s.kills).toEqual([{ pgid: run.pid, signal: 'SIGKILL' }]);
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('success');
+    expect(fs.existsSync(s.intentPath)).toBe(false);
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().blocked).toBe(false);
+    s2.svc.shutdown();
+  });
+
+  it('a crash result written by the child is settled as the error it is, and its retry is queued without an interruption', async () => {
+    const { s } = await stopAfterResult({ kind: 'crash', detail: 'orchestrator threw' } as unknown as VerifyRunResult);
+    const events = auditEvents(s);
+    expect(events).toContain('settled-at-shutdown');
+    expect(events).toContain('run-error');
+    expect(events).not.toContain('interrupted');
+    expect(s.svc.getRecord(1, sha('a'), 'main')?.outcome).toBe('error');
+    const queue = JSON.parse(fs.readFileSync(path.join(s.stateDir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<{ pr: number; interruptions?: number; inFlight?: boolean }> };
+    const retries = queue.entries.filter((e) => e.pr === 1);
+    expect(retries).toHaveLength(1);
+    for (const entry of retries) {
+      expect(entry.interruptions ?? 0).toBe(0);
+      expect(entry.inFlight ?? false).toBe(false);
+    }
+  });
+
+  it('a file that is not a result object is not a verdict', async () => {
+    for (const junk of ['{}', '"done"', '0', 'null', 'not json']) {
+      const s = setup({ views: { 1: view() } });
+      await s.svc.request(1);
+      await s.svc.tick();
+      fs.writeFileSync(s.spawned[0].resultPath, junk);
+      s.svc.shutdown();
+      expect(auditEvents(s), junk).toContain('interrupted');
+      expect(auditEvents(s), junk).not.toContain('settled-at-shutdown');
+      await s.finish(0, null);
+    }
+  });
+
+  it('a result file that parses to something other than an object is a crash record, not a thrown exit handler', async () => {
+    // Before: '"done"' or '0' parsed fine, and the exit handler's `'degradations' in result`
+    // threw a TypeError out of the exit promise (an unhandled rejection in the server).
+    for (const junk of ['"done"', '0', 'true', '[1,2]']) {
+      const s = setup({ views: { 1: view() } });
+      await s.svc.request(1);
+      await s.svc.tick();
+      fs.writeFileSync(s.spawned[0].resultPath, junk);
+      s.alive.delete(s.spawned[0].pid);
+      await s.finish(0, null);
+      const events = auditEvents(s);
+      expect(events, junk).not.toContain('settled-at-shutdown');
+      // The exit handler ran to its end: the run is recorded as an error and retried.
+      expect(events, junk).toContain('run-error');
+      expect(events, junk).toContain('record');
+    }
+  });
+
+  it('is not settled when the verifier on disk changed: the next verifier would ignore the record, so the entry keeps its place', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    fs.writeFileSync(s.spawned[0].resultPath, JSON.stringify(ok(record({ outcome: 'success' }))));
+    s.alive.delete(s.spawned[0].pid);
+    s.setDiskVersion('vh3:changed');
+    s.svc.shutdown();
+    const events = auditEvents(s);
+    expect(events).toContain('interrupted');
+    expect(events).not.toContain('settled-at-shutdown');
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    const queue = JSON.parse(fs.readFileSync(path.join(s.stateDir, 'state', 'local-verify', 'queue.json'), 'utf-8')) as { entries: Array<{ pr: number; resumeFirst?: boolean }> };
+    expect(queue.entries[0]).toMatchObject({ pr: 1, resumeFirst: true });
+  });
+
+  it('a run with no result yet is still an interruption, exactly as before', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    s.svc.shutdown();
+    const events = auditEvents(s);
+    expect(events).toContain('interrupted');
+    expect(events).not.toContain('settled-at-shutdown');
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    await s.finish(0, null);
+    const s2 = setup({ stateDir: s.stateDir, views: { 1: view() } });
+    await s2.svc.boot();
+    expect(s2.svc.snapshot().queue[0]).toMatchObject({ pr: 1, interruptions: 1, resumeFirst: true });
+    s2.svc.shutdown();
+  });
+
+  it('a half-written result (the temporary file only) is not a verdict', async () => {
+    const s = setup({ views: { 1: view() } });
+    await s.svc.request(1);
+    await s.svc.tick();
+    fs.writeFileSync(`${s.spawned[0].resultPath}.tmp`, JSON.stringify(ok(record({ outcome: 'success' }))));
+    s.svc.shutdown();
+    expect(auditEvents(s)).toContain('interrupted');
+    expect(s.svc.getRecord(1, sha('a'), 'main')).toBeNull();
+    await s.finish(0, null);
   });
 });
