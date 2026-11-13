@@ -47,10 +47,18 @@ export async function runProbe(name: string): Promise<void> {
   if (!dir) return; // probe not active for this scenario — trivial pass
   const expected = Number(process.env['FIXTURE_PROBE_EXPECT'] ?? '5');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, `start-${name}.json`),
-    JSON.stringify({ name, t: Date.now(), pid: process.pid }),
-  );
+  // First stamp wins ('wx'): if a probe file is ever run a second time in the same scenario,
+  // the second pass finds all the start files already there and would overwrite a real window
+  // with a zero-length one, turning the measurement into 0 (seen once, 2026-11-12, on a
+  // saturated machine; not reproduced in five further runs).
+  const stamp = (file: string): void => {
+    try {
+      fs.writeFileSync(path.join(dir, file), JSON.stringify({ name, t: Date.now(), pid: process.pid }), { flag: 'wx' });
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    }
+  };
+  stamp(`start-${name}.json`);
   const deadline = Date.now() + 4000;
   for (;;) {
     let starts = 0;
@@ -62,8 +70,5 @@ export async function runProbe(name: string): Promise<void> {
     if (starts >= expected || Date.now() >= deadline) break;
     await new Promise((r) => setTimeout(r, 50));
   }
-  fs.writeFileSync(
-    path.join(dir, `end-${name}.json`),
-    JSON.stringify({ name, t: Date.now(), pid: process.pid }),
-  );
+  stamp(`end-${name}.json`);
 }

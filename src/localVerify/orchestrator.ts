@@ -571,6 +571,12 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const uw = input.laneShards?.unitWorkers;
         const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
         laneEnv.INSTAR_TEST_WORKERS = String(workers);
+        // This run already holds the host suite slot. Its own unit lane is a child of that
+        // holder, so the host test-runner bound's nested clamp capped it at 4 workers whatever
+        // was asked (2026-11-12: 8 workers ran no faster, 1159 s). Declare the lane as the
+        // holder's own suite: the bound then skips only the clamp (the kill switch would also
+        // log a disabled bound on every run and trip the self-disable detector).
+        laneEnv.INSTAR_HOST_TEST_OWN_SUITE_HOLDER = String(process.pid);
         seams.log({ event: 'unit-workers', workers, source: workers === uw ? 'machine-setting' : 'policy-default' });
         laneEnv.AUDIT_CHANGE_KIND = 'pull_request';
         laneEnv.AUDIT_CHANGE_BASE_SHA = input.baseSha;

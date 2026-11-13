@@ -5,6 +5,8 @@ A green PR verify after `main`'s own error retries ran out now queues one more `
 
 Each machine can set its own unit-lane worker count with `monitoring.localVerify.laneShards.unitWorkers` (1..12; default 4), read at each run start like the shard counts. It changes how many unit test files run at once, never which ones.
 
+The lane time limits are now hang limits, not speed targets: unit 40, integration 45 and e2e 60 minutes (were 20, 30 and 45), about twice the measured normal, after healthy runs were being killed at the old limits on 2026-11-12. And the verify's own unit lane is no longer held to 4 workers by the host test-runner bound: the run that holds the suite slot declares that lane as its own, so a configured `unitWorkers` above 4 takes effect. Every other nested test run is clamped as before.
+
 ## What to Tell Your User
 When a test run on the way to merging times out, I can now see which test was stuck instead of guessing, and the machine is freed for the next change sooner. Changes waiting to merge also no longer stall for hours after the main branch's own check times out a few times. Nothing for you to do.
 

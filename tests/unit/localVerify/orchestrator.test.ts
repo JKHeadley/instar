@@ -817,12 +817,18 @@ describe('runVerify — e2e shards', () => {
     expect(f.logs.some((l) => l.event === 'file-in-multiple-shards' && l.file === E2E)).toBe(true);
   });
   it('a shard deadline waits for its sibling shard to exit before the slot is released', async () => {
-    const f = fake({ durations: { e2e: LOCAL_VERIFY_DEADLINES.lanes.e2e + 1 } });
+    // Only shard 1 hits its deadline; the last shard is still running when it does. (The fake
+    // clock is shared, so giving every shard the over-deadline duration would spend the overall
+    // budget before the last shard starts.)
+    const f = fake();
     const order: string[] = [];
     f.seams.holdSuiteSlot = async () => () => { order.push('release'); };
     const exec = f.seams.exec;
     f.seams.exec = async (c, a, o) => {
-      if ((isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`))) {
+      if (isE2e(a) && a.includes(`--shard=1/${E2E_N}`)) {
+        return { status: null, signal: 'SIGTERM', stdout: '', stderr: '', deadlineKilled: true, pid: 999 };
+      }
+      if (isE2e(a) && a.includes(`--shard=${E2E_N}/${E2E_N}`)) {
         await new Promise((r) => setTimeout(r, 20)); // still running when shard 1 has already failed
         const res = await exec(c, a, o);
         order.push('shard2-exited');
@@ -834,6 +840,7 @@ describe('runVerify — e2e shards', () => {
     expect(r.kind === 'record' && r.record).toMatchObject({ outcome: 'error' });
     expect(order).toEqual(['shard2-exited', 'release']);
   });
+
   it('the unit lane is pinned to the parallel worker count; other lanes are not', async () => {
     const f = fake();
     await runVerify(input(), f.seams);
@@ -845,6 +852,11 @@ describe('runVerify — e2e shards', () => {
     const f = fake();
     await runVerify(input({ laneShards: { unitWorkers: 8 } }), f.seams);
     expect(f.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe('8');
+    // The run holds the suite slot; its own unit lane is exempt from the nested clamp, other lanes are not touched.
+    const calls = f.execCalls.filter((c) => c.command.endsWith('vitest'));
+    expect(calls[0].env.INSTAR_HOST_TEST_OWN_SUITE_HOLDER).toBe(String(process.pid));
+    expect(calls[0].env.INSTAR_HOST_TEST_SEMAPHORE).toBeUndefined();
+    for (const l of calls.slice(1)) expect(l.env.INSTAR_HOST_TEST_OWN_SUITE_HOLDER).toBeUndefined();
     const g = fake();
     await runVerify(input({ laneShards: { unitWorkers: 99 } }), g.seams);
     expect(g.execCalls.filter((c) => c.command.endsWith('vitest'))[0].env.INSTAR_TEST_WORKERS).toBe(String(LOCAL_VERIFY_LIMITS.unitWorkersParallel));
