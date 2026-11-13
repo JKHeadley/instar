@@ -41,6 +41,7 @@ import { DegradationReporter } from './DegradationReporter.js';
 import { GuardLatchStore, type GuardLatchEntry } from './GuardLatchStore.js';
 import type { AgentStopFacts } from './agentStopRelease.js';
 import { DefaultMergeRunner } from './MergeRunner.js';
+import { listOpenPrRowsPaged } from './greenPrOpenPrList.js';
 import {
   type GreenPrAutoMergerDeps,
   type GreenPrState,
@@ -118,7 +119,7 @@ export const AGENT_STOP_PR_JSON_FIELDS: readonly string[] = [
   'number', 'body', 'state', 'mergedAt', 'baseRefName', 'mergeCommit',
 ];
 
-/** The `listOpenPrs` projection. */
+/** The `listOpenPrs` projection: the keys of every row the paged listing (greenPrOpenPrList) returns. */
 export const LIST_PR_JSON_FIELDS: readonly string[] = [
   'number', 'title', 'labels', 'isDraft', 'headRefName', 'headRefOid', 'baseRefName', 'mergeable',
   'statusCheckRollup', 'autoMergeRequest', 'reviewDecision', 'createdAt',
@@ -372,16 +373,11 @@ export function buildGreenPrDeps(opts: GreenPrWiringOpts, latches: GuardLatchSto
       return extractRulesetReviewPolicy(JSON.parse(r.stdout));
     },
     listOpenPrs: async () => {
-      const r = await exec([
-        'pr', 'list', '--author', '@me', '--state', 'open', '--base', 'main',
-        // Widened (mergerunner-auto-arm-handoff Blocker 4 — the cheap-pass): one
-        // extra field on the single oldest-first list call already made each tick
-        // lets gather() skip an already-armed PR FREE, regardless of local state.
-        '--limit', '100', '--json', LIST_PR_JSON_FIELDS.join(','),
-        '--search', 'sort:created-asc',
-      ]);
-      if (r.code !== 0) throw new Error(`gh pr list failed: ${r.stderr.slice(0, 200)}`);
-      const rows = JSON.parse(r.stdout) as Array<Record<string, unknown>>;
+      // Paged (greenPrOpenPrList): the single `gh pr list --limit 100` call with every PR's
+      // checks got HTTP 502 from GitHub once enough PRs were open. Rows keep the `gh pr list`
+      // shape (LIST_PR_JSON_FIELDS), including autoMergeRequest so gather() still skips an
+      // already-armed PR for free. A failed page throws and feeds the tick-failed breaker.
+      const rows = await listOpenPrRowsPaged(exec, opts.repo);
       return rows.map(mapPr);
     },
     codeOwnedPaths: async (pr: PrSummary): Promise<CodeOwnedPathsVerdict> => {
