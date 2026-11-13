@@ -1889,6 +1889,13 @@ export class LocalVerifyService {
     this.peerState.results = [...this.peerState.results.filter((x) => x.attemptId !== id), { attemptId: id, record }].slice(-PEER_RESULTS_KEPT);
     this.persistPeerState();
     this.audit({ event: 'peer-attempt-done', attemptId: id, pr: record.pr, outcome: record.outcome });
+    // Why it went red, in THIS machine's audit log. The coordinator imports only the record, so
+    // until now a peer failure named no file on either machine: "unit 65,816 passed / 0 failed,
+    // failure" could not be told apart from a real fault (2026-11-13: PRs 3139, 3096, 3133).
+    if (record.outcome !== 'success' || record.flakyRetried) {
+      const run = r && r.kind === 'record' ? r as { reasons?: string[]; failures?: FailureDetail[] } : undefined;
+      this.audit({ event: 'run-detail', source: 'peer-run', attemptId: id, ...runDetail(record, run) });
+    }
   }
 
   /** Coordinator: after any pump, try to hand one more entry to an idle peer (never blocks the pump). */

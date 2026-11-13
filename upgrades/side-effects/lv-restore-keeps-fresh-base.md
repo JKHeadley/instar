@@ -52,6 +52,10 @@ The queue is machine-local to the lease holder by design. The fix covers both th
 
 Revert the commit. No migration: the durable queue format is unchanged.
 
+## Addendum: a peer's red run records its detail locally
+
+`finishPeerAttempt` (the peer side) now audits `run-detail` with `source: "peer-run"` and the attempt id when the record is not a success (or was flaky). Observability only: no decision reads it, nothing is sent to the coordinator, and the peer result payload and its validation are unchanged. Bounded by `runDetail` (40 reasons, 30 failures), the same bound as a local run's row. Over-block / under-block: not applicable. Multi-machine: the row is machine-local by design; reading it means reading the peer's `logs/local-verify.jsonl` (carrying it to the coordinator would change the peer wire format and is tracked as fb-fc240295-598). Rollback: revert. Added after the second-pass read below; covered by one new unit test.
+
 ---
 
 ## Second-pass review

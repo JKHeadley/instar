@@ -35,6 +35,10 @@ If the fresh look-up fails (GitHub unreachable), the test uses the remembered ve
 
 The first test after a restart now waits for one extra look-up (well under a second) before it starts. That is the same look-up every other test already does.
 
+## One more thing in the same change
+
+When the second test machine runs a test and it fails, it used to report only "failed" to the first machine and write nothing down about which test failed. Three such failures today could not be explained without guesswork. The second machine now writes the failed tests and their first error into its own log.
+
 ## What you need to decide
 
 Nothing. This stops the first tests after every restart from failing against outdated code.
