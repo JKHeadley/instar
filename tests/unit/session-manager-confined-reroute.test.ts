@@ -220,6 +220,41 @@ describe('confined spawn on the subscription (rerouted interactive) lane', () =>
     expect(manager.confinedRerouteCapacity()).toBe('saturated');
   });
 
+  it('from four slots up, ordinary traffic leaves one slot for a confined executor spawn as well as the scheduler slot', async () => {
+    const { manager } = makeManager(tmpDir, { maxRerouted: 4 });
+    manager.setConfinedRerouteReserve(() => true);
+    await manager.spawnSession({ name: 'builder-a', prompt: 'p' });
+    await manager.spawnSession({ name: 'builder-b', prompt: 'p' });
+    // A third ordinary spawn would take the executor's slot: refused.
+    await expect(manager.spawnSession({ name: 'builder-c', prompt: 'p' })).rejects.toBeInstanceOf(RerouteRefusedError);
+    expect(manager.confinedRerouteCapacity()).toBe('available');
+    await expect(manager.spawnSession({ name: 'feedback-x-a1', prompt: 'p', cwd: ws, omitAuthEnv: true, framework: 'claude-code',
+      confinement: confined(), triggeredBy: 'feedback-executor' })).resolves.toBeTruthy();
+    // The confined spawn never takes the scheduler's slot.
+    expect(manager.confinedRerouteCapacity()).toBe('saturated');
+    await expect(manager.spawnSession({ name: 'feedback-y-a1', prompt: 'p', cwd: ws, omitAuthEnv: true, framework: 'claude-code',
+      confinement: confined(), triggeredBy: 'feedback-executor' })).rejects.toBeInstanceOf(RerouteRefusedError);
+    await expect(manager.spawnSession({ name: 'health-job', prompt: 'p', jobSlug: 'health-check', triggeredBy: 'scheduler:scheduled' }))
+      .resolves.toMatchObject({ jobSlug: 'health-check' });
+  });
+
+  for (const [label, reserve] of [['never set', undefined], ['off', () => false], ['unreadable', () => { throw new Error('unreadable'); }]] as const) {
+    it(`without a live executor asking for it (${label}), ordinary traffic keeps every slot but the scheduler's`, async () => {
+      const { manager } = makeManager(tmpDir, { maxRerouted: 4 });
+      if (reserve) manager.setConfinedRerouteReserve(reserve);
+      for (const n of ['a', 'b', 'c']) await manager.spawnSession({ name: `builder-${n}`, prompt: 'p' });
+      await expect(manager.spawnSession({ name: 'builder-d', prompt: 'p' })).rejects.toBeInstanceOf(RerouteRefusedError);
+    });
+  }
+
+  it('below four slots the executor reserve is not taken from ordinary traffic', async () => {
+    const { manager } = makeManager(tmpDir, { maxRerouted: 3 });
+    manager.setConfinedRerouteReserve(() => true);
+    await manager.spawnSession({ name: 'builder-a', prompt: 'p' });
+    await expect(manager.spawnSession({ name: 'builder-b', prompt: 'p' })).resolves.toBeTruthy();
+    await expect(manager.spawnSession({ name: 'builder-c', prompt: 'p' })).rejects.toBeInstanceOf(RerouteRefusedError);
+  });
+
   it('a confined workspace path containing whitespace is refused by name at spawn (never left to fail as dialog-unknown)', async () => {
     const { manager, startups } = makeManager(tmpDir);
     const spaced = path.join(tmpDir, '.worktrees', 'feedback with space-a1');

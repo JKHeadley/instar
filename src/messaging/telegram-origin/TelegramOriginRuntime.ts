@@ -27,6 +27,12 @@ import { assessOriginActivation, type OriginEnrollmentSnapshot } from './OriginA
 import { verifyHistoricalOriginAttestation } from './OriginAttestation.js';
 import type { OriginVerificationKey } from './OriginAttestation.js';
 import { OriginUnrecordedReceipts } from './OriginUnrecordedReceipts.js';
+import { definiteSessionLine, lateDeliverySessionBatch, lateLineForParseMode, lateRecoveredReplyNotice, LATE_REPLY_THRESHOLD_MS, ownerUnstatedSessionLine, uncertainSessionLine } from './SessionDeliveryNotice.js';
+import type { DefiniteFailureCause } from './SessionDeliveryNotice.js';
+import { forwardExpiryArm } from './OriginForwardToHolder.js';
+import type { HeldForwardDetail } from './OriginForwardToHolder.js';
+import { escapeOriginFooter, originFooter } from './OriginPresentation.js';
+import type { HeldOperationRow } from './StoreTypes.js';
 
 /** How long an origin keeps full detail in the hot tables; the archive holds it after that. */
 const HOT_DETAIL_MS = 7 * 24 * 60 * 60_000;
@@ -58,8 +64,6 @@ export interface TelegramOriginRuntimeOptions {
   authorizeOrigin?: OriginServiceOptions['authorizeOrigin'];
   resolveOriginKey?: (machineId: string, epoch?: number) => OriginVerificationKey | null;
   reviewLegacyRecovery?: OriginServiceOptions['reviewLegacyRecovery'];
-  /** Retire an unsent recovery reply when newer conversation has overtaken it. */
-  reviewQueuedReply?: (input: { operationId: string; chatId: string | null; topicId: number; preparedAt: number }) => Promise<import('./QueuedReplySupersession.js').QueuedReplyReview>;
   /** A peer's forwarded reply this holder just delivered: record it in this
    * machine's topic history. History only — never a send, never a gate. */
   onForwardedDelivered?: (row: import('./ForwardedDeliveryHistory.js').ForwardedDeliveryRow) => void;
@@ -86,8 +90,17 @@ export interface TelegramOriginRuntimeOptions {
   /** §4.2 — a DIRECT-path `lease-not-held` hold (owner = this machine, no forward
    * detail) was observed for the first time: the server sends the notice/item. */
   onLeaseHoldObserved?: (row: import('./StoreTypes.js').HeldOperationRow) => Promise<void> | void;
-  /** Mirror a recovered, receipt-confirmed Bot API message into topic history. */
-  onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; preparedAt: number; producerKind: string }) => Promise<void> | void;
+  /** Mirror a recovered, receipt-confirmed Bot API message into topic history.
+   * native-conversation-base §3a item 2 — `firstPreparedAt` and `lateMarkedAt` travel beside `preparedAt`. */
+  onRecoveredMessage?: (input: { operationId: string; chatId: string; threadId: number | null; messageId: number; text: string; acceptedAt: number; preparedAt: number; producerKind: string;
+    firstPreparedAt?: number; lateMarkedAt?: number | null }) => Promise<void> | void;
+  /** native-conversation-base §3a items 5, 7, 8 — type one line into the running session
+   * bound to a reply on THIS machine. True only when the line was injected. */
+  injectSessionLine?: (binding: OriginSessionBinding, text: string) => Promise<boolean> | boolean;
+  /** §3a item 8 — the hub-only attention item for a reply handed back to its author (once per operation). */
+  raiseHandBackItem?: (row: HeldOperationRow) => Promise<void> | void;
+  /** §3a item 7 — one record-only item per topic (`telegram-origin-unresolved:<topicId>`) while unresolved rows remain. */
+  syncUnresolvedTopics?: (counts: ReadonlyMap<string, number>) => Promise<void> | void;
   onSessionDeliveryHeld?: (input: { source: 'live' | 'scan'; operationId: string; reason: string; chatId: string | null; threadId: number | null; state?: string; uncertain?: boolean; preparedAt?: number; acceptedAt?: number | null; outOfOrder?: boolean }) => Promise<void> | void;
   /** Synchronous diagnostics, independent of worker/transport authority. */
   readDetectorHealth?: () => Record<string, unknown>;
@@ -321,8 +334,19 @@ export class TelegramOriginRuntime {
       expiredHolds: this.service.expiredHeldStatus(),
       // §3b — owner-read latency for the 2026-11-25 review; a missing counter reads unknown, never zero.
       ownerRead: this.ownerReader?.stats() ?? { state: 'unknown', reason: 'owner-read-not-wired' },
+      // §3a — per machine, read by the 2026-11-25 review (CMT-056). Unreadable reads unknown, never zero.
+      heldReplies: await this.heldReplyCounters(),
       browsers: [...this.browsers].map(([profileId, browser]) => ({ profileId, ...browser.executor.broker.readStatus() })),
       notices: this.options.alertDestinations().map(d => this.remoteNotices.get(d.id) ?? this.notifier.getState(d.id)) };
+  }
+  /** native-conversation-base §3a review counters, from the store's keyed operation events. */
+  async heldReplyCounters(): Promise<Record<string, number> | { state: 'unknown'; reason: string }> {
+    try {
+      const counts = (await this.store.getMetrics()).counts ?? {};
+      const read = (metric: string) => counts[metric] ?? 0;
+      return { lateDeliveries: read('late-delivery'), recoveredUnderThreshold: read('recovered-under-threshold'), lateUnmarked: read('late-unmarked'),
+        ownerUnstated: read('owner-unstated'), definiteNoSession: read('definite-no-session'), neverHandedBack: read('never-handed-back') };
+    } catch { return { state: 'unknown', reason: 'origin-store-unavailable' }; }
   }
   /**
    * The phone's Messages summary inputs (docs/specs/mobile-native-phones-messages.md): exactly the
@@ -382,8 +406,16 @@ export class TelegramOriginRuntime {
     let rows: import('./StoreTypes.js').HeldOperationRow[];
     try { rows = await this.store.listHeldOperations({ holdReason: 'lease-not-held', limit: 500 }); }
     catch { return; /* The last known summary stands; the store reports its own health. */ }
-    const held = rows.filter(row => row.state === 'held');
+    // native-conversation-base §3a item 7 — a row with `ownerVerdict` is ended, not held: it
+    // stays `held` only to keep its text, and is left out of every "will still be delivered" count.
+    const held = rows.filter(row => row.state === 'held' && !(row.holdDetail as { ownerVerdict?: unknown } | null)?.ownerVerdict);
     const expired = rows.filter(row => row.state === 'expired' && row.expiryReportedAt === null);
+    const unresolved = new Map<string, number>();
+    for (const row of held) {
+      const unstated = (row.holdDetail as { ownerUnstated?: { settled?: unknown } } | null)?.ownerUnstated;
+      if (unstated?.settled === true && row.destination.topicId !== null) unresolved.set(row.destination.topicId, (unresolved.get(row.destination.topicId) ?? 0) + 1);
+    }
+    try { await this.options.syncUnresolvedTopics?.(unresolved); } catch { /* re-synced on the next refresh */ }
     // Direct-path holds (sealed owner = this machine, no forward detail) are
     // reported once each; the forward path reports its own holds at hold time.
     const liveIds = new Set(held.map(row => row.operationId));
@@ -406,9 +438,175 @@ export class TelegramOriginRuntime {
       oldestSince: held.length ? Math.min(...held.map(row => row.preparedAt)) : null, observedAt: now, expiredUnreported: expired.length };
     for (const row of expired) {
       if (this.closed) return;
-      try { await this.options.onHeldForwardExpired?.(row); }
+      try { await this.handBackExpiredForward(row, now); }
       catch { continue; /* Not marked: reported again on the next refresh, never silently dropped. */ }
-      try { await this.store.markHoldExpiryReported({ operationId: row.operationId, now }); } catch { /* re-reported next refresh */ }
+    }
+  }
+  /** native-conversation-base §3a item 8 — the forward-expiry carrier. The hub item
+   * is raised once under its own keyed event; `hold_expiry_reported_at` is written
+   * only after the session line was injected (or for a row with no session author
+   * here). With no running session the row is picked up again on each pass, until
+   * it is older than the purge horizon, where it is counted `neverHandedBack`. */
+  private async handBackExpiredForward(row: HeldOperationRow, now: number): Promise<void> {
+    await this.raiseHandBackOnce(row);
+    const binding = this.authorBinding(row);
+    if (!binding) { await this.store.markHoldExpiryReported({ operationId: row.operationId, now }); return; }
+    const arm = forwardExpiryArm(row);
+    const first = row.firstPreparedAt ?? row.preparedAt;
+    const shown = await this.originalOperationId(row.operationId);
+    const text = arm.arm === 'uncertain' ? uncertainSessionLine({ operationId: shown, ageMs: now - first })
+      : definiteSessionLine({ operationId: shown, ageMs: now - first, cause: arm.cause });
+    const sent = await this.sessionLine({ operationId: row.operationId, binding, text });
+    if (sent === 'sent' || sent === 'already') { await this.store.markHoldExpiryReported({ operationId: row.operationId, now }); return; }
+    if (arm.arm === 'definite' && arm.cause !== 'refused') await this.countOnce(row.operationId, 'definite-no-session');
+    if (row.preparedAt < now - HOT_DETAIL_MS) {
+      await this.store.markHoldExpiryReported({ operationId: row.operationId, now });
+      await this.countOnce(row.operationId, 'never-handed-back');
+    }
+  }
+  /** The hub item for a reply handed back, once per operation (`<operationId>:handback-item`),
+   * recorded only after it was raised, so a failed raise is raised again next pass. */
+  private async raiseHandBackOnce(row: HeldOperationRow): Promise<void> {
+    const key = { eventId: `${row.operationId}:handback-item`, metric: 'handback-item' };
+    if (await this.store.hasOperationEvent(key)) return;
+    await (this.options.raiseHandBackItem ?? this.options.onHeldForwardExpired)?.(row);
+    await this.store.recordOperationEvent(key);
+  }
+  /** The reply's author binding when it was written by a session on THIS machine. */
+  private authorBinding(row: Pick<HeldOperationRow, 'producerKind' | 'originMachineId' | 'sessionId' | 'harnessId'>): OriginSessionBinding | null {
+    if (row.producerKind !== 'session' || row.originMachineId !== this.options.identity.originMachineId || !row.sessionId) return null;
+    return { sessionId: row.sessionId, harnessId: row.harnessId ?? '' } as OriginSessionBinding;
+  }
+  /** One counted event per operation (`lateUnmarked`, `definiteNoSession`, …) for the 2026-11-25 review. */
+  private async countOnce(operationId: string, metric: string): Promise<void> {
+    try { await this.store.recordOperationEvent({ eventId: `${operationId}:${metric}`, metric }); } catch { /* counters never gate */ }
+  }
+  /** §3a items 7, 8 — one session line per operation, whichever carrier reaches it
+   * first (`<operationId>:session-line`). Recorded only after it was injected, so a
+   * line injected but not recorded is injected again; never one recorded but not sent. */
+  async sessionLine(input: { operationId: string; binding: OriginSessionBinding; text: string; key?: 'session-line' | 'late-line' }): Promise<'sent' | 'already' | 'no-session' | 'failed'> {
+    const key = input.key ?? 'session-line';
+    const eventId = `${input.operationId}:${key}`;
+    if (await this.store.hasOperationEvent({ eventId, metric: key }).catch(() => false)) return 'already';
+    if (!this.options.injectSessionLine || !this.options.isSessionLive?.(input.binding)) return 'no-session';
+    let injected = false;
+    try { injected = await this.options.injectSessionLine(input.binding, input.text) === true; } catch { injected = false; }
+    if (!injected) return 'failed';
+    await this.store.recordOperationEvent({ eventId, metric: key }).catch(() => false);
+    return 'sent';
+  }
+  /** §3a item 7 — the owner's verdict: the definite line in the same forward pass, and the hub item. */
+  async handOwnerVerdict(row: HeldOperationRow, verdict: { failure: DefiniteFailureCause }): Promise<void> {
+    try { await this.raiseHandBackOnce(row); } catch { /* raised again by the forward-expiry pass */ }
+    const binding = this.authorBinding(row);
+    if (!binding) return;
+    const now = Date.now(), first = row.firstPreparedAt ?? row.preparedAt;
+    const sent = await this.sessionLine({ operationId: row.operationId, binding,
+      text: definiteSessionLine({ operationId: await this.originalOperationId(row.operationId), ageMs: now - first, cause: verdict.failure }) });
+    if (sent === 'no-session' && verdict.failure !== 'refused') await this.countOnce(row.operationId, 'definite-no-session');
+  }
+  /** §3a item 7 — a second reasonless ending: one session line (the item is per topic, from the refresh). */
+  async handOwnerUnstated(row: HeldOperationRow): Promise<void> {
+    await this.countOnce(row.operationId, 'owner-unstated');
+    const binding = this.authorBinding(row);
+    if (binding) await this.sessionLine({ operationId: row.operationId, binding, text: ownerUnstatedSessionLine(await this.originalOperationId(row.operationId)) });
+    await this.refreshHeldForward({ force: true });
+  }
+  async countLateUnmarked(operationId: string): Promise<void> { await this.countOnce(operationId, 'late-unmarked'); }
+  /** §3a item 5 — late deliveries noted during a pass; one line per session per pass. */
+  #lateNotes: Array<{ operationId: string; binding: OriginSessionBinding; deliveredAfterMs: number; marked: boolean }> = [];
+  /** Every reply delivered through recovery is counted with its delay; a late one is noted for its author. */
+  private async noteRecoveredDelivery(input: { operationId: string; reportedId: string; record: Pick<TelegramOriginRecord, 'producerKind' | 'originMachineId' | 'sessionId' | 'harnessId'>;
+    firstPreparedAt: number; acceptedAt: number; marked: boolean }): Promise<void> {
+    const delay = input.acceptedAt - input.firstPreparedAt;
+    if (!Number.isFinite(delay)) return;
+    await this.countOnce(input.reportedId, delay > LATE_REPLY_THRESHOLD_MS ? 'late-delivery' : 'recovered-under-threshold');
+    if (delay <= LATE_REPLY_THRESHOLD_MS) return;
+    const binding = this.authorBinding(input.record);
+    if (binding) this.#lateNotes.push({ operationId: input.reportedId, binding, deliveredAfterMs: delay, marked: input.marked });
+  }
+  /** A forward delivered by recovery: follow its successors to the accepted copy. */
+  private async noteForwardDelivery(row: HeldOperationRow, operation: OriginPreparedBotOperation): Promise<void> {
+    try {
+      let audit = await this.store.getOperation(row.operationId);
+      for (let hop = 0; hop < 8 && audit?.operation?.state === 'superseded'; hop++) {
+        const next = (audit.operation.holdDetail as { supersededBy?: unknown } | null)?.supersededBy;
+        if (typeof next !== 'string') return;
+        audit = await this.store.getOperation(next);
+      }
+      if (!audit?.operation) return;
+      const accepted = audit.attempts.filter(a => a.outcome === 'accepted').map(a => a.resolvedAt ?? a.createdAt);
+      if (!accepted.length) return;
+      const record = JSON.parse(audit.record.envelopeJson) as TelegramOriginRecord;
+      const detail = row.holdDetail as { authoredPreparedAt?: unknown } | null;
+      const first = audit.operation.firstPreparedAt ?? record.firstPreparedAt ?? (typeof detail?.authoredPreparedAt === 'number' ? detail.authoredPreparedAt : row.preparedAt);
+      await this.noteRecoveredDelivery({ operationId: audit.operation.operationId, reportedId: await this.originalOperationId(row.operationId),
+        record: record.producerKind === 'session' ? record : operation.record, firstPreparedAt: first, acceptedAt: Math.max(...accepted), marked: !!audit.operation.lateMarkedAt });
+    } catch { /* a missed line is a missed courtesy, never a send */ }
+  }
+  /** The id the session was given: walk `supersedes` back to the first operation of the chain. */
+  private async originalOperationId(operationId: string): Promise<string> {
+    let current = operationId;
+    for (let hop = 0; hop < 8; hop++) {
+      const audit = await this.store.getOperation(current).catch(() => null);
+      const previous = (audit?.operation?.holdDetail as { supersedes?: unknown } | null)?.supersedes;
+      if (typeof previous !== 'string' || previous === current) break;
+      current = previous;
+    }
+    return current;
+  }
+  private async flushLateNotes(): Promise<void> {
+    const notes = this.#lateNotes.splice(0);
+    const bySession = new Map<string, typeof notes>();
+    for (const note of notes) {
+      const key = `${note.binding.sessionId}\u0000${note.binding.harnessId}`;
+      bySession.set(key, [...bySession.get(key) ?? [], note]);
+    }
+    for (const group of bySession.values()) {
+      const fresh: typeof group = [];
+      for (const note of group) if (!await this.store.hasOperationEvent({ eventId: `${note.operationId}:late-line`, metric: 'late-line' }).catch(() => false)) fresh.push(note);
+      const text = lateDeliverySessionBatch(fresh);
+      if (!text || !this.options.injectSessionLine || !this.options.isSessionLive?.(group[0].binding)) continue;
+      let injected = false;
+      try { injected = await this.options.injectSessionLine(group[0].binding, text) === true; } catch { injected = false; }
+      if (!injected) continue;
+      for (const note of fresh) await this.store.recordOperationEvent({ eventId: `${note.operationId}:late-line`, metric: 'late-line' }).catch(() => false);
+    }
+  }
+  /** §3a item 2 — the author is the execution owner: replace a late, unmarked session
+   * reply with one whose first line says so, `admitted`, and send it in this pass.
+   * Single-part replies only; anything else goes out as it is, counted `lateUnmarked`. */
+  private async markLateDirect(operation: OriginPreparedBotOperation): Promise<OriginPreparedBotOperation> {
+    const record = operation.record;
+    if (record.producerKind !== 'session' || record.operationKind !== 'sendMessage' || record.originMachineId !== this.options.identity.originMachineId) return operation;
+    const audit = await this.store.getOperation(record.operationId).catch(() => null);
+    const op = audit?.operation;
+    if (!op || op.lateMarkedAt || op.state !== 'admitted') return operation;
+    const now = Date.now(), first = op.firstPreparedAt ?? record.firstPreparedAt ?? op.preparedAt;
+    const line = lateRecoveredReplyNotice(first, now);
+    if (!line || op.deadlineAt <= now) return operation;
+    if (await this.store.hasOperationEvent({ eventId: `${record.operationId}:late-unmarked`, metric: 'late-unmarked' }).catch(() => true)) return operation;
+    try {
+      if (operation.admission.children.length !== 1 || audit!.attempts.some(a => a.outcome !== 'known-failed')) throw new Error('late-mark-shape');
+      const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson) as { method?: string; body?: string; policy?: import('./OriginSendPolicy.js').OriginSendPolicyInput };
+      const params = JSON.parse(request.body ?? '{}') as import('./types.js').BotParameters;
+      if (request.method !== 'sendMessage' || typeof params.text !== 'string') throw new Error('late-mark-shape');
+      const footer = originFooter(record, record.display);
+      const tail = footer ? `\n\n${escapeOriginFooter(footer, typeof params.parse_mode === 'string' ? params.parse_mode : undefined)}` : '';
+      const authored = tail && params.text.endsWith(tail) ? params.text.slice(0, -tail.length) : params.text;
+      const text = `${lateLineForParseMode(line, params.parse_mode)}\n\n${authored}`;
+      const next = this.service.runAsRecordedProducer(record, () => this.service.prepareBot({ method: 'sendMessage', accountId: record.destination.accountId,
+        params: { ...params, text }, executionOwnerMachineId: this.options.identity.originMachineId,
+        ...(request.policy ? { policyInput: request.policy } : {}), replacement: { firstPreparedAt: first, deadlineAt: op.deadlineAt } }));
+      if (next.admission.children.length !== 1) throw new Error('late-mark-part-limit');
+      this.service.authorizeSendPolicyDispatch(next.record);
+      await this.service.recordIntent(next);
+      if (!await this.store.supersedeWithAdmission({ operationId: record.operationId, admission: next.admission, holdReason: null, holdDetail: null,
+        replacementState: 'admitted', firstPreparedAt: first, lateMarkedAt: now })) throw new Error('late-mark-supersede-refused');
+      return next;
+    } catch {
+      await this.countLateUnmarked(record.operationId);
+      return operation;
     }
   }
   /** §4.2 — the quick retry ladder for held FORWARDS, driven by the 5 s boot
@@ -428,14 +626,15 @@ export class TelegramOriginRuntime {
         if (!operation.record.executionOwnerMachineId || operation.record.executionOwnerMachineId === this.options.identity.originMachineId) continue;
         try {
           processed++;
-          if (!await this.allowQueuedRecovery(operation, row)) continue;
+          if (!await this.allowQueuedRecovery(operation)) continue;
           const outcome = await this.options.forwardRecovery(operation, row);
-          if (outcome === 'sent' || outcome === 'resolved') recovered++;
+          if (outcome === 'sent' || outcome === 'resolved') { recovered++; await this.noteForwardDelivery(row, operation); }
         } catch (error) {
           console.warn('[telegram-origin] forward ladder retained operation', row.operationId, error instanceof Error ? error.name : 'unknown-error');
         }
       }
       if (processed) await this.refreshHeldForward({ force: true });
+      await this.flushLateNotes();
       return { processed, recovered };
     } finally { this.recovering = false; }
   }
@@ -583,9 +782,9 @@ export class TelegramOriginRuntime {
               recovery: audit.recovery ?? null, expiryReportedAt: null, producerKind: operation.record.producerKind };
             if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
             processed++;
-            if (!await this.allowQueuedRecovery(operation, row, audit)) continue;
+            if (!await this.allowQueuedRecovery(operation)) continue;
             const outcome = await this.options.forwardRecovery(operation, row);
-            if (outcome === 'sent' || outcome === 'resolved') recovered++;
+            if (outcome === 'sent' || outcome === 'resolved') { recovered++; await this.noteForwardDelivery(row, operation); }
           } catch (error) {
             if (error instanceof QuietRecordedError) { this.service.forgetTerminalHold(operation.record.operationId); continue; }
             console.warn('[telegram-origin] forward recovery retained operation', operation.record.operationId,
@@ -614,23 +813,32 @@ export class TelegramOriginRuntime {
         // Reserve in the same durable owner before entering either review or
         // transport. Memory-held candidates pass this gate too; a missing or
         // timed-out reservation leaves the payload queued and spends no review.
-        if (!await this.store.reserveRecoveryAttempt({ operationId: operation.record.operationId })) continue;
+        // native-conversation-base §3a item 2 — a late, unmarked session reply is replaced
+        // (`admitted`) with its first line saying so, and the replacement is sent now.
+        const sending = await this.markLateDirect(operation);
+        if (!await this.store.reserveRecoveryAttempt({ operationId: sending.record.operationId })) continue;
         processed++;
-        const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
-        if (!await this.allowQueuedRecovery(operation)) continue;
+        const request = JSON.parse(sending.admission.children[0].materializations[0].requestJson);
+        if (!await this.allowQueuedRecovery(sending)) continue;
         const response = await telegramFetch(`https://api.telegram.org/bot${owners[0].token}/${request.method}`,
           { method: 'POST', headers: { 'Content-Type': request.contentType }, body: request.body,
-            networkTimeoutMs: 10_000 }, undefined, operation);
-        if (request.method === 'sendMessage' && this.options.onRecoveredMessage) {
+            networkTimeoutMs: 10_000 }, undefined, sending);
+        if (request.method === 'sendMessage') {
           try {
             const receipt = await response.json() as { ok?: boolean; result?: { message_id?: number; date?: number } };
             const body = JSON.parse(request.body) as { chat_id?: string | number; message_thread_id?: number; text?: string };
             if (receipt.ok && Number.isSafeInteger(receipt.result?.message_id) && typeof body.text === 'string' && body.chat_id != null) {
-              await this.options.onRecoveredMessage({ operationId: operation.record.operationId,
+              const settled = await this.store.getOperation(sending.record.operationId).catch(() => null);
+              const firstPreparedAt = settled?.operation?.firstPreparedAt ?? sending.record.firstPreparedAt ?? sending.admission.preparedAt;
+              const lateMarkedAt = settled?.operation?.lateMarkedAt ?? null;
+              const acceptedAt = Number.isSafeInteger(receipt.result?.date) ? receipt.result!.date! * 1000 : Date.now();
+              await this.options.onRecoveredMessage?.({ operationId: sending.record.operationId,
                 chatId: String(body.chat_id), threadId: body.message_thread_id ?? null,
                 messageId: receipt.result!.message_id!, text: body.text,
-                acceptedAt: Number.isSafeInteger(receipt.result?.date) ? receipt.result!.date! * 1000 : Date.now(),
-                preparedAt: operation.admission.preparedAt, producerKind: operation.record.producerKind });
+                acceptedAt,
+                preparedAt: sending.admission.preparedAt, producerKind: sending.record.producerKind, firstPreparedAt, lateMarkedAt });
+              await this.noteRecoveredDelivery({ operationId: sending.record.operationId, reportedId: operation.record.operationId, record: sending.record,
+                firstPreparedAt, acceptedAt, marked: !!lateMarkedAt });
             }
           } catch (error) {
             console.warn('[telegram-origin] recovered message history unavailable', operation.record.operationId,
@@ -646,6 +854,7 @@ export class TelegramOriginRuntime {
             error instanceof Error ? error.name : 'unknown-error');
         }
       }
+      await this.flushLateNotes();
       await this.refreshHeldForward({ force: true });
       // Notice I/O cannot hold up the outbox drain. The scan is repeatable and
       // uses a cursor so an old or busy topic cannot permanently hide a loss.
@@ -662,7 +871,7 @@ export class TelegramOriginRuntime {
     // non-delivery, and a read before suppression would still race the holder.
     if (operation.record.executionOwnerMachineId && operation.record.executionOwnerMachineId !== this.options.identity.originMachineId) return true;
     try {
-      if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {
+      if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed', holdReason: 'historical-notice-retired' })) {
         this.service.forgetTerminalHold(operation.record.operationId);
         console.info('[telegram-origin] retired historical delivery notice', { operationId: operation.record.operationId });
       }
@@ -672,40 +881,14 @@ export class TelegramOriginRuntime {
     // A failed transition or a stale snapshot must never fall through to send.
     return true;
   }
-  /** Shared gate for direct recovery and both forward retry schedulers. */
-  private async allowQueuedRecovery(operation: OriginPreparedBotOperation,
-    row?: import('./StoreTypes.js').HeldOperationRow,
-    knownAudit?: import('./StoreTypes.js').OriginAuditRecord): Promise<boolean> {
-    if (await this.withholdHistoricalDeliveryNotice(operation)) return false;
-    const originalKind = typeof row?.holdDetail?.authoredProducerKind === 'string'
-      ? row.holdDetail.authoredProducerKind : operation.record.producerKind;
-    const originalPreparedAt = typeof row?.holdDetail?.authoredPreparedAt === 'number' && Number.isFinite(row.holdDetail.authoredPreparedAt)
-      ? row.holdDetail.authoredPreparedAt : operation.admission.preparedAt;
-    if (!this.options.reviewQueuedReply || operation.record.destination.topicId === null ||
-      (originalKind !== 'session' && originalKind !== 'imported-legacy')) return true;
-    const request = JSON.parse(operation.admission.children[0].materializations[0].requestJson);
-    if (request.method !== 'sendMessage') return true;
-    const audit = knownAudit ?? await this.store.getOperation(operation.record.operationId);
-    if (!audit?.operation) return false;
-    // Visible or uncertain children must be reconciled through their original
-    // receipt path. Suppression is allowed only for definite non-delivery.
-    if (audit.children.some(child => child.state === 'accepted' || child.state === 'outcome-unknown')) return true;
-    // Forward attempts can retain historical uncertainty after the holder's
-    // receipt has proven nonacceptance. The current marker is authoritative.
-    if (!row && audit.attempts.some(attempt => attempt.outcome === 'outcome-unknown')) return true;
-    const lastAttempt = row?.holdDetail?.lastAttempt;
-    if (lastAttempt === 'outcome-unknown' || lastAttempt === 'local-sent') return true;
-    const review = await this.options.reviewQueuedReply({ operationId: operation.record.operationId,
-      chatId: operation.record.destination.chatId,
-      topicId: Number(operation.record.destination.topicId), preparedAt: originalPreparedAt });
-    if (review === 'hold') return false;
-    if (review === 'retire') {
-      if (await this.store.recordOperationState({ operationId: operation.record.operationId, state: 'suppressed' })) {
-        console.info('[telegram-origin] retired overtaken queued reply', operation.record.operationId);
-      }
-      return false;
-    }
-    return true;
+  /** Shared gate for direct recovery and both forward retry schedulers.
+   * native-conversation-base §3a item 1 — a later timestamp no longer ends a
+   * queued reply (the causal rule is the only rule): no timestamp comparison is
+   * computed here. The one retirement left is the historical delivery notice,
+   * which is never a reply; a reply's own retirement is the execution owner's
+   * content check, which fires only on platform acceptance of the same text. */
+  private async allowQueuedRecovery(operation: OriginPreparedBotOperation): Promise<boolean> {
+    return !await this.withholdHistoricalDeliveryNotice(operation);
   }
   private async reportSessionDeliveryExceptions(): Promise<void> {
     if (this.#reportingSessionExceptions || !this.options.onSessionDeliveryHeld || this.closed) return;
@@ -718,15 +901,37 @@ export class TelegramOriginRuntime {
         ? { afterPreparedAt: rows[99].preparedAt, afterOperationId: rows[99].operationId } : null;
       for (const row of rows) {
         if (this.closed) break;
-        try { await this.options.onSessionDeliveryHeld({ ...row, source: 'scan' }); }
-        catch (error) { console.warn('[telegram-origin] session delivery notice retry retained',
-          error instanceof Error ? error.name : 'unknown-error'); }
+        // §3a item 7 — a settled reasonless ending is unresolved, not ended: its session
+        // line and per-topic item carry it; the scan raises no per-operation notice for it.
+        if (!row.ownerUnstated) {
+          try { await this.options.onSessionDeliveryHeld({ ...row, source: 'scan' }); }
+          catch (error) { console.warn('[telegram-origin] session delivery notice retry retained',
+            error instanceof Error ? error.name : 'unknown-error'); }
+        }
+        try { await this.scanSessionLine(row); } catch { /* retried on the next scan */ }
       }
     } catch (error) { console.warn('[telegram-origin] session delivery exception scan unavailable',
       error instanceof Error ? error.name : 'unknown-error'); }
     finally { this.#reportingSessionExceptions = false; }
   }
 
+  /** native-conversation-base §3a item 8 — the existing scan is the carrier for a row
+   * this machine both wrote and sent (or whose forward the owner settled unknown).
+   * Session lines go only to replies authored here; the arm is never the state alone. */
+  private async scanSessionLine(row: { operationId: string; state: string; uncertain: boolean; preparedAt: number; firstPreparedAt?: number;
+    originMachineId?: string | null; sessionId?: string | null; harnessId?: string | null; failure?: DefiniteFailureCause | null; ownerUnstated?: boolean }): Promise<void> {
+    const binding = this.authorBinding({ producerKind: 'session', originMachineId: row.originMachineId ?? null, sessionId: row.sessionId ?? null, harnessId: row.harnessId ?? null });
+    if (!binding) return;
+    const now = Date.now(), ageMs = now - (row.firstPreparedAt ?? row.preparedAt);
+    const shown = row.ownerUnstated || row.uncertain || ['outcome-unknown', 'known-failed', 'expired'].includes(row.state) ? await this.originalOperationId(row.operationId) : row.operationId;
+    let text: string | null = null, definite: DefiniteFailureCause | null = null;
+    if (row.ownerUnstated) text = ownerUnstatedSessionLine(shown);
+    else if (row.uncertain || row.state === 'outcome-unknown') text = uncertainSessionLine({ operationId: shown, ageMs });
+    else if ((row.state === 'known-failed' || row.state === 'expired') && row.failure) { definite = row.failure; text = definiteSessionLine({ operationId: shown, ageMs, cause: row.failure }); }
+    if (!text) return;
+    const sent = await this.sessionLine({ operationId: row.operationId, binding, text });
+    if (sent === 'no-session' && definite && definite !== 'refused') await this.countOnce(row.operationId, 'definite-no-session');
+  }
   async importLegacyQueue(): Promise<number> {
     if (this.closed || this.importingLegacy || !this.options.bot.token || !this.options.bot.chatId) return 0;
     this.importingLegacy = true;

@@ -15,6 +15,7 @@ import path from 'node:path';
 import { Cron } from 'croner';
 import type { JobDefinition, JobPriority, ModelTier } from '../core/types.js';
 import { validJobDependencyPath } from '../core/JobDependency.js';
+import { THINKING_MODES } from '../core/topicProfileValidation.js';
 import { loadAgentMdJobs, type AgentMdLoadResult, type LoadProblem } from './AgentMdJobLoader.js';
 
 const VALID_PRIORITIES: JobPriority[] = ['critical', 'high', 'medium', 'low'];
@@ -423,6 +424,11 @@ export function validateJob(job: unknown, index?: number): void {
 
   if (j.catchUpPolicy !== undefined && !['skip', 'run-once', 'ask'].includes(j.catchUpPolicy as string)) {
     throw new Error(`${prefix}: \"catchUpPolicy\" must be skip, run-once, or ask`);
+  }
+
+  // Per-job thinking mode (job-launch-intent-record §1): closed enum, fails at load.
+  if (j.thinkingMode !== undefined && !(THINKING_MODES as readonly unknown[]).includes(j.thinkingMode)) {
+    throw new Error(`${prefix}: "thinkingMode" must be one of ${THINKING_MODES.join(', ')}`);
   }
 
   if (j.requiredPaths !== undefined && (!Array.isArray(j.requiredPaths) || j.requiredPaths.length > 32

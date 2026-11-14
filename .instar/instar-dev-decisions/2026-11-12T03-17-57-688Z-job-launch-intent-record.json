@@ -1,0 +1,43 @@
+{
+  "ts": "2026-11-12T03:17:57.688Z",
+  "slug": "job-launch-intent-record",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/commands/jobMigrate.ts touches migrate*() migration family",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 17,
+  "loc": 1149,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "scripts/framework-name-ratchet-baseline.json",
+      "scripts/lint-framework-name-ratchet.mjs",
+      "src/commands/jobMigrate.ts",
+      "src/core/JobPortableBundle.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SessionManager.ts",
+      "src/core/cliVersionReader.ts",
+      "src/core/frameworkSessionLaunch.ts",
+      "src/core/types.ts",
+      "src/scaffold/templates.ts",
+      "src/scheduler/AgentMdJobLoader.ts",
+      "src/scheduler/InstallBuiltinJobs.ts",
+      "src/scheduler/JobLoader.ts",
+      "src/scheduler/JobRunHistory.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/scheduler/buildPerSlugManifest.ts",
+      "src/scheduler/launchIntentEvidence.ts"
+    ],
+    "addedLines": 1118,
+    "deletedLines": 31
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}
