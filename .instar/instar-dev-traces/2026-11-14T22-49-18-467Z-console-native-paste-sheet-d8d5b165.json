@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "console-native-paste-sheet",
+  "sessionId": "281a0ff5-07f5-4b12-a1fe-e89b1451fdc4",
+  "timestamp": "2026-11-14T22:49:18.467Z",
+  "artifactPath": "upgrades/side-effects/console-native-paste-sheet.md",
+  "artifactSha256": "e900490377170d4bdb7f843b643edafb8e3515308c827f3566f5c243a1cb55ed",
+  "coveredFiles": [
+    "dashboard/console/console.css",
+    "dashboard/console/paste-model.js",
+    "dashboard/console/paste.js",
+    "dashboard/console/sessions.js",
+    "docs/specs/console-native-paste-sheet.eli16.md",
+    "tests/integration/console-paste-sheet-routes.test.ts",
+    "tests/unit/console-paste-sheet.test.ts",
+    "upgrades/side-effects/console-native-paste-sheet.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Dashboard-only sheet over the existing /pastes routes; no server change, nothing new stored, and a revert fully undoes it.",
+  "eli16Path": "docs/specs/console-native-paste-sheet.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/console-native-paste-sheet.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
