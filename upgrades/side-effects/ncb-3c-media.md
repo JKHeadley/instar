@@ -130,3 +130,13 @@ It concurred on the trust rule at every entry point, the carriers, ordering, con
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+## Addendum (2026-11-13): silent-fallback scanner markers
+
+After merging current main, the no-silent-fallbacks ratchet counted four catches in
+`src/core/platformMediaForSession.ts` (498 against the 494 baseline). Each of those catches
+already reports its error: `this.report` calls `deps.report`, which AgentServer wires to
+`DegradationReporter`. The scanner only looks for that name inside the catch's 20-line
+window, so each catch now carries a one-line comment naming where the report goes.
+Comment-only: no behaviour, no API, no baseline change. Over-block / under-block: none.
+Rollback: revert the comments.

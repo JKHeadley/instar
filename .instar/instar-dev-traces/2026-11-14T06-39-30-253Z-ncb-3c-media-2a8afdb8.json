@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "ncb-3c-media",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T06:39:30.253Z",
+  "artifactPath": "upgrades/side-effects/ncb-3c-media.md",
+  "artifactSha256": "b8ee3fe998c100021004ac9f30845991ab03ae69631985bf8b840d49f8ccafe7",
+  "coveredFiles": [
+    "docs/specs/ncb-3c-fallback-markers.eli16.md",
+    "src/core/platformMediaForSession.ts",
+    "upgrades/side-effects/ncb-3c-media.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Comment-only markers on catches that already report through DegradationReporter; a revert fully undoes it. Recorded in the artifact addendum.",
+  "eli16Path": "docs/specs/ncb-3c-fallback-markers.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ncb-3c-media.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

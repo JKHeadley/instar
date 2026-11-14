@@ -131,9 +131,9 @@ export class PlatformMediaForSession {
       // one interval instead of a file.
       s.store.addAppendListener((ev: AppEvent) => {
         if (ev.kind === 'platform-media') {
-          void this.convertPendingMediaEvent(ev.eventId).catch((err) => this.report('media event listener', err));
+          void this.convertPendingMediaEvent(ev.eventId).catch((err) => this.report('media event listener', err)); // reported: deps.report routes to DegradationReporter (AgentServer wiring)
         } else if (ev.kind === 'media-message') {
-          for (const a of ev.attachments) void this.convertPendingMediaEvent(`${ATT_PREFIX}${a.attachmentId}`).catch((err) => this.report('media event listener', err));
+          for (const a of ev.attachments) void this.convertPendingMediaEvent(`${ATT_PREFIX}${a.attachmentId}`).catch((err) => this.report('media event listener', err)); // reported: deps.report routes to DegradationReporter (AgentServer wiring)
         }
       });
       s.setPlatformFollowUp((conversationKey, line) => this.followUp(conversationKey, line));
@@ -245,6 +245,7 @@ export class PlatformMediaForSession {
       }
       return STORED_ELSEWHERE_LINE;
     } catch (err) {
+      // reported: this.report routes to DegradationReporter (AgentServer wiring)
       this.report('media line', err);
       return STORED_ELSEWHERE_LINE;
     }
@@ -404,6 +405,7 @@ export class PlatformMediaForSession {
       // Telegram rows the app's expiry marked `expired` are read by nothing; they end here.
       db.prepare(`DELETE FROM pending_deliveries WHERE state = 'expired' AND conversationKey LIKE 'telegram:%'`).run();
     } catch (err) {
+      // reported: this.report routes to DegradationReporter (AgentServer wiring)
       this.report('media event sweep', err);
     } finally {
       this.sweeping = false;
