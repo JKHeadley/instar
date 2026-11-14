@@ -1,5 +1,5 @@
 {
-  "total": 1130,
+  "total": 1135,
   "perFile": {
     "src/cli.ts": 1,
     "src/commands/init.ts": 35,
@@ -43,7 +43,7 @@
     "src/core/PreCompactionFlush.ts": 8,
     "src/core/QuotaPoller.ts": 7,
     "src/core/ResumeValidator.ts": 6,
-    "src/core/SessionManager.ts": 95,
+    "src/core/SessionManager.ts": 98,
     "src/core/StuckInputSentinel.ts": 2,
     "src/core/SubscriptionPool.ts": 1,
     "src/core/SubscriptionReloginHelper.ts": 2,
@@ -52,7 +52,7 @@
     "src/core/TopicProfileOrchestrator.ts": 17,
     "src/core/TopicProfileResolver.ts": 4,
     "src/core/TopicResumeMap.ts": 11,
-    "src/core/UsageWallRescue.ts": 9,
+    "src/core/UsageWallRescue.ts": 11,
     "src/core/accountFollowMeCooperativeWipe.ts": 3,
     "src/core/classifyProfileChange.ts": 3,
     "src/core/claudeForbiddenGuard.ts": 1,

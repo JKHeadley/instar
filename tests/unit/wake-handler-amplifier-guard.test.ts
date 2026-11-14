@@ -387,6 +387,8 @@ describe('wake-handler amplifier #1 — source-grounded wiring assertions (C)', 
     expect(src).toMatch(/if \(marker\?\.inFlight\)[\s\S]{0,400}return;/);
     // the short-circuit is itself gated behind the (A) flag
     expect(src).toMatch(/if \(_tmuxAsyncHotPathWakeGuard\)\s*\{[\s\S]{0,200}defaultInflightMarkerReader/);
+    // the mirror is settled first: an op that already ended must not read as in flight (2026-11-13)
+    expect(src).toMatch(/flushSyncOpMirror\(\);[^\n]*\n\s*const marker = defaultInflightMarkerReader\(config\.stateDir\)\(\)/);
   });
 
   it('the tmux re-validation uses async execFileAsync with timeout:9000 + killSignal:SIGKILL under the guard', () => {

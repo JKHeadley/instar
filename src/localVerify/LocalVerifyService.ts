@@ -352,13 +352,17 @@ export type MergeHandoff = (record: LocalVerifyRecord, ctx: MergeHandoffContext)
 /**
  * Should a PR entry re-read its base head before it starts? Yes when `main` moved
  * after the entry's base was resolved (a merge landed, or the reconcile loop saw a
- * new head), or when the entry has waited `baseRefreshAfterMs` since then. Pure.
+ * new head), or when the entry has waited `baseRefreshAfterMs` since then, or when the
+ * entry was restored after a restart (`baseResolvedAt: 0`): what merged while the server was
+ * down is unknown. Pure.
  */
 export function decideBaseRefresh(
   entry: { baseRefName: string; firstQueuedAt: number; baseResolvedAt?: number },
   i: { now: number; mainMovedAt: number | null },
   limits: { baseRefreshAfterMs: number } = MERGE_LINE,
 ): boolean {
+  // 0 = restored from the durable queue and not resolved by this process yet: always re-read.
+  if (entry.baseResolvedAt === 0) return true;
   const resolvedAt = entry.baseResolvedAt ?? entry.firstQueuedAt;
   if (i.mainMovedAt !== null && entry.baseRefName === 'main' && i.mainMovedAt > resolvedAt) return true;
   return i.now - resolvedAt >= limits.baseRefreshAfterMs;
@@ -524,6 +528,8 @@ interface InFlight {
   startedAt: number;
   /** Latched at spawn: a live setting change cannot shorten this child's restart hold. */
   preflightAllowanceMs: number;
+  /** Latched once this run's exit has been handled, so it is handled exactly once (see shutdown()). */
+  settled?: boolean;
 }
 
 /** Peer side: what this machine knows about the attempts coordinators handed it. */
@@ -1133,8 +1139,13 @@ export class LocalVerifyService {
       if (this.prQueueLength() >= capFor(QUEUE_PRIORITY.mergeThroughput) + 1) { drops['queue-full']++; continue; }
       const entry: QueueEntry = {
         id: crypto.randomBytes(6).toString('hex'), pr: e.pr, headSha: e.headSha,
+        // The saved base, never the PR view's `baseRefOid`: that is the base as of the PR's last
+        // update and can be hours or days stale (see LocalVerifyServiceSeams.baseHead). Restoring it
+        // put two runs on a main from seven hours earlier (2026-11-13 18:50Z, PRs 3137 and 3096:
+        // both failed, one on a flake fixed on main that morning). The saved base is the newest this
+        // service resolved, and the pre-start refresh below re-reads today's head before any run.
         // A reserved entry keeps the base it was dispatched with (the marker's snapshot decides import).
-        baseSha: e.remote ? e.baseSha : (view?.baseRefOid && isValidSha(view.baseRefOid) ? view.baseRefOid : e.baseSha),
+        baseSha: e.baseSha,
         baseRefName: e.baseRefName, firstQueuedAt: e.firstQueuedAt, attempts: e.attempts,
         errorRetries: e.errorRetries, starvedRaised: e.starvedRaised,
         ...(e.firstRefusedAt !== undefined ? { firstRefusedAt: e.firstRefusedAt } : {}),
@@ -1142,7 +1153,11 @@ export class LocalVerifyService {
         priority: restoredPriority,
         files: view ? viewFiles(view) : null, text: view ? prMatchText(view.title, view.body) : '',
         ...(e.pausedMs ? { pausedMs: e.pausedMs } : {}),
-        ...(e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}),
+        // A reserved entry keeps when its base was resolved (it is not re-read: see above). Any other
+        // entry comes back as "never resolved" (0), so decideBaseRefresh re-reads its base before it
+        // starts, whatever its branch: this process cannot know what merged while it was down. The
+        // next resolution (a pre-start refresh or a new request) writes a real time.
+        ...(e.remote ? (e.baseResolvedAt ? { baseResolvedAt: e.baseResolvedAt } : {}) : { baseResolvedAt: 0 }),
         ...(e.remote ? { remote: e.remote } : {}),
         ...(e.remoteAttempts ? { remoteAttempts: e.remoteAttempts } : {}),
         ...(e.preflightBypassRetry ? { preflightBypassRetry: true as const } : {}),
@@ -1899,6 +1914,13 @@ export class LocalVerifyService {
     this.peerState.results = [...this.peerState.results.filter((x) => x.attemptId !== id), { attemptId: id, record }].slice(-PEER_RESULTS_KEPT);
     this.persistPeerState();
     this.audit({ event: 'peer-attempt-done', attemptId: id, pr: record.pr, outcome: record.outcome });
+    // Why it went red, in THIS machine's audit log. The coordinator imports only the record, so
+    // until now a peer failure named no file on either machine: "unit 65,816 passed / 0 failed,
+    // failure" could not be told apart from a real fault (2026-11-13: PRs 3139, 3096, 3133).
+    if (record.outcome !== 'success' || record.flakyRetried) {
+      const run = r && r.kind === 'record' ? r as { reasons?: string[]; failures?: FailureDetail[] } : undefined;
+      this.audit({ event: 'run-detail', source: 'peer-run', attemptId: id, ...runDetail(record, run) });
+    }
   }
 
   /** Coordinator: after any pump, try to hand one more entry to an idle peer (never blocks the pump). */
@@ -2319,10 +2341,15 @@ export class LocalVerifyService {
   }
 
   /**
-   * Server shutdown: stop the in-flight run's group and start nothing else. The
-   * cancelled entry goes back to the head of the durable queue (not as an attempt),
-   * so the next boot resumes it. No timer is armed (the process is exiting); a group
-   * that survives SIGTERM is found by the next boot's orphan reap.
+   * Server shutdown: start nothing else, and deal with the run in flight.
+   *
+   * A run whose result is already on disk has finished: it is settled here, as its
+   * exit handler would have settled it (see finishedResultAtShutdown()).
+   *
+   * Any other run is stopped. The cancelled entry goes back to the head of the durable
+   * queue (not as an attempt), so the next boot resumes it. No timer is armed (the
+   * process is exiting); a group that survives SIGTERM is found by the next boot's
+   * orphan reap.
    */
   shutdown(): void {
     if (this.stopped) return;
@@ -2330,7 +2357,10 @@ export class LocalVerifyService {
     void this.failedFileDiagnosisPeer?.preempt('shutdown');
     this.publishSuitePriority(false);
     const f = this.inFlight;
-    if (f && !f.cancelled) {
+    if (f && !f.cancelled && this.finishedResultAtShutdown(f)) {
+      this.audit({ event: 'settled-at-shutdown', ...(f.entry.kind === 'main' ? { kind: 'main' } : { pr: f.entry.pr }), headSha: f.entry.headSha, ranMs: this.now() - f.startedAt });
+      this.onExit(f, { status: null, signal: null });
+    } else if (f && !f.cancelled) {
       this.cancelInFlight('shutdown', { armKillTimer: false });
       if (f.entry.kind !== 'main') {
         // The stop killed a real run: it stays counted as an attempt, it is recorded as an
@@ -2342,6 +2372,25 @@ export class LocalVerifyService {
       }
     }
     this.persistQueue();
+  }
+
+  /**
+   * Has the in-flight run already reached its verdict? The child writes its result with a
+   * temporary name and a rename as its last act (after its own worktree cleanup and suite-slot
+   * release), so a result file that holds a result object is a finished run. What may not have
+   * happened yet is this process handling the child's exit: a planned restart is released the
+   * moment the child is no longer alive, and on a busy event loop the stop request can arrive
+   * before the exit event does (2026-11-13: a 24-minute run was cancelled 121 ms after it
+   * finished, its result discarded, and it ran again from the start).
+   *
+   * Not settled when the verifier on disk has changed: the restart then loads a verifier whose
+   * index ignores a record this one writes, so the run has to happen again anyway, and the
+   * interruption path keeps the entry at the head of the queue for that.
+   */
+  private finishedResultAtShutdown(f: InFlight): boolean {
+    if (this.verifierChangedOnDisk()) return false;
+    const result = this.readResult(f.resultPath) as { kind?: unknown } | null;
+    return !!result && typeof result === 'object' && typeof result.kind === 'string';
   }
 
   // ---- internals ----
@@ -2816,6 +2865,11 @@ export class LocalVerifyService {
   }
 
   private onExit(f: InFlight, exit: { status: number | null; signal: string | null }): void {
+    // Handled exactly once: shutdown() settles a run whose result is already on disk, and the
+    // child's real exit event may still arrive afterwards. Handling it again would find the
+    // result file gone and record a crash over the real verdict.
+    if (f.settled) return;
+    f.settled = true;
     // Sweep leftovers of the group right away (step processes the child left behind).
     if (this.seams.isGroupAlive(f.pgid)) {
       try { this.seams.killGroup(f.pgid, 'SIGKILL'); } catch { /* @silent-fallback-ok: best-effort */ }
@@ -3203,7 +3257,14 @@ export class LocalVerifyService {
   }
 
   private readResult(p: string): (VerifyRunResult | { kind: 'crash'; detail: string }) | null {
-    try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+    // Only a JSON object can be a result. A file holding a bare string, number or `null` parses
+    // without error, and the exit handler's `'degradations' in result` then threw on it: an
+    // unhandled rejection in the server, and no record for the run.
+    try {
+      const parsed: unknown = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as VerifyRunResult | { kind: 'crash'; detail: string } : null;
+    } catch { return null; } // @silent-fallback-ok: an absent or unparseable result file is "no result"; the caller records the crash
   }
 
   private removeRunFiles(f: InFlight): void {
