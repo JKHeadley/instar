@@ -144,8 +144,12 @@ export interface OriginAuditRecord {
   sequence: number;
   record: StoredOriginInput;
   operation: { operationId: string; preparedAt: number; deadlineAt: number; maxAttempts: number; state: string;
+    /** native-conversation-base §3a item 2 — late-mark carrier (null on rows that were never replaced). */
+    firstPreparedAt?: number | null; lateMarkedAt?: number | null;
     /** a2a-single-agent-identity §4.2 — present only while a named hold is recorded. */
-    holdReason?: string; holdDetail?: Record<string, unknown> | null } | null;
+    holdReason?: string; holdDetail?: Record<string, unknown> | null;
+    /** native-conversation-forwarded-advisory item 2 — the outbound check's verdict (`policy_verdict_json`), never cleared. */
+    policyVerdict?: Record<string, unknown> | null } | null;
   children: Array<{ childId: string; deliveryId: string; destinationJson: string; generation: number; state: string; attempts: number }>;
   attempts: Array<{ attemptId: string; childId: string; materializationId: string; ownerBootId: string; deliveryMachineId: string | null; phase: string; outcome: string | null; receiptJson: string | null; createdAt: number; resolvedAt: number | null; reason?: string | null; nextAttemptAt?: number | null }>;
 }
@@ -209,4 +213,14 @@ export interface HeldOperationRow {
    * sealed envelope. Null when unreadable. Gates the user-facing delayed-reply notice:
    * background output never claims "I have your message". */
   producerKind?: string | null;
+  /** native-conversation-base §3a item 2 — the original draft time of a replaced reply (null = its own preparedAt). */
+  firstPreparedAt?: number | null;
+  /** §3a item 2 — set when a late first line was added; never marked twice. */
+  lateMarkedAt?: number | null;
+  /** The sealed author binding, read from the envelope (null when unreadable). */
+  originMachineId?: string | null;
+  sessionId?: string | null;
+  harnessId?: string | null;
+  /** native-conversation-forwarded-advisory item 2 — the recorded verdict, when there is one. */
+  policyVerdict?: Record<string, unknown> | null;
 }

@@ -93,6 +93,9 @@ export async function handleOriginMesh(options: {
         role, outcome: verdict.outcome, safeToResend: verdict.safeToResend, reason: verdict.reason ?? null, failure: verdict.failure ?? null,
         supersededBy: verdict.supersededBy ?? null, duplicateOfMessageId: verdict.duplicateOfMessageId ?? null,
         originMachineId: record.originMachineId, detail: verdict.detail,
+        // native-conversation-forwarded-advisory item 3 — the recorded verdict goes only to the machine that
+        // wrote the reply, never on a `reader` answer (its suggestion is for that session alone).
+        ...(!reader && record.originMachineId === options.authenticatedSender && audit.operation?.policyVerdict ? { policyVerdict: audit.operation.policyVerdict } : {}),
         ...(record.originMachineId === self ? { holding: authorStatement(audit, verdict).holding } : {}) };
     } catch { return { ok: false, reason: 'origin-receipt-unavailable' }; }
   }
@@ -159,6 +162,19 @@ export async function handleOriginMesh(options: {
     record.destination.transport !== 'bot-api' || record.destination.accountId !== runtime.options.bot.accountId) {
     return { ok: false, reason: 'origin-plan-invalid' };
   }
+  // native-conversation-base §3a item 7 — an owner that receives a submit for an id
+  // it holds as terminal answers with that ending instead of sending. Naming the
+  // operation id makes the forwarder ask this machine's `receipt`, which carries
+  // the classified outcome, reason and failure; the old id is never sent again.
+  try {
+    const existing = await runtime.store.getOperation(record.operationId);
+    const state = existing?.operation?.state;
+    if (existing && state && ['suppressed', 'known-failed', 'expired', 'superseded'].includes(state)) {
+      const verdict = classifyOperationOutcome(record.operationId, existing, runtime.unrecordedReceipts?.forOperation(record.operationId) ?? []);
+      return { ok: false, reason: 'origin-operation-terminal', outcome: 'held', operationId: record.operationId,
+        terminal: { state, outcome: verdict.outcome, reason: verdict.reason ?? null, failure: verdict.failure ?? null } };
+    }
+  } catch { /* unreadable: the admit below refuses a conflicting replay on its own */ }
   try {
     await runtime.store.putVerifiedEvidence({ record: stored, verification });
     const response = await runtime.service.runFirstSend(record.operationId, async () => {
@@ -173,8 +189,15 @@ export async function handleOriginMesh(options: {
       deliveryMachineId: runtime.options.identity.originMachineId, forwardedFromMachine: record.originMachineId };
   } catch (error) {
     if (error instanceof QuietRecordedError) return { ok: true, originId: record.originId, ...error.receipt, deliveryMachineId: runtime.options.identity.originMachineId };
-    if (error instanceof OriginSendPolicyRefusal) return { ok: false, reason: error.reason, outcome: 'held',
-      operationId: record.operationId, policyRefusal: error.decision };
+    if (error instanceof OriginSendPolicyRefusal) {
+      // native-conversation-forwarded-advisory item 2 — "not sent" is answered only after this machine ended
+      // its own copy in the same transition that recorded the verdict. A `retain` refusal, or a write that
+      // lost (a concurrent claim, an earlier verdict), is CUSTODY: the author holds its row and asks later.
+      const ended = await runtime.endForPolicy(record, error.decision).catch(() => null);
+      if (ended?.ended) return { ok: false, reason: error.reason, outcome: 'held', operationId: record.operationId,
+        policyRefusal: error.decision, copyEnded: true, policyVerdict: ended.verdict };
+      return { ok: false, reason: error.reason, outcome: 'outcome-unknown', operationId: record.operationId };
+    }
     // Telegram accepted it; only the receipt write failed. Answering a refusal
     // here would let the forwarding standby re-forward a delivered message.
     if (error instanceof TelegramOriginHoldError && error.outcome === 'accepted-unrecorded' && error.delivered?.messageId && /^\d+$/.test(error.delivered.messageId)) {

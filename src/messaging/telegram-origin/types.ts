@@ -61,6 +61,11 @@ export interface TelegramOriginRecord extends TelegramOriginProducer {
   operationId: string;
   deliveryId: string;
   createdAt: number;
+  /** native-conversation-base §3a item 2 — a replacement's original draft time.
+   * Sealed in the envelope (never the admission, which the store rebuilds from
+   * fixed columns); the execution owner's content check looks back to it. An
+   * older receiver keeps the envelope bytes whole and ignores the field. */
+  firstPreparedAt?: number;
   operationKind: string;
   destination: OriginDestination;
   contentDigest: string;
@@ -181,6 +186,12 @@ export class TelegramOriginHoldError extends Error {
     super(`Telegram message held: ${reason}`);
     this.name = 'TelegramOriginHoldError';
   }
+}
+/** native-conversation-forwarded-advisory item 5 — an answer named a handed-back reply that is no
+ * longer held (it expired, or was already replaced). Nothing is admitted and nothing is sent; the
+ * caller is told to read the old reply's recorded outcome (a 409 that names its operation id). */
+export class AdvisoryAnswerClosedError extends TelegramOriginHoldError {
+  constructor(operationId: string) { super('advisory-answer-closed', operationId, 'held'); this.name = 'AdvisoryAnswerClosedError'; }
 }
 /** a2a-single-agent-identity §4.2 — the forward-to-holder path found, during
  * its lease-settling window, that THIS machine holds the lease after all. The

@@ -1,0 +1,52 @@
+{
+  "ts": "2026-11-12T18:56:23.214Z",
+  "slug": "ncb-3g-forwarded-advisory",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 19,
+  "loc": 840,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/data/feature-ladders.json",
+      "src/messaging/telegram-origin/OriginAwareness.ts",
+      "src/messaging/telegram-origin/OriginForwardToHolder.ts",
+      "src/messaging/telegram-origin/OriginMesh.ts",
+      "src/messaging/telegram-origin/OriginOperationOutcome.ts",
+      "src/messaging/telegram-origin/OriginOwnerRead.ts",
+      "src/messaging/telegram-origin/OriginPolicyClassifier.ts",
+      "src/messaging/telegram-origin/OriginPolicyVerdict.ts",
+      "src/messaging/telegram-origin/OriginStore.ts",
+      "src/messaging/telegram-origin/OriginStore.worker.ts",
+      "src/messaging/telegram-origin/OriginStoreBackend.ts",
+      "src/messaging/telegram-origin/SessionDeliveryNotice.ts",
+      "src/messaging/telegram-origin/StoreTypes.ts",
+      "src/messaging/telegram-origin/TelegramOriginRuntime.ts",
+      "src/messaging/telegram-origin/TelegramOriginService.ts",
+      "src/messaging/telegram-origin/types.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 776,
+    "deletedLines": 64
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "src/testing/selfActionRegistry.ts#telegram-origin-forward-ladder",
+      "howCaught": "This slice only removes forward-ladder actions: a row with an advisory verdict leaves both recovery selections and the due ladder and recoverForwardedHold returns at once for it; a copy-ended verdict is recorded instead of retried. The only new sends are session answers that supersede the held row in one transaction under the original 6 h deadline, so the modeled bound of 31 attempts per reply holds."
+    }
+  },
+  "verdict": "pass"
+}

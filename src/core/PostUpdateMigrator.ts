@@ -65,7 +65,7 @@ import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.
 import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER, refreshHeldReplyAdvisoryAwareness, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
@@ -9985,6 +9985,20 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added owner-read outcome awareness');
     }
 
+    // native-conversation-base §3a — held replies are delivered late and marked; the session lines.
+    if (!content.includes(HELD_REPLY_LATE_AWARENESS_MARKER)) {
+      content += '\n' + telegramOriginHeldLateAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added held-reply late-delivery awareness');
+    }
+    // native-conversation-forwarded-advisory — the advisory line and its two answers, in that same paragraph.
+    const refreshedAdvisory = refreshHeldReplyAdvisoryAwareness(content);
+    if (refreshedAdvisory !== content) {
+      content = refreshedAdvisory;
+      patched = true;
+      result.upgraded.push('CLAUDE.md: the held-reply paragraph names the advisory line and its two answers');
+    }
+
     if (!content.includes('Telegram test groups:')) {
       content += '\n' + telegramOriginTestGroupsAwareness();
       patched = true;
@@ -17154,6 +17168,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
         [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
+        [HELD_REPLY_LATE_AWARENESS_MARKER, telegramOriginHeldLateAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],

@@ -44,6 +44,26 @@ export function telegramOriginOwnerReadAwareness(): string {
   return `${OWNER_READ_AWARENESS_MARKER} on an agent with more than one machine, the held-reply outcome route asks the machine that actually sends to Telegram (the execution owner) over the signed machine link, so any machine gives that machine's own verdict. The answer names who gave it (\`answeredBy\`, \`source\`, \`asOf\`, \`ownerAnswered\`). \`pending\` means wait: a machine still holds the reply and will deliver it. Only \`safeToResend: true\` permits a resend; \`not-delivered\` with \`safeToResend: false\` was ended on purpose. \`unknown\` always says which fact is missing in \`why\`: \`owner-unresolved\` (the owner's own send is unresolved), \`owner-no-record\`, \`author-unanswered\` (the machine that wrote it did not answer), \`timeout\`, \`refused\`, \`old-version\` (the owner runs an older release) or \`owner-read-off\`. A missing answer is never "did not arrive". The route answers within 4 s. \`messageOrigin.ownerRead.enabled: false\` stops this machine asking (answers only get more cautious); \`GET /telegram/origins/status\` → \`ownerRead\` shows ask counts and latency. **When to use** (PROACTIVE): before resending after a held or ambiguous send on a multi-machine agent → read the outcome and act only on \`safeToResend: true\`.\n`;
 }
 
+/** native-conversation-base §3a — held replies are delivered late and marked, never dropped on a timestamp. Marker: `Held replies are delivered late, not dropped:`. */
+export const HELD_REPLY_LATE_AWARENESS_MARKER = 'Held replies are delivered late, not dropped:';
+export function telegramOriginHeldLateAwareness(): string {
+  return `${HELD_REPLY_LATE_AWARENESS_MARKER} a reply that was held (the relay script said HELD) is delivered when it can be, even after newer messages; a later message never ends it. One sent more than 5 minutes after you wrote it starts with a plain first line saying it is late, and you get one line in your session saying so ("Your reply \`ID\` was delivered N minutes after you wrote it."). A reply is ended only when the user already has its text (\`duplicate-content\`). Every other ending names its reason (\`quiet-notification-recorded\`, \`historical-notice-retired\`, \`recorded-by-caller\`, \`suppressed-at-holder\`). If a reply could not be delivered you get one of two lines: **definite** ("was not delivered (CAUSE) and will not be retried") with one of three causes, "Telegram refused it", "it could not be sent before its attempts ran out" or "it passed its delivery deadline"; read its text at \`GET /telegram/origins/operations/ID/text\` and send it again yourself if it is still needed. Or **uncertain** ("could not be confirmed. It may have arrived."): do not send it again unless the user says it is missing. A line saying the sending machine "runs an older version and gave no reason" means the user may already have it: check the conversation before repeating. A reply the outbound check handed back while it was held gets one line, \"Your reply \`ID\` was not sent. The outbound check has a suggestion\", and waits for you until its deadline: to send a revised version, send it with \`--tone-complied RULE --tone-decision-ref REF\` as the line says; to send it as written, resend its text with \`--tone-ack RULE --tone-reason \"why\" --tone-decision-ref REF\`. A reply without that reference is a separate message and leaves the held one waiting; nothing else ever sends it. **When to use** (PROACTIVE): when one of these lines arrives, act on it as written. If you notice a late reply that was stale or wrong to send, file feedback tagged \`late-reply-stale\` with the operation id.\n`;
+}
+
+/** native-conversation-forwarded-advisory item 7 — the two sentences on the advisory line and its two answers,
+ * added to an already-installed held-reply paragraph (idempotent: sniffed by its own opening words). */
+export const HELD_REPLY_ADVISORY_AWARENESS_MARKER = 'A reply the outbound check handed back while it was held';
+export function refreshHeldReplyAdvisoryAwareness(content: string): string {
+  if (!content.includes(HELD_REPLY_LATE_AWARENESS_MARKER) || content.includes(HELD_REPLY_ADVISORY_AWARENESS_MARKER)) return content;
+  const current = telegramOriginHeldLateAwareness();
+  const start = current.indexOf(HELD_REPLY_ADVISORY_AWARENESS_MARKER);
+  const sentences = current.slice(start, current.indexOf(' **When to use** (PROACTIVE): when one of these lines arrives', start));
+  const anchor = ' **When to use** (PROACTIVE): when one of these lines arrives, act on it as written.';
+  const at = content.indexOf(anchor, content.indexOf(HELD_REPLY_LATE_AWARENESS_MARKER));
+  if (at < 0) return content;
+  return `${content.slice(0, at)} ${sentences}${content.slice(at)}`;
+}
+
 export function telegramOriginBrowserDriftAwareness(): string {
   return 'Telegram Web K updates: the typed browser routes run only on Web K builds that were reviewed against their source maps and enrolled. When Telegram ships a new build, the browser send/snapshot routes hold (409) and the failed build is recorded (`GET /telegram/origins/status` → browser recovery `failedBuilds`) with exactly one attention item per failed build; nothing is sent. That item is a maintainer task, not an operator chore: review the new build (record evidence under `docs/specs/reports/telegram-message-origin-evidence/`, add it to `ReviewedWebKBuilds.ts`), ship it, then run `instar telegram-origin enroll-browser <profile>` on the machine. It runs a read-only canary on the managed profile, refuses any build not on the reviewed list, and keeps one prior reviewed build; the running server picks it up at its next browser start without a restart. It is deliberately not an HTTP route. Never hand-edit the profile registry or drive the managed profile with generic browser tools to work around the hold.\n';
 }
@@ -88,6 +108,7 @@ ${telegramOriginWorkerAwareness()}
 ${telegramOriginBrowserDriftAwareness()}
 ${telegramOriginHeldOutcomeAwareness()}
 ${telegramOriginOwnerReadAwareness()}
+${telegramOriginHeldLateAwareness()}
 ${telegramOriginTestGroupsAwareness()}
 Ordinary bot messages and fixed outage notices share the credential owner's bounded send capacity across server and Lifeline processes. A \`credential-capacity-unavailable\` result retains the original operation for recovery; never replace it with a new message. An unavailable or stale capacity owner holds sends. Recording-worker failure does not disable the independent notice queue or its current permission checks.
 
