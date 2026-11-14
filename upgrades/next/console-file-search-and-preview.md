@@ -1,0 +1,18 @@
+## What Changed
+
+Two read-only file-viewer routes. `GET /api/files/search?q=` matches file and folder names across every allowed folder under the viewer's existing rules (never-served and blocked names on the requested and resolved path, realpath inside the project), skips `.git` and `node_modules`, and is bounded (200 results max, 20,000 entries, depth 12, 2 seconds, `truncated: true` when cut). `GET /api/files/image?path=` serves a PNG, JPEG, GIF or WebP for preview, typed by its first bytes (SVG and renamed files are refused with 415), capped at 5 MB and the viewer's `maxFileSize` (413), inline with `nosniff` and a sandbox CSP. The console Files page searches the whole project as you type and shows images. CLAUDE.md gains one line about both routes.
+
+## Evidence
+
+Before: the Files search matched only folders already opened, and an opened image showed "Images are not previewed here yet". After (tests/integration/file-search-image-routes.test.ts, tests/e2e/file-search-image-alive.test.ts): a search finds a file in an unopened folder and never returns key material, a secret-named file or a link to a key; a real PNG is served as `image/png` with `nosniff`, while an SVG and a renamed HTML file answer 415 and an over-size image 413.
+
+## What to Tell Your User
+
+On the Files page, "Find a file" now searches every folder you allowed, not just the ones you opened, and pictures open as pictures. Private keys and secret-named files still never appear, and SVG files are never shown as pictures.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|-----------|
+| Find a file by name across the project | `GET /api/files/search?q=NAME` or the Files page search box |
+| Image preview | `GET /api/files/image?path=...`; automatic on the Files page |
