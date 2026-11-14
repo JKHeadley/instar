@@ -7,6 +7,7 @@ import { correctionControls } from './conversation-corrections.js';
 import { effortActionControls } from './conversation-effort-actions.js';
 import { erasureControls } from './conversation-erasure.js';
 import { machineControls } from './conversation-machines.js';
+import { renderSuggestions } from './conversation-suggestions.js';
 
 const PAGE = '#/work/conversations';
 const ROOTS = '/conversation-graph/roots';
@@ -15,12 +16,13 @@ const runs = new WeakMap();
 
 function routeState() {
   const params = new URLSearchParams(location.hash.split('?')[1] || '');
-  return { view: params.get('view') === 'all' ? 'all' : 'overview', q: params.get('q') || '', ref: params.get('node') || '' };
+  const view = params.get('view');
+  return { view: view === 'all' || view === 'suggestions' ? view : 'overview', q: params.get('q') || '', ref: params.get('node') || '' };
 }
 
 function href({ view = 'overview', q = '', ref = '' } = {}) {
   const p = new URLSearchParams();
-  if (view === 'all') p.set('view', 'all');
+  if (view === 'all' || view === 'suggestions') p.set('view', view);
   if (q) p.set('q', q);
   if (ref) p.set('node', ref);
   return PAGE + (p.size ? `?${p}` : '');
@@ -179,6 +181,14 @@ export async function renderConversations(main) {
   // Clear private content before any asynchronous owner-authorized read.
   setKids(main, el('div', { class: 'conversations-page', 'aria-busy': 'true' },
     pageHead({ eyebrow: 'Conversations', headline: 'Loading conversations…' })));
+  if (state.view === 'suggestions' && !state.ref) {
+    await renderSuggestions({ main, send: (path, body) => read(path, controller.signal, body), current,
+      unlock: () => unlock(main, retry),
+      header: pageHead({ eyebrow: 'Conversations', headline: 'Suggested efforts' }),
+      back: nav('Back to your efforts', href()),
+      openEffort: (effort) => href({ ref: encodeNodeRef(effort) }) });
+    return;
+  }
   if (state.ref) {
     const result = await read(`/conversation-graph/nodes/${encodeURIComponent(state.ref)}`, controller.signal);
     if (!current()) return;
@@ -341,16 +351,21 @@ export async function renderConversations(main) {
     cursor = page.nextCursor;
     pagesLoaded++;
   }
-  const rows = el('div', { class: 'rows conversation-rows' }, loaded.map((item) => itemRow(item, state)));
+  // Overview: the Chief of Staff conversation is the top row and every root effort sits under it.
+  const rootRow = state.view === 'overview' && model.root ? itemRow(model.root, state) : null;
+  if (rootRow) rootRow.classList.add('conversation-root-row');
+  const rows = el('div', { class: rootRow ? 'rows conversation-rows conversation-under-root' : 'rows conversation-rows' }, loaded.map((item) => itemRow(item, state)));
   const status = el('p', { class: 'need-sub', role: 'status' });
   const syncLine=el('p',{class:'need-sub conversation-sync',role:'status',text:model.sync});
   const body = el('div', { class: 'conversations-page' },
     pageHead({ eyebrow: 'Conversations', headline: state.view === 'overview' ? 'Your efforts' : 'All conversations' }),
-    tabs, form, syncLine, rows, status);
+    tabs, form, syncLine, ...(rootRow ? [el('div', { class: 'rows conversation-rows' }, rootRow)] : []), rows, status);
+  if (state.view === 'overview' && model.canCorrect) body.insertBefore(nav('Review suggestions', href({ view: 'suggestions' }), 'btn-quiet btn-inline'), status);
   const effortActions = effortActionControls({ canCorrect: model.canCorrect,
     send: (path, body) => read(path, controller.signal, body), current,
     unlock: () => unlock(main, retry), refresh: () => { remember(); retry(); } });
-  if (effortActions) body.insertBefore(effortActions, rows);
+  // Under the Chief of Staff root the efforts follow it directly; the actions come after them.
+  if (effortActions) body.insertBefore(effortActions, rootRow ? status : rows);
   if (state.view === 'overview') void machineControls({ send: (path, sent) => read(path, controller.signal, sent), current,
     unlock: () => unlock(main, retry), refresh: () => { remember(); retry(); } }).then(controls => { if (controls && current()) body.append(controls); }).catch(() => {});
   if (!model.items.length) rows.append(el('p', { class: 'empty-line', text: state.q ? 'No conversations match this search.'

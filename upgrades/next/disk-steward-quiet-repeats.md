@@ -1,0 +1,21 @@
+# Disk warnings stop repeating every 2 hours when nothing has changed
+
+<!-- bump: patch -->
+
+## What Changed
+
+The Disk Steward repeated a still-true critical post every 2 h and an escalate post every 6 h at a fixed rate; only warn posts backed off. Every level now backs off: when less than 1% of the disk can be reclaimed, each repeat doubles the wait (up to 12 times the base), capped at 24 h for critical and escalate and 7 days for warn. A further drop of 2% of the disk since the last post resets the wait at once, checked on every 15 minute sample. Spec: `docs/specs/disk-steward.md` §3.5 (amended 2026-11-12).
+
+## What to Tell Your User
+
+Disk space warnings no longer repeat the same message every couple of hours when nothing has changed. If the disk keeps filling, you hear about it again straight away.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| Disk warnings back off when nothing changes, and come back when space drops further | Automatic |
+
+## Evidence
+
+Studio and Laptop, 2026-11-11: both stuck critical with nothing safe to clear, posting the same text every 2 h. Simulated over 4 days stuck critical: 7 posts instead of 48; a drop to 10 GiB posts again within 9 samples. `tests/unit/diskSteward-levels.test.ts` (24) and `tests/unit/diskSteward.test.ts` (11) pass.
