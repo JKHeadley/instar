@@ -18,6 +18,22 @@ import { TopicResumeMap } from '../../src/core/TopicResumeMap.js';
 import { EventEmitter } from 'node:events';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
+// A tmux stand-in in which every session these tests name has a live pane. The
+// heartbeat reads all sessions with one `list-sessions` call
+// (`<name>||<pane_id>||<pane_dead>` per line); any other call prints a live pane.
+const LIVE_TMUX_SESSIONS = ['echo-dashboard-features', 'echo-dead-session', 'echo-heartbeat', 'echo-jobs-not-running', 'echo-my-topic', 'echo-session-robustness', 'echo-slack-general', 'echo-slack-threadline', 'inspec-topic-505', 'inspec-topic-683', 'session-505', 'session-683', 'session-999', 'some-session'];
+const LIVE_TMUX_MOCK = [
+  '#!/bin/bash',
+  'if [ "$1" = "list-sessions" ]; then',
+  ...LIVE_TMUX_SESSIONS.map((name) => `  printf '%s||%%1||0\\n' '${name}'`),
+  '  exit 0',
+  'fi',
+  'echo "%1||0"',
+  'exit 0',
+  '',
+].join('\n');
+
+
 // ── Helpers ─────────────────────────────────────────────────────────
 
 /** Compute the expected Claude project dir hash (must match TopicResumeMap internals) */
@@ -162,7 +178,7 @@ describe('Session Resume E2E', () => {
 
       // Create a TopicResumeMap with a mock tmux path that always says sessions exist
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const heartbeatMap = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -222,7 +238,7 @@ describe('Session Resume E2E', () => {
 
       // Mock tmux that says session exists
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux-alive.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const heartbeatMap = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -380,7 +396,7 @@ describe('Session Resume E2E', () => {
 
       // Phase 1: Session is running, heartbeat saves UUID
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const map = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -557,7 +573,7 @@ describe('Session Resume E2E', () => {
       cleanupDirs.push(myDir);
 
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const map = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -599,7 +615,7 @@ describe('Session Resume E2E', () => {
       fs.utimesSync(path.join(myDir, `${uuid3}.jsonl`), new Date(Date.now() + 10000), new Date(Date.now() + 10000));
 
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const map = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -625,7 +641,7 @@ describe('Session Resume E2E', () => {
       cleanupDirs.push(myDir);
 
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const map = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -750,7 +766,7 @@ describe('Session Resume E2E', () => {
       cleanupDirs.push(myDir);
 
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const map = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -777,7 +793,7 @@ describe('Session Resume E2E', () => {
       cleanupDirs.push(myDir);
 
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const map = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
@@ -837,7 +853,7 @@ describe('Session Resume E2E', () => {
       cleanupDirs.push(myDir);
 
       const mockTmuxScript = path.join(tmpDir, 'mock-tmux.sh');
-      fs.writeFileSync(mockTmuxScript, '#!/bin/bash\n# A live pane: display-message prints `<pane_id>||<pane_dead>`.\necho "%1||0"\nexit 0\n');
+      fs.writeFileSync(mockTmuxScript, LIVE_TMUX_MOCK);
       fs.chmodSync(mockTmuxScript, '755');
 
       const map = new TopicResumeMap(stateDir, projectDir, mockTmuxScript);
