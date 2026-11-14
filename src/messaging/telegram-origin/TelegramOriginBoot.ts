@@ -71,7 +71,6 @@ export async function bootTelegramOrigin(options: {
   diagnoseUnknown: (originId: string, reason: string) => Promise<string | void>;
   diagnosticMode?: 'local' | 'delegate';
   reviewLegacyRecovery?: (text: string) => Promise<boolean>;
-  reviewQueuedReply?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['reviewQueuedReply'];
   authorizeOrigin?: import('./TelegramOriginService.js').OriginServiceOptions['authorizeOrigin'];
   onNoticeState: (state: OutageNoticeState) => void;
   onRecoveredMessage?: import('./TelegramOriginRuntime.js').TelegramOriginRuntimeOptions['onRecoveredMessage'];
@@ -215,7 +214,6 @@ export async function bootTelegramOrigin(options: {
     diagnoseUnknown: options.diagnoseUnknown,
     diagnosticMode: options.diagnosticMode,
     reviewLegacyRecovery: options.reviewLegacyRecovery,
-    reviewQueuedReply: options.reviewQueuedReply,
     resolveOriginKey,
     authorizeOrigin: options.authorizeOrigin ?? (record => {
       try {
