@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { InstarConfig } from '../../core/types.js';
 import type { InitiativeTracker } from '../../core/InitiativeTracker.js';
@@ -133,6 +134,15 @@ export function executorUpdatePending(
   return now - detected < UPDATE_PENDING_BRAKE_MAX_MS;
 }
 
+/**
+ * The merge script of the running package, never a checkout's. An agent home can sit on an old branch
+ * (2026-11-07: Echo's held an August copy with no CI-floor path), and merging a fix to the script never
+ * reaches a stale checkout. Both src/ and dist/ sit three levels under the package root.
+ */
+export function installedSafeMergeScript(moduleUrl: string = import.meta.url): string {
+  return fileURLToPath(new URL('../../../scripts/safe-merge.mjs', moduleUrl));
+}
+
 /** Production reviewer wiring, with only the external model call replaceable in tests. */
 export function buildFeedbackReviewPort(config: ReviewerConfig, invoke: typeof runCrossModelReview = runCrossModelReview): IndependentReviewPort {
   return {
@@ -193,7 +203,7 @@ export function buildFeedbackExecutor(input: {
     root: path.join(agentHome, '.worktrees', '.feedback-deps'), agentHome, trashRoot: path.join(executeStateDir, 'trash'), runner, testRunnerHoldersFile,
   });
   const githubRuntime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: config.stateDir });
-  const github = input.overrides?.github ?? new GhGateway({ resolveRuntime: githubRuntime, cwd: config.stateDir, safeMergeScript: path.join(resolveConfig().sourceRepoPath ?? agentHome, 'scripts', 'safe-merge.mjs') });
+  const github = input.overrides?.github ?? new GhGateway({ resolveRuntime: githubRuntime, cwd: config.stateDir, safeMergeScript: installedSafeMergeScript() });
 
   const sm = input.sessionManager;
   // While the executor is enabled, live and owns the queue on this machine, ordinary rerouted spawns leave a slot for its confined
@@ -329,7 +339,7 @@ export async function disarmExecutorPrsWithoutExecutor(input: {
   const rows = db.prepare(`SELECT attempt_id AS attemptId, pr_number AS prNumber FROM execution WHERE pr_number IS NOT NULL AND state IN (${states.map(() => '?').join(',')})`).all(...states) as Array<{ attemptId: string; prNumber: number }>;
   if (rows.length === 0) return { checked: 0, disarmed: 0, failed: 0 };
   const git = input.git ?? new SafeAttemptGit();
-  const github = input.github ?? new GhGateway({ cwd: input.stateDir, safeMergeScript: path.join(input.sourceRepoPath ?? input.stateDir, 'scripts', 'safe-merge.mjs') });
+  const github = input.github ?? new GhGateway({ cwd: input.stateDir, safeMergeScript: installedSafeMergeScript() });
   const slug = input.sourceRepoPath ? (await git.githubRemote(input.sourceRepoPath))?.slug ?? null : null;
   let disarmed = 0;
   let failed = 0;

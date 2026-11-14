@@ -496,6 +496,7 @@ export class TunnelManager extends EventEmitter {
         token: config.token,
         configFile: config.configFile,
         hostname: config.hostname,
+        stateDir: config.stateDir,
       }));
     }
     pool.push(new CloudflareQuickProvider({ port: config.port, stateDir: config.stateDir }));

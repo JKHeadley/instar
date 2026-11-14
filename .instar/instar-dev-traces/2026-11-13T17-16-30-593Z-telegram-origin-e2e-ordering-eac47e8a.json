@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "telegram-origin-e2e-ordering",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T17:16:30.593Z",
+  "artifactPath": "upgrades/side-effects/telegram-origin-e2e-ordering.md",
+  "artifactSha256": "025c80965f2a342c5cc01d043823b43028c29a016b3816c04e7a375c17d810b3",
+  "coveredFiles": [
+    "docs/specs/telegram-origin-e2e-ordering.eli16.md",
+    "tests/e2e/telegram-origin-notice-policy.test.ts",
+    "tests/e2e/telegram-origin-runtime-lifecycle.test.ts",
+    "upgrades/next/telegram-origin-e2e-ordering.md",
+    "upgrades/side-effects/telegram-origin-e2e-ordering.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Test-only: two e2e files stop asserting values that depend on which timer fires first; no file under src changes; a revert restores the old assertions. One assertion (count of hub alerts after a recovery pass) is relaxed from exactly one to one or two, stated in the artifact and filed as a product question; independent review concurred.",
+  "eli16Path": "docs/specs/telegram-origin-e2e-ordering.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/telegram-origin-e2e-ordering.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

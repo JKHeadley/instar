@@ -472,9 +472,13 @@ describe('media off', () => {
     const t = await signed(e, 'POST', `/mobile/chat/${TOPIC}`, { text: 'x', requestId: rid(), attachments: [] });
     expect(t.status).toBe(400);
     expect(t.body.error).toBe('media-target-unsupported');
+    // The refusal says what is actually wrong and carries the one-tap turn-on.
+    expect(t.body.detail).toBe('Files are turned off on this agent.');
+    expect(t.body.action).toMatchObject({ kind: 'team-switch-on', setting: 'files' });
     const s = await signed(e, 'POST', `/mobile/chat/slack/${e.channelId}`, { machine: 'm1', text: 'x', requestId: rid(), attachments: [] });
     expect(s.status).toBe(400);
     expect(s.body.error).toBe('media-target-unsupported');
+    expect(s.body.action).toMatchObject({ kind: 'team-switch-on', setting: 'files' });
     const u = await signed(e, 'POST', '/mobile/media/uploads', { conversationRef: `telegram:${TOPIC}`, ...describeFile(png()), requestId: rid() });
     expect(u.status).toBe(503);
     expect(e.ingested).toHaveLength(0);

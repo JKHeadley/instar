@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Keep the Doorway/Model Map Current*
+
 /**
  * lint-model-registry-freshness.mjs — the model-registry FRESHNESS ratchet.
  *

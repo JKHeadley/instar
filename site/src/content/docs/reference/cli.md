@@ -64,6 +64,12 @@ instar slack-cli channels       # List authorized channels
 instar whatsapp                 # WhatsApp adapter management (QR pairing, status)
 ```
 
+## Contributor checks
+
+```bash
+instar dev:claim-check <paths...>   # Before a build: open and recent PRs touching these paths
+```
+
 ## Users
 
 ```bash

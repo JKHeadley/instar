@@ -15,7 +15,7 @@ import { FeedbackDrainStore, DrainConflictError } from '../../../src/feedback-fa
 import { InitiativeTracker } from '../../../src/core/InitiativeTracker.js';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
 import { buildFeedbackTriage } from '../../../src/feedback-factory/triage/buildFeedbackTriage.js';
-import { disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, executorUpdatePending, UPDATE_PENDING_BRAKE_MAX_MS, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
+import { installedSafeMergeScript, disarmExecutorPrsWithoutExecutor, readVaultNames, buildFeedbackExecutor, executorUpdatePending, UPDATE_PENDING_BRAKE_MAX_MS, isInstarSourceCheckout, readIdentityFacts } from '../../../src/feedback-factory/execute/buildFeedbackExecutor.js';
 import { SafeAttemptGit, GhGateway } from '../../../src/feedback-factory/execute/executorPorts.js';
 import { SandboxRuntimeRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache } from '../../../src/feedback-factory/execute/depsCache.js';
@@ -191,5 +191,18 @@ describe('the update-pending admission brake', () => {
     let standby: (() => boolean) | null = null;
     build({ sessionManager: { setConfinedRerouteReserve: (fn: () => boolean) => { standby = fn; } } as unknown as SessionManager, execute: { dryRun: false }, canonicalOwner: false });
     expect(standby!()).toBe(false);
+  });
+});
+
+describe('the executor merges with the running package\'s script', () => {
+  it('resolves from both src and dist to the package scripts folder, never a checkout', () => {
+    expect(installedSafeMergeScript('file:///pkg/dist/feedback-factory/execute/buildFeedbackExecutor.js')).toBe('/pkg/scripts/safe-merge.mjs');
+    expect(installedSafeMergeScript('file:///pkg/src/feedback-factory/execute/buildFeedbackExecutor.ts')).toBe('/pkg/scripts/safe-merge.mjs');
+    expect(fs.existsSync(installedSafeMergeScript())).toBe(true);
+  });
+  it('the production gateway is built with it, and the source path no longer picks the script', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'src/feedback-factory/execute/buildFeedbackExecutor.ts'), 'utf-8');
+    expect(source).toContain('safeMergeScript: installedSafeMergeScript()');
+    expect(source).not.toMatch(/safeMergeScript: path\.join/);
   });
 });

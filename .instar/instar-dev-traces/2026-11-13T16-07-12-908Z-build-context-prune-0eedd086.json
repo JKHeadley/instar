@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "build-context-prune",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T16:07:12.908Z",
+  "artifactPath": "upgrades/side-effects/build-context-prune.md",
+  "artifactSha256": "aa0e9d961a1b573b0dfd3a34e07ce1f1458597f9804b45f3ac9b3016f0c3a4a9",
+  "coveredFiles": [
+    "docs/specs/build-context-prune.eli16.md",
+    "src/core/SessionBuildContextStore.ts",
+    "tests/unit/session-build-context-store.test.ts",
+    "upgrades/next/build-context-prune.md",
+    "upgrades/side-effects/build-context-prune.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One store drops rows it already refuses to use (older than its own max age) when it writes; same file and format; no decision logic; a revert undoes it.",
+  "eli16Path": "docs/specs/build-context-prune.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/build-context-prune.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
