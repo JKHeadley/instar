@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Maturation Path — Test Agent → Development Agent → Fleet*
+
 /**
  * write-convergence-tag.mjs — stamp a spec's frontmatter with the convergence tag.
  *

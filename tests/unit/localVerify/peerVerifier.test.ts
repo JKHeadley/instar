@@ -923,6 +923,34 @@ describe('peer — accepting and running', () => {
     expect(h.spawned).toHaveLength(0);
   });
 
+  it('a failed peer run writes why it failed to this machine\'s audit log; a green one writes no detail', async () => {
+    const lines = (dir: string) => fs.readFileSync(path.join(dir, 'logs', 'local-verify.jsonl'), 'utf-8').split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l) as { event: string; source?: string; attemptId?: string; pr?: number; outcome?: string; reasons?: string[]; failures?: Array<{ file: string; message: string }> });
+    const attempt = { id: ATT, coordinatorMachineId: 'coord', leaseEpoch: 7 };
+
+    const red = peerSide();
+    await red.svc.peerRun(runReq(), notHolder);
+    await red.finish(0, {
+      kind: 'record', record: record({ machineId: 'peer1', attempt, outcome: 'failure' }), overlaps: [], keptWorktree: null,
+      reasons: ['lane-failed:unit:1'], failures: [{ file: 'tests/unit/x.test.ts', lane: 'unit', failed: 0, message: 'Unhandled Rejection: boom' }],
+    } as unknown as VerifyRunResult);
+    const detail = lines(red.stateDir).filter((l) => l.event === 'run-detail');
+    expect(detail).toHaveLength(1);
+    expect(detail[0]).toMatchObject({ source: 'peer-run', attemptId: ATT, pr: 1, outcome: 'failure', reasons: ['lane-failed:unit:1'] });
+    expect(detail[0].failures?.[0]).toMatchObject({ file: 'tests/unit/x.test.ts', message: 'Unhandled Rejection: boom' });
+
+    // A crash (no result) is an error record: detail is written, with nothing to name.
+    const crashed = peerSide();
+    await crashed.svc.peerRun(runReq(), notHolder);
+    await crashed.finish(0, null);
+    expect(lines(crashed.stateDir).filter((l) => l.event === 'run-detail')).toMatchObject([{ source: 'peer-run', outcome: 'error', reasons: [], failures: [] }]);
+
+    const green = peerSide();
+    await green.svc.peerRun(runReq(), notHolder);
+    await green.finish(0, ok(record({ machineId: 'peer1', attempt })));
+    expect(lines(green.stateDir).some((l) => l.event === 'run-detail')).toBe(false);
+  });
+
   it('the result is kept for the coordinator and never enters this machine\'s own index or queue file', async () => {
     const h = peerSide();
     await h.svc.peerRun(runReq(), notHolder);

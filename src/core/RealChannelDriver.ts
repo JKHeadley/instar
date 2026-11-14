@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Live-User-Channel Proof Before Done*
+
 /**
  * RealChannelDriver — the production `ChannelDriver` for the LiveTestHarness
  * (docs/specs/live-user-channel-proof-standard.md §5.4 "Platform-Sanctioned

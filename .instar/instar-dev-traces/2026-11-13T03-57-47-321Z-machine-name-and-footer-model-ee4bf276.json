@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "machine-name-and-footer-model",
+  "sessionId": "259c62aa-2b68-485c-8146-ca101d0809b9",
+  "timestamp": "2026-11-13T03:57:47.321Z",
+  "artifactPath": "upgrades/side-effects/machine-name-and-footer-model.md",
+  "artifactSha256": "ea1e124def3ce09c8a085fa1fcca317c1831990d2cb8a92ed9b721dbf6d3262b",
+  "coveredFiles": [
+    "docs/specs/machine-name-and-footer-model.eli16.md",
+    "src/commands/server.ts",
+    "src/core/SessionManager.ts",
+    "src/messaging/telegram-origin/RuntimeOriginObserver.ts",
+    "src/messaging/telegram-origin/TelegramOriginService.ts",
+    "tests/unit/telegram-origin/origin-service.test.ts",
+    "tests/unit/telegram-origin/runtime-origin-observer.test.ts",
+    "tests/unit/telegram-origin/session-manager-origin-lifecycle.test.ts",
+    "upgrades/next/machine-name-and-footer-model.md",
+    "upgrades/side-effects/machine-name-and-footer-model.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Evidence-only fix on the same branch: bind the native session id at send time from Claude Code's own per-process record, record the spawn tree on headless records, find a transcript in sibling project folders, newest-first Codex discovery. A revert restores prior behavior; no persistent state beyond the cwd field the interactive path already writes.",
+  "eli16Path": "docs/specs/machine-name-and-footer-model.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/machine-name-and-footer-model.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

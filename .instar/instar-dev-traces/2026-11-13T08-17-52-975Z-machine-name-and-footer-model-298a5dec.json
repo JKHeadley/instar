@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "machine-name-and-footer-model",
+  "sessionId": "6f7eef6b-2d11-4e94-8ed3-be9acf288544",
+  "timestamp": "2026-11-13T08:17:52.975Z",
+  "artifactPath": "upgrades/side-effects/machine-name-and-footer-model.md",
+  "artifactSha256": "40d60b8b99962a57f5ed4db282af85218fc1cd2bf52bdf3dbc835d73dd77f85f",
+  "coveredFiles": [
+    "src/core/MachineIdentity.ts",
+    "src/data/stageBCertifiedSet.ts",
+    "tests/e2e/message-origin-all-platforms-alive.test.ts",
+    "upgrades/side-effects/machine-name-and-footer-model.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "CI follow-up on the same branch: classify the new friendlyMachineName.ts in the Stage-B closure as excluded with a reason, annotate one fallback, and make an e2e expectation host-independent under the new naming rule. Revert restores prior state.",
+  "eli16Path": "docs/specs/machine-name-and-footer-model.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/machine-name-and-footer-model.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

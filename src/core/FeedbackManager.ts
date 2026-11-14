@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Self-Hosting*
+
 /**
  * Feedback Manager — handles the agent-to-origin feedback loop.
  *

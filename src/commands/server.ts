@@ -174,7 +174,7 @@ import {
   LIFELINE_INGRESS_CALLER_HEADER,
   LIFELINE_INGRESS_CALLER_SERVER_SELF,
 } from '../core/LifelineIngressSecret.js';
-import { configureSyncOpMarker, defaultInflightMarkerReader } from '../core/InFlightSyncOpMarker.js';
+import { configureSyncOpMarker, defaultInflightMarkerReader, flushSyncOpMirror } from '../core/InFlightSyncOpMarker.js';
 import { StateManager, SYSTEM_TOPIC_STATE_KEYS } from '../core/StateManager.js';
 import { StuckInputSentinel } from '../core/StuckInputSentinel.js';
 import { SessionRecoveryChannel } from '../core/SessionRecoveryChannel.js';
@@ -9418,6 +9418,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -9558,6 +9559,7 @@ export async function startServer(options: StartOptions): Promise<void> {
         telegramOriginBoot.runtime.service.notificationTopicId = (chat, topic) => telegram!.notificationTopicId(chat, topic);
         telegramOriginBoot.runtime.service.notificationJobSession = id => !!(id && state.getSession(id)?.jobSlug);
         telegramOriginBoot.runtime.service.notificationJobSlug = id => id ? scheduledJobSlug(state.getSession(id)) : undefined;
+        telegramOriginBoot.runtime.service.resolveNativeSession = id => sessionManager.resolveOriginNativeSession(id);
         telegramOriginBoot.runtime.service.notificationPromotedUpgradeSession = id => hasPromotedUpgradeAnnouncement(config.stateDir, id ? state.getSession(id)?.jobSlug : undefined);
       }
       armHolderForwardWait(telegram);
@@ -14808,6 +14810,12 @@ export async function startServer(options: StartOptions): Promise<void> {
           },
           captureSessionOutput: (name, lines) => sessionManager.captureOutput(name, lines),
           isSessionAlive: (name) => sessionManager.isSessionAlive(name),
+          // The per-poll check of every session goes through the non-blocking tmux
+          // path where that path is on (the same gate as the rest of the async hot path).
+          ...(_tmuxAsyncEnabled ? {
+            isSessionAliveAsync: (name: string) => sessionManager.isSessionAliveNonBlocking(name),
+            captureSessionOutputAsync: (name: string, lines: number) => sessionManager.captureOutputAsync(name, lines),
+          } : {}),
           isSessionStarting: (topicId) => {
             const slackKey = slackProxyChannelMap.get(topicId);
             if (slackKey) {
@@ -15151,6 +15159,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     const operatorLinkOrigin = createOperatorLinkOriginResolver({
       port: config.port, tunnelConfigured: () => !!tunnel, tunnelUrl: () => tunnel?.url,
     });
+    // Scheduler warnings link to the job's page; they wait for the public link like other notices.
+    scheduler?.setOperatorLinkOrigin(() => { const o = operatorLinkOrigin(); return o.kind === 'pending' ? null : o.origin; });
     if (tunnelEnabled) {
       // Persist tunnel config if it wasn't in config.json yet (existing agents)
       if (!config.tunnel) {
@@ -19657,6 +19667,7 @@ export async function startServer(options: StartOptions): Promise<void> {
       // confidence band: do the minimum and return before any recovery cascade.
       if (_tmuxAsyncHotPathWakeGuard) {
         try {
+          flushSyncOpMirror(); // same process as the writer: settle a queued idle write first
           const marker = defaultInflightMarkerReader(config.stateDir)();
           if (marker?.inFlight) {
             console.log(

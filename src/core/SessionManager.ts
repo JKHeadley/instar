@@ -1679,7 +1679,14 @@ export class SessionManager extends EventEmitter {
       // A definitive negative: the tmux server answered and named the session
       // absent. Treated as a SUCCESSFUL probe for latency (the call returned fast
       // with a real answer; it is not a slow/degraded call).
-      if (/can't find session|no such session|no server running|session not found/i.test(msg)) {
+      // "error connecting to <socket> (No such file or directory)" is the same
+      // definitive negative from one step earlier: there is no socket, so there
+      // is no tmux server and no session (what tmux prints after a reboot or a
+      // cleaned temp directory; "no server running" is what it prints when the
+      // socket file is still there). Only that errno: a socket that exists but
+      // cannot be reached (permission denied, connection refused mid-start) says
+      // nothing about the session and stays indeterminate.
+      if (/can't find session|no such session|no server running|session not found|error connecting to .*\(No such file or directory\)/i.test(msg)) {
         this.degradedTmuxGuard?.observeTmuxCall(Date.now() - t0, 'success');
         return { state: 'definitely-absent', reason: msg.slice(0, 120) };
       }
@@ -3413,6 +3420,27 @@ rm()  { "${shimRunner}" rm  "$@"; }
     try { this.claudeSessionBoundSink?.(session, claudeSessionId); } catch (err) { console.warn('[SessionManager] usage binding sink failed:', err); }
   }
 
+  /**
+   * The Claude Code session id of a running instar session, for origin evidence at send time.
+   * A session's first reply can arrive before any hook has reported the id (seen live: Luna's
+   * first reply 13 s after spawn read "native-session-unbound"), so the model reader had no
+   * transcript to read. Claude Code's own per-process record (`<config home>/sessions/<pid>.json`,
+   * matched by tmux pane and a live pid) names it; binding it is what the next hook would do.
+   * Also re-tells the origin observer when the id is already known. Null when it cannot be found.
+   */
+  resolveOriginNativeSession(instarSessionId: string): string | null {
+    const session = this.state.listSessions({ status: 'running' }).find(s => s.id === instarSessionId);
+    if (!session || (session.framework ?? 'claude-code') !== 'claude-code') return null;
+    if (session.claudeSessionId) {
+      this.originLifecycle?.bindNative(instarSessionId, session.claudeSessionId);
+      return session.claudeSessionId;
+    }
+    const configHome = this.configHomeForSession(session.tmuxSession, { defaultWhenUnset: true });
+    const found = configHome ? claudeSessionIdFromPidFiles(configHome, session.tmuxSession) : null;
+    if (found) this.setClaudeSessionId(instarSessionId, found);
+    return found;
+  }
+
   private claudeSessionBoundSink: ((session: Session, claudeSessionId: string) => void) | null = null;
 
   /** Register the observer told about each new Claude session id (unified usage ledger). */
@@ -5025,6 +5053,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
       model: resolveModelForFramework(headlessFramework, launchModel) ?? launchModel,
       framework: headlessFramework,
       prompt: options.prompt,
+      // The spawn tree (a topic worktree, when one was resolved). Server-restart re-enrollment reads
+      // it as the origin binding's projectDir; without it the transcript folder was looked up under
+      // the agent home and never found ("source-unreadable").
+      cwd: resolvedCwd,
       maxDurationMinutes: options.maxDurationMinutes,
       // Subscription-pool pinning: tag the session with the account it launched
       // under, so auto-swap can move it when that account hits a quota wall.
@@ -5465,6 +5497,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
       model: resolveModelForFramework('claude-code', launchModel) ?? launchModel,
       framework: 'claude-code',
       prompt: options.prompt,
+      cwd: resolvedCwd, // the spawn tree; see the headless record above
       maxDurationMinutes: options.maxDurationMinutes,
       ...(reroutedConfined ? { confinedTools: reroutedConfined } : {}),
       // Subscription-pool pinning: tag with the account this launched under, so
@@ -5745,6 +5778,19 @@ rm()  { "${shimRunner}" rm  "$@"; }
       console.log(`[SessionManager] Session "${tmuxSession}" has unknown pane command: "${paneCmd}" — assuming alive`);
     }
     return true;
+  }
+
+  /**
+   * isSessionAlive() for a caller that runs on a timer and must not hold the
+   * event loop: the same two tmux reads, awaited instead of blocking. The
+   * answer is tri-state. `'indeterminate'` means tmux did not answer in time,
+   * or the pane ended in a way that does not prove the session is finished;
+   * the synchronous check reports the second case as alive and the first as
+   * dead after its 5 s timeout. A caller that used the synchronous check
+   * should treat `'indeterminate'` as alive: a slow tmux is not a dead session.
+   */
+  isSessionAliveNonBlocking(tmuxSession: string): Promise<boolean | 'indeterminate'> {
+    return this.isSessionAliveAsync(tmuxSession);
   }
 
   /**
@@ -6384,7 +6430,7 @@ rm()  { "${shimRunner}" rm  "$@"; }
     // Footer leg (the extended-think discriminator: a long think shows the
     // footer but spawns no child process and writes nothing to JSONL).
     let footer: 'working' | 'idle' | 'indeterminate';
-    const cap = await this.tmuxExecCoalesced('capture-pane', tmuxSession, [
+    const cap = await this.tmuxExecCoalesced('capture-pane:30', tmuxSession, [
       'capture-pane',
       '-t',
       `=${tmuxSession}:`,
@@ -6563,7 +6609,10 @@ rm()  { "${shimRunner}" rm  "$@"; }
    * version's catch — the caller's null handling is byte-for-byte preserved.
    */
   async captureOutputAsync(tmuxSession: string, lines: number = 100): Promise<string | null> {
-    const out = await this.tmuxExecCoalesced('capture-pane', tmuxSession, [
+    // The line count is part of the single-flight key: two callers that want
+    // different depths of the same pane must not be handed each other's capture
+    // (a 12-line caller joining a 200-line read, or the reverse).
+    const out = await this.tmuxExecCoalesced(`capture-pane:${lines}`, tmuxSession, [
       'capture-pane',
       '-t',
       `=${tmuxSession}:`,

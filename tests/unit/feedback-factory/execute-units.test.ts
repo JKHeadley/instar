@@ -22,12 +22,12 @@ import { effectChecks, evaluateSessionCanary, failureTail, findSessionTranscript
 import { readCallLines, toolCallLines } from '../../fixtures/feedbackExecuteHarness.js';
 import { resolveSandboxRuntime, runCapped, shortTmpDir, treeBytes, SandboxRuntimeRunner, type ConfinedRunner } from '../../../src/feedback-factory/execute/ConfinedRunner.js';
 import { DepsCache, dependencyManifestText, rebuildFailureTail, FIX_SCRIPT_SIBLINGS } from '../../../src/feedback-factory/execute/depsCache.js';
-import { removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
+import { attemptTrashPending, attemptTrashSettled, removeAttemptTree, sweepTrash } from '../../../src/feedback-factory/execute/attemptFs.js';
 import { isCredentialEnvName } from '../../../src/core/credentialEnvNames.js';
 import { claudeHeadlessExtraFlags } from '../../../src/core/frameworkSessionLaunch.js';
 
 const dirs: string[] = [];
-afterEach(() => { for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-units.test.ts' }); });
+afterEach(async () => { await attemptTrashSettled(); for (const d of dirs.splice(0)) SafeFsExecutor.safeRmSync(d, { recursive: true, force: true, operation: 'execute-units.test.ts' }); });
 function tmp(prefix = 'exec-units-'): string { const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix))); dirs.push(d); return d; }
 function write(root: string, rel: string, text: string | Buffer) { fs.mkdirSync(path.dirname(path.join(root, rel)), { recursive: true }); fs.writeFileSync(path.join(root, rel), text); }
 
@@ -973,10 +973,75 @@ describe('runner and filesystem helpers', () => {
     expect(await treeBytes(path.join(root, 'attempt'))).toBe(3);
     removeAttemptTree(path.join(root, 'attempt'), trash, 'test');
     expect(fs.existsSync(path.join(root, 'attempt'))).toBe(false);
+    // The path is free at once; the bytes go in the background.
+    await attemptTrashSettled();
     expect(fs.readdirSync(trash)).toHaveLength(0);
     removeAttemptTree(path.join(root, 'missing'), trash, 'test');
     write(trash, 'left/x', 'x');
     expect(sweepTrash(trash, 'test')).toBe(1);
+    // A second sweep before the delete ran must not queue the same leftover again.
+    expect(sweepTrash(trash, 'test')).toBe(0);
+    await attemptTrashSettled();
+    expect(fs.readdirSync(trash)).toHaveLength(0);
+    expect(attemptTrashPending()).toBe(0);
+  });
+
+  it('removing an attempt tree never deletes it on the calling thread, and deletes one tree at a time', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    for (const name of ['base', 'head', 'gate']) write(root, `${name}/node_modules/pkg/index.js`, 'x');
+    const syncRm = vi.spyOn(SafeFsExecutor, 'safeRmSync');
+    let running = 0; let peak = 0;
+    const realRm = SafeFsExecutor.safeRmTreeSerial.bind(SafeFsExecutor);
+    const asyncRm = vi.spyOn(SafeFsExecutor, 'safeRmTreeSerial').mockImplementation(async (target, opts) => {
+      running++; peak = Math.max(peak, running);
+      await new Promise((r) => setTimeout(r, 15));
+      try { await realRm(target, opts); } finally { running--; }
+    });
+    try {
+      for (const name of ['base', 'head', 'gate']) removeAttemptTree(path.join(root, name), trash, 'test');
+      // Synchronously: every path is gone from where it was, nothing was deleted yet, all three are parked.
+      for (const name of ['base', 'head', 'gate']) expect(fs.existsSync(path.join(root, name))).toBe(false);
+      expect(syncRm).not.toHaveBeenCalled();
+      expect(fs.readdirSync(trash)).toHaveLength(3);
+      expect(attemptTrashPending()).toBe(3);
+      await attemptTrashSettled();
+      expect(asyncRm).toHaveBeenCalledTimes(3);
+      expect(peak).toBe(1);
+      expect(fs.readdirSync(trash)).toHaveLength(0);
+    } finally { syncRm.mockRestore(); asyncRm.mockRestore(); }
+  });
+
+  it('a failed background delete leaves the tree parked for the next sweep and does not stop later deletes', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    write(root, 'first/x', 'x'); write(root, 'second/x', 'x');
+    const realRm = SafeFsExecutor.safeRmTreeSerial.bind(SafeFsExecutor);
+    let calls = 0;
+    const asyncRm = vi.spyOn(SafeFsExecutor, 'safeRmTreeSerial').mockImplementation(async (target, opts) => {
+      if (++calls === 1) throw new Error('EBUSY');
+      await realRm(target, opts);
+    });
+    try {
+      removeAttemptTree(path.join(root, 'first'), trash, 'test');
+      removeAttemptTree(path.join(root, 'second'), trash, 'test');
+      await attemptTrashSettled();
+      expect(fs.readdirSync(trash)).toHaveLength(1);
+      expect(attemptTrashPending()).toBe(0);
+      expect(sweepTrash(trash, 'test')).toBe(1);
+      await attemptTrashSettled();
+      expect(fs.readdirSync(trash)).toHaveLength(0);
+    } finally { asyncRm.mockRestore(); }
+  });
+
+  it('a sweep queues at most its limit of leftovers', async () => {
+    const root = tmp();
+    const trash = path.join(root, '.instar', 'state', 'trash');
+    for (let i = 0; i < 5; i++) write(trash, `left-${i}/x`, 'x');
+    expect(sweepTrash(trash, 'test', 2)).toBe(2);
+    expect(attemptTrashPending()).toBe(2);
+    await attemptTrashSettled();
+    expect(fs.readdirSync(trash)).toHaveLength(3);
   });
 });
 
