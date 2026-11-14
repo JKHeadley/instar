@@ -13,7 +13,7 @@
  * can record which version scrubbed a flush.
  */
 
-export const REDACTION_CATEGORY_VERSION = 1;
+export const REDACTION_CATEGORY_VERSION = 2;
 
 export enum RedactionCategory {
   BearerToken = 'bearer-token',
@@ -39,6 +39,13 @@ const RULES: CategoryRule[] = [
   { category: RedactionCategory.JwtLike, pattern: /\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b/g },
   // key/secret/token/password = "value" or : value
   { category: RedactionCategory.SecretAssignment, pattern: /\b(?:api[_-]?key|secret|token|password|passwd|client[_-]?secret)\b\s*[:=]\s*["']?[A-Za-z0-9._\-]{8,}["']?/gi },
+  // Hyphenated sk-family keys: Anthropic (sk-ant-api03-, sk-ant-admin01-, sk-ant-oat01-),
+  // OpenAI project / service-account / admin / None forms, OpenRouter (sk-or-v1-). The
+  // generic rule below needs 16 unbroken alphanumerics straight after `sk-`, so it never
+  // fires on these and the whole key used to leak. The prefix list is explicit (not "any
+  // hyphenated sk- word"; Anthropic prefixes always end in digits) so ordinary kebab text
+  // like sk-learn-compatible-estimators stays readable; the lookbehind (not \b) also catches MY_KEY_sk-proj-… and refuses task-proj-….
+  { category: RedactionCategory.ApiKey, pattern: /(?<![A-Za-z0-9])(?:sk-ant-[a-z]+\d{1,3}-|sk-(?:proj|svcacct|admin|None|or-v1)-)[A-Za-z0-9_-]{16,}/g },
   // Generic long opaque api-key-ish tokens (sk-, ghp_, xoxb-, etc.)
   { category: RedactionCategory.ApiKey, pattern: /\b(?:sk|pk|rk|ghp|gho|ghs|xox[bpoa])[_-][A-Za-z0-9]{16,}\b/g },
 ];
