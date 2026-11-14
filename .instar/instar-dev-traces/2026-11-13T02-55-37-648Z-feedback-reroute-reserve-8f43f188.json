@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "feedback-reroute-reserve",
+  "sessionId": "c7ebcf37-5ca7-419f-a005-cf4c9107a40b",
+  "timestamp": "2026-11-13T02:55:37.648Z",
+  "artifactPath": "upgrades/side-effects/feedback-reroute-reserve.md",
+  "artifactSha256": "32927b30d0177563bb37a62bdb6fda0b98498262deb97e62ec01ebcbcee87c9a",
+  "coveredFiles": [
+    "docs/specs/confined-spawn-subscription-reroute.eli16.md",
+    "docs/specs/confined-spawn-subscription-reroute.md",
+    "src/core/SessionManager.ts",
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "tests/unit/feedback-factory/execute-wiring.test.ts",
+    "tests/unit/session-manager-confined-reroute.test.ts",
+    "upgrades/next/feedback-reroute-reserve.md",
+    "upgrades/side-effects/feedback-reroute-reserve.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Re-splits an existing admission cap with fixed arithmetic, opt-in by the live queue-owning executor; no new authority, no state; a revert restores the old split.",
+  "eli16Path": "docs/specs/confined-spawn-subscription-reroute.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-reroute-reserve.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
