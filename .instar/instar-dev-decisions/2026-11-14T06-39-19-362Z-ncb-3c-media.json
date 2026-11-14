@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-14T06:39:19.362Z",
+  "slug": "ncb-3c-media",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 6,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/platformMediaForSession.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

@@ -64,6 +64,9 @@ export interface TelegramOriginRuntimeOptions {
   authorizeOrigin?: OriginServiceOptions['authorizeOrigin'];
   resolveOriginKey?: (machineId: string, epoch?: number) => OriginVerificationKey | null;
   reviewLegacyRecovery?: OriginServiceOptions['reviewLegacyRecovery'];
+  /** A peer's forwarded reply this holder just delivered: record it in this
+   * machine's topic history. History only — never a send, never a gate. */
+  onForwardedDelivered?: (row: import('./ForwardedDeliveryHistory.js').ForwardedDeliveryRow) => void;
   peerEvidence?: OriginServiceOptions['peerEvidence'];
   diagnoseUnknown: NonNullable<OriginServiceOptions['diagnoseUnknown']>;
   diagnosticMode?: OriginServiceOptions['diagnosticMode'];

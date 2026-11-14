@@ -12,7 +12,7 @@ import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
  */
 
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
-import { conversationsAwareness } from '../messaging/shared/conversationGraphChat.js';
+import { conversationsAwareness, conversationsSuggestionsAwareness } from '../messaging/shared/conversationGraphChat.js';
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
 import { peerHomebaseAwareness } from "../core/peerHomebaseAwareness.js";
 import { FEEDBACK_INBOX_TOKEN_SENTENCE } from "../feedback-factory/inbox/inboxAwareness.js";
@@ -25,7 +25,7 @@ import { jobCoverageGuide, jobTransferGuide } from '../core/jobMeshAwareness.js'
 // existing-agent migration there) so the two can never drift. Imported as a runtime
 // function call inside generateClaudeMd — no module-init cycle (PostUpdateMigrator
 // never imports templates).
-import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_TOOL_LIMITS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, ACTING_AS_OPERATOR_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, DISK_STEWARD_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION, USAGE_LEDGER_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
+import { PAIR_SHARING_CLAUDEMD_SECTION, APPRENTICESHIP_STALL_GATE_CLAUDEMD_SECTION, SESSION_LISTING_HYGIENE_CLAUDEMD_SECTION, PLAYWRIGHT_PROFILE_REGISTRY_CLAUDEMD_SECTION, MACHINE_LOAD_ASSESSMENT_CLAUDEMD_SECTION, CODEX_CONNECT_CLAUDEMD_SECTION, FEATURE_SWITCH_CLAUDEMD_SECTION, NORMAL_CHROME_BROWSER_CLAUDEMD_SECTION, SINGLE_MACHINE_FAILOVER_GAP_CLAUDEMD_SECTION, MISSING_LOGIN_SESSION_CLAUDEMD_SECTION, DYNAMIC_MCP_CLAUDEMD_SECTION, ULTRACODE_SPAWN_CLAUDEMD_SECTION, AGENT_SIGNATURE_PROVENANCE_CLAUDEMD_SECTION, SENDER_REJECTION_CLAUDEMD_SECTION, SCOPE_ACCRETION_CLAUDEMD_SECTION, MESH_SELF_HEALING_CLAUDEMD_SECTION, LEASE_MEDIUM_CLAUDEMD_SECTION, WRITE_ADMISSION_CLAUDEMD_SECTION, DOORWAY_REGISTRY_CLAUDEMD_SECTION, EXTERNAL_HOG_CLAUDEMD_SECTION, ROUTING_SPEND_CLAUDEMD_SECTION, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION, MATURATION_LADDER_CLAUDEMD_SECTION, QUEUE_PACE_CLAUDEMD_SECTION, ECOSYSTEM_IDEAS_CLAUDEMD_SECTION, MOBILE_PAIRING_CLAUDEMD_SECTION, MOBILE_CHAT_CLAUDEMD_SECTION, APP_CONVERSATIONS_CLAUDEMD_SECTION, MOBILE_ROUTES_CLAUDEMD_SECTION, MOBILE_PUSH_CLAUDEMD_SECTION, MOBILE_PEOPLE_CLAUDEMD_SECTION, DECISION_QUALITY_CLAUDEMD_SECTION, BENCHMARK_DIVERGENCE_CLAUDEMD_SECTION, DUPLICATE_RECONCILER_CLAUDEMD_SECTION, AUDIT_CONVERGENCE_CLAUDEMD_SECTION, TONE_ADVISORY_MIGRATION_CLAUDEMD_SECTION, DECISION_JOURNAL_CONFIDENCE_CLAUDEMD_GUIDANCE, WINDOW_RUN_LIVENESS_CLAUDEMD_SECTION, SCRIPT_JOBS_CLAUDEMD_SECTION, JOB_TOOL_LIMITS_CLAUDEMD_SECTION, SESSION_HANDOFF_CLAUDEMD_SECTION, ACTING_AS_OPERATOR_CLAUDEMD_SECTION, JOB_RESULT_SUPERVISION_CLAUDEMD_SECTION, DEDICATED_PROFILE_REGISTRY_ROW_ANSWER, CODEX_ARM_SWEEPER_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_CLAUDEMD_SECTION, DISK_STEWARD_CLAUDEMD_SECTION, APP_MEDIA_CLAUDEMD_SECTION, MACHINE_BROWSER_CARE_CLAUDEMD_SECTION, PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION, SLACK_FROM_APP_CLAUDEMD_SECTION, SLACK_MENTIONS_CLAUDEMD_SECTION, MACHINE_MAINTENANCE_POOL_CLAUDEMD_SECTION, MACHINE_WEDGE_CLAUDEMD_SECTION, USAGE_LEDGER_CLAUDEMD_SECTION, TELEGRAM_FILES_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { ATTRIBUTION_CLAUDEMD_SECTION, SURFACE_REFERRAL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { QUIET_NOTIFICATIONS_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
 import { RECOMMENDED_SERVICES_CLAUDEMD_SECTION, EMAIL_CLAUDEMD_SECTION } from '../core/PostUpdateMigrator.js';
@@ -885,6 +885,7 @@ I declare owner/blockedOn at commitment creation; a later state change goes thro
 **Local Verify** (instar-dev / maintainer environments only) — The server runs the full test suite on the exact code a pull request would merge (its merge with \`main\`), in a private clone, and keeps the result, so a merge can wait on a local run instead of GitHub Actions. Only PRs from this agent's or the operator's GitHub login, from this repository, are verified. Ships OFF (\`monitoring.localVerify.enabled\`); 503 on any install with no instar source checkout; a standby machine answers 409 naming the lease holder.
 - Ask for a verify: \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/local-verify -d '{"pr":123}'\` (202 queued, 200 already recorded, 403 untrusted head, 429 queue full)
 - Queue and the run in progress: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/local-verify\`
+- **Why is a PR not merged yet? Read this queue, not GitHub's run list.** For the instar repo, GitHub's own test runs are not part of merging. The only required check is the server-posted \`instar/local-verify\`, plus a code-owner review where CODEOWNERS applies. A pile of queued GitHub Actions runs never holds a merge. So before you name a cause for a wait, read this queue: the PR's place in line, the run in progress and how long it has run, \`main\`'s health (a \`main-suspect\` or \`main-red\` state holds ordinary merges until a green \`main\` run), and any recent server restarts. Report that cause.
 - One result: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/local-verify/record?pr=123&head=<40-hex sha>&base=main"\`
 - Failed-file diagnosis for that result: \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/local-verify/diagnosis?pr=123&head=<40-hex sha>&base=main"\` (404 when none; advisory only).
 - Merge-status loop: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/local-verify/status\` — whether GitHub's settings make the local floor effective (\`effective\` / \`awaiting-edit-a\` / \`awaiting-edit-b\`), the health of \`main\` (\`healthy\` / \`main-suspect\` / \`main-red\`), the last pass, stuck heads and failed posts; posts to GitHub only when \`monitoring.localVerify.postStatuses\` is true (otherwise dry-run).
@@ -1099,8 +1100,10 @@ ${MOBILE_PAIRING_CLAUDEMD_SECTION(port)}
 ${MOBILE_CHAT_CLAUDEMD_SECTION(port)}
 ${APP_CONVERSATIONS_CLAUDEMD_SECTION(port)}
 ${APP_MEDIA_CLAUDEMD_SECTION()}
+${TELEGRAM_FILES_CLAUDEMD_SECTION(port)}
 ${PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_SECTION()}
 ${SLACK_FROM_APP_CLAUDEMD_SECTION(port) /* Shared live-owner guidance also refreshed on update. */}
+${SLACK_MENTIONS_CLAUDEMD_SECTION()}
 ${MOBILE_ROUTES_CLAUDEMD_SECTION(port)}
 ${MOBILE_PUSH_CLAUDEMD_SECTION(port)}
 ${MOBILE_PEOPLE_CLAUDEMD_SECTION(port)}
@@ -2030,6 +2033,7 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
   // message-origin-all-platforms: every agent (app and Slack record origin without Telegram).
   content += '\n' + messageOriginAllPlatformsAwareness(port);
   content += '\n' + conversationsAwareness();
+  content += '\n' + conversationsSuggestionsAwareness();
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);
@@ -2779,6 +2783,12 @@ export const AGENT_CONNECT_STEP1_RESTART_ASK_MARKER = "Send /lifeline restart he
 /** Pairing requires owner info. Also the content-sniff for the PostUpdateMigrator patch of this line. */
 export const AGENT_CONNECT_OWNER_LINE = `   An invite always names its owner. If this is refused because I don't know my owner's name, I set \`threadline.ownerName\` myself from my verified operator (\`GET /topic-operator\`) and make the invite again; I ask my person only if no operator is verified yet. An incoming invite that names no owner is refused too: I tell my person the other agent needs updating.`;
 
+/**
+ * Every dashboard pointer in the pairing flow is a direct link (topic 10000002573: an agent said
+ * "open the Threadline tab" with no link). Also the content-sniff for the PostUpdateMigrator patch.
+ */
+export const AGENT_CONNECT_DASHBOARD_LINK_LINE = '   Whenever I send my person to my dashboard for any of this, I give the direct link, never "open the tab": my address from `GET /tunnel`, then `/dashboard/console/#/people/agents` (waiting approvals and Finish are at the top; add `?connect=paste` to open the box for pasting an invite they were sent). I never put the invite itself in a link. With no tunnel I say the link opens only on this computer.';
+
 export function agentConnectSection(port: number): string {
   return `${AGENT_CONNECT_HEADING}
 
@@ -2790,6 +2800,7 @@ ${AGENT_CONNECT_OWNER_LINE}
 3. **Give it to my person with one plain sentence.** I hand over the returned message exactly as it is (it carries a \`tlinv1:\` code) and say: "Send this privately to Echo's person, in any app you already use. If Echo is yours too, just forward it to Echo's Telegram chat. It works once and expires at <time>." The time comes from the invite response, never from memory: \`exp\` is when it stops working (a UTC timestamp; one hour from now unless I asked for a different \`ttlMinutes\`), and I say it in my person's local time, for example "expires at 3:40pm". A person carries the invite, outside the agent network. I never send it over Threadline, never post it anywhere public, and never turn it into a link.
 4. **Their person approves.** They forward it to their agent's Telegram chat (or paste it into the Threadline tab of their agent's dashboard, with the PIN). Their agent asks "Pair with the agent that calls itself <my name>?" and they tap **Approve**. No agent can approve for a person, including me.
 5. **My person finishes.** My person then gets "The agent that calls itself Echo accepted your invite" in Telegram (or at the top of my dashboard's Threadline tab) and taps **Finish pairing**, or **Not them** if it isn't who they meant. I tell them to expect it; I can't tap it for them.
+${AGENT_CONNECT_DASHBOARD_LINK_LINE}
 6. **Check, then say hello.** \`GET /threadline/pairing\` shows the peer as \`mutual-verified\` when it's done (\`invite-accepted\` means it's waiting for my person's Finish). \`GET /threadline/pairing/invites\` lists my open invites. Then I send the other agent a first message with \`threadline_send\` and tell my person "I'm connected with Echo."
 
 If an invite expires or the wrong agent uses it, I make a new one (a second use of the same invite pauses the pairing and alerts my person). An invite that my person forwards to me is taken by my server before I see it, so I never handle invite text myself. Spec: \`docs/specs/a2a-pairing-invite-link.md\`.

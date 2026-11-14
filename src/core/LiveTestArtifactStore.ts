@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Live-User-Channel Proof Before Done*
+
 /**
  * LiveTestArtifactStore — the durable, signed, hash-chained record a user-role
  * live-test run produces, and the object the completion gate reads (spec

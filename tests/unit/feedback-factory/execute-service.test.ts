@@ -922,6 +922,42 @@ describe('verification and publication', () => {
     expect(h.store.gradeCounts()).toEqual(expect.arrayContaining([expect.objectContaining({ grade: 'wrong', strength: 'weak', disposition: 'work' })]));
   });
 
+  it('a verified already-fixed claim holds the item after one attempt; an unverified one counts as plain not-reproducible', async () => {
+    const FULL = 'c825f2075'.padEnd(40, '0');
+    h = await createExecHarness();
+    const id = await h.workItem('c1');
+    const asked: Array<[string, string]> = [];
+    h.commitInBase.fn = (commit, baseSha) => { asked.push([commit, baseSha]); return { sha: FULL, committedAt: Date.parse('2099-01-01T00:00:00Z') }; };
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'C825F2075' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(asked).toEqual([['c825f2075', BASE_SHA]]);
+    expect(h.store.get(id)).toMatchObject({ state: 'hold', reason: 'already-fixed' });
+    expect(h.execStore.attemptsFor(id)).toHaveLength(1);
+    expect(h.execStore.attemptsFor(id)[0]).toMatchObject({ state: 'not-reproducible', reason: 'already-fixed' });
+    const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8');
+    expect(audit).toContain(`"verified":"${FULL}"`);
+    h.cleanup();
+
+    h = await createExecHarness();
+    const id2 = await h.workItem('c1');
+    h.commitInBase.fn = () => null;
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'deadbeef' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(h.store.get(id2)!.state).toBe('work');
+    expect(h.execStore.attemptsFor(id2)[0]).toMatchObject({ state: 'not-reproducible', reason: 'session-claim' });
+    h.cleanup();
+
+    // A commit in the base but older than the item's first report cannot be its fix.
+    h = await createExecHarness();
+    const id3 = await h.workItem('c1');
+    h.commitInBase.fn = () => ({ sha: FULL, committedAt: Date.parse('2000-01-01T00:00:00Z') });
+    h.sessions.behavior.fn = (ws) => { fs.writeFileSync(path.join(ws, RESULT_FILE), JSON.stringify({ outcome: 'not-reproducible', notes: 'already fixed', fixedByCommit: 'c825f2075' })); };
+    await h.exec.tick(); finishSessions(h); await h.exec.tick();
+    expect(h.store.get(id3)!.state).toBe('work');
+    expect(h.execStore.attemptsFor(id3)[0]).toMatchObject({ state: 'not-reproducible', reason: 'session-claim' });
+    expect(fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8')).toContain('"afterFirstReport":false');
+  });
+
   it('after a second failure episode the executor no longer takes the item automatically; release lets it', async () => {
     h = await createExecHarness();
     const id = await h.workItem('c1');
@@ -1882,6 +1918,83 @@ describe('focused review round regressions', () => {
       expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason });
       h.cleanup();
     }
+  });
+
+  describe('a related-tests failure the unchanged base also reports', () => {
+    const EPERM = `Serialized Error: { code: 'EPERM', errno: -1, syscall: 'listen', address: '127.0.0.1' }\nThis error originated in "tests/unit/routes.test.ts" test file.`;
+    const withRouteTest = () => {
+      fs.mkdirSync(path.join(h.sourceRepo, 'tests', 'unit'), { recursive: true });
+      fs.writeFileSync(path.join(h.sourceRepo, 'tests', 'unit', 'routes.test.ts'), "it('serves', () => {});\n");
+    };
+    it('is inconclusive when every failure also happens at base, and the fix still reaches a PR', async () => {
+      h = await createExecHarness();
+      withRouteTest();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      const baselineRuns: string[] = [];
+      h.runScript.fn = (cmd) => {
+        if (/vitest related/.test(cmd.command)) return { exitCode: 1, stderr: EPERM };
+        if (/-reports\/baseline\//.test(cmd.command)) { baselineRuns.push(cmd.cwd); return { exitCode: 1, stderr: EPERM }; }
+        return scripted(cmd);
+      };
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(baselineRuns).toHaveLength(1);
+      expect(baselineRuns[0]).toMatch(/-reference$/);
+      // Each report folder is writable only by its own run and lies outside the attempt's temp directory.
+      for (const [label, re] of [['baseline', /-reports\/baseline\//], ['related', /vitest related/]] as const) {
+        const r = h.runs.find((x) => re.test(x.command))!;
+        const dir = r.settings.filesystem.allowWrite.find((w: string) => w.endsWith(`-reports/${label}`));
+        expect(dir).toBeTruthy();
+        expect(dir!.startsWith(r.env.TMPDIR!)).toBe(false);
+        expect(h.runs.filter((x) => x !== r && x.settings.filesystem.allowWrite.includes(dir!))).toEqual([]);
+      }
+      expect(h.execStore.latestFor(initiativeId)!.state).toBe('pr-open');
+      const audit = fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8');
+      expect(audit).toContain('execute:related-tests-preexisting');
+      expect(h.repo.createdBodies.at(-1)).toContain('also happens on the unchanged code');
+    });
+    it('still stops the fix when the base run does not share a failure', async () => {
+      h = await createExecHarness();
+      withRouteTest();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      h.runScript.fn = (cmd) => {
+        if (/vitest related/.test(cmd.command)) return { exitCode: 1, stderr: EPERM };
+        if (/-reports\/baseline\//.test(cmd.command)) return { exitCode: 0, stdout: ' Tests  1 passed (1)' };
+        return scripted(cmd);
+      };
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+      expect(fs.readFileSync(path.join(h.dir, 'logs', 'feedback-triage.jsonl'), 'utf8')).toContain('execute:related-tests-failed');
+    });
+    it('still stops the fix when the failing file does not exist at base, or no failure can be named', async () => {
+      for (const stderr of ['This error originated in "tests/unit/only-in-fix.test.ts" test file.', 'something broke']) {
+        h = await createExecHarness();
+        const { initiativeId } = await startOne();
+        const scripted = h.runScript.fn;
+        h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: 1, stderr } : /-reports\/baseline\//.test(cmd.command) ? { exitCode: 1, stderr } : scripted(cmd));
+        finishSessions(h);
+        h.now.value += 60_000;
+        await h.exec.tick();
+        expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+        h.cleanup();
+      }
+    });
+    it('still stops the fix when the base run hits its time limit', async () => {
+      h = await createExecHarness();
+      withRouteTest();
+      const { initiativeId } = await startOne();
+      const scripted = h.runScript.fn;
+      h.runScript.fn = (cmd) => (/vitest related/.test(cmd.command) ? { exitCode: 1, stderr: EPERM } : /-reports\/baseline\//.test(cmd.command) ? { exitCode: null, signal: 'SIGKILL', timedOut: true } : scripted(cmd));
+      finishSessions(h);
+      h.now.value += 60_000;
+      await h.exec.tick();
+      expect(h.execStore.attemptsFor(initiativeId)[0]).toMatchObject({ state: 'failed', reason: 'gate:related-tests' });
+    });
   });
 
   it('other checks that hit their time limit still stop the fix', async () => {

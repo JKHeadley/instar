@@ -451,6 +451,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'A registered frontier-model triage authority decides work/hold/ignore within deterministic floors; provenance stores packet identity and enumerated options, never report text or model output.',
   },
   {
+    decisionPoint: 'conversation-graph-suggestions',
+    component: 'ConversationGraphSuggestions',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Advice-only grouping of the owner\'s unassigned conversations into proposed efforts. Deterministic floors drop invalid groups; every surviving group is graded by the owner\'s own Accept or Reject before anything moves.',
+  },
+  {
     decisionPoint: 'ecosystem-idea-review',
     component: 'EcosystemIdeaReview',
     status: 'pending:backlog:decision-quality-enrolment',

@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "probe-window-zero-length",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T12:55:37.114Z",
+  "artifactPath": "upgrades/side-effects/probe-window-zero-length.md",
+  "artifactSha256": "aa671f66dbac5abe5026101ae4bfe1fd8eae8fbe830d8c8aa50f01f247859819",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/2026-11-13T12-54-29-564Z-probe-window-zero-length-5fbb8459.json",
+    "docs/specs/probe-window-zero-length.eli16.md",
+    "tests/fixtures/test-runner-bound/tests/fixture-helpers.ts",
+    "upgrades/next/probe-window-zero-length.md",
+    "upgrades/side-effects/probe-window-zero-length.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One test fixture helper, 12 lines; no runtime code; a revert undoes it. It repairs a measurement artifact in a test I added that failed an unrelated PR's run.",
+  "eli16Path": "docs/specs/probe-window-zero-length.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/probe-window-zero-length.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

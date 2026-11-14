@@ -8,7 +8,7 @@ import { OriginTransportCancelledBeforeNetwork } from '../../../src/messaging/te
 import { OriginCapacityUnavailable } from '../../../src/messaging/telegram-origin/OriginEgressCapacity.js';
 import { TelegramOriginRuntime } from '../../../src/messaging/telegram-origin/TelegramOriginRuntime.js';
 import { telegramFetch } from '../../../src/messaging/telegram-egress.js';
-import { compileOriginWorker, temporaryState } from '../../helpers/telegramOriginStore.js';
+import { compileOriginWorker, temporaryState, allowSlowOriginRecording, SLOW_DISK_STORE_REQUEST_TIMEOUT_MS } from '../../helpers/telegramOriginStore.js';
 import { fixtureOriginContentDedup } from '../../helpers/originContentDedup.js';
 
 let worker: URL;
@@ -19,13 +19,14 @@ afterEach(async () => { for (const runtime of runtimes.splice(0)) await runtime.
 async function harness(extra: Partial<Parameters<typeof TelegramOriginRuntime.open>[0]> = {}) {
   const stateDir = temporaryState(), token = `123:${randomUUID()}`;
   let lifecycle: OriginSessionLifecycle | undefined;
-  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo' }, workerUrl: worker,
+  const runtime = await TelegramOriginRuntime.open({ storage: { stateDir, agentId: 'echo', requestTimeoutMs: SLOW_DISK_STORE_REQUEST_TIMEOUT_MS }, workerUrl: worker,
     identity: { agentId: 'echo', agentName: 'Echo', originMachineId: 'studio', originMachineName: 'Studio' },
     signingKey: { privateKey, keyId: 'studio-1', keyEpoch: 1 }, bot: { token, accountId: 'bot-1', chatId: '-100123' },
     isSessionLive: () => true, attachSessionLifecycle: value => { lifecycle = value; },
     display: () => ({}), authorize: () => true, diagnoseUnknown: async () => undefined,
     alertDestinations: () => [], getAlertPolicy: () => null, onNoticeState: () => undefined, ...extra });
   runtimes.push(runtime);
+  allowSlowOriginRecording(runtime.service);
   const sessionToken = await lifecycle!.issue({ sessionId: 'deadline-session', harnessId: 'codex-cli', projectDir: process.cwd(), configuredModel: 'fixture-model' });
   const review = vi.fn(async () => ({ ok: true as const }));
   runtime.attachSendPolicy({ review, authorizeDispatch: () => ({ ok: true }), ...fixtureOriginContentDedup(stateDir) });
