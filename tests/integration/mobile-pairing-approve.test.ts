@@ -115,10 +115,14 @@ describe('what the waiting phone is told', () => {
     expect(redeem.body.token).toBeUndefined();
   });
 
-  it('dashboard path: names the dashboard; never the code', async () => {
+  it('dashboard path: names the dashboard only while the pairing page is open; never the code', async () => {
     const ctx = setup();
-    const { redeem } = await waiting(ctx);
-    expect(redeem.body).toMatchObject({ approval: 'dashboard', confirmWith: ['dashboard', 'code'] });
+    const { redeem, dev, deviceId } = await waiting(ctx);
+    // mobile-pairing-introducer §3.4: nobody has the pairing page open yet.
+    expect(redeem.body).toMatchObject({ approval: 'dashboard', confirmWith: ['code'], codeAt: 'pairing-page' });
+    expect(JSON.stringify(redeem.body)).not.toMatch(/"code":/);
+    await operator(request(ctx.app).get('/mobile/pairing-approvals'));
+    expect((await signed(ctx.app, dev, deviceId, 'GET', '/mobile/device')).body.confirmWith).toEqual(['dashboard', 'code']);
     expect(ctx.dms).toHaveLength(0);
   });
 
@@ -126,15 +130,15 @@ describe('what the waiting phone is told', () => {
     const ctx = setup();
     await ownerPhone(ctx, { presence: false });
     const noKey = await waiting(ctx);
-    expect(noKey.redeem.body.confirmWith).toEqual(['dashboard', 'code']);
+    expect(noKey.redeem.body.confirmWith).toEqual(['code']);
     expect(ctx.pushes).toHaveLength(0);
     ctx.svc.declinePending(noKey.deviceId);
 
     const ctx2 = setup();
     await ownerPhone(ctx2);
     const w = await waiting(ctx2);
-    expect(w.redeem.body.confirmWith).toEqual(['dashboard', 'owner-phone', 'code']);
-    expect(ctx2.pushes).toEqual([{ kind: 'notice', dedupeKey: `pairing-request:${w.deviceId}` }]);
+    expect(w.redeem.body.confirmWith).toEqual(['owner-phone', 'code']);
+    expect(ctx2.pushes).toEqual([{ kind: 'notice', subject: 'phone-approval', dedupeKey: `pairing-request:${w.deviceId}` }]);
   });
 
   it('the status poll is signed as the waiting phone and follows it to the end', async () => {
@@ -143,7 +147,7 @@ describe('what the waiting phone is told', () => {
     expect((await request(ctx.app).get('/mobile/device')).status).toBe(401);
     const s1 = await signed(ctx.app, w.dev, w.deviceId, 'GET', '/mobile/device');
     expect(s1.status).toBe(200);
-    expect(s1.body).toMatchObject({ status: 'pending', confirmWith: ['dashboard', 'code'], fingerprint: ctx.svc.devices.get(w.deviceId)!.fingerprint });
+    expect(s1.body).toMatchObject({ status: 'pending', confirmWith: ['code'], fingerprint: ctx.svc.devices.get(w.deviceId)!.fingerprint });
     expect(typeof s1.body.expiresAt).toBe('string');
     await operator(request(ctx.app).post(`/mobile/pairing-approvals/${w.deviceId}/approve`)).send({});
     const s2 = await signed(ctx.app, w.dev, w.deviceId, 'GET', '/mobile/device');
@@ -359,7 +363,7 @@ describe('an owner phone, with Face ID', () => {
     const list = await signed(ctx.app, phone.dev, phone.deviceId, 'GET', '/mobile/pairing-requests');
     expect(list.status).toBe(200);
     expect(list.body.presenceKey).toBe(true);
-    expect(list.body.waiting).toEqual([expect.objectContaining({ deviceId: w.deviceId, deviceName: 'iPhone', fingerprint: fp, role: 'owner' })]);
+    expect(list.body.waiting).toEqual([expect.objectContaining({ deviceId: w.deviceId, client: 'phone', deviceName: 'iPhone', fingerprint: fp, role: 'owner' })]);
     expect(list.body.waiting[0].code).toBeUndefined();
     const dmsBefore = ctx.dms.length;
     const a = await signed(ctx.app, phone.dev, phone.deviceId, 'POST', path_(w.deviceId, 'approve'), await faceId(ctx, phone, w.deviceId, 'approve', fp));

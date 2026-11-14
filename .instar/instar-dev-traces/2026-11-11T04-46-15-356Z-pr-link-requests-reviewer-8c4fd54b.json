@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "slug": "pr-link-requests-reviewer",
+  "sessionId": "7094a1d1-9d1f-47ca-afa6-843b05149625",
+  "timestamp": "2026-11-11T04:46:15.356Z",
+  "artifactPath": "upgrades/side-effects/pr-link-requests-reviewer.md",
+  "artifactSha256": "19ebc014c918e7c35203697e110adb6743cdad80ad9f17f1181ff5fb9f535aa9",
+  "coveredFiles": [
+    "docs/specs/pr-link-requests-reviewer.eli16.md",
+    "docs/specs/pr-link-requests-reviewer.md",
+    "scripts/pr-reviewer-request.d.mts",
+    "scripts/pr-reviewer-request.mjs",
+    "scripts/safe-merge.mjs",
+    "src/core/PrLinkReviewerCheck.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/data/feature-ladders.json",
+    "src/server/routes.ts",
+    "tests/unit/PrLinkReviewerCheck.test.ts",
+    "tests/unit/pr-link-reviewer-route.test.ts",
+    "tests/unit/pr-reviewer-request.test.ts",
+    "upgrades/next/pr-link-requests-reviewer.md",
+    "upgrades/side-effects/pr-link-requests-reviewer.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Flag-gated dev-gated addition (live on dev agents, dark on fleet, read live); enabled:false or a revert fully undoes it, no persistent state. Below the risk floor for a new outbound hold and an idempotent GitHub write; independent second pass concurred.",
+  "eli16Path": "docs/specs/pr-link-requests-reviewer.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/pr-link-requests-reviewer.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

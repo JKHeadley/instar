@@ -1,0 +1,31 @@
+{
+  "ts": "2026-11-07T10:05:51.947Z",
+  "slug": "conversation-graph-peer-signature-auth",
+  "suggestedTier": 2,
+  "declaredTier": null,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 52,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/server/ConversationGraphDefault.ts",
+      "src/server/ConversationGraphDefaultSurface.ts",
+      "src/server/ConversationGraphReplicationRuntime.ts"
+    ],
+    "addedLines": 34,
+    "deletedLines": 18
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "This change adds no new trigger: the existing sync tick only logs a fixed-format reason when that reason changes, bounded by a single stored value."
+  },
+  "verdict": "blocked"
+}

@@ -230,6 +230,13 @@ describe('agents', () => {
     expect(none.headline).toBe('Can’t tell which agents I work with.');
   });
 
+  it('names the public recovery channel without exposing its operational evidence or credentials',()=>{
+    const result=summarizeChannels({channels:[{id:'server-down-recovery',audience:'peer',state:'unknown',direction:'none',detail:'private host 10.42.7.3',purpose:'owner-device-secret',cost:'relay-credential-secret'}]}) as any;
+    expect(result.channels).toEqual([{key:'server-down-recovery',name:'Machine recovery',audience:'agents',state:'unknown',stateWords:'Can’t tell',directionWords:'carries nothing',tone:'unknown'}]);
+    expect(result.channelSummary.working).toBe(0);
+    for(const secret of ['10.42.7.3','owner-device-secret','relay-credential-secret'])expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
   it('channels: fixed names and verdict words, never the registry evidence text; unknown is never working', () => {
     const r = summarizeChannels({ channels: [
       { id: 'mutual-ssh', audience: 'peer', state: 'not-configured', direction: 'none', detail: 'ssh to 10.0.0.5 failed', purpose: 'x' },

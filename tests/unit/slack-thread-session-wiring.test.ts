@@ -58,7 +58,8 @@ describe('thread→session: the live message path consults the routing key', () 
   });
 
   it('the resume map is consulted + cleared on the routing key', () => {
-    expect(handlerBlock).toContain('getChannelResume(routingKey)');
+    // session-swap-any-conversation §3.1: the lookup also names the engine it may resume.
+    expect(handlerBlock).toContain('getChannelResume(routingKey,');
     expect(handlerBlock).toContain('removeChannelResume(routingKey)');
   });
 
@@ -80,7 +81,7 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
   // The onMessage handler (distinct from slackInboundDispatch) must route the
   // inbound message through the SessionRouter BEFORE local dispatch — the exact
   // fix for "a Slack channel pinned to a peer machine still injected locally".
-  const onMsgStart = SERVER_TS.indexOf('slackAdapter.onMessage(async (message)');
+  const onMsgStart = SERVER_TS.indexOf('const slackRouteAndDispatch = async (');
   const onMsgEnd = SERVER_TS.indexOf('await slackAdapter.start();', onMsgStart);
   const onMsgBlock = SERVER_TS.slice(onMsgStart, onMsgEnd > onMsgStart ? onMsgEnd : onMsgStart + 6000);
 
@@ -88,7 +89,8 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
     expect(onMsgStart).toBeGreaterThan(-1);
     // ownership-gated-spawn threads the router verdict through the dispatch
     // (the SpawnAdmission TOCTOU guard) — the call now carries a second arg.
-    expect(onMsgBlock).toContain('await slackInboundDispatch(message, _slackAdmissionVerdict)');
+    expect(onMsgBlock).toContain('return dispatch(message, _slackAdmissionVerdict)');
+    expect(onMsgBlock).toContain('await slackRouteAndDispatch(message, slackDispatchOrHold)');
   });
 
   it('the handler consults the SessionRouter on the routing key (not bare channelId)', () => {
@@ -108,12 +110,14 @@ describe('WS1.1 Slack dispatch-to-owner: inbound consults pool placement', () =>
   it('the owner-side mesh bridge replays a forwarded Slack key through the shared dispatch', () => {
     // onAccepted: a non-numeric forwarded session key is a Slack conversation
     // owned by THIS machine → reconstruct the Message and replay it.
-    const acceptStart = SERVER_TS.indexOf('onAccepted: (cmd) => {');
+    const acceptStart = SERVER_TS.indexOf('onAccepted: (cmd, sender, originalEnvelope) => {');
     expect(acceptStart).toBeGreaterThan(-1);
-    const acceptBlock = SERVER_TS.slice(acceptStart, acceptStart + 4000);
+    const acceptEnd = SERVER_TS.indexOf('// ── WS1.2 owner-side drain runner', acceptStart);
+    expect(acceptEnd).toBeGreaterThan(acceptStart);
+    const acceptBlock = SERVER_TS.slice(acceptStart, acceptEnd);
     expect(acceptBlock).toContain('_slackInboundDispatch');
     // Slack keys are non-numeric; Telegram topic keys are pure numbers.
-    expect(acceptBlock).toContain('isSlackSessionKey(slackKey)');
+    expect(acceptBlock).toContain('isSlackConversationKey(slackKey)');
     expect(acceptBlock).toContain('reconstructSlackMessage(');
   });
 });
@@ -127,6 +131,27 @@ describe('thread→session: SessionManager carries the thread_ts', () => {
   });
   it('the resume-failed fallback propagates slackThreadTs', () => {
     expect(SESSION_MANAGER_TS).toContain('slackThreadTs: options.slackThreadTs');
+  });
+});
+
+describe('thread→session: dead-session recovery stays in the conversation', () => {
+  it('the monitor reads the raw channel and filters to the registered thread', () => {
+    const start = SERVER_TS.indexOf('sessionMonitor = new SessionMonitor(');
+    const block = SERVER_TS.slice(start, start + 5500);
+    expect(start).toBeGreaterThan(-1);
+    expect(block).toContain('parseRoutingKey(slackChId)');
+    expect(block).toContain('getChannelMessages(target.channelId');
+    expect(block).toContain('resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === slackChId');
+  });
+
+  it('fresh Slack recovery excludes other channel threads from its bootstrap', () => {
+    const start = SERVER_TS.indexOf('respawnSessionFresh: async (topicId');
+    const end = SERVER_TS.indexOf('if (telegram) {', start);
+    const block = SERVER_TS.slice(start, end);
+    expect(start).toBeGreaterThan(-1);
+    expect(block).toContain('parseRoutingKey(slackChId)');
+    expect(block).toContain('getConversationMessagesWithFallback(slackChId, 30)');
+    expect(block).toContain('registerChannelSession(slackChId, newSessionName)');
   });
 });
 

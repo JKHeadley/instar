@@ -29,18 +29,20 @@ export interface CatalogRow {
   gapSpec?: string;
   /** The test that proved the fallback. Required on an `exercised` row. */
   drillTest?: string;
-  /** The id of a live-proven setup recipe. A service with none is unavailable. */
+  /** The id of a live-proven setup recipe. A service with none is unavailable, so a yes can't be taken for it. */
   setupRecipe: string | null;
+  /** A way for the person to reach the agent (an address or a channel). Switching one off waits until another route works. */
+  wayIn?: boolean;
 }
 
 const LOCAL_MODEL_SPEC = 'docs/specs/backup-local-model-last-resort.md';
 const OFF_MACHINE_SPEC = 'docs/specs/backup-off-machine-copy.md';
 const VOICE_SPEC = 'docs/specs/backup-on-machine-voice.md';
-const EMAIL_SPEC = 'docs/specs/backup-email-sending.md';
 
 export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze([
   {
     id: 'tailscale',
+    wayIn: true,
     name: 'Tailscale',
     benefit: 'A private address for reaching your agent from your own devices, and the strongest link between its machines.',
     dataLeaves: 'Device names and network addresses go to Tailscale so your devices can find each other. Your traffic stays encrypted between them.',
@@ -48,10 +50,12 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     account: 'A Tailscale account, signed in with an existing Google, GitHub or similar login.',
     backup: 'Cloudflare, your local network, or messaging, which needs no address.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-07 (topic 135786): a test agent sent the sign-in link, the person's tap signed the machine in, the check passed.
+    setupRecipe: 'tailscale-v1',
   },
   {
     id: 'cloudflare-domain',
+    wayIn: true,
     name: 'Cloudflare with your own domain',
     benefit: 'A public address that never changes. Saying no keeps the temporary address, so tunnels stay on.',
     dataLeaves: 'Every request to your agent passes through Cloudflare.',
@@ -63,6 +67,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
   },
   {
     id: 'telegram',
+    wayIn: true,
     name: 'Telegram',
     benefit: 'Reach your agent from anywhere, and get its messages on your phone.',
     dataLeaves: 'Your messages with your agent pass through Telegram.',
@@ -75,13 +80,14 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
   {
     id: 'jev',
     name: 'Jev (TypeSafe)',
-    benefit: 'Could bring large efficiency gains, by answering routine yes-or-no judgments quickly and cheaply, and adds another opinion on advisory checks. Not measured yet. The gains arrive as each feature using it is proven, not all at once.',
+    benefit: 'Optional efficiency upgrade: your agent runs without it. Could bring large efficiency gains, by answering routine yes-or-no judgments quickly and cheaply, and adds another opinion on advisory checks. Not measured yet. The gains arrive as each feature using it is proven, not all at once.',
     dataLeaves: 'Short pieces of text from those checks go to TypeSafe, with secrets removed first.',
     cost: 'Paid by use, at a very small cost per call. TypeSafe needs credits added before it gives out a key, so this needs a card or a credit code. I confirm the price and amount with you first.',
     account: 'A TypeSafe account and key, which I get myself.',
     backup: 'Those checks skip it or use their normal path.',
     backupStatus: 'specified',
-    setupRecipe: null,
+    // Proven live 2026-11-05 (topic 135786): a test agent opened the account, got the key and stored it; the check passed.
+    setupRecipe: 'jev-v1',
   },
   {
     id: 'bitwarden',
@@ -94,7 +100,8 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'On a single machine, losing that machine loses the secrets.',
     gapSpec: OFF_MACHINE_SPEC,
-    setupRecipe: null,
+    // Proven live 2026-11-07 (topic 135786): a test agent took the person's yes, received the login through Secret Drop, had the server write the copy, and its check passed.
+    setupRecipe: 'bitwarden-v1',
   },
   {
     id: 'github-state-backup',
@@ -107,12 +114,12 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'Nothing else keeps a copy off the machine.',
     gapSpec: OFF_MACHINE_SPEC,
-    setupRecipe: null,
+    setupRecipe: 'github-v1',
   },
   {
     id: 'second-ai-door',
     name: 'A second AI subscription',
-    benefit: 'Your agent keeps working when one AI provider is down or out of quota.',
+    benefit: 'A second AI provider your agent can work on: when the main one is down or out of quota, you can ask it to move a conversation over, so the work doesn’t stop.',
     dataLeaves: 'Your agent’s conversations and work go to that provider when it’s in use.',
     cost: 'A paid subscription. I confirm the price with you before anything is bought.',
     account: 'An account with the second provider.',
@@ -120,7 +127,7 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'With only one door, your agent stops when that provider does.',
     gapSpec: LOCAL_MODEL_SPEC,
-    setupRecipe: null,
+    setupRecipe: 'second-door-v1',
   },
   {
     id: 'voice-transcription',
@@ -133,19 +140,19 @@ export const RECOMMENDED_SERVICE_CATALOG: readonly CatalogRow[] = Object.freeze(
     backupStatus: 'gap',
     gapWhen: 'Nothing can read a voice note without a provider.',
     gapSpec: VOICE_SPEC,
-    setupRecipe: null,
+    setupRecipe: 'voice-v1',
   },
   {
     id: 'email',
     name: 'Email',
-    benefit: 'Scheduled reports in your inbox.',
-    dataLeaves: 'The reports go through the email provider. Which one is still to be chosen.',
-    cost: 'Not known until the provider is chosen.',
-    account: 'Not known until the provider is chosen.',
-    backup: null,
-    backupStatus: 'gap',
-    gapWhen: 'Your agent can’t send email yet.',
-    gapSpec: EMAIL_SPEC,
+    benefit: 'Reports you choose arrive in your inbox. I only ever email you, at the address you type here.',
+    dataLeaves: 'Those reports go through the email service you pick: Resend, or your own Gmail or iCloud.',
+    cost: 'Free: Resend’s free plan, or the mailbox you already have.',
+    account: 'Your choice: a free Resend account I open in your name, your own Gmail or iCloud, or a mailbox you give me.',
+    backup: 'The report comes to our conversation instead, with a line saying why.',
+    backupStatus: 'exercised',
+    drillTest: 'tests/e2e/email-sending-lifecycle.test.ts',
+    // Proving: available only to an agent that lists email-v1 under recommendedServices.provingRecipes until its live proof.
     setupRecipe: null,
   },
 ] satisfies CatalogRow[]);

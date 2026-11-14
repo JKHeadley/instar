@@ -47,6 +47,12 @@ export interface ExtractorInput {
   /** Existing refs on the topic, provided so the LLM can anchor signals. */
   existingRefs: EstablishedRef[];
   /**
+   * Update the awareness projection only; discard every evidence signal
+   * (context-budget §6.4 transcript-growth ticks: raw tool output must never
+   * create or reinforce a ref as if the agent had said it).
+   */
+  awarenessOnly?: boolean;
+  /**
    * Rolling conversational summary for the topic (from TopicMemory), giving the
    * extractor broader context to judge significance + horizon. Untrusted user
    * content — rendered inside a delimited data block, never as instructions.
@@ -151,7 +157,7 @@ export class TopicIntentExtractor {
     const createdRefs: Array<{ refId: string; kind: RefKind; text: string }> = [];
     let skipped = 0;
 
-    for (const p of proposals) {
+    for (const p of input.awarenessOnly ? [] : proposals) {
       const translated = this.translateProposal(p, effectiveInput);
       if (!translated) {
         skipped++;
@@ -390,6 +396,8 @@ export type ExtractDegradeReason = 'no-intelligence' | 'error';
 export function createLlmExtractFn(
   intelligence?: IntelligenceProvider,
   onDegrade?: (reason: ExtractDegradeReason, topicId: number) => void,
+  /** Measurement only (context budget §11): the provider-reported token usage of each call, with its input. */
+  onUsage?: (input: ExtractorInput, usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
 ): ExtractFn {
   return async (input: ExtractorInput): Promise<SignalProposal[] | ExtractorAnalysis> => {
     if (!intelligence) {
@@ -408,6 +416,7 @@ export function createLlmExtractFn(
         // budget rather than inheriting the provider's 30s wall.
         timeoutMs: 60_000,
         attribution: { component: 'TopicIntentExtractor' },
+        ...(onUsage ? { onUsage: (u: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => { try { onUsage(input, u); } catch { /* @silent-fallback-ok — a measurement observer never affects extraction */ } } } : {}),
         // LLM-Decision Quality Meter §5.1.4/§5.6 enrollment. Observability ONLY:
         // the settlement seam consumes this block and records on its own path —
         // it never reaches the model and never alters the extraction. A

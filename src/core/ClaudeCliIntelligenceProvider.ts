@@ -16,7 +16,8 @@ import { join } from 'node:path';
 import type { IntelligenceProvider, IntelligenceOptions } from './types.js';
 import { resolveCliFlag } from './models.js';
 import { assertClaudeAllowed } from './claudeForbiddenGuard.js';
-import { applyClaudeChildAuth, classifyClaudeAuthFailure, reportClaudeCallOutcome } from './claudeChildAuth.js';
+import { guardChildStdin } from './pipeErrorGuard.js';
+import { applyClaudeChildAuth, applyClaudeReviewerLogin, classifyClaudeAuthFailure, isUsageLimitOutput, reportClaudeCallOutcome, reportClaudeUsageLimited } from './claudeChildAuth.js';
 
 const DEFAULT_MODEL = 'fast';
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -150,7 +151,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
       // The configured sign-in key goes on after the allowlist: it is what `claude -p` itself needs
       // on an agent with no stored login (spec cloud-key-internal-calls).
       const childEnv = applyClaudeChildAuth(hardened
-        ? buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema))
+        ? applyClaudeReviewerLogin(buildClaudeReviewerChildEnv(process.env, Boolean(hardened.jsonSchema)))
         : (() => {
             const e = { ...process.env };
             delete e.CLAUDECODE;
@@ -179,6 +180,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
           // The auth verdict is only in stdout. It is logged as a category, never as CLI text.
           const authFailure = classifyClaudeAuthFailure(stdout);
           if (authFailure) reportClaudeCallOutcome(authFailure);
+          if (isUsageLimitOutput(stdout)) reportClaudeUsageLimited();
           reject(new Error(`Claude CLI error: ${error.message}${stderr ? ` — ${stderr.slice(0, 600)}` : ''}${authFailure ? ` — auth: ${authFailure}` : ''}`));
           return;
         }
@@ -187,6 +189,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
         resolve(parseJsonResult(stdout, options?.onUsage, Boolean(hardened?.jsonSchema), options?.onServedModel));
       });
 
+      guardChildStdin(child.stdin, 'claude-cli');
       // Hardened calls pass the prompt over STDIN (§1.4) so it never appears in
       // ps-visible argv; the default path already carries it as the `-p` arg.
       if (hardened) {
@@ -219,7 +222,7 @@ export class ClaudeCliIntelligenceProvider implements IntelligenceProvider {
  */
 export function parseJsonResult(
   stdout: string,
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void,
+  onUsage?: IntelligenceOptions['onUsage'],
   preferStructuredOutput = false,
   onServedModel?: (info: { model: string; framework?: string }) => void,
 ): string {
@@ -249,7 +252,23 @@ export function parseJsonResult(
       const outputTokens = num(u.output_tokens);
       const cachedTokens = num(u.cache_read_input_tokens);
       if (inputTokens > 0 || outputTokens > 0) {
-        onUsage({ inputTokens, outputTokens, cachedTokens });
+        // Unified usage ledger (Slice 2): the disjoint parts, the session id the
+        // ledger pairs with this call's transcript, and the metered dollars.
+        const part = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null);
+        const usd = typeof obj.total_cost_usd === 'number' && Number.isFinite(obj.total_cost_usd) ? obj.total_cost_usd : null;
+        onUsage({
+          inputTokens, outputTokens, cachedTokens,
+          detail: {
+            sessionId: typeof obj.session_id === 'string' ? obj.session_id : null,
+            input: part(u.input_tokens),
+            cacheRead: part(u.cache_read_input_tokens),
+            cacheWrite: part(u.cache_creation_input_tokens),
+            output: part(u.output_tokens),
+            reasoning: null,
+            reportedUsd: usd,
+            reportedBasis: usd != null ? 'actual' : null,
+          },
+        });
       }
     } catch {
       /* @silent-fallback-ok — usage extraction must never break the result path. */

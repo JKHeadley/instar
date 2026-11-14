@@ -5,7 +5,11 @@
  *                            usage windows with reset times (merged across the machines that answer).
  *   GET /mobile/spend      — what thinking costs on this machine: recorded cost with its basis,
  *                            paid-route limits, conversation token totals. ?window=today|week|month.
- *   GET /mobile/resources  — CPU and memory for the agent, its server and each session (last hour).
+ *   GET /mobile/resources  — CPU and memory for the agent, its server and each session (last hour),
+ *                            on EVERY machine: a combined summary plus one block per machine
+ *                            (proxied-on-read to each peer's `?scope=local` answer; a machine that
+ *                            does not answer is "not answering", never zeros). `?scope=local`
+ *                            answers only the machine asked (the peer read; never fans out).
  *
  * Read-only. A paired OWNER phone (device-signed; DEVICE_ALLOWLIST lists exactly these three paths,
  * each `ownerOnly`) or the agent's bearer token may read them; anything else gets 403
@@ -89,6 +93,7 @@ export function ownerOrBearer(req: Request, bearerOk: (req: Request) => boolean)
 // ── accounts ──────────────────────────────────────────────────────────────────
 
 const NEEDS_SIGN_IN = new Set(['needs-reauth', 'signed-out', 'expired', 'broken']);
+const WRONG_LOGIN_SETTLE_MS = 24 * 60 * 60 * 1000;
 const KIND_WORDS: Record<string, string> = { 'claude-code': 'Claude', 'codex-cli': 'Codex', 'gemini-cli': 'Gemini', 'grok-build': 'Grok', 'pi-cli': 'Pi' };
 export function kindWord(framework: unknown): string { return (typeof framework === 'string' && KIND_WORDS[framework]) || 'Other'; }
 
@@ -114,9 +119,25 @@ export interface MobileAccount {
  * running an automatic sign-in repair for the row (only known for this machine's own rows). A login
  * check that found the login signed out reads as needing sign-in even while the status says active.
  */
-export function accountCellState(row: Rec, repairing = false): { state: MobileAccountMachine['state']; label: string } {
+export function accountCellState(row: Rec, repairing = false, blockerReason: string | null = null, nowMs = Date.now()): { state: MobileAccountMachine['state']; label: string } {
   const status = str(row.status);
   if (repairing) return { state: 'working', label: 'signing in now' };
+  // A slot proven to hold another account's login. Same rule as the console's accounts-model.js:
+  // a fresh mismatch may correct itself; after a day it needs a new sign-in. The other account's
+  // address stays off the phone.
+  if (row.identityDrifted === true) {
+    const drift = rec(row.identityDrift);
+    if (drift.actualAccountId === 'missing-local-login' || drift.repairState === 'owner-relogin-required') return { state: 'attn', label: 'needs sign-in' };
+    const at = Date.parse(String(drift.detectedAt ?? ''));
+    if (drift.repairState === 'repairing' || (Number.isFinite(at) && nowMs - at < WRONG_LOGIN_SETTLE_MS)) {
+      return { state: 'unknown', label: "holds another account's login; checking if it corrects itself" };
+    }
+    return { state: 'attn', label: "holds another account's login" };
+  }
+  // A repair blocker with no operator-only step is shown, not counted: `unknown` keeps the app's state list.
+  if (status && NEEDS_SIGN_IN.has(status) && blockerReason && blockerReason !== 'device-limit-benched') {
+    return { state: 'unknown', label: blockerReason === 'no-open-incident' ? 'sign-in not confirmed; still checking' : "automatic repair can't start yet" };
+  }
   if (status && NEEDS_SIGN_IN.has(status)) return { state: 'attn', label: 'needs sign-in' };
   if (status === 'active' && row.loginCheck === 'signed-out') return { state: 'attn', label: 'login check failed' };
   if (status === 'active' && row.loginCheck === 'ok') return { state: 'ok', label: 'signed in' };
@@ -156,8 +177,115 @@ export interface AccountsOptions {
   nicknameOf?: (machineId: string) => string | null;
   /** This machine's own repair episodes (accountId + state); remote rows are never matched. */
   localRepairs?: Array<{ accountId: string; state: string }>;
+  /** Repair blockers across machines; a machine with no row here keeps its pool status. */
+  blockers?: Array<{ accountId: string; machineId: string; reason: string }>;
+  /** The verified name of the machine answering, for wording that would otherwise say "this machine". */
+  selfName?: string | null;
   /** Registered machines the pool does not count as online (not asked): their ids. */
   offlineMachineIds?: string[];
+}
+
+/** A usage window at or over this share is "nearly out" (the rows' red tone uses the same line). */
+export const NEAR_OUT_PCT = 90;
+
+/**
+ * Something on the Accounts screen that needs the person or changes what they can do. The screen's
+ * notice spot shows only these, and nothing at all when the list is empty: a routine state (one
+ * account full while others have room) is already on its row and is never a notice.
+ * `action`: `sign-in` names the accounts (row keys) to sign in; `ask` is the question for the agent.
+ */
+export interface AccountNotice {
+  key: string;
+  tone: 'bad' | 'attn';
+  title: string;
+  /** When room comes back (the earliest account to free up), for an out-of-room notice. */
+  returnsAt: string | null;
+  action: { kind: 'sign-in'; accounts: string[] } | { kind: 'ask'; about: string };
+}
+
+type NoticeAccount = Pick<MobileAccount, 'key' | 'name' | 'kind' | 'signIn' | 'windows' | 'machines'>;
+
+/** When this account has room again: every window at or over the line must reset (null if one has no time). */
+function roomReturnsAt(a: NoticeAccount): number | null {
+  const full = a.windows.filter((w) => w.pct >= NEAR_OUT_PCT);
+  let latest = 0;
+  for (const w of full) {
+    const t = w.resetsAt ? Date.parse(w.resetsAt) : NaN;
+    if (!Number.isFinite(t)) return null;
+    latest = Math.max(latest, t);
+  }
+  return latest || null;
+}
+
+/**
+ * The notices, most serious first. Each rule is about the pool, never one account among several:
+ *  - this machine's own account list can't be read (and nothing else was);
+ *  - accounts need signing in (only what the person can act on: `needs-sign-in`);
+ *  - a machine has no signed-in account (none signed in or signing in there, and one to sign in);
+ *  - every usable account, or every usable account of one kind, is at or over the line,
+ *    with when room returns. A kind with an unread usable account is not concluded on.
+ */
+export function accountNotices(accounts: NoticeAccount[], opts: { localUnreadable: boolean; partial: boolean; selfName?: string | null }): AccountNotice[] {
+  const out: AccountNotice[] = [];
+  const scope = opts.partial ? ' (on the machines that answered)' : '';
+  if (opts.localUnreadable && accounts.length === 0) {
+    // Named, never "this machine": the phone talks to the agent, not to one machine.
+    const title = opts.selfName ? `${opts.selfName}'s account list can't be read right now.` : "The account list can't be read right now.";
+    out.push({ key: 'list-unreadable', tone: 'bad', title, returnsAt: null, action: { kind: 'ask', about: title } });
+    return out;
+  }
+  const needing = accounts.filter((a) => a.signIn === 'needs-sign-in');
+
+  // A machine where nothing is signed in can run nothing. Grouped by the name the rows show.
+  const byMachine = new Map<string, { states: string[]; attn: string[] }>();
+  for (const a of accounts) for (const m of a.machines) {
+    const g = byMachine.get(m.name) ?? { states: [], attn: [] };
+    g.states.push(m.state);
+    if (m.state === 'attn' && !g.attn.includes(a.key)) g.attn.push(a.key);
+    byMachine.set(m.name, g);
+  }
+  const machineNotices: AccountNotice[] = [];
+  for (const [name, g] of byMachine) {
+    // Only when a sign-in would fix it: a machine whose rows are all unknown (warming up, still
+    // checking) is not concluded on.
+    if (g.states.some((s) => s === 'ok' || s === 'working') || g.attn.length === 0) continue;
+    const title = `${name} has no signed-in account, so nothing can run there.`;
+    machineNotices.push({ key: rowKey('notice-machine', name), tone: 'bad', title, returnsAt: null, action: { kind: 'sign-in', accounts: g.attn } });
+  }
+
+  // Out of room: per kind (a session uses only its own kind's accounts), or the whole pool at once.
+  const usable = accounts.filter((a) => a.machines.some((m) => m.state === 'ok'));
+  const kinds = [...new Set(usable.map((a) => a.kind))].sort();
+  const outKinds: Array<{ kind: string; list: NoticeAccount[] }> = [];
+  for (const kind of kinds) {
+    const list = usable.filter((a) => a.kind === kind);
+    if (list.some((a) => a.windows.length === 0)) continue; // one we can't read may have room
+    if (list.every((a) => (a.windows[0]?.pct ?? 0) >= NEAR_OUT_PCT)) outKinds.push({ kind, list });
+  }
+  const roomNotice = (list: NoticeAccount[], kind: string | null): AccountNotice => {
+    const usedUp = list.every((a) => (a.windows[0]?.pct ?? 0) >= 100);
+    const state = usedUp ? 'used up' : 'nearly out';
+    const noun = kind ? `${kind} account` : 'account';
+    const title = list.length === 1 ? `The only ${noun} is ${state}${scope}.` : `All ${list.length} ${noun}s are ${state}${scope}.`;
+    const times = list.map(roomReturnsAt).filter((t): t is number => t !== null);
+    return { key: rowKey('notice-room', kind ?? '*'), tone: usedUp ? 'bad' : 'attn', title,
+      returnsAt: times.length ? new Date(Math.min(...times)).toISOString() : null, action: { kind: 'ask', about: title } };
+  };
+  const roomNotices = outKinds.length && outKinds.length === kinds.length
+    ? [roomNotice(outKinds.flatMap((k) => k.list), kinds.length === 1 ? kinds[0] : null)]
+    : outKinds.map((k) => roomNotice(k.list, k.kind));
+
+  out.push(...machineNotices);
+  // An account a machine notice already asks to sign in is not asked for twice.
+  const covered = new Set(machineNotices.flatMap((n) => (n.action.kind === 'sign-in' ? n.action.accounts : [])));
+  const rest = needing.filter((a) => !covered.has(a.key));
+  if (rest.length) {
+    const more = covered.size ? ' more' : '';
+    const title = `${rest.length === 1 ? `1${more} account needs` : `${rest.length}${more} accounts need`} signing in${scope}.`;
+    out.push({ key: 'sign-in', tone: 'attn', title, returnsAt: null, action: { kind: 'sign-in', accounts: rest.map((a) => a.key) } });
+  }
+  out.push(...roomNotices);
+  return out.sort((a, b) => Number(b.tone === 'bad') - Number(a.tone === 'bad'));
 }
 
 /**
@@ -167,7 +295,7 @@ export interface AccountsOptions {
 export function summarizeAccounts(
   payload: unknown,
   opts: AccountsOptions,
-): { enabled: boolean; localUnreadable: boolean; accounts: MobileAccount[]; headline: string; needsSignIn: number; usable: number; unread: { count: number; names: string[] }; offline: { count: number; names: string[] }; truncated: boolean } {
+): { enabled: boolean; localUnreadable: boolean; accounts: MobileAccount[]; headline: string; notices: AccountNotice[]; needsSignIn: number; usable: number; unread: { count: number; names: string[] }; offline: { count: number; names: string[] }; truncated: boolean } {
   const p = rec(payload);
   const nicknameOf = opts.nicknameOf ?? (() => null);
   const selfId = str(rec(p.pool).selfMachineId);
@@ -183,7 +311,7 @@ export function summarizeAccounts(
   const offlineIds = opts.offlineMachineIds ?? [];
   const offline = { count: offlineIds.length, names: offlineIds.map((id) => phoneText(verifiedEntityName(id, nicknameOf(id)), 60)).filter((n): n is string => !!n) };
   if (p.enabled === false || !Array.isArray(p.accounts)) {
-    return { enabled: false, localUnreadable: false, accounts: [], headline: 'The account pool is not set up on this agent.', needsSignIn: 0, usable: 0, unread, offline, truncated: false };
+    return { enabled: false, localUnreadable: false, accounts: [], headline: 'The account pool is not set up on this agent.', notices: [], needsSignIn: 0, usable: 0, unread, offline, truncated: false };
   }
   const repairing = new Set((opts.localRepairs ?? []).filter((e) => REPAIR_WORKING.has(e.state)).map((e) => e.accountId));
   const groups = new Map<string, AccountGroup>();
@@ -196,7 +324,7 @@ export function summarizeAccounts(
     g.email = g.email ?? accountEmail(id, r.email);
     const mid = String(r.machineId ?? '');
     const isSelf = r.remote !== true;
-    const machine = verifiedEntityName(mid, r.machineNickname) ?? verifiedEntityName(mid, nicknameOf(mid)) ?? (isSelf ? 'This machine' : 'A machine with no name yet');
+    const machine = verifiedEntityName(mid, r.machineNickname) ?? verifiedEntityName(mid, nicknameOf(mid)) ?? (isSelf ? (opts.selfName ?? 'Your machine') : 'A machine with no name yet');
     g.cells.push({ row: r, machine: phoneText(machine, 60) ?? 'A machine with no name yet', isSelf });
     const q = rec(r.lastQuota);
     const at = Date.parse(String(q.measuredAt ?? ''));
@@ -205,7 +333,7 @@ export function summarizeAccounts(
     groups.set(id, g);
   }
   const accounts = [...groups.values()].map((g): MobileAccount & { _pct: number } => {
-    const machines = g.cells.map((c) => ({ name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, c.isSelf && repairing.has(g.id)) }));
+    const machines = g.cells.map((c) => ({ name: c.machine, isSelf: c.isSelf, ...accountCellState(c.row, c.isSelf && repairing.has(g.id), (opts.blockers ?? []).find((b) => b.accountId === g.id && b.machineId === String(c.row.machineId ?? ''))?.reason ?? null, opts.now) }));
     const windows = usageWindows(g.reading);
     const top = windows[0] ?? null;
     const signIn: MobileAccount['signIn'] = machines.some((m) => m.state === 'attn') ? 'needs-sign-in'
@@ -234,22 +362,20 @@ export function summarizeAccounts(
     || a.name.localeCompare(b.name));
   const needsSignIn = accounts.filter((a) => a.signIn === 'needs-sign-in').length;
   const usable = accounts.filter((a) => a.machines.some((m) => m.state === 'ok')).length;
-  const read = accounts.filter((a) => a._pct >= 0);
-  const busiest = read[0] ? read.reduce((x, y) => (y._pct > x._pct ? y : x), read[0]) : null;
-  const near = read.filter((a) => a._pct >= 90 && a.machines.some((m) => m.state === 'ok'));
-  // Conclusions cover only the machines that answered; a partial read says so in the headline.
+  // Conclusions cover only the machines that answered; a partial read says so.
   // An offline machine was not read: its accounts may be missing, so conclusions are scoped too.
   const partial = unread.count > 0 || localUnreadable || offline.count > 0;
-  const scope = partial ? ' (on the machines that answered)' : '';
+  const notices = accountNotices(accounts, { localUnreadable, partial, selfName: opts.selfName ?? null });
+  const read = accounts.filter((a) => a._pct >= 0 && a.machines.some((m) => m.state === 'ok'));
+  // `headline` is kept for app builds that show it as a line of its own; current builds show `notices`
+  // and nothing when there are none. It never names one account as "nearly out".
   let headline: string;
-  if (localUnreadable && accounts.length === 0) headline = "This machine's account list can't be read right now.";
-  else if (needsSignIn) headline = `${needsSignIn === 1 ? '1 account needs' : `${needsSignIn} accounts need`} signing in${scope}.`;
+  if (notices.length) headline = notices[0].title;
   else if (accounts.length === 0) headline = partial ? 'No accounts found on the machines that answered.' : 'No accounts are set up yet.';
-  else if (near.length && near.length === read.length) headline = `Every account is nearly out${scope}.`;
-  else if (busiest) headline = busiest._pct >= 90 ? `${busiest.name} is nearly out; others have room${scope}.` : `Plenty left${scope}: the busiest account is at ${busiest._pct}%.`;
+  else if (read.length) headline = `${read.filter((a) => a._pct < NEAR_OUT_PCT).length} of ${read.length} accounts have room.`;
   else headline = 'No usage readings yet.';
   const truncated = accounts.length > MAX_ACCOUNTS;
-  return { enabled: true, localUnreadable, accounts: accounts.slice(0, MAX_ACCOUNTS).map(({ _pct, ...a }) => a), headline, needsSignIn, usable, unread, offline, truncated };
+  return { enabled: true, localUnreadable, accounts: accounts.slice(0, MAX_ACCOUNTS).map(({ _pct, ...a }) => a), headline, notices, needsSignIn, usable, unread, offline, truncated };
 }
 
 // ── spend ─────────────────────────────────────────────────────────────────────
@@ -322,7 +448,7 @@ export interface MobilePaidRoute { key: string; name: string; status: 'Frozen' |
 export interface SpendMachine { name: string | null; machineId?: string; isSelf: boolean; summary: SpendPart; tokens: SpendPart }
 function machineName(m: SpendMachine): string {
   const v = m.machineId ? verifiedEntityName(m.machineId, m.name) : m.name;
-  return phoneText(v, 60) ?? (m.isSelf ? 'This machine' : 'A machine with no name yet');
+  return phoneText(v, 60) ?? (m.isSelf ? 'Your machine' : 'A machine with no name yet');
 }
 type SpendMachineLine = { name: string; isSelf: boolean; state: 'ok' | 'off' | 'unavailable' | 'unreached' | 'offline'; netUsd: number | null; unpricedTokens: number | null };
 
@@ -412,7 +538,9 @@ export function summarizeRecorded(machines: SpendMachine[]): Rec {
  * console: `routes` (the caps view, behind the spend view's switch) and `controls` (the money-layer
  * status). Both are this machine's (the money layer is held by one machine, named in the sentence).
  */
-export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: (machineId: string) => string | null = () => null, selfMachineIds: string[] = []): Rec {
+export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: (machineId: string) => string | null = () => null, selfMachineIds: string[] = [], selfName: string | null = null): Rec {
+  // "on Mac Studio", never "on this machine"; with no verified name the qualifier is left out.
+  const onSelf = selfName ? ` on ${selfName}` : '';
   const isSelf = (id: string) => selfMachineIds.includes(id);
   let routesState: 'ok' | 'off' | 'unavailable' = 'ok'; let routesReason: string | null = null;
   let routes: MobilePaidRoute[] = [];
@@ -440,7 +568,7 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
           dailyCapUsd: num(k.dailyCapUsd),
           committedLifetimeUsd: elsewhere ? null : nonNeg(k.committedLifetimeUsd),
           lifetimeCapUsd: num(k.lifetimeCapUsd),
-          heldBy: holder === null ? null : isSelf(holder) ? 'this machine' : (phoneText(verifiedEntityName(holder, nicknameOf(holder)), 60) ?? 'another machine'),
+          heldBy: holder === null ? null : isSelf(holder) ? (selfName ?? 'the machine the app reached') : (phoneText(verifiedEntityName(holder, nicknameOf(holder)), 60) ?? 'another machine'),
           committedElsewhere: elsewhere,
         };
       });
@@ -457,7 +585,7 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
   let notEnforcingWhileOn = false;
   if (!status.ok) {
     controlsState = status.off ? 'off' : 'unavailable';
-    sentence = status.off ? 'Spending limits are not built on this machine.' : "Can't tell whether spending limits are on.";
+    sentence = status.off ? `Spending limits are not built${onSelf}.` : "Can't tell whether spending limits are on.";
   } else {
     const s = rec(status.data);
     const life = str(s.lifecycleState);
@@ -470,8 +598,8 @@ export function summarizeLimits(caps: SpendPart, status: SpendPart, nicknameOf: 
     else if (!life || life === 'disabled') sentence = 'Spending limits are off';
     else sentence = /^[a-z-]{1,40}$/.test(life) ? `Limits: ${life.replace(/-/g, ' ')}` : 'Limits: state unknown';
     if (s.anyKeyFrozen === true) sentence += '; a paid route is frozen';
-    // The status is this machine's own; the machine that holds each paid route is on the route (`heldBy`).
-    sentence = `${sentence} on this machine.`;
+    // The status is the answering machine's own, so it names it; each paid route names its holder (`heldBy`).
+    sentence = `${sentence}${onSelf}.`;
   }
   return { routesState, routesReason, routesSentence, routes, storeUnreadable, truncated, controlsState, sentence, enforcing, notEnforcingWhileOn };
 }
@@ -505,14 +633,15 @@ export function summarizeConversations(machines: SpendMachine[], phrase: string)
 }
 
 /** The whole spend answer (minus schemaVersion/generatedAt). `machines[0]` is this machine. */
-export function summarizeSpend(windowKey: SpendWindowKey, parts: { machines: SpendMachine[]; caps: SpendPart; status: SpendPart; nicknameOf?: (machineId: string) => string | null; selfMachineIds?: string[]; now?: number }): Rec {
+export function summarizeSpend(windowKey: SpendWindowKey, parts: { machines: SpendMachine[]; caps: SpendPart; status: SpendPart; nicknameOf?: (machineId: string) => string | null; selfMachineIds?: string[]; selfName?: string | null; now?: number }): Rec {
   const w = SPEND_WINDOWS[windowKey];
   const now = parts.now ?? Date.now();
   const recorded = summarizeRecorded(parts.machines);
-  const limits = summarizeLimits(parts.caps, parts.status, parts.nicknameOf, parts.selfMachineIds ?? []);
+  const selfName = parts.selfName ?? (parts.machines[0] && parts.machines[0].isSelf && parts.machines[0].machineId ? phoneText(verifiedEntityName(parts.machines[0].machineId, parts.machines[0].name), 60) : phoneText(parts.machines[0]?.name, 60)) ?? null;
+  const limits = summarizeLimits(parts.caps, parts.status, parts.nicknameOf, parts.selfMachineIds ?? [], selfName);
   const conversations = summarizeConversations(parts.machines, w.phrase);
   const answered = (recorded.machines as SpendMachineLine[]).filter((l) => l.state === 'ok').length;
-  const where = parts.machines.length <= 1 ? 'on this machine' : answered === parts.machines.length ? `across ${answered} machines` : `on the ${answered === 1 ? 'machine' : `${answered} machines`} that answered`;
+  const where = parts.machines.length <= 1 ? (selfName ? `on ${selfName}` : 'on this agent') : answered === parts.machines.length ? `across ${answered} machines` : `on the ${answered === 1 ? 'machine' : `${answered} machines`} that answered`;
   let headline: string;
   if (recorded.state === 'ok') {
     const net = recorded.netUsd as number;
@@ -578,6 +707,93 @@ export function summarizeResources(sources: unknown, sessionNames: Map<string, s
   return { headline, total, server: srv ? processRow(srv, 'server', 'The agent server', now) : null, sessions: sessions.slice(0, MAX_SESSIONS), truncated: sessions.length > MAX_SESSIONS, machine };
 }
 
+/** Busiest sessions shown per machine in the pooled answer. */
+export const MAX_SESSIONS_PER_MACHINE = 5;
+
+/** One machine of the pool, as the pooled resources read needs it (no ids are returned). */
+export interface ResourceMachineInfo {
+  key: string; name: string; isSelf: boolean; leading: boolean;
+  sessions: number | null; maxSessions: number | null; version: string | null;
+}
+/** A machine's own `/mobile/resources?scope=local` answer, or why there is none. */
+export type ResourceAnswer = { ok: true; body: unknown } | { ok: false; reason: 'not-answering' | 'offline' };
+
+export interface MobileResourceMachine {
+  key: string; name: string; leading: boolean;
+  /** answering: a reading came back; off: the machine answered but does not record resource use; not-answering: no answer. */
+  state: 'answering' | 'off' | 'not-answering';
+  /** Short: "43% CPU · 6.1 GB", "Last read 12 min ago: …", "Not answering", "Not recorded there". */
+  line: string;
+  headline: string | null;
+  total: MobileProcess | null;
+  server: MobileProcess | null;
+  /** The busiest few, running first. */
+  sessions: MobileProcess[];
+  sessionsShownOf: number;
+  runningSessions: number | null; maxSessions: number | null; version: string | null;
+}
+export interface MobileResourcesCombined {
+  headline: string;
+  busiest: string | null;
+  machines: number; answering: number; notAnswering: string[]; off: string[];
+  memoryBytes: number | null; runningSessions: number | null; maxSessions: number | null;
+}
+
+/** A process row from a peer's answer, re-checked field by field (a peer's text is not trusted as shaped). */
+function peerProcess(v: unknown): MobileProcess | null {
+  const p = rec(v);
+  const key = str(p.key);
+  if (!key || !/^[A-Za-z0-9_-]{1,40}$/.test(key)) return null;
+  return {
+    key, name: phoneText(p.name, 80) ?? 'A session', ended: p.ended === true, stale: p.stale === true,
+    cpuPercent: num(p.cpuPercent), memoryBytes: num(p.memoryBytes), avgCpuPercent: num(p.avgCpuPercent),
+    peakCpuPercent: num(p.peakCpuPercent), peakMemoryBytes: num(p.peakMemoryBytes), newestAt: iso(p.newestAt),
+  };
+}
+
+function useWords(p: MobileProcess, now: number): string {
+  const use = `${p.cpuPercent !== null ? `${Math.round(p.cpuPercent)}%` : '?'} CPU · ${gb(p.memoryBytes)}`;
+  if (p.stale && p.newestAt) return `Last read ${agoWords(now - Date.parse(p.newestAt))}: ${use}`;
+  return use;
+}
+
+/**
+ * Every machine's resource use, merged for the phone. Each machine's own answer is re-read through
+ * an allowlist; a machine that did not answer carries no numbers at all.
+ */
+export function summarizeResourceMachines(inputs: Array<{ info: ResourceMachineInfo; answer: ResourceAnswer }>, now: number): { machines: MobileResourceMachine[]; combined: MobileResourcesCombined } {
+  const machines = inputs.map(({ info, answer }): MobileResourceMachine => {
+    const base = { key: info.key, name: phoneText(info.name, 60) ?? 'A machine with no name yet', leading: info.leading, runningSessions: info.sessions, maxSessions: info.maxSessions, version: info.version };
+    if (!answer.ok) return { ...base, state: 'not-answering', line: answer.reason === 'offline' ? 'Offline' : 'Not answering', headline: null, total: null, server: null, sessions: [], sessionsShownOf: 0 };
+    const b = rec(answer.body);
+    if (b.enabled !== true) return { ...base, state: 'off', line: 'Not recorded there', headline: null, total: null, server: null, sessions: [], sessionsShownOf: 0 };
+    const all = (Array.isArray(b.sessions) ? b.sessions : []).map(peerProcess).filter((x): x is MobileProcess => !!x);
+    const total = peerProcess(b.total);
+    const line = total && total.cpuPercent !== null ? useWords(total, now) : 'No reading yet';
+    return { ...base, state: 'answering', line, headline: phoneText(b.headline, 200), total, server: peerProcess(b.server), sessions: all.slice(0, MAX_SESSIONS_PER_MACHINE), sessionsShownOf: all.length };
+  }).sort((a, b) => Number(a.state === 'answering') - Number(b.state === 'answering') || Number(b.leading) - Number(a.leading) || a.name.localeCompare(b.name));
+  const answering = machines.filter((m) => m.state === 'answering');
+  const read = answering.filter((m) => m.total && !m.total.stale);
+  const sum = (xs: Array<number | null>): number | null => (xs.length && xs.every((x) => x !== null) ? xs.reduce<number>((a, x) => a + (x as number), 0) : null);
+  const memoryBytes = read.length ? sum(read.map((m) => m.total!.memoryBytes)) : null;
+  const runningSessions = sum(machines.map((m) => m.runningSessions));
+  const maxSessions = sum(machines.map((m) => m.maxSessions));
+  const busiestM = read.filter((m) => m.total!.cpuPercent !== null).sort((a, b) => (b.total!.cpuPercent ?? 0) - (a.total!.cpuPercent ?? 0))[0];
+  const notAnswering = machines.filter((m) => m.state === 'not-answering').map((m) => m.name);
+  const off = machines.filter((m) => m.state === 'off').map((m) => m.name);
+  const n = machines.length;
+  let headline: string;
+  if (!answering.length) headline = n === 1 ? "The machine's resource use couldn't be read." : "No machine's resource use could be read right now.";
+  else {
+    const parts = [n === 1 ? null : answering.length === n ? `All ${n} machines` : `${answering.length} of ${n} machines`,
+      memoryBytes !== null ? `${gb(memoryBytes)} of memory` : null,
+      runningSessions !== null ? `${runningSessions} ${runningSessions === 1 ? 'session' : 'sessions'}` : null].filter(Boolean);
+    headline = parts.length ? parts.join(' · ') : 'Resource use, last hour';
+  }
+  const busiest = busiestM ? `Busiest: ${busiestM.name}, ${Math.round(busiestM.total!.cpuPercent ?? 0)}% CPU` : null;
+  return { machines, combined: { headline, busiest, machines: n, answering: answering.length, notAnswering, off, memoryBytes, runningSessions, maxSessions } };
+}
+
 // ── routes ────────────────────────────────────────────────────────────────────
 
 export interface MobileCapacityDeps {
@@ -589,6 +805,8 @@ export interface MobileCapacityDeps {
   offlineMachineIds?: () => string[];
   /** This machine's sign-in repair episodes (`/subscription-relogin`, local store). */
   localRepairs: () => Array<{ accountId: string; state: string }>;
+  /** Repair blockers across machines; unavailable means cells keep their pool status. */
+  reloginBlockers?: () => Promise<Array<{ accountId: string; machineId: string; reason: string }>>;
   /** This machine's `/routing-spend/summary?grain=day&sinceHours=N` and `/tokens/summary?since=` reads. */
   spendSummary: (sinceHours: number) => SpendPart;
   tokens: (sinceMs: number) => SpendPart;
@@ -599,6 +817,13 @@ export interface MobileCapacityDeps {
   spendStatus: () => SpendPart;
   /** `/resources/summary` sources since the time given, or null when the resource ledger is off. */
   resourceSources: (sinceMs: number) => unknown[] | null;
+  /**
+   * Every machine in the pool (this one included, `isSelf`), or [] when there is no pool. With
+   * `peerResources`, makes `/mobile/resources` pooled; without them it answers this machine only.
+   */
+  resourceMachines?: () => ResourceMachineInfo[];
+  /** A peer's own `/mobile/resources?scope=local` answer (5 s bound), by its row key. */
+  peerResources?: (key: string) => Promise<ResourceAnswer>;
   /** Running session id → name. */
   runningSessionNames: () => Map<string, string>;
   /** Machine id → registry nickname (unverified; the summarizers verify it). */
@@ -664,11 +889,11 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
     if (!guard(req, res)) return;
     try {
       const body = await cached('accounts', async () => {
-        const [payload, inUse] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null)]);
+        const [payload, inUse, blockers] = await Promise.all([deps.accountsView(), deps.inUseAccountId().catch(() => null), deps.reloginBlockers?.().catch(() => []) ?? Promise.resolve([])]);
         let repairs: Array<{ accountId: string; state: string }> = [];
         try { repairs = deps.localRepairs(); } catch { /* @silent-fallback-ok — no repair evidence: cells show their pool status */ }
         // generatedAt is stamped when the answer is built, so a cached answer keeps its own time.
-        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, offlineMachineIds: deps.offlineMachineIds?.() ?? [] }) } as unknown as Rec;
+        return { ...head(), ...summarizeAccounts(payload, { inUseAccountId: inUse, now: now(), nicknameOf: deps.nicknameOf, localRepairs: repairs, blockers, offlineMachineIds: deps.offlineMachineIds?.() ?? [], selfName: phoneText(deps.selfName(), 60) }) } as unknown as Rec;
       });
       res.json(body);
     } catch (err) {
@@ -694,6 +919,7 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
         return { ...head(), ...summarizeSpend(key, {
           nicknameOf: deps.nicknameOf,
           selfMachineIds: deps.selfMachineIds?.() ?? [],
+          selfName: phoneText(deps.selfName(), 60),
           now: now(),
           machines: [self, ...peers],
           caps: safePart('GET /mobile/spend (limits)', () => deps.spendCaps()),
@@ -707,16 +933,32 @@ export function mountMobileCapacityRoutes(router: Router, deps: MobileCapacityDe
     }
   });
 
-  router.get('/mobile/resources', (req: Request, res: Response) => {
+  /** This machine's own answer (the shape every older phone reads). */
+  const localResources = (): Rec => {
+    const machine = phoneText(deps.selfName(), 60) ?? 'Your machine';
+    const sources = deps.resourceSources(now() - RESOURCE_WINDOW_HOURS * 3_600_000);
+    if (sources === null) {
+      return { ...head(), enabled: false, machine, windowHours: RESOURCE_WINDOW_HOURS, headline: "Resource usage isn't recorded on this agent.", total: null, server: null, sessions: [], truncated: false };
+    }
+    return { ...head(), enabled: true, windowHours: RESOURCE_WINDOW_HOURS, ...summarizeResources(sources, deps.runningSessionNames(), machine, now()) };
+  };
+
+  router.get('/mobile/resources', async (req: Request, res: Response) => {
     if (!guard(req, res)) return;
     try {
-      const machine = phoneText(deps.selfName(), 60) ?? 'This machine';
-      const sources = deps.resourceSources(now() - RESOURCE_WINDOW_HOURS * 3_600_000);
-      if (sources === null) {
-        res.json({ ...head(), enabled: false, machine, windowHours: RESOURCE_WINDOW_HOURS, headline: "Resource usage isn't recorded on this agent.", total: null, server: null, sessions: [], truncated: false });
-        return;
-      }
-      res.json({ ...head(), enabled: true, windowHours: RESOURCE_WINDOW_HOURS, ...summarizeResources(sources, deps.runningSessionNames(), machine, now()) });
+      const local = localResources();
+      if (req.query.scope === 'local' || !deps.resourceMachines || !deps.peerResources) { res.json(local); return; }
+      const pooled = await cached('resources', async () => {
+        const list = deps.resourceMachines!();
+        if (!list.length) return {} as Rec;
+        const inputs = await Promise.all(list.map(async (info) => ({
+          info,
+          answer: info.isSelf ? { ok: true as const, body: local } : await deps.peerResources!(info.key).catch((): ResourceAnswer => ({ ok: false, reason: 'not-answering' })),
+        })));
+        return summarizeResourceMachines(inputs, now()) as unknown as Rec;
+      });
+      // The top-level fields stay this machine's, so an older phone reads what it always did.
+      res.json(Array.isArray(pooled.machines) ? { ...local, scope: 'pool', ...pooled } : local);
     } catch (err) {
       reportReadFailure('GET /mobile/resources', err);
       res.status(500).json({ error: 'resources-unavailable' });

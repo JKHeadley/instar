@@ -43,12 +43,36 @@ export interface DevGatedFeature {
 }
 
 export const DEV_GATED_FEATURES: DevGatedFeature[] = [
+  {
+    name: 'usageLedger',
+    configPath: 'usage.ledger.enabled',
+    description: 'Unified usage ledger (unified-usage-ledger spec): one attributed row per model call from this agent\'s own sessions, rolled up by hour, day and conversation in server-data/usage-ledger.db; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Read-only against source transcripts and pure data transformation: it writes only its own SQLite file in server-data (excluded from git-sync), adds no gate, notice or outward action, and changes nothing the existing TokenLedger, routes or burn alerts see. enabled:false stops it and leaves the file inert.',
+  },
+  {
+    name: 'contextBudgetLayers',
+    configPath: 'contextBudget.enabled',
+    description: 'Context budget layers (docs/specs/context-budget-layered-summaries.md Phase 1): the per-topic layer store and transcript archive, and the layer writers built on them; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Writes only scrubbed derived summaries and row references under the agent\'s own 0700 state directory, never served and never git-synced; folds stay behind contextBudget.fold.enabled, so no session is shrunk, held or killed by this switch. Every LLM call runs on the background lane under a per-topic budget. Setting enabled:false stops every writer at the next read; the stored records are inert.',
+  },
+  {
+    name: 'chiefOfStaff',
+    configPath: 'chiefOfStaff.enabled',
+    description: 'Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation that checks each bound project and restarts or redirects stalled work within its stated goal; omitted ⇒ live on a development agent, dark on the fleet.',
+    justification: 'Every side effect goes through the §2.4 action protocol (signed intent, ownership-machine lock, durable executing record, idempotency key) and the existing quota, spawn-cap and pressure gates; it acts only on owner-confirmed bindings while the operator check-in lease is live, with P19 brakes (park, breaker, backoff). PR 2 wires the protocol only; no loop runs until PR 3.',
+  },
   { name: 'notificationSelectivity', configPath: 'notifications.selectivity.enabled', description: 'Observe automated notification dispositions on development agents; fleet remains dark until operator enable.', justification: 'Structural provenance only, dry-run by default, reply floors preserved. Echo enforcement is explicitly authorized by the current operator directive; other agents retain the approved staged flip.' },
   {
     name: 'scriptRunners',
     configPath: 'jobs.scriptRunners.enabled',
     description: 'Script runners (job-cost-reduction §5.1): the converted built-in jobs run their shipped Node script instead of opening a model session; omitted ⇒ live on a development agent, every converted job runs its body as a session on the fleet.',
     justification: 'Each script calls the same local endpoint its session body called, under the same claim and lock-file trust; an untrusted script records failed and starts nothing. Setting enabled:false or listing a slug in disabledSlugs restores the session path live at the next trigger. No credential or state mutation beyond what the session already did; it removes spend.',
+  },
+  {
+    name: 'jobToolAllowlistEnforcement',
+    configPath: 'jobs.toolAllowlistEnforcement.enabled',
+    description: 'Job tool limits are applied (EVO-008, docs/specs/job-tool-allowlist-real-enforcement.md): a Claude job with a declared or clamped tool list starts in the confined launch form (no permission bypass; only the listed tools exist); omitted ⇒ live on a development agent, dark on the fleet, where the list is recorded but not applied.',
+    justification: 'It can only REMOVE tools from the development agent\'s own jobs that declare a list (or ask for "*" without authorization); it adds no capability, spend, credential or state change. A user job\'s bare ["Read"] default is never applied, a list naming tools the launch cannot honour is left as today and reported, and a non-Claude launch runs as today except a tamper-clamped instar job, which is refused. Read live at every launch: enabled:false restores today\'s launch at the next spawn.',
   },
   {
     name: 'scriptTriageJev',
@@ -67,6 +91,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'monitoring.workAdmission.enabled',
     description: 'Overload admission (trustworthy-machine-load Part C): closes this machine to new automatic work while its own multi-signal load verdict is saturated/impaired, keeps one host-wide recovery slot for an operator session, advertises the state so placement skips it.',
     justification: 'Ships dryRun:true: the state machine, audit and advert run on the real verdict feed but nothing is refused and peers keep placing work here until a deliberate dryRun:false. Even live it only DEFERS automatic work (jobs retry, inbound messages stay in the durable queue) and always leaves an operator session a slot; no LLM, no spend, no kills, no credential or state mutation.',
+  },
+  {
+    name: 'appConversationsPool',
+    configPath: 'multiMachine.sessionPool.appConversations.enabled',
+    description: 'App conversations move between machines (docs/specs/app-conversations-in-the-pool.md): per-conversation ownership, forwards to the owner, Move and Bring it back here. Off means the lease holder serves every app conversation, exactly as before.',
+    justification: 'Live on a development agent so the first real two-machine move proves it. Held from the fleet until then: a duplicate is still possible when an attempt reached another machine before its delivery event replicates, and nothing has run across two real machines yet.',
   },
   {
     name: 'overloadShed',
@@ -135,6 +165,11 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     configPath: 'feedbackFactory.execute.enabled',
     description: 'Feedback executor: confined build sessions turn top-ranked feedback work items into pull requests that merge only at the exact head the repository owner approves.',
     justification: 'Ships dryRun:true (evaluates admission and records the attempt it would start, spawning and pushing nothing). Live, every session and every command that runs attempt code is OS-sandboxed (no network, no credentials, no reads outside the workspace) behind a must-fail/must-succeed canary before each attempt; trusted code alone pushes, from its own clone, refusing tooling paths and secret-shaped content; merges happen only at the exact head the repository owner approved, and the executor refuses to run while the agent itself could act as that approver unless a PIN-bound acceptance exists.',
+  },
+  {
+    name:'serverDownRecovery',configPath:'multiMachine.serverDownRecovery.enabled',
+    description:'Independent SSH and relay recovery with source-verified server-down route proofs.',
+    justification:'The setup page, missing-enrollment attention and truthful pool/channel status are visible across the fleet. Active source probing remains development-agent gated until explicit setup enables it. No host grant or listener can activate without a release-certified per-agent authority, a current owner-phone grant, current MachineAuth-signed peer inventory and a target-bound checkpoint. Missing enrollment is degraded, never ready.',
   },
   {
     name: 'mutualSsh',
@@ -705,6 +740,12 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Replicates the verified-operator binding between the operator\'s OWN machines only; THE LOAD-BEARING SAFETY INVARIANT (Know Your Principal): a replicated record is UNTRUSTED peer data and is NEVER the authoritative answer to "who is my verified operator?" — only the LOCAL authenticated setAuthenticatedOperator binds it; recordKey is sha256(topicId+verified-uid), never a content-name; tombstoned unbinds; fully reversible (rollback-unmerge); no external egress, no destructive write, no spend. Runs live AND dryRun:false on dev. Operator directive 2026-06-13 topic 13481.',
   },
   {
+    name: 'jevFirstCommitment',
+    configPath: 'intelligence.jevFirstCommitment.enabled',
+    description: 'Shared Jev-first yes/no path for CommitmentSentinel (jev-first-decision-path.md): shadow by default on a development agent, off on the fleet; only a separately validated confident negative may later skip the detailed incumbent extraction.',
+    justification: 'Shadow changes no commitment verdict or tracker write. Missing Jev key, uncertain answer, oversize or unscrubbable context, model mismatch, timeout and provenance write failure all reach the incumbent; the same feature works with one provider. Jev receives only bounded secret-scrubbed text, the model is pinned, and the kill switch is read live. Fleet use requires an explicit enable and stage promotion after a held-out replay.',
+  },
+  {
     name: 'jevSignalLive',
     configPath: 'intelligence.jevSignalLive.enabled',
     description: 'Jev as a live advisory input to the tone gate\'s B1–B7 artefact signals (jev-signal-live.md): confident Jev answers decide a kind, unsure/missing answers and every failure fall back to the deterministic detectors.',
@@ -919,10 +960,22 @@ export const DEV_GATED_FEATURES: DevGatedFeature[] = [
     justification: 'Device-signed only, behind the existing allowlist; the server decides a file\'s type from its bytes and serves everything non-executable; reply files are confined to three roots and scanned by the existing credential wall; every admission is capped and a free-disk floor protects the machine. Off ⇒ the media routes answer 503, nothing is copied, and what is stored stays. Dark on the fleet until the development-agent live proof passes.',
   },
   {
+    name: 'mobilePairingBrowser',
+    configPath: 'mobilePairing.browser.enabled',
+    description: 'Dashboard conversations with the browser as its own signed device (docs/specs/dashboard-conversations-browser-device.md): a browser holds its own non-extractable key, is approved through the same channel a new phone would be (never the PIN alone on an agent with a Telegram owner), may call only the conversation and media routes and revoke itself, and every message it signs is marked as browser-signed from the signed ledger row.',
+    justification: 'a new signing client identity; proven live on the development agent before any fleet exposure',
+  },
+  {
     name: 'mobilePairingMultiRoute',
     configPath: 'mobilePairing.multiRoute.enabled',
     description: 'Several routes per agent for the Instar iPhone app (docs/specs/mobile-multi-route.md): a paired phone\'s signature is accepted on any of this machine\'s proven own names (Cloudflare tunnel hostname, Tailscale HTTPS name), GET /mobile/routes lists them, and a boot step maps tailscale serve HTTPS 443 to the agent port when 443 has no serve config.',
     justification: 'Own names come only from local configuration and are proven by the per-process pairing ping (echoed Host, local-TLS arrival, no sibling claim); a request is accepted only on a still-configured own name that arrived through this machine\'s own TLS front, and a captured signature names its exact host. Probes are bounded (one in flight, 3 s, backoff to 15 min, breaker after 8). The serve step never overwrites an existing 443 config. Switching it off restores the single paired host exactly.',
+  },
+  {
+    name: 'mobilePairingOwnerPresence',
+    configPath: 'mobilePairing.ownerPresence.enabled',
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page on the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): a fresh presence-key signature over a single-use, purpose-bound challenge mints a desktop-only, phone-bound 15-minute session (POST /mobile/desktop-unlock) or reveals the dashboard PIN this server compares against (POST /mobile/dashboard-pin/reveal).',
+    justification: 'The desktop session is narrower than the PIN unlock: accepted only by the desktop routes, re-checked against the phone on every use, cleared on a PIN change, and the phone never holds the API token. The reveal is owner-phone only, never returns a placeholder, and needs the owner\'s private chat, which is told (without the PIN) at most once per phone per 10 minutes while every reveal is audited. Bearer, MSP and shared phones are refused; every use and refusal is audited. Dark on the fleet until the development-agent live proof and a physical-phone check pass.',
   },
   {
     name: 'mobilePairingPermissionActions',
@@ -1013,6 +1066,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     configPath: 'monitoring.agentWorktreeReaper.enabled',
     category: 'destructive',
     reason: 'deletes git worktrees; off+dry-run for everyone',
+  },
+  {
+    configPath: 'monitoring.diskSteward.prune.enabled',
+    category: 'destructive',
+    reason: 'deletes npm cache and Xcode build files; off for everyone, the update migration writes an explicit true on development agents only (docs/specs/disk-steward.md)',
   },
   {
     configPath: 'monitoring.mcpProcessReaper.enabled',

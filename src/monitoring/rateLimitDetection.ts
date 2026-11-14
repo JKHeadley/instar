@@ -222,7 +222,15 @@ export const USAGE_WALL_PATTERNS: RegExp[] = [
   new RegExp(BANNER_LEAD + String.raw`usage limit reached\b`, 'i'),
   new RegExp(BANNER_LEAD + String.raw`(?:session|weekly|opus|sonnet) limit reached\b`, 'i'),
   new RegExp(BANNER_LEAD + String.raw`/extra-usage to finish`, 'i'),
+  // Claude Code 2.1.3xx (2026-11-10, fb-f8b946ae-597) renamed the companion
+  // hint: "/usage-credits to finish what you’re working on."
+  new RegExp(BANNER_LEAD + String.raw`/usage-credits to finish`, 'i'),
 ];
+
+/** The banner phrasing without the line anchor, for text that is known to be
+ * the provider's own message (a transcript API-error row), never pane prose. */
+export const USAGE_WALL_TEXT_PATTERN =
+  /(?:you['’]?ve|you have) (?:hit|reached) your (?:(?:session|weekly|opus|sonnet|usage|5-hour) )?limit\b|(?:session|weekly|opus|sonnet|usage|5-hour) limit\s*(?:(?:has been )?reached\b|[·•∙,]\s*resets\b)|\/(?:extra-usage|usage-credits) to finish\b/i;
 
 /**
  * Terminal furniture that Claude Code draws BELOW its last real output: the
@@ -247,7 +255,16 @@ export const PANE_CHROME_PATTERNS: RegExp[] = [
   // the limit menu
   /^(?:[❯>]\s*)?\d+\.\s+(?:stop and wait for limit to reset|switch to extra usage|upgrade your plan)\s*$/i,
   // the permission-mode status row, optionally with its trailing hints
-  /^(?:⏵⏵\s*)?(?:bypass permissions|accept edits|plan mode) on(?:\s*\(shift\+tab to cycle\))?(?:\s*[·•∙]\s*(?:esc to interrupt|ctrl\+t to (?:hide|show) tasks|\? for shortcuts))*\s*$/i,
+  // ("⏵⏵ bypass permissions on · 7 shells · ↓ to manage", 2026-11-10)
+  /^(?:⏵⏵\s*)?(?:bypass permissions|accept edits|plan mode) on(?:\s*\(shift\+tab to cycle\))?(?:\s*[·•∙]\s*(?:esc to interrupt|ctrl\+t to (?:hide|show) tasks|\? for shortcuts|\d+ (?:shells?|background tasks?|agents?|tasks?)|↓ to manage))*\s*$/i,
+  // the usage-credits promotion row under the wall banner:
+  // "Usage credits are at least 30% off for one purchase · 14 days left · /usage-credits"
+  /^usage credits are [^\n]*[·•∙]\s*\/(?:usage-credits|extra-usage)\s*$/i,
+  // the finished-turn row: "✻ Baked for 3s · done 7:56 AM · 7 shells still running"
+  // (one capitalised verb, a duration, then only known hint segments)
+  /^[✻✽✶✳✢]\s+[A-Z][a-z]+\s+for\s+\d+[hms](?:\s+\d+[hms]){0,2}(?:\s*[·•∙]\s*(?:done \d{1,2}:\d{2}\s*(?:[AaPp][Mm])?|\d+ (?:shells?|background tasks?|agents?|tasks?) still running))*\s*$/,
+  // the self-update notice: "✔ Update installed · Restart to update"
+  /^[✔✓]\s*update installed(?:\s*[·•∙]\s*restart to update)?\s*$/i,
   /^\?\s+for shortcuts\s*$/i,
   /^context left until auto-compact:?\s*\d+%\s*$/i,
   /^[\s│|╭╮╰╯─━═┃┌┐└┘_-]*$/,                                           // box rules, borders, blank-ish rows
@@ -263,6 +280,90 @@ export function isPaneChromeLine(line: string): boolean {
 }
 
 /**
+ * A background-agent row of Claude Code's task list:
+ * "◯ general-purpose  Pushing side-effects artifact commit upstream  1h 8m 2s · ↓ 312.5k tokens".
+ * Anchored on the status glyph, the column gaps and the trailing elapsed timer
+ * (+ optional token count) — the timer ticks every second, which is why these
+ * rows must count as chrome AND why the wall's settle signature must not
+ * include them.
+ */
+export const BACKGROUND_AGENT_ROW =
+  /^[◯○◉●◐◑◒◓◌✓✔✗⏸]\s+[\w.-]+\s{2,}\S.*?\s{2,}\d+[hms](?:\s+\d+[hms]){0,2}(?:\s*[·•∙]\s*[↓↑]\s*[\d.,]+[kKmM]?\s+tokens)?\s*$/;
+
+/** The "⏺ main" header that tops the task list. Only chrome when a
+ * background-agent row follows it: on its own it is indistinguishable from an
+ * assistant reply that is the single word "main". */
+const TASK_LIST_HEADER = /^⏺\s+main$/;
+
+/** Chrome check for line `i` of `lines`, with the context-dependent rows. */
+function isChromeAt(lines: string[], i: number): boolean {
+  if (isPaneChromeLine(lines[i])) return true;
+  const trimmed = lines[i].trim();
+  if (BACKGROUND_AGENT_ROW.test(trimmed)) return true;
+  if (TASK_LIST_HEADER.test(trimmed)) {
+    return lines.slice(i + 1).some((l) => BACKGROUND_AGENT_ROW.test(l.trim()));
+  }
+  return false;
+}
+
+/**
+ * Remove a right-hand side panel (Claude Code's diff / file view) from pane
+ * lines. The panel draws a vertical rule "│" at the SAME column on most rows
+ * and fills the space after it with its own text, so every row of a walled
+ * pane carried diff text and nothing read as chrome (fb-f8b946ae-597).
+ *
+ * Detection is structural, not textual: a column ≥ 20 where at least 5 rows
+ * and 40% of the non-blank rows carry "│". Each row is cut at its rule (±2
+ * columns, for a wide glyph earlier on the row). Rows without the rule are
+ * kept whole. A boxed input prompt ("│ > │") has its rules at the edges of a
+ * short box, which never reaches the threshold on a real pane.
+ */
+export function stripSidePanel(lines: string[]): string[] {
+  const counts = new Map<number, number>();
+  let nonBlank = 0;
+  for (const line of lines) {
+    if (line.trim()) nonBlank += 1;
+    const seen = new Set<number>();
+    for (let i = line.indexOf('│'); i >= 0; i = line.indexOf('│', i + 1)) {
+      if (i >= 20 && !seen.has(i)) { seen.add(i); counts.set(i, (counts.get(i) ?? 0) + 1); }
+    }
+  }
+  let col = -1;
+  let best = 0;
+  for (const [c, n] of counts) if (n > best) { best = n; col = c; }
+  if (col < 0 || best < 5 || best < nonBlank * 0.4) return lines;
+  return lines.map((line) => {
+    for (let i = Math.max(0, col - 2); i <= col + 2 && i < line.length; i++) {
+      if (line[i] === '│') return line.slice(0, i).replace(/\s+$/, '');
+    }
+    return line;
+  });
+}
+
+/** The inspected window, side panel removed. */
+function wallWindow(snapshot: string, captureLines: number): string[] {
+  return stripSidePanel(snapshot.split('\n').slice(-captureLines));
+}
+
+/** Index of the last usage-wall banner line in `lines`, or -1. */
+function lastBannerIndex(lines: string[]): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (USAGE_WALL_PATTERNS.some((p) => p.test(lines[i]))) return i;
+  }
+  return -1;
+}
+
+/** A retry spinner after the banner means the framework is still moving.
+ * Checked on RAW lines, before chrome is dropped ("Retrying in 10s · esc to
+ * cancel" must veto, not be filtered away as chrome). */
+function retryingAfter(lines: string[], idx: number): boolean {
+  return lines.slice(idx + 1).some((l) => RETRY_SPINNER_PATTERN.test(stripSeparators(l)));
+}
+
+/** Rows of context above the banner that make up the wall's settle signature. */
+const WALL_SIGNATURE_CONTEXT_ROWS = 15;
+
+/**
  * True iff a usage-wall banner is the CURRENT state of the pane: the last
  * banner line in the inspected window is followed only by chrome, never by
  * any session output. A session that walled earlier and has since resumed is
@@ -273,18 +374,62 @@ export function detectUsageWall(
   captureLines: number = RATE_LIMIT_SETTLED_CAPTURE_LINES,
 ): boolean {
   if (!snapshot) return false;
-  const lines = snapshot.split('\n').slice(-captureLines);
-  let idx = -1;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (USAGE_WALL_PATTERNS.some((p) => p.test(lines[i]))) { idx = i; break; }
-  }
+  const lines = wallWindow(snapshot, captureLines);
+  const idx = lastBannerIndex(lines);
   if (idx < 0) return false;
-  const rawAfter = lines.slice(idx + 1);
-  // A retry spinner after the banner means the framework is still moving.
-  // Checked on RAW lines, before chrome is dropped ("Retrying in 10s · esc to
-  // cancel" must veto, not be filtered away as chrome).
-  if (rawAfter.some((l) => RETRY_SPINNER_PATTERN.test(stripSeparators(l)))) return false;
-  return rawAfter.filter((l) => !isPaneChromeLine(l)).length === 0;
+  if (retryingAfter(lines, idx)) return false;
+  for (let i = idx + 1; i < lines.length; i++) {
+    if (!isChromeAt(lines, i)) return false;
+  }
+  return true;
+}
+
+/** A row of model output (a reply or a tool call): "⏺ …" (drawn "● …" on some terminals). */
+const MODEL_OUTPUT_ROW = /^\s*[⏺●]\s/;
+
+/**
+ * Weaker pane signal, used only together with the exact session's transcript:
+ * a usage-wall banner is in the inspected window, no retry spinner follows it,
+ * and no model output (a "⏺" reply or tool-call row, other than the task-list
+ * header) follows it. Unknown chrome rows after the banner are tolerated —
+ * the transcript (its latest main-turn row is the provider's wall error) is
+ * what establishes that the session stopped at the wall. The model-output
+ * veto keeps a resumed session whose transcript id is still the old, walled
+ * one from reading as walled under a replayed banner.
+ */
+export function paneShowsUsageWallBanner(
+  snapshot: string | null | undefined,
+  captureLines: number = RATE_LIMIT_SETTLED_CAPTURE_LINES,
+): boolean {
+  if (!snapshot) return false;
+  const lines = wallWindow(snapshot, captureLines);
+  const idx = lastBannerIndex(lines);
+  if (idx < 0 || retryingAfter(lines, idx)) return false;
+  for (let i = idx + 1; i < lines.length; i++) {
+    if (MODEL_OUTPUT_ROW.test(lines[i]) && !isChromeAt(lines, i)) return false;
+  }
+  return true;
+}
+
+/**
+ * Settle fingerprint for a wall: the banner row and the rows above it (side
+ * panel removed), never the chrome below it. Background-agent timers and the
+ * shell counter tick every second below the banner, so a whole-pane
+ * fingerprint never stays byte-identical and the wall could never settle.
+ * Anything that is real session output after the banner already fails
+ * detection, so excluding the tail loses nothing.
+ */
+export function usageWallSignature(
+  snapshot: string,
+  captureLines: number = RATE_LIMIT_SETTLED_CAPTURE_LINES,
+): string {
+  const lines = wallWindow(snapshot, captureLines);
+  const idx = lastBannerIndex(lines);
+  if (idx < 0) return throttleSignature(snapshot, captureLines);
+  return lines
+    .slice(Math.max(0, idx - WALL_SIGNATURE_CONTEXT_ROWS), idx + 1)
+    .map((l) => l.replace(/\s+$/g, ''))
+    .join('\n');
 }
 
 /** Current usage-banner signal for courtesy notices. Claude also renders real
@@ -293,40 +438,53 @@ export function detectUsageWall(
  * consumer must corroborate ownership with the exact serving-session transcript. */
 export function currentUsageLimitBanner(snapshot: string | null | undefined): string | null {
   if (!snapshot) return null;
-  const lines = snapshot.split('\n').slice(-RATE_LIMIT_SETTLED_CAPTURE_LINES);
-  const banner = /^\s*(?:[●⏺✗⚠⎿]\s*)?(?:api error:\s*)?(?:(?:you['’]?ve|you have) (?:hit|reached) your (?:(?:session|weekly|opus|sonnet|usage|5-hour) )?limit\b|(?:session|weekly|opus|sonnet|usage|5-hour) limit\s*(?:(?:has been )?reached\b|[·•∙,]\s*resets\b)|\/extra-usage to finish\b)/i;
+  const lines = wallWindow(snapshot, RATE_LIMIT_SETTLED_CAPTURE_LINES);
+  const banner = new RegExp(String.raw`^\s*(?:[●⏺✗⚠⎿]\s*)?(?:api error:\s*)?(?:` + USAGE_WALL_TEXT_PATTERN.source + ')', 'i');
   const finished = /^[✻✽✶✳✢]\s+\S+ for \d[^\n]*$/;
   let found: string | null = null;
-  for (const line of lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     if (banner.test(line)) {
       // Extra-usage is a companion hint, not a replacement for the banner's
       // reset time. Preserve both when the framework prints both rows.
       found = found ? `${found}\n${line}` : line;
       continue;
     }
-    if (found && !isPaneChromeLine(line) && !finished.test(line.trim())) found = null;
+    if (found && !isChromeAt(lines, i) && !finished.test(line.trim())) found = null;
   }
   return found;
 }
 
 /**
  * Settle decision for a usage wall, same discipline as evaluateThrottleSettle:
- * the banner must be the current pane state AND the pane must stay
+ * the wall must be the current state AND its banner region must stay
  * byte-identical for `settleMs` before the wall is reported, so a single
  * glance at a pane that is about to move on never fires.
+ *
+ * The wall is current when either
+ *  - the pane alone shows it (banner followed only by chrome), or
+ *  - `transcriptConfirmed`: the exact session's own transcript ends on the
+ *    provider's usage-wall error AND the pane still shows the banner (no retry
+ *    spinner after it). This is the robust path: it survives Claude Code
+ *    layouts whose rows the chrome list does not know yet.
+ *
+ * The signature covers the banner and the rows above it only, so ticking
+ * timer rows below the banner never restart the settle clock.
  */
 export function evaluateUsageWallSettle(
   snapshot: string | null | undefined,
   prev: ThrottleSettleState | undefined,
   now: number,
-  opts?: { settleMs?: number; captureLines?: number },
+  opts?: { settleMs?: number; captureLines?: number; transcriptConfirmed?: boolean },
 ): { decision: ThrottleSettleDecision; next: ThrottleSettleState | undefined } {
   const captureLines = opts?.captureLines ?? RATE_LIMIT_SETTLED_CAPTURE_LINES;
   const settleMs = opts?.settleMs ?? RATE_LIMIT_DEFAULT_SETTLE_MS;
-  if (!detectUsageWall(snapshot, captureLines)) {
+  const present = detectUsageWall(snapshot, captureLines)
+    || (opts?.transcriptConfirmed === true && paneShowsUsageWallBanner(snapshot, captureLines));
+  if (!present) {
     return { decision: 'no-throttle', next: undefined };
   }
-  const sig = throttleSignature(snapshot as string, captureLines);
+  const sig = usageWallSignature(snapshot as string, captureLines);
   if (!prev || prev.sig !== sig) return { decision: 'waiting', next: { sig, since: now } };
   if (now - prev.since >= settleMs) return { decision: 'settled', next: prev };
   return { decision: 'waiting', next: prev };

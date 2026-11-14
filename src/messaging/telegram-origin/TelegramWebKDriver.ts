@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { browserPeerMatches, canonicalBrowserJson, type BrowserDestination, type BrowserJson, type BrowserCanary, type PreparedBrowserChild, type TelegramBrowserDriver } from './BrowserTypes.js';
 import { BrowserProtocolError, PrivateCdpPipe } from './PrivateCdpPipe.js';
 import { TelegramRpcRefusal } from './TelegramBrowserBroker.js';
+import { randomUUID } from 'node:crypto';
 
 export interface WebKBuildEnrollment {
   buildId: string;
@@ -18,10 +19,20 @@ export interface TelegramWebKOptions {
   supportedBuilds: WebKBuildEnrollment[];
   startupTimeoutMs?: number;
 }
+/** Web K's client-side error for an rpc_result it could not deserialize (networker.ts, build 686+). */
+export const WEB_K_UNREADABLE_RESULT = 'NETWORK_RESULT_UNREADABLE';
 /** The only script surface is static code written here plus JSON data, never caller JS. */
 const assetsExpression = `Array.from(new Set([...Array.from(document.scripts).map(s=>s.src), ...performance.getEntriesByType('resource').map(e=>e.name)]))
  .filter(u=>u.startsWith('https://web.telegram.org/k/')).map(u=>u.split('/').pop().split('?')[0])
  .filter(n=>/^(index-|app-|apiManagerProxy-|index\\.worker-).*\\.js$/.test(n)).sort()`;
+/** Shared identity predicate pieces for every test-group page script. */
+const TEST_GROUP_TITLE_PATTERN = String(/^Instar test - .{1,112} \[itg-[a-z2-7]{10}\]$/);
+export const TEST_GROUP_REQUIRED_RIGHTS = Object.freeze(['manage_topics', 'pin_messages', 'delete_messages']);
+/** `other` is the manage-chat right Telegram implies for every admin. Anything else fails. */
+export const TEST_GROUP_ALLOWED_RIGHTS = Object.freeze([...TEST_GROUP_REQUIRED_RIGHTS, 'other']);
+/** The static rights literal. tweb's serializer reads constructor flags from pFlags. */
+export const TEST_GROUP_ADMIN_RIGHTS = canonicalBrowserJson({ _: 'chatAdminRights', pFlags: { manage_topics: true, pin_messages: true, delete_messages: true } });
+const TEST_GROUP_LIST_BOUND = 100;
 export function webKBuildFingerprint(assets: string[]): string {
   return createHash('sha256').update(canonicalBrowserJson([...new Set(assets)].sort())).digest('hex');
 }
@@ -75,13 +86,17 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
     if (response.exceptionDetails || response.result?.subtype === 'error') throw new Error('browser-evaluation-failed');
     return response.result?.value;
   }
-  private probeExpression(): string {
+  /** `deadlineMs` (test-group operations only) bounds the account RPC and the asset loop;
+   * without it the probe is byte-for-byte what sends have always run. */
+  private probeExpression(deadlineMs?: number): string {
+    const stop = deadlineMs === undefined ? 'Date.now()+20000' : `Math.min(Date.now()+20000,${Math.floor(deadlineMs) - 3000})`;
+    const budget = deadlineMs === undefined ? '' : `if(Date.now()>${Math.floor(deadlineMs) - 3000})throw new Error('browser-probe-budget');`;
     return `(async()=>{if(location.origin!=='https://web.telegram.org'||!location.pathname.startsWith('/k/')||typeof window.createProxiedManagersForAccount!=='function')return null;
       const m=window.createProxiedManagersForAccount(${this.options.accountNumber});
-      const accountNumber=await m.apiManager.getAccountNumber();const self=await m.apiManager.invokeApi('users.getUsers',{id:[{_:'inputUserSelf'}]},{rawError:true,noErrorBox:true,stopTime:Date.now()+20000});const accountId=Array.isArray(self)&&self[0]&&self[0]._==='user'?String(self[0].id):'';
+      const accountNumber=await m.apiManager.getAccountNumber();const self=await m.apiManager.invokeApi('users.getUsers',{id:[{_:'inputUserSelf'}]},{rawError:true,noErrorBox:true,stopTime:${stop}});const accountId=Array.isArray(self)&&self[0]&&self[0]._==='user'?String(self[0].id):'';
       const assets=${assetsExpression};if(assets.length<3||assets.length>32)throw new Error('browser-asset-census-bound');
       const assetDigests={};let total=0;
-      for(const asset of assets){
+      for(const asset of assets){${budget}
         const response=await fetch('https://web.telegram.org/k/'+asset,{cache:'force-cache',credentials:'omit',redirect:'error',signal:AbortSignal.timeout(5000)});
         if(!response.ok||!response.body)throw new Error('browser-asset-unavailable');
         const reader=response.body.getReader();const chunks=[];let length=0;
@@ -94,15 +109,15 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
       return {accountNumber,accountId,assets,assetDigests}})()`;
   }
   /** Trusted enrollment inspection only; no send method, cookies or chat text. */
-  async inspectEnrollment(): Promise<{ accountNumber: number; accountId: string; criticalAssets: string[]; assetDigests: Record<string, string> }> {
+  async inspectEnrollment(deadlineMs?: number): Promise<{ accountNumber: number; accountId: string; criticalAssets: string[]; assetDigests: Record<string, string> }> {
     await this.ready;
-    const probe = await this.evaluatePageScript(this.probeExpression()) as {
+    const probe = await this.evaluatePageScript(this.probeExpression(deadlineMs)) as {
       accountNumber: number; accountId: string; assets: string[]; assetDigests: Record<string, string> } | null;
     if (!probe) throw new Error('browser-enrollment-unavailable');
     return { accountNumber: probe.accountNumber, accountId: probe.accountId, criticalAssets: probe.assets, assetDigests: probe.assetDigests };
   }
-  async canary(): Promise<BrowserCanary> {
-    const probe = await this.inspectEnrollment();
+  async canary(deadlineMs?: number): Promise<BrowserCanary> {
+    const probe = await this.inspectEnrollment(deadlineMs);
     const assets = probe.criticalAssets;
     const fingerprint = webKBuildFingerprint(assets);
     const build = this.options.supportedBuilds.find(b => validWebKBuildEnrollment(b) && webKBuildFingerprint(b.criticalAssets) === fingerprint &&
@@ -142,11 +157,118 @@ export class TelegramWebKDriver implements TelegramBrowserDriver {
         ||!approved.some(a=>JSON.stringify(a.assets)===JSON.stringify(probe.assets)&&a.assets.every(name=>a.assetDigests[name]===probe.assetDigests[name]))||Date.now()>=${child.deadlineMs})return {held:true};
       const p=${payload};const m=window.createProxiedManagersForAccount(${this.options.accountNumber});
       try{return {result:await m.apiManager.invokeApi(p.method,p.args,{rawError:true,noErrorBox:true,stopTime:${child.deadlineMs}})}}
-      catch(e){return {rpcError:{code:Number(e&&e.code)}}}
-    })()`) as { held?: boolean; rpcError?: { code: number }; result?: unknown };
+      catch(e){return {rpcError:{code:Number(e&&e.code),type:String(e&&e.type||'')}}}
+    })()`) as { held?: boolean; rpcError?: { code: number; type?: string }; result?: unknown };
     if (result?.held) throw new TelegramRpcRefusal(403);
+    // Web K 2.3 (686) turns a server result the client cannot parse into a
+    // synthetic 400. The server may have executed the write, so this is an
+    // unknown outcome, never a refusal that would make a resend look safe.
+    if (result?.rpcError?.type === WEB_K_UNREADABLE_RESULT) throw new Error('telegram-result-unreadable');
     if (result?.rpcError) throw new TelegramRpcRefusal(result.rpcError.code);
     return result?.result;
+  }
+  /** One evaluation: the same-evaluation build/account probe (the `invoke` pattern), then
+   * `body` with `api(method, params)` bound to this account and the evaluation's stop time.
+   * Only static code and canonical JSON data are interpolated. */
+  private testGroupScript(deadline: number, body: string): string {
+    const approvedAssets = this.options.supportedBuilds.filter(validWebKBuildEnrollment).map(b => ({ assets: [...b.criticalAssets].sort(), assetDigests: b.assetDigests }));
+    const stop = Math.floor(deadline) - 3000;
+    return `(async()=>{
+      let probe;try{probe=await (${this.probeExpression(deadline)});}catch(e){return {ok:false,step:'budget'};}
+      const approved=${canonicalBrowserJson(approvedAssets)};
+      if(!probe||probe.accountId!==${canonicalBrowserJson(this.options.expectedAccountId)}||probe.accountNumber!==${this.options.accountNumber}
+        ||!approved.some(a=>JSON.stringify(a.assets)===JSON.stringify(probe.assets)&&a.assets.every(name=>a.assetDigests[name]===probe.assetDigests[name])))return {ok:false,step:'canary'};
+      const m=window.createProxiedManagersForAccount(${this.options.accountNumber});
+      const api=(method,params)=>{if(Date.now()>${stop})throw {code:0,type:'STEP_BUDGET'};return m.apiManager.invokeApi(method,params,{rawError:true,noErrorBox:true,stopTime:${stop}});};
+      const fail=(step,e,extra)=>{const out={ok:false,step};const code=Number(e&&e.code);if(Number.isSafeInteger(code))out.code=code;
+        const type=e&&typeof e.type==='string'&&/^[A-Z_0-9]{1,48}$/.test(e.type)?e.type:typeof e==='string'&&/^[A-Z_0-9]{1,48}$/.test(e)?e:undefined;if(type)out.type=type;
+        if(!type&&!Number.isSafeInteger(code)){const n=e&&e.constructor&&e.constructor.name;if(typeof n==='string'&&/^[A-Za-z]{1,40}$/.test(n))out.kind=n;
+          const msg=e&&typeof e.message==='string'?e.message:'';if(/^[A-Za-z0-9 _.:()'-]{1,120}$/.test(msg))out.message=msg;}
+        return Object.assign(out,extra||{});};
+      const isCandidate=c=>!!c&&c._==='channel'&&!!c.pFlags&&!!c.pFlags.creator&&!!c.pFlags.megagroup&&!!c.pFlags.forum
+        &&typeof c.title==='string'&&${TEST_GROUP_TITLE_PATTERN}.test(c.title);
+      ${body}
+    })()`;
+  }
+  private testGroupOperation = '';
+  /**
+   * Lists this account's test groups with Telegram's own chat search for the fixed title prefix. Web K
+   * ships only the API methods its own interface calls, so `messages.getAllChats` is not there ("No method
+   * messages.getAllChats found", live 2026-11-09); `contacts.search` is (the search box), and so is
+   * `messages.getDialogs` (the chat list), whose newest 100 chats are merged in because search misses a
+   * brand-new empty group. A full page of 100 of the account's own search matches marks the read incomplete.
+   */
+  async listTestGroups(input: { deadline: number; channelId?: string }): Promise<unknown> {
+    await this.ready;
+    const operation = this.testGroupOperation = randomUUID();
+    const requested = input.channelId === undefined ? 'null' : canonicalBrowserJson(input.channelId);
+    return this.evaluatePageScript(this.testGroupScript(input.deadline, `
+      let r;try{r=await api('contacts.search',{q:'Instar test',limit:100});}catch(e){return fail('list',e);}
+      // Telegram's search does not return a brand-new, empty group (live 2026-11-09: a group made a
+      // minute earlier was missing), so the newest 100 chats from the chat list are read too and merged.
+      let recent;try{recent=await api('messages.getDialogs',{offset_date:0,offset_id:0,offset_peer:{_:'inputPeerEmpty'},limit:100,hash:'0'});}catch(e){return fail('list',e);}
+      const byId=new Map();
+      for(const c of [...(r&&Array.isArray(r.chats)?r.chats:[]),...(recent&&Array.isArray(recent.chats)?recent.chats:[])])if(c&&c.id!==undefined&&!byId.has(String(c.id)))byId.set(String(c.id),c);
+      const chats=[...byId.values()];
+      const mine=r&&Array.isArray(r.my_results)?r.my_results.length:0;
+      const candidates=chats.filter(isCandidate);
+      window.__instarTestGroups={operation:${canonicalBrowserJson(operation)},chats:Object.fromEntries(candidates.map(c=>[String(c.id),c]))};
+      const req=${requested};
+      const out={ok:true,complete:!!r&&mine<100&&candidates.length<=${TEST_GROUP_LIST_BOUND},
+        groups:candidates.slice(0,${TEST_GROUP_LIST_BOUND}).map(c=>({channelId:String(c.id),title:c.title,date:Number(c.date)}))};
+      if(req!==null)out.requested={present:chats.some(c=>String(c&&c.id)===req)};
+      return out;`));
+  }
+  async createTestGroup(input: { title: string; bot: { username: string; userId: string }; deadline: number }): Promise<unknown> {
+    await this.ready;
+    const data = canonicalBrowserJson({ title: input.title, username: input.bot.username, userId: input.bot.userId });
+    return this.evaluatePageScript(this.testGroupScript(input.deadline, `
+      const d=${data};
+      let resolved;try{resolved=await api('contacts.resolveUsername',{username:d.username});}catch(e){return fail('bot-identity',e);}
+      const user=(resolved&&Array.isArray(resolved.users)?resolved.users:[]).find(u=>u&&u._==='user'&&String(u.id)===d.userId);
+      if(!user||!user.pFlags||!user.pFlags.bot||user.pFlags.deleted)return {ok:false,step:'bot-identity'};
+      const inputUser={_:'inputUser',user_id:user.id,access_hash:user.access_hash};
+      if(Date.now()>${Math.floor(input.deadline) - 15000})return {ok:false,step:'budget'};
+      let created;
+      try{created=await api('channels.createChannel',{megagroup:true,forum:true,title:d.title,about:''});}
+      catch(e){const code=Number(e&&e.code);return fail('create',e,{uncertain:!(e&&e.type==='STEP_BUDGET')&&!([400,403,406,420].includes(code)&&!(typeof (e&&e.type)==='string'&&e.type.startsWith('NETWORK_')))});}
+      const made=(created&&Array.isArray(created.chats)?created.chats:[]).filter(c=>isCandidate(c)&&c.title===d.title);
+      if(made.length!==1)return {ok:false,step:'create-shape',uncertain:true};
+      const ch=made[0];const channel={_:'inputChannel',channel_id:ch.id,access_hash:ch.access_hash};
+      const rollback=async step=>{let rolledBack=false;try{await m.apiManager.invokeApi('channels.deleteChannel',{channel},{rawError:true,noErrorBox:true,stopTime:${Math.floor(input.deadline) - 1000}});rolledBack=true;}catch(e){rolledBack=false;}
+        return {ok:false,step,channelId:String(ch.id),rolledBack};};
+      try{const inv=await api('channels.inviteToChannel',{channel,users:[inputUser]});
+        if(inv&&Array.isArray(inv.missing_invitees)&&inv.missing_invitees.length)return rollback('invite');}catch(e){return rollback('invite');}
+      try{await api('channels.editAdmin',{channel,user_id:inputUser,admin_rights:${TEST_GROUP_ADMIN_RIGHTS},rank:''});}catch(e){return rollback('promote');}
+      try{const p=await api('channels.getParticipants',{channel,filter:{_:'channelParticipantsRecent'},offset:0,limit:10,hash:'0'});
+        const list=p&&p._==='channels.channelParticipants'&&Array.isArray(p.participants)?p.participants:null;
+        if(!list||p.count!==2||list.length!==2)return rollback('verify');
+        const owner=list.find(x=>x._==='channelParticipantCreator'&&String(x.user_id)===probe.accountId);
+        const admin=list.find(x=>x._==='channelParticipantAdmin'&&String(x.user_id)===d.userId);
+        const rights=admin&&admin.admin_rights&&admin.admin_rights.pFlags?Object.keys(admin.admin_rights.pFlags).filter(k=>admin.admin_rights.pFlags[k]):[];
+        const allowed=${JSON.stringify(TEST_GROUP_ALLOWED_RIGHTS)};const required=${JSON.stringify(TEST_GROUP_REQUIRED_RIGHTS)};
+        if(!owner||!admin||!required.every(k=>rights.includes(k))||!rights.every(k=>allowed.includes(k)))return rollback('verify');
+      }catch(e){return rollback('verify');}
+      return {ok:true,channelId:String(ch.id)};`));
+  }
+  async deleteTestGroup(input: { channelId: string; title: string; deadline: number }): Promise<unknown> {
+    await this.ready;
+    const operation = this.testGroupOperation;
+    this.testGroupOperation = '';
+    const data = canonicalBrowserJson({ channelId: input.channelId, title: input.title, operation });
+    return this.evaluatePageScript(this.testGroupScript(input.deadline, `
+      const d=${data};const kept=window.__instarTestGroups;window.__instarTestGroups=undefined;
+      const ch=d.operation&&kept&&kept.operation===d.operation&&kept.chats?kept.chats[d.channelId]:undefined;
+      if(!ch||!ch.access_hash)return {ok:false,step:'stale-read'};
+      const channel={_:'inputChannel',channel_id:ch.id,access_hash:ch.access_hash};
+      let fresh;
+      try{const r=await api('channels.getChannels',{id:[channel]});fresh=r&&Array.isArray(r.chats)?r.chats.find(c=>c&&String(c.id)===d.channelId):undefined;}
+      catch(e){if(e&&e.type==='CHANNEL_INVALID')return {ok:true,outcome:'gone'};return fail('read',e);}
+      if(fresh&&fresh._==='channelForbidden')return {ok:true,outcome:'gone'};
+      if(!isCandidate(fresh)||fresh.title!==d.title)return {ok:false,step:'identity-mismatch'};
+      try{await api('channels.deleteChannel',{channel});}
+      catch(e){const code=Number(e&&e.code);return fail('delete',e,{uncertain:!(e&&e.type==='STEP_BUDGET')&&!([400,403,406,420].includes(code)&&!(typeof (e&&e.type)==='string'&&e.type.startsWith('NETWORK_')))});}
+      return {ok:true,outcome:'deleted'};`));
   }
   close(): Promise<void> { return this.pipe.close(); }
 }

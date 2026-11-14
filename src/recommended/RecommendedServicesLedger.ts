@@ -40,6 +40,13 @@ export interface ChoiceRow extends RowSignature {
   principal?: string;
   /** On a yes: every no its writer knew of. A no outside this list came later, whatever the clocks say. */
   knownNos?: string[];
+  /**
+   * On a yes to email (docs/specs/backup-email-sending.md): a keyed hash of the owner-typed recipient (HMAC with the
+   * machine identity key, so a replicated row is not dictionary-reversible). The address itself is in the vault.
+   */
+  recipientHash?: string;
+  /** On a yes to email: the agent's email day timezone, the granting machine's zone at the yes. */
+  timezone?: string;
 }
 
 export interface LegacyImportRow extends RowSignature {
@@ -49,7 +56,32 @@ export interface LegacyImportRow extends RowSignature {
   at: string;
 }
 
-export type LedgerRow = ChoiceRow | LegacyImportRow;
+/**
+ * One offer of a service to an owner (docs/specs/recommended-services.md, Offers: "sent once"). `pending`
+ * is written before the send; `offered` only once the platform returned a message id for it. A service with
+ * an `offered` row for this owner is never offered again. A `pending` row with no `offered` row is resumed
+ * (sent again) until it is a week old, and then released. Offer rows never touch the choice fold.
+ */
+export interface OfferRow extends RowSignature {
+  type: 'offer';
+  eventId: string;
+  service: string;
+  owner: string;
+  /** Every row sent in one message shares a list id. */
+  listId: string;
+  state: 'pending' | 'offered';
+  origin: 'first-offer';
+  messageId?: string;
+  at: string;
+}
+
+export type LedgerRow = ChoiceRow | LegacyImportRow | OfferRow;
+
+export type OfferState = 'none' | 'pending' | 'offered';
+/** A pending offer older than this is treated as never sent. */
+export const OFFER_PENDING_TTL_MS = 7 * 24 * 60 * 60_000;
+/** At most one list a week per owner. */
+export const OFFER_LIST_EVERY_MS = 7 * 24 * 60 * 60_000;
 
 export interface EffectiveChoice {
   service: string;
@@ -87,6 +119,16 @@ export function validateRow(raw: unknown): LedgerRow | null {
   if (typeof service !== 'string' || !SERVICE_RE.test(service)) return null;
   if (typeof at !== 'string' || !Number.isFinite(Date.parse(at))) return null;
   if (r.type === 'legacy-import') return { type: 'legacy-import', eventId, service, at, ...s };
+  if (r.type === 'offer') {
+    const { owner, listId, state, origin, messageId } = r;
+    if (typeof owner !== 'string' || !owner || owner.length > 128) return null;
+    if (typeof listId !== 'string' || !ID_RE.test(listId)) return null;
+    if (state !== 'pending' && state !== 'offered') return null;
+    if (origin !== 'first-offer') return null;
+    if (messageId !== undefined && (typeof messageId !== 'string' || !messageId || messageId.length > 64)) return null;
+    if (state === 'offered' && messageId === undefined) return null;
+    return { type: 'offer', eventId, service, owner, listId, state, origin, at, ...(messageId === undefined ? {} : { messageId }), ...s };
+  }
   if (r.type !== 'choice') return null;
   const { choice, shutdown, reason, origin, offerTextHash, supersedes } = r;
   if (choice !== 'yes' && choice !== 'no') return null;
@@ -97,7 +139,12 @@ export function validateRow(raw: unknown): LedgerRow | null {
   if (typeof offerTextHash !== 'string' || offerTextHash.length > 128) return null;
   if (!Array.isArray(supersedes) || supersedes.length > 256) return null;
   if (!supersedes.every((id) => typeof id === 'string' && ID_RE.test(id))) return null;
-  const { grantMachine, principal, knownNos } = r;
+  const { grantMachine, principal, knownNos, recipientHash, timezone } = r;
+  if (recipientHash !== undefined || timezone !== undefined) {
+    if (choice !== 'yes' || grantMachine === undefined) return null;
+    if (typeof recipientHash !== 'string' || !/^[0-9a-f]{64}$/.test(recipientHash)) return null;
+    if (typeof timezone !== 'string' || !timezone || timezone.length > 64 || !/^[A-Za-z0-9_+\-/]+$/.test(timezone)) return null;
+  }
   if (grantMachine !== undefined || principal !== undefined || knownNos !== undefined) {
     if (choice !== 'yes') return null;
     for (const v of [grantMachine, principal]) {
@@ -110,6 +157,7 @@ export function validateRow(raw: unknown): LedgerRow | null {
     type: 'choice', eventId, service, choice, shutdown, reason: reason as NoReason,
     origin: origin as ChoiceOrigin, offerTextHash, supersedes: supersedes as string[], at,
     ...(grantMachine === undefined ? {} : { grantMachine: grantMachine as string, principal: principal as string, knownNos: knownNos as string[] }),
+    ...(recipientHash === undefined ? {} : { recipientHash: recipientHash as string, timezone: timezone as string }),
     ...s,
   };
 }
@@ -190,7 +238,7 @@ export class RecommendedServicesLedger {
   }
 
   /** A confirmed yes replaces every no standing at this moment, and only those. */
-  recordYes(input: { service: string; origin: ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string }): ChoiceRow {
+  recordYes(input: { service: string; origin: ChoiceOrigin; offerTextHash: string; grantMachine: string; principal: string; recipientHash?: string; timezone?: string }): ChoiceRow {
     const replaced = new Set(this.all().flatMap((r) => (r.type === 'choice' && r.choice === 'yes' ? r.supersedes : [])));
     const supersedes = this.all()
       .filter((r): r is ChoiceRow => r.type === 'choice' && r.service === input.service && r.choice === 'no' && !replaced.has(r.eventId))
@@ -227,6 +275,39 @@ export class RecommendedServicesLedger {
     return this.signAndStore({ type: 'legacy-import', eventId: newId(), service, at: this.at() }) as LegacyImportRow;
   }
 
+  /** Written before a list is sent, so a crash between send and record repeats at most this one offer. */
+  recordOfferPending(input: { service: string; owner: string; listId: string }): OfferRow {
+    return this.signAndStore({ type: 'offer', eventId: newId(), service: input.service, owner: input.owner, listId: input.listId, state: 'pending', origin: 'first-offer', at: this.at() }) as OfferRow;
+  }
+
+  /** Written only from the platform's own message id: the proof the offer reached the person. */
+  recordOfferDelivered(input: { service: string; owner: string; listId: string; messageId: string | number }): OfferRow {
+    return this.signAndStore({ type: 'offer', eventId: newId(), service: input.service, owner: input.owner, listId: input.listId, state: 'offered', origin: 'first-offer', messageId: String(input.messageId), at: this.at() }) as OfferRow;
+  }
+
+  offerRows(owner?: string): OfferRow[] {
+    return this.all().filter((r): r is OfferRow => r.type === 'offer' && (owner === undefined || r.owner === owner));
+  }
+
+  /** `offered` once any delivery row exists; `pending` while a recent pending row has no delivery; else `none`. */
+  offerState(service: string, owner: string, nowMs: number = this.opts.now?.()?.getTime() ?? Date.now()): OfferState {
+    const rows = this.offerRows(owner).filter((r) => r.service === service);
+    if (rows.some((r) => r.state === 'offered')) return 'offered';
+    if (rows.some((r) => r.state === 'pending' && nowMs - Date.parse(r.at) < OFFER_PENDING_TTL_MS)) return 'pending';
+    return 'none';
+  }
+
+  /** The pending rows a new lease holder (or this one, after a failed send) must send again, by list. */
+  pendingOffers(owner: string, nowMs: number = this.opts.now?.()?.getTime() ?? Date.now()): OfferRow[] {
+    return this.offerRows(owner).filter((r) => r.state === 'pending' && this.offerState(r.service, owner, nowMs) === 'pending');
+  }
+
+  /** When the newest list was sent to this owner, or null. Pending rows count: a list in flight is a list. */
+  lastListAt(owner: string): number | null {
+    const ats = this.offerRows(owner).map((r) => Date.parse(r.at)).filter((n) => Number.isFinite(n));
+    return ats.length ? Math.max(...ats) : null;
+  }
+
   /** A peer's row lands only when it verifies under the pinned key of the machine it names. */
   ingestReplicated(raw: unknown): IngestResult {
     const row = validateRow(raw);
@@ -251,6 +332,7 @@ export class RecommendedServicesLedger {
       type: 'choice', eventId: newId(), service: input.service, choice: input.choice, shutdown: input.shutdown,
       reason: input.reason, origin: input.origin, offerTextHash: input.offerTextHash ?? '', supersedes: input.supersedes, at: this.at(),
       ...(input.grantMachine === undefined ? {} : { grantMachine: input.grantMachine, principal: input.principal, knownNos: input.knownNos }),
+      ...(input.recipientHash === undefined ? {} : { recipientHash: input.recipientHash, timezone: input.timezone }),
     }) as ChoiceRow;
   }
 

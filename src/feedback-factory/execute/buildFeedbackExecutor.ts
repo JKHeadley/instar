@@ -4,11 +4,13 @@
  * executor shares the drain database, the triage owner fence and the epoch. Test seams
  * (`overrides`) replace only the external boundaries (git, GitHub, sandbox runtime, sessions).
  */
+import { createOperatorLinkOriginResolver, originOrNull } from '../../server/dashboardPaths.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import type { InstarConfig } from '../../core/types.js';
 import type { InitiativeTracker } from '../../core/InitiativeTracker.js';
@@ -29,6 +31,7 @@ import { SandboxRuntimeRunner } from './ConfinedRunner.js';
 import { DepsCache } from './depsCache.js';
 import { GhGateway, SafeAttemptGit, type AttemptGit, type GitHubGateway } from './executorPorts.js';
 import { SecretStore } from '../../core/SecretStore.js';
+import { createAuthenticatedGitHubCliRuntimeResolver } from '../../core/githubRuntime.js';
 import { secretKeyPaths } from '../../core/SecretSync.js';
 import { OPEN_PR_STATES } from './FeedbackExecuteStore.js';
 
@@ -116,13 +119,28 @@ export function readIdentityFacts(stateDir: string, readVault: () => string[] | 
 export const UPDATE_PENDING_BRAKE_MAX_MS = 6 * 60 * 60_000;
 
 export function executorUpdatePending(
-  status: { config?: { autoApply?: boolean }; pendingUpdate?: string | null; pendingUpdateDetectedAt?: string | null } | null | undefined,
+  status: {
+    config?: { autoApply?: boolean }; pendingUpdate?: string | null; pendingUpdateDetectedAt?: string | null;
+    restartDeferral?: { active?: boolean } | null; updateActivationPendingSince?: string | null;
+  } | null | undefined,
   now: number = Date.now(),
 ): boolean {
+  // The updater clears pendingUpdate once applied, so a restart that is waiting shows up only here.
+  if (status?.restartDeferral?.active === true) return true;
+  if (status?.updateActivationPendingSince && Number.isFinite(Date.parse(status.updateActivationPendingSince))) return true;
   if (status?.config?.autoApply !== true || status.pendingUpdate == null) return false;
   const detected = status.pendingUpdateDetectedAt ? Date.parse(status.pendingUpdateDetectedAt) : NaN;
   if (!Number.isFinite(detected)) return true;
   return now - detected < UPDATE_PENDING_BRAKE_MAX_MS;
+}
+
+/**
+ * The merge script of the running package, never a checkout's. An agent home can sit on an old branch
+ * (2026-11-07: Echo's held an August copy with no CI-floor path), and merging a fix to the script never
+ * reaches a stale checkout. Both src/ and dist/ sit three levels under the package root.
+ */
+export function installedSafeMergeScript(moduleUrl: string = import.meta.url): string {
+  return fileURLToPath(new URL('../../../scripts/safe-merge.mjs', moduleUrl));
 }
 
 /** Production reviewer wiring, with only the external model call replaceable in tests. */
@@ -163,8 +181,12 @@ export function buildFeedbackExecutor(input: {
   enabled: () => boolean;
   quotaShedding: () => boolean;
   updatePending: () => boolean;
+  /** Local Verify holds queued work for a restart (see FeedbackExecutorServiceOptions.localVerifyNeedsRestart). */
+  localVerifyNeedsRestart?: () => boolean;
   raiseAttention: (item: AttentionInput) => Promise<void>;
   tunnelUrl: () => string | null;
+  /** True when this agent runs a tunnel (up or not): links then wait for its public URL instead of using localhost. */
+  tunnelConfigured?: () => boolean;
   /** Queue pace tick-row sink (writes only while queuePace resolves enabled). */
   paceTicks?: FeedbackExecutorServiceOptions['paceTicks'];
   overrides?: Partial<Pick<FeedbackExecutorServiceOptions, 'git' | 'github' | 'runner' | 'deps' | 'sessions' | 'admission' | 'identityFacts' | 'commitIdentity' | 'clock' | 'sleep' | 'sessionWaitMs'>> & { homeDir?: string };
@@ -180,8 +202,8 @@ export function buildFeedbackExecutor(input: {
   const deps = input.overrides?.deps ?? new DepsCache({
     root: path.join(agentHome, '.worktrees', '.feedback-deps'), agentHome, trashRoot: path.join(executeStateDir, 'trash'), runner, testRunnerHoldersFile,
   });
-  const ghPath = 'gh';
-  const github = input.overrides?.github ?? new GhGateway({ ghPath, cwd: config.stateDir, safeMergeScript: path.join(resolveConfig().sourceRepoPath ?? agentHome, 'scripts', 'safe-merge.mjs') });
+  const githubRuntime = createAuthenticatedGitHubCliRuntimeResolver({ stateDir: config.stateDir });
+  const github = input.overrides?.github ?? new GhGateway({ resolveRuntime: githubRuntime, cwd: config.stateDir, safeMergeScript: installedSafeMergeScript() });
 
   const sm = input.sessionManager;
   let cachedFrameworkVersion: { value: string | null; at: number } | null = null;
@@ -253,12 +275,13 @@ export function buildFeedbackExecutor(input: {
     review,
     processing: input.processing,
     initiatives: input.initiativeTracker,
-    git: input.overrides?.git ?? new SafeAttemptGit(),
+    git: input.overrides?.git ?? new SafeAttemptGit(githubRuntime),
     github,
     runner,
     deps,
     sessions,
     admission,
+    ...(input.localVerifyNeedsRestart ? { localVerifyNeedsRestart: input.localVerifyNeedsRestart } : {}),
     identityFacts: input.overrides?.identityFacts ?? (() => readIdentityFacts(config.stateDir)),
     rankedWork: () => input.triage.service.queue().map((item) => ({ initiativeId: String(item.initiativeId), clusterId: String(item.clusterId) })),
     enabled: input.enabled,
@@ -269,10 +292,14 @@ export function buildFeedbackExecutor(input: {
     ownerEpoch: input.ownerEpoch,
     isCanonicalOwner: input.isCanonicalOwner,
     commitIdentity: identity,
-    ghCredentialHelper: `!${ghPath} auth git-credential`,
+    // The trusted git port derives its helper from the same explicit per-agent runtime.
+    ghCredentialHelper: null,
     raiseAttention: input.raiseAttention,
     reportDegradation: (event) => DegradationReporter.getInstance().report(event),
-    dashboardLink: () => `${input.tunnelUrl() ?? `http://localhost:${config.port}`}/dashboard?tab=feedback-drain`,
+    dashboardLink: (() => {
+      const resolveOrigin = createOperatorLinkOriginResolver({ port: config.port, tunnelConfigured: input.tunnelConfigured ?? (() => false), tunnelUrl: input.tunnelUrl });
+      return () => { const origin = originOrNull(resolveOrigin()); return origin ? `${origin}/dashboard?tab=feedback-drain` : null; };
+    })(),
     ...(input.overrides?.sleep ? { sleep: input.overrides.sleep } : {}),
     ...(input.overrides?.sessionWaitMs !== undefined ? { sessionWaitMs: input.overrides.sessionWaitMs } : {}),
     paceTicks: input.paceTicks ?? null,
@@ -306,7 +333,7 @@ export async function disarmExecutorPrsWithoutExecutor(input: {
   const rows = db.prepare(`SELECT attempt_id AS attemptId, pr_number AS prNumber FROM execution WHERE pr_number IS NOT NULL AND state IN (${states.map(() => '?').join(',')})`).all(...states) as Array<{ attemptId: string; prNumber: number }>;
   if (rows.length === 0) return { checked: 0, disarmed: 0, failed: 0 };
   const git = input.git ?? new SafeAttemptGit();
-  const github = input.github ?? new GhGateway({ cwd: input.stateDir, safeMergeScript: path.join(input.sourceRepoPath ?? input.stateDir, 'scripts', 'safe-merge.mjs') });
+  const github = input.github ?? new GhGateway({ cwd: input.stateDir, safeMergeScript: installedSafeMergeScript() });
   const slug = input.sourceRepoPath ? (await git.githubRemote(input.sourceRepoPath))?.slug ?? null : null;
   let disarmed = 0;
   let failed = 0;

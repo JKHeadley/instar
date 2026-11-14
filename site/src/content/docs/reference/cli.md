@@ -64,6 +64,12 @@ instar slack-cli channels       # List authorized channels
 instar whatsapp                 # WhatsApp adapter management (QR pairing, status)
 ```
 
+## Contributor checks
+
+```bash
+instar dev:claim-check <paths...>   # Before a build: open and recent PRs touching these paths
+```
+
 ## Users
 
 ```bash
@@ -260,6 +266,10 @@ instar dev:ci-failures <pr>     # Print a PR's exact failing tests (file:line + 
 instar dev:post-drive-transcript-audit --topic <id> --start <time> --end <time>
                                 # Audit a supervised topic transcript for operator-seat UX findings and file framework-issue observations
 instar dev:profile-node [pid]   # CPU-profile a running node process (SIGUSR1 + inspector + CDP) and print its hottest JS functions
+instar dev:claim-check [paths...] --keywords <words...>
+                                # Before a build: list open and recently merged PRs touching those paths, and specs matching the keywords
+instar mobile introducer show|add|remove|list
+                                # Choose which agents' owner phones may add this agent with Face ID
 instar jobMigrate               # Migrate jobs between schema versions
 instar ledgerCleanup            # Token ledger cleanup
 instar memoryBackfillEvidence   # Backfill evidence rows into the memory index
@@ -273,3 +283,16 @@ Docs coverage tracks the post-drive auditor capability as `instar post-drive-tra
 ```bash
 instar feedback --type bug --title "Session timeout" --description "Details..."
 ```
+
+## Testing a build on a throwaway agent
+
+```bash
+instar test-as-self --no-roundtrip                 # deploy the running dist into a throwaway agent home, boot it, verify, tear down
+instar test-as-self --bot-token <secret-drop-id>   # add a real Telegram round-trip (token via Secret Drop, never raw)
+instar test-as-self --keep --target <dir>          # leave the throwaway running for inspection
+instar test-as-self --report-json <path>           # per-step JSON report
+```
+
+`instar test-as-self` deploys the `dist/cli.js` that is running it, so `node <worktree>/dist/cli.js test-as-self` tests a
+branch without a release. It refuses a raw bot token and refuses to target a real agent home. See the
+[throwaway-deploy guide](/guides/test-as-self/) for the steps and the report format.

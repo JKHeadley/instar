@@ -30,6 +30,7 @@ async function get(path, timeoutMs = 5000) {
 const nav = {
   read() { return location.search; },
   write(q) { history.replaceState(null, '', location.pathname + q); },
+  href(q) { return location.pathname + q; },
 };
 
 async function validToken(t) {

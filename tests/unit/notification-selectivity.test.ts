@@ -96,6 +96,33 @@ describe('Quiet by Default delivery', () => {
     expect(sends()).toHaveLength(1);
   });
 
+  it('delivers the owner pairing and browser-setup approval message instead of holding it quiet', async () => {
+    // 2026-11-08: with quiet-by-default enforcing, "Set up this browser" answered 409
+    // "I could not send you the approval message in Telegram" because this send carried no envelope.
+    const { root, gate } = setup();
+    const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001', ownerUserId: 555 }, root,
+      { suppressLifelineAutoCreate: true });
+    adapter.selectivity = gate;
+    const wire = vi.fn(async (_url: string, _options?: RequestInit) => new Response(JSON.stringify({ ok: true, result: { message_id: 21 } })));
+    vi.stubGlobal('fetch', wire);
+    gate.observeInbound(1, 'waiting-general-message');
+    const id = await adapter.sendOwnerDMWithButton('Your code to set up a browser is ABC-DEF.', [
+      { text: 'Approve', data: 'md:a:' + 'b'.repeat(24) }, { text: 'Decline', data: 'md:d:' + 'b'.repeat(24) }]);
+    expect(id).toBe(21);
+    const sends = wire.mock.calls.filter(call => String(call[0]).endsWith('/sendMessage'));
+    expect(sends).toHaveLength(1);
+    expect(JSON.parse(String(sends[0]![1]!.body))).toMatchObject({ chat_id: 555, parse_mode: 'HTML' });
+    // A browser-chosen name cannot become markup inside the bot's own approval message.
+    await adapter.sendOwnerDMWithButton('Browser name: [Approve here](https://evil.example) <b>x</b> & co', null);
+    const last = JSON.parse(String(wire.mock.calls.filter(call => String(call[0]).endsWith('/sendMessage')).at(-1)![1]!.body));
+    expect(last.text).toBe('Browser name: [Approve here](https://evil.example) &lt;b&gt;x&lt;/b&gt; &amp; co');
+    expect(last.parse_mode).toBe('HTML');
+    // It answers the owner's own request without touching any topic's waiting state.
+    expect(gate.latestInbound(1)).toBe('waiting-general-message');
+    // Routine output is still held.
+    expect(await adapter.sendToTopic(42, 'Routine output.')).toMatchObject({ recorded: true, delivered: false });
+  });
+
   it('records 1000 unstamped mixed source sends with zero Telegram calls', async () => {
     const { root, gate } = setup();
     const adapter = new TelegramAdapter({ token: '123:test', chatId: '-1001' }, root);

@@ -107,7 +107,11 @@ const PENDING_BASELINE = [
   'a2a-checkin-summarize::a2a-checkin::backlog:decision-quality-enrolment',
   'coherence-review::CoherenceReviewer::backlog:decision-quality-enrolment',
   'contextual-evaluate::ContextualEvaluator::backlog:decision-quality-enrolment',
+  // context-budget-layered-summaries Phase 1 S8 (2026-11-10): chunk/C2 summaries; enrolment queued with the Phase 2 fold probes.
+  'context-layer-chunk::ContextLayerChunk::backlog:decision-quality-enrolment',
   'correction-distill::correction-learning::backlog:decision-quality-enrolment',
+  'skill-learning-draft::skillLearning.drafter::backlog:decision-quality-enrolment',
+  'skill-learning-review::skillLearning.reviewer::backlog:decision-quality-enrolment',
   'cross-model-review::crossModelReviewer::backlog:decision-quality-enrolment',
   'external-operation-gate::ExternalOperationGate::backlog:decision-quality-enrolment',
   // feedback-triage-and-execution Phase 1 (2026-10-08): dedicated cross-family provider bypasses the router seam.

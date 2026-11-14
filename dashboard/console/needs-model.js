@@ -11,12 +11,38 @@ import { buildPlansPage } from './plans-model.js';
 import { buildRequests } from './secrets-model.js';
 import { spendingNeed } from './costs-model.js';
 import { healthNeedRows } from './health-model.js';
+import { proposalsNeedingVerdict, buildPending } from './learned-model.js';
 
 // warning-path: inline
 const row = (key, main, sub, href, refs = []) => ({ key: `need:${key}`, main, sub: sub || '', tone: 'attn', refs, action: { kind: 'href', href } });
 
 /** A 200 that does not have the expected shape: it told us nothing, so never read it as "nothing waiting". */
 const UNREADABLE = null;
+
+/** Chief of Staff rows: parked / breaker-tripped projects, projects waiting on the owner, a paused or soon-expiring check-in lease. */
+export function chiefOfStaffNeedRows(cos, now) {
+  // Off (503) arrives as `{ ok: false, reason: 'switched off…' }` from the console's reader (no status); a real failure is unreadable.
+  if (!cos || !cos.ok) return cos && (cos.status === 503 || /switched off/i.test(String(cos.reason || ''))) ? [] : UNREADABLE;
+  const d = cos.data;
+  if (!d || typeof d !== 'object' || !d.lease || typeof d.lease !== 'object' || !Array.isArray(d.projects)) return UNREADABLE;
+  const out = [];
+  const href = '#/work/chats';
+  const title = (p) => (typeof p.goal === 'string' && p.goal.trim() ? p.goal.trim().slice(0, 80) : String(p.conversationKey || 'a project'));
+  for (const p of d.projects) {
+    if (!p || typeof p !== 'object') continue;
+    if (p.breakerTripped) out.push(row(`cos:breaker:${p.conversationKey}`, `${title(p)} hit its weekly restart limit`, 'Unpark it or close it.', href));
+    else if (p.parked) out.push(row(`cos:parked:${p.conversationKey}`, `${title(p)} is parked after ${p.restartsWithoutProgress || 0} restarts without progress`, 'Unpark it or close it.', href));
+    else if (p.lastVerdict === 'waiting-on-user') out.push(row(`cos:waiting:${p.conversationKey}`, `${title(p)} is waiting on you`, '', href));
+  }
+  if (d.projects.length) {
+    if (!d.lease.live) out.push(row('cos:paused', 'Your Chief of Staff is paused until you check in', 'Say anything in its conversation.', href));
+    else if (typeof d.lease.expiresAt === 'string') {
+      const left = Date.parse(d.lease.expiresAt) - (typeof now === 'number' ? now : Date.now());
+      if (Number.isFinite(left) && left > 0 && left <= 24 * 3600 * 1000) out.push(row('cos:expiring', 'Your Chief of Staff pauses within a day unless you check in', '', href));
+    }
+  }
+  return out;
+}
 
 export const NEED_SOURCES = [
   // First, so a real problem leads Home. Only what affects the person. Internal notes stay on the Health page and never raise this count.
@@ -38,7 +64,8 @@ export const NEED_SOURCES = [
   { id: 'accounts', page: 'capacity/accounts', reads: { pool: '/subscription-pool?scope=pool', relogin: '/subscription-relogin?scope=pool' },
     rows: ({ pool, relogin }, now) => {
       const episodes = relogin.ok && Array.isArray(relogin.data && relogin.data.episodes) ? relogin.data.episodes : [];
-      const page = buildAccountsPage(pool, now, { episodes });
+      const blockers = relogin.ok && Array.isArray(relogin.data && relogin.data.blockers) ? relogin.data.blockers : [];
+      const page = buildAccountsPage(pool, now, { episodes, blockers });
       if (!page.ok) return pool.data && pool.data.enabled === false ? [] : UNREADABLE;
       return page.needs.map((n) => row(`account:${n.key}`, n.title, n.sub, '#/capacity/accounts?s=needs', [String(n.label || '').split(' · ').pop()].filter(Boolean)));
     } },
@@ -53,6 +80,9 @@ export const NEED_SOURCES = [
       if (!page.ok) return UNREADABLE;
       return page.sections.needsYou.map((r) => row(`plan:${r.key}`, r.main, r.needs, '#/work/plans?s=needsYou'));
     } },
+  // Chief of Staff (chief-of-staff-topic.md §5): what its projects need from the owner. 503 = feature off = nothing waiting.
+  { id: 'chief-of-staff', page: 'work/chats', reads: { cos: '/chief-of-staff' },
+    rows: ({ cos }, now) => chiefOfStaffNeedRows(cos, now) },
   { id: 'secrets', page: 'people/secrets', reads: { pending: '/secrets/pending' },
     // Never the card's own key or link: both carry the one-time drop token.
     rows: ({ pending }, now) => {
@@ -62,6 +92,20 @@ export const NEED_SOURCES = [
     } },
   { id: 'spending', page: 'capacity/costs', reads: { status: '/routing-spend/enable-status' },
     rows: ({ status }) => { const n = spendingNeed(status); return n ? [row('spending', n.title, n.why, '#/capacity/costs')] : []; } },
+  // Skill-learning proposals without a verdict (docs/specs/skill-learning-sentinel.md §3.10); 503 = the sentinel is off here.
+  { id: 'skill-learning-proposals', page: 'settings/learned', reads: { status: '/skills/learned' },
+    rows: ({ status }) => {
+      const pending = proposalsNeedingVerdict(status.data);
+      if (pending === null) return UNREADABLE;
+      return pending.map((p) => row(`skill-proposal:${p.name}`, `I think I’ve learned to: ${p.description}`, 'Agree, or disagree with a reason, on the Learned page', '#/settings/learned?s=skills', [p.name]));
+    } },
+  // A learned skill written but not switched on until the operator's confirm/reject tap (skill-learning-sentinel.md §3.5, rung 2); 503 = the sentinel is off here.
+  { id: 'learned-pending', page: 'settings/learned', reads: { status: '/skills/learned' },
+    rows: ({ status }) => {
+      const p = buildPending(status);
+      if (!p.ok) return p.off ? [] : UNREADABLE;
+      return p.rows.map((r) => row(`learned-pending:${r.name}`, `A new skill waits for your OK: ${r.body}`, 'Confirm or reject it on the Learned page', '#/settings/learned?s=pending', [r.name]));
+    } },
 ];
 
 /**

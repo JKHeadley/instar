@@ -63,9 +63,17 @@ export interface PresenceProxyConfig {
   confirmSessionUsageLimit?: (sessionName: string) => boolean | string;
   sendMessage: (topicId: number, text: string, metadata?: ProxyMetadata) => Promise<void>;
   getAuthorizedUserIds: () => number[];
+  /**
+   * True when the inbound gate refused this user message (it never reached the session — e.g. the
+   * Chief of Staff conversation's owner-only rule). A refused message gets no standby watch, so it
+   * is never told it "has been delivered to the session". Echo Bugs topic 10000002533.
+   */
+  isInboundRefused?: (topicId: number, platformUserId: string | undefined) => boolean;
   getProcessTree: (sessionName: string) => ProcessInfo[];
   /** Check if agent sent any message to this topic after the given timestamp. Prevents race conditions. */
   hasAgentRespondedSince?: (topicId: number, sinceMs: number) => boolean;
+  /** Any actual agent reply, including a brief acknowledgement, disproves a death notice. */
+  hasAgentRepliedSince?: (topicId: number, sinceMs: number) => boolean;
 
   // Optional: triage coordination
   acquireTriageMutex?: (sessionName: string, holder: string) => boolean;
@@ -166,6 +174,11 @@ export interface PresenceProxyConfig {
    * Absent → the standard notice, exactly as before.
    */
   describeQuotaWall?: (sessionName: string) => string | false | null;
+  /**
+   * Set while the agent is proven out of Claude usage (UsageLimitWatch): the line to say instead of
+   * "actively working" when the pane hasn't shown the banner yet, say on a session still starting.
+   */
+  usageLimitNotice?: (sessionName: string) => string | null;
 
   /**
    * Honest turn-receipts: when a recovery sentinel (ContextWedgeSentinel,
@@ -918,6 +931,14 @@ export class PresenceProxy {
   // ─── Core Logic ─────────────────────────────────────────────────────────
 
   private handleUserMessage(topicId: number, event: MessageLoggedEvent): void {
+    // A message the inbound gate refused never reached the session: no watch, so no "delivered" claim.
+    // Any watch already running for an earlier accepted message is left exactly as it was.
+    let refused = false;
+    try { refused = this.config.isInboundRefused?.(topicId, event.platformUserId) === true; } catch { /* @silent-fallback-ok: an unreadable verdict leaves the normal watch in place; the gate itself still refused or accepted the message */ refused = false; }
+    if (refused) {
+      console.log(`[PresenceProxy] No standby for topic ${topicId} — the inbound gate refused this message, so it was not delivered.`);
+      return;
+    }
     const sessionName = this.config.getSessionForTopic(topicId);
     if (!sessionName) return;
 
@@ -1329,6 +1350,22 @@ export class PresenceProxy {
         this.persistState(topicId, state);
         state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
         return; // Don't schedule tier 2/3 — nothing more to assess
+      }
+    }
+
+    // ── Proven out of usage, banner or no banner ──
+    // The summary below needs the model, which is what ran out; its fallback says "actively working".
+    {
+      let limited: string | null = null;
+      try { limited = this.config.usageLimitNotice?.(state.sessionName) ?? null; }
+      catch { /* @silent-fallback-ok: no notice means the ordinary tier flow */ }
+      if (limited) {
+        if (state.cancelled) return;
+        state.tier1FiredAt = Date.now();
+        await this.sendProxyMessage(topicId, `${this.prefix} ${limited}`, 1, originAuthor);
+        this.persistState(topicId, state);
+        state.conversationHistory.push({ role: 'proxy', text: limited, timestamp: Date.now() });
+        return; // nothing more to assess
       }
     }
 
@@ -1786,35 +1823,14 @@ export class PresenceProxy {
     let summary: string;
 
     if (!alive) {
-      // Session is dead — but was it working recently? If tier 1 captured output,
-      // it was alive then and likely completed its work before exiting. Use the
-      // last known snapshot for a summary instead of a generic "stopped" alarm.
+      // A completed session may have already answered. SessionMonitor checks
+      // the conversation and owns any needed recovery.
       if (state.tier1Snapshot) {
-        // Session was active at tier 1 but died before tier 3 — likely completed normally.
-        // Use LLM to summarize what it did.
-        try {
-          const { text: completionSummary, author } = await this.callLlm(
-            `A Claude Code session was working on a task and has now exited. Based on the last terminal output, summarize what the session accomplished in 1-2 sentences. If it looks like it completed its work, say so. If it looks like it crashed or failed, note that.\n\nTerminal output:\n${state.tier1Snapshot.slice(-2000)}`,
-            { model: this.config.tier1Model ?? 'fast', maxTokens: 200 },
-            'low',
-            this.config.llmTimeoutMs?.t1 ?? 15_000,
-          );
-          state.llmCallCount++;
-          state.lastLlmCallAt = Date.now();
-          const guard = guardProxyOutput(completionSummary);
-          const safeSummary = guard.safe ? completionSummary : 'The session completed and exited.';
-          const msg = `${this.prefix} Session finished — ${safeSummary}\n\nSend a new message to start a fresh session.`;
-          state.tier3FiredAt = Date.now();
-          state.tier3Assessment = 'dead';
-          state.tier3Summary = safeSummary;
-          await this.sendProxyMessage(topicId, msg, 3, guard.safe ? author : deterministicAutomationAuthor());
-          this.persistState(topicId, state);
-          state.conversationHistory.push({ role: 'proxy', text: msg, timestamp: Date.now() });
-          this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
-          return;
-        } catch {
-          // LLM failed — fall through to default dead handling
-        }
+        // A completed session is not a request for the person to manage it.
+        // The monitor owns recovery if the user's turn remains unanswered.
+        this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+        this.cleanupState(topicId, state);
+        return;
       }
       assessment = 'dead';
       summary = 'Session is not running.';
@@ -1878,6 +1894,31 @@ export class PresenceProxy {
       return;
     }
 
+    // A live process, a replacement in flight, or even a brief agent reply
+    // disproves a "conversation stopped" claim. A brief ack can still leave
+    // progress timers running, but it must never produce a death notice.
+    if (assessment === 'dead') {
+      const currentName = this.config.getSessionForTopic?.(topicId) ?? state.sessionName;
+      if (this.config.hasAgentRepliedSince?.(topicId, state.userMessageAt) ||
+          (state.lastAckAt ?? 0) > state.userMessageAt) {
+        this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+        this.cleanupState(topicId, state);
+        return;
+      }
+      if (alive || this.isSessionStarting(topicId) || this.config.isSessionAlive(currentName)) {
+        this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+        // Count this as a recheck so the tier 3 limit still ends the loop.
+        state.tier3RecheckCount++;
+        this.persistState(topicId, state);
+        this.scheduleTier(topicId, 3, this.tier3RecheckDelayMs);
+        return;
+      }
+      // SessionMonitor owns the one recovery and the one failure notice.
+      this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
+      this.cleanupState(topicId, state);
+      return;
+    }
+
     state.tier3FiredAt = Date.now();
     state.tier3Assessment = assessment;
     state.tier3Summary = summary;
@@ -1885,14 +1926,9 @@ export class PresenceProxy {
 
     let message: string;
 
-    if (assessment === 'stalled' || assessment === 'dead') {
-      if (assessment === 'dead') originAuthor = deterministicAutomationAuthor();
-      const action = assessment === 'dead'
-        ? (this.tier3Label(state) === '5-minute check'
-          ? 'The session appears to have stopped.'
-          : 'The session handling this conversation has stopped, and no new session has started for it.')
-        : `${this.config.agentName} appears to be stuck — ${summary}`;
-      message = `${this.prefix} ${this.tier3Label(state)} — ${action}\n\nReply "unstick" to attempt recovery, or "restart" to start a fresh session.`;
+    if (assessment === 'stalled') {
+      const action = `${this.config.agentName} appears to be stuck — ${summary}`;
+      message = `${this.prefix} ${this.tier3Label(state)} — ${action}`;
     } else {
       // Working or waiting
       const guard = guardProxyOutput(summary);
@@ -1909,7 +1945,7 @@ export class PresenceProxy {
     state.conversationHistory.push({ role: 'proxy', text: message, timestamp: Date.now() });
 
     // Release mutex after 60s if user doesn't act
-    if (assessment === 'stalled' || assessment === 'dead') {
+    if (assessment === 'stalled') {
       setTimeout(() => {
         this.config.releaseTriageMutex?.(state.sessionName, 'presence-proxy');
       }, 60_000);

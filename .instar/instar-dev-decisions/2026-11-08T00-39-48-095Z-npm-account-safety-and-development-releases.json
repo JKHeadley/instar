@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-08T00:39:48.095Z",
+  "slug": "npm-account-safety-and-development-releases",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 7,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/UpdateChecker.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "One-shot user-requested installation; finite migration output buffer and existing 30s timeout, no new controller"
+  },
+  "verdict": "pass"
+}

@@ -18,6 +18,7 @@
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { guardChildStdin } from './pipeErrorGuard.js';
 import { ChromeCdpReloginBrowser, type ChromeCdpReloginBrowserOptions, type WebAuthnCredential } from './ChromeCdpReloginBrowser.js';
 
 /** The JXA runner: pid in argv, page JavaScript on stdin, JSON text out. The code never touches the command line. */
@@ -250,6 +251,7 @@ function runOsascript(pid: number, code: string, timeoutSec: number): Promise<st
         if (error) { reject(new Error('plain-browser-osascript-failed')); return; }
         resolve(String(stdout));
       });
+    guardChildStdin(child.stdin, 'plain-chrome-osascript');
     child.stdin?.end(code);
   });
 }

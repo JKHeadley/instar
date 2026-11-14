@@ -1,22 +1,37 @@
 {
   "schemaVersion": 1,
   "version": 1,
-  "_doc": "Canonical, human-reviewed price authority for the Routing Control Room spend view (docs/specs/routing-control-room-spend-alerts.md, Layer 1). USD per MILLION tokens, per door+model, effective-dated. APPEND-ONLY: a change or correction ADDS a point; points are never edited in place. GENERIC PUBLISHED prices only — operator-specific deals live in the machine-local overlay (.instar/routing-prices.overlay.json), never here. Written ONLY by a human path (a reviewed git commit, or — in Increment B — the PIN-gated promotion action). Every point's effectiveAt MUST be UTC-day-aligned (T00:00:00Z). In Increment A this manifest feeds the REPORTING view only; no money gate consumes it yet (the gate is Increment B).",
+  "_doc": "Canonical, human-reviewed price authority for the Routing Control Room spend view (docs/specs/routing-control-room-spend-alerts.md, Layer 1). USD per MILLION tokens, per door+model, effective-dated. APPEND-ONLY: a change or correction ADDS a point; points are never edited in place. GENERIC PUBLISHED prices only \u2014 operator-specific deals live in the machine-local overlay (.instar/routing-prices.overlay.json), never here. Written ONLY by a human path (a reviewed git commit, or \u2014 in Increment B \u2014 the PIN-gated promotion action). Every point's effectiveAt MUST be UTC-day-aligned (T00:00:00Z). In Increment A this manifest feeds the REPORTING view only; no money gate consumes it yet (the gate is Increment B).",
   "doors": {
     "gemini-api": {
       "freshnessSlaDays": 45,
       "staleMode": "book-conservative-max",
-      "conservativeMax": { "inPerMtok": 2.0, "outPerMtok": 12.0 }
+      "conservativeMax": {
+        "inPerMtok": 2.0,
+        "outPerMtok": 12.0
+      }
     },
     "openrouter-api": {
       "freshnessSlaDays": 45,
       "staleMode": "book-conservative-max",
-      "conservativeMax": { "inPerMtok": 15.0, "outPerMtok": 90.0 }
+      "conservativeMax": {
+        "inPerMtok": 15.0,
+        "outPerMtok": 90.0
+      }
     },
     "groq-api": {
       "freshnessSlaDays": 45,
       "staleMode": "book-conservative-max",
-      "conservativeMax": { "inPerMtok": 2.0, "outPerMtok": 8.0 }
+      "conservativeMax": {
+        "inPerMtok": 2.0,
+        "outPerMtok": 8.0
+      }
+    },
+    "anthropic-list": {
+      "_doc": "list-equivalent: published API list price, used only to value usage as if bought by the token. Exempt from the freshness SLA."
+    },
+    "openai-list": {
+      "_doc": "list-equivalent: published API list price, used only to value usage as if bought by the token. Exempt from the freshness SLA."
     }
   },
   "points": [
@@ -59,6 +74,322 @@
       "recordedAt": "2026-07-05T00:00:00Z",
       "source": "published-generic-list",
       "corrects": null
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-fable-5-2",
+      "inPerMtok": 8,
+      "outPerMtok": 40,
+      "cachedInPerMtok": 0.2,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 10
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-fable-5-1",
+      "inPerMtok": 10,
+      "outPerMtok": 50,
+      "cachedInPerMtok": 0.25,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 12.5
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-fable-5",
+      "inPerMtok": 10,
+      "outPerMtok": 50,
+      "cachedInPerMtok": 1,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 12.5
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-opus-5-5",
+      "inPerMtok": 4,
+      "outPerMtok": 20,
+      "cachedInPerMtok": 0.2,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 5
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-opus-5",
+      "inPerMtok": 5,
+      "outPerMtok": 25,
+      "cachedInPerMtok": 0.5,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 6.25
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-opus-4-8",
+      "inPerMtok": 5,
+      "outPerMtok": 25,
+      "cachedInPerMtok": 0.5,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 6.25
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-sonnet-5-5",
+      "inPerMtok": 2,
+      "outPerMtok": 10,
+      "cachedInPerMtok": 0.1,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 2.5
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-sonnet-5",
+      "inPerMtok": 2,
+      "outPerMtok": 10,
+      "cachedInPerMtok": 0.2,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 2.5
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-haiku-4-5",
+      "inPerMtok": 1,
+      "outPerMtok": 5,
+      "cachedInPerMtok": 0.1,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Cache writes use the 5-minute rate (Claude Code's default).",
+      "cacheWritePerMtok": 1.25
+    },
+    {
+      "door": "anthropic-list",
+      "modelId": "claude-haiku-5-5",
+      "inPerMtok": 0.1,
+      "outPerMtok": 0.5,
+      "cachedInPerMtok": 0.01,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://platform.claude.com/docs/en/about-claude/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Uses the prompts-up-to-100,000-tokens rate; longer prompts cost 5x and are under-valued here.",
+      "cacheWritePerMtok": 0.125
+    },
+    {
+      "door": "openai-list",
+      "modelId": "gpt-6-astra",
+      "inPerMtok": 10,
+      "outPerMtok": 50,
+      "cachedInPerMtok": 1,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Short-context (up to 272K input) standard-tier rate. Codex reports no cache writes."
+    },
+    {
+      "door": "openai-list",
+      "modelId": "gpt-6.1-sol",
+      "inPerMtok": 2,
+      "outPerMtok": 10,
+      "cachedInPerMtok": 0.1,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Short-context (up to 272K input) standard-tier rate. Codex reports no cache writes."
+    },
+    {
+      "door": "openai-list",
+      "modelId": "gpt-6-sol",
+      "inPerMtok": 2,
+      "outPerMtok": 10,
+      "cachedInPerMtok": 0.2,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Short-context (up to 272K input) standard-tier rate. Codex reports no cache writes."
+    },
+    {
+      "door": "openai-list",
+      "modelId": "gpt-6-luna",
+      "inPerMtok": 0.1,
+      "outPerMtok": 0.5,
+      "cachedInPerMtok": 0.01,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Short-context (up to 272K input) standard-tier rate. Codex reports no cache writes."
+    },
+    {
+      "door": "openai-list",
+      "modelId": "gpt-5.5",
+      "inPerMtok": 5,
+      "outPerMtok": 30,
+      "cachedInPerMtok": 0.5,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Short-context (up to 272K input) standard-tier rate. Codex reports no cache writes."
+    },
+    {
+      "door": "openai-list",
+      "modelId": "gpt-5.2",
+      "inPerMtok": 1.75,
+      "outPerMtok": 14,
+      "cachedInPerMtok": 0.175,
+      "effectiveAt": "2026-10-01T00:00:00Z",
+      "recordedAt": "2026-11-10T00:00:00Z",
+      "source": "published-list-equivalent",
+      "sourceUrl": "https://developers.openai.com/api/docs/pricing",
+      "retrievedAt": "2026-11-10T21:30:00Z",
+      "corrects": null,
+      "_note": "published list price copied from the provider's pricing page on 2026-11-10 (the page gives no effective date); applied from 2026-10-01, the start of the usage ledger's history. A price change found later is a new point, never an edit. Short-context (up to 272K input) standard-tier rate. Codex reports no cache writes."
+    }
+  ],
+  "modelFamilies": [
+    {
+      "prefix": "claude-fable-5-2",
+      "door": "anthropic-list",
+      "modelId": "claude-fable-5-2"
+    },
+    {
+      "prefix": "claude-fable-5-1",
+      "door": "anthropic-list",
+      "modelId": "claude-fable-5-1"
+    },
+    {
+      "prefix": "claude-fable-5",
+      "door": "anthropic-list",
+      "modelId": "claude-fable-5"
+    },
+    {
+      "prefix": "claude-opus-5-5",
+      "door": "anthropic-list",
+      "modelId": "claude-opus-5-5"
+    },
+    {
+      "prefix": "claude-opus-5",
+      "door": "anthropic-list",
+      "modelId": "claude-opus-5"
+    },
+    {
+      "prefix": "claude-opus-4-8",
+      "door": "anthropic-list",
+      "modelId": "claude-opus-4-8"
+    },
+    {
+      "prefix": "claude-sonnet-5-5",
+      "door": "anthropic-list",
+      "modelId": "claude-sonnet-5-5"
+    },
+    {
+      "prefix": "claude-sonnet-5",
+      "door": "anthropic-list",
+      "modelId": "claude-sonnet-5"
+    },
+    {
+      "prefix": "claude-haiku-4-5",
+      "door": "anthropic-list",
+      "modelId": "claude-haiku-4-5"
+    },
+    {
+      "prefix": "claude-haiku-5-5",
+      "door": "anthropic-list",
+      "modelId": "claude-haiku-5-5"
+    },
+    {
+      "prefix": "gpt-6-astra",
+      "door": "openai-list",
+      "modelId": "gpt-6-astra"
+    },
+    {
+      "prefix": "gpt-6.1-sol",
+      "door": "openai-list",
+      "modelId": "gpt-6.1-sol"
+    },
+    {
+      "prefix": "gpt-6-sol",
+      "door": "openai-list",
+      "modelId": "gpt-6-sol"
+    },
+    {
+      "prefix": "gpt-6-luna",
+      "door": "openai-list",
+      "modelId": "gpt-6-luna"
+    },
+    {
+      "prefix": "gpt-5.5",
+      "door": "openai-list",
+      "modelId": "gpt-5.5"
+    },
+    {
+      "prefix": "gpt-5.2",
+      "door": "openai-list",
+      "modelId": "gpt-5.2"
     }
   ]
 }

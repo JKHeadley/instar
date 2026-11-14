@@ -1,0 +1,33 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-protocol",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-09T21:37:12.086Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-protocol.md",
+  "artifactSha256": "3c30d7882d4065837e5e65dcea9cbd5247d9fbc54a17f3a19d1886257bd71f2f",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "site/src/content/docs/architecture/chief-of-staff.md",
+    "src/commands/server.ts",
+    "src/core/AutonomousRunStore.ts",
+    "src/core/ChiefOfStaffActionProtocol.ts",
+    "src/core/MeshRpc.ts",
+    "src/core/ReplicatedRecordEmitter.ts",
+    "src/core/devGatedFeatures.ts",
+    "src/core/types.ts",
+    "src/monitoring/AutonomousLivenessReconciler.ts",
+    "src/monitoring/AutonomousProgressHeartbeat.ts",
+    "src/monitoring/ResumeQueueDrainer.ts",
+    "tests/integration/chief-of-staff-protocol.test.ts",
+    "tests/unit/ChiefOfStaffActionProtocol.test.ts",
+    "tests/unit/chief-of-staff-protocol-wiring.test.ts",
+    "tests/unit/chief-of-staff-standdown-deps.test.ts",
+    "upgrades/next/chief-of-staff-protocol.md",
+    "upgrades/side-effects/chief-of-staff-protocol.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Tier-2 spec; touches the autonomous-run path, three run producers, the mesh union and a dev-gated flag; dormant but the right chain for a coordination protocol.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

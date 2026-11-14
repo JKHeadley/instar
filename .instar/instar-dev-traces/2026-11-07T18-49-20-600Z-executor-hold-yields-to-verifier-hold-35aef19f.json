@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "executor-hold-yields-to-verifier-hold",
+  "sessionId": "e6a7c270-c8c7-46d4-8d59-84552a399bf5",
+  "timestamp": "2026-11-07T18:49:20.600Z",
+  "artifactPath": "upgrades/side-effects/executor-hold-yields-to-verifier-hold.md",
+  "artifactSha256": "9494c883435fa8397bce3f290238132b926fd10f9d2b5079d673c042c316ef0d",
+  "coveredFiles": [
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "src/feedback-factory/execute/buildFeedbackExecutor.ts",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/server/AgentServer.ts",
+    "tests/fixtures/feedbackExecuteHarness.ts",
+    "tests/integration/feedback-github-runtime-routes.test.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "tests/unit/feedback-factory/execute-wiring.test.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/eli16/executor-hold-yields-to-verifier-hold.md",
+    "upgrades/next/executor-hold-yields-to-verifier-hold.md",
+    "upgrades/side-effects/executor-hold-yields-to-verifier-hold.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Four runtime files, about 50 lines, removing one restart hold in one enumerable case; a revert fully undoes it; second pass done for the restart lifecycle.",
+  "eli16Path": "upgrades/eli16/executor-hold-yields-to-verifier-hold.md",
+  "sideEffectsPath": "upgrades/side-effects/executor-hold-yields-to-verifier-hold.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

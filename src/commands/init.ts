@@ -1,3 +1,4 @@
+import { ACCOUNT_PAGE_SAFETY_SCRIPT } from '../data/accountPageSafetyScript.js';
 /**
  * `instar init` — Initialize agent infrastructure.
  * Governed by: Avoid TCC-Protected Directories — No Agent State Under ~/Documents on macOS (docs/STANDARDS-REGISTRY.md) —
@@ -58,7 +59,8 @@ import { INSTAR_BASH_PRETOOLUSE_HOOKS, INSTAR_MCP_PRETOOLUSE_HOOKS, INSTAR_WILDC
 import { allocatePort, registerAgent, validateAgentName } from '../core/AgentRegistry.js';
 import { defaultIdentity } from '../scaffold/bootstrap.js';
 import { MachineIdentityManager, ensureGitignore } from '../core/MachineIdentity.js';
-import { PostUpdateMigrator } from '../core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, CLEAR_SEED_SETTINGS_HOOK, POST_COMPACT_SETTINGS_HOOK, PRE_COMPACT_STEER_SETTINGS_HOOK } from '../core/PostUpdateMigrator.js';
+import { normalizeSkillFrontmatter } from '../core/skillCanonicalFrontmatter.js';
 import { findCoreRegion, REFERENCE_DIR_REL as CLAUDE_MD_REFERENCE_DIR_REL } from '../scaffold/claudeMdLayout.js';
 import { ProjectMapper } from '../core/ProjectMapper.js';
 import { ContextHierarchy } from '../core/ContextHierarchy.js';
@@ -82,6 +84,7 @@ import { installCodexHooks } from '../core/installCodexHooks.js';
 import { armCodexHooks, makeTmuxTrustDriver } from '../core/codexHookArm.js';
 import { ensureSlackReplyRelay, isSlackConfigured } from '../core/SlackReplyRelayInstaller.js';
 import { ensureAppReplyRelay } from '../core/AppReplyRelayInstaller.js';
+import { ensureThreadlineReplyRelay } from '../core/ThreadlineReplyRelayInstaller.js';
 import { verifyBundledStageBReleaseEvidence } from '../core/StageBActivationGate.js';
 
 /**
@@ -1787,6 +1790,17 @@ curl http://localhost:\${INSTAR_PORT:-${port}}/evolution
  * Install built-in skills for evolution system.
  * Only writes skill files that don't already exist (preserves customizations).
  */
+/**
+ * The canonical skills root (`<agent-home>/.instar/skills`) for a Claude skills
+ * dir (`<agent-home>/.claude/skills`), or null when `skillsDir` is not that
+ * shape (test fixtures pass arbitrary dirs; those keep the legacy behaviour).
+ */
+export function canonicalSkillsRootFor(skillsDir: string): string | null {
+  const resolved = path.resolve(skillsDir);
+  if (path.basename(resolved) !== 'skills' || path.basename(path.dirname(resolved)) !== '.claude') return null;
+  return path.join(path.dirname(path.dirname(resolved)), '.instar', 'skills');
+}
+
 export function installBuiltinSkills(skillsDir: string, port: number): void {
   const skills: Record<string, { name: string; description: string; content: string }> = {
     'iterative-converging-audit': {
@@ -3094,7 +3108,29 @@ Cherry-picked from the GSD verifier role. The insight: task completion is not go
     },
   };
 
+  // Canonical-first (specs/instar-concepts/skill.md; skill-learning-sentinel
+  // slice 0): the master copy of each built-in skill is written to
+  // `.instar/skills/<slug>/SKILL.md` when absent. The Claude rendering below is
+  // still written when absent so a fresh install is usable before the first
+  // async migration pass; every other enabled framework's rendering is produced
+  // from canonical by PostUpdateMigrator.migrateBuiltinSkillRenderings (via the
+  // parity rule's remediate). Nothing on disk is ever overwritten.
+  const canonicalRoot = canonicalSkillsRootFor(skillsDir);
   for (const [slug, skill] of Object.entries(skills)) {
+    if (canonicalRoot) {
+      const canonicalFile = path.join(canonicalRoot, slug, 'SKILL.md');
+      if (!fs.existsSync(canonicalFile)) {
+        // Canonical must parse under the parity rule's YAML schema: an unquoted
+        // `description:` holding ": " (e.g. "Trigger words: …") is re-quoted with the
+        // same content; a skill that still cannot parse gets no canonical (its Claude
+        // rendering below is unaffected).
+        const normalized = normalizeSkillFrontmatter(skill.content);
+        if (normalized !== null) {
+          fs.mkdirSync(path.dirname(canonicalFile), { recursive: true });
+          fs.writeFileSync(canonicalFile, normalized.text);
+        }
+      }
+    }
     const skillDir = path.join(skillsDir, slug);
     const skillFile = path.join(skillDir, 'SKILL.md');
     if (!fs.existsSync(skillFile)) {
@@ -4420,6 +4456,12 @@ function installHooks(stateDir: string): void {
     { stateDir, port: 4040, sessions: { claudePath: 'claude' } } as any
   );
   fs.writeFileSync(path.join(hooksDir, 'session-start.sh'), migrator.getHookContent('session-start'), { mode: 0o755 });
+  // Clear-seed hook (context-budget-layered-summaries §9.2 rung 1): silent on a human /clear.
+  fs.writeFileSync(path.join(hooksDir, 'clear-seed.sh'), migrator.getHookContent('clear-seed'), { mode: 0o755 });
+  // PostCompact hook (context-budget-layered-summaries §9.1): stores the compaction summary.
+  fs.writeFileSync(path.join(hooksDir, 'post-compact.sh'), migrator.getHookContent('post-compact'), { mode: 0o755 });
+  // PreCompact steering hook (§9.1/§9.5): prints staged keep-instructions into the compaction prompt.
+  fs.writeFileSync(path.join(hooksDir, 'pre-compact-steer.sh'), migrator.getHookContent('pre-compact-steer'), { mode: 0o755 });
 
   // Auto-restart-on-MCP-inaccessible — fired backgrounded by session-start.sh.
   // Dark by default; enabled on development agents. Install on fresh init too so
@@ -4586,6 +4628,8 @@ fi
 
   // Compaction recovery — shared from PostUpdateMigrator (single source of truth).
   fs.writeFileSync(path.join(hooksDir, 'compaction-recovery.sh'), migrator.getHookContent('compaction-recovery'), { mode: 0o755 });
+  // The recovery-output fitter the session-start hook pipes the block through (§9.1: hook output over 10,000 chars reaches the model only as a preview).
+  fs.writeFileSync(path.join(hooksDir, 'fit-recovery-output.mjs'), PostUpdateMigrator.getFitRecoveryOutput(), { mode: 0o755 });
 
 
   // Deferral detector, post-action reflection, external communication guard
@@ -4604,6 +4648,7 @@ fi
   // deferred-install gap widening). Dev-gated dark + fail-open on every
   // uncertainty, so on a fresh fleet agent it is one config read per tool call.
   fs.writeFileSync(path.join(hooksDir, 'standdown-guard.js'), migrator.getHookContent('standdown-guard'), { mode: 0o755 });
+  fs.writeFileSync(path.join(hooksDir, 'fold-marker-guard.js'), migrator.getHookContent('fold-marker-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'signin-profile-guard.js'), migrator.getHookContent('signin-profile-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'telegram-origin-guard.js'), migrator.getHookContent('telegram-origin-guard'), { mode: 0o755 });
   fs.writeFileSync(path.join(hooksDir, 'post-action-reflection.js'), migrator.getHookContent('post-action-reflection'), { mode: 0o755 });
@@ -5129,6 +5174,13 @@ function installAppRelay(projectDir: string, stateDir: string = path.join(projec
     claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
   });
   if (outcome.errors.length > 0) throw new Error(`App reply relay install failed: ${outcome.errors.join('; ')}`);
+  // Peer-place reply relay (docs/specs/memory-privacy-agent-places.md §5): inert outside a peer place.
+  const peerOutcome = ensureThreadlineReplyRelay({
+    projectDir, stateDir,
+    template: loadRelayTemplate('threadline-reply.sh', 4040),
+    claudeCompatibility: fs.existsSync(path.join(projectDir, '.claude')),
+  });
+  if (peerOutcome.errors.length > 0) throw new Error(`Peer-place reply relay install failed: ${peerOutcome.errors.join('; ')}`);
 }
 
 function installSerendipityCapture(projectDir: string): void {
@@ -5240,7 +5292,7 @@ function installSecretGet(projectDir: string): void {
  * with its WSL wrapper (ndrive.sh), and the Linux driver (x-drive.py, AT-SPI + XTEST on an agent-private
  * display) with its wrapper (xdrive.sh). All install everywhere; each refuses the wrong platform itself.
  */
-export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py'] as const;
+export const BROWSER_SCRIPT_NAMES = ['chrome-launch.sh', 'chrome-js.sh', 'chrome-mainworld.sh', 'account-page-safety.js', 'native-drive.ps1', 'ndrive.sh', 'xdrive.sh', 'x-drive.py'] as const;
 /** Started by the agent's own boot, never by a person or the skill, so the skill does not name it. */
 export const BROWSER_PROVISION_SCRIPT_NAMES = ['xdrive-provision.sh'] as const;
 /** The three macOS (Apple Events) scripts: the ones that refuse with ERR macos-only off macOS. */
@@ -5266,6 +5318,14 @@ export function installBrowserScripts(projectDir: string): string[] {
   const modDir = __dirname;
   const written: string[] = [];
   for (const name of [...BROWSER_SCRIPT_NAMES, ...BROWSER_CARE_SCRIPT_NAMES, ...BROWSER_PROVISION_SCRIPT_NAMES]) {
+    if (name === 'account-page-safety.js') {
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      const target = path.join(scriptsDir, name);
+      fs.writeFileSync(target, ACCOUNT_PAGE_SAFETY_SCRIPT, { mode: 0o755 });
+      fs.chmodSync(target, 0o755);
+      written.push(name);
+      continue;
+    }
     const candidates = [
       path.resolve(modDir, '..', 'templates', 'scripts', 'browser', name),
       path.resolve(modDir, '..', '..', 'src', 'templates', 'scripts', 'browser', name),
@@ -5393,7 +5453,8 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
 
   // SessionStart: identity injection on all lifecycle events
   // Uses the correct Claude Code hook type (not PostToolUse or Notification)
-  // The session-start.sh hook handles event routing internally via CLAUDE_HOOK_MATCHER
+  // The session-start.sh hook routes on the "source" field Claude Code passes in its stdin JSON
+  // (context-budget-layered-summaries §9.1; CLAUDE_HOOK_MATCHER is only a legacy fallback).
   const sessionStartHook = {
     type: 'command',
     command: 'bash "${CLAUDE_PROJECT_DIR}/.instar/hooks/instar/session-start.sh"',
@@ -5405,6 +5466,7 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       { matcher: 'startup', hooks: [sessionStartHook] },
       { matcher: 'resume', hooks: [sessionStartHook] },
       { matcher: 'compact', hooks: [sessionStartHook] },
+      { matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] },
     ];
   } else {
     // Merge: ensure all matchers are covered
@@ -5413,6 +5475,25 @@ function installClaudeSettings(projectDir: string, serverPort?: number): void {
       if (!sessionStart.some(e => e.matcher === matcher)) {
         sessionStart.push({ matcher, hooks: [sessionStartHook] });
       }
+    }
+    if (!sessionStart.some(e => (e.hooks as Array<{ command?: string }> | undefined)?.some(h => h.command?.includes('clear-seed.sh')))) {
+      sessionStart.push({ matcher: 'clear', hooks: [{ ...CLEAR_SEED_SETTINGS_HOOK }] });
+    }
+  }
+
+  // PostCompact (context-budget-layered-summaries §9.1): store Claude's compaction summary.
+  {
+    const postCompact = (hooks.PostCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    if (!postCompact.some(e => e.hooks?.some(h => h.command?.includes('post-compact.sh')))) {
+      postCompact.push({ matcher: '', hooks: [{ ...POST_COMPACT_SETTINGS_HOOK }] });
+    }
+  }
+
+  // PreCompact steering (§9.1): its own entry, separate from the reporter's.
+  {
+    const preCompact = (hooks.PreCompact ??= []) as Array<{ matcher?: string; hooks?: Array<{ command?: string }> }>;
+    if (!preCompact.some(e => e.hooks?.some(h => h.command?.includes('pre-compact-steer.sh')))) {
+      preCompact.push({ matcher: '', hooks: [{ ...PRE_COMPACT_STEER_SETTINGS_HOOK }] });
     }
   }
 

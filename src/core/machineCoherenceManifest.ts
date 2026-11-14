@@ -76,6 +76,34 @@ export const COHERENCE_STATE_SYNC_STORES = [
   'classReview',
 ] as const;
 
+/**
+ * The frameworks whose per-machine default model is coherence-critical. A topic
+ * with no pin runs on whatever machine the pool places it, and that machine's
+ * `sessions.frameworkDefaultModels[framework]` decides the model; unset, the CLI
+ * login's own default runs instead. 2026-11-09 (topic 141133): the Studio and Mac
+ * Mini defaulted Claude Code to Opus 5.5, Mama PC and the Laptop had nothing set,
+ * and a topic placed on Mama PC silently ran Fable 5.1. Code constant, so the
+ * manifest stays fleet-uniform.
+ */
+export const COHERENCE_DEFAULT_MODEL_FRAMEWORKS = ['claude-code', 'codex-cli'] as const;
+
+/** The advertised value when a machine has no default model for a framework. */
+export const DEFAULT_MODEL_UNSET = 'account-default';
+
+function defaultModelEntries(): CoherenceCriticalFlag[] {
+  return COHERENCE_DEFAULT_MODEL_FRAMEWORKS.map((framework) => ({
+    key: `defaultModel.${framework}`,
+    configPath: `sessions.frameworkDefaultModels.${framework}`,
+    resolution: 'raw' as const,
+    // The real consumer (TopicProfileResolver via ctx.config) reads the boot
+    // config object, which PATCH /config mutates in place.
+    readSource: 'boot' as const,
+    // Read both as the impact ("…aren't running as the same me: <this>") and as
+    // the feature in the fix line ("I'll switch <this> to <model> on <machine>").
+    guarantee: `the default ${framework} model for topics with no model pin`,
+  }));
+}
+
 function stateSyncEntries(): CoherenceCriticalFlag[] {
   return COHERENCE_STATE_SYNC_STORES.map((store) => ({
     key: `stateSync.${store}.enabled`,
@@ -147,6 +175,7 @@ export const COHERENCE_CRITICAL_FLAGS: CoherenceCriticalFlag[] = [
     guarantee: 'pool-cache fan-out honesty (a mixed pool re-fans per surface)',
   },
   ...stateSyncEntries(),
+  ...defaultModelEntries(),
   {
     key: 'pollFollowsLease.enabled',
     configPath: 'multiMachine.pollFollowsLease.enabled',
@@ -296,6 +325,8 @@ export interface CoherenceManifestExclusion {
 }
 
 export const COHERENCE_MANIFEST_EXCLUSIONS: CoherenceManifestExclusion[] = [
+  { configPath: 'multiMachine.serverDownRecovery.enabled', reason: 'machine-specific owner enrollment and host grants graduate separately; the source-verified recovery summary explicitly reports dark or missing targets as degraded, never a whole-pool guarantee' },
+  { configPath: 'multiMachine.sessionPool.appConversations.enabled', reason: 'its own coherence authority: the appConversationsPool capability flag, enforced continuously from the flagged side (a whole-pool write gate, and moved conversations brought home)' },
   { configPath: 'multiMachine.coherenceJournal.enabled', reason: 'content-free local lifecycle journal; a mixed pool degrades to no-journal on one side, not a data guarantee the guard owns' },
   { configPath: 'multiMachine.meshTransport.recoveryProbeEnabled', reason: 'per-machine transport self-heal probe; its own U4.3 episode alarm owns its skew' },
   { configPath: 'multiMachine.secretSync.enabled', reason: 'receive-only by default + per-machine sealed keys; a non-receiver simply re-enters a secret, no silent data-loss' },
@@ -457,6 +488,13 @@ export function resolveFlagValue(entry: CoherenceCriticalFlag, view: CoherenceCo
     }
     default:
       break;
+  }
+
+  // Default-model rows: a scalar model id, or DEFAULT_MODEL_UNSET when the
+  // machine falls back to the CLI login's own default.
+  if (entry.key.startsWith('defaultModel.')) {
+    const model = getByPath(cfg, entry.configPath);
+    return typeof model === 'string' && model.trim().length > 0 ? clampValue(model.trim()) : DEFAULT_MODEL_UNSET;
   }
 
   // Boolean-fold path (raw / dev-gate / dev-gate+dryRun with an optional dryRun fold).

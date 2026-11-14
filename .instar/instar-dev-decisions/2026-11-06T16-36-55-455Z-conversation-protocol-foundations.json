@@ -1,0 +1,36 @@
+{
+  "ts": "2026-11-06T16:36:55.455Z",
+  "slug": "conversation-protocol-foundations",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 13,
+  "loc": 1065,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/ConversationGraphReplicationLimits.ts",
+      "src/core/GraphCustodyDurability.ts",
+      "src/core/GraphCustodyProfile.ts",
+      "src/core/GraphLocalFiles.ts",
+      "src/core/GraphMemberLossActivation.ts",
+      "src/core/GraphMemberLossNativeProof.ts",
+      "src/core/GraphOwnerMemberLoss.ts",
+      "src/core/GraphOwnerRecovery.ts",
+      "src/core/GraphOwnerRecoveryStore.ts",
+      "src/core/GraphWitnessCrypto.ts",
+      "src/core/GraphWitnessTypes.ts",
+      "src/core/IdentityStore.ts",
+      "src/core/types.ts"
+    ],
+    "addedLines": 1063,
+    "deletedLines": 2
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

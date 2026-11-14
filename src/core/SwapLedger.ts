@@ -111,6 +111,9 @@ export interface SwapLedgerRow {
   sourceWasUntagged?: boolean;
   /** The level-triggered condition that authorized this proactive intent. */
   sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
+  /** A busy-deferred proactive swap that escalated because the source account
+   *  reached the wall-escalation threshold after a full deferral ceiling. */
+  wallEscalated?: boolean;
   episodeId?: string;
   episodeKind?: EpisodeKind;
   breakerOpenedAt?: string;

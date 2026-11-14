@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-09T20:42:32.694Z",
+  "slug": "browser-setup-no-second-pin",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/messaging/TelegramAdapter.ts matches Telegram adapter"
+  ],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 76,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/TelegramAdapter.ts",
+      "src/server/mobileBrowserDevices.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 64,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

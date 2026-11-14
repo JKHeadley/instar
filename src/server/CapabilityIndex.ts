@@ -70,6 +70,35 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({ configured: true, endpoints: ['GET /memory-privacy', 'GET /memory-privacy/fix/:token', 'POST /memory-privacy/fix/:token'] }),
   },
   {
+    key: 'teamPeople',
+    prefixes: ['/team'],
+    description: 'Who can reach this agent, how, and what each person can see. The owner\'s phone gives access; the agent can only take it away.',
+    build: () => ({ configured: true, endpoints: ['GET /team/people', 'GET /team/people?scope=pool', 'POST /team/people/:personKey/lower', 'POST /team/proposals', 'GET /mobile/team/requests', 'GET /mobile/team/people', 'GET /mobile/team/context', 'GET /mobile/team/activity', 'POST /mobile/team/invites', 'POST /mobile/team/grants', 'POST /mobile/team/off', 'POST /mobile/team/restore', 'POST /mobile/team/memory-privacy', 'POST /mobile/team/switches/turn-on'] }),
+  },
+  {
+    key: 'chiefOfStaff',
+    prefixes: ['/chief-of-staff'],
+    description: 'The Chief of Staff (docs/specs/chief-of-staff-topic.md): which projects it watches, each one\'s last verdict (moving, stalled, waiting on you, claims done, unknown), restarts, parks, and whether the owner\'s check-in lease is live. Check this for "is anything stalled" before reading topics one by one.',
+    build: ({ ctx }) => {
+      const loop = (ctx as { chiefOfStaffLoop?: { status?: () => { lease?: { live?: boolean } } } | null }).chiefOfStaffLoop;
+      if (!loop?.status) return { enabled: false };
+      return { enabled: true, leaseLive: loop.status().lease?.live === true, endpoints: ['GET /chief-of-staff', 'GET /chief-of-staff/projects/:key'] };
+    },
+  },
+  {
+    key: 'contextBudget',
+    prefixes: ['/context-budget'],
+    description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a, or counted for an engine such as Codex whose compactions are detected from its rollout and counted, with recovery not yet verifiable and never healed by injection) — and the recorded results of the adapter verification suite (which engine capabilities the engine version on this machine really supports). Check this before saying compaction recovery works. GET /context-budget/layers shows the per-topic summary store and transcript archive on this machine (roots and modes, topics, bytes, replication outcomes; 503 while contextBudget.enabled is off). GET /context-budget/metrics (optional ?topic=, ?sinceHours=) is the measurement backend: cost-weighted tokens per request per session and topic, live context size, rework (pending while the ledger lags), extractor calls and tokens per day by trigger, LayerUpdate spend against its reserve, U size, archive and layer bytes, G/C growth; Anchors read unavailable until built (503 while contextBudget.enabled is off). GET /topic/:id/chunks lists a conversation\'s chunk (C) and range (C2) summaries with their sizes, status and each archived span\'s state (present, raw-evicted, unknown); GET /topic/:id/chunks/:k returns one. A pending chunk is an unsummarized gap that is retried on the next compaction. GET /context-budget/delta-shadow is the per-prompt delta hook\'s shadow comparison (§7.7): prompts measured, median and p95 of full vs delta characters, items the delta would omit, candidate re-fetches (unknown with a reason whenever anything was omitted), and whether reduction is allowed here (contextBudget.deltaHook.enabled, refused unless the compaction canary reads healthy). GET /topic/:id/prompt-context is the per-prompt hook\'s single request (full output in shadow).',
+    build: ({ ctx }) => {
+      const c = ctx as { contextBudgetSentinel?: { heartbeatFresh?: () => boolean } | null; contextLayers?: unknown };
+      const s = c.contextBudgetSentinel;
+      const layers = !!c.contextLayers;
+      if (!s?.heartbeatFresh && !layers) return { enabled: false };
+      const endpoints = [...(s?.heartbeatFresh ? ['GET /context-budget/sentinel'] : []), ...(layers ? ['GET /context-budget/layers', 'GET /topic/:id/chunks', 'GET /topic/:id/chunks/:k', 'GET /context-budget/metrics', 'GET /context-budget/delta-shadow'] : [])];
+      return { enabled: true, ...(s?.heartbeatFresh ? { heartbeatFresh: s.heartbeatFresh() } : {}), layers, endpoints };
+    },
+  },
+  {
     key: 'capabilityRegistry',
     prefixes: ['/capability-registry'],
     description: 'Local capability registry read surface; dark until explicitly enabled.',
@@ -108,6 +137,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         'POST /subscription-pool/enroll/:id/cancel',
         'POST /subscription-pool/enroll/:id/complete',
         'POST /subscription-pool/enroll/reissue-expired',
+        'GET /subscription-pool/follow-me/completion',
+        'GET /subscription-pool/follow-me/enroll/:id/completion',
       ],
     }),
   },
@@ -125,6 +156,8 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
       endpoints: [
         'GET /subscription-relogin',
         'POST /subscription-relogin/configure',
+        'POST /subscription-relogin/configure-pool',
+        'POST /subscription-relogin/configure-with-mandate',
         'GET /subscription-relogin/:episodeId/events',
         'POST /subscription-relogin/repair-cell',
         'POST /subscription-relogin/:episodeId/approve',
@@ -276,10 +309,19 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'recommendedServices',
     prefixes: ['/recommended-services'],
-    description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Offers are not live yet, and the route reports what they wait for (`migrationComplete`, `firstResult`). A no needs the dashboard PIN.',
+    description: 'Recommended outside services (docs/specs/recommended-services.md) — the catalog (benefit, what leaves the machine, cost, account, backup and its status, whether it is available) and the saved yes or no for each service, replicated across machines where machine sync is on (the route reports `replicating`). Tailscale, Jev, Bitwarden and GitHub private backup are available on every agent: a yes is given on the dashboard confirm page (`/dashboard/service-yes?service=<id>`, PIN), which starts a setup session that owns the whole job; a no can also switch a working service off here (`shutdown: authorized`). The first list (the agent offering first) is behind `recommendedServices.offers.enabled`: one Telegram message, once per service, after a delivered first result, with a No button per row and a Yes button only for an address service when there is no address; the route reports `offersLive`, what offers wait for (`migrationComplete`, `firstResult`) and `offered` / `inUse` per row. An agent created before the offer shipped stays out of the first list until `recommendedServices.offers.existingAgents` is on (rollout step 5); then its owner is admitted at the next tick, once, for good. A no needs the dashboard PIN or the No button under the list.',
     build: () => ({
       configured: true,
       endpoints: ['GET /recommended-services', 'POST /recommended-services/:id/no', 'GET /recommended-services/:id/confirm', 'POST /recommended-services/:id/confirm', 'POST /recommended-services/:id/verify'],
+    }),
+  },
+  {
+    key: 'email',
+    prefixes: ['/email'],
+    description: 'Sending email to the owner (docs/specs/backup-email-sending.md) — send only, to the owner only: the owner types the one address on the Services confirm page (`/dashboard/service-yes?service=email`, PIN) and confirms it with the proof email\'s code; no route takes a recipient. A job with `deliver: ["email"]` in jobs.json emails the report it would have sent to its topic (never a quiet one); a session sends a one-off with POST /email/send-to-owner {subject, text} (X-Instar-Request: 1 and its X-Instar-Bind-Token; refused from a conversation with other readers). Refused, unsure or not set up → the report goes to its topic with one plain line, so a copy may come twice. GET /email/outbox lists rows (hashes only); GET /recommended-services/email/status shows the state, shape, masked address and today\'s budget. When to use: the person asks to get something by email → set up email if it isn\'t, then POST /email/send-to-owner. It is HTTP, outside the MCP external-operation gate: the fixed recipient and the credential-exposure guard are its controls. 503 until the sender is built.',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /email/send-to-owner', 'GET /email/outbox', 'GET /recommended-services/email/status', 'POST /recommended-services/email/code', 'POST /recommended-services/:id/prove'],
     }),
   },
   {
@@ -303,10 +345,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
   {
     key: 'appConversations',
     prefixes: ['/app'],
-    description: 'Native app conversations (docs/specs/mobile-native-conversations.md) — the Instar iPhone app starts, lists, reads and writes conversations stored by Instar itself, with no messaging service configured. Device-signed: POST/GET /mobile/conversations, PATCH/DELETE /mobile/conversations/:key, POST /mobile/chat/app/:key (idempotent by requestId; persisted with its device-signature fields before dispatch), GET /mobile/chat/app/:key/messages (browse backwards) and /events (sync). Open session: GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey> (device-signed only, read-only) answers {active, sessionName, startedAt, framework, machineNickname, dashboardUrl, reason, ownerMachine}: the session driving that conversation on this machine and a dashboard link (<pairing origin>/dashboard?session=<name>, no token or PIN; the dashboard asks for its PIN), or active:false with a plain reason (no session yet, or the machine that runs it). Native session screen (docs/specs/mobile-native-session-screen.md): an OWNER phone may also GET /sessions/:name/output (pane text, credentials redacted) and POST /sessions/:name/input {text} (plain text only, durable replay record, logged without text in logs/mobile-session-input.jsonl) for sessions running on this machine; Bearer requests to the same paths are unchanged. A session spawned for an app conversation sees messages tagged [app:<id> "<title>" from <owner>] and answers with app-reply.sh, which posts to POST /app/session-reply (bind-token scoped; 409 not-owner unless this machine owns the conversation). Each app message is stored with the phone\'s signature and this machine\'s signed receipt; history rows (and a device\'s read of GET /telegram/topics/:topicId/messages, joined by eventId) carry originVerified: verified / redacted / failed / unknown / none, checked against the device-key ledger (machine-signed, append-only, never pruned) and the machine signing-key history. The conversation store and the ledger replicate to every machine. Dev-gated (mobilePairing.native.enabled); 503 when dark. Media (docs/specs/mobile-native-chat-media.md, mobilePairing.native.media.enabled): POST /mobile/media/uploads, PUT .../chunks/:index, GET /mobile/media/uploads/:id, GET /mobile/media/:sha256?ref= (ref is app:<uuid>, telegram:<topicId>, or the conversationKey a Slack history read returns, served only by the machine that lists that conversation), POST /mobile/media/purge; sessions see [image:…], [document:…], [video:…], [voice:…] paths, open earlier files with GET /app/media-path/:attachmentId (app-media-path), and reply with files through app-reply.sh --file. Every machine copies every file an event it holds references, over the signed app-media-pull mesh verb, keeping a copy only when its SHA-256 matches; a download of a file still copying answers 202 fetching, a dispatch waits up to 60 s and otherwise says [file still copying: …] then [file now available: …], and /health?scope=pool → appMediaPool shows every machine (singleCopyBlobs, unrecoverableBlobs). A reply notification carries only the message id; the phone fetches GET /mobile/chat/app/:key/preview/:messageId (device, its notification read token, or the agent token) for the first 100 characters or a "sent a photo" phrase. Slack from the app (§4.9): where Slack is configured and mobilePairing.slackOwnerUserId is set, GET /mobile/conversations also lists Slack channels and threads (platform slack, id = the negative durable conversation id); GET /mobile/chat/slack/:conversationId/messages reads their history (slack-messages.jsonl, the in-memory ring and app-sent messages from the store, with originVerified) and POST /mobile/chat/slack/:conversationId sends as the operator through the Slack inbound dispatch, stored first with a v2 machine receipt that signs the canonical Slack key, then mirrored into the channel as "📱 <owner> (from the app): …". Owner id unset ⇒ 503 slack-owner-unset; no Slack ⇒ 503 slack-not-configured. Files from the app into Telegram and Slack (chat-media §4.9, media on): an upload may name telegram:<topicId> or a Slack conversationKey as its conversationRef, and POST /mobile/chat/:topicId and POST /mobile/chat/slack/:conversationId accept the same signed attachments as an app conversation; the message is stored as a media-message under telegram:<topicId> or the Slack key, the session receives the file lines with paths, and the mirror uploads the files (Telegram: sendPhoto/sendVideo/sendVoice/sendDocument or one sendMediaGroup through the origin outbox, a file above 50,000,000 bytes mirrored as "📱 <owner> sent <name> (too large for Telegram; open it in the app)"; Slack: the v2 file upload into the channel or thread). A failed mirror answers mirror: "failed" and never repeats the dispatch. Media off ⇒ 400 media-target-unsupported as before.',
+    description: 'Native app conversations (docs/specs/mobile-native-conversations.md) — the Instar iPhone app starts, lists, reads and writes conversations stored by Instar itself, with no messaging service configured. Dashboard browsers (docs/specs/dashboard-conversations-browser-device.md): a browser set up through POST /mobile/browser-devices (Bearer + dashboard PIN session, approved like a new phone) is a device of its own on Work > Conversations; it may use only the conversation and media routes and revoke itself, GET /mobile/browser-devices/status reports its state, and 💻 marks a message an approved browser key of the owner signed in the dashboard (gate mobilePairing.browser.enabled). Device-signed: POST/GET /mobile/conversations, PATCH/DELETE /mobile/conversations/:key, POST /mobile/chat/app/:key (idempotent by requestId; persisted with its device-signature fields before dispatch), GET /mobile/chat/app/:key/messages (browse backwards) and /events (sync). Open session: GET /mobile/conversations/session?ref=<app:<uuid> | telegram:<topicId> | Slack conversationKey> (device-signed only, read-only) answers {active, sessionName, startedAt, framework, machineNickname, dashboardUrl, reason, ownerMachine}: the session driving that conversation on this machine and a dashboard link (<pairing origin>/dashboard?session=<name>, no token or PIN; the dashboard asks for its PIN), or active:false with a plain reason (no session yet, or the machine that runs it). Native session screen (docs/specs/mobile-native-session-screen.md): an OWNER phone may also GET /sessions/:name/output (pane text, credentials redacted) and POST /sessions/:name/input {text} (plain text only, durable replay record, logged without text in logs/mobile-session-input.jsonl) for sessions running on this machine; Bearer requests to the same paths are unchanged. A session spawned for an app conversation sees messages tagged [app:<id> "<title>" from <owner>] and answers with app-reply.sh, which posts to POST /app/session-reply (bind-token scoped; 409 not-owner unless this machine owns the conversation). Each app message is stored with the phone\'s signature and this machine\'s signed receipt; history rows (and a device\'s read of GET /telegram/topics/:topicId/messages, joined by eventId) carry originVerified: verified / redacted / failed / unknown / none, checked against the device-key ledger (machine-signed, append-only, never pruned) and the machine signing-key history. The conversation store and the ledger replicate to every machine. Dev-gated (mobilePairing.native.enabled); 503 when dark. Media (docs/specs/mobile-native-chat-media.md, mobilePairing.native.media.enabled): POST /mobile/media/uploads, PUT .../chunks/:index, GET /mobile/media/uploads/:id, GET /mobile/media/:sha256?ref= (ref is app:<uuid>, telegram:<topicId>, or the conversationKey a Slack history read returns, served only by the machine that lists that conversation), POST /mobile/media/purge; sessions see [image:…], [document:…], [video:…], [voice:…] paths, open earlier files with GET /app/media-path/:attachmentId (app-media-path), and reply with files through app-reply.sh --file. Media off: every refusal (media-off, and media-target-unsupported when files are the reason) carries action {kind: team-switch-on, setting: files, path: /mobile/team/switches/turn-on}, the owner\'s one Face ID tap that turns files on for every machine. Every machine copies every file an event it holds references, over the signed app-media-pull mesh verb, keeping a copy only when its SHA-256 matches; a download of a file still copying answers 202 fetching, a dispatch waits up to 60 s and otherwise says [file still copying: …] then [file now available: …], and /health?scope=pool → appMediaPool shows every machine (singleCopyBlobs, unrecoverableBlobs). A reply notification carries only the message id; the phone fetches GET /mobile/chat/app/:key/preview/:messageId (device, its notification read token, or the agent token) for the first 100 characters or a "sent a photo" phrase. Slack from the app (§4.9): where Slack is configured and mobilePairing.slackOwnerUserId is set, GET /mobile/conversations also lists Slack channels and threads (platform slack, id = the negative durable conversation id); GET /mobile/chat/slack/:conversationId/messages reads their history (slack-messages.jsonl, the in-memory ring and app-sent messages from the store, with originVerified) and POST /mobile/chat/slack/:conversationId sends as the operator through the Slack inbound dispatch, stored first with a v2 machine receipt that signs the canonical Slack key, then mirrored into the channel as "📱 <owner> (from the app): …". Owner id unset ⇒ 503 slack-owner-unset; no Slack ⇒ 503 slack-not-configured. Files from the app into Telegram and Slack (chat-media §4.9, media on): an upload may name telegram:<topicId> or a Slack conversationKey as its conversationRef, and POST /mobile/chat/:topicId and POST /mobile/chat/slack/:conversationId accept the same signed attachments as an app conversation; the message is stored as a media-message under telegram:<topicId> or the Slack key, the session receives the file lines with paths, and the mirror uploads the files (Telegram: sendPhoto/sendVideo/sendVoice/sendDocument or one sendMediaGroup through the origin outbox, a file above 50,000,000 bytes mirrored as "📱 <owner> sent <name> (too large for Telegram; open it in the app)"; Slack: the v2 file upload into the channel or thread). A failed mirror answers mirror: "failed" and never repeats the dispatch. Media off ⇒ 400 media-target-unsupported as before. Unread (docs/specs/mobile-unread-messages.md, mobilePairing.native.unread.enabled, true when absent): for a phone, every row of GET /mobile/conversations carries hasUnread, unreadCount (absent when unknown), unreadMore (the count is a floor, shown as "N+") and readUpTo ({atMs, id}); the page carries unreadTotal, unreadTotalMore and unreadBeyondPage. The phone reports what it read with POST /mobile/conversations/read {marks:[{ref, id, atMs, machine?}]} (1-50 marks, own 60/min bucket) → {results:[{ref, ok, readUpTo?, unreadCount?, unreadMore?, error?}]}; history reads carry readUpTo for the divider; a reply push carries aps.badge = the phone\'s app-conversation unread. Read markers (one per person per conversation, forward-only) and a per-person baseline replicate through the conversation-read-marker kind; GET /mobile/conversations/read-markers?cursor= (Bearer only) is the catch-up between my machines. My own Bearer reads carry no read fields (a ?reader= key is the pool forwarding). Telegram and Slack expose no per-user read state to a bot: the marker here is the source, and a person\'s own reply counts everything before it as read. Pinned messages (docs/specs/conversation-pinned-messages.md, mobilePairing.native.pins.enabled, true when absent): any number per conversation, newest pin first, kept as pin events in the conversation store (replicated): GET /mobile/chat/app/:key/pins, GET /mobile/chat/:topicId/pins, GET /mobile/chat/slack/:conversationId/pins?machine= → {conversationKey, pins:[{messageId, pinnedAt, pinnedBy:{name, role}, preview, source}]}; every history read also carries pins. Device-signed POST to the same paths {messageId, pinned, requestId[, machine]} → {ok, pinned, changed, mirror: done|failed|unavailable|not-applicable, mirrorDetail?, pins} (the same access as sending; Telegram only on the machine serving it, Slack only on the machine holding the conversation). A Telegram pin is also made in Telegram (pinChatMessage, quietly) and a pin made in Telegram is recorded here; an unpin inside Telegram and pins inside Slack are not seen.',
     build: () => ({
       configured: true,
-      endpoints: ['POST /mobile/conversations', 'GET /mobile/conversations', 'PATCH /mobile/conversations/:key', 'DELETE /mobile/conversations/:key', 'POST /mobile/chat/app/:key', 'GET /mobile/chat/app/:key/messages', 'GET /mobile/chat/app/:key/events', 'GET /mobile/chat/app/:key/preview/:messageId', 'GET /mobile/chat/slack/:conversationId/messages', 'POST /mobile/chat/slack/:conversationId', 'POST /app/session-reply', 'POST /mobile/media/uploads', 'PUT /mobile/media/uploads/:uploadId/chunks/:index', 'GET /mobile/media/uploads/:uploadId', 'GET /mobile/media/:sha256', 'POST /mobile/media/purge', 'GET /app/media-path/:attachmentId'],
+      endpoints: ['POST /mobile/browser-devices', 'GET /mobile/browser-devices/status', 'POST /mobile/conversations', 'GET /mobile/conversations', 'PATCH /mobile/conversations/:key', 'DELETE /mobile/conversations/:key', 'POST /mobile/chat/app/:key', 'GET /mobile/chat/app/:key/messages', 'GET /mobile/chat/app/:key/events', 'GET /mobile/chat/app/:key/preview/:messageId', 'GET /mobile/chat/slack/:conversationId/messages', 'POST /mobile/chat/slack/:conversationId', 'POST /mobile/conversations/read', 'GET /mobile/conversations/read-markers', 'POST /app/session-reply', 'POST /mobile/media/uploads', 'PUT /mobile/media/uploads/:uploadId/chunks/:index', 'GET /mobile/media/uploads/:uploadId', 'GET /mobile/media/:sha256', 'POST /mobile/media/purge', 'GET /app/media-path/:attachmentId'],
     }),
   },
   {
@@ -431,10 +473,19 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     // The routes live under the '/mobile' prefix already claimed by the mobilePairing entry, so this
     // awareness entry claims no new top-level prefix (the empty-prefix precedent above).
     prefixes: [],
-    description: 'Native Accounts, What thinking costs and Resource usage screens for the Instar iPhone app (docs/specs/mobile-native-capacity-screens.md): GET /mobile/accounts (subscription accounts across the machines that answer: signed in or needing sign-in per machine, usage windows with reset times), GET /mobile/spend?window=today|week|month (recorded pay-per-use cost across machines with its basis, this machine\'s paid-route limits, conversation token totals), GET /mobile/resources (CPU and memory for the agent, its server and sessions on this machine). Read-only trimmed summaries for an owner phone (device-signed, ownerOnly) or the bearer token; an MSP phone gets 403 owner-phone-required.',
+    description: 'Native Accounts, What thinking costs and Resource usage screens for the Instar iPhone app (docs/specs/mobile-native-capacity-screens.md): GET /mobile/accounts (subscription accounts across the machines that answer: signed in or needing sign-in per machine, usage windows with reset times), GET /mobile/spend?window=today|week|month (recorded pay-per-use cost across machines with its basis, this machine\'s paid-route limits, conversation token totals), GET /mobile/resources (CPU and memory for the agent, its server and sessions on this machine). Read-only trimmed summaries for an owner phone (device-signed, ownerOnly) or the bearer token; an MSP phone gets 403 owner-phone-required. POST /mobile/accounts/sign-in/start {accountId, machineId, challenge, presenceSig} starts a fresh sign-in for one account on one machine with a Face ID presence signature in place of the dashboard PIN (owner phone only; challenge action account-sign-in, target <accountId>@<machineId>; docs/specs/account-sign-in-face-id.md); it runs start-cell\'s own core and answers the same body. POST /mobile/accounts/add {provider: claude|codex, nickname?, email, challenge, presenceSig} (challenge action account-add, target the kind) adds a Claude or Codex account and starts its sign-in on this machine, answering start-cell\'s body; the account joins the pool only when the sign-in completes with that email, and no credential is ever accepted (docs/specs/account-add-face-id.md).',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/accounts', 'GET /mobile/spend', 'GET /mobile/resources'],
+      endpoints: ['GET /mobile/accounts', 'GET /mobile/spend', 'GET /mobile/resources', 'POST /mobile/accounts/sign-in/start', 'POST /mobile/accounts/add'],
+    }),
+  },
+  {
+    key: 'unifiedUsageLedger',
+    prefixes: ['/usage'],
+    description: 'Unified usage ledger (docs/specs/unified-usage-ledger.md) — one record of this agent\'s own token use per model request (Claude Code transcripts, Codex rollouts, every funnel one-shot; the same work seen twice is counted once), attributed to machine, engine, model, topic, job, run and feature, with list-equivalent API cost priced on read at the published price in force that UTC day (unpriced tokens shown as unpriced, never $0). Registry First: "where are my tokens going / what would this have cost at API prices / which topic or job costs most?" → GET /usage/summary (agent totals + per machine; not-reached and warming machines named), /usage/tree (agent → machine → engine/model → topic/job/feature → session), /usage/series (over time, split by model, framework or machine), /usage/top?dim=topic|job|session|feature, /usage/coverage (what is and is not measured: roots, unattributed/unpriced/null-token shares, dedupe pairs, snapshot, peer pulls). GET /usage/events?session= reads one session\'s raw rows on the machine that holds them. A standby proxies to the lease holder; GET /usage/rollup is the machine-to-machine replication page. GET /mobile/usage is the owner phone\'s trimmed view. Dev-gated (usage.ledger.enabled): 503 usage-ledger-off when dark. The older /tokens/* routes are unchanged.',
+    build: () => ({
+      configured: true,
+      endpoints: ['GET /usage/summary', 'GET /usage/tree', 'GET /usage/series', 'GET /usage/top', 'GET /usage/coverage', 'GET /usage/events', 'GET /usage/rollup', 'GET /mobile/usage'],
     }),
   },
   {
@@ -471,10 +522,10 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     key: 'mobileSessionControls',
     // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
     prefixes: [],
-    description: 'The Instar iPhone app\'s session screen controls (docs/specs/mobile-native-session-controls.md): GET /mobile/sessions/controls (machine, door, model and why each can or cannot change), GET /mobile/sessions/new-options, GET /mobile/sessions/history (secrets removed), POST /sessions/:name/key (the keys tray and Stop) and POST /sessions/:name/attachments for owner phones; POST /mobile/sessions/door/:topic, /move/:topic, /close/:id, /new and /default, each with Face ID over a single-use challenge behind mobilePairing.permissionActions. Every control runs the dashboard\'s own route, so its rules stay in force. Sessions on another machine go through the machine the phone reached (pool-token /mobile/sessions/relay/:name/* routes), and typing obeys that machine\'s dashboard.poolStream.allowRemoteInput.',
+    description: 'The Instar iPhone app\'s session screen controls (docs/specs/mobile-native-session-controls.md): GET /mobile/sessions/controls (machine, door, model and why each can or cannot change), GET /mobile/sessions/new-options, GET /mobile/sessions/history (secrets removed), POST /sessions/:name/key (the keys tray and Stop) and POST /sessions/:name/attachments for owner phones; POST /mobile/sessions/door/:topic, /move/:topic, /close/:id, /new and /default, each with Face ID over a single-use challenge behind mobilePairing.permissionActions. Every control runs the dashboard\'s own route, so its rules stay in force. Sessions on another machine go through the machine the phone reached (pool-token /mobile/sessions/relay/:name/* routes), and typing obeys that machine\'s dashboard.poolStream.allowRemoteInput. Engine and model switching works for every conversation (docs/specs/session-swap-any-conversation.md): the door route takes a conversation reference (telegram:N, app:<key>, slack:<team>:<channel>[:<thread>], or a bare topic id), GET /sessions rows carry conversationRef, and /topic-profile/:key accepts app:<key>; moving machines is still Telegram-only, and a Slack conversation stays with the machine that holds the Slack connection (POST /pool/transfer refuses it, 409 slack-stays-with-connection).',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:topic', 'POST /mobile/sessions/move/:topic', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
+      endpoints: ['GET /mobile/sessions/controls', 'GET /mobile/sessions/new-options', 'GET /mobile/sessions/history', 'POST /sessions/:name/key', 'POST /sessions/:name/attachments', 'POST /mobile/sessions/door/:conversation', 'POST /mobile/sessions/move/:conversation', 'POST /mobile/sessions/bring-back/:conversation', 'POST /mobile/sessions/close/:id', 'POST /mobile/sessions/new', 'POST /mobile/sessions/default'],
     }),
   },
   {
@@ -485,6 +536,16 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     build: () => ({
       configured: true,
       endpoints: ['POST /mobile/secrets/requests', 'POST /mobile/secrets/requests/:key/cancel'],
+    }),
+  },
+  {
+    key: 'mobileOwnerPresence',
+    // Under the '/mobile' prefix already claimed by mobilePairing (the empty-prefix precedent above).
+    prefixes: [],
+    description: 'Remote Desktop with Face ID and the Dashboard PIN page for the owner\'s phone (docs/specs/mobile-owner-presence-pin.md): POST /mobile/desktop-unlock/challenge and POST /mobile/desktop-unlock mint a desktop-only, phone-bound 15-minute session after a fresh presence-key (Face ID / passcode) signature; POST /mobile/dashboard-pin/challenge and POST /mobile/dashboard-pin/reveal show the dashboard PIN this machine compares against and tell the owner privately. Owner phone only; the bearer is refused. Dev-gated (mobilePairing.ownerPresence.enabled).',
+    build: () => ({
+      configured: true,
+      endpoints: ['POST /mobile/desktop-unlock/challenge', 'POST /mobile/desktop-unlock', 'POST /mobile/dashboard-pin/challenge', 'POST /mobile/dashboard-pin/reveal'],
     }),
   },
   {
@@ -524,7 +585,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     description: 'What a degraded /health means for the person (docs/specs/mobile-health-issues.md): each reason sorted into user-affecting, internal or unclassified from a declared table, with plain words and a next step, and the quick actions on each one (docs/specs/health-quick-actions.md): hide for a while, hide from me, or ignore completely, undoable from the Hidden list. Owner phone or bearer. /health keeps its shape; only an ignored problem stops counting in it.',
     build: () => ({
       configured: true,
-      endpoints: ['GET /mobile/health-issues', 'POST /mobile/health-issues/choices', 'POST /mobile/health-issues/choices/undo'],
+      endpoints: ['GET /mobile/health-issues', 'POST /mobile/health-issues/choices', 'POST /mobile/health-issues/choices/undo', 'POST /mobile/attention/:id/choice'],
     }),
   },
   {
@@ -866,6 +927,7 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
         ? [
             'GET /topic/search?q=...&topic=N&limit=20',
             'GET /topic/context/:topicId?recent=30',
+            'GET /topic/:topicId/prompt-context?session=<claudeSessionId> (the per-prompt hook\'s single request)',
             'GET /topic/context/:topicId?assembled=true&prompt=...',
             'GET /session/context/:topicId?prompt=...&job=...',
             'GET /topic/list',
@@ -1660,6 +1722,15 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
             ],
           }
         : { enabled: false },
+  },
+  {
+    key: 'jevFirstDecisions',
+    prefixes: ['/jev-first'],
+    description: 'Read-only observed Jev-first decision counts and incumbent handoffs; no projected savings are credited.',
+    build: () => ({
+      endpoints: ['GET /jev-first/summary — local observed Jev calls, handoffs, settlements, and audit disagreements'],
+      savings: 'Unmeasured until comparable live model usage exists',
+    }),
   },
   {
     key: 'autonomousSessions',

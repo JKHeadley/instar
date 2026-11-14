@@ -71,3 +71,29 @@ export function approveHint(fingerprint) {
     ? `Phone key: ${fingerprint}. Approve only if you are pairing this phone right now and the key matches the one the app shows.`
     : 'Approve only if you are pairing this phone right now.';
 }
+
+/**
+ * The paired devices, split for display (docs/specs/dashboard-ui-quality-standard.md): phones and
+ * browsers are separate groups, so neither heading lists the other kind and no row repeats its kind.
+ * Each row is a name line and one short detail line. Only active and pending devices are shown.
+ * `personText` (optional) adds whose device it is to the name.
+ */
+export function pairedGroups(devices, { browserOff = false, personText = () => '' } = {}) {
+  const phones = [], browsers = [];
+  for (const d of Array.isArray(devices) ? devices : []) {
+    if (!d || (d.status !== 'active' && d.status !== 'pending')) continue;
+    const isBrowser = d.client === 'browser';
+    const name = `${d.deviceName || (isBrowser ? 'Unnamed browser' : 'Unnamed phone')}${personText(d)}`;
+    let detail;
+    if (d.status === 'pending') detail = 'Waiting to confirm';
+    else if (isBrowser) {
+      const t = Date.parse(d.lastSeenAt || '');
+      detail = browserOff ? 'Switched off on this agent' : Number.isFinite(t) ? `Last used on this machine ${new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not used yet';
+    } else {
+      const t = Date.parse(d.approvedAt || '');
+      detail = Number.isFinite(t) ? `Paired since ${new Date(t).toLocaleDateString(undefined, { dateStyle: 'medium' })}` : 'Paired';
+    }
+    (isBrowser ? browsers : phones).push({ id: d.id, name, detail, removable: d.status === 'active', what: isBrowser ? 'browser' : 'phone' });
+  }
+  return { phones, browsers };
+}

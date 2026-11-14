@@ -1,0 +1,27 @@
+{
+  "version": 2,
+  "slug": "always-serves-a-team",
+  "sessionId": "7094a1d1-9d1f-47ca-afa6-843b05149625",
+  "timestamp": "2026-11-10T23:31:06.937Z",
+  "artifactPath": "upgrades/side-effects/always-serves-a-team.md",
+  "artifactSha256": "f0124a11688827a3c34ce7041378fcb92320e43a832560cd9ba2d5026bf9b24e",
+  "coveredFiles": [
+    "docs/STANDARDS-REGISTRY.md",
+    "docs/audits/always-serves-a-team-building-family-2026-11-10-r2.json",
+    "docs/audits/always-serves-a-team-building-family-2026-11-10.json",
+    "docs/constitution-alignment-map.md",
+    "docs/specs/always-serves-a-team.eli16.md",
+    "docs/specs/reports/always-serves-a-team-constitution-review-2026-11-10-r2.md",
+    "docs/specs/reports/always-serves-a-team-constitution-review-2026-11-10.md",
+    "docs/standards-registry-area-audits.json",
+    "tests/unit/standards-coverage-ratchet.test.ts",
+    "upgrades/side-effects/always-serves-a-team.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Constitution text only, one approved article and its records; no runtime code; a revert fully undoes it.",
+  "eli16Path": "docs/specs/always-serves-a-team.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/always-serves-a-team.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

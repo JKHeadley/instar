@@ -41,6 +41,49 @@ describe('verified primary account admission', () => {
     expect(await h.service.quotaStatus()).toEqual({ usedPercent: 70, pauseThreshold: 75 });
   });
 
+  it('a restart that moved the live owner epoch past the saved one does not stop sorting', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }), revalidate: () => true } });
+    await h.addItem('after-restart');
+    h.ownerEpoch.value = 2;
+    const result = await h.service.tick();
+    expect(result.reason).not.toBe('call-cap-reached');
+    expect(result.calls).toBe(1);
+    expect(result.decided).toBe(1);
+    expect(h.drain.ownerAuthorityEpoch()).toBe(2);
+  });
+
+  it('losing the lease during a tick is reported as losing ownership', async () => {
+    let checks = 0;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => { if (++checks === 1) h.ownerEpoch.value = 2; return true; } } });
+    await h.addItem('moved');
+    const result = await h.service.tick();
+    expect(result.reason).toBe('owner-lost');
+    expect(result.calls).toBe(0);
+  });
+
+  it('a refusal below every limit is not reported as the daily call limit', async () => {
+    let checks = 0;
+    h = await createHarness({ config: { accountSelectionMode: 'on' },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }),
+        revalidate: () => ++checks === 1 } });
+    await h.addItem('refused');
+    const result = await h.service.tick();
+    expect(result.reason).toBe('authority-admission-refused');
+    expect(result.calls).toBe(0);
+  });
+
+  it('a primary call refused at the real daily limit keeps the call-limit reason', async () => {
+    h = await createHarness({ config: { accountSelectionMode: 'on', maxCallsPerDay: 1, maxBatchChars: 4_000 },
+      primaryAccountAdmission: { select: async () => ({ state: 'eligible', account: selected }), revalidate: () => true } });
+    for (const id of ['a', 'b', 'c']) await h.addItem(id, { description: 'x'.repeat(1_100) });
+    const result = await h.service.tick();
+    expect(h.calls).toHaveLength(1);
+    expect(result.reason).toBe('call-cap-reached');
+  });
+
   it('refuses pace margin when the selected account is stale or unreadable', async () => {
     let valid = false;
     h = await createHarness({ config: { accountSelectionMode: 'on' },
@@ -502,6 +545,19 @@ describe('action list (§5)', () => {
     expect(await h.service.sendActionList()).toMatchObject({ sent: false, reason: 'already-sent-today' });
     h.now.value += DAY;
     expect(await h.service.sendActionList()).toMatchObject({ sent: false, reason: 'nothing-new' });
+  });
+  it('waits, unstamped, while the dashboard link would not open on a phone (tunnel starting), then sends once it can', async () => {
+    h = await createHarness({ approve: false });
+    let link: string | null = null;
+    (h.service as any).opts.dashboardLink = () => link;
+    expect(await h.service.sendActionList()).toMatchObject({ sent: false, reason: 'public-link-pending' });
+    expect(h.service.composeActionList()).toBeNull();
+    expect(h.attention).toHaveLength(0);
+    expect(h.store.meta('action_list:last_day')).toBeNull();
+    link = 'https://agent.example/dashboard?tab=feedback-drain';
+    const sent = await h.service.sendActionList();
+    expect(sent.sent).toBe(true);
+    expect(h.attention[0].description).toContain('https://agent.example/dashboard?tab=feedback-drain');
   });
   it('carries serious needs-review holds once each, at most 10 plus a count line, to the configured topic', async () => {
     h = await createHarness({ config: { actionTopicId: 4242, maxBatchChars: 200_000 } });

@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-05T22:25:22.291Z",
+  "slug": "safe-git-read-surface-hardening",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "safety-invariant proximity: src/core/SafeGitExecutor.ts matches SafeGitExecutor (destructive-git funnel)"
+  ],
+  "belowFloor": false,
+  "files": 4,
+  "loc": 899,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/lint-no-direct-destructive.js",
+      "src/commands/machine.ts",
+      "src/core/GitStateManager.ts",
+      "src/core/SafeGitExecutor.ts"
+    ],
+    "addedLines": 670,
+    "deletedLines": 229
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

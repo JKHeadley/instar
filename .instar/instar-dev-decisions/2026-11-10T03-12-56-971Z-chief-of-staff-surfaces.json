@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-10T03:12:56.971Z",
+  "slug": "chief-of-staff-surfaces",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 17,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/WriteDomainRegistry.ts"
+    ],
+    "addedLines": 17,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "Declaration only."
+  },
+  "verdict": "pass"
+}

@@ -23,7 +23,7 @@ export async function readTriageSessionAuthor(runtime: TelegramOriginRuntime | u
   if (!sessionId) return unknownAutomationAuthor('triage-session-identity-unavailable');
   const binding = runtime.sessions.getBinding(sessionId);
   if (!binding) return unknownAutomationAuthor('triage-session-not-enrolled');
-  await runtime.observer.refresh(sessionId);
+  await runtime.observer.refresh(sessionId, { catchUp: true });
   const current = runtime.sessions.getBinding(sessionId), observation = runtime.observer.get(sessionId);
   if (!current || current.sessionIncarnation !== binding.sessionIncarnation ||
       !observation || observation.sessionIncarnation !== binding.sessionIncarnation || observation.harnessId !== binding.harnessId) {

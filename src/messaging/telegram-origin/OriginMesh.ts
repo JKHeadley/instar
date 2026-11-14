@@ -8,6 +8,7 @@ import type { OriginPreparedBotOperation } from './TelegramOriginService.js';
 import type { StoredOriginInput, OriginListQuery } from './StoreTypes.js';
 import { TelegramOriginHoldError } from './types.js';
 import { classifyOperationOutcome, unrecordedAcceptanceCovers } from './OriginOperationOutcome.js';
+import { authorStatement } from './OriginOwnerRead.js';
 import type { TelegramOriginRecord } from './types.js';
 import { telegramFetch } from '../telegram-egress.js';
 import { verify as verifySignature } from 'node:crypto';
@@ -17,7 +18,7 @@ import { originAuditDeliveryConfirmed } from './OriginDeliveryResolution.js';
 
 export const ORIGIN_MESH_PROTOCOL = 'instar-telegram-origin-v1';
 export type OriginMeshCommand = { type: 'telegram-origin'; protocol: typeof ORIGIN_MESH_PROTOCOL } & (
-  { action: 'capabilities' } | { action: 'receipt'; operationId: string } | { action: 'evidence'; record: StoredOriginInput } |
+  { action: 'capabilities' } | { action: 'receipt'; operationId: string; reader?: boolean } | { action: 'evidence'; record: StoredOriginInput } |
   { action: 'submit'; operation: OriginPreparedBotOperation } | { action: 'audit'; query: OriginListQuery; operatorAssertion?: PoolLinkAssertion }
   | { action: 'metrics'; operatorAssertion?: PoolLinkAssertion });
 export const ORIGIN_METRICS_AUDIENCE = 'telegram-origin-metrics:v1';
@@ -60,17 +61,39 @@ export async function handleOriginMesh(options: {
       if (!audit) return { ok: true, operationId: command.operationId, state: 'no-record', originReceiptConfirmed: false,
         executionOwnerMachineId: runtime.options.identity.originMachineId };
       const record = JSON.parse(audit.record.envelopeJson) as TelegramOriginRecord;
-      if (record.originMachineId !== options.authenticatedSender || record.agentId !== runtime.options.identity.agentId ||
+      const self = runtime.options.identity.originMachineId;
+      // native-conversation-base §3b item 3 — `reader: true` relaxes exactly two
+      // checks (the asker wrote it; this machine owns it); `role` replaces the
+      // second. Agent, operation id, origin id, digest and key epoch stay. The
+      // forward ladder never sends `reader`, so a reader answer cannot free a re-forward.
+      const reader = command.reader === true;
+      if ((!reader && record.originMachineId !== options.authenticatedSender) || record.agentId !== runtime.options.identity.agentId ||
         record.operationId !== command.operationId || record.originId !== audit.record.originId ||
-        record.executionOwnerMachineId !== runtime.options.identity.originMachineId || wireDigest(audit.record.envelopeJson) !== audit.record.envelopeDigest) {
+        (!reader && record.executionOwnerMachineId !== self) || wireDigest(audit.record.envelopeJson) !== audit.record.envelopeDigest) {
         return { ok: false, reason: 'origin-receipt-unavailable' };
       }
-      const fallback = !originAuditDeliveryConfirmed(audit) && unrecordedAcceptanceCovers(runtime, audit);
+      const role = record.executionOwnerMachineId === self ? 'execution-owner' : record.originMachineId === self ? 'author' : null;
+      if (!role) return { ok: false, reason: 'origin-receipt-unavailable' };
       const verdict = classifyOperationOutcome(command.operationId, audit, runtime.unrecordedReceipts?.forOperation(command.operationId) ?? []);
+      if (role === 'author') {
+        // The author's own row: whether it still holds the reply, and its successor. No verdict, no terminal state.
+        // `holding: null` = cannot tell (unresolved forward or send); `delivered` = it sent the reply itself.
+        const statement = authorStatement(audit, verdict);
+        return { ok: true, operationId: command.operationId, originId: record.originId, envelopeDigest: audit.record.envelopeDigest, role,
+          holding: statement.delivered ? null : statement.holding, supersededBy: statement.supersededBy,
+          ...(statement.delivered ? { delivered: true, messageIds: statement.delivered.messageIds } : {}) };
+      }
+      const fallback = !originAuditDeliveryConfirmed(audit) && unrecordedAcceptanceCovers(runtime, audit);
       return { ok: true, operationId: command.operationId, originId: record.originId, envelopeDigest: audit.record.envelopeDigest,
-        executionOwnerMachineId: runtime.options.identity.originMachineId, state: fallback ? 'accepted' : audit.operation?.state ?? 'not-admitted',
+        executionOwnerMachineId: self, state: fallback ? 'accepted' : audit.operation?.state ?? 'not-admitted',
         originReceiptConfirmed: (fallback || originAuditDeliveryConfirmed(audit)) && verdict.outcome === 'delivered',
-        messageIds: verdict.messageIds };
+        messageIds: verdict.messageIds,
+        // §3b item 1 — the classified verdict travels with the raw state. An older
+        // asker ignores these fields; the ladder still reads only `state`.
+        role, outcome: verdict.outcome, safeToResend: verdict.safeToResend, reason: verdict.reason ?? null, failure: verdict.failure ?? null,
+        supersededBy: verdict.supersededBy ?? null, duplicateOfMessageId: verdict.duplicateOfMessageId ?? null,
+        originMachineId: record.originMachineId, detail: verdict.detail,
+        ...(record.originMachineId === self ? { holding: authorStatement(audit, verdict).holding } : {}) };
     } catch { return { ok: false, reason: 'origin-receipt-unavailable' }; }
   }
   if (command.action === 'capabilities') return { ok: true, protocol: ORIGIN_MESH_PROTOCOL,

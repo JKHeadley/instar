@@ -32,6 +32,7 @@ const OAUTH_KEY_PREFIX = 'sk-ant-oat';
 
 let keySource: (() => string | undefined) | null = null;
 let baseUrlSource: (() => string | undefined) | null = null;
+let reviewerLoginSource: (() => string | null) | null = null;
 
 /** Called once per process, right after loadConfig. Read per call, so a restored key applies at once. */
 export function configureClaudeChildAuth(
@@ -65,6 +66,29 @@ export function applyClaudeChildAuth<T extends NodeJS.ProcessEnv>(env: T): T {
   return env;
 }
 
+/**
+ * Where a locked-down reviewer call finds a stored login when the agent has none of its own. A
+ * machine whose logins all live in the subscription pool leaves the default login signed out, so
+ * a reviewer started from the server answered "Not logged in" on every call (2026-11-07: no
+ * feedback PR could pass its review). Read per call, so quota and sign-in changes apply at once.
+ */
+export function configureClaudeReviewerLogin(source: (() => string | null) | null): void {
+  reviewerLoginSource = source;
+}
+
+/**
+ * Point a reviewer child at a pool login. A configured key and an inherited login both win, so an
+ * agent that already says which login to use is unchanged. With no source or no account with room
+ * the env is left alone, the call fails, and the review stays refused: it never runs unreviewed.
+ */
+export function applyClaudeReviewerLogin<T extends NodeJS.ProcessEnv>(env: T): T {
+  if (configuredClaudeOauthKey() || env.CLAUDE_CONFIG_DIR) return env;
+  let home: string | null = null;
+  try { home = reviewerLoginSource?.() ?? null; } catch { /* @silent-fallback-ok: no pick means the call fails and the review stays refused */ }
+  if (home) (env as NodeJS.ProcessEnv).CLAUDE_CONFIG_DIR = home;
+  return env;
+}
+
 /** How a `claude -p` failed on auth, from its stdout JSON. Null when it was not an auth failure. */
 export type ClaudeAuthFailure = 'rejected' | 'no-auth';
 
@@ -91,6 +115,32 @@ export function setClaudeCallOutcomeListener(listener: ((outcome: ClaudeCallOutc
 
 export function reportClaudeCallOutcome(outcome: ClaudeCallOutcome): void {
   try { outcomeListener?.(outcome); } catch { /* @silent-fallback-ok: a signal must never break the model call */ }
+}
+
+/**
+ * The CLI's limit wording, at the start of its result. A 429 alone can be a server throttle, whose
+ * text reads "not your usage limit". Kept here, not imported from rateLimitDetection, so the model
+ * call path does not take on that module.
+ */
+const USAGE_LIMIT_RESULT = /^\s*(?:api error:\s*)?(?:you['’]ve hit your (?:session |weekly |opus |sonnet |usage )?limit|usage limit reached\b|(?:session|weekly|opus|sonnet) limit reached\b)/i;
+
+/** Whether a `claude -p` stdout says the account is out of usage. */
+export function isUsageLimitOutput(stdout: string): boolean {
+  try {
+    const parsed = JSON.parse(stdout) as { is_error?: unknown; result?: unknown };
+    return parsed?.is_error === true && typeof parsed.result === 'string' && USAGE_LIMIT_RESULT.test(parsed.result);
+  } catch { return false; } // @silent-fallback-ok: unreadable output says nothing about usage
+}
+
+/** Heard by UsageLimitWatch: an internal call was refused for usage. A signal only. */
+let usageLimitedListener: (() => void) | null = null;
+
+export function setClaudeUsageLimitedListener(listener: (() => void) | null): void {
+  usageLimitedListener = listener;
+}
+
+export function reportClaudeUsageLimited(): void {
+  try { usageLimitedListener?.(); } catch { /* @silent-fallback-ok: a signal must never break the model call */ }
 }
 
 /**

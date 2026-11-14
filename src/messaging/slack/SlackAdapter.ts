@@ -35,9 +35,10 @@ import { FileHandler, type SlackUploadOptions } from './FileHandler.js';
 import { RingBuffer } from './RingBuffer.js';
 import { MessageLogger, type LogEntry } from '../shared/MessageLogger.js';
 import { verifiedChannelIdentity } from '../shared/channelIdentity.js';
-import type { SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
+import { conversationsPointer } from '../shared/conversationGraphChat.js';
+import type { SlackChannelKind, SlackConfig, SlackMessage, PendingPrompt, InteractionPayload, InteractionAction, SlackWorkspaceMode, SlackRespondMode } from './types.js';
 import { sanitizeDisplayName, validateChannelId } from './sanitize.js';
-import { applySlackFormatter, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
+import { applySlackFormatter, candidateUserMentionIds, SLACK_SEND_METHODS, type SlackFormatMode } from './SlackMrkdwnFormatter.js';
 import type { SlackApiResponse } from './SlackApiClient.js';
 import type { SlackPermissionObserver } from '../../permissions/SlackPermissionObserver.js';
 import type { AmbientContributionGate } from '../../permissions/AmbientContributionGate.js';
@@ -48,6 +49,12 @@ import { ORIGIN_OUTAGE_NOTICE_TEXT, RECORDED_SLACK_METHODS, SlackOriginLedger, S
 export const SLACK_STALL_CONFIRM_PROMPT_ID = 'slack-stall-confirm-v1';
 
 const RING_BUFFER_CAPACITY = 50;
+/** How long a conversation's member list is reused before it is read again. */
+const MEMBER_CACHE_TTL_MS = 5 * 60 * 1000;
+/** After a failed member read, mentions in that conversation stay literal this long before another try. */
+const MEMBER_LOOKUP_RETRY_MS = 60 * 1000;
+/** The participant lookup never holds a send longer than this; on timeout every mention stays literal. */
+const PARTICIPANT_LOOKUP_TIMEOUT_MS = 2500;
 const SLACK_MAX_TEXT_LENGTH = 4000;
 const AUTO_ARCHIVE_DAYS = 7;
 const LOG_PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000; // Daily
@@ -128,11 +135,56 @@ export type SlackInboundMediaHook = (info: SlackInboundMedia) => Promise<void> |
 /** Longest the inbound media copy is waited on before delivery stops caring about it. */
 const INBOUND_MEDIA_WAIT_MS = 30_000;
 
+const SLACK_MESSAGE_TS_RE = /^\d{1,12}\.\d{1,6}$/;
+
+/**
+ * The log id of a standalone file share (context-budget §14: deterministic on every machine).
+ * Prefers the share's real message ts in this channel (files.info `shares.public|private`),
+ * then the event's `event_ts`, then `file-<fileId>`. Never a clock read.
+ */
+export function fileShareLogId(fileInfo: Record<string, unknown> | undefined, channelId: string, event: Record<string, unknown>, fileId: string): string {
+  const shares = (fileInfo?.shares ?? null) as Record<string, unknown> | null;
+  for (const scope of ['public', 'private'] as const) {
+    const byChannel = shares && typeof shares[scope] === 'object' ? (shares[scope] as Record<string, unknown>)[channelId] : undefined;
+    if (Array.isArray(byChannel)) {
+      for (const sh of byChannel) {
+        const ts = (sh as { ts?: unknown } | null)?.ts;
+        if (typeof ts === 'string' && SLACK_MESSAGE_TS_RE.test(ts)) return ts;
+      }
+    }
+  }
+  const eventTs = event.event_ts;
+  if (typeof eventTs === 'string' && SLACK_MESSAGE_TS_RE.test(eventTs)) return eventTs;
+  return `file-${fileId}`;
+}
+
 function finiteNonNegative(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
+/** One Slack resume record (session-swap-any-conversation §3.1 adds framework, provenance, parked). */
+export interface SlackResumeEntry {
+  uuid: string;
+  savedAt: string;
+  sessionName: string;
+  /** The engine the session ran on; absent on records from before this was stored. */
+  framework?: string;
+  /** Where the id came from: the session's own hook, or the newest transcript. */
+  provenance?: 'hook' | 'mtime';
+  /** Set aside for a fresh restart by the profile orchestrator. */
+  parked?: { at: string; reason: string };
+}
+
+/** What the resume record's save consults (wired by the server). */
+export interface SlackResumeGuards {
+  sessionFacts(sessionName: string): { framework: string | null; hookId: string | null } | null;
+  writeGate(profileKey: string, framework: string | null): { allowed: boolean; reason?: string };
+}
+
 export class SlackAdapter implements MessagingAdapter {
+  private conversationsUrl: () => string | null = () => null;
+
+  setConversationsUrlProvider(provider: () => string | null): void { this.conversationsUrl = provider; }
   readonly platform = 'slack';
 
   // Config
@@ -185,7 +237,17 @@ export class SlackAdapter implements MessagingAdapter {
   private pendingPrompts: Map<string, PendingPrompt> = new Map();
   private seenMessageTs: Set<string> = new Set();
   private seenMessageTsCleanupTimer: ReturnType<typeof setInterval> | null = null;
-  private userCache: Map<string, { name: string; fetchedAt: number }> = new Map();
+  private userCache: Map<string, { name: string; fetchedAt: number; isBot?: boolean; deleted?: boolean }> = new Map();
+  /** Member ids of a conversation (conversations.members), for participant mentions. */
+  private memberCache: Map<string, { members: Set<string>; fetchedAt: number }> = new Map();
+  private memberLookupFailedAt: Map<string, number> = new Map();
+  private memberLookupsInFlight: Map<string, Promise<Set<string>>> = new Map();
+  /** Channel names from conversations.info, for titles (fb-4db533fa-9d9). */
+  private channelNameCache: Map<string, { name: string; fetchedAt: number }> = new Map();
+  /** What kind of conversation a channel id is (from conversations.info), so titles can show '#' only for channels. */
+  private channelKindCache: Map<string, SlackChannelKind> = new Map();
+  private nameLookupsInFlight = new Set<string>();
+  private nameLookupFailureLoggedAt = new Map<string, number>();
   private promptEvictionTimer: ReturnType<typeof setInterval> | null = null;
   private housekeepingTimer: ReturnType<typeof setInterval> | null = null;
   private logPurgeTimer: ReturnType<typeof setInterval> | null = null;
@@ -195,7 +257,8 @@ export class SlackAdapter implements MessagingAdapter {
   private channelRegistryPath: string;
 
   // Channel Resume Map (persisted — maps channel IDs to Claude session UUIDs for resume)
-  private channelResumeMap: Map<string, { uuid: string; savedAt: string; sessionName: string }> = new Map();
+  private channelResumeMap: Map<string, SlackResumeEntry> = new Map();
+  private resumeGuards: SlackResumeGuards | null = null;
   private channelResumeMapPath: string;
 
   // Disconnect tracking for missed message recovery
@@ -503,6 +566,8 @@ export class SlackAdapter implements MessagingAdapter {
   private async formattedApiCall(method: string, params: Record<string, unknown>): Promise<SlackApiResponse> {
     // The origin footer is already-escaped mrkdwn: appended after formatting, never re-processed.
     const { _originFooter: footer, ...rest } = params;
+    const participants = await this.participantMentionIds(method, rest);
+    if (participants.length) rest._participantUserIds = participants;
     const { outgoingParams } = applySlackFormatter(method, rest, this.config.formatMode);
     if (typeof footer === 'string' && footer && typeof outgoingParams.text === 'string') {
       outgoingParams.text = `${outgoingParams.text}\n${footer}`;
@@ -522,6 +587,103 @@ export class SlackAdapter implements MessagingAdapter {
       : typeof result.ts === 'string' ? result.ts : null;
     this.originLedger.completeReceipt(intent, ts);
     return result;
+  }
+
+  /**
+   * The person ids written as `<@U…>` in an outgoing message that are human participants of the
+   * target conversation: a member of the channel or DM, or someone who posted in the thread. Their
+   * mentions are sent active; every other id stays literal (the formatter escapes it). Bots, this
+   * agent itself, deactivated accounts and Slackbot are not participants here (list them with
+   * `nativeReferences` to activate them deliberately). Fails closed: any lookup error or timeout
+   * returns no ids, logs at debug level, and never blocks or fails the send.
+   */
+  private async participantMentionIds(method: string, params: Record<string, unknown>): Promise<string[]> {
+    if (!SLACK_SEND_METHODS.has(method) || typeof params.text !== 'string' || params.blocks !== undefined) return [];
+    if ((params._formatMode ?? this.config.formatMode) === 'legacy-passthrough' || params.mrkdwn === false) return [];
+    const candidates = candidateUserMentionIds(params.text);
+    const channel = typeof params.channel === 'string' ? params.channel : '';
+    if (!candidates.length || !channel) return [];
+    const threadTs = typeof params.thread_ts === 'string' ? params.thread_ts : null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`participant lookup took over ${PARTICIPANT_LOOKUP_TIMEOUT_MS} ms`)), PARTICIPANT_LOOKUP_TIMEOUT_MS);
+        timer.unref?.();
+      });
+      return await Promise.race([this.resolveParticipantMentions(channel, threadTs, candidates), timeout]);
+    } catch (err) {
+      console.debug(`[slack] mentions in ${channel} sent as plain text; participant lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      return [];
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private async resolveParticipantMentions(channel: string, threadTs: string | null, candidates: string[]): Promise<string[]> {
+    const present = new Set<string>();
+    if (threadTs) {
+      for (const m of this.getChannelMessages(channel, RING_BUFFER_CAPACITY)) {
+        if (m.user && (m.thread_ts === threadTs || m.ts === threadTs)) present.add(m.user);
+      }
+    }
+    if (candidates.some((id) => !present.has(id))) {
+      for (const id of await this.conversationMembers(channel)) present.add(id);
+    }
+    const checks = await Promise.all(candidates.map(async (id) => {
+      if (!present.has(id) || id === this.botUserId || id === 'USLACKBOT') return null;
+      try {
+        return (await this.isActiveHuman(id)) ? id : null;
+      } catch (err) {
+        console.debug(`[slack] mention of ${id} sent as plain text; users.info failed: ${err instanceof Error ? err.message : String(err)}`);
+        return null;
+      }
+    }));
+    return checks.filter((id): id is string => id !== null);
+  }
+
+  /** A conversation's member ids, cached for five minutes. Throws when Slack cannot be read. */
+  private async conversationMembers(channel: string): Promise<Set<string>> {
+    const cached = this.memberCache.get(channel);
+    if (cached && Date.now() - cached.fetchedAt < MEMBER_CACHE_TTL_MS) return cached.members;
+    const failedAt = this.memberLookupFailedAt.get(channel);
+    if (failedAt !== undefined && Date.now() - failedAt < MEMBER_LOOKUP_RETRY_MS) {
+      throw new Error('the member list could not be read a moment ago');
+    }
+    // Concurrent sends to an uncached conversation share one read.
+    const inFlight = this.memberLookupsInFlight.get(channel);
+    if (inFlight) return inFlight;
+    const read = this.readConversationMembers(channel).finally(() => this.memberLookupsInFlight.delete(channel));
+    this.memberLookupsInFlight.set(channel, read);
+    return read;
+  }
+
+  private async readConversationMembers(channel: string): Promise<Set<string>> {
+    try {
+      const members = new Set<string>();
+      let cursor: string | undefined;
+      for (let page = 0; page < 10; page++) {
+        const result = await this.apiClient.call('conversations.members', { channel, limit: 1000, ...(cursor ? { cursor } : {}) });
+        for (const id of (result.members as string[] | undefined) ?? []) members.add(id);
+        cursor = (result.response_metadata as { next_cursor?: string } | undefined)?.next_cursor || undefined;
+        if (!cursor) break;
+      }
+      this.memberCache.set(channel, { members, fetchedAt: Date.now() });
+      this.memberLookupFailedAt.delete(channel);
+      return members;
+    } catch (err) {
+      this.memberLookupFailedAt.set(channel, Date.now());
+      throw err;
+    }
+  }
+
+  /** True only when users.info says the id is a person (not a bot) with an active account. */
+  private async isActiveHuman(userId: string): Promise<boolean> {
+    let cached = this.userCache.get(userId);
+    if (!cached || cached.isBot === undefined || Date.now() - cached.fetchedAt >= 5 * 60 * 1000) {
+      await this.getUserInfo(userId, { refresh: true });
+      cached = this.userCache.get(userId);
+    }
+    return cached?.isBot === false && cached.deleted !== true;
   }
 
   /** The pre-recorded reachability notice for a conversation whose send was refused (§3). Never throws. */
@@ -763,6 +925,11 @@ export class SlackAdapter implements MessagingAdapter {
     await this.apiClient.call('pins.add', { channel: channelId, timestamp });
   }
 
+  /** Unpin a message (conversation-pinned-messages). */
+  async unpinMessage(channelId: string, timestamp: string): Promise<void> {
+    await this.apiClient.call('pins.remove', { channel: channelId, timestamp });
+  }
+
   /** Send an ephemeral message (visible only to one user). */
   async postEphemeral(channelId: string, userId: string, text: string): Promise<void> {
     await this.formattedApiCall('chat.postEphemeral', { channel: channelId, user: userId, text });
@@ -813,17 +980,106 @@ export class SlackAdapter implements MessagingAdapter {
     }
   }
 
+  /** Return only messages belonging to a channel or thread routing key. */
+  async getConversationMessagesWithFallback(routingKey: string, limit = 30): Promise<SlackMessage[]> {
+    const target = this.parseRoutingKey(routingKey);
+    const belongs = (m: SlackMessage) =>
+      this.resolveRoutingKey(target.channelId, m.thread_ts, m.ts) === routingKey ||
+      (target.threadTs !== undefined && m.ts === target.threadTs);
+    const cached = this.getChannelMessages(target.channelId, 200).filter(belongs);
+    if (!target.threadTs) {
+      if (cached.length > 0) return cached.slice(-limit);
+      return (await this.getChannelMessagesWithFallback(target.channelId, limit)).filter(belongs);
+    }
+    // A new inbound reply can make the cache nonempty immediately after a
+    // restart, while all preceding thread context is still absent. Read the
+    // thread API for recovery even when that one reply is cached.
+    try {
+      const remote = await this.channelManager.getThreadHistory(target.channelId, target.threadTs, limit);
+      const merged = new Map([...remote, ...cached].map(m => [m.ts, m]));
+      return [...merged.values()].filter(belongs).sort((a, b) => Number(a.ts) - Number(b.ts)).slice(-limit);
+    } catch (err) {
+      console.warn(`[slack] Thread history fallback failed for ${routingKey}: ${(err as Error).message}`);
+      return cached.slice(-limit);
+    }
+  }
+
   /** Get user info (cached for 5 minutes). */
-  async getUserInfo(userId: string): Promise<{ id: string; name: string }> {
+  /**
+   * A user's display name from the cache, or null while it is being fetched (fb-4db533fa-9d9). Sync
+   * for read paths that cannot wait (the app's Slack history); a miss starts one lookup, and a later
+   * read has the name. A failed lookup is logged with its reason.
+   */
+  cachedUserName(userId: string): string | null {
+    if (!/^[UWB][A-Z0-9]{2,30}$/.test(userId)) return null;
+    const c = this.userCache.get(userId);
+    if (!c || Date.now() - c.fetchedAt >= 5 * 60 * 1000) this.warmName('user', userId);
+    return c ? c.name : null;
+  }
+
+  /** A channel's name (without '#') from the cache, or null while it is being fetched (fb-4db533fa-9d9). */
+  cachedChannelName(channelId: string): string | null {
+    const id = channelId.split(':')[0];
+    if (!/^[CGD][A-Z0-9]{2,30}$/.test(id)) return null;
+    const c = this.channelNameCache.get(id);
+    if (!c || Date.now() - c.fetchedAt >= 60 * 60 * 1000) this.warmName('channel', id);
+    return c ? c.name : null;
+  }
+
+  /**
+   * Whether a channel id is a channel (public or private), a DM or a group DM: from conversations.info once
+   * known, else from the id ('D' is always a DM). Null when not yet known.
+   */
+  cachedChannelKind(channelId: string): SlackChannelKind | null {
+    const id = channelId.split(':')[0];
+    if (!/^[CGD][A-Z0-9]{2,30}$/.test(id)) return null;
+    const known = this.channelKindCache.get(id);
+    if (known) return known;
+    if (id.startsWith('D')) return 'dm';
+    this.cachedChannelName(id); // warms the lookup that also records the kind
+    return null;
+  }
+
+  private warmName(kind: 'user' | 'channel', id: string): void {
+    const key = `${kind}:${id}`;
+    if (this.nameLookupsInFlight.has(key) || !this.started) return;
+    this.nameLookupsInFlight.add(key);
+    const lookup = kind === 'user'
+      ? this.getUserInfo(id).then(() => undefined)
+      : this.channelManager.getChannelInfo(id).then((info) => {
+        const kindOf = info as { is_im?: boolean; is_mpim?: boolean } | undefined;
+        if (kindOf) this.channelKindCache.set(id, kindOf.is_im ? 'dm' : kindOf.is_mpim ? 'group-dm' : 'channel');
+        if (kindOf?.is_im) return; // a DM has no channel name; its title never uses one
+        const identity = verifiedChannelIdentity('slack', id, (info as { name?: string } | undefined)?.name);
+        if (!identity) throw new Error('conversations.info returned no usable name');
+        this.channelNameCache.set(id, { name: identity.name, fetchedAt: Date.now() });
+      });
+    void lookup.catch((err) => this.noteNameLookupFailure(kind, id, err)).finally(() => this.nameLookupsInFlight.delete(key));
+  }
+
+  private noteNameLookupFailure(kind: 'user' | 'channel', id: string, err: unknown): void {
+    const key = `${kind}:${id}`;
+    const last = this.nameLookupFailureLoggedAt.get(key) ?? 0;
+    if (Date.now() - last < 60 * 60 * 1000) return;
+    this.nameLookupFailureLoggedAt.set(key, Date.now());
+    console.warn(`[slack] could not resolve the ${kind} name of ${id}; showing the id instead: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  async getUserInfo(userId: string, opts?: { refresh?: boolean }): Promise<{ id: string; name: string }> {
     const cached = this.userCache.get(userId);
-    if (cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
+    if (!opts?.refresh && cached && Date.now() - cached.fetchedAt < 5 * 60 * 1000) {
       return { id: userId, name: cached.name };
     }
 
     const result = await this.apiClient.call('users.info', { user: userId });
-    const user = result.user as { id: string; real_name?: string; name: string };
+    const user = result.user as { id: string; real_name?: string; name: string; is_bot?: boolean; deleted?: boolean };
     const name = user.real_name || user.name;
-    this.userCache.set(userId, { name, fetchedAt: Date.now() });
+    // is_bot is recorded only when Slack states it, so a partial answer never counts as a person.
+    this.userCache.set(userId, {
+      name, fetchedAt: Date.now(),
+      ...(typeof user.is_bot === 'boolean' ? { isBot: user.is_bot } : {}),
+      deleted: user.deleted === true,
+    });
     return { id: userId, name };
   }
 
@@ -1013,20 +1269,69 @@ export class SlackAdapter implements MessagingAdapter {
 
   // ── Channel Resume Map ──
 
-  /** Save a session UUID for resume when a channel goes idle. */
+  /** session-swap-any-conversation §3.1: what the resume record's single save consults. */
+  setResumeGuards(guards: SlackResumeGuards | null): void { this.resumeGuards = guards; }
+
+  /**
+   * Save a session UUID for resume when a channel goes idle. All three writers (kill hook, resume
+   * heartbeat, shutdown save) come here, so the guards apply to each: the record stores the engine
+   * it was made under and where its id came from, and nothing is saved while the profile
+   * orchestrator's write gate refuses (mid-switch). A save the gate allows replaces a parked entry,
+   * as Telegram's resume map does: after a switch lands, the new session's id is the one to keep.
+   */
   saveChannelResume(channelId: string, uuid: string, sessionName: string): void {
+    const facts = this.resumeGuards?.sessionFacts(sessionName) ?? null;
+    if (this.resumeGuards) {
+      let gate: { allowed: boolean; reason?: string };
+      try { gate = this.resumeGuards.writeGate(`slack:${channelId}`, facts?.framework ?? null); }
+      catch { gate = { allowed: true }; } // @silent-fallback-ok — a gate fault keeps today's save; the spawn still checks the engine before resuming
+      if (!gate.allowed) return;
+    }
     this.channelResumeMap.set(channelId, {
       uuid,
       savedAt: new Date().toISOString(),
       sessionName,
+      ...(facts ? { framework: facts.framework ?? undefined, provenance: facts.hookId === uuid ? 'hook' as const : 'mtime' as const } : {}),
     });
     this._saveChannelResumeMap();
   }
 
-  /** Get the resume UUID for a channel (returns null if none or expired). */
-  getChannelResume(channelId: string): { uuid: string; sessionName: string } | null {
+  /**
+   * Set a record aside for a fresh restart (the orchestrator's park). Idempotent. The record stays
+   * on disk, so `unparkChannelResume` restores it after a failed kill or a breaker revert.
+   */
+  parkChannelResume(channelId: string, reason: string): void {
+    const e = this.channelResumeMap.get(channelId);
+    if (!e || e.parked) return;
+    e.parked = { at: new Date().toISOString(), reason };
+    this._saveChannelResumeMap();
+  }
+
+  /** Restore a parked record. True when one was restored. Idempotent. */
+  unparkChannelResume(channelId: string): boolean {
+    const e = this.channelResumeMap.get(channelId);
+    if (!e?.parked) return false;
+    delete e.parked;
+    this._saveChannelResumeMap();
+    return true;
+  }
+
+  /** The unparked record's id and engine, without consuming it (the orchestrator's resume views). */
+  peekChannelResume(channelId: string): { uuid: string; framework: string | null; provenance: 'hook' | 'mtime' | null } | null {
+    const e = this.channelResumeMap.get(channelId);
+    if (!e || this._expireResume(channelId, e) || e.parked) return null;
+    return { uuid: e.uuid, framework: e.framework ?? null, provenance: e.provenance ?? null };
+  }
+
+  /**
+   * Get the resume UUID for a channel (returns null if none, parked or expired). With `forFramework`
+   * (spec §3.1), only a record made under that engine is returned; a record from before engines were
+   * stored is returned only when `legacyOk` (the spawn is on the agent default).
+   */
+  getChannelResume(channelId: string, forFramework?: { framework: string; legacyOk: boolean }): { uuid: string; sessionName: string } | null {
     const entry = this.channelResumeMap.get(channelId);
-    if (!entry) return null;
+    if (!entry || this._expireResume(channelId, entry) || entry.parked) return null;
+    if (forFramework && (entry.framework ? entry.framework !== forFramework.framework : !forFramework.legacyOk)) return null;
     // Expire entries older than 24 hours
     const age = Date.now() - new Date(entry.savedAt).getTime();
     if (age > 24 * 60 * 60 * 1000) {
@@ -1035,6 +1340,14 @@ export class SlackAdapter implements MessagingAdapter {
       return null;
     }
     return { uuid: entry.uuid, sessionName: entry.sessionName };
+  }
+
+  /** Drop an entry older than 24 hours, parked or not. True when it was dropped. */
+  private _expireResume(channelId: string, e: SlackResumeEntry): boolean {
+    if (Date.now() - new Date(e.savedAt).getTime() <= 24 * 60 * 60 * 1000) return false;
+    this.channelResumeMap.delete(channelId);
+    this._saveChannelResumeMap();
+    return true;
   }
 
   /** Remove a resume entry (consumed after resume). */
@@ -1076,6 +1389,9 @@ export class SlackAdapter implements MessagingAdapter {
         if (now - entry.injectedAt > timeoutMs) {
           this.pendingStalls.delete(key);
 
+          const alive = this.onIsSessionAlive ? this.onIsSessionAlive(entry.sessionName) : true;
+          if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
+
           // Delegate to triage system if available
           if (this.onStallDetected) {
             this.onStallDetected(entry.channelId, entry.sessionName, entry.text, entry.injectedAt);
@@ -1084,15 +1400,13 @@ export class SlackAdapter implements MessagingAdapter {
 
           // Fallback: LLM-gated user-facing alert
           const minutesAgo = Math.round((now - entry.injectedAt) / 60000);
-          const alive = this.onIsSessionAlive ? this.onIsSessionAlive(entry.sessionName) : true;
           const shouldAlert = await this.confirmStallAlert({
             type: 'stall', sessionName: entry.sessionName,
             messageText: entry.text, minutesElapsed: minutesAgo, sessionAlive: alive,
           });
-          if (shouldAlert) {
-            const status = alive ? 'running but not responding' : 'no longer running';
+          if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(entry.sessionName))) {
             this.sendToChannel(entry.channelId,
-              `⚠️ No response after ${minutesAgo} minutes. "${entry.sessionName}" is ${status}.\n\n${alive ? 'Use `!interrupt` to nudge it, or `!restart` to start fresh.' : 'Send another message to start a new session.'}`
+              `No response yet after ${minutesAgo} minutes. I'm checking on it.`
             ).catch(() => {});
           }
         }
@@ -1106,6 +1420,7 @@ export class SlackAdapter implements MessagingAdapter {
 
           promise.alerted = true;
           const alive = this.onIsSessionAlive ? this.onIsSessionAlive(promise.sessionName) : true;
+          if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
 
           // Delegate to triage if available
           if (this.onStallDetected) {
@@ -1119,9 +1434,9 @@ export class SlackAdapter implements MessagingAdapter {
             type: 'promise-expired', sessionName: promise.sessionName,
             messageText: promise.promiseText, minutesElapsed: minutesAgo, sessionAlive: alive,
           });
-          if (shouldAlert) {
+          if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(promise.sessionName))) {
             this.sendToChannel(channelId,
-              `⚠️ The agent said "${promise.promiseText.slice(0, 80)}..." ${minutesAgo} minutes ago but hasn't followed up.\n\n${alive ? 'Use `!interrupt` to nudge or `!restart` to start fresh.' : 'Session has ended. Send a new message to start.'}`
+              `I haven't followed up on "${promise.promiseText.slice(0, 80)}" yet. I'm checking on it.`
             ).catch(() => {});
           }
         }
@@ -1276,7 +1591,7 @@ export class SlackAdapter implements MessagingAdapter {
       if (fs.existsSync(this.channelResumeMapPath)) {
         const data = JSON.parse(fs.readFileSync(this.channelResumeMapPath, 'utf-8'));
         for (const [k, v] of Object.entries(data)) {
-          this.channelResumeMap.set(k, v as { uuid: string; savedAt: string; sessionName: string });
+          this.channelResumeMap.set(k, v as SlackResumeEntry);
         }
       }
     } catch { /* non-fatal */ }
@@ -1379,13 +1694,14 @@ export class SlackAdapter implements MessagingAdapter {
 
     // In mention-only mode, skip messages that don't @mention the bot (except DMs and commands)
     const isDM = channelId.startsWith('D');
+    const isConversationsRequest = /^[/!]conversations(?:\s|$)/i.test(text.trim());
 
     // Slack org permission gate (Slice 0 observe-only → Phase 1 enforce).
     // Observe-only (default): log the verdict for FP-rate measurement; never block.
     // Enforce (opt-in, dark): on a non-allow verdict, send the conversational reply
     // and stop processing — the gate refused / asked to clarify / requires step-up.
     if (this.permissionObserver) {
-      const directed = isDM || this._isBotMentioned(text);
+      const directed = isDM || this._isBotMentioned(text) || isConversationsRequest;
       const pInput = { slackUserId: userId, displayName: userId, text, directed, channel: channelId };
       if (this.permissionObserver.enforcing) {
         const verdict = await this.permissionObserver.observe(pInput);
@@ -1403,7 +1719,7 @@ export class SlackAdapter implements MessagingAdapter {
       }
     }
 
-    if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text)) {
+    if (this.respondMode === 'mention-only' && !isDM && !this._isBotMentioned(text) && !isConversationsRequest) {
       // ── Ambient "should I speak?" gate (considered/ambient mode, §5.2) ──────────
       // This opt-in gate returns exactly one closed action: speak processes the
       // message downstream, react makes one fixed eyes-reaction attempt and returns,
@@ -1452,9 +1768,10 @@ export class SlackAdapter implements MessagingAdapter {
 
     // Handle commands (Slack intercepts / prefix, so we use ! prefix)
     // Supports both !command and /command (in case Slack delivers it)
-    if (text.startsWith('!') || text.startsWith('/')) {
-      const normalizedText = text.startsWith('!') ? '/' + text.slice(1) : text;
-      const handled = await this._handleSlashCommand(normalizedText, channelId, ts);
+    const commandText = isConversationsRequest ? text.trim() : text;
+    if (commandText.startsWith('!') || commandText.startsWith('/')) {
+      const normalizedText = commandText.startsWith('!') ? '/' + commandText.slice(1) : commandText;
+      const handled = await this._handleSlashCommand(normalizedText, channelId, ts, threadTs);
       if (handled) return;
     }
 
@@ -1641,8 +1958,9 @@ export class SlackAdapter implements MessagingAdapter {
     try {
       const info = await this.getUserInfo(userId);
       senderName = info.name;
-    } catch {
-      // Use userId as fallback
+    } catch (err) {
+      // The id stands in for the name; the reason is logged (once an hour per user), never silent.
+      this.noteNameLookupFailure('user', userId, err);
     }
 
     // Log inbound message
@@ -1845,13 +2163,16 @@ export class SlackAdapter implements MessagingAdapter {
     try {
       const info = await this.getUserInfo(userId);
       senderName = info.name;
-    } catch {
-      // Use userId as fallback
+    } catch (err) {
+      // The id stands in for the name; the reason is logged (once an hour per user), never silent.
+      this.noteNameLookupFailure('user', userId, err);
     }
 
-    // Log inbound file
+    // Log inbound file under the share's real message ts when Slack gave one (files.info
+    // `shares`), else the event's own `event_ts`, else the file id: all fixed by Slack, so the
+    // TopicMemory row key (context-budget §14) is the same on every machine. Never Date.now().
     const logEntry: LogEntry = {
-      messageId: ts,
+      messageId: fileShareLogId(fileInfo, channelId, event, fileId),
       channelId,
       text: cleanText,
       fromUser: true,
@@ -1959,7 +2280,7 @@ export class SlackAdapter implements MessagingAdapter {
    * sent from the Instar app (mobile-native-conversations §4.9; it carries the app store's
    * `eventId`). Without these rows the app's Slack history would show only one side.
    */
-  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }): void {
+  logMessage(entry: { messageId: string; channelId: string; threadTs?: string | null; text: string; fromUser: boolean; senderName?: string; platformUserId?: string; eventId?: string; deviceId?: string }, opts: { notify?: boolean } = {}): void {
     const row: LogEntry = {
       messageId: entry.messageId, channelId: entry.channelId, text: entry.text, fromUser: entry.fromUser,
       timestamp: new Date().toISOString(), sessionName: null, platform: 'slack',
@@ -1970,6 +2291,14 @@ export class SlackAdapter implements MessagingAdapter {
       ...(entry.deviceId ? { deviceId: entry.deviceId } : {}),
     };
     this.logger.append(row);
+    // The same seam every logged Slack row reaches (TopicMemory rows, presence, learning), so an
+    // operator message sent from the Instar app is a row too (context-budget §14). A caller that
+    // already notifies for this row itself passes `notify: false` (the agent-reply route does).
+    if (opts.notify !== false) {
+      try { this.onMessageLogged?.(row); } catch (err) {
+        console.error(`[slack] onMessageLogged failed for a logged row: ${(err as Error).message}`);
+      }
+    }
   }
 
   /** The path of slack-messages.jsonl (bounded tail reads by the app's history route). */
@@ -2130,12 +2459,19 @@ export class SlackAdapter implements MessagingAdapter {
   // ── Slash Commands (Telegram parity) ──
 
   /** Handle slash commands from Slack messages. Returns true if handled. */
-  private async _handleSlashCommand(text: string, channelId: string, ts: string): Promise<boolean> {
+  private async _handleSlashCommand(text: string, channelId: string, ts: string, threadTs?: string): Promise<boolean> {
     const parts = text.trim().split(/\s+/);
     const cmd = parts[0].toLowerCase();
     const args = parts.slice(1).join(' ');
 
     switch (cmd) {
+      case '/conversations': {
+        // A neutral, authenticated-app pointer is safe in public/private
+        // channels, DMs, guest-visible and retained-history destinations alike.
+        // No graph service read and no owner detail enters a model session.
+        await this.sendToChannel(channelId, conversationsPointer(this.conversationsUrl()), { thread_ts: threadTs || ts });
+        return true;
+      }
       case '/sessions': {
         // List running sessions
         const sessions = this.getChannelRegistry();
@@ -2276,6 +2612,7 @@ export class SlackAdapter implements MessagingAdapter {
         await this.sendToChannel(channelId,
           `Available commands (use \`!\` prefix in Slack):\n` +
           `• \`!sessions\` — List running sessions\n` +
+          `• \`!conversations\` — Open your private Conversations view\n` +
           `• \`!new [name]\` — Create a new session channel\n` +
           `• \`!claim <session>\` — Link a session to this channel\n` +
           `• \`!unlink\` — Unlink session from this channel\n` +

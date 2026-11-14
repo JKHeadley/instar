@@ -708,6 +708,13 @@ export function resolveAnthropicLaunchFields(
 export function readConfiguredAnthropicKey(stateDir: string): string | null | undefined {
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(stateDir, 'config.json'), 'utf-8')) as { sessions?: Record<string, unknown> };
+    // A value that is not a string (a secret-store placeholder such as { secret: true }) is only filled in
+    // at boot, so disk cannot say what the key is: keep the one in use. The key watch reads this every
+    // minute, so reading it as "no key" would wipe a working key.
+    const sessions = raw.sessions as { credentials?: { anthropic?: { value?: unknown } }; anthropicApiKey?: unknown } | undefined;
+    const credentialValue = sessions?.credentials?.anthropic?.value;
+    if ((credentialValue !== undefined && typeof credentialValue !== 'string')
+      || (sessions?.anthropicApiKey !== undefined && sessions.anthropicApiKey !== null && typeof sessions.anthropicApiKey !== 'string')) return undefined;
     return resolveAnthropicLaunchFields(raw.sessions).anthropicApiKey || null;
   } catch { return undefined; } // @silent-fallback-ok: an unreadable file keeps the last key, by contract above
 }
@@ -1304,6 +1311,7 @@ export function loadConfig(projectDir?: string): InstarConfig {
     },
     authToken: fileConfig.authToken,
     dashboardPin: fileConfig.dashboardPin,
+    dashboardPinGeneration: fileConfig.dashboardPinGeneration,
     relationships: fileConfig.relationships || {
       relationshipsDir: path.join(stateDir, 'relationships'),
       maxRecentInteractions: 20,

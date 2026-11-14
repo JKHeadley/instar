@@ -18,7 +18,7 @@ export class MessageFormatter {
    * Format a message for inline delivery (standard case).
    * Includes full body, reply/ack instructions, and optional thread context.
    */
-  formatInline(message: AgentMessage, thread?: MessageThread): string {
+  formatInline(message: AgentMessage, thread?: MessageThread, opts?: { replyHint?: string }): string {
     const sender = `${message.from.agent}/${message.from.session}`;
     const subject = this.truncateSubject(message.subject);
     const sanitizedBody = this.sanitize(message.body);
@@ -62,6 +62,8 @@ export class MessageFormatter {
       // Same agent (another of my own sessions): reply session-to-session, never
       // through a user topic (bug 2026-11-03, Echo Bugs topic 10000001474).
       lines.push(`Reply: POST /messages/send to session "${message.from.session}" (type handoff). Never answer an agent message in a user topic.`);
+    } else if (opts?.replyHint) {
+      lines.push(`Reply: ${opts.replyHint}`);
     } else {
       lines.push(`Reply: Use the threadline_send MCP tool with the sender's agentId and threadId to reply.`);
     }

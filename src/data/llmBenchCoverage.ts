@@ -41,6 +41,10 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   ExternalHogClassifier: { task: 'zombie-classify' },
   MessagingToneGate: { task: 'tone-gate' },
   AttributionJudge: { pending: 'wave-3' },
+  // chief-of-staff-topic.md §2.5: the per-project verdict judge (stalled / moving / claims-done / unknown over a
+  // bounded evidence bundle). Graded in production by its decision-quality seam (DP_COS_PROJECT_VERDICT:
+  // progress observed after a restart) until a bench battery lands.
+  ChiefOfStaffLoop: { pending: 'wave-3' },
   // CompletionEvaluator has TWO judged surfaces; both benched.
   CompletionEvaluator: { task: 'completion-judge+p13-stop-judge' },
   ExternalOperationGate: { task: 'external-op-gate' },
@@ -137,11 +141,18 @@ export const LLM_BENCH_COVERAGE: Readonly<Record<string, BenchCoverage>> = {
   PipeSessionSpawner: { pending: 'wave-3' },
   CartographerSweep: { pending: 'wave-3' },
   PreCompactionFlush: { pending: 'wave-3' },
+  // context-budget-layered-summaries §6.5 (Phase 1 S8): chunk/C2 summaries; graded by the Phase 2 fold probes (§10) until a bench task lands. <!-- tracked: CMT-1536 -->
+  ContextLayerChunk: { pending: 'wave-3' },
   TreeSynthesis: { pending: 'wave-3' },
   LLMConflictResolver: { pending: 'wave-3' },
   openConversationBrief: { pending: 'wave-3' },
   'a2a-checkin': { pending: 'wave-3' },
   'mentor-stage-b': { pending: 'wave-3' },
+  // skill-learning-sentinel slice 1 (2026-11-06): the arbiter/drafter and the cross-family reviewer run shadow-only
+  // (proposals, never renders) and are graded by the rung-1 operator agree/disagree sample until a bench task lands.
+  'skillLearning.drafter': { pending: 'wave-3' },
+  'skillLearning.reviewer': { pending: 'wave-3' },
+  'skillLearning.classifier': { task: 'skill-learning-classifier' },
   'correction-class-review': { pending: 'wave-3' },
   'completion-claim-verify': { pending: 'wave-3' },
   // Closed action selection over adversarial provider-page state. The task
@@ -189,6 +200,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   StallTriageNurse: true,
   CommitmentSentinel: true,
   PresenceProxy: true,
+  ChiefOfStaffLoop: true, // judges a project's session tail + owner/agent messages + linked-work evidence
   MessageSentinel: true,
   ProjectDriftChecker: true,
   TemporalCoherenceChecker: true,
@@ -239,6 +251,7 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   Usher: true,
   TopicIntentExtractor: true,
   PreCompactionFlush: true,
+  ContextLayerChunk: true,
   TreeSynthesis: true,
   LLMConflictResolver: true, // divergent multi-machine state = untrusted peer data
   openConversationBrief: true,
@@ -247,6 +260,9 @@ export const LLM_UNTRUSTED_INPUT: Readonly<Record<string, UntrustedInputFlag>> =
   'correction-class-review': true, // correction summary + prior model-derived candidates + standards/tool context
   'completion-claim-verify': true, // outbound model text + structural tool evidence
   'mentor-stage-b': true,
+  'skillLearning.drafter': true, // operator messages + the agent's tool-call outline (args excerpts are untrusted evidence)
+  'skillLearning.reviewer': true, // the other family's draft + operator messages + tool-call outline
+  'skillLearning.classifier': true, // operator message text re-read from TopicMemory + model-proposed procedure keys
   DashboardInsightEngine: true, // summarizes page data incl. user/peer-authored rows (relationships/threadline/commitments)
 
   // ── Jobs authoring over untrusted file/code content → true ──
@@ -358,6 +374,9 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   // ── Judges (judgesClaims: true) ────────────────────────────────────────────
   // Completion evaluators — credit/refuse a claim of asserted work.
   CompletionEvaluator: { claimKind: 'completionClaim' }, // THE motivating callsite: credited a bare "tests pass"
+  // chief-of-staff-topic.md §2.5: the verdict judge refuses or credits a project's "done" claim against its
+  // deterministic checklist (claims-done never closes on the claim alone) → judges a completion claim.
+  ChiefOfStaffLoop: { claimKind: 'completionClaim' },
   UnjustifiedStopGate: { claimKind: 'completionClaim' }, // judges whether a stop is justified = is the claimed work actually done/blocked
   JobReflector: { claimKind: 'completionClaim' }, // reflects on job success/completion (spec §2 pending-wave judge; classified now so the asymmetry can't silently reopen)
 
@@ -370,6 +389,9 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
 
   // Scored evaluators — award credit for claimed work.
   'mentor-stage-b': { claimKind: 'scoredCredit' }, // classifies mentor signals over mentee output (spec §2 pending-wave judge)
+  'skillLearning.drafter': false, // drafts a skill / decides draft-wait-never; never credits a completion/health claim
+  'skillLearning.reviewer': false, // clears or strikes draft lines; never credits a completion/health claim
+  'skillLearning.classifier': false, // keys operator requests; an outcome label is corroborated by the §3.6 join (delivered reply + telemetry + transcript), never credited by this verdict alone
 
   // ── Not a completion/progress/health judge (judgesClaims: false) ────────────
   // Sentinels that classify/summarize but do not credit a completion/health claim.
@@ -425,6 +447,7 @@ export const LLM_JUDGES_CLAIMS: Readonly<Record<string, JudgesClaimsFlag>> = {
   Usher: false, // routes a turn to candidate topics
   TopicIntentExtractor: false, // extracts topic intent from a turn
   PreCompactionFlush: false, // extracts durable facts before compaction
+  ContextLayerChunk: false, // summarizes an archived span of agent work; judges no claim
   TreeSynthesis: false, // synthesizes knowledge fragments → answer
   LLMConflictResolver: false, // resolves divergent multi-machine state
   openConversationBrief: false, // generates an A2A conversation brief
@@ -514,6 +537,7 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   StallTriageNurse: { pending: 'contract-wave-2' }, // closed stall-triage diagnosis label
   CommitmentSentinel: { pending: 'contract-wave-2' }, // closed commitment-detected verdict + structured envelope
   PresenceProxy: { pending: 'contract-wave-2' }, // closed tier-3 stall verdict
+  ChiefOfStaffLoop: { pending: 'contract-wave-2' }, // closed project verdict (moving/stalled/drifting/claims-done/waiting-on-user/unknown) + cited evidence ids
   ProjectDriftChecker: { pending: 'contract-wave-2' }, // closed on-project verdict
   TemporalCoherenceChecker: { pending: 'contract-wave-2' }, // closed temporal-coherence verdict
   SessionWatchdog: { pending: 'contract-wave-2' }, // closed stuck verdict
@@ -624,6 +648,10 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
     false:
       'extracts durable facts before compaction as free-text content — no closed taught output vocabulary a parser gates on',
   },
+  ContextLayerChunk: {
+    false:
+      'summarizes an archived transcript span into free-text fields (attempted, outcome, artifacts, open threads) — a shape check, no closed taught verdict vocabulary a parser gates on',
+  },
   TreeSynthesis: {
     false:
       'synthesizes knowledge fragments into a free-text answer — the prose is the product, no closed taught verdict vocabulary a parser accepts',
@@ -650,10 +678,17 @@ export const LLM_PARSER_CONTRACT: Readonly<Record<string, ParserContractFlag>> =
   'completion-claim-verify': {
     contractTest: 'tests/unit/turn-evidence-completion-verifier.test.ts',
   },
+  'skillLearning.drafter': {
+    contractTest: 'tests/unit/skill-learning-drafter.test.ts', // covered-by|patch|new + canonical SKILL.md shape; arbiter draft|wait|never
+  },
+  'skillLearning.reviewer': {
+    contractTest: 'tests/unit/skill-learning-drafter.test.ts', // {follows, lines:{id: clear|strike}} — undecided counts as struck
+  },
   'mentor-stage-b': {
     false:
       'classifies mentor signals over mentee output into differential content — no closed taught verdict vocabulary a parser gates on (its own bench coverage is wave-3)',
   },
+  'skillLearning.classifier': { contractTest: 'tests/integration/skill-learning-classifier.test.ts' },
   PipeSessionSpawner: {
     false:
       'spawns sessions from task descriptions — no LLM output parsed into a closed taught verdict vocabulary',
@@ -836,6 +871,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   StallTriageNurse: exposed(EXPOSED_MODEL), // session output
   CommitmentSentinel: exposed(EXPOSED_USER_MODEL), // both sides of a conversation
   PresenceProxy: exposed(EXPOSED_MODEL), // session-stall over session output
+  ChiefOfStaffLoop: exposed(EXPOSED_ALL), // owner + agent messages, session tail, gh/page evidence
   MessageSentinel: exposed(EXPOSED_USER), // inbound user message (R8 input-classifier — must stay exposed)
   ProjectDriftChecker: exposed(EXPOSED_MODEL_TOOL), // session work + files
   TemporalCoherenceChecker: exposed(EXPOSED_USER_MODEL),
@@ -887,6 +923,7 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   Usher: exposed(EXPOSED_USER), // routes an inbound turn
   TopicIntentExtractor: exposed(EXPOSED_USER),
   PreCompactionFlush: exposed(EXPOSED_MODEL_TOOL), // durable facts from a transcript
+  ContextLayerChunk: exposed(EXPOSED_ALL), // a transcript span: operator turns, agent prose and tool output
   TreeSynthesis: exposed(EXPOSED_TOOL),
   LLMConflictResolver: exposed(EXPOSED_TOOL), // divergent peer state = untrusted peer data
   openConversationBrief: exposed(EXPOSED_TOOL), // A2A peer content
@@ -895,6 +932,9 @@ export const LLM_ROUTING_INJECTION_EXPOSURE: Readonly<Record<string, InjectionEx
   'correction-class-review': exposed(EXPOSED_ALL),
   'completion-claim-verify': exposed(EXPOSED_MODEL_TOOL),
   'mentor-stage-b': exposed(EXPOSED_MODEL_TOOL), // mentor signals over mentee output
+  'skillLearning.drafter': exposed(EXPOSED_USER_TOOL), // operator requests + the agent's own tool-call targets/args
+  'skillLearning.reviewer': exposed(EXPOSED_ALL), // another family's draft + operator requests + tool-call outline
+  'skillLearning.classifier': exposed(EXPOSED_USER_MODEL), // operator message text + model-proposed procedure keys folded by meaning
   ResumeValidator: exposed(EXPOSED_TOOL), // matches a resume UUID against topic/session state
   DashboardInsightEngine: exposed(EXPOSED_ALL), // summarizes page data that can embed user + model + tool content (fail-safe: never onto a non-injection door)
 

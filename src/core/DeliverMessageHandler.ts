@@ -15,15 +15,18 @@
  * router advances the platform offset only on this ACK (exactly-once ingress).
  */
 
-import type { MeshCommand, MeshCommandHandler } from './MeshRpc.js';
+import type { MeshCommand, MeshCommandHandler, MeshEnvelope } from './MeshRpc.js';
 
 export interface DeliverMessageHandlerDeps {
   /** The owner's current ownership epoch for a session, or null if no record. */
   ownerEpochOf: (session: string) => number | null;
   /** Durably record a receipt (idempotency key = messageId). Returns true iff FIRST time. */
   recordReceipt: (messageId: string, session: string) => boolean;
+  /** Optional synchronous durable admission before the duplicate receipt. A
+   * failure propagates without recording receipt; no ACK may invent custody. */
+  beforeReceipt?: (command:Extract<MeshCommand,{type:'deliverMessage'}>,sender:string,envelope:MeshEnvelope)=>void;
   /** Optional hand-off to local processing (Track-H staged activation). Dark by default. */
-  onAccepted?: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => void;
+  onAccepted?: (command: Extract<MeshCommand, { type: 'deliverMessage' }>, sender: string, envelope: MeshEnvelope) => void;
   /**
    * Durable Inbound Message Queue §3.4 remote path: re-validate a CARRIED
    * senderEnvelope.userId against THIS machine's users registry before
@@ -33,7 +36,7 @@ export interface DeliverMessageHandlerDeps {
    * the peer is never marked suspect. Only consulted when the envelope is
    * PRESENT (an old sender never carries one — version skew named).
    */
-  validateSender?: (senderEnvelope: { userId?: string | number }, session: string) => boolean;
+  validateSender?: (senderEnvelope: { userId?: string | number; via?: string; deviceId?: string; eventId?: string }, session: string, payload?: unknown) => boolean;
   /**
    * session-pool-no-silent-drop: refuse what this machine would accept and then drop. The
    * checks come as one object so a refusal can never be set up without the duplicate guard.
@@ -51,6 +54,23 @@ export interface DeliverMessageHandlerDeps {
     onCannotServe?: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => void;
   };
   /**
+   * The app arm (app-conversations-in-the-pool §2.4). `isApp` picks the commands it applies to; the rest
+   * never reach these seams.
+   */
+  app?: {
+    isApp: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => boolean;
+    /**
+     * A stop or pause this machine accepts as the conversation's current owner, at an epoch at least
+     * the forwarded one. Checked before the stale fence: the owner's own transfer raises its epoch and
+     * the lease holder learns that only through the journal, so a stop must never lose to that.
+     */
+    urgentAccepted: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => boolean;
+    /** May this machine take it now? False answers `not-yet`, and the sender keeps it queued. */
+    canTake: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => boolean;
+    /** Durably ingest the carried signed event, idempotent by event id. False answers `not-yet`. Runs before the receipt. */
+    ingest: (command: Extract<MeshCommand, { type: 'deliverMessage' }>) => boolean;
+  };
+  /**
    * silent-loss-refusal-conservation §2.B — the receiver-side rejection trace.
    * Fired SYNCHRONOUSLY, once, immediately before the `sender-rejected` NACK is
    * returned, so the DECIDING (owner) machine keeps a forensic record of its own
@@ -61,11 +81,21 @@ export interface DeliverMessageHandlerDeps {
    * SAME rejected messageId) — the trace is written once per rejection, bounded.
    */
   onRejected?: (meta: { reason: 'sender-rejected'; session: string; messageId: string; senderUid?: number }) => void;
+  /**
+   * Relay-path row carrier (context-budget-layered-summaries §14): land the carried
+   * TopicMemory row (`command.row`, absent from an older peer) in THIS machine's
+   * TopicMemory BEFORE the receipt, keyed and idempotent, so a crash between the two
+   * leaves a redelivery that lands it again. Runs for every accepted, duplicate or
+   * re-delivered message (never for a refused, stale or rejected one, and never for an
+   * app conversation, whose rows come from the replicated store). A fault here never
+   * changes the answer: the message is still received.
+   */
+  landRow?: (command: Extract<MeshCommand, { type: 'deliverMessage' }>, sender: string) => void;
 }
 
 export type DeliverMessageAck = {
   messageId: string;
-  accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected';
+  accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet';
 };
 
 /** Bounded per-(session,messageId) rejection suppression (§2.B): a peer replaying
@@ -96,19 +126,27 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
     }
   }
 
-  return (command: MeshCommand): DeliverMessageAck => {
+  return (command: MeshCommand, sender: string, meshEnvelope: MeshEnvelope): DeliverMessageAck => {
     if (command.type !== 'deliverMessage') {
       // Defensive — the dispatcher only routes deliverMessage here, but be total.
       return { messageId: 'unknown', accepted: 'queued' };
     }
+    const appCommand = deps.app?.isApp(command) === true;
+    const urgentAccepted = appCommand && deps.app!.urgentAccepted(command);
     const ownerEpoch = deps.ownerEpochOf(command.session);
-    if (ownerEpoch != null && command.ownershipEpoch < ownerEpoch) {
+    if (!urgentAccepted && ownerEpoch != null && command.ownershipEpoch < ownerEpoch) {
       return { messageId: command.messageId, accepted: 'stale-ownership' };
     }
     // §3.4 sender re-validation — BEFORE the receipt: a rejected sender's
     // message must never be recorded as received (recording first would dedupe
     // the redelivery's NACK into a 'duplicate' ack).
     const envelope = (command as { senderEnvelope?: { userId?: string | number } }).senderEnvelope;
+    // An app forward always names the device that sent it (app-conversations-in-the-pool §2.4), so one
+    // without an envelope has no sender to check. A Telegram or Slack command keeps today's rule.
+    if (appCommand && !envelope) {
+      try { deps.onRejected?.({ reason: 'sender-rejected', session: command.session, messageId: command.messageId, senderUid: undefined }); } catch { /* @silent-fallback-ok — a trace fault never changes the NACK */ }
+      return { messageId: command.messageId, accepted: 'sender-rejected' };
+    }
     if (envelope && deps.validateSender) {
       const suppressKey = `${command.session}\u0000${command.messageId}`;
       const nowMs = Date.now();
@@ -118,7 +156,7 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
         // registry (and without re-firing the trace: bounded to once per reject).
         return { messageId: command.messageId, accepted: 'sender-rejected' };
       }
-      if (!deps.validateSender(envelope, command.session)) {
+      if (!deps.validateSender(envelope, command.session, command.payload)) {
         rejectionCache.set(suppressKey, nowMs);
         pruneRejectionCache(nowMs);
         // §2.B receiver-side trace — metadata-only, synchronous, before the NACK.
@@ -135,6 +173,20 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
         return { messageId: command.messageId, accepted: 'sender-rejected' };
       }
     }
+    if (appCommand) {
+      if (!urgentAccepted && !deps.app!.canTake(command)) {
+        if (deps.refusal?.alreadyReceived(command.messageId, command.session)) return { messageId: command.messageId, accepted: 'duplicate' };
+        return { messageId: command.messageId, accepted: 'not-yet' };
+      }
+      // Acknowledged only after durable ingest: a failed ingest leaves no receipt, so a retry is a first time.
+      let ingested = false;
+      try { ingested = deps.app!.ingest(command); } catch { ingested = false; } // @silent-fallback-ok — answered not-yet: no receipt, the sender keeps it queued
+      if (!ingested) return { messageId: command.messageId, accepted: 'not-yet' };
+      const first = deps.recordReceipt(command.messageId, command.session);
+      if (!first) return { messageId: command.messageId, accepted: 'duplicate' };
+      deps.onAccepted?.(command, sender, meshEnvelope);
+      return { messageId: command.messageId, accepted: 'queued' };
+    }
     // Answered as stale ownership on purpose: every router, on any build, already takes that
     // as "this message is still yours" and re-places it or keeps it. A new ack value would
     // need every peer upgraded first, and an older peer would read it as nothing.
@@ -145,9 +197,14 @@ export function createDeliverMessageHandler(deps: DeliverMessageHandlerDeps): Me
       try { deps.refusal.onCannotServe?.(command); } catch { /* a trace fault never changes the answer */ }
       return { messageId: command.messageId, accepted: 'stale-ownership' };
     }
+    // §14: the row lands before the receipt (a duplicate lands as a no-op, which also fills a row a crash lost).
+    if (deps.landRow) {
+      try { deps.landRow(command, sender); } catch { /* @silent-fallback-ok — the owner's watermark keeps the gap; the message is still received */ }
+    }
+    deps.beforeReceipt?.(command,sender,meshEnvelope);
     const firstSeen = deps.recordReceipt(command.messageId, command.session);
     if (!firstSeen) return { messageId: command.messageId, accepted: 'duplicate' };
-    deps.onAccepted?.(command);
+    deps.onAccepted?.(command, sender, meshEnvelope);
     return { messageId: command.messageId, accepted: 'queued' };
   };
 }

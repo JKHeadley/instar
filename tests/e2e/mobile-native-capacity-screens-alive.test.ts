@@ -90,6 +90,7 @@ describe('native capacity screens — production wiring', () => {
     expect(accounts.status).toBe(200);
     expect(accounts.body.schemaVersion).toBe(1);
     expect(typeof accounts.body.headline).toBe('string');
+    expect(Array.isArray(accounts.body.notices)).toBe(true);
     expect(Array.isArray(accounts.body.accounts)).toBe(true);
 
     const spend = await send('GET', '/mobile/spend?window=today');
@@ -106,6 +107,14 @@ describe('native capacity screens — production wiring', () => {
     expect(resources.status).toBe(200);
     expect(typeof resources.body.enabled).toBe('boolean');
     expect(typeof resources.body.headline).toBe('string');
+    // The pooled answer is wired (resourceMachines + peerResources): with no pool it is this machine's
+    // own answer; with one it carries every machine. Either way the peer read (?scope=local) answers.
+    if (resources.body.scope === 'pool') expect(Array.isArray(resources.body.machines)).toBe(true);
+    else expect(resources.body.machines).toBeUndefined();
+    const local = await auth(request(app).get('/mobile/resources?scope=local'));
+    expect(local.status).toBe(200);
+    expect(local.body.machines).toBeUndefined();
+    expect(typeof local.body.headline).toBe('string');
     const rawRes = await auth(request(app).get('/resources/summary'));
     expect(resources.body.enabled).toBe(rawRes.status === 200);
 

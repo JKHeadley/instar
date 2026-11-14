@@ -2598,6 +2598,11 @@
     #originsTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
     #phonesTab .action-btn { min-height: 44px; font: inherit; padding: 10px 14px; }
     #phonesTab .phone-approval, #phonesTab .phone-row { border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--bg-panel); margin-bottom: 10px; overflow-wrap: anywhere; }
+    #phonesTab .phone-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+    #phonesTab .phone-row-words { display: flex; flex-direction: column; min-width: 0; }
+    #phonesTab .phone-row-name { font-weight: 600; }
+    #phonesTab .phone-row-detail { color: var(--text-dim); font-size: 0.9em; }
+    #phonesTab .phone-row .action-btn { white-space: nowrap; }
     #phonesTab .phone-code { font-size: 2rem; font-weight: 700; letter-spacing: 0.15em; margin: 8px 0; }
     #phonesTab [role=status]:empty { display: none; }
     #originsTab .glance-root:has(> .glance-drilldown:not([hidden])) > .glance-layer { display: none; }
@@ -4038,6 +4043,9 @@
       .sub-matrix-cell.sub-matrix-just-verified { background:rgba(22,163,74,.14); outline:2px solid #16a34a; animation:subVerifiedPulse 1.2s ease-in-out 3; }
       @keyframes subVerifiedPulse { 0%,100% { box-shadow:none; } 50% { box-shadow:0 0 0 4px rgba(22,163,74,.28); } }
       .sub-pending.sub-pending-done { border-color:#16a34a; background:rgba(22,163,74,.08); }
+      .sub-pending.sub-pending-finishing { border-color:#0ea5e9; background:rgba(14,165,233,.08); }
+      .sub-pending.sub-pending-finishing .sub-pending-status { font-size:15px; font-weight:600; color:#38bdf8; }
+      .sub-matrix-cell.sub-matrix-finishing .sub-matrix-glyph { color:#38bdf8; font-weight:600; font-size:14px; }
       .sub-pending-done-head { color:#22c55e; font-weight:600; }
       .sub-pending.sub-pending-failed { border-color:#f87171; background:rgba(248,113,113,.06); }
       .sub-pending-failed-head { color:#f87171; font-weight:600; }

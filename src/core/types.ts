@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Observable Intelligence — No Autonomous LLM Action Is Unauditable*
+
 /**
  * Core type definitions for instar.
  *
@@ -72,6 +75,10 @@ export interface Session {
    *  renders engine-aware (a Codex session must not display as a Claude one).
    *  Populated at spawn from the resolved framework; undefined on legacy records. */
   framework?: 'claude-code' | 'codex-cli' | 'gemini-cli' | 'pi-cli' | 'grok-build';
+  /** EVO-008: the tool list this session was CONFINED to (no bypass flag; dontAsk +
+   *  --tools). Set by SessionManager only after the final launch argv passed the whole
+   *  confinement contract on a Claude lane; unset on every other launch and on old records. */
+  confinedTools?: string[];
   /** The initial prompt/instruction sent to the framework's CLI */
   prompt?: string;
   /** Maximum duration in minutes before the session is killed */
@@ -599,6 +606,12 @@ export interface JobDefinition {
    *  When undefined, defaults to 'on-alert' — jobs are quiet unless they have
    *  something that needs the user's attention. */
   telegramNotify?: boolean | 'on-alert';
+  /**
+   * Where a report this job would send goes (docs/specs/backup-email-sending.md). Absent means Telegram only, as
+   * before. `['email']` emails the report that would have gone to Telegram; `['telegram', 'email']` does both.
+   * Never overrides a quiet job. Refused on script jobs (their runner has no report text).
+   */
+  deliver?: Array<'telegram' | 'email'>;
   /** Grounding configuration — what context this job needs at session start */
   grounding?: JobGrounding;
   /** LLM supervision tier — see docs/LLM-SUPERVISED-EXECUTION.md */
@@ -635,6 +648,11 @@ export interface JobDefinition {
    *  If omitted or empty, the job runs on ALL machines (default behavior).
    *  Example: ["m_abc123...", "justins-macbook"] */
   machines?: string[];
+  /** How much this job asks of a machine (docs/specs/resource-aware-placement.md §5).
+   *  `heavy` (builds, full test runs, simulators) never runs on a machine below the
+   *  heavy-work size floor unless `machines` explicitly names that machine.
+   *  Absent = `standard` (today's behaviour). */
+  workWeight?: 'light' | 'standard' | 'heavy';
   /** Common blockers — pre-confirmed resolution patterns for this job.
    *  Injected into working memory at session start and used by the
    *  EscalationResolutionReviewer to catch unnecessary human escalations. */
@@ -1156,6 +1174,27 @@ export interface IntelligenceProvider {
   evaluate(prompt: string, options?: IntelligenceOptions): Promise<string>;
 }
 
+/**
+ * Unified usage ledger (docs/specs/unified-usage-ledger.md, Slice 2): the split,
+ * disjoint token parts and the provider session id a one-shot returned, carried
+ * alongside the folded `inputTokens`/`outputTokens` so existing consumers are
+ * byte-identical. Every field is optional; null/absent means "not reported".
+ */
+export interface IntelligenceUsageDetail {
+  /** Provider session id: Claude `session_id`, Codex `thread_id`, Grok `sessionId`. */
+  sessionId?: string | null;
+  /** Fresh (uncached) input only. */
+  input?: number | null;
+  cacheRead?: number | null;
+  cacheWrite?: number | null;
+  /** Output including reasoning. */
+  output?: number | null;
+  /** Subset of output (display only). */
+  reasoning?: number | null;
+  reportedUsd?: number | null;
+  reportedBasis?: 'actual' | 'plan-rate' | null;
+}
+
 export interface IntelligenceOptions {
   /** Optional shared-queue cancellation signal for preemptible background work. */
   signal?: AbortSignal;
@@ -1301,7 +1340,7 @@ export interface IntelligenceOptions {
    * CircuitBreakingIntelligenceProvider sets it to feed per-feature token
    * counts into the metrics ledger (/metrics/features).
    */
-  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number }) => void;
+  onUsage?: (usage: { inputTokens: number; outputTokens: number; cachedTokens?: number; detail?: IntelligenceUsageDetail }) => void;
   /**
    * Observable Intelligence standard (docs/specs/observable-intelligence.md):
    * surface the resolved provider/model so the per-feature metrics funnel can
@@ -1480,6 +1519,7 @@ export type SkipReason =
   | 'capacity'        // No available session slots (queued instead of skipped, but tracked)
   | 'claimed'         // Another machine already claimed this job (Phase 4C — Gap 5)
   | 'machine-scope'   // Job is scoped to a different machine
+  | 'machine-too-small' // A `workWeight: 'heavy'` job on a machine below the heavy-work size floor (resource-aware placement §5)
   | 'already-running' // A live session already holds this jobSlug (june15-headless-spawn-reroute O3: per-slug double-run guard)
   | 'role-guard'      // WS4.3: state-writing job refused on a read-only standby (not the lease-holder)
   | 'throwaway-agent' // test-agent-leak-guard: agent lives in a temp folder / sandboxed HOME
@@ -2262,6 +2302,14 @@ export interface MachineRegistryEntry {
    */
   nickname?: string;
   /**
+   * Where `nickname` came from. `user`: typed by a person (never replaced automatically).
+   * `auto-self`: the machine's own friendly name (macOS ComputerName / Linux pretty hostname).
+   * `auto-derived`: derived from another machine's view of the hostname (e.g. at pairing); the
+   * machine itself upgrades it to its own friendly name on boot. Absent on older registries:
+   * treated like `user` (never replaced) when a nickname is present.
+   */
+  nicknameSource?: 'user' | 'auto-self' | 'auto-derived';
+  /**
    * Self-attested static hardware properties (Session Pool §L2) — captured by
    * the machine from `os` and recorded into ITS OWN registry entry, then synced
    * to peers via the registry. Surfaced on the Machines dashboard tab + GET /pool.
@@ -2502,6 +2550,9 @@ export interface MachineCapacity {
    *  senders never forward to a peer that cannot durably receive; the journal
    *  applier's silently-drop-unknown-kinds behavior is the named skew-failure
    *  mode this gate prevents). Fixed-size values only — never an inventory. */
+  /** RECEIVER-side receipt time (ISO) of the last beat that actually CARRIED seamlessnessFlags. Carry-forward
+   *  on a coarse beat must never impersonate a fresh report (app-conversations-in-the-pool §2.6). */
+  seamlessnessFlagsReceivedAt?: string;
   seamlessnessFlags?: {
     /** This machine can durably RECEIVE forwarded inbound messages (the
      *  'deliverMessage' receiver handler + live durable queue). */
@@ -2515,6 +2566,11 @@ export interface MachineCapacity {
      *  ABSENT/false → the transfer sender degrades to today's pin-and-
      *  idle-closeout path — never a doomed drain order. */
     ws12DrainReceive?: boolean;
+    /** app-conversations-in-the-pool §2.6: this machine runs that part, with its durable ownership
+     *  store and placement replication both active. ABSENT/false keeps every app record out of the pool. */
+    appConversationsPool?: boolean;
+    /** app-conversations-in-the-pool §2.5: memory privacy is on and its sandbox is ready here. */
+    memoryPrivacyEnforced?: boolean;
     /** WS4.4 (§WS4.4 / F6): this machine can SERVE the holder side of a
      *  cross-machine pool-view-fetch — answer the existence probe AND verify a
      *  pool-link user-auth assertion before serving a held view body. ABSENT/false
@@ -2780,6 +2836,22 @@ export interface MeshTransportConfig {
 }
 
 export interface MultiMachineConfig {
+  /** Storage prerequisite only; never enables the Conversations read/UI increment. */
+  conversationGraph?: {
+    /** Release switches: leave absent/off until increment-A acceptance. Storage
+     * enablement alone does not expose even an opt-in read API. */
+    readEnabled?: boolean;
+    correctionsEnabled?: boolean;
+    /** Machine ids to sign when the graph is first created. Absent means every paired machine. Has no effect afterwards. */
+    genesisMembers?: string[];
+    storage?: { enabled: boolean; /** Resource budget only; per-record/proof wire caps remain fixed. Default 32 MiB. */ stagingDiskQuotaBytes?: number };
+    agentId?: string;
+    membership?: import('./GraphMembershipTypes.js').GraphMembershipEpoch;
+    ownerPublicKey?: string;
+    /** SecretStore key names, never bearer values in project configuration. */
+    peerBearerSecret?: string;
+    witness?: { baseUrl: string; witnessId: string; publicKey: string; failureDomain: string; bearerSecret?: string; historicalPublicKeys?: Record<string,string> };
+  };
   /** Whether multi-machine is enabled */
   enabled: boolean;
   /** Private, approved user-job transfer. Dark until paired-machine proof. */
@@ -2796,6 +2868,8 @@ export interface MultiMachineConfig {
   };
   /** Whether to require human confirmation before auto-failover */
   autoFailoverConfirm: boolean;
+  /** Independent server-down recovery; requires owner enrollment before any host mutation. */
+  serverDownRecovery?: { enabled?: boolean };
   /** Restricted mutual SSH-subsystem proof. Enabled is dev-gated; dryRun ships first. */
   mutualSsh?: {
     enabled?: boolean;
@@ -3258,6 +3332,8 @@ export interface WriteAdmissionConfig {
 }
 
 export interface SessionPoolConfig {
+  /** App conversations move between machines (docs/specs/app-conversations-in-the-pool.md). Unset: on for a development agent, off for the fleet (DEV_GATED_FEATURES). */
+  appConversations?: { enabled?: boolean };
   /** Master switch. Default false — the entire session-pool layer is inert when false. */
   enabled?: boolean;
   /**
@@ -3647,6 +3723,12 @@ export interface ExternalServicePermissions {
 // ── Server Configuration ────────────────────────────────────────────
 
 export interface InstarConfig {
+  /**
+   * PR links in outbound replies (src/messaging/prLinkReviewRequest.ts): when a reply links an open PR
+   * this agent authored, the reviewer is requested on GitHub and read back before the reply goes out.
+   * On by default. `reviewer` is a GitHub login; absent → the repository owner when that owner is a user.
+   */
+  prLinkReviewRequest?: { enabled?: boolean; reviewer?: string };
   /** Memory privacy (docs/specs/memory-privacy.md). On only when `enabled` is true. */
   memoryPrivacy?: import('../users/MemoryPrivacy.js').MemoryPrivacyConfig;
   /**
@@ -3663,6 +3745,24 @@ export interface InstarConfig {
   messageOrigin?: {
     display?: { enabled?: boolean; machine?: boolean; harness?: boolean; model?: boolean };
     recording?: { slackFailClosed?: boolean };
+  };
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md): the always-on go-to conversation and
+   *  its check-in loop. `enabled` is dev-gated (omit it to follow the gate). Every setting is
+   *  owner-tunable at the agent level; per-project values live on the binding. */
+  chiefOfStaff?: {
+    enabled?: boolean;
+    displayName?: string;
+    tickMinutes?: number;
+    defaultCadenceHours?: number;
+    maxRunHours?: number;
+    operatorLeaseHours?: number;
+    noteCadenceHours?: number;
+    noteTime?: string;
+    maxRestartsWithoutProgress?: number;
+    breakerRestartsPerWeek?: number;
+    immediateMessagesPerDay?: number;
+    judgeDailyCents?: number;
+    excludedAuthors?: string[];
   };
   /** Machine self-maintenance (docs/specs/machine-self-maintenance.md). Watch-only: `enabled` is dev-gated, omit it to follow the gate. */
   machineMaintenance?: {
@@ -4024,6 +4124,11 @@ export interface InstarConfig {
    */
   mobilePairing?: {
     enabled?: boolean;
+    /** Team access (docs/specs/team-roles-and-access.md). */
+    team?: {
+      /** Refuse team phones after 24 hours with no peer answering, instead of serving on. Off by default. */
+      strictStaleness?: boolean;
+    };
     /** Code lifetime in minutes, default 10, clamped to 1–60. */
     codeTtlMinutes?: number;
     /** Native operator chat (docs/specs/mobile-operator-chat.md). `enabled` omitted ⇒ follows mobilePairing. */
@@ -4040,7 +4145,24 @@ export interface InstarConfig {
        * `maxStoreBytes` (default 20 GiB, read live) is the agent-wide admission cap.
        */
       media?: { enabled?: boolean; maxStoreBytes?: number };
+      /**
+       * Unread counts, read reports and the app badge (docs/specs/mobile-unread-messages.md).
+       * `enabled` omitted ⇒ true wherever native conversations are on; `false` turns unread off alone. Read live.
+       */
+      unread?: { enabled?: boolean };
+      /**
+       * Pinned messages in conversations (docs/specs/conversation-pinned-messages.md). `enabled`
+       * omitted ⇒ true wherever native conversations are on; `false` turns pins off alone. Read live.
+       */
+      pins?: { enabled?: boolean };
     };
+    /**
+     * Dashboard browsers as signed devices (docs/specs/dashboard-conversations-browser-device.md).
+     * `enabled` omitted ⇒ live on a development agent, dark on the fleet (read live); needs
+     * `native.enabled`. `maxBrowsers` (default 10) pending-or-active per machine; `maxSetupsPerHour`
+     * (default 6) per machine.
+     */
+    browser?: { enabled?: boolean; maxBrowsers?: number; maxSetupsPerHour?: number };
     /**
      * Several routes per agent (docs/specs/mobile-multi-route.md): accept a phone's signature on
      * any of this machine's proven own names (Cloudflare tunnel + Tailscale HTTPS) and serve
@@ -4116,6 +4238,13 @@ export interface InstarConfig {
     notices?: {
       /** Default true: log would-raise, raise nothing. */
       dryRun?: boolean;
+    };
+  };
+  /** Unified usage ledger (docs/specs/unified-usage-ledger.md). */
+  usage?: {
+    ledger?: {
+      /** OMITTED in the shipped config so the dev-agent gate decides (LIVE-dev / DARK-fleet). */
+      enabled?: boolean;
     };
   };
   routingSpend?: {
@@ -4597,6 +4726,13 @@ export interface InstarConfig {
      */
     nonGatingFailureSwap?: { enabled?: boolean; maxAttempts?: number };
     /**
+     * Internal Codex calls (sentinels, gates, extractors) pick the pool Codex account
+     * with the most room by its last reading, instead of only the machine's ambient
+     * login. Default ON; `{ enabled: false }` keeps every call on the ambient login.
+     * The framework and model never change, only which Codex login answers.
+     */
+    codexAccountSelection?: { enabled?: boolean };
+    /**
      * Unified self-action backpressure — the SelfActionGovernor (Increment B,
      * docs/specs/unified-self-action-backpressure.md; the companion doc is the
      * implementation authority). Ships OBSERVE-ONLY on every class,
@@ -4901,6 +5037,8 @@ export interface InstarConfig {
   authToken?: string;
   /** PIN for dashboard web access (simpler than authToken, used for mobile/remote login) */
   dashboardPin?: string;
+  /** Server-managed revocation generation, atomically coupled to each PIN write. */
+  dashboardPinGeneration?: string;
   /** Relationship tracking config */
   relationships?: RelationshipManagerConfig;
   /** Feedback loop config */
@@ -4909,7 +5047,34 @@ export interface InstarConfig {
   dispatches?: DispatchConfig;
   /** Git backup config (opt-in for standalone agents) */
   /** docs/specs/recommended-services.md: setup recipes this agent is proving. Only a test agent or the development agent sets it. */
-  recommendedServices?: { provingRecipes?: string[] };
+  recommendedServices?: {
+    provingRecipes?: string[];
+    /** The first list of recommended services, sent once per service after a delivered first result. Off by default. */
+    offers?: {
+      enabled?: boolean;
+      /**
+       * Rollout step 5 of recommended-services.md: existing agents (created before the offer shipped) stay out of the
+       * first list until this is true. Then this agent's owner is marked migration-complete at the next offer tick,
+       * and the first list follows the same rule as a new agent's (after a delivered first result, once).
+       */
+      existingAgents?: boolean;
+    };
+  };
+  /**
+   * Sending email to the owner (docs/specs/backup-email-sending.md). Email only works after the owner's yes and the
+   * recipe's proof, so this block is optional. `enabled: false` drains the outbox to the topics and stops sending.
+   */
+  email?: {
+    enabled?: boolean;
+    /** How long a Resend send is watched for delivery before it falls back (default 30, at most 60). */
+    statusWindowMinutes?: number;
+    /** Transport timeout (default 15, 5 to 60). */
+    transportTimeoutSeconds?: number;
+    /** How often the plain fallback line is repeated per cause (default once a day, never more than hourly). */
+    fallbackLineEvery?: 'hour' | 'day';
+    /** The agent's email day timezone; defaults to the one recorded on the owner's yes. */
+    timezone?: string;
+  };
   gitBackup?: {
     /** Whether git backup is enabled. Defaults to true if .git/ exists, false otherwise. */
     enabled: boolean;
@@ -4960,8 +5125,21 @@ export interface InstarConfig {
         /** Age of the oldest successful repair required in days. Default 30. */
         minimumEvidenceDays?: number;
       };
+      /**
+       * Monotonic write counter for this block (spec one-tap-unattended-repair §1). Incremented by
+       * every operator write (local configure, configure-pool, configure-with-mandate) and folded
+       * into the block's revision so A→B→A content still gets a new revision. Missing ⇒ 0.
+       */
+      generation?: number;
       /** Optional attention-routing topic. Omit to use the configured attention hub. */
       approvalTopicId?: number;
+      /**
+       * Remind the operator ONCE when an approval-mode repair has waited this many hours for its
+       * tap (CMT-1541). Absent ⇒ 4; 0 turns the reminder off. Delivered on the same attention row
+       * as the first notice (Quiet-by-Default applies) and never during `slowRetry.quietHours`.
+       * Signal only: it never approves a repair.
+       */
+      approvalReminderHours?: number;
       /**
        * Who chooses each sign-in step (spec agent-driven-relogin): `agent` = a model reading the
        * page's floor-filtered controls; `closed` = the fixed page-class table; `agent-session` = one
@@ -5138,6 +5316,12 @@ export interface InstarConfig {
       reactiveGraceMs?: number;
       /** Busy re-check cadence inside a grace window (default 10000). */
       recheckMs?: number;
+      /** Busy-deferral escalation (default 95): once a session's busy episode
+       *  has been deferred a full deferralCeilingMs and its account is at or
+       *  over this measured %, the proactive swap executes through the
+       *  reactive-swap class (bounded grace, then mitigations) instead of
+       *  being dropped again. Above 100 disables it. */
+      wallEscalationPct?: number;
     };
     /** P2.1 enrollment wizard knobs (all optional). */
     enrollment?: {
@@ -5994,6 +6178,11 @@ export interface ThreadlineConfig {
   spawn?: ThreadlineSpawnConfig;
   /** Warm-session A2A keep-alive integration (Arch Y). */
   warmSessionA2A?: ThreadlineWarmSessionConfig;
+  /**
+   * Memory privacy: sessions in other agents' places (docs/specs/memory-privacy-agent-places.md §4).
+   * `globalCap` (default 3) places live at once; `idleMs` (default 600000) idle end.
+   */
+  placeSessions?: { globalCap?: number; idleMs?: number };
   /** Secure A2A Verified Pairing — SAS mutual verification + credential-share gate (§3.10). */
   verifiedPairing?: ThreadlineVerifiedPairingConfig;
   /** The owner's name stated in pairing invites. Omitted: the registered users, then the verified Telegram operator. */
@@ -7696,6 +7885,12 @@ export interface MonitoringConfig {
       ciMaxRunsPerTick?: number;
     };
   };
+  /** Serious user-called-out failures retain scrubbed context and receive
+   * bounded investigation by default. Independent of preference promotion. */
+  failureCallouts?: {
+    /** Default true. False disables failure-context retention and investigation. */
+    enabled?: boolean;
+  };
   /**
    * Correction & Preference Learning Sentinel
    * (docs/specs/CORRECTION-PREFERENCE-LEARNING-SENTINEL-SPEC.md). Ships OFF.
@@ -7706,7 +7901,7 @@ export interface MonitoringConfig {
    * distill → ledger → recurrence-gate loop that writes via `recordPreference()`.
    */
   correctionLearning?: {
-    /** Master kill switch (default: false). Gates the loop AND the read route. */
+    /** Preference-learning switch (default false). Failure callouts use their own switch. */
     enabled: boolean;
     /**
      * Self-Violation Signal extension (default: false). Ships DARK behind BOTH
@@ -7803,6 +7998,35 @@ export interface MonitoringConfig {
      *  infra-gap batch serializes under the route's 10/min IP limit (Slice 2
      *  NEW-2). Default 7000. */
     feedbackPostDelayMs?: number;
+  };
+  /**
+   * Skill-learning sentinel (docs/specs/skill-learning-sentinel.md §3). Ships OFF;
+   * `enabled` is the kill switch (omitted ⇒ off on every agent) and is read at
+   * boot (`restartNeeded`). Slice 0 ships only the repairs (canonical backfill,
+   * telemetry hook); the sentinel itself reads this block from slice 1.
+   */
+  skillLearning?: {
+    /** Kill switch. Default false. */
+    enabled?: boolean;
+    /** `shadow` records what it WOULD do; `live` writes skills. Default shadow. */
+    mode?: 'shadow' | 'live';
+    /** The deterministic evidence floor: count-based, no time bound, never widened by a model. */
+    floor?: { minOccurrences?: number; minCorroboratedCleanRuns?: number };
+    /** The static fallback rung (its recency is its own, not the floor's). */
+    defaultGate?: { minSupport?: number; minDistinctDays?: number; minDistinctSessions?: number; windowDays?: number };
+    /** Evidence floor for admitting any arbiter to act. */
+    shadow?: { minDisagreementsSampled?: number; verdictReaskDays?: number };
+    /** A SIGNAL to the operator, never a refusal. */
+    growthSignals?: { createdPerWeekNotice?: number };
+    evidence?: { runSliceBytesPerRun?: number; promptBudgetBytes?: number; transcriptScanBytes?: number };
+    /** Retire floor + the static defaults the reviewer judges against. */
+    retire?: { minCorroboratedRuns?: number; defaultScoreFloor?: number; defaultMisfireFloor?: number; defaultUnusedDays?: number; measurableFloor?: number };
+    review?: { requireDifferentFamily?: boolean; minCorrectedRunsSameFamily?: number; revertBreakerPer30d?: number };
+    /** The spend ceiling is a money floor (irreversible spend), deliberately static. */
+    llm?: { maxDailyCents?: number; batchSize?: number };
+    tickMinutes?: number;
+    /** Every-machine rendering reconcile of `instar-learned` skills (decision 19). Read live. Default on. */
+    reconcile?: { enabled?: boolean };
   };
   /** Un-gated correction durable-outcome drain; enabled on dev agents via DEV_GATED_FEATURES. */
   correctionClassReview?: {

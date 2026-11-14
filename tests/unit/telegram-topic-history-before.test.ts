@@ -46,4 +46,13 @@ describe('topic history before a time (History scroll-back past the current sess
     expect(r[0].text).toBe(`first ${filler}`);
     expect(r[2].text).toBe('third ✓');
   });
+  it('a message-id tie breaker reaches every recorded message at one timestamp', () => {
+    const timestamp = at(25);
+    setup(Array.from({ length: 120 }, (_, n) => ({ topicId: 5, messageId: n + 1, text: String(n + 1), timestamp, fromUser: true })));
+    const newest = adapter.getTopicHistoryBefore(5, Date.parse(timestamp), 50, 121);
+    const middle = adapter.getTopicHistoryBefore(5, Date.parse(timestamp), 50, newest[0].messageId);
+    const oldest = adapter.getTopicHistoryBefore(5, Date.parse(timestamp), 50, middle[0].messageId);
+    expect([...oldest, ...middle, ...newest].map((m) => m.messageId)).toEqual(Array.from({ length: 120 }, (_, n) => n + 1));
+    expect(adapter.getTopicHistoryBefore(5, Date.parse(timestamp), 50)).toEqual([]); // legacy strict-before semantics
+  });
 });

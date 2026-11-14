@@ -18,7 +18,10 @@
 
 import path from 'node:path';
 import { computeInventory, isInventoried, LANES, type LaneName } from './inventory.js';
-import { readUnhandledErrors } from './unhandledErrorsReporter.js';
+import { readProgress, readUnhandledErrors } from './unhandledErrorsReporter.js';
+
+/** A progress snapshot larger than this is ignored (it is at most ~10 short paths). */
+const PROGRESS_MAX_BYTES = 64 * 1024;
 import { decideIsolationRerun, evaluateRun, parseVitestJson, type LaneRunInput, type LaneTotals, type ParsedLaneReport } from './laneReport.js';
 import { evaluateSkipRatchet, loadTypescript, type ChangedTestFile, type TsModule } from './skipRatchet.js';
 import { classifyHarness, harnessReasonPaths, protectedPath as isProtectedPath, protectedPathMatches } from './harnessClassifier.js';
@@ -31,6 +34,8 @@ import { DURATIONS_MAX_BYTES, mergeDurations, planShards, type FileDurations } f
 
 /** Upper bound on processes per slow lane (bounded blast radius: at most 4 + 4 + 4 test workers). */
 export const MAX_LANE_SHARDS = 4;
+/** Upper bound for the per-machine unit-lane worker setting (`laneShards.unitWorkers`). */
+export const MAX_UNIT_WORKERS = 12;
 
 // ── Seams ──────────────────────────────────────────────────────────────
 
@@ -74,6 +79,18 @@ export interface OrchestratorFs {
   mkdtemp(prefix: string): string;
   /** Recursive delete, scoped to local-verify's own directories by the real seam. */
   removeTree(p: string): Promise<void>;
+  /** Entry names of a directory; null when unreadable. Absent seam ⇒ the orphan sweep is skipped. */
+  list?(p: string): string[] | null;
+  /** Resolved path; null when it cannot be resolved. */
+  realpath?(p: string): string | null;
+  /**
+   * Whether any running process uses `dir` (its working folder is inside it, or
+   * its command line names it). null when that cannot be read. Absent seam ⇒
+   * the orphan sweep is skipped.
+   */
+  inUse?(dir: string): boolean | null;
+  /** Bytes under `dir` (every file, recursively); null when that cannot be read. Absent seam ⇒ kept entries are listed without a size. */
+  treeSize?(dir: string): number | null;
 }
 
 export interface OrchestratorSeams {
@@ -101,6 +118,13 @@ export interface OrchestratorSeams {
    */
   holdSuiteSlot?(): Promise<(() => void) | 'busy' | null>;
   log(event: Record<string, unknown>): void;
+  /**
+   * Record a degradation beyond the run log, so a problem that silently stops a safety
+   * behaviour (an unreadable kept-failed.json stopping all sweeping) is seen without
+   * reading a run's log. The run child collects these into its result; the server's
+   * DegradationReporter records them (the child must not write the server's file). Absent ⇒ log only.
+   */
+  degrade?(event: RunDegradation): void;
   /** Every file reachable through relative imports from `files` (absolute paths; roots included). */
   importGraph?(files: string[]): string[];
   /** Absolute path of the trusted unhandled-errors reporter; null/absent ⇒ unknown ⇒ no isolation re-run. */
@@ -151,10 +175,11 @@ export interface VerifyRunInput {
   /** True only for an automatic watcher candidate that can be rediscovered after a lease move. */
   preflightRediscoverable?: boolean;
   /**
-   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service).
-   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards`.
+   * Processes per slow lane (`monitoring.localVerify.laneShards`, clamped 1..4 by the service),
+   * and the per-machine unit-lane worker count `unitWorkers` (1..MAX_UNIT_WORKERS).
+   * Absent ⇒ `LOCAL_VERIFY_LIMITS.integrationShards` / `e2eShards` / `unitWorkersParallel`.
    */
-  laneShards?: { integration?: number; e2e?: number };
+  laneShards?: { integration?: number; e2e?: number; unitWorkers?: number };
   extraHarnessGlobs?: readonly string[];
   /** Already-scrubbed base environment (allowlisted by the service). */
   baseEnv: Record<string, string>;
@@ -180,10 +205,17 @@ export interface Overlap {
   holders: number[];
 }
 
-export type VerifyRunResult =
+/** A degradation the run child noticed (disk-steward §5); the server's reporter records it. */
+export interface RunDegradation { feature: string; primary: string; fallback: string; reason: string; impact: string }
+
+export type VerifyRunResult = (
   | { kind: 'record'; record: LocalVerifyRecord; reasons: string[]; overlaps: Overlap[]; keptWorktree: string | null; failures?: FailureDetail[]; flakyRetried?: FlakyRetry[] }
   | { kind: 'requeue'; reason: 'foreign-suite-at-start' | 'foreign-suite-wait-exceeded'; overlaps: Overlap[] }
-  | { kind: 'invalid'; errors: string[] };
+  | { kind: 'invalid'; errors: string[] }
+) & {
+  /** Carried from the run child to the server, which has the only DegradationReporter that reaches /health. */
+  degradations?: RunDegradation[];
+};
 
 export interface VerifyPaths {
   verifyRoot: string;
@@ -371,6 +403,9 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
     seams.fs.writeFile(path.join(p.bare, 'config'), bareConfigTemplate(input.remoteUrl));
     await seams.fs.removeTree(path.join(p.bare, 'hooks'));
     seams.fs.mkdirp(path.join(p.bare, 'hooks'));
+    // Checkouts left by runs cut short (restart, update, crash) are never cleaned by
+    // their own run; sweep them now, while this run is the only one (disk-steward §5).
+    await sweepOrphanVerifyRuns(seams, p);
 
     await gitOk(['fetch', '--no-tags', '--no-recurse-submodules', 'origin', input.headSha, input.baseSha], 'fetch', undefined, d.fetchMs);
     await gitOk(['update-ref', 'refs/heads/main', input.baseSha], 'update-ref');
@@ -533,7 +568,16 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (lane.name === 'unit') {
         // 4 workers whatever the bound's posture: the nested clamp only applies while it
         // enforces, and the parallel lanes' worker total (4 + 1 + 1 + 1) is the claim.
-        laneEnv.INSTAR_TEST_WORKERS = String(LOCAL_VERIFY_LIMITS.unitWorkersParallel);
+        const uw = input.laneShards?.unitWorkers;
+        const workers = typeof uw === 'number' && Number.isInteger(uw) && uw >= 1 && uw <= MAX_UNIT_WORKERS ? uw : LOCAL_VERIFY_LIMITS.unitWorkersParallel;
+        laneEnv.INSTAR_TEST_WORKERS = String(workers);
+        // This run already holds the host suite slot. Its own unit lane is a child of that
+        // holder, so the host test-runner bound's nested clamp capped it at 4 workers whatever
+        // was asked (2026-11-12: 8 workers ran no faster, 1159 s). Declare the lane as the
+        // holder's own suite: the bound then skips only the clamp (the kill switch would also
+        // log a disabled bound on every run and trip the self-disable detector).
+        laneEnv.INSTAR_HOST_TEST_OWN_SUITE_HOLDER = String(process.pid);
+        seams.log({ event: 'unit-workers', workers, source: workers === uw ? 'machine-setting' : 'policy-default' });
         laneEnv.AUDIT_CHANGE_KIND = 'pull_request';
         laneEnv.AUDIT_CHANGE_BASE_SHA = input.baseSha;
         laneEnv.AUDIT_CHANGE_HEAD_SHA = input.headSha;
@@ -548,14 +592,41 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
         const pTmp = seams.fs.mkdtemp('lv-tmp-');
         const pTmux = seams.fs.mkdtemp('lv-tmux-');
         tempDirs.push(pTmp, pTmux);
+        const progressPath = path.join(p.reportsDir, `${key}.progress.json`);
         const env: NodeJS.ProcessEnv = { ...laneEnv, TMPDIR: pTmp, TMUX_TMPDIR: pTmux };
-        if (reporter) env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
-        const r = await exec(
-          path.join(binDir, 'vitest'),
-          ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
-            ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
-          key, budget(d.lanes[lane.name]), env, failFast ? stopLanes.signal : undefined,
-        );
+        if (reporter) {
+          env.LOCAL_VERIFY_UNHANDLED_ERRORS_FILE = errorsPath;
+          env.LOCAL_VERIFY_PROGRESS_FILE = progressPath;
+        }
+        let r: Awaited<ReturnType<typeof exec>>;
+        try {
+          // The signal is always passed: a deadline anywhere ends the run as an error, so the
+          // sibling lanes stop then too (fail-fast or not); before, they ran on for up to
+          // ~11 min holding the suite slot for a run already lost (brainstorm 2026-11-12 E2).
+          r = await exec(
+            path.join(binDir, 'vitest'),
+            ['run', '--config', lane.config, '--allowOnly=false', '--reporter=json', ...(reporter ? [`--reporter=${reporter}`] : []), `--outputFile=${reportPath}`,
+              ...(plan ? plan[k] : shards > 1 ? [`--shard=${k + 1}/${shards}`] : [])],
+            key, budget(d.lanes[lane.name]), env, stopLanes.signal,
+          );
+        } catch (e) {
+          if (e instanceof RunError && e.step.startsWith('deadline:')) {
+            // Deadline forensics: which files were still running at the kill.
+            // Written by test-side code: read only when small (like the durations file).
+            const progressSize = seams.fs.size ? seams.fs.size(progressPath) : null;
+            const progress = reporter && (progressSize === null || progressSize <= PROGRESS_MAX_BYTES)
+              ? readProgress(seams.fs.readFile(progressPath), p.runDir, seams.now()) : null;
+            seams.log({ event: 'deadline-in-flight', step: key, ...(progress ?? { unknown: true }) });
+            if (!stopLanes.signal.aborted) {
+              seams.log({ event: 'lanes-stop', after: key, reason: 'deadline' });
+              stopLanes.abort();
+            }
+            if (progress && progress.running.length > 0) {
+              throw new RunError(e.step, `vitest hit its deadline; ${progress.finishedFiles} files finished; still running: ${progress.running.map((x) => `${x.file} (${x.seconds}s)`).join(', ')}`.slice(0, 1500));
+            }
+          }
+          throw e;
+        }
         if (r.aborted) return { report: null, status: null, unhandled: null, aborted: true };
         let report: ParsedLaneReport | null = null;
         const text = seams.fs.readFile(reportPath);
@@ -608,7 +679,7 @@ export async function runVerify(input: VerifyRunInput, seams: OrchestratorSeams)
       if (decision.rerun.length > 0 && report) {
         rerunBudget -= decision.rerun.length;
         const laneDeadlineAt = t + d.lanes[lane.name];
-        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, failFast ? stopLanes.signal : undefined);
+        const allPassed = await isolationRerun(lane.name, lane.config, decision.rerun, report, laneEnv, laneDeadlineAt, stopLanes.signal);
         // The exit code is cleared only when the failed files explain it: they all passed alone
         // AND the lane reported zero unhandled errors (checked before the re-run).
         if (allPassed && unhandled === 0) exitCode = 0;
@@ -983,14 +1054,116 @@ export async function removeWorktree(seams: OrchestratorSeams, p: VerifyPaths, d
   });
 }
 
-/** Record a kept failed-run worktree; drop the oldest beyond the cap. */
-async function keepFailed(seams: OrchestratorSeams, p: VerifyPaths): Promise<void> {
-  let list: string[] = [];
+/**
+ * The kept failed-run list. `ok: false` when the file exists but cannot be parsed:
+ * then nothing may be swept (any run could be a kept one) and the file is left as
+ * it is for a person to repair (disk-steward §5).
+ */
+export function readKeptList(seams: OrchestratorSeams, p: VerifyPaths): { ok: true; list: string[] } | { ok: false } {
+  const raw = seams.fs.readFile(p.keptListFile);
+  if (raw === null) return seams.fs.exists(p.keptListFile) ? { ok: false } : { ok: true, list: [] };
   try {
-    const raw = seams.fs.readFile(p.keptListFile);
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (Array.isArray(parsed)) list = parsed.filter((x): x is string => typeof x === 'string');
-  } catch { list = []; }
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { ok: false };
+    return { ok: true, list: parsed.filter((x): x is string => typeof x === 'string') };
+  } catch {
+    return { ok: false }; // @silent-fallback-ok — reported by the callers (sweep stops, keepFailed leaves the file)
+  }
+}
+
+/**
+ * Remove run checkouts under `runs/` that no run owns: not the current run, not a
+ * kept failed run. Only a non-forced `git worktree remove` is used, so git keeps
+ * anything it considers dirty, locked or unregistered; those are listed, never
+ * forced. Never throws: a sweep problem must not fail a verify.
+ */
+export async function sweepOrphanVerifyRuns(seams: OrchestratorSeams, p: VerifyPaths): Promise<{ removed: string[]; kept: string[]; skipped?: string }> {
+  const removed: string[] = [];
+  const kept: string[] = [];
+  try {
+    if (!seams.fs.list || !seams.fs.inUse) return { removed, kept, skipped: 'no-list-seam' };
+    const kl = readKeptList(seams, p);
+    if (!kl.ok) {
+      seams.log({ event: 'orphan-sweep-skipped', detail: 'kept-failed.json unreadable; nothing swept until it parses again' });
+      degradeKeptList(seams, p, 'the orphan sweep removes nothing until it parses again, so run checkouts cut short accumulate');
+      return { removed, kept, skipped: 'kept-list-unreadable' };
+    }
+    const real = (x: string) => seams.fs.realpath?.(x) ?? null;
+    const protectedPaths = new Set<string>();
+    for (const k of [...kl.list, p.runDir]) {
+      protectedPaths.add(path.resolve(k));
+      const r = real(k);
+      if (r) protectedPaths.add(r);
+    }
+    // Only checkouts the verifier itself made: its 12-hex run-id name AND
+    // registered in its own clone. Anything else in runs/ (a hand-made copy,
+    // an entry orphaned by a re-made clone) is left alone and listed.
+    const listed = await seams.git(['worktree', 'list', '--porcelain'], {
+      cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:worktree-list', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
+    });
+    if (listed.status !== 0) {
+      seams.log({ event: 'orphan-sweep-skipped', detail: `git worktree list failed (${listed.status}); nothing swept this run`, stderr: listed.stderr.slice(0, 500) });
+      return { removed, kept, skipped: 'worktree-list-failed' };
+    }
+    const registered = new Set<string>();
+    for (const line of listed.stdout.split('\n')) {
+      if (!line.startsWith('worktree ')) continue;
+      const w = line.slice('worktree '.length).trim();
+      registered.add(path.resolve(w));
+      const r = real(w);
+      if (r) registered.add(r);
+    }
+    const names = seams.fs.list(p.runsDir) ?? [];
+    for (const name of names) {
+      const dir = path.join(p.runsDir, name);
+      const r = real(dir);
+      if (protectedPaths.has(path.resolve(dir)) || (r && protectedPaths.has(r))) continue;
+      if (!/^[0-9a-f]{12}$/.test(name) || !(registered.has(path.resolve(dir)) || (r && registered.has(r)))) { kept.push(dir); continue; }
+      if (seams.fs.inUse(dir) !== false) { kept.push(dir); continue; }
+      const res = await seams.git(['worktree', 'remove', dir], {
+        cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:orphan-sweep', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
+      });
+      if (res.status === 0 && !seams.fs.exists(dir)) removed.push(dir);
+      else kept.push(dir);
+    }
+    if (removed.length > 0) {
+      await seams.git(['worktree', 'prune'], {
+        cwd: p.verifyRoot, gitDir: p.bare, operation: 'local-verify:worktree-prune', timeoutMs: LOCAL_VERIFY_DEADLINES.gitStepMs,
+      });
+    }
+    // Kept entries are listed with their size (disk-steward §5), so a person can see what
+    // the sweep is leaving behind and how much it costs without a du of their own.
+    const keptEntries = kept.slice(0, 20).map((dir) => ({ dir, bytes: seams.fs.treeSize?.(dir) ?? null }));
+    seams.log({ event: 'orphan-sweep', removed: removed.length, kept: kept.length, keptEntries });
+  } catch (e) {
+    seams.log({ event: 'orphan-sweep-failed', detail: e instanceof Error ? e.message : String(e) });
+  }
+  return { removed, kept };
+}
+
+/** The one degradation both readers of an unparseable kept-failed.json record (disk-steward §5). */
+function degradeKeptList(seams: OrchestratorSeams, p: VerifyPaths, impact: string): void {
+  seams.degrade?.({
+    feature: 'LocalVerify.keptList',
+    primary: 'the kept-failed list (kept-failed.json in the verify root) names the failed runs kept for diagnosis',
+    fallback: 'the unreadable list exactly as it is, untouched, until a person repairs or removes it',
+    reason: 'kept-failed.json exists but is not a JSON array of paths',
+    impact,
+  });
+}
+
+/** Record a kept failed-run worktree; drop the oldest beyond the cap. Exported for its tests. */
+export async function keepFailed(seams: OrchestratorSeams, p: VerifyPaths): Promise<void> {
+  const kl = readKeptList(seams, p);
+  if (!kl.ok) {
+    // Never overwrite a list we cannot read: it may name runs someone is keeping.
+    seams.log({ event: 'kept-list-unreadable', detail: 'kept-failed.json left as is; this run is kept but not listed' });
+    // The run folder's absolute path stays in the run log; the degradation text reaches /health.
+    seams.log({ event: 'kept-list-unreadable-run', detail: p.runDir });
+    degradeKeptList(seams, p, 'this failed run is kept but not listed; the next sweep removes it once the list parses again');
+    return;
+  }
+  let list = kl.list;
   list = list.filter((d) => d !== p.runDir);
   list.push(p.runDir);
   while (list.length > LOCAL_VERIFY_LIMITS.keepFailedWorktrees) {

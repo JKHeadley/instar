@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-09T20:02:12.444Z",
+  "slug": "browser-approval-phone-first",
+  "suggestedTier": 1,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 23,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/MobilePush.ts",
+      "src/server/mobilePairingRoutes.ts"
+    ],
+    "addedLines": 19,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

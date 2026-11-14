@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "cb-row-writer",
+  "sessionId": "3117c024-d5c8-4ef5-948b-e8585a7dd39d",
+  "timestamp": "2026-11-10T21:42:24.807Z",
+  "artifactPath": "upgrades/side-effects/cb-row-writer.md",
+  "artifactSha256": "6ac92ab583015f3088d3f0e4c72282524d6f7f64f7a0b21da318f35396553827",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "upgrades/side-effects/cb-row-writer.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Moves the S2 app-row listener below the replication hooks so the pinned server.ts wiring test sees setReplicationHook in its window; code order only.",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot event-driven actions, not a self-triggered loop: the row writer reports a refusal at most once per message it was handed, and the app-row reconcile is a single bounded pass run at boot and on an off-to-on switch transition; nothing retries, re-drives or re-fires on its own"
+  }
+}

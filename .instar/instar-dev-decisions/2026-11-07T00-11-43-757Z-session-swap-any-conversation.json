@@ -1,0 +1,42 @@
+{
+  "ts": "2026-11-07T00:11:43.757Z",
+  "slug": "session-swap-any-conversation",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 14,
+  "loc": 923,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SpawnAdmission.ts",
+      "src/core/TopicProfileOrchestrator.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/core/conversationKeys.ts",
+      "src/core/conversationPorts.ts",
+      "src/core/topicProfileWriteSurface.ts",
+      "src/messaging/slack/SlackAdapter.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/mobilePairingRoutes.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/mobileSessionControlsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 849,
+    "deletedLines": 74
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: an app or Slack session restarts only after the operator's own engine write, through the profile orchestrator's existing debounce, concurrency cap and spawn-failure breaker; the new spawns run once per inbound message, as before"
+  },
+  "verdict": "blocked"
+}

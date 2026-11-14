@@ -1,0 +1,35 @@
+{
+  "ts": "2026-11-07T01:09:47.096Z",
+  "slug": "session-conversation-for-every-session",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 340,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/SpawnAdmission.ts",
+      "src/core/appInboundDispatch.ts",
+      "src/server/mobilePermissionsRoutes.ts",
+      "src/server/mobileSessionControlsRoutes.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 310,
+    "deletedLines": 30
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "n/a",
+    "reason": "one-shot user-driven action, not a self-triggered loop: exactly one session starts per person-submitted create; repeats resume the first create; jobs and helpers never take this path"
+  },
+  "verdict": "pass"
+}

@@ -8,7 +8,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { PostUpdateMigrator, MATURATION_BOARD_CLAUDEMD_SECTION } from '../../src/core/PostUpdateMigrator.js';
+import { PostUpdateMigrator, MATURATION_BOARD_CLAUDEMD_SECTION, QUALITY_HISTORY_CLAUDEMD_SECTION } from '../../src/core/PostUpdateMigrator.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 
 type MigrationResult = { upgraded: string[]; skipped: string[]; errors: string[] };
@@ -40,6 +40,18 @@ describe('PostUpdateMigrator — Maturation Board CLAUDE.md section', () => {
     expect(content).toContain('http://localhost:4042/maturation/board?scope=pool');
     expect(content).toContain('/dashboard/maturation/');
     expect(content).toContain('advisory: true');
+  });
+
+  it('adds the quality-history section once, with its direct link', () => {
+    const marker = 'Quality history at a glance';
+    fs.writeFileSync(path.join(projectDir, 'CLAUDE.md'), '# CLAUDE.md\n');
+    expect(run(projectDir).upgraded).toContain('CLAUDE.md: added Quality history at a glance section');
+    run(projectDir);
+    const content = fs.readFileSync(path.join(projectDir, 'CLAUDE.md'), 'utf-8');
+    expect(content.split(marker).length - 1).toBe(1);
+    expect(content).toContain('http://localhost:4042/maturation/board?part=quality');
+    expect(content).toContain('#/work/maturation?s=quality');
+    expect(QUALITY_HISTORY_CLAUDEMD_SECTION(4040)).toContain(marker);
   });
 
   it('the shared section carries the marker the migration sniffs', () => {

@@ -102,6 +102,53 @@ describe('gate-expiry (§5.3 — queue will not run this boot)', () => {
   }
 });
 
+describe('gate-expiry of fold-held rows (context-budget-layered-summaries §9.3)', () => {
+  it('rolls the holding fold back FIRST, once per fold, and names the fold in the loss', () => {
+    const store = seedStore();
+    const held = seedRow(store, '141133', 'm1');
+    seedRow(store, '141133', 'm2');
+    const plain = seedRow(store, 's2', 'm3');
+    store.holdForFold('141133', 'fold1', new Date(nowMs).toISOString());
+    store.close();
+
+    const order: string[] = [];
+    const deps = makeDeps({
+      queueWillRun: { run: false, gateReason: 'feature-disabled' },
+      onFoldRowsGateExpired: (ids) => {
+        order.push(`rollback:${ids.join(',')}`);
+        // the rows are still non-terminal when the rollback runs (same tick, before expiry)
+        const peek = seedStore();
+        order.push(`nonTerminal:${peek.listNonTerminal().length}`);
+        peek.close();
+      },
+    });
+    const res = runInboundQueueBootSweep(deps);
+    expect(order).toEqual(['rollback:fold1', 'nonTerminal:3']);
+    expect(res.gateExpired).toBe(3);
+    const reasons = deps.losses[0].items.map((i) => i.reason);
+    expect(reasons.filter((r) => r.includes('held by fold fold1'))).toHaveLength(2);
+    const reopened = seedStore();
+    expect(reopened.getRow(held)?.terminal_reason).toBe('gate:feature-disabled (held by fold fold1)');
+    expect(reopened.getRow(plain)?.terminal_reason).toBe('gate:feature-disabled');
+    reopened.close();
+  });
+
+  it('a throwing rollback is logged and the gate-expiry still completes', () => {
+    const store = seedStore();
+    seedRow(store, '141133', 'm1');
+    store.holdForFold('141133', 'fold1', new Date(nowMs).toISOString());
+    store.close();
+    const logs: string[] = [];
+    const deps = makeDeps({
+      queueWillRun: { run: false, gateReason: 'pool-dark' },
+      onFoldRowsGateExpired: () => { throw new Error('boom'); },
+      log: (l: string) => { logs.push(l); },
+    });
+    expect(runInboundQueueBootSweep(deps).gateExpired).toBe(1);
+    expect(logs.some((l) => l.includes('fold rollback for gate-expired rows failed: boom'))).toBe(true);
+  });
+});
+
 describe('crash recovery (§3.4 crash table)', () => {
   it('row 1: claimed, no receipt → released to queued (redispatch)', () => {
     const store = seedStore();

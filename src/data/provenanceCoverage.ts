@@ -274,6 +274,9 @@ export const DP_MESSAGE_SENTINEL_CLASSIFY = 'message-sentinel-classify';
 /** Hub message + bounded conversation/topic enum → bind intent. */
 export const DP_HUB_INTENT_CLASSIFY = 'hub-intent-classify';
 
+/** Chief of Staff (docs/specs/chief-of-staff-topic.md §2.5): deterministic evidence + bounded conversation tail → project verdict (a SIGNAL; the loop's floors hold authority). */
+export const DP_COS_PROJECT_VERDICT = 'cos-project-verdict';
+
 /** Ambiguous interactive terminal prompt → approve or relay. */
 export const DP_INPUT_CLASSIFY = 'input-classify';
 
@@ -342,6 +345,10 @@ export const DP_MENTOR_STAGE_B_CLASSIFY = 'mentor-stage-b-classify';
 
 /** Redacted closed browser snapshot → one action from the deterministic allowlist. */
 export const DP_SUBSCRIPTION_RELOGIN_ACTION = 'subscription-relogin-action';
+
+/** Skill-learning batch classifier — repeatable? procedureKey (fold by meaning), outcomeOfPrevRun
+ * (skillLearning.classifier; docs/specs/skill-learning-sentinel.md §3.1, §3.6, §4). */
+export const DP_SKILL_LEARNING_CLASSIFY = 'skill-learning-classify';
 
 // ───────────────────────────────────────────────────────────────────────────
 // The census
@@ -531,6 +538,14 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'review or recurrence evidence can grade real cases without archiving inbound text.',
     reason:
       'Input-coherence verdict over an inbound prompt and recent topic context; provenance stores only bounded identities and shape.',
+  },
+  {
+    decisionPoint: 'context-layer-chunk',
+    component: 'ContextLayerChunk',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Chunk and range summaries of an archived transcript span (context-budget §6.5). Derived layers for later lookup only; they decide nothing. A strict validator refuses malformed or unfaithfully quoted output, and the Phase 2 fold probes grade summaries against the raw span.',
   },
   {
     decisionPoint: 'session-activity-digest',
@@ -760,6 +775,20 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
     contentClass: 'content-bearing',
     reason:
       'Outbound coherence review — THE measured high-volume point (3,641 of 4,098 llm calls/24h on the dev agent, spec §5.6); MUST declare sampled:<rate> or budget:<rows/day> at enrollment, never full.',
+  },
+  {
+    decisionPoint: DP_COS_PROJECT_VERDICT,
+    component: 'ChiefOfStaffLoop',
+    status: 'wired',
+    volumeClass: 'budget:200',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'The loop grades a restart verdict by whether artifact progress follows within one cadence and a done ' +
+      'verdict by whether the closure stays closed for 14 days (spec §5); those outcomes land in a later tick, so ' +
+      'identity-only rows are recorded now and settled by the loop, never by the judge itself.',
+    reason:
+      'Project check-in verdict (moving/stalled/drifting/waiting/claims-done/unknown) over deterministic evidence and a bounded untrusted conversation tail; provenance stores evidence ids and the tail bound, never the text.',
   },
   {
     decisionPoint: DP_HUB_INTENT_CLASSIFY,
@@ -1130,6 +1159,24 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'Recurring-correction distillation into a durable preference; enrollment queued in the ACT-1193 uniform-provenance retrofit backlog.',
   },
   {
+    decisionPoint: 'skill-learning-draft',
+    component: 'skillLearning.drafter',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Skill-learning arbiter (draft/wait/never) and drafter (covered-by/patch/new) over operator requests and tool-call outlines; ' +
+      'the sentinel records each call directly through JudgmentProvenanceLog (arbiter: true) pending seam enrolment in the ACT-1193 backlog.',
+  },
+  {
+    decisionPoint: 'skill-learning-review',
+    component: 'skillLearning.reviewer',
+    status: 'pending:backlog:decision-quality-enrolment',
+    contentClass: 'content-bearing',
+    reason:
+      'Cross-family v1 review of a skill draft (follows / clear-or-strike each flagged line); recorded directly through ' +
+      'JudgmentProvenanceLog by the sentinel pending seam enrolment in the ACT-1193 backlog.',
+  },
+  {
     decisionPoint: DP_MENTOR_STAGE_B_CLASSIFY,
     component: 'mentor-stage-b',
     status: 'wired',
@@ -1142,6 +1189,21 @@ export const PROVENANCE_COVERAGE: ReadonlyArray<ProvenanceCoverageEntry> = [
       'settlement, so provenance is collected without treating persistence as truth.',
     reason:
       'Mentor-signal classification over bounded mentee output; context stores exact signal and prompt identities without log or session text.',
+  },
+  {
+    decisionPoint: DP_SKILL_LEARNING_CLASSIFY,
+    component: 'skillLearning.classifier',
+    status: 'wired',
+    volumeClass: 'budget:200',
+    contentClass: 'content-bearing',
+    gradingPosture: 'measurement-only',
+    gradingReason:
+      'A verdict (repeatable / procedureKey / outcomeOfPrevRun) is graded by the sentinel\'s own §3.6 corroboration ' +
+      'and the weekly operator label sample, which are not correlation-bound to each settlement yet; provenance is the ' +
+      'precondition of every verdict (§4: no record, no action) and is collected before an outcome rule exists.',
+    reason:
+      'Batch classification of operator request rows; context stores source and prompt identities (hashes), counts and ' +
+      'booleans — never message text (the ledger holds only the pointer and the scrubbed paraphrase).',
   },
 
   // ── Argued exemptions (closed taxonomy; pinned shrink-only) ──────────────

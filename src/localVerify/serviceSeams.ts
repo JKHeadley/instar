@@ -7,9 +7,11 @@
 
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import { promisify } from 'node:util';
 import { getHostTestRunnerSemaphore, resolveCap } from '../core/hostTestRunnerSemaphore.js';
 import type { ChildHandle, LocalVerifyServiceSeams, PrView } from './LocalVerifyService.js';
+import { LaunchdNoFallbackError, launchdLabelPrefix, spawnViaLaunchd } from './launchdSpawn.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -27,12 +29,22 @@ export function scrubbedEnv(env: NodeJS.ProcessEnv = process.env): Record<string
   return out;
 }
 
+/** A full page means the list may be cut short, so it is not used as a complete list. */
+const OPEN_PR_LIST_LIMIT = 1000;
+
 export interface DefaultServiceSeamOpts {
   repo: string;
   /** Stable per-agent claim key; absent in isolated tests. */
   priorityKey?: string;
   /** The explicit per-agent GitHub environment (as MergeRunner uses); null = gh unavailable. */
   resolveGitHubEnv: () => NodeJS.ProcessEnv | null;
+  /**
+   * macOS: start each run child as its own launchd job with `ProcessType Interactive`, so the
+   * run and its lanes use the performance cores instead of the efficiency cores every
+   * session-descended process is kept on (see launchdSpawn.ts). Any failure before the run
+   * starts falls back to the plain detached spawn. Ignored on other platforms.
+   */
+  performanceCores?: { stateDir: string; onFallback?: (reason: string) => void };
 }
 
 export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<LocalVerifyServiceSeams, 'onStarved' | 'onRecord'> {
@@ -88,7 +100,30 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
       if (!out) return null;
       try { return (JSON.parse(out) as { state?: string }).state === 'OPEN'; } catch { return null; }
     },
+    async listOpenPrs(): Promise<ReadonlySet<number> | null> {
+      const out = await gh(['pr', 'list', '--repo', opts.repo, '--state', 'open', '--limit', String(OPEN_PR_LIST_LIMIT), '--json', 'number']);
+      if (!out) return null;
+      try {
+        const rows = JSON.parse(out) as Array<{ number?: unknown }>;
+        if (!Array.isArray(rows) || rows.length >= OPEN_PR_LIST_LIMIT) return null; // may be cut short
+        const numbers = rows.map((row) => row.number);
+        return numbers.every((n): n is number => typeof n === 'number') ? new Set(numbers) : null;
+      } catch { return null; } // @silent-fallback-ok: the caller falls back to per-PR reads
+    },
     spawnRun(a): ChildHandle {
+      const pc = opts.performanceCores;
+      if (pc && process.platform === 'darwin') {
+        try {
+          return spawnViaLaunchd(a, {
+            dir: path.join(pc.stateDir, 'state', 'local-verify', 'launchd'),
+            labelPrefix: launchdLabelPrefix(pc.stateDir),
+            cwd: process.cwd(),
+          });
+        } catch (e) {
+          if (e instanceof LaunchdNoFallbackError) throw e; // a launchd job may still be running: never start it twice
+          pc.onFallback?.(e instanceof Error ? e.message : String(e)); // the plain spawn below still runs it
+        }
+      }
       const fd = fs.openSync(a.logFile, 'a', 0o600);
       const child = spawn(a.command, a.args, { env: a.env, detached: true, stdio: ['ignore', fd, fd] });
       fs.closeSync(fd);

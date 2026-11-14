@@ -768,8 +768,13 @@ export class QueueDrainLoop {
     // mismatch — monotonic deadlines unreconstructable, wall governs, §6).
     const crossTenure = row.lease_epoch !== this.tenure;
     const crossBoot = row.boot_session_id !== this.d.bootSessionId;
-    if (crossTenure || crossBoot) {
-      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms;
+    // An app message waiting for its conversation's machine keeps the normal TTL across a reboot of
+    // THIS holder (same tenure): the restart doesn't change where it must go, the app tail re-reads the
+    // owner on every attempt, and the owner dedupes by message id. Clamping it dropped a message the
+    // phone showed as saved and waiting after a 3-second holder restart.
+    const appAcrossOwnReboot = crossBoot && !crossTenure && row.session_key.startsWith('app:');
+    if ((crossTenure || crossBoot) && !appAcrossOwnReboot) {
+      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms - (row.fold_frozen_ms ?? 0); // fold-held time never ages a row (§9.3)
       if (age > q.staleCustodyTtlMs) {
         if (this.d.store.transition(row.enqueue_seq, 'queued', 'expired', { nowIso, terminalReason: crossTenure ? 'stale-custody-tenure' : 'stale-custody-reboot' })) {
           this.mirrorRemove(row.session_key);
@@ -1047,7 +1052,7 @@ export class QueueDrainLoop {
     const stale: LossItem[] = [];
     for (const row of this.d.store.listNonTerminal()) {
       if (row.frozen_since) continue; // pause governs frozen rows
-      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms;
+      const age = nowMs - Date.parse(row.enqueued_at) - row.total_frozen_ms - (row.fold_frozen_ms ?? 0); // fold-held time never ages a row (§9.3)
       if (age > q.maxNapDeliveryAgeMs && row.state === 'queued') {
         if (this.d.store.transition(row.enqueue_seq, 'queued', 'expired', { nowIso, terminalReason: 'nap-stale' })) {
           this.mirrorRemove(row.session_key);

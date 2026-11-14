@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "slug": "cb-engine-checkpoint",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T11:01:22.324Z",
+  "artifactPath": "upgrades/side-effects/cb-engine-checkpoint.md",
+  "artifactSha256": "05e6538bb7ed5764c9561f07ccf192ab1eb749e29ddb2cf61e202c7f3ca1b1b9",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/core/BackupManager.ts",
+    "src/monitoring/engineCheckpoint.ts",
+    "src/monitoring/foldCarriers.ts",
+    "tests/e2e/engine-checkpoint-crash-lifecycle.test.ts",
+    "tests/integration/engine-checkpoint-fold-lifecycle.test.ts",
+    "tests/unit/BackupManager-never-backup.test.ts",
+    "tests/unit/engine-checkpoint.test.ts",
+    "upgrades/next/cb-engine-checkpoint.md",
+    "upgrades/side-effects/cb-engine-checkpoint.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Stores an unscrubbed transcript copy and writes into the engine transcript directory on restore; inert in Phase 0",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

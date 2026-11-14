@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-loop",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T01:50:20.980Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-loop.md",
+  "artifactSha256": "c4ccfb22b26abfdfddcb462131cbc9d3303a3e214d3d4de3cfd5f2148082ee74",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "src/server/CapabilityIndex.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Capability-index classification of the Chief of Staff status routes (read-only) under the converged, approved spec.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

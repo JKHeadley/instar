@@ -1058,6 +1058,19 @@ export class FeedbackDrainStore {
     };
   }
 
+  /**
+   * Finished drain runs created since `sinceMs`, from the durable run table (it survives
+   * restarts, unlike any in-memory counter). `succeeded` counts `succeeded` and `no-op`;
+   * `degraded`, `failed` and `abandoned` count against it. Runs still in flight are left out.
+   */
+  runOutcomes(sinceMs: number): { succeeded: number; finished: number } {
+    const row = this.db.prepare(`SELECT
+        SUM(CASE WHEN state IN ('succeeded','no-op') THEN 1 ELSE 0 END) ok,
+        COUNT(*) total
+      FROM drain_runs WHERE created_at>=? AND state NOT IN ('accepted','running')`).get(sinceMs) as { ok: number | null; total: number };
+    return { succeeded: Number(row.ok ?? 0), finished: Number(row.total ?? 0) };
+  }
+
   mutateAuthority(input: Omit<AuthorityRecord, 'generation' | 'revoked'> & { action: 'create' | 'replace' | 'revoke' | 'restore'; operatorDecisionRef: string }): AuthorityRecord {
     if (!input.operatorDecisionRef.trim()) throw new Error('operatorDecisionRef is required');
     for (const [name, value, max] of [
@@ -1299,10 +1312,11 @@ export class FeedbackDrainStore {
     return this.db.transaction(() => {
       const current = this.getAuthority(authority.authorityId, authority.generation);
       const tenure = this.drainOwnerContinuity();
+      const storedEpoch = this.ownerAuthorityEpoch();
       if (!current || current.revoked || current.generation !== this.latestAuthority(authority.authorityId)?.generation ||
         current.provider !== authority.provider || current.modelFamily !== authority.modelFamily ||
         !tenure || tenure.host !== ownerHost || ownerEpoch < tenure.sinceEpoch ||
-        this.ownerAuthorityEpoch() !== ownerEpoch ||
+        (storedEpoch === null || ownerEpoch < storedEpoch) ||
         !this.authorityOwnerCurrent(current, ownerHost, ownerEpoch)) return null;
       const used = this.authorityCallsToday(authority, now);
       if (used >= maxCallsPerDay) return null;
@@ -1311,6 +1325,9 @@ export class FeedbackDrainStore {
           .get(day, subcap.kind) as { calls: number } | undefined;
         if (Number(row?.calls ?? 0) >= subcap.maxCallsPerDay) return null;
       }
+      // The lease moves on every restart while this durable copy waits for its next writer.
+      // A current owner with unbroken tenure carries it forward, as starting a drain run does.
+      this.advanceOwnerAuthorityEpoch(ownerEpoch);
       const token = randomUUID();
       const attemptId = randomUUID();
       this.db.prepare(`INSERT INTO authority_daily_usage(authority_id,generation,utc_day,committed_usd,decisions,updated_at)

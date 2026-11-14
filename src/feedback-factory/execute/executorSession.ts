@@ -199,3 +199,48 @@ function normalizePosix(p: string): string {
   }
   return parts.join('/');
 }
+
+/**
+ * The failures one Vitest run reported, as stable keys (`file::test name`, `file::<suite>` for a
+ * file that failed without a test result, `file::<unhandled>` for an error the runner traced to a
+ * file). Paths are made relative to `cloneDir`, so a run in another clone gives the same keys.
+ * Reads the JSON report when there is one and the printed output always: an unhandled error (for
+ * example a sandbox refusing a local `listen`) appears only in the printed output.
+ */
+export function vitestFailureKeys(jsonText: string | null, output: string, cloneDir: string): { keys: Set<string>; files: string[] } {
+  const keys = new Set<string>();
+  const files = new Set<string>();
+  const root = cloneDir.replace(/\/+$/, '') + '/';
+  const rel = (p: string) => {
+    const clean = p.trim().replace(/^\.\//, '');
+    return clean.startsWith(root) ? clean.slice(root.length) : clean;
+  };
+  const add = (file: string, name: string) => {
+    const f = rel(file);
+    // Only a plain path inside the clone: the text comes from a run of attempt test code.
+    if (!f || f.startsWith('/') || f.split('/').includes('..') || f.startsWith('-')) return;
+    files.add(f);
+    keys.add(`${f}::${name}`);
+  };
+  if (jsonText) {
+    try {
+      const report = JSON.parse(jsonText) as { testResults?: Array<{ name?: string; status?: string; assertionResults?: Array<{ fullName?: string; title?: string; status?: string }> }> };
+      for (const file of report.testResults ?? []) {
+        if (!file.name) continue;
+        const failedTests = (file.assertionResults ?? []).filter((a) => a.status === 'failed');
+        for (const a of failedTests) add(file.name, a.fullName || a.title || '<test>');
+        if (file.status === 'failed' && failedTests.length === 0) add(file.name, '<suite>');
+      }
+    } catch { /* @silent-fallback-ok: an unreadable report leaves only the printed output; an empty key set fails the gate */ }
+  }
+  const text = output.replace(/\u001b\[[0-9;]*m/g, '');
+  for (const m of text.matchAll(/originated in "([^"]+)" test file/g)) add(m[1], '<unhandled>');
+  return { keys, files: [...files].sort() };
+}
+
+/** True when every failure the head run reported was also reported by the base run (nothing new). */
+export function failuresAllPreexisting(head: Set<string>, base: Set<string>): boolean {
+  if (head.size === 0) return false;
+  for (const k of head) if (!base.has(k)) return false;
+  return true;
+}

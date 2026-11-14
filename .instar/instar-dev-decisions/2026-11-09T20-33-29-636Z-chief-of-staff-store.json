@@ -1,0 +1,27 @@
+{
+  "ts": "2026-11-09T20:33:29.636Z",
+  "slug": "chief-of-staff-store",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 6,
+  "loc": 750,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/ChiefOfStaffStore.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/data/feature-ladders.json"
+    ],
+    "addedLines": 746,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

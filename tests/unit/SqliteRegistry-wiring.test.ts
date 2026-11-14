@@ -19,6 +19,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import {
+  closeAllSqlite,
   sqliteRegistrySize,
   __resetSqliteRegistryForTests,
 } from '../../src/core/SqliteRegistry.js';
@@ -26,13 +27,16 @@ import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
 import { StopGateDb } from '../../src/core/StopGateDb.js';
 import { PreferenceStore } from '../../src/providers/uxConfirm/PreferenceStore.js';
 import { SpawnLedger } from '../../src/threadline/SpawnLedger.js';
+import { witnessFixture } from './graph-witness-fixtures.js';
 import { JobSupervisionStore } from '../../src/scheduler/JobSupervisionStore.js';
+import { RecoveryAdmission } from '../../src/recovery/RecoveryAdmission.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SRC = path.join(REPO_ROOT, 'src');
 
 /** The 15 long-lived (process-lifetime) SQLite stores — the registry allowlist. */
 const LONG_LIVED_STORES = [
+  'src/core/GraphWitnessService.ts',
   'src/core/StopGateDb.ts',
   'src/core/FeatureRegistry.ts',
   'src/providers/uxConfirm/PreferenceStore.ts',
@@ -47,6 +51,7 @@ const LONG_LIVED_STORES = [
   'src/monitoring/FrameworkIssueLedger.ts',
   'src/monitoring/ApprenticeshipCycleStore.ts',
   'src/memory/TopicMemory.ts',
+  'src/memory/topicRowWatermark.ts',  // row-carrier watermark store (context-budget S3)
   'src/memory/SemanticMemory.ts',
   'src/messaging/MessageProcessingLedger.ts',
   'src/messaging/OutboundDedupStore.ts',
@@ -58,6 +63,7 @@ const LONG_LIVED_STORES = [
   // constructor (registerSqliteHandle), process-lifetime.
   'src/core/AppMediaStore.ts',
   'src/messaging/imessage/NativeBackend.ts',
+  'src/monitoring/skillLearning/Ledger.ts',
   'src/threadline/A2ADeliveryTracker.ts',
   // A2A inbound message-id ledger: registers its handle in the constructor and
   // unregisters in close() (docs/specs/a2a-inbound-id-ledger.md §1).
@@ -69,6 +75,10 @@ const LONG_LIVED_STORES = [
   // registers its handle in the constructor (registerSqliteHandle), process-
   // lifetime, closed once at shutdown like FeatureMetricsLedger beside it.
   'src/monitoring/ProviderCostReportStore.ts',
+  // Unified usage ledger (docs/specs/unified-usage-ledger.md): registers its handle in the
+  // constructor, process-lifetime. Its snapshot write and import open short-lived handles
+  // that close in finally.
+  'src/monitoring/UsageLedger.ts',
   // Correction-class review is durable process-lifetime state and registers
   // its handle in the constructor like the other monitoring stores above.
   'src/monitoring/ClassReviewStore.ts',
@@ -89,6 +99,9 @@ const LONG_LIVED_STORES = [
   // Script-result supervision keeps its WAL journal open for the scheduler's
   // lifetime and must close before process exit.
   'src/scheduler/JobSupervisionStore.ts',
+  // The independent sidecar owns its admission handle for its process lifetime;
+  // short-lived SSH/install callers unregister in their explicit close().
+  'src/recovery/RecoveryAdmission.ts',
 ];
 
 /**
@@ -96,12 +109,15 @@ const LONG_LIVED_STORES = [
  * each documented as a transient (closes itself) or a non-owning helper.
  */
 const TRANSIENT_SKIP: Record<string, string> = {
+  'src/core/GraphCustodyRetiredRoles.ts': 'Opens a retired role database briefly to purge or verify it, then closes it in the same call.',
   'src/messaging/telegram-origin/OriginStoreBackend.ts': 'worker-owned outbox handle is owned and registered by PendingRelayStore; archive handles close in finally',
   'src/messaging/telegram-origin/OriginEvidenceSpool.ts': 'worker opens one evidence transaction and closes its handle in finally',
   'src/commands/server.ts': ':memory: probe testDb — closes itself immediately',
+  'src/messaging/telegram-origin/OriginStore.ts': 'parent-thread addon hold: opens one :memory: database and closes it at once, only to keep better-sqlite3 loaded while store workers exit',
   'src/server/routes.ts': 'readonly per-request open — closed per request, not process-lifetime',
   'src/memory/NativeModuleHealer.ts': 'generic ABI-heal helper — owns no handle (a comment mentions new Database)',
   'src/core/UpdateChecker.ts': 'candidate startup probe opens an in-memory database in a child process and closes it in finally',
+  'src/recovery/RecoveryRuntimeSlot.ts': 'bounded copied-runtime qualification opens only an in-memory database in its isolated child process, closes it before success, and the parent owns no handle',
 };
 
 function walkTs(dir: string, acc: string[] = []): string[] {
@@ -164,6 +180,13 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
     try { SafeFsExecutor.safeRmSync(tmp, { recursive: true, force: true, operation: 'tests/unit/SqliteRegistry-wiring.test.ts' }); } catch { /* ignore */ }
   });
 
+  it('GraphWitnessService registers its real live handle, unregisters on close, and closes through process teardown',()=>{
+    const fixture=witnessFixture(tmp),service=fixture.open();expect(sqliteRegistrySize()).toBe(1);
+    expect(service.membershipProof(fixture.membership.agentId,1)).toEqual(fixture.membership);service.close();expect(sqliteRegistrySize()).toBe(0);
+    const reopened=fixture.open();expect(sqliteRegistrySize()).toBe(1);closeAllSqlite();expect(sqliteRegistrySize()).toBe(0);
+    expect(()=>reopened.membershipProof(fixture.membership.agentId,1)).toThrow();reopened.close();expect(sqliteRegistrySize()).toBe(0);
+  });
+
   it('StopGateDb registers on construct', () => {
     expect(sqliteRegistrySize()).toBe(0);
     new StopGateDb({ dbPath: path.join(tmp, 'stopgate.db') });
@@ -187,6 +210,21 @@ describe('SqliteRegistry wiring — registration fires (functional)', () => {
     expect(sqliteRegistrySize()).toBe(1);
     store.close();
     expect(sqliteRegistrySize()).toBe(0);
+  });
+
+  it('RecoveryAdmission registers its sidecar handle and allows normal close after exit cleanup',()=>{
+    const store=new RecoveryAdmission({stateDir:path.join(tmp,'recovery'),agentId:'test',machineId:'target',bootId:'test-boot',certificationRoot:''});
+    expect(sqliteRegistrySize()).toBe(1);expect(closeAllSqlite()).toBe(1);
+    expect(sqliteRegistrySize()).toBe(0);expect(()=>store.close()).not.toThrow();
+  });
+
+  it('RecoveryAdmission closes and unregisters when its real schema setup fails',()=>{
+    const stateDir=path.join(tmp,'recovery');fs.mkdirSync(stateDir,{mode:0o700});
+    const file=path.join(stateDir,'recovery-admission.db'),db=new Database(file);
+    db.exec('CREATE TABLE operations (wrong_column TEXT)');db.close();fs.chmodSync(file,0o600);
+    expect(()=>new RecoveryAdmission({stateDir,agentId:'test',machineId:'target',bootId:'test-boot',certificationRoot:''})).toThrow();
+    expect(sqliteRegistrySize()).toBe(0);
+    const reopened=new Database(file);expect(()=>reopened.exec('BEGIN EXCLUSIVE; ROLLBACK')).not.toThrow();reopened.close();
   });
 
   it('JobSupervisionStore closes an opened journal when schema setup fails', () => {

@@ -20,6 +20,7 @@
 
 import type { PlacementDecision, PlacementExecutor, TopicPlacement } from './PlacementExecutor.js';
 import type { MachineCapacity } from './types.js';
+import { isAppOwnershipKey } from './SessionOwnership.js';
 
 export interface OwnershipView {
   owner: string | null;
@@ -39,7 +40,9 @@ export interface DeliverAck {
    * identically), and maps in the queue drain to terminal
    * `sender-deauthorized`. Old peers never emit it (version skew named).
    */
-  accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected';
+  /** `not-yet` (app-conversations-in-the-pool §2.4): an app conversation's owner can't take it right now
+   *  (mid-binding, lease gate closed). Keep it queued. Only flagged machines receive app forwards. */
+  accepted: 'queued' | 'duplicate' | 'stale-ownership' | 'sender-rejected' | 'not-yet';
 }
 
 /** Sender identity captured at ingress (Durable Inbound Message Queue §2.2) —
@@ -53,6 +56,8 @@ export interface InboundSenderEnvelope {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** A team phone's person, so the machine that delivers can judge them itself (team-roles-and-access §3.6). */
+  personKey?: string;
 }
 
 export interface InboundMessage {
@@ -64,6 +69,13 @@ export interface InboundMessage {
   /** A pool stepped down to dark: reach a peer that owns this conversation, never place one.
    *  Anything that would place stays on this machine instead. */
   routingOnly?: boolean;
+  /**
+   * An app conversation's emergency stop or pause (app-conversations-in-the-pool §2.4): it skips the
+   * hold for a `transferring` record and the per-session line, and goes to the current owner at once.
+   */
+  appUrgent?: 'stop' | 'pause';
+  /** Earlier messages for this app conversation still wait in the queue: this one goes behind them. */
+  appBehindHeld?: boolean;
   /** The channel scope this message arrived on — threaded into placement so a Slack channel
    *  is never placed on a machine not connected to its workspace (spec:
    *  placement-platform-workspace-aware). Populated at the inbound from the platform event
@@ -179,7 +191,14 @@ export interface SessionRouterDeps {
   /** SYNCHRONOUS per-session CAS-claim (the §L−1 single-ref fast-forward push). */
   casClaimOwnership: (sessionKey: string, machineId: string, expectedEpoch: number) => { ok: boolean; epoch: number };
   /** ONE deliverMessage attempt over MeshRpc; throws on transport error/timeout. */
-  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null }) => Promise<DeliverAck>;
+  deliverMessage: (target: string, env: { sessionKey: string; messageId: string; payload: unknown; ownershipEpoch: number; senderEnvelope?: InboundSenderEnvelope | null; row?: unknown }) => Promise<DeliverAck>;
+  /**
+   * The message's TopicMemory row to carry to the owner (context-budget §14 relay-path
+   * row carrier): read on this machine, numbered in its stream, idempotent per message.
+   * Null or absent ⇒ nothing carried (the switch is off, or no row channel). Never throws
+   * into dispatch: a fault carries nothing.
+   */
+  carryRow?: (msg: InboundMessage) => unknown | null;
   /** Router == owner: process the message on this machine. */
   handleLocally: (msg: InboundMessage) => Promise<void>;
   /**
@@ -191,7 +210,7 @@ export interface SessionRouterDeps {
    * ignored, the receiver refused a hard-coded epoch 0 as stale, and the
    * message was logged `spawned` while no machine held it).
    */
-  spawnOnMachine: (machineId: string, msg: InboundMessage, ownershipEpoch: number) => Promise<DeliverAck>;
+  spawnOnMachine: (machineId: string, msg: InboundMessage, ownershipEpoch: number, row?: unknown) => Promise<DeliverAck>;
   /**
    * Undo a remote placement this router just made whose spawn never landed:
    * move the still-`placing` record (owned by `placedOn`) to THIS machine as
@@ -216,6 +235,11 @@ export interface SessionRouterDeps {
    * the FSM only permits a claim whose machineId equals the placed owner.)
    */
   confirmClaim?: (sessionKey: string, machineId: string) => void;
+  /**
+   * Is a conversation with no ownership record served here (app-conversations-in-the-pool §2.3)? True:
+   * deliver locally. False: the lease gate is closed, so it waits. Absent ⇒ true.
+   */
+  appNoRecordServedHere?: (sessionKey: string) => boolean;
   /** Tri-state custody taking (Durable Inbound Message Queue §2.2). The
    *  production dep is QueueDrainLoop.enqueueLive (never throws; a storage
    *  failure maps to 'refused' → today's fall-through). */
@@ -237,6 +261,8 @@ export class SessionRouter {
   private readonly deps: SessionRouterDeps;
   private readonly cfg: SessionRouterConfig;
   private readonly chains = new Map<string, Promise<unknown>>();
+  /** Stops seen per app conversation. One entry per conversation ever stopped, in this process. */
+  private readonly appStopGeneration = new Map<string, number>();
 
   constructor(deps: SessionRouterDeps, cfg: SessionRouterConfig = DEFAULT_ROUTER_CONFIG) {
     this.deps = deps;
@@ -245,8 +271,15 @@ export class SessionRouter {
 
   /** Dispatch an inbound message; serialized per-session (in-order, one-in-flight). */
   route(msg: InboundMessage): Promise<RouteOutcome> {
+    // A stop or pause never waits behind this conversation's in-flight forwards. A stop also ends
+    // every forward already under way: nothing sent before it runs after it.
+    if (msg.appUrgent && isAppOwnershipKey(msg.sessionKey)) {
+      if (msg.appUrgent === 'stop') this.appStopGeneration.set(msg.sessionKey, (this.appStopGeneration.get(msg.sessionKey) ?? 0) + 1);
+      return this.dispatchApp(msg, this.appStopGeneration.get(msg.sessionKey) ?? 0);
+    }
+    const stopGeneration = this.appStopGeneration.get(msg.sessionKey) ?? 0;
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(() => this.dispatchOne(msg));
+    const next = prior.catch(() => undefined).then(() => this.dispatchOne(msg, stopGeneration));
     // Track the tail so the next message on this session waits for this one to
     // settle — and DELETE the entry once this tail settles while still current,
     // so the map is bounded by in-flight sessions, not sessions-ever-routed
@@ -268,6 +301,9 @@ export class SessionRouter {
    * (acked outcome that isn't another queued/blocked verdict).
    */
   async forceReplace(msg: InboundMessage): Promise<boolean | 'rejected' | 'local'> {
+    // app-conversations-in-the-pool §2.2: nothing in the pool places an app conversation. Its queue
+    // entry runs out at the queue's limits and the phone is told in words.
+    if (isAppOwnershipKey(msg.sessionKey)) return false;
     const prior = this.chains.get(msg.sessionKey) ?? Promise.resolve();
     const next = prior.catch(() => undefined).then(() => this.placeAndClaim(msg, 'failover', true));
     const tail = next.then(() => undefined, () => undefined);
@@ -303,7 +339,82 @@ export class SessionRouter {
     return Math.min(this.cfg.deliverMessageRetryBackoffStartMs * 2 ** attempt, this.cfg.deliverMessageRetryBackoffMaxMs);
   }
 
-  private async dispatchOne(msg: InboundMessage): Promise<RouteOutcome> {
+  /**
+   * The app arm (app-conversations-in-the-pool §2.2, §2.4). No path here places: with no record it
+   * delivers on this machine (the lease holder) or waits for the lease gate; an active record elsewhere
+   * is forwarded; a transient record waits, except a stop or pause, which goes to its owner at once.
+   */
+  private async dispatchApp(msg: InboundMessage, stopGeneration: number): Promise<RouteOutcome> {
+    const stopped = (this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration;
+    if (stopped) return { action: 'queued', detail: 'app-stopped', acked: true };
+    const queue = (detail: string, owner?: string | null): RouteOutcome => {
+      // A stop that can't land now is never kept: firing later, it would stop work asked for since.
+      if (msg.appUrgent) return { action: 'queued', detail, owner, acked: false };
+      const q = this.deps.queueMessage(msg, detail);
+      return { action: 'queued', detail, owner, acked: q === 'queued' || q === 'already-queued' };
+    };
+    if (msg.appBehindHeld && !msg.appUrgent) return queue('app-behind-held');
+    const own = this.deps.resolveOwnership(msg.sessionKey);
+    if (!own.status || !own.owner) {
+      if (this.deps.appNoRecordServedHere?.(msg.sessionKey) ?? true) return { action: 'handled-locally', owner: this.deps.selfMachineId, acked: true };
+      // A stop at a closed gate runs today's local stop, which is harmless (§2.4).
+      if (msg.appUrgent) return { action: 'handled-locally', owner: this.deps.selfMachineId, detail: 'lease-gate-closed', acked: true };
+      return queue('app-lease-gate-closed');
+    }
+    const transient = own.status !== 'active';
+    if (transient && !(msg.appUrgent && own.status === 'transferring')) return queue(own.status, own.owner);
+    if (own.owner === this.deps.selfMachineId) return { action: 'handled-locally', owner: own.owner, acked: true };
+    if (!this.deps.isMachineAlive(own.owner) && !msg.appUrgent) return queue('app-owner-not-answering', own.owner);
+    return this.forwardApp(msg, own.owner, own.epoch, stopGeneration);
+  }
+
+  /** Forward to the app conversation's owner. Any answer but acceptance keeps it queued; nothing re-places. */
+  private async forwardApp(msg: InboundMessage, owner: string, epoch: number, stopGeneration: number): Promise<RouteOutcome> {
+    const stoppedOutcome = (): RouteOutcome => ({ action: 'queued', detail: attemptThrew ? 'app-stopped-unknown' : 'app-stopped', owner, acked: true });
+    const queue = (detail: string): RouteOutcome => {
+      if (msg.appUrgent) return { action: 'queued', detail, owner, acked: false };
+      // A stop landed during this attempt: queued now, it would run after the stop.
+      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return stoppedOutcome();
+      const q = this.deps.queueMessage(msg, detail);
+      return { action: 'queued', detail, owner, acked: q === 'queued' || q === 'already-queued' };
+    };
+    let target = owner;
+    let targetEpoch = epoch;
+    let reForwarded = false;
+    // A thrown attempt may have reached the owner with only its answer lost, so a stop after one can't say it never arrived.
+    let attemptThrew = false;
+    for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
+      if ((this.appStopGeneration.get(msg.sessionKey) ?? 0) !== stopGeneration) return stoppedOutcome();
+      try {
+        const ack = await this.deps.deliverMessage(target, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: targetEpoch, senderEnvelope: msg.senderEnvelope ?? null });
+        this.deps.onOwnerResponsive?.(target);
+        if (ack.accepted === 'duplicate') return { action: 'duplicate', owner: target, acked: true };
+        if (ack.accepted === 'queued') return { action: 'forwarded', owner: target, acked: true };
+        if (ack.accepted === 'sender-rejected') return { action: 'rejected', owner: target, detail: 'sender-deauthorized', acked: true };
+        if (ack.accepted === 'not-yet') return queue('app-owner-not-yet');
+        // stale-ownership: the record may have moved under us. A stop or pause follows it once, by
+        // re-reading the record (§2.4); anything else waits for the queue's next pass.
+        const now = this.deps.resolveOwnership(msg.sessionKey);
+        if (msg.appUrgent && !reForwarded && now.owner && now.owner !== this.deps.selfMachineId && now.owner !== target) {
+          reForwarded = true;
+          target = now.owner;
+          targetEpoch = now.epoch;
+          attempt = -1;
+          continue;
+        }
+        return queue('app-owner-stale');
+      } catch (err) { // @silent-fallback-ok — logged and retried; exhausted retries mark the owner suspect and keep the message queued
+        attemptThrew = true;
+        this.deps.log?.(`deliverMessage attempt ${attempt} to ${target} failed: ${String((err as Error)?.message ?? err)}`);
+        if (attempt < this.cfg.deliverMessageMaxRetries) await this.deps.sleep(this.backoff(attempt));
+      }
+    }
+    this.deps.markOwnerSuspect?.(target);
+    return queue('app-owner-unreachable');
+  }
+
+  private async dispatchOne(msg: InboundMessage, stopGeneration: number): Promise<RouteOutcome> {
+    if (isAppOwnershipKey(msg.sessionKey)) return this.dispatchApp(msg, stopGeneration);
     const own = this.deps.resolveOwnership(msg.sessionKey);
 
     if (own.status === 'active' && own.owner) {
@@ -338,10 +449,23 @@ export class SessionRouter {
     return this.placeAndClaim(msg, 'new', false);
   }
 
+  /** The row carried with a forward (§14). Contained: a fault carries nothing, the message still goes. */
+  private carriedRow(msg: InboundMessage): unknown | null {
+    if (!this.deps.carryRow) return null;
+    try {
+      return this.deps.carryRow(msg) ?? null;
+    } catch (err) { // @silent-fallback-ok — logged; the owner records the message as expected, so its precondition reads the missing row
+      this.deps.log?.(`carryRow for ${msg.sessionKey} failed: ${String((err as Error)?.message ?? err)}`);
+      return null;
+    }
+  }
+
   private async forwardToOwner(msg: InboundMessage, owner: string, epoch: number, reResolveDepth: number): Promise<RouteOutcome> {
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
+      // Read per attempt: the seq is idempotent per message, and a row stored after the first try still rides the retry.
+      const row = this.carriedRow(msg);
       try {
-        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch, senderEnvelope: msg.senderEnvelope ?? null });
+        const ack = await this.deps.deliverMessage(owner, { sessionKey: msg.sessionKey, messageId: msg.messageId, payload: msg.payload, ownershipEpoch: epoch, senderEnvelope: msg.senderEnvelope ?? null, ...(row != null ? { row } : {}) });
         // ANY ack (queued/duplicate/stale) proves the peer answered — close its
         // suspect window before interpreting the ack.
         this.deps.onOwnerResponsive?.(owner);
@@ -420,6 +544,10 @@ export class SessionRouter {
   }
 
   private async placeAndClaim(msg: InboundMessage, reason: 'new' | 'failover', fromDead: boolean): Promise<RouteOutcome> {
+    if (isAppOwnershipKey(msg.sessionKey)) {
+      const q = this.deps.queueMessage(msg, 'app-never-placed');
+      return { action: 'queued', detail: 'app-never-placed', acked: q === 'queued' || q === 'already-queued' };
+    }
     if (msg.routingOnly) {
       // The record must change hands too: the queue refuses local delivery while it names
       // the peer, and nothing else re-places at dark, so the message would run out of tries.
@@ -531,8 +659,9 @@ export class SessionRouter {
   /** The placement spawn hop, with the same retry/backoff as forwardToOwner. */
   private async spawnWithRetries(target: string, msg: InboundMessage, epoch: number): Promise<DeliverAck['accepted'] | 'unreachable'> {
     for (let attempt = 0; attempt <= this.cfg.deliverMessageMaxRetries; attempt++) {
+      const row = this.carriedRow(msg);
       try {
-        const ack = await this.deps.spawnOnMachine(target, msg, epoch);
+        const ack = row != null ? await this.deps.spawnOnMachine(target, msg, epoch, row) : await this.deps.spawnOnMachine(target, msg, epoch);
         return ack.accepted;
       } catch (err) {
         this.deps.log?.(`spawn attempt ${attempt} on ${target} failed: ${String((err as Error)?.message ?? err)}`);

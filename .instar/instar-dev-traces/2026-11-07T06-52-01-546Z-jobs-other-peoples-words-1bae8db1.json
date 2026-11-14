@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "jobs-other-peoples-words",
+  "sessionId": "01d20012-6a42-483e-af23-beab1eb3aaad",
+  "timestamp": "2026-11-07T06:52:01.546Z",
+  "artifactPath": "upgrades/side-effects/jobs-other-peoples-words.md",
+  "artifactSha256": "4c12acca811182f3f564060f1efdd0bad97bf8c72e9b399692a3344cfee14cf0",
+  "specPath": "docs/specs/team-roles-and-access.md",
+  "coveredFiles": [
+    "docs/specs/team-roles-and-access.eli16.md",
+    "docs/specs/team-roles-and-access.md",
+    "src/commands/server.ts",
+    "src/scheduler/JobScheduler.ts",
+    "tests/unit/JobScheduler-other-peoples-words.test.ts",
+    "upgrades/next/jobs-other-peoples-words.md",
+    "upgrades/side-effects/jobs-other-peoples-words.md"
+  ],
+  "phase": "complete",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

@@ -61,6 +61,7 @@ function harness(regime: ProfileWriteRegime, opts: {
   localBinding?: boolean;
   respawnFails?: boolean;
   reapplyCooldownMs?: number;
+  tokenMayWrite?: (key: string) => { ok: true } | { ok: false; reply: string };
   now?: () => number;
 } = {}): Harness {
   const store = new TopicProfileStore({
@@ -85,8 +86,9 @@ function harness(regime: ProfileWriteRegime, opts: {
     store,
     resolver,
     regime: () => regime,
-    boundOperator: () =>
-      opts.boundUid === null ? null : { platform: 'telegram', uid: opts.boundUid ?? '777' },
+    boundOperator: (key) =>
+      opts.boundUid === null || !/^\d+$/.test(key) ? null : { platform: 'telegram', uid: opts.boundUid ?? '777' },
+    ...(opts.tokenMayWrite ? { tokenMayWrite: opts.tokenMayWrite } : {}),
     localModelBinding: () => (opts.localBinding ? { provider: 'ollama' } : null),
     legacyFrameworkRespawn: async (topicKey) => {
       respawns.push(topicKey);
@@ -395,6 +397,25 @@ describe('§10.1 — principal gates', () => {
     });
     expect(refused.ok).toBe(false);
     expect(refused.refusal?.reason).toBe('no-bound-operator');
+  });
+
+  it('a token write to an app or Slack conversation is decided by its own record (session-swap-any-conversation §3.4)', async () => {
+    const APP = 'app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f';
+    const yes = harness(FLEET_REGIME, { tokenMayWrite: () => ({ ok: true }) });
+    const ok = await yes.surface.applyWrite({ topicKey: APP, patch: { framework: 'codex-cli' }, principal: { kind: 'token' }, origin: 'http' });
+    expect(ok.ok).toBe(true);
+    expect(yes.store.resolve(APP)?.framework).toBe('codex-cli');
+    const no = harness(FLEET_REGIME, { tokenMayWrite: () => ({ ok: false, reply: 'Another of your machines runs this conversation right now.' }) });
+    const refused = await no.surface.applyWrite({ topicKey: 'slack:C0ABC', patch: { framework: 'codex-cli' }, principal: { kind: 'token' }, origin: 'http' });
+    expect(refused).toMatchObject({ ok: false, refusal: { reason: 'no-bound-operator' } });
+    expect(refused.reply).toContain('Another of your machines');
+    expect(no.store.resolve('slack:C0ABC')).toBeNull();
+    // A Telegram topic still needs its bound operator; the hook never decides it.
+    const tg = harness(FLEET_REGIME, { boundUid: null, tokenMayWrite: () => ({ ok: true }) });
+    expect((await tg.surface.applyWrite({ topicKey: 24, patch: { framework: 'codex-cli' }, principal: { kind: 'token' }, origin: 'http' })).ok).toBe(false);
+    // An operator principal (a chat command) on an app key: no bound operator, refused as before.
+    const op = harness(FLEET_REGIME, { tokenMayWrite: () => ({ ok: true }) });
+    expect((await op.surface.applyWrite({ topicKey: APP, patch: { framework: 'codex-cli' }, principal: OPERATOR, origin: 'conversational' })).ok).toBe(false);
   });
 
   it('operator writes stamp the platform:uid principal server-side', async () => {

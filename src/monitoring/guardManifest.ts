@@ -66,6 +66,18 @@ export interface GuardManifestEntry {
 
 export const GUARD_MANIFEST: readonly GuardManifestEntry[] = [
   {
+    // ContextBudgetSentinel (docs/specs/context-budget-layered-summaries.md §7.8, §9.3):
+    // reconciles quarantined context folds (verified termination before any release) and
+    // keeps containment on any unknown. Ships dark; its heartbeat is a fold precondition,
+    // so off ⇒ no fold can begin. Built and ticked only when on (no runtime registration).
+    key: 'contextBudget.sentinel', kind: 'config',
+    configPath: 'contextBudget.sentinel.enabled',
+    defaultEnabled: false,
+    expectedTickMs: 300_000, process: 'server', expectRuntime: false,
+    component: 'ContextBudgetSentinel',
+    description: 'Context Budget sentinel: reconciles quarantined context folds and escalates torn fold records; off ⇒ no fold can begin.',
+  },
+  {
     key: 'scheduler.jobCoverage', kind: 'code-default', defaultEnabled: true,
     expectedTickMs: 300_000, process: 'server', expectRuntime: false,
     component: 'JobCoverageMonitor',
@@ -1284,12 +1296,14 @@ export interface NotAGuardEntry {
 }
 
 export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
+  { component: 'pipeErrorGuard', reason: 'Stateless stream helpers that attach error listeners so a closed pipe cannot become an uncaught exception. Always on, with no enable flag, no state to report, and no block or allow decision over agent behavior.' },
   { component: 'WedgeMonitor', reason: 'Machine self-maintenance Part E wedge sampler, dry-run. It has no enable flag of its own: it is constructed inside the same machineMaintenance.enabled gate as DrainRehearsal, whose GUARD_MANIFEST row already reports that posture, and it can act on nothing (no rung exists). Its live state is GET /machine-maintenance -> wedge.' },
   { component: 'ThrowawayAgentGuard', reason: 'Pure classification module + init/teardown helpers called inline by installAutoStart, the scheduler admission gate and the server/lifeline startup decision (test-agent-leak-guard). Always-on safety floor with no enabled flag and no boot-constructed monitor, so the /guards inventory has no posture to report for it.' },
   { component: 'OriginToolGuard', reason: 'Generates an always-on harness hook, not a boot-constructed server monitor. Actual installed hook enrollment is reported by the Telegram origin activation matrix.' },
   { component: 'AgentIdentityDivergenceDetector', reason: 'Pure decision function over injected peer observations (agree / disagree / cannot-tell). It IS wired at boot in AgentServer and raises one deduped Attention item on a real split, but it registers no runtime getter and carries no enabled flag, so there is nothing for the /guards inventory to report a posture FOR. It moves to GUARD_MANIFEST if it ever gains a config gate or a status surface.' },
   { component: 'SessionPoolPromotionActivation', reason: 'Evidence-gated rollout actuator selected by promotionModel; it delegates every mutation to StageAdvancer and is not itself a protective guard. Its off/operator/auto posture is surfaced by the promotion route and machine-coherence manifest.' },
   { component: 'DeferralPatternSentinel', reason: 'Increment-1 core only: pure injected-deps detector over the existing judgment-provenance store; NOT boot-constructed and registers no runtime getter yet, so it is absent from the live /guards inventory. It moves to GUARD_MANIFEST when a later increment wires it at boot.' },
+  { component: 'promisedUpdateDetector', reason: 'Pure stateless parser (promise cue + concrete time → instant) feeding PromisedUpdateCapture, which only records a dated commitment; it blocks, edits or delays nothing and has no runtime getter, so there is no posture to report. The follow-through it feeds is the check-in reminder, gated by commitments.checkInReminder.' },
   { component: 'rawTextRequestDetector', reason: 'Pure stateless predicate (high-precision pattern match) feeding the observe-only ask-for-access signal in checkOutboundMessage; no enabled flag, no runtime getter, takes no protective action — a detector that produces a signal, never a guard with posture.' },
   { component: 'GuardPostureTripwire', reason: 'The boot-transition detector OVER the guard inventory — meta-layer, not a guard itself; always-on, no enabled flag.' },
   { component: 'GuardRegistry', reason: 'Infrastructure of this feature: the runtime-getter registry the inventory reads; not a guard.' },
@@ -1361,6 +1375,7 @@ export const NOT_A_GUARD: readonly NotAGuardEntry[] = [
   { component: 'PlannedRestartVerifyGuard', reason: 'Shared file/PID precondition helper consulted by existing supervisor and foreground restart authorities; no independent boot lifecycle or switch.' },
   { component: 'RevertDetector', reason: 'Read-only git revert scan feeding the FailureLedger; failure-learning ingestion plumbing, fail-open, no operator switch.' },
   { component: 'SelfViolationDetector', reason: 'Observe-only detector arm of the correctionLearning.selfViolationSignal sub-guard, which IS declared in the manifest under component CorrectionLearningLoop.' },
+  { component: 'SkillLearningSentinel', reason: 'Skill-learning sentinel (docs/specs/skill-learning-sentinel.md): observes recurring operator requests and, in shadow, writes proposals under .instar/skill-learning/proposals; it never blocks, delays or rewrites a message and takes no protective action over agent behavior. Its kill switch (monitoring.skillLearning.enabled) and live state are reported by GET /skills/learned, not the /guards inventory.' },
   { component: 'SessionActivitySentinel', reason: 'Mid-session activity digests + completion synthesis; session observability/digest feature, takes no protective action.' },
   { component: 'SessionServerGuard', reason: 'Pure decision helper validating session-server actions; stateless validation logic, no boot lifecycle or enabled switch.' },
   { component: 'SessionSummarySentinel', reason: 'Real-time session summaries for intelligent message routing (session: "best"); routing-quality plumbing, not a protective guard.' },

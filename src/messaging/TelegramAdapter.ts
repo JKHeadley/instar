@@ -38,6 +38,7 @@ import type { MessageProvenance } from './shared/MessageProvenance.js';
 import { SessionChannelRegistry } from './shared/SessionChannelRegistry.js';
 import { StallDetector, type StallEvent } from './shared/StallDetector.js';
 import { CommandRouter } from './shared/CommandRouter.js';
+import { conversationsPointer } from './shared/conversationGraphChat.js';
 import { AuthGate } from './shared/AuthGate.js';
 import { MessagingEventBus } from './shared/MessagingEventBus.js';
 import { CallbackRegistry, isAllowedButtonKey } from '../core/CallbackRegistry.js';
@@ -270,7 +271,7 @@ interface TelegramUpdate {
     // is_bot:false). `sender_chat` is present for group bot-as-channel relays.
     from: { id: number; first_name: string; username?: string; is_bot?: boolean };
     sender_chat?: { id: number; type?: string; username?: string };
-    chat: { id: number };
+    chat: { id: number; type?: string };
     message_thread_id?: number;
     text?: string;
     date: number;
@@ -302,6 +303,8 @@ interface TelegramUpdate {
     };
     forum_topic_created?: { name: string };
     forum_topic_edited?: { name?: string };
+    /** A service message: someone pinned this message (conversation-pinned-messages). */
+    pinned_message?: { message_id: number };
   };
   callback_query?: {
     id: string;
@@ -320,6 +323,8 @@ interface LogEntry {
   topicId: number | null;
   text: string;
   fromUser: boolean;
+  /** Sent by a team member's phone: not the owner's words, whatever else this row says. */
+  teamPhone?: boolean;
   timestamp: string;
   sessionName: string | null;
   senderName?: string;
@@ -338,10 +343,16 @@ interface LogEntry {
   deviceId?: string;
   eventId?: string;
   /** People and roles: the app sender's role and registry person (MSP only; namespaced by machine). */
-  senderRole?: 'owner' | 'msp';
+  senderRole?: 'owner' | 'msp' | 'team';
   senderPerson?: { machineId: string; userId: string };
   /** Structural origin, stamped at the send/receive seam. */
   provenance: MessageProvenance;
+  /**
+   * Set only on a row that reached this topic through another agent (context-budget §8):
+   * `relay` (a Threadline relay message mirrored in), `a2a` (this agent's own A2A traffic
+   * mirrored in). Such rows are labelled and carry no operator authority.
+   */
+  rowOrigin?: 'relay' | 'a2a';
   /** Joined at read time from the ASP classification authority. */
   authorship?: MessageAuthorship;
   /** The signing agent's id — present only when `authorship` is `agent-verified`. */
@@ -531,6 +542,8 @@ export const TOPIC_STYLE = {
   INFO:    { color: 7322096,  emoji: '📢' },
   /** Yellow — needs user attention */
   ALERT:   { color: 16766590, emoji: '🔔' },
+  /** Pink — the Chief of Staff (docs/specs/chief-of-staff-topic.md §1.4) */
+  CHIEF:   { color: 16749490, emoji: '🧭' },
 } as const;
 
 /**
@@ -625,6 +638,9 @@ export class TelegramAdapter implements MessagingAdapter {
 
   private config: TelegramConfig;
   private handler: ((message: Message) => Promise<void>) | null = null;
+  private conversationsUrl: () => string | null = () => null;
+
+  setConversationsUrlProvider(provider: () => string | null): void { this.conversationsUrl = provider; }
   private polling = false;
 
   /** True when this adapter is actively polling for messages (false in send-only mode). */
@@ -678,6 +694,9 @@ export class TelegramAdapter implements MessagingAdapter {
    * same handler, which still checks owner, chat and the one-time token (spec §6.1 r7). Before
    * this, a polling agent (PP, 2026-10-21) could only say "use the dashboard".
    */
+  /** Called once each time polling recovers after errors (consecutive poll errors back to zero). */
+  private readonly reconnectListeners: Array<() => void> = [];
+  onReconnect(listener: () => void): void { this.reconnectListeners.push(listener); }
   private pairingHandler: PollingPairingHandler | null = null;
   setPairingHandler(h: PollingPairingHandler | null): void { this.pairingHandler = h; }
   hasPairingHandler(): boolean { return this.pairingHandler !== null; }
@@ -842,7 +861,7 @@ export class TelegramAdapter implements MessagingAdapter {
   // Message log callback — fires on every message logged (inbound and outbound).
   // Used by TopicMemory to dual-write to SQLite for search and summarization.
   // Includes sender identity fields (Phase 1C/1D — User-Agent Topology Spec).
-  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance }) => void) | null = null;
+  public onMessageLogged: ((entry: { messageId: number; topicId: number | null; text: string; fromUser: boolean; teamPhone?: boolean; timestamp: string; sessionName: string | null; senderName?: string; senderUsername?: string; telegramUserId?: number; forwarded?: boolean; provenance?: MessageProvenance; rowOrigin?: 'relay' | 'a2a' }) => void) | null = null;
 
   /**
    * Scope-accretion ratification observer (spec autonomous-scope-accretion-
@@ -995,6 +1014,27 @@ export class TelegramAdapter implements MessagingAdapter {
    * trust the click came from the owner.
    */
   private tunnelConsentHandler: ((action: 'grant' | 'decline', nonce: string) => Promise<string>) | null = null;
+  /** Offer-list buttons (docs/specs/recommended-services.md, Offers). Wired by the recommended-services routes. */
+  private recommendedOfferHandler: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null = null;
+  setRecommendedOfferHandler(fn: ((tap: { action: 'no' | 'yes'; nonce: string; fromIsOwner: boolean }) => Promise<string>) | null): void { this.recommendedOfferHandler = fn; }
+
+  /** One offer list with its buttons, in the owner's conversation. The message id is the delivery proof the offer ledger records. */
+  async sendOfferList(topicId: number, text: string, buttons: Array<{ text: string; data: string }>): Promise<number | null> {
+    try {
+      // Telegram allows up to 8 buttons a row; one per row keeps the names readable on a phone.
+      const result = await this.apiCall('sendMessage', {
+        chat_id: this.config.chatId,
+        message_thread_id: isGeneralTopic(topicId) ? undefined : topicId,
+        text,
+        reply_markup: { inline_keyboard: buttons.map((b) => [{ text: b.text, callback_data: b.data }]) },
+      }) as { message_id: number };
+      return typeof result?.message_id === 'number' ? result.message_id : null;
+    } catch (err) {
+      // @silent-fallback-ok — not silent: null means "not delivered", and the offer stays pending
+      console.warn(`[telegram] sendOfferList failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
   /**
    * UNIFIED-SESSION-LIFECYCLE bonus — fired when a Telegram forum topic is
    * renamed. Wired in server.ts to update the bound session's display name
@@ -1083,7 +1123,8 @@ export class TelegramAdapter implements MessagingAdapter {
       return 'refused';
     }
     const r = this.mobileApproveHandler ? this.mobileApproveHandler(m[1]!) : { outcome: 'ended' as const, text: 'This pairing has already ended.' };
-    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? 'Approved. That phone is paired.' : r.text);
+    const browser = r.client === 'browser';
+    await this.answerCallback(t.callbackQueryId, r.outcome === 'approved' ? (browser ? 'Approved. That browser is set up.' : 'Approved. That phone is paired.') : r.text);
     if (r.outcome === 'approved') {
       // The code stays in the message: a shipped app's code box only submits a complete-looking code,
       // and once the phone is active any such code finishes it. Only the buttons go.
@@ -1092,8 +1133,9 @@ export class TelegramAdapter implements MessagingAdapter {
       });
       // A validated owner tap and consumed pairing nonce establish this reply; scope its
       // capability to the existing owner-DM funnel without altering any topic's waiting state.
-      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(
-        'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
+      await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.sendToOwnerDM(browser
+        ? 'Approved. That browser can now use your conversations with this agent. If the dashboard still shows a code box, type the code above to finish. You can remove the browser any time on the Phones page.'
+        : 'Approved. That phone is paired with this agent. If the app still shows a code box, type the code above to finish. You can remove the phone any time on the Phones page.',
       ));
       return 'approved';
     }
@@ -1116,10 +1158,17 @@ export class TelegramAdapter implements MessagingAdapter {
       await this.answerCallback(t.callbackQueryId, 'Only the owner can do this.');
       return 'refused';
     }
-    const r = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
-    await this.answerCallback(t.callbackQueryId, r === 'declined' ? 'Declined. That phone will not be paired.' : 'This pairing has already ended.');
-    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, 'Declined. That phone was not paired.');
-    return r;
+    const raw = this.mobileDeclineHandler ? this.mobileDeclineHandler(m[1]!) : 'unknown';
+    const r = typeof raw === 'string' ? raw : raw.result;
+    const browser = typeof raw !== 'string' && raw.client === 'browser';
+    // dashboard-conversations-browser-device §4.1: a Decline that loses to an approval already under
+    // way is answered "already approved", never as declined.
+    const toast = r === 'declined' ? (browser ? 'Declined. That browser will not be set up.' : 'Declined. That phone will not be paired.')
+      : r === 'already-approved' ? "Already approved — remove it on the Phones page if this wasn't you."
+      : 'This pairing has already ended.';
+    await this.answerCallback(t.callbackQueryId, toast);
+    if (r === 'declined') await this.closeOwnerPairingMessage(owner, t.messageId, browser ? 'Declined. That browser was not set up.' : 'Declined. That phone was not paired.');
+    return r === 'declined' ? 'declined' : 'unknown';
   }
 
   /** The small toast answering a button tap. Best-effort. */
@@ -1136,6 +1185,15 @@ export class TelegramAdapter implements MessagingAdapter {
 
   /** Callback to inject a response into a tmux session. Wired by server.ts. */
   public onPromptResponse: ((sessionName: string, key: string) => boolean) | null = null;
+  /**
+   * True when the inbound gate will refuse this message (it never reaches a session — today the Chief
+   * of Staff owner-only rule). Set by the server; every "delivered" acknowledgement asks it first, so a
+   * refused message is never reported as delivered (Echo Bugs 10000002533). senderId 0 = unverified.
+   */
+  isInboundRefused: ((topicId: number, senderId: number) => boolean) | null = null;
+
+  /** Chief of Staff (docs/specs/chief-of-staff-topic.md §3): an owner tap on a `cos:` button; set by the server with the loop. */
+  onChiefOfStaffTap: ((tap: { data: string; fromUserId: number; callbackQueryId: string }) => Promise<'ok' | 'ignored'>) | null = null;
   /** Callback to inject text input into a tmux session. Wired by server.ts. */
   public onPromptTextResponse: ((sessionName: string, text: string) => boolean) | null = null;
   /** Callback when relay lease should extend idle timeout for a session */
@@ -1292,6 +1350,11 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   private registerSharedCommands(): void {
     if (!this.sharedCommandRouter) return;
+
+    this.sharedCommandRouter.register('conversations', async (ctx) => {
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(Number(ctx.channelId), conversationsPointer(this.conversationsUrl())));
+      return true;
+    }, { description: 'Open your private Conversations view', platforms: ['telegram'] });
 
     // Attention topic interceptor
     this.sharedCommandRouter.addInterceptor(async (ctx) => {
@@ -1651,7 +1714,7 @@ export class TelegramAdapter implements MessagingAdapter {
     via?: 'mobile-device';
     deviceId?: string;
     eventId?: string;
-    senderRole?: 'owner' | 'msp';
+    senderRole?: 'owner' | 'msp' | 'team';
     senderPerson?: { machineId: string; userId: string };
   }): void {
     const fromApp = entry.via === 'mobile-device';
@@ -1830,6 +1893,8 @@ export class TelegramAdapter implements MessagingAdapter {
       kindMetadata?: Record<string, unknown>;
       /** Conversational agent reply vs server-generated outbound traffic. */
       provenance?: Exclude<MessageProvenance, 'user'>;
+      /** The row's agent origin (context-budget §8), stamped on the logged row of a mirrored A2A message. */
+      rowOrigin?: 'relay' | 'a2a';
       /** a2a-single-agent-identity §4.1 — the caller SKIPPED its local outbound
        *  gate because `willRelay()` said the lease holder would gate instead.
        *  If the send would now proceed LOCALLY (the lease settled here, or the
@@ -2018,6 +2083,7 @@ export class TelegramAdapter implements MessagingAdapter {
       timestamp: new Date().toISOString(),
       sessionName: this.topicToSession.get(topicId) ?? null,
       provenance: options?.provenance ?? 'automation',
+      ...(options?.rowOrigin ? { rowOrigin: options.rowOrigin } : {}),
     });
 
     // Clear stall tracking for this topic (agent responded)
@@ -2186,6 +2252,28 @@ export class TelegramAdapter implements MessagingAdapter {
    * Edit a forum topic's name and/or icon color.
    * Best-effort — silently ignores failures (topic may not exist).
    */
+  /** Pin one message in a forum topic (the Chief of Staff greeting). False on any API failure. */
+  async pinTopicMessage(topicId: number, messageId: number): Promise<boolean> {
+    try {
+      await this.apiCall('pinChatMessage', { chat_id: this.config.chatId, message_id: messageId, message_thread_id: topicId, disable_notification: true });
+      return true;
+    } catch (err) { /* @silent-fallback-ok: the caller reports an unpinned topic and retries next boot */
+      console.warn(`[telegram] pinChatMessage failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
+  /** Remove every pin in a forum topic (Chief of Staff rollback). False on any API failure. */
+  async unpinTopicMessages(topicId: number): Promise<boolean> {
+    try {
+      await this.apiCall('unpinAllForumTopicMessages', { chat_id: this.config.chatId, message_thread_id: topicId });
+      return true;
+    } catch (err) { /* @silent-fallback-ok: the caller reports the pin as still present and retries next boot */
+      console.warn(`[telegram] unpinAllForumTopicMessages failed for topic ${topicId}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
+  }
+
   async editForumTopic(topicId: number, name?: string, iconColor?: number): Promise<boolean> {
     const params: Record<string, unknown> = {
       chat_id: this.config.chatId,
@@ -2269,6 +2357,20 @@ export class TelegramAdapter implements MessagingAdapter {
     this.callbackApproverResolver = resolve;
   }
 
+  /**
+   * The VERIFIED owner: the configured owner id, else the one verified operator (the same answer
+   * authority-bearing buttons use). Undefined means no owner is known — never "anybody".
+   * Chief of Staff reads this for its owner-only rule (src/core/chiefOfStaffOwner.ts).
+   */
+  getVerifiedOwner(): number | undefined {
+    return this.getCallbackApprover();
+  }
+
+  /** Whether every owner source is wired: a configured owner, or the verified-operator lookup. */
+  ownerSourcesReady(): boolean {
+    return this.getConfiguredApprover() !== undefined || this.callbackApproverResolver !== null;
+  }
+
   /** The configured owner, normalized the way pairing reads it: config is raw JSON, so an id may be a string. */
   private getConfiguredApprover(): number | undefined {
     return resolveApprovalOwner(this.getOwnerUserId(), [], []);
@@ -2320,16 +2422,44 @@ export class TelegramAdapter implements MessagingAdapter {
    * sent only to the owner's private chat, with an optional Decline button. Resolves to the
    * Telegram message id when Telegram accepted it, else null.
    */
+  private botIdentityCache: { at: number; value: { name: string; username: string | null } | null } | null = null;
+  /**
+   * The bot's own display name and username (getMe), cached for an hour. Only for wording, such as the
+   * dashboard naming the private chat an approval message arrives in ("Echo Agent"), so a missed message
+   * is found (2026-11-09: the operator looked in the group and said no code arrived). Null when unknown.
+   */
+  async botIdentity(): Promise<{ name: string; username: string | null } | null> {
+    if (this.botIdentityCache && Date.now() - this.botIdentityCache.at < 3_600_000) return this.botIdentityCache.value;
+    try {
+      const me = await this.apiCall('getMe', {}) as { first_name?: unknown; username?: unknown } | null;
+      const name = typeof me?.first_name === 'string' && me.first_name.trim() ? me.first_name.trim().slice(0, 64) : null;
+      const username = typeof me?.username === 'string' && /^[A-Za-z0-9_]{3,64}$/.test(me.username) ? me.username : null;
+      const value = name ? { name, username } : null;
+      this.botIdentityCache = { at: Date.now(), value };
+      return value;
+    } catch {
+      return null; // @silent-fallback-ok — wording only: the dashboard falls back to "your private Telegram chat with the agent"
+    }
+  }
+
   async sendOwnerDMWithButton(text: string, button: { text: string; data: string } | Array<{ text: string; data: string }> | null): Promise<number | null> {
     const owner = this.getOwnerUserId();
     if (!owner) return null;
     const buttons = Array.isArray(button) ? button : button ? [button] : [];
     try {
-      const result = await this.apiCall('sendMessage', {
+      // Only the owner's own pairing and browser-setup messages come here (the code, Approve and
+      // Decline). The owner is waiting on the screen that asked for it, so it must never be held as a
+      // quiet notification: that answered 409 "could not send you the approval message" (2026-11-08).
+      // Sent as escaped HTML, never through the markdown converter: the text carries a caller-chosen device
+      // name, which must not become a link or bold text inside the bot's own approval message.
+      const escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const result = await withNotificationEnvelope(verifiedReplyEnvelope('verified-mobile-approval'), () => this.apiCall('sendMessage', {
         chat_id: owner,
-        text,
+        text: escaped,
+        parse_mode: 'HTML',
+        _formatMode: 'html',
         ...(buttons.length ? { reply_markup: { inline_keyboard: [buttons.map((b) => ({ text: b.text, callback_data: b.data }))] } } : {}),
-      }) as { message_id: number };
+      })) as { message_id: number };
       return typeof result?.message_id === 'number' ? result.message_id : null;
     } catch (err) {
       // @silent-fallback-ok — not silent: null makes the caller cancel the pending pairing and answer 409
@@ -2342,11 +2472,36 @@ export class TelegramAdapter implements MessagingAdapter {
   public onHubPost: ((t: { kind: 'item' | 'notice'; itemId?: string; dedupeKey: string; priority?: string }) => void) | null = null;
 
   /** Mobile device keys: the owner's Decline tap on a pairing code. Wired by AgentServer. */
-  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown') | null = null;
+  public mobileDeclineHandler: ((nonce: string) => 'declined' | 'unknown' | 'already-approved' | { result: 'declined' | 'unknown' | 'already-approved'; client?: 'phone' | 'browser' }) | null = null;
   /** Approve instead of a code (mobile-pairing-approve §3.2): the owner's Approve tap. Wired by AgentServer. */
-  public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string }) | null = null;
+  public mobileApproveHandler: ((nonce: string) => { outcome: 'approved' | 'ended' | 'other'; text: string; client?: 'phone' | 'browser' }) | null = null;
   /** Mobile device keys: void a pending pairing whose code appears in inbound text. Wired by AgentServer. */
   public mobileInboundScan: ((text: string) => string[]) | null = null;
+  /**
+   * Pinned messages (docs/specs/conversation-pinned-messages.md): an authorized person pinned a
+   * message in a topic. Telegram sends no update for an unpin, so only pins are handed over.
+   */
+  public onTopicMessagePinned: ((p: { topicId: number; messageId: number; serviceMessageId: number; byName: string; atMs: number }) => void) | null = null;
+
+  /**
+   * A pin service message the lifeline read (agents whose lifeline owns polling): handed over only
+   * when the person who pinned is authorized here. Returns whether it was handed over.
+   */
+  handleForwardedPin(p: { topicId: number; messageId: number; serviceMessageId: number; fromUserId: number; byName: string }): boolean {
+    if (!Number.isSafeInteger(p.topicId) || p.topicId <= 0 || !Number.isSafeInteger(p.messageId) || p.messageId <= 0 || !Number.isSafeInteger(p.serviceMessageId)) return false;
+    if (!Number.isSafeInteger(p.fromUserId) || !this.isAuthorized(p.fromUserId)) return false;
+    this.onTopicMessagePinned?.({ topicId: p.topicId, messageId: p.messageId, serviceMessageId: p.serviceMessageId, byName: String(p.byName ?? '').slice(0, 128), atMs: Date.now() });
+    return true;
+  }
+
+  /** Pin or unpin one message in a topic's chat in Telegram itself, quietly (conversation-pinned-messages). */
+  async setTopicMessagePin(topicId: number, messageId: number, pinned: boolean): Promise<void> {
+    // The chat a topic lives in (issues-group topics live in the issues chat); the pin calls take no thread.
+    const dest = toWireParams({ chat_id: this.config.chatId, message_thread_id: topicId }, this.topicSpace());
+    const params: Record<string, unknown> = { chat_id: dest.chat_id, message_id: messageId };
+    if (pinned) params.disable_notification = true;
+    await this.apiCall(pinned ? 'pinChatMessage' : 'unpinChatMessage', params);
+  }
 
   async sendToOwnerDM(text: string): Promise<SendResult | null> {
     const owner = this.getOwnerUserId();
@@ -3530,6 +3685,14 @@ export class TelegramAdapter implements MessagingAdapter {
 
       pending.alerted = true;
 
+      // SessionMonitor is the sole owner of dead-session recovery and its
+      // failure notice. Triage can itself send a stopped notice, so do not
+      // invoke it for an already dead session.
+      if (!alive) {
+        console.log(`[telegram] Dead session ${pending.sessionName} awaits monitor recovery for topic ${pending.topicId}`);
+        continue;
+      }
+
       // Try LLM-powered triage first if available
       if (this.onStallDetected) {
         try {
@@ -3545,6 +3708,8 @@ export class TelegramAdapter implements MessagingAdapter {
           console.warn(`[telegram] Triage nurse error:`, err);
         }
       }
+
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(pending.sessionName)) continue;
 
       // Classify the stall — check if it's a quota death
       let isQuotaDeath = false;
@@ -3579,11 +3744,11 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlert) {
+        if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(pending.sessionName))) {
           const status = alive ? 'running but not responding' : 'no longer running';
           withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(
             pending.topicId,
-            `\u26a0\ufe0f No response after ${minutesAgo} minutes. "${pending.sessionName}" is ${status}.\n\nYour message: "${pending.messageText}..."${alive ? '\n\nTry /interrupt to nudge it, or /restart to start fresh.' : '\n\nSend another message and a new session will start automatically.'}`
+            `\u26a0\ufe0f No response after ${minutesAgo} minutes. "${pending.sessionName}" is ${status}.\n\nYour message: "${pending.messageText}..."`,
           )).catch(err => {
             console.error(`[telegram] Stall alert failed: ${err}`);
           });
@@ -3607,6 +3772,7 @@ export class TelegramAdapter implements MessagingAdapter {
         const alive = this.onIsSessionAlive
           ? this.onIsSessionAlive(promise.sessionName)
           : true;
+        if (!alive) continue; // SessionMonitor owns dead-session recovery and failure notice.
 
         // Delegate to triage nurse if available
         if (this.onStallDetected) {
@@ -3631,6 +3797,8 @@ export class TelegramAdapter implements MessagingAdapter {
           }
         }
 
+        if (this.onIsSessionAlive && !this.onIsSessionAlive(promise.sessionName)) continue;
+
         // Fallback: LLM-gated user-facing alert
         const promiseMinutesAgo = Math.round((now - promise.promisedAt) / 60000);
         const shouldAlertPromise = await this.confirmStallAlert({
@@ -3641,16 +3809,10 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlertPromise) {
-          if (!alive) {
-            await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
-              `The session stopped unexpectedly after saying "${promise.promiseText}". Sending a new message will auto-spawn a fresh session.`
-            )).catch(() => {});
-          } else {
-            await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
-              `It's been ${promiseMinutesAgo} minutes since the session said "${promise.promiseText}" — checking on it now...`
-            )).catch(() => {});
-          }
+        if (shouldAlertPromise && (!this.onIsSessionAlive || this.onIsSessionAlive(promise.sessionName))) {
+          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
+            `It's been ${promiseMinutesAgo} minutes since the session said "${promise.promiseText}" — checking on it now...`
+          )).catch(() => {});
         }
       }
 
@@ -3677,6 +3839,9 @@ export class TelegramAdapter implements MessagingAdapter {
    */
   private async handleSharedStallEvent(event: StallEvent, alive: boolean): Promise<void> {
     const topicId = parseInt(event.channelId, 10);
+    // The shared detector may still hold an old session name while a
+    // replacement answers. Leave dead-session handling to SessionMonitor.
+    if (!alive || (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName))) return;
 
     // Phase 1e: Emit to event bus
     if (this.eventBus) {
@@ -3714,6 +3879,8 @@ export class TelegramAdapter implements MessagingAdapter {
         }
       }
 
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName)) return;
+
       // Classify — check if it's a quota death
       let isQuotaDeath = false;
       if (this.onClassifySessionDeath) {
@@ -3740,11 +3907,11 @@ export class TelegramAdapter implements MessagingAdapter {
           sessionAlive: alive,
         });
 
-        if (shouldAlert) {
+        if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(event.sessionName))) {
           const status = alive ? 'running but not responding' : 'no longer running';
           withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(
             topicId,
-            `\u26a0\ufe0f No response after ${event.minutesElapsed} minutes. Session "${event.sessionName}" is ${status}.\n\nMessage: "${event.messageText}..."${alive ? '\n\nTry /interrupt to unstick, or /restart to respawn.' : '\n\nSend another message to auto-respawn.'}`
+            `\u26a0\ufe0f No response after ${event.minutesElapsed} minutes. Session "${event.sessionName}" is ${status}.\n\nMessage: "${event.messageText}..."`,
           )).catch(err => console.error(`[telegram] Stall alert failed: ${err}`));
         }
       }
@@ -3761,6 +3928,8 @@ export class TelegramAdapter implements MessagingAdapter {
         }
       }
 
+      if (this.onIsSessionAlive && !this.onIsSessionAlive(event.sessionName)) return;
+
       const shouldAlert = await this.confirmStallAlert({
         type: 'promise-expired',
         sessionName: event.sessionName,
@@ -3769,16 +3938,10 @@ export class TelegramAdapter implements MessagingAdapter {
         sessionAlive: alive,
       });
 
-      if (shouldAlert) {
-        if (!alive) {
-          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
-            `The session stopped unexpectedly after saying "${event.messageText}". Sending a new message will auto-spawn a fresh session.`
-          )).catch(() => {});
-        } else {
-          await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
-            `It's been ${event.minutesElapsed} minutes since the session said "${event.messageText}" — checking on it now...`
-          )).catch(() => {});
-        }
+      if (shouldAlert && (!this.onIsSessionAlive || this.onIsSessionAlive(event.sessionName))) {
+        await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId,
+          `It's been ${event.minutesElapsed} minutes since the session said "${event.messageText}" — checking on it now...`
+        )).catch(() => {});
       }
     }
   }
@@ -3903,7 +4066,16 @@ export class TelegramAdapter implements MessagingAdapter {
   /**
    * Process Telegram commands. Returns true if the message was a command.
    */
-  public async handleCommand(text: string, topicId: number, userId: number): Promise<boolean> {
+  public async handleCommand(text: string, topicId: number, userId: number, source?: { privateChatId: number }): Promise<boolean> {
+    const command = text.trim().toLowerCase();
+    if (source && (command === '/conversations' || command.startsWith('/conversations '))) {
+      // This coordinate comes only from authenticated Telegram ingress. Never
+      // answer a private request in the configured forum group by topic alias.
+      if (!Number.isSafeInteger(source.privateChatId) || source.privateChatId <= 0
+          || source.privateChatId !== userId || !this.isAuthorized(userId)) return true;
+      await this.apiCall('sendMessage', { chat_id: source.privateChatId, text: conversationsPointer(this.conversationsUrl()) });
+      return true;
+    }
     // Phase 1a: Delegate to shared CommandRouter when flag is enabled
     if (this.sharedCommandRouter) {
       return this.sharedCommandRouter.route(
@@ -3915,6 +4087,13 @@ export class TelegramAdapter implements MessagingAdapter {
     }
 
     const cmd = text.trim().toLowerCase();
+
+    // This explicit command never reads owner hierarchy content or dispatches
+    // to a model session. Forum groups/unknown audiences get the same pointer.
+    if (cmd === '/conversations' || cmd.startsWith('/conversations ')) {
+      await withNotificationEnvelope(stampNotification(), async () => this.sendToTopic(topicId, conversationsPointer(this.conversationsUrl())));
+      return true;
+    }
 
     // Attention topic commands — intercept before general commands
     if (this.isAttentionTopic(topicId)) {
@@ -4383,7 +4562,7 @@ export class TelegramAdapter implements MessagingAdapter {
    * strictly before `beforeMs`, oldest first. Reads the log directly (the tail
    * cache only holds recent entries); bounded by the log's rotation cap.
    */
-  getTopicHistoryBefore(topicId: number, beforeMs: number, limit: number = 20): LogEntry[] {
+  getTopicHistoryBefore(topicId: number, beforeMs: number, limit: number = 20, beforeMessageId?: number): LogEntry[] {
     if (!fs.existsSync(this.messageLogPath)) return [];
     const matching: LogEntry[] = [];
     // Read backwards in 1 MB chunks and stop once the page is full: the log can
@@ -4417,7 +4596,8 @@ export class TelegramAdapter implements MessagingAdapter {
             const entryTopicId = entry.topicId ?? (entry as unknown as { channelId?: number }).channelId;
             if (entryTopicId !== topicId) continue;
             const at = Date.parse(String(entry.timestamp));
-            if (Number.isFinite(at) && at < beforeMs) matching.unshift(entry);
+            if (Number.isFinite(at) && (at < beforeMs || (at === beforeMs && beforeMessageId !== undefined
+                && Number.isSafeInteger(entry.messageId) && entry.messageId < beforeMessageId))) matching.unshift(entry);
           } catch { /* @silent-fallback-ok: a malformed log line is skipped; the page is built from the lines that parse */ }
         }
       }
@@ -4483,6 +4663,7 @@ export class TelegramAdapter implements MessagingAdapter {
         forwarded: entry.forwarded,
         ...(entry.via ? { via: entry.via, deviceId: entry.deviceId, eventId: entry.eventId } : {}),
         provenance: entry.provenance,
+        ...(entry.rowOrigin ? { rowOrigin: entry.rowOrigin } : {}),
       });
       if (!persisted) return;
       this.rememberLoggedEntry(entry, dedupeKey);
@@ -5887,6 +6068,13 @@ export class TelegramAdapter implements MessagingAdapter {
 
     try {
       const updates = await this.getUpdates();
+      // The poll-error-to-zero edge (docs/specs/backup-email-sending.md): one reconnect signal, so parked work that
+      // was waiting for Telegram (the email fallback's 24-hour breaker) resumes.
+      if (this.consecutivePollErrors > 0) {
+        for (const listener of this.reconnectListeners) {
+          try { listener(); } catch { /* @silent-fallback-ok — a listener's failure never touches polling */ }
+        }
+      }
       this.consecutivePollErrors = 0; // Reset on success
 
       // Offset range sanity check: if received update_ids are significantly lower
@@ -6027,6 +6215,10 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
 
+    // A pin by someone not authorized here (an anonymous admin, a stranger) is ignored quietly:
+    // it is a service message, not someone asking to talk (conversation-pinned-messages).
+    if (msg.pinned_message && !this.isAuthorized(msg.from.id)) return;
+
     // Auth gating — handle messages from unauthorized/unknown users
     if (!this.isAuthorized(msg.from.id)) {
       await this.handleUnknownUser(msg.from.id, msg.from.first_name, msg.from.username, msg.text);
@@ -6048,6 +6240,19 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Service messages (topic created/edited) have no user content — skip further processing
     if (msg.forum_topic_created || msg.forum_topic_edited) {
+      return;
+    }
+
+    // A pin made in Telegram (conversation-pinned-messages): handed to the server, never a message.
+    if (msg.pinned_message) {
+      const pinnedId = msg.pinned_message.message_id;
+      if (Number.isSafeInteger(pinnedId) && pinnedId > 0) {
+        try {
+          this.onTopicMessagePinned?.({ topicId: numericTopicId, messageId: pinnedId, serviceMessageId: msg.message_id, byName: msg.from.first_name, atMs: Date.now() });
+        } catch (err) {
+          console.warn(`[telegram] pin hand-off failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       return;
     }
 
@@ -6090,7 +6295,8 @@ export class TelegramAdapter implements MessagingAdapter {
 
     // Check for commands first
     if (text.startsWith('/')) {
-      const handled = await this.handleCommand(text, numericTopicId, msg.from.id);
+      const handled = await this.handleCommand(text, numericTopicId, msg.from.id,
+        msg.chat.type === 'private' ? { privateChatId: msg.chat.id } : undefined);
       if (handled) return;
     }
 
@@ -6362,7 +6568,7 @@ export class TelegramAdapter implements MessagingAdapter {
       const errMsg = err instanceof Error ? err.message : String(err);
       const isNotConfigured = errMsg.includes('No voice transcription provider configured');
       const replyText = isNotConfigured
-        ? '\ud83c\udfa4 Voice transcription is not configured. To enable it, set GROQ_API_KEY or OPENAI_API_KEY in your environment.'
+        ? "\ud83c\udfa4 I can't read voice notes yet: no transcription service is set up. Ask me to set up voice transcription and I'll do it, with one yes from you."
         : `(Voice message received but transcription failed: ${errMsg})`;
       await withNotificationEnvelope(stampResponse(), async () => this.sendToTopic(topicId, replyText)).catch(() => {});
     } finally {
@@ -6647,6 +6853,26 @@ export class TelegramAdapter implements MessagingAdapter {
       return;
     }
 
+    // ── Chief of Staff taps (docs/specs/chief-of-staff-topic.md §3/§6): `cos:<action>:<conversation key>`.
+    // Owner-only, checked HERE against the explicit owner principal; anyone else gets "owner only" and
+    // nothing runs. The handler (the loop's ownerTap) decides what the tap means and answers plainly.
+    if (query.data.startsWith('cos:')) {
+      const owner = this.getVerifiedOwner(); // configured owner, else the one verified operator (chiefOfStaffOwner.ts rule 1)
+      if (!owner || query.from.id !== owner) {
+        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: owner ? 'Only the owner can tap this.' : 'No verified owner is set for this agent, so this cannot be tapped yet.' }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the refusal already held */ });
+        return;
+      }
+      let answer = 'Not available right now.';
+      try {
+        const r = this.onChiefOfStaffTap ? await this.onChiefOfStaffTap({ data: query.data, fromUserId: query.from.id, callbackQueryId: query.id }) : null;
+        answer = r === 'ok' ? 'Done.' : r === 'ignored' ? 'That action no longer applies.' : answer;
+      } catch (err) { /* @silent-fallback-ok: the tap answers with a plain failure line; the handler's own log carries the cause */
+        console.warn(`[telegram] chief-of-staff tap failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: answer }).catch(() => { /* @silent-fallback-ok: answering the tap is cosmetic; the handler's outcome is already recorded by the loop */ });
+      return;
+    }
+
     // ── Pairing-invite buttons. With a pairing handler wired, a tap read here (getUpdates) is
     // authentic and goes to it, which checks owner, chat and token (a2a-pairing-invite-link §6.1
     // r7); without one, the owner is pointed at the dashboard.
@@ -6687,6 +6913,30 @@ export class TelegramAdapter implements MessagingAdapter {
     // may approve routing private traffic through a third-party relay.
     // We use getOwnerUserId() (the explicit owner principal), NOT the
     // broader authorizedUserIds set.
+    // ── Offer-list buttons (docs/specs/recommended-services.md; telegram-button-approval.md §1).
+    // `rs:n:` is S-class (a no: less action, undoable on the confirm page, bounded per hour by the handler),
+    // so anyone in the owner's conversation may tap it. `rs:y:` is P-class and owner-only; the handler also
+    // limits it to address services. The nonce is single-use on the handler's side.
+    if (query.data.startsWith('rs:')) {
+      const m = /^rs:([ny]):([0-9a-f]{32})$/.exec(query.data);
+      if (!m) {
+        await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: 'Invalid button' }).catch(() => {});
+        return;
+      }
+      const approver = this.getConfiguredApprover();
+      const fromIsOwner = approver !== undefined && query.from.id === approver;
+      let statusText = 'My dashboard has the list.';
+      if (this.recommendedOfferHandler) {
+        try {
+          statusText = await this.recommendedOfferHandler({ action: m[1] === 'y' ? 'yes' : 'no', nonce: m[2]!, fromIsOwner });
+        } catch {
+          statusText = 'Could not take that. My dashboard has the list.';
+        }
+      }
+      await this.apiCall('answerCallbackQuery', { callback_query_id: query.id, text: statusText, show_alert: statusText.length > 60 }).catch(() => {});
+      return;
+    }
+
     if (query.data.startsWith('tc:')) {
       const owner = this.getConfiguredApprover();
       if (owner === undefined) this.reportNoCallbackApprover('tunnelConsent');

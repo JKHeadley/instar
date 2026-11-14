@@ -6,6 +6,7 @@
 
 import { machineState, ago } from './home-model.js';
 import { verifiedDisplayName } from './display-identity.js';
+import { unreachableClause, poolMachine } from './unreachable-model.js';
 
 const STATE_ORDER = { bad: 0, attn: 1, stale: 2, unknown: 3, ok: 4 };
 
@@ -37,8 +38,8 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
   let machines = Array.isArray(d.machines) ? d.machines : null;
   const single = !machines || machines.length === 0;
   if (single) {
-    // A single-machine agent still gets a "This machine" card (the pool can be off).
-    machines = [{ machineId: 'self', nickname: 'This machine', isSelf: true, online: true, routerReceivedAt: new Date(now).toISOString() }];
+    // A single-machine agent still gets one card (the pool can be off).
+    machines = [{ machineId: 'self', nickname: 'Your machine', isSelf: true, online: true, routerReceivedAt: new Date(now).toISOString() }];
   }
   const selfId = d.selfMachineId;
   const routerId = d.router && (d.router.machineId || d.router.holder || d.router);
@@ -55,7 +56,8 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
       rope: m.ropeCondition || null,
       record: m,
     };
-  }).sort((a, b) => Number(b.isSelf) - Number(a.isSelf) || (STATE_ORDER[a.state] - STATE_ORDER[b.state]) || a.name.localeCompare(b.name));
+  // Order never depends on which machine served the page: trouble first, then the leading machine.
+  }).sort((a, b) => (STATE_ORDER[a.state] - STATE_ORDER[b.state]) || Number(b.leading) - Number(a.leading) || a.name.localeCompare(b.name));
 
   const total = rows.length;
   const answering = rows.filter((r) => r.state === 'ok' || r.state === 'attn').length;
@@ -69,7 +71,7 @@ export function buildMachinesPage(poolRes, healthRes, now = Date.now(), extras =
   else if (unclear.length) headline = unclear.length === 1 ? `I can't see ${unclear[0].name} clearly right now.` : `I can't see ${unclear.length} machines clearly right now.`;
   else headline = total === 2 ? 'Both machines are answering.' : `All ${total} machines are answering.`;
   const subParts = [];
-  if (dark.length) subParts.push(dark.map((r) => `${r.name}: last heard ${r.age || 'never since this server started'}`).join('; ') + '.');
+  if (dark.length) subParts.push(dark.map((r) => `${r.name}: last heard ${r.age || 'never since the agent last started'}`).join('; ') + '.');
   if (struggling.length) subParts.push(struggling.map((r) => `${r.name} is ${r.verdict === 'overloaded' ? 'overloaded' : 'slow to answer'}`).join('; ') + '.');
   if (rows.some((r) => r.estimated) && !single) subParts.push('States are estimated from heartbeat age and load until the new live checks ship.');
   const busiest = rows.filter((r) => typeof r.perCore === 'number').sort((a, b) => b.perCore - a.perCore)[0];
@@ -141,6 +143,30 @@ export function usageOf(res, sessionNames = {}) {
   };
 }
 
+/**
+ * Resource use on every machine, from the pooled GET /mobile/resources (the same read the phone
+ * uses). Returns { ok, summary, busiest, byName: {name: {line, state, rows}} }. An older server
+ * answers its own machine only (no `machines`): that is shown as the one machine it is.
+ */
+export function poolUsageOf(res) {
+  if (!res || !res.ok || !res.data) return { ok: false, reason: res ? res.reason : 'not read' };
+  const d = res.data;
+  const gb = (b) => (Number.isFinite(b) ? `${(b / 1e9).toFixed(1)} GB` : '—');
+  const rowOf = (p) => ({ main: p.name || 'A session', sub: p.ended ? 'ended' : `${Math.round(p.cpuPercent || 0)}% CPU · ${gb(p.memoryBytes)}` });
+  if (!Array.isArray(d.machines)) {
+    if (typeof d.headline !== 'string') return { ok: false, reason: 'the resource answer had no headline' };
+    const rows = [d.server ? rowOf(d.server) : null, ...(Array.isArray(d.sessions) ? d.sessions.slice(0, 5).map(rowOf) : [])].filter(Boolean);
+    return { ok: true, pooled: false, summary: d.headline, busiest: null, byName: d.machine ? { [d.machine]: { line: d.headline, state: d.enabled ? 'answering' : 'off', rows } } : {} };
+  }
+  const byName = {};
+  for (const m of d.machines) {
+    if (!m || typeof m.name !== 'string') continue;
+    byName[m.name] = { line: m.line, state: m.state, rows: [m.server ? rowOf(m.server) : null, ...(Array.isArray(m.sessions) ? m.sessions.map(rowOf) : [])].filter(Boolean) };
+  }
+  const c = d.combined || {};
+  return { ok: true, pooled: true, summary: c.headline || '', busiest: c.busiest || null, notAnswering: Array.isArray(c.notAnswering) ? c.notAnswering : [], byName };
+}
+
 /** One line for this machine's care status. Watch-only, so it never implies a restart will happen. */
 export function machineCareLine(r) {
   if (!r || !r.ok || !r.data) return null;
@@ -156,6 +182,7 @@ export function machineCareLine(r) {
   return [`Restart care is watching only, nothing restarts.`, uptime, last, held.length ? `Holding now: ${held.join(', ')}` : null].filter(Boolean).join(' · ');
 }
 
+const UNREACHED = new Set(['offline', 'peer-unreachable', 'timeout', 'unreachable']);
 const CARE_FAILED = {
   offline: 'offline',
   'not-enabled': 'not turned on there',
@@ -184,7 +211,7 @@ function careShort(d) {
  * Returns { header, byMachine: {machineId: line}, selfLine, missing: [line] } or null.
  * An older server ignores scope and answers its own status only: treated as self.
  */
-export function machineCarePool(r) {
+export function machineCarePool(r, { pool = null, now = Date.now() } = {}) {
   if (!r || !r.ok || !r.data) return null;
   const d = r.data;
   const header = 'Restart care is watching only, nothing restarts.';
@@ -200,6 +227,7 @@ export function machineCarePool(r) {
     if (m.self) selfLine = line;
   }
   const failed = d.pool && Array.isArray(d.pool.failed) ? d.pool.failed : [];
-  const missing = failed.map((f) => `${f.machineNickname || 'a machine with no name yet'}: can’t tell, ${CARE_FAILED[f.reason] || 'no answer'}`);
+  // A machine that is out of reach says for how long and whether anything is fixing it (CMT-1541).
+  const missing = failed.map((f) => `${f.machineNickname || 'a machine with no name yet'}: can’t tell, ${UNREACHED.has(f.reason) ? unreachableClause(poolMachine(pool, f.machineId), f, now) : CARE_FAILED[f.reason] || 'no answer'}`);
   return { header, byMachine, selfLine, missing };
 }

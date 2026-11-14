@@ -49,14 +49,30 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'GET' && r.re.test('/sessions/a/output'))).toBe(false);
     expect(DEVICE_ALLOWLIST.some((r) => r.method !== 'POST' && r.re.test('/sessions/a/input'))).toBe(false);
   });
-  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, and permissions screens)', () => {
+  it('the owner-only rules are exactly this named set (session screen + capacity, ops, plans and people, messages and insights, permissions screens, and Remote Desktop with Face ID)', () => {
     // Each owner-only rule, named by one request it admits. A new owner-only route adds its line here.
     const named: Array<[string, string]> = [
       ['GET', '/sessions/a/output'],
       ['POST', '/sessions/a/input'],
+      // Conversations' exact additive owner-only route families. Functional
+      // signature/ledger and owner refusal are covered by graph HTTP tests.
+      ['GET', '/mobile/conversation-graph/roots'],
+      ['GET', '/mobile/conversation-graph/nodes/e30'],
+      ['GET', '/mobile/conversation-graph/nodes/e30/destinations'],
+      ['GET', '/mobile/conversation-graph/pending'],
+      ['GET', '/mobile/conversation-graph/changes/request-1234'],
+      ['GET', '/mobile/conversation-graph/erasures/erasev1_12345678'],
+      ['POST', '/mobile/conversation-graph/forget-header/discover'],
+      ['POST', '/mobile/conversation-graph/forget-header/ensure'],
+      ['POST', '/mobile/conversation-graph/changes'],
+      ['POST', '/mobile/conversation-graph/preview'],
+      ['POST', '/mobile/conversation-graph/undo'],
+      ['POST', '/mobile/conversation-graph/forget-header'],
+      ['POST', '/mobile/conversation-graph/changes/graph-event:change-12345678/cancel'],
       ['GET', '/mobile/accounts'],
       ['GET', '/mobile/spend'],
       ['GET', '/mobile/resources'],
+      ['GET', '/mobile/usage'],
       ['GET', '/mobile/jobs'],
       ['GET', '/mobile/commitments'],
       ['GET', '/mobile/machines'],
@@ -94,9 +110,48 @@ describe('DEVICE_ALLOWLIST: session output and input', () => {
       ['GET', '/mobile/sessions/history'],
       ['POST', '/mobile/sessions/door/134088'],
       ['POST', '/mobile/sessions/move/134088'],
+      ['POST', '/mobile/sessions/bring-back/app:0f9c1d2e-3b4a-4c5d-8e6f-7a8b9c0d1e2f'],
       ['POST', '/mobile/sessions/close/a-session-id'],
       ['POST', '/mobile/sessions/new'],
       ['POST', '/mobile/sessions/default'],
+      ['POST', '/mobile/attention/tg-1/choice'],
+      // Team access: the owner's phone writes, and reads the whole team (team-roles-and-access §4.1).
+      ['GET', '/mobile/team/context'],
+      ['GET', '/mobile/team/activity'],
+      ['GET', '/mobile/team/requests'],
+      ['POST', '/mobile/team/requests/abc/decline'],
+      ['GET', '/mobile/team/invites/mia'],
+      ['POST', '/mobile/team/invites'],
+      ['POST', '/mobile/team/grants'],
+      ['POST', '/mobile/team/people/mia'],
+      ['POST', '/mobile/team/off'],
+      ['POST', '/mobile/team/restore'],
+      ['POST', '/mobile/team/origin-gone'],
+      ['POST', '/mobile/team/memory-privacy'],
+      // Add a new agent from a phone you already use (mobile-pairing-introducer §3.2).
+      ['GET', '/mobile/introducer'],
+      ['POST', '/mobile/introductions/challenge'],
+      ['POST', '/mobile/introductions'],
+      // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4).
+      ['POST', '/mobile/desktop-unlock/challenge'],
+      ['POST', '/mobile/desktop-unlock'],
+      ['POST', '/mobile/dashboard-pin/challenge'],
+      // The Chief of Staff check-in from the owner's phone (chief-of-staff-topic.md §4).
+      ['POST', '/mobile/chief-of-staff/check-in'],
+      ['POST', '/mobile/dashboard-pin/reveal'],
+      // The desktop calls the app makes after a Face ID unlock (§2.2).
+      ['GET', '/desktop/targets'],
+      ['GET', '/desktop/setup'],
+      ['GET', '/desktop/setup/m_0123abcd'],
+      ['POST', '/desktop/setup/m_0123abcd'],
+      ['POST', '/desktop/requests'],
+      ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000'],
+      ['GET', '/desktop/requests/00000000-0000-4000-8000-000000000000/cursor'],
+      ['POST', '/desktop/requests/00000000-0000-4000-8000-000000000000/ticket'],
+      // Start an account sign-in with Face ID instead of the PIN (account-sign-in-face-id).
+      ['POST', '/mobile/accounts/sign-in/start'],
+      // Add a Claude or Codex account with Face ID (account-add-face-id).
+      ['POST', '/mobile/accounts/add'],
     ];
     const ownerOnly = DEVICE_ALLOWLIST.filter((r) => r.ownerOnly);
     for (const [method, p] of named) expect(ownerOnly.filter((r) => r.method === method && r.re.test(p)), `${method} ${p}`).toHaveLength(1);

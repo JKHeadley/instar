@@ -22,8 +22,15 @@ import { claimReconciliationNotice } from '../core/TopicProfileOrchestrator.js';
  * steady-state FREQUENCY under feedback).
  */
 
+import { GRAPH_SOURCE_SWEEP_HEARTBEAT_MS, sourceSweepCheckpointDue } from '../core/ConversationGraphSourceSweep.js';
+import { SOURCE_STATUS_RETRY_MS, sourceStatusPollGivesUp } from '../core/GraphSourceStatusPoll.js';
 import { WorkAdmission } from '../core/workAdmission.js';
+import { PlaceSessionRegistry } from '../threadline/PlaceSessionRegistry.js';
+import { DEAD_RECOVERY_MAX_AGE_MS, deadRecoveryDue } from '../monitoring/SessionMonitor.js';
+import { reachNoticeDue } from '../users/ReachablePeople.js';
 import { nextAuditAfterFailure } from '../core/attribution/AttributionAudit.js';
+import { markerEmitDue, EMIT_THROTTLE_MS } from '../core/ConversationReadMarkers.js';
+import { catchUpAttemptDue, CATCH_UP_MAX_FAILURES, CATCH_UP_RETRY_MS } from '../core/ConversationUnreadService.js';
 import { advanceEvolutionArchiveFailure, evolutionArchiveSyncAttemptDue, EVOLUTION_ARCHIVE_SYNC_MAX_FAILURES } from '../core/EvolutionArchiveSync.js';
 import type { EvolutionArchiveSyncPeer } from '../core/EvolutionArchive.js';
 import { PENDING_MAX_BACKOFF_MS, PENDING_TICK_MS, PENDING_TTL_MS } from '../threadline/requiredAckService.js';
@@ -32,6 +39,8 @@ import { MAX_GUARD_REPLACEMENTS, RESPAWNS_PER_REQUEST, decideGuardReplacement, d
 import { OverloadShedPlanner, DEFAULT_OVERLOAD_SHED } from '../core/OverloadShedPlanner.js';
 import { PlacementExecutor } from '../core/PlacementExecutor.js';
 import type { MachineCapacity } from '../core/types.js';
+import { AppFlagTracker, AppPoolEnforcer } from '../core/appConversationPool.js';
+import type { SessionOwnershipRecord } from '../core/SessionOwnership.js';
 import { HostSpawnSemaphore } from '../core/hostSpawnSemaphore.js';
 import { CHROME_UPGRADE_INTERVAL_MS, MAX_INSTALL_ATTEMPTS, decideProvision, type BackoffRecord, type MachineFacts, type ProvisionRecord } from '../core/linuxBrowserProvision.js';
 import fs from 'node:fs';
@@ -52,6 +61,8 @@ import { decideIsolationRerun, type ParsedLaneReport } from '../localVerify/lane
 import { MAIN_VERIFY_LIMITS, decideMainEnqueue, decideMainErrorRetry, decideMainHeadEnqueue, type MainHeadObservation } from '../localVerify/mainHealth.js';
 import { LOCAL_VERIFY_LIMITS } from '../localVerify/policy.js';
 import { decideKeyRefresh, REFRESH_MAX_ATTEMPTS } from '../core/ClaudeKeyHealth.js';
+import { decideRefusedRetry, RETRY_DELAYS_MS } from '../core/SlackRefusedHold.js';
+import { decideLimitRefresh, REFRESH_MAX_PER_DAY } from '../core/UsageLimitWatch.js';
 import { raiseDue } from '../monitoring/MaturationLadder.js';
 import { decideLoginExpiredSwap, INTERACTIVE_LOGIN_SWAP_COOLDOWN_MS, INTERACTIVE_LOGIN_SWAP_MAX_ATTEMPTS } from '../core/InteractiveLoginExpiredRecovery.js';
 import { decideRescueGate, WALL_RESCUE_LIMITS } from '../core/UsageWallRescue.js';
@@ -59,6 +70,12 @@ import { nextBreakerState, RECONCILE_LIMITS } from '../core/ReplicatedStoreRecon
 import { findStuckPreparingRuns, PREPARING_NOTICE_MAX_ATTEMPTS } from '../core/AutonomousStartAdmission.js';
 import type { AutonomousRunRecord } from '../core/AutonomousRunStore.js';
 import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, passBackoffDelay, postRetryDue } from '../localVerify/StatusReconciler.js';
+import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
+import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
+import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
+import { fallbackRetryDelayMs } from '../email/EmailService.js';
+import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
+import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -353,6 +370,57 @@ const attributionAuditRetry: SelfActionController = {
         sink.emit({ verb: 'retry', target: 'attribution-audit' });
         failures += 1;
         nextRunAt = nextAuditAfterFailure(failures, now).nextRunAt;
+      },
+    };
+  },
+};
+
+const reachSecondPersonNotice: SelfActionController = {
+  id: 'reach-second-person-notice',
+  actionVerb: 'notify',
+  models: 'src/server/teamPeople.ts (runReachNotices — reachNoticeDue, held at the count last raised)',
+  modelsPath: 'src/server/teamPeople.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The count last raised is on disk in reachable-people.json, so a restart cannot reset the hold.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 30,
+  tickMs: 60 * 60_000,
+  makeUnderPressure(_f, sink) {
+    const steadyCount = 2;
+    let heldAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!reachNoticeDue(steadyCount, heldAt)) return;
+        sink.emit({ verb: 'notify', target: 'team:second-person' });
+        heldAt = steadyCount;
+      },
+    };
+  },
+};
+
+/** session-monitor-dead-recovery: a dead conversation never comes back and the same
+ * message stays unanswered, so the monitor keeps polling it. One restart, then quiet. */
+const sessionMonitorDeadRecovery: SelfActionController = {
+  id: 'session-monitor-dead-recovery',
+  actionVerb: 'restart',
+  models: 'src/monitoring/SessionMonitor.ts (dead case — deadRecoveryDue, one fresh restart per unanswered message)',
+  modelsPath: 'src/monitoring/SessionMonitor.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: `The attempt is held in memory, so a server restart allows one more for the same message, and only within ${DEAD_RECOVERY_MAX_AGE_MS / 3_600_000} hours of it. The failure notice stays deduplicated on disk.` },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 24 * 60,
+  tickMs: 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure(f, sink) {
+    const userMessageAt = f.clock.nowMs();
+    let attempted: number | undefined;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (!deadRecoveryDue(attempted, userMessageAt, f.clock.nowMs())) return;
+        attempted = userMessageAt;
+        sink.emit({ verb: 'restart', target: 'dead-conversation' });
       },
     };
   },
@@ -1495,6 +1563,146 @@ const feedbackTriageActionList: SelfActionController = {
  * episode state is durable (triage_meta), so a restart resumes the ladder
  * instead of restarting it.
  */
+/**
+ * context-budget-quarantine-reconcile — the ContextBudgetSentinel's quarantine
+ * ladder (context-budget-layered-summaries §9.3): one SelfHealGate episode per
+ * quarantined fold, at most 12 attempts and a 45-minute wall clock, then
+ * exhausted (one Attention item) and RETAINED for 24 h so the same fold never
+ * re-opens a ladder. Pressure model: a quarantine that never resolves, ticked
+ * every 5 minutes for a day.
+ */
+const contextBudgetQuarantineReconcile: SelfActionController = {
+  id: 'context-budget-quarantine-reconcile',
+  actionVerb: 'converge-quarantined-fold',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (pool-shared async SelfHealGate ladder per quarantined fold: <=12 attempts / 45 min, exhausted episodes retained 24 h)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 12,
+  perTargetBoundK: 12,
+  ticks: 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetQuarantineReconcile.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WALL_CLOCK_MS = 45 * 60_000; const MAX_ATTEMPTS = 12;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-quarantine') as { attempts: number; startedAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, startedAt: f.clock.nowMs(), exhausted: false };
+      if (st.exhausted) { f.durableState.set('cb-quarantine', st); return; }
+      if (st.attempts >= MAX_ATTEMPTS || f.clock.nowMs() - st.startedAt >= WALL_CLOCK_MS) { f.durableState.set('cb-quarantine', { ...st, exhausted: true }); return; }
+      sink.emit({ verb: 'converge-quarantined-fold', target: 'fold:f1' });
+      f.durableState.set('cb-quarantine', { ...st, attempts: st.attempts + 1 });
+    } };
+  },
+};
+
+/**
+ * context-budget-adapter-suite — the sentinel's adapter verification suite
+ * trigger (context-budget-layered-summaries §9.6): one suite run (a spawned
+ * process, ~7 engine calls) per engine version with no recorded result, the
+ * attempt recorded BEFORE the run, retried at most once per 24 h and given up after 3. Pressure
+ * model: a version whose run always fails, ticked every 5 minutes for 3 days.
+ */
+const contextBudgetAdapterSuite: SelfActionController = {
+  id: 'context-budget-adapter-suite',
+  actionVerb: 'retry-adapter-suite',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (maybeRunAdapterSuite: one run per unrecorded engine version, durable attempt stamp, 24 h retry floor, 3 attempts then give up, one at a time)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 3 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetAdapterSuite.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const RETRY_MS = 24 * 60 * 60_000;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-adapter-suite') as { count: number; lastAt: number } | undefined) ?? { count: 0, lastAt: -Infinity };
+      if (st.count >= 3 || f.clock.nowMs() - st.lastAt < RETRY_MS) return; // gives up after 3 attempts per version
+      f.durableState.set('cb-adapter-suite', { count: st.count + 1, lastAt: f.clock.nowMs() });
+      sink.emit({ verb: 'retry-adapter-suite', target: 'claude-code@failing-version' });
+    } };
+  },
+};
+
+/**
+ * context-budget-orphan-carrier-clear — the ContextBudgetSentinel's hold-health
+ * ladder (context-budget-layered-summaries §10, §17): one SelfHealGate episode
+ * per (carrier kind, topic, fold) whose hold or marker outlived its record past
+ * the grace period. At most 3 attempts inside a 30-minute wall clock, then
+ * exhausted (one Attention item) and RETAINED for 7 days, so the same leftover
+ * never re-opens a ladder within the horizon. Pressure model: a release that
+ * never takes (the file reappears every time), ticked every 5 minutes for 2 days.
+ */
+const contextBudgetOrphanCarrierClear: SelfActionController = {
+  id: 'context-budget-orphan-carrier-clear',
+  actionVerb: 'converge-orphan-carrier',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (pool-shared sync SelfHealGate ladder per orphan hold/marker: <=3 attempts / 30 min, exhausted episodes retained 7 days)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 2 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetOrphanCarrierClear.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const WALL_CLOCK_MS = 30 * 60_000; const MAX_ATTEMPTS = 3;
+    return { tick() {
+      sink.considered += 1;
+      const st = (f.durableState.get('cb-orphan') as { attempts: number; startedAt: number; exhausted: boolean } | undefined)
+        ?? { attempts: 0, startedAt: f.clock.nowMs(), exhausted: false };
+      if (st.exhausted) { f.durableState.set('cb-orphan', st); return; }
+      if (st.attempts >= MAX_ATTEMPTS || f.clock.nowMs() - st.startedAt >= WALL_CLOCK_MS) { f.durableState.set('cb-orphan', { ...st, exhausted: true }); return; }
+      sink.emit({ verb: 'converge-orphan-carrier', target: 'fold-hold:141133:f1' });
+      f.durableState.set('cb-orphan', { ...st, attempts: st.attempts + 1 });
+    } };
+  },
+};
+
+/**
+ * context-budget-layer-rebuild-request — the ContextBudgetSentinel's layer
+ * freshness row (context-budget-layered-summaries §6, §17): a topic whose H1 is
+ * over target gets at most 3 rebuild requests per stale episode, 30 minutes
+ * apart, through the capture loop's re-projection seam (deterministic, no model
+ * call); the episode is durable and ends only on a fresh reading. The bound is
+ * per episode FILE: a corrupt or unreadable episodes file (never self-induced)
+ * is audited and restarts the episodes once. This is §7.8's bounded "ask", not a
+ * heal ladder, so it carries its own durable counters rather than a SelfHealGate
+ * episode. Pressure model: a layer that never catches up, ticked every 5
+ * minutes for 2 days.
+ */
+const contextBudgetLayerRebuildRequest: SelfActionController = {
+  id: 'context-budget-layer-rebuild-request',
+  actionVerb: 'retry-layer-rebuild',
+  models: 'src/monitoring/ContextBudgetSentinel.ts (checkFreshness: <=3 rebuild requests per durable stale episode, 30 min apart; one notice per episode)',
+  modelsPath: 'src/monitoring/ContextBudgetSentinel.ts',
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 2 * 24 * 12,
+  tickMs: 5 * 60_000,
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure(f, sink) { return contextBudgetLayerRebuildRequest.makeUnderPressure(f, sink); },
+  },
+  makeUnderPressure(f, sink) {
+    const SPACING_MS = 30 * 60_000; const MAX = 3;
+    return { tick() {
+      sink.considered += 1;
+      const ep = (f.durableState.get('cb-layer-stale') as { requests: number; lastAt: number } | undefined) ?? { requests: 0, lastAt: -Infinity };
+      if (ep.requests >= MAX || f.clock.nowMs() - ep.lastAt < SPACING_MS) return; // the stale episode never ends under pressure
+      f.durableState.set('cb-layer-stale', { requests: ep.requests + 1, lastAt: f.clock.nowMs() });
+      sink.emit({ verb: 'retry-layer-rebuild', target: 'topic:141133' });
+    } };
+  },
+};
+
 const feedbackTriageSelfHealProbe: SelfActionController = {
   id: 'feedback-triage-self-heal-probe',
   actionVerb: 'retry-authority-probe',
@@ -1535,6 +1743,25 @@ const feedbackTriageSelfHealProbe: SelfActionController = {
  * scheduler and capacity/concurrency brakes; it cannot create an unbounded
  * in-process burst.
  */
+/** Durable four-attempt cycle, fifteen-minute cooling, second-cycle exhaustion.
+ * The real target admission additionally enforces one global mutation budget
+ * across sources; the model below conservatively bounds this source at eight. */
+function recoveryRepairModel(f:PressureFixture,sink:ActionSink):{tick():void} {
+  return {tick(){
+    sink.considered++;
+    const attempts=Number(f.durableState.get('server-down-recovery:attempts')??0);
+    if(attempts>=8)return;
+    f.durableState.set('server-down-recovery:attempts',attempts+1);
+    sink.emit({verb:'repair-restart',target:'unavailable-target'});
+  }};
+}
+const serverDownRecoveryRepair:SelfActionController={
+  id:'server-down-recovery-repair',actionVerb:'repair-restart',
+  models:'src/recovery/RecoveryRepairCoordinator.ts (durable four attempts per cycle, fifteen-minute cooldown, two cycles until terminal exhaustion; target budget survives source handoff)',
+  modelsPath:'src/recovery/RecoveryRepairCoordinator.ts',boundK:8,perTargetBoundK:8,ticks:64,tickMs:60_000,
+  restartPosture:{pressureSurvives:true,restartUnderPressure:recoveryRepairModel},makeUnderPressure:recoveryRepairModel,
+};
+
 const mutualSshRepairSweep: SelfActionController = {
   id: 'mutual-ssh-repair-sweep',
   actionVerb: 'repair-retry',
@@ -2663,6 +2890,63 @@ const systemTopicAdoption: SelfActionController = {
 };
 
 
+// ── disk steward (docs/specs/disk-steward.md §3.4–§3.5) ──
+// The worst case: a disk stuck below the warn line that cleanup cannot help, and
+// a Telegram send that always fails. Drives the SAME pure cadence functions the
+// DiskSteward calls (repeatDue, sendRetryDelay) and its two brakes: the 6 h
+// cleanup interval with the three-strikes breaker, and the 24 h drop of an unsent
+// post (which counts as attempted, so the next one waits a full repeat window).
+const DISK_TICK_MS = 15 * 60_000;
+const diskStewardNotice: SelfActionController = {
+  id: 'disk-steward',
+  actionVerb: 'notify-disk-space', // 'notify' detector token: the post send attempt (and the cleanup run beside it)
+  models: 'src/monitoring/DiskSteward.ts (tick → cycle: one cleanup per 6 h, breaker after three runs freeing <1%; deliver: send backoff 15m→6h, unsent post dropped after 24 h)',
+  modelsPath: 'src/monitoring/DiskSteward.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Cadence, last cleanup time, breaker count and the due post with its failure count are persisted in the machine-local state file and restored at boot (a restored level is not a rise), so a restart resumes the same brakes rather than resetting them.' },
+  boundK: 60,
+  perTargetBoundK: 60,
+  ticks: 400, // 100 h at 15 min
+  tickMs: DISK_TICK_MS,
+  // A full disk is a fact that stays true until someone acts, so the watcher keeps
+  // telling (Self-Heal Before Notify: an operator-facing notice must never go
+  // silent while the condition holds). Its floor: send attempts never closer than
+  // the first retry step (15 min); each post is given up after 24 h and the next
+  // waits a full repeat window. Cleanup runs are separately capped by the breaker.
+  eternalSentinel: { reason: 'disk-space notices must keep coming while a disk stays low; send retries back off 15 min→6 h and each post is dropped after 24 h', rateFloorMs: DISK_TICK_MS },
+  delegatedGiveUp: 'DiskSteward.applyAck — an unsent post is dropped after 24 h (counted as attempted); cleanup has its own three-strikes breaker',
+  makeUnderPressure(f, sink) {
+    const DAY = 86_400_000;
+    let lastPruneAt: number | null = null;
+    let breaker = 0;
+    const cadence = { lastPostAt: null as number | null, stage: 0, warnBackoff: 1 };
+    let due: { createdAt: number; failures: number; nextAttemptAt: number } | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!due && diskRepeatDue(cadence, 'warn', false, now)) {
+          if (breaker < 3 && (lastPruneAt === null || now - lastPruneAt >= 6 * 3_600_000)) {
+            lastPruneAt = now;
+            breaker += 1; // the pinned case: cleanup frees nothing (the breaker stops it after three)
+          }
+          due = { createdAt: now, failures: 0, nextAttemptAt: now };
+        }
+        if (due && now >= due.nextAttemptAt) {
+          sink.emit({ verb: 'notify-disk-space', target: 'm_self' });
+          if (f.targetAlwaysRejects()) {
+            due.failures += 1;
+            due.nextAttemptAt = now + diskSendRetryDelay(due.failures);
+            if (now - due.createdAt > DAY) { cadence.lastPostAt = now; due = null; }
+          } else {
+            cadence.lastPostAt = now;
+            due = null;
+          }
+        }
+      },
+    };
+  },
+};
+
 // ── local-verify (spec docs/specs/local-verify-merge-authority.md; ACT-147) ──
 // Every model below drives the SAME exported pure decision functions the real
 // LocalVerifyService / StatusReconciler call (decideVerifyRetry, decideStarved,
@@ -2852,6 +3136,8 @@ function makeMainVerifyPasses(
  * one verify per head, and an `error` re-queues with backoff at most 3 times per
  * head. Pinned worst case: `main` sits on one head and EVERY verify errors
  * (targetAlwaysRejects) ⇒ 1 + 3 = 4 verifies, then nothing, horizon-independent.
+ * (A green PR run on this machine re-arms one more round — decideMainRearmAfterGreen — so the
+ * real bound is per green PR run; this model has no PR runs, so its pinned count is unchanged.)
  */
 const localVerifyMainSchedule: SelfActionController = {
   id: 'local-verify-main-schedule',
@@ -3275,6 +3561,68 @@ const claudeKeySessionRefresh: SelfActionController = {
         attempts += 1;
         sink.emit({ verb: 'session-refresh', target: TARGET });
         if (!f.targetAlwaysRejects()) { attempts = 0; } // a real refresh (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
+ * usage-limit-session-refresh — when Claude usage comes back, a conversation with messages waiting is
+ * restarted. Worst case, the probe keeps passing while the session keeps hitting the limit (say it
+ * sits on another account). The REAL brake is `decideLimitRefresh`: 3 restarts per session in a
+ * rolling day, then it is left as it is and reported.
+ */
+const usageLimitSessionRefresh: SelfActionController = {
+  id: 'usage-limit-session-refresh',
+  actionVerb: 'session-refresh',
+  models: 'src/core/UsageLimitWatch.ts (decideLimitRefresh: 3 restarts per session per rolling day)',
+  modelsPath: 'src/core/UsageLimitWatch.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Restart times are persisted, so a server restart resets nothing, and a server restart is never caused by this controller.' },
+  boundK: REFRESH_MAX_PER_DAY,
+  perTargetBoundK: REFRESH_MAX_PER_DAY,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'walled-session';
+    let recent = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideLimitRefresh({ recentRefreshes: recent }) !== 'attempt') return;
+        recent += 1;
+        sink.emit({ verb: 'session-refresh', target: TARGET });
+        if (!f.targetAlwaysRejects()) { recent = 0; } // it answered (never under the fixture)
+      },
+    };
+  },
+};
+
+/**
+ * slack-refused-hold-retry — a refused Slack conversation start is retried. Under the pinned fixture
+ * every retry is refused. The REAL brake is `decideRefusedRetry`: a fixed schedule of 6 tries over
+ * about two hours, then the person is asked to resend and the messages are dropped. Nothing re-adds
+ * them unless the person sends again.
+ */
+const slackRefusedHoldRetry: SelfActionController = {
+  id: 'slack-refused-hold-retry',
+  actionVerb: 'session-spawn',
+  models: 'src/core/SlackRefusedHold.ts (decideRefusedRetry: 6 tries per conversation, then dropped)',
+  modelsPath: 'src/core/SlackRefusedHold.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Attempts are persisted with the held messages, so a restart resets nothing, and a restart is never caused by this controller.' },
+  boundK: RETRY_DELAYS_MS.length,
+  perTargetBoundK: RETRY_DELAYS_MS.length,
+  ticks: 60,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'refused-conversation';
+    let attempts = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (decideRefusedRetry({ attempts }) !== 'attempt') return;
+        attempts += 1;
+        sink.emit({ verb: 'session-spawn', target: TARGET });
+        if (!f.targetAlwaysRejects()) { attempts = 0; } // it got through (never under the fixture)
       },
     };
   },
@@ -4098,15 +4446,947 @@ const presenceUsageNotice: SelfActionController = {
   makeUnderPressure: makePresenceUsageNotice,
 };
 
+const graphSourceSweepCheckpointRetry: SelfActionController = {
+  id: 'graph-source-sweep-checkpoint-retry',
+  actionVerb: 'retry',
+  models: 'src/server/ConversationGraphSourceInventoryRuntime.ts (run — sourceSweepCheckpointDue, publish on change plus a daily heartbeat)',
+  modelsPath: 'src/server/ConversationGraphSourceInventoryRuntime.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The last checkpoint is remembered in memory, so a restart publishes one more checkpoint and then settles.' },
+  boundK: 170,
+  perTargetBoundK: 170,
+  ticks: 60 * 24 * 7,
+  tickMs: 60_000,
+  eternalSentinel: { reason: 'Coverage readers need a recent signed checkpoint, so a live producer keeps publishing once a day while nothing changes.', rateFloorMs: GRAPH_SOURCE_SWEEP_HEARTBEAT_MS },
+  delegatedGiveUp: 'The hourly heartbeat; a scan that does not commit publishes nothing new',
+  makeUnderPressure(f, sink) {
+    let last: { hash: string; at: number } | null = null;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!sourceSweepCheckpointDue(last, 'unchanged-inventory', now)) return;
+        sink.emit({ verb: 'retry', target: 'graph-source-checkpoint' });
+        last = { hash: 'unchanged-inventory', at: now };
+      },
+    };
+  },
+};
+
+const graphSourceStatusPollRetry: SelfActionController = {
+  id: 'graph-source-status-poll-retry',
+  actionVerb: 'retry',
+  models: 'src/server/ConversationGraphDefault.ts (applyHeldSourceCustodyStageV2 — sourceStatusPollGivesUp, 120s limit while the peer is unreachable)',
+  modelsPath: 'src/server/ConversationGraphDefault.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The poll belongs to one running stage. A restart ends that stage, so nothing resumes polling on its own.' },
+  boundK: 241,
+  perTargetBoundK: 241,
+  ticks: 2400,
+  tickMs: SOURCE_STATUS_RETRY_MS,
+  makeUnderPressure(f, sink) {
+    const since = f.clock.nowMs();
+    let gaveUp = false;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (gaveUp) return;
+        if (sourceStatusPollGivesUp(since, f.clock.nowMs())) { gaveUp = true; return; }
+        sink.emit({ verb: 'retry', target: 'graph-source-status' });
+      },
+    };
+  },
+};
+
+/**
+ * learned-skill-reconciler — the every-machine reconcile of LEARNED skill
+ * renderings (docs/specs/skill-learning-sentinel.md §3.2, decision 19;
+ * src/monitoring/LearnedSkillReconciler.ts). Its tick is self-triggered (boot,
+ * post-pull, every 10 min). The emit is a RENDER of one (skill × layout).
+ *
+ * Convergence argument — verify-then-render: a render only happens when
+ * `verifyRendering` reports drift, and a render makes the rendering equal the
+ * canonical, so once every rendering matches there are ZERO renders per tick
+ * (steady-state bound) regardless of horizon. The settling brakes: a rendering
+ * that differs from this machine's own baseline is an operator edit → locked
+ * in the durable shard and never retried; a render that throws is locked in
+ * the shard under the canonical hash that failed and is retried only when the
+ * canonical CHANGES — never on the next tick. Both locks live on disk, so a
+ * restart cannot re-arm them. Pinned pressure: N learned canonicals all
+ * drifted at once; `targetAlwaysRejects()` makes every render throw. Either
+ * way each skill is rendered at most once per canonical change ⇒ boundK = N.
+ */
+const LEARNED_SKILL_RECONCILER_N = 8;
+function makeLearnedSkillReconcilerPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const canonical = new Map<string, string>();
+  for (let i = 0; i < LEARNED_SKILL_RECONCILER_N; i++) canonical.set(`learned-skill-${i}`, 'h1');
+  // Durable (shard-backed in the real controller): the baselines of what this
+  // machine rendered and the canonical-hash-keyed failure locks.
+  const rendered = (f.durableState.get('learned-skill-reconciler:rendered') as Map<string, string> | undefined)
+    ?? new Map<string, string>();
+  const failed = (f.durableState.get('learned-skill-reconciler:failed') as Map<string, string> | undefined)
+    ?? new Map<string, string>();
+  f.durableState.set('learned-skill-reconciler:rendered', rendered);
+  f.durableState.set('learned-skill-reconciler:failed', failed);
+  return {
+    tick() {
+      sink.considered += 1;
+      for (const [name, hash] of canonical) {
+        if (rendered.get(name) === hash) continue;   // verify clean → zero writes
+        if (failed.get(name) === hash) continue;     // failure lock → wait for a canonical change
+        sink.emit({ verb: 'converge-render', target: name });
+        if (f.targetAlwaysRejects()) failed.set(name, hash);
+        else rendered.set(name, hash);
+      }
+    },
+  };
+}
+const learnedSkillReconciler: SelfActionController = {
+  id: 'learned-skill-reconciler',
+  actionVerb: 'converge-render',
+  models: 'src/monitoring/LearnedSkillReconciler.ts (reconcileOne — verify-then-render, baseline edit lock, canonical-hash-keyed failure lock)',
+  modelsPath: 'src/monitoring/LearnedSkillReconciler.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeLearnedSkillReconcilerPressure(f, sink),
+  },
+  boundK: LEARNED_SKILL_RECONCILER_N,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeLearnedSkillReconcilerPressure,
+};
+
+/**
+ * skill-learning-tick — the Skill Learning Sentinel's tick
+ * (docs/specs/skill-learning-sentinel.md §3.1, §3.3–§3.5;
+ * src/monitoring/SkillLearningSentinel.ts). Self-triggered every
+ * `tickMinutes`. The emit is ONE classify/draft LLM batch: up to
+ * `llm.batchSize` keys per tick reach the arbiter/drafter.
+ *
+ * Convergence argument: every key a tick touches reaches a DURABLE verdict row
+ * in the append-only ledger — a draft becomes a proposal (the key is skipped
+ * while its proposal exists), a wait/never carries `expiresAt = now +
+ * verdictReaskDays`, and a refusal is held the same way — so a key is never
+ * re-asked inside its horizon. Under the pinned pressure (a fixed backlog of
+ * PENDING keys, every arbiter answer `wait`, every draft refused, the re-ask
+ * horizon longer than the test horizon) the backlog drains in
+ * ceil(PENDING / batchSize) batches and then the tick makes ZERO calls:
+ * boundK = PENDING ÷ batchSize, horizon-independent. An LlmQueue admission
+ * refusal stops the tick early WITHOUT marking keys (counted; retried next
+ * tick) — that pauses the drain, it never widens it. The durable holds live in
+ * the ledger, so a restart cannot re-arm them.
+ */
+const SKILL_LEARNING_PENDING = 100;
+const SKILL_LEARNING_BATCH = 20;
+function makeSkillLearningTickPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const held = (f.durableState.get('skill-learning-tick:held') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-tick:held', held);
+  const keys = Array.from({ length: SKILL_LEARNING_PENDING }, (_, i) => `procedure-key-${i}`);
+  return {
+    tick() {
+      sink.considered += 1;
+      const pending = keys.filter((k) => !held.has(k));
+      if (pending.length === 0) return;                       // empty backlog ⇒ zero calls
+      const batch = pending.slice(0, SKILL_LEARNING_BATCH);
+      sink.emit({ verb: 'converge-classify-draft', target: `batch-${held.size / SKILL_LEARNING_BATCH}` });
+      for (const k of batch) held.add(k);                      // durable verdict row (wait / refused) per key
+    },
+  };
+}
+const skillLearningTick: SelfActionController = {
+  id: 'skill-learning-tick',
+  actionVerb: 'converge-classify-draft',
+  models: 'src/monitoring/SkillLearningSentinel.ts (evaluateKeys — per-key durable verdict rows with a re-ask horizon; llm.batchSize keys per tick)',
+  modelsPath: 'src/monitoring/SkillLearningSentinel.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSkillLearningTickPressure(f, sink),
+  },
+  boundK: SKILL_LEARNING_PENDING / SKILL_LEARNING_BATCH,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillLearningTickPressure,
+};
+
+/**
+ * skill-learning-commit-recovery — the commit protocol's boot recovery of its
+ * own journal (docs/specs/skill-learning-sentinel.md §3.5 step 6;
+ * src/monitoring/skillLearning/CommitProtocol.ts `recoverOwnJournal`). Runs
+ * once per boot, BEFORE the reconciler's boot pass. The emit is ONE recovery
+ * decision per dangling `commit-prepare`/`move-prepare` row (finish, void, or
+ * lock operator-owned).
+ *
+ * Convergence argument: every decision appends the CLOSING row (`commit`,
+ * `commit-void`, `move-commit`, `move-void`) to the same journal, fsync'd, so
+ * the next pass finds the prepare closed and does nothing — one action per
+ * dangling prepare, then zero, horizon-independent. Foreign prepares (another
+ * machine's, pulled by sync) are counted and never acted on. The one case that
+ * does NOT close is a fence re-check that answers `aborted-unreachable`
+ * (`targetAlwaysRejects()`): the prepare is DEFERRED, untouched, and re-read
+ * next boot — no row is written, so repeated boots under an unreachable remote
+ * emit zero actions. Pinned pressure: D dangling own prepares + F foreign.
+ * boundK = D, perTarget 1 (one txId is decided once).
+ */
+const COMMIT_RECOVERY_DANGLING = 6;
+const COMMIT_RECOVERY_FOREIGN = 3;
+function makeCommitRecoveryPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // Durable (the journal on disk): which prepares are closed.
+  const closed = (f.durableState.get('skill-learning-commit-recovery:closed') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-commit-recovery:closed', closed);
+  const own = Array.from({ length: COMMIT_RECOVERY_DANGLING }, (_, i) => `tx-own-${i}`);
+  const foreign = Array.from({ length: COMMIT_RECOVERY_FOREIGN }, (_, i) => `tx-foreign-${i}`);
+  return {
+    tick() {
+      sink.considered += 1;
+      for (const _tx of foreign) { /* reported, never acted on */ }
+      for (const tx of own) {
+        if (closed.has(tx)) continue;              // the closing row is on disk → nothing to do
+        if (f.targetAlwaysRejects()) continue;     // fence unreachable → deferred, no row written
+        sink.emit({ verb: 'converge-commit-recovery', target: tx });
+        closed.add(tx);
+      }
+    },
+  };
+}
+const skillLearningCommitRecovery: SelfActionController = {
+  id: 'skill-learning-commit-recovery',
+  actionVerb: 'converge-commit-recovery',
+  models: 'src/monitoring/skillLearning/CommitProtocol.ts (recoverOwnJournal — three-way finish/void/lock per dangling own prepare; foreign prepares reported only)',
+  modelsPath: 'src/monitoring/skillLearning/CommitProtocol.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeCommitRecoveryPressure(f, sink),
+  },
+  boundK: COMMIT_RECOVERY_DANGLING,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 60 * 60_000, // one boot per virtual hour
+  eternalSentinel: undefined,
+  makeUnderPressure: makeCommitRecoveryPressure,
+};
+
+/**
+ * skill-learning-live-write — the Skill Learning Sentinel's live write
+ * (docs/specs/skill-learning-sentinel.md §3.5 tail; slice 2;
+ * src/monitoring/SkillLearningSentinel.ts `liveCreate`). In `mode: live` a
+ * validated draft is ONE `CommitProtocol.write('create')` per procedure key.
+ *
+ * Convergence argument: the write is keyed by the procedure key the classifier
+ * yields. A successful write leaves a canonical (`pending` or `active`) under
+ * the key, and the key is skipped while that skill exists; a REFUSED write
+ * (fence aborted, preflight conflict, protocol unreachable — the pinned
+ * pressure: `targetAlwaysRejects`) holds the key with a durable VerdictRow
+ * until the re-ask horizon (`shadow.verdictReaskDays`, longer than the test
+ * horizon). Either way ONE emit per key per horizon: with the fixture's
+ * classifier always yielding the same key, boundK = perTargetBoundK = 1,
+ * horizon-independent. The hold lives in the append-only ledger, so a restart
+ * cannot re-arm it. Shadow mode never reaches this controller at all.
+ */
+function makeSkillLearningLiveWritePressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const written = (f.durableState.get('skill-learning-live-write:written') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-live-write:written', written);
+  const KEY = 'procedure-key-recurring';                      // the classifier always yields the same key
+  return {
+    tick() {
+      sink.considered += 1;
+      if (written.has(KEY)) return;                             // canonical exists OR the key is held ⇒ zero calls
+      sink.emit({ verb: 'converge-learned-write', target: KEY });
+      // Success ⇒ canonical under the key; refusal (the fence/protocol rejects under pressure) ⇒ durable hold.
+      // Both are durable rows: the key is never re-written inside the horizon.
+      written.add(KEY);
+      void f.targetAlwaysRejects();
+    },
+  };
+}
+const skillLearningLiveWrite: SelfActionController = {
+  id: 'skill-learning-live-write',
+  actionVerb: 'converge-learned-write',
+  models: 'src/monitoring/SkillLearningSentinel.ts (liveCreate — one CommitProtocol.write per procedure key; a refused write holds the key with a durable VerdictRow until the re-ask horizon)',
+  modelsPath: 'src/monitoring/SkillLearningSentinel.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSkillLearningLiveWritePressure(f, sink),
+  },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillLearningLiveWritePressure,
+};
+
+/**
+ * skill-learning-revert — the Skill Learning Sentinel's bounded auto-revert
+ * (docs/specs/skill-learning-sentinel.md §3.7; slice 3A;
+ * src/monitoring/skillLearning/Reverter.ts `tick`). Holder-only tick phase.
+ * The emit is ONE `CommitProtocol.write('revert')` per learned skill whose
+ * live version N+1 trips the trigger (≥ 3 corroborated runs, ≥ 2 corrected,
+ * corrected rate strictly above N's).
+ *
+ * Convergence argument: a revert changes the live body, so the next tick
+ * compares a DIFFERENT pair (N+2 = N's body vs the rejected N+1); the counts
+ * are per body and N's rate was lower by construction, so the trigger is
+ * quiet until NEW corrections arrive. If they do (the ping-pong case — the
+ * pinned pressure: every version keeps tripping the trigger), the BREAKER
+ * stops it: `review.revertBreakerPer30d` (2) reverts on one key inside 30
+ * days ⇒ `write('lock')` and the key is `operator-owned`, which every later
+ * tick skips. A REFUSED revert is decided once per (name, on-disk fileHash)
+ * through the durable handled map and leaves the canonical `pending`, which
+ * the tick also skips. So per key: at most `revertBreakerPer30d` emits per
+ * 30-day window, horizon-independent; the lock lives in the canonical's
+ * frontmatter (synced), so a restart cannot re-arm it. boundK = KEYS × 2.
+ */
+const SKILL_LEARNING_REVERT_KEYS = 5;
+const SKILL_LEARNING_REVERT_BREAKER = 2; // review.revertBreakerPer30d default
+function makeSkillLearningRevertPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  // Durable (the version rows + the canonical's frontmatter): reverts per key, and the lock.
+  const reverts = (f.durableState.get('skill-learning-revert:reverts') as Map<string, number> | undefined) ?? new Map<string, number>();
+  f.durableState.set('skill-learning-revert:reverts', reverts);
+  const locked = (f.durableState.get('skill-learning-revert:locked') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-revert:locked', locked);
+  const keys = Array.from({ length: SKILL_LEARNING_REVERT_KEYS }, (_, i) => `learned-skill-${i}`);
+  return {
+    tick() {
+      sink.considered += 1;
+      for (const k of keys) {
+        if (locked.has(k)) continue;                              // operator-owned: the tick skips it
+        // The pinned pressure: every live version trips the trigger again (new corrections every tick).
+        sink.emit({ verb: 'converge-revert', target: k });
+        const n = (reverts.get(k) ?? 0) + 1;
+        reverts.set(k, n);
+        if (n >= SKILL_LEARNING_REVERT_BREAKER) locked.add(k);    // breaker: write('lock') — durable in the frontmatter
+        void f.targetAlwaysRejects();                              // a refused revert is decided once per body (pending) — never re-emitted
+      }
+    },
+  };
+}
+const skillLearningRevert: SelfActionController = {
+  id: 'skill-learning-revert',
+  actionVerb: 'converge-revert',
+  models: 'src/monitoring/skillLearning/Reverter.ts (tick — one write(revert) per tripped skill; the revertBreakerPer30d lock ends the loop; a refusal is decided once per body)',
+  modelsPath: 'src/monitoring/skillLearning/Reverter.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSkillLearningRevertPressure(f, sink),
+  },
+  boundK: SKILL_LEARNING_REVERT_KEYS * SKILL_LEARNING_REVERT_BREAKER,
+  perTargetBoundK: SKILL_LEARNING_REVERT_BREAKER,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillLearningRevertPressure,
+};
+
+/**
+ * skill-learning-review-retry — the Skill Learning Sentinel's §3.7 reviewer
+ * (docs/specs/skill-learning-sentinel.md §3.7; slice 3A;
+ * src/monitoring/skillLearning/Reviewer.ts `tick`). Holder-only tick phase.
+ * The emit is ONE reviewer LLM call per learned skill with unhandled
+ * corrected runs (the batch of a skill's unhandled runs shares one call).
+ *
+ * Convergence argument: every corrected run is keyed by its runId in a
+ * DURABLE handled map (the sentinel's state file) the moment a call
+ * completes — patched, no-change, refused, unparseable, unrecorded or
+ * provider-error alike — so a run is reviewed at most once. The only path
+ * that leaves a run unhandled makes NO call (an LlmQueue admission refusal, or
+ * a pre-call hold: post-revert needs two runs, same-family needs
+ * `minCorrectedRunsSameFamily`, chain mismatch). Under the pinned pressure
+ * (R corrected runs across K skills, every answer refused) each skill's
+ * batch is called once and then the tick is quiet: boundK = K, perTarget 1
+ * per corrected run. A restart re-reads the same file, so it cannot re-arm.
+ */
+const SKILL_LEARNING_REVIEW_SKILLS = 4;
+const SKILL_LEARNING_REVIEW_RUNS_PER_SKILL = 3;
+function makeSkillLearningReviewPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const handled = (f.durableState.get('skill-learning-review-retry:handled') as Set<string> | undefined) ?? new Set<string>();
+  f.durableState.set('skill-learning-review-retry:handled', handled);
+  const skills = Array.from({ length: SKILL_LEARNING_REVIEW_SKILLS }, (_, i) => `learned-skill-${i}`);
+  return {
+    tick() {
+      sink.considered += 1;
+      for (const sk of skills) {
+        const runs = Array.from({ length: SKILL_LEARNING_REVIEW_RUNS_PER_SKILL }, (_, j) => `${sk}:run-${j}`).filter((r) => !handled.has(r));
+        if (runs.length === 0) continue;                         // every corrected run handled ⇒ zero calls
+        sink.emit({ verb: 'retry-skill-review', target: sk });    // one call per skill batch
+        for (const r of runs) handled.add(r);                     // durable per runId, whatever the answer was
+        void f.targetAlwaysRejects();                             // a refused/unparseable answer is still handled
+      }
+    },
+  };
+}
+const skillLearningReviewRetry: SelfActionController = {
+  id: 'skill-learning-review-retry',
+  actionVerb: 'retry-skill-review',
+  models: 'src/monitoring/skillLearning/Reviewer.ts (tick — one reviewer call per skill batch of unhandled corrected runs; every completed call marks its runIds handled in the sentinel state file)',
+  modelsPath: 'src/monitoring/skillLearning/Reviewer.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeSkillLearningReviewPressure(f, sink),
+  },
+  boundK: SKILL_LEARNING_REVIEW_SKILLS,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillLearningReviewPressure,
+};
+
+/**
+ * Skill Learning Sentinel attention items 1–4 (docs/specs/skill-learning-sentinel.md
+ * §3.10; src/monitoring/skillLearning/SkillLearningAttention.ts). Each is a
+ * SelfHealGate consumer: the durable episode store caps a dedupe key at THREE
+ * heal attempts with 1 h / 6 h / 24 h backoff, then exhausts (the one notice).
+ * Pinned pressure: the injected heal always fails (`targetAlwaysRejects`), the
+ * condition never clears. The gate's arithmetic is modelled on durableState
+ * (attempts + nextEligibleAt survive a restart; a restart cannot re-arm a key).
+ */
+const SKILL_HEAL_BACKOFF_MS = [60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000];
+function makeSkillHealPressure(controllerId: string, verb: string, target: string, maxAttempts: number) {
+  return (f: PressureFixture, sink: ActionSink): { tick(): void } => ({
+    tick() {
+      sink.considered += 1;
+      const attempts = Number(f.durableState.get(`${controllerId}:attempts`) ?? 0);
+      const nextEligibleAt = Number(f.durableState.get(`${controllerId}:next`) ?? 0);
+      if (attempts >= maxAttempts) return;                     // exhausted: the notice went out once; no further heal
+      if (f.clock.nowMs() < nextEligibleAt) return;             // backoff
+      sink.emit({ verb, target });
+      sink.emitTimesMs.push(f.clock.nowMs());
+      f.durableState.set(`${controllerId}:attempts`, attempts + 1);
+      f.durableState.set(`${controllerId}:next`, f.clock.nowMs() + SKILL_HEAL_BACKOFF_MS[Math.min(attempts, SKILL_HEAL_BACKOFF_MS.length - 1)]);
+      void f.targetAlwaysRejects();                               // the heal fails; the gate records not-healed
+    },
+  });
+}
+const skillLearningHealRevertFirst: SelfActionController = {
+  id: 'skill-learning-heal-revert-first',
+  actionVerb: 'converge-skill-heal',
+  models: 'src/monitoring/skillLearning/SkillLearningAttention.ts (item 1: bounded revert before "retired for harm" notifies; SelfHealGate 3 attempts / 1h-6h-24h)',
+  modelsPath: 'src/monitoring/skillLearning/SkillLearningAttention.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeSkillHealPressure('skill-learning-heal-revert-first', 'converge-skill-heal', 'skill:harm-retired', 3)(f, sink) },
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 40,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillHealPressure('skill-learning-heal-revert-first', 'converge-skill-heal', 'skill:harm-retired', 3),
+};
+const skillLearningHealIndexRetire: SelfActionController = {
+  id: 'skill-learning-heal-index-retire',
+  actionVerb: 'converge-skill-heal',
+  models: 'src/monitoring/skillLearning/SkillLearningAttention.ts (item 2: reviewer-proposed retire of the lowest-scored unused skill before "index too costly" notifies)',
+  modelsPath: 'src/monitoring/skillLearning/SkillLearningAttention.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeSkillHealPressure('skill-learning-heal-index-retire', 'converge-skill-heal', 'key:index-cost', 3)(f, sink) },
+  boundK: 3,
+  perTargetBoundK: 3,
+  ticks: 40,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillHealPressure('skill-learning-heal-index-retire', 'converge-skill-heal', 'key:index-cost', 3),
+};
+/**
+ * Items 3/4 swap ONCE per episode: the controller records the swap with the
+ * condition's marker; the condition moving past it notifies instead of swapping
+ * again (SkillLearningAttention `swapOnce`). One emit per key per episode.
+ */
+const skillLearningDrafterFamilySwap: SelfActionController = {
+  id: 'skill-learning-drafter-family-swap',
+  actionVerb: 'swap-drafter-family',
+  models: 'src/monitoring/skillLearning/SkillLearningAttention.ts (item 3: swap the drafter family once after 5 consecutive refusals, then notify)',
+  modelsPath: 'src/monitoring/skillLearning/SkillLearningAttention.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeSkillHealPressure('skill-learning-drafter-family-swap', 'swap-drafter-family', 'key:refusal-streak', 1)(f, sink) },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillHealPressure('skill-learning-drafter-family-swap', 'swap-drafter-family', 'key:refusal-streak', 1),
+};
+const skillLearningClassifierFailureSwap: SelfActionController = {
+  id: 'skill-learning-classifier-failure-swap',
+  actionVerb: 'swap-classifier-family',
+  models: 'src/monitoring/skillLearning/SkillLearningAttention.ts (item 4: the bounded classifier failure swap once per episode, then notify)',
+  modelsPath: 'src/monitoring/skillLearning/SkillLearningAttention.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeSkillHealPressure('skill-learning-classifier-failure-swap', 'swap-classifier-family', 'classifier', 1)(f, sink) },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillHealPressure('skill-learning-classifier-failure-swap', 'swap-classifier-family', 'classifier', 1),
+};
+/**
+ * skill-learning-attention-notify — the notice itself (every item). Pinned
+ * pressure: the heal always fails, so the gate exhausts after its 3 attempts
+ * and raises ONE notice per condition key; the durable `open` map (conditionKey)
+ * dedupes every later tick inside the flap window, and the attention store
+ * folds a repeat onto the same row. perTarget 1 per key per horizon.
+ */
+function makeSkillAttentionNotifyPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const heal = makeSkillHealPressure('skill-learning-attention-notify:heal', 'converge-skill-heal', 'skill:harm-retired', 3)(f, makeActionSink());
+  return {
+    tick() {
+      sink.considered += 1;
+      heal.tick();
+      const attempts = Number(f.durableState.get('skill-learning-attention-notify:heal:attempts') ?? 0);
+      if (attempts < 3) return;                                                  // the heal is still being tried: no notice
+      if (f.durableState.get('skill-learning-attention-notify:open')) return;    // one notice per condition episode
+      f.durableState.set('skill-learning-attention-notify:open', true);
+      sink.emit({ verb: 'escalate-skill-attention', target: 'skill-learning:1:harm-retired' });
+      sink.emitTimesMs.push(f.clock.nowMs());
+    },
+  };
+}
+const skillLearningAttentionNotify: SelfActionController = {
+  id: 'skill-learning-attention-notify',
+  actionVerb: 'escalate-skill-attention',
+  models: 'src/monitoring/skillLearning/SkillLearningAttention.ts (notify — one attention item per condition key after its heal is exhausted; durable open-map dedupe)',
+  modelsPath: 'src/monitoring/skillLearning/SkillLearningAttention.ts',
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => makeSkillAttentionNotifyPressure(f, sink) },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 60 * 60_000,
+  eternalSentinel: undefined,
+  makeUnderPressure: makeSkillAttentionNotifyPressure,
+};
+
+/**
+ * learned-skill-retire-reconcile — the Retirer's every-machine archive sweep
+ * (docs/specs/skill-learning-sentinel.md §3.8 "archive first";
+ * src/monitoring/skillLearning/Retirer.ts `reconcileRetiredRenderings`, run
+ * FIRST inside every LearnedSkillReconciler pass under its mutex). The emit is
+ * ONE archive+remove of a rendering (skill × layout × this machine): rename,
+ * or copy → verify → safeRmSync.
+ *
+ * Convergence argument: a rendering that moved is gone from the layout, so the
+ * next pass finds nothing for that (skill × layout). A rendering that could NOT
+ * move (the pinned pressure: `targetAlwaysRejects` — the rename AND the
+ * copy/remove fail) is recorded in a durable per-machine blocked file keyed by
+ * the rendering's content hash; it is re-attempted only when the bytes change
+ * or 24 h have passed, both outside the 40 × 10-min horizon. So: one action per
+ * (skill × layout), horizon-independent; the blocked entry is read back after
+ * a restart (durableState), so a restart cannot re-arm it. Never
+ * `removeOrphans`; never a rendering without a learned canonical behind it.
+ */
+const RETIRE_RECONCILE_SKILLS = 4;
+const RETIRE_RECONCILE_LAYOUTS = ['claude', 'agents'] as const;
+function makeRetireReconcilePressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const archived = (f.durableState.get('learned-skill-retire-reconcile:archived') as Set<string> | undefined) ?? new Set<string>();
+  const blocked = (f.durableState.get('learned-skill-retire-reconcile:blocked') as Map<string, { hash: string; atMs: number }> | undefined) ?? new Map<string, { hash: string; atMs: number }>();
+  f.durableState.set('learned-skill-retire-reconcile:archived', archived);
+  f.durableState.set('learned-skill-retire-reconcile:blocked', blocked);
+  const RETRY_MS = 24 * 3600_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      for (let i = 0; i < RETIRE_RECONCILE_SKILLS; i++) {
+        for (const layout of RETIRE_RECONCILE_LAYOUTS) {
+          const key = `retired-skill-${i}:${layout}`;
+          if (archived.has(key)) continue;                      // the rendering left the layout → nothing to do
+          const prior = blocked.get(key);
+          if (prior && prior.hash === 'h1' && f.clock.nowMs() - prior.atMs < RETRY_MS) continue; // bytes unchanged, < 24 h → not re-attempted
+          sink.emit({ verb: 'converge-retire-rendering', target: key });
+          if (f.targetAlwaysRejects()) blocked.set(key, { hash: 'h1', atMs: f.clock.nowMs() });
+          else archived.add(key);
+        }
+      }
+    },
+  };
+}
+const learnedSkillRetireReconcile: SelfActionController = {
+  id: 'learned-skill-retire-reconcile',
+  actionVerb: 'converge-retire-rendering',
+  models: 'src/monitoring/skillLearning/Retirer.ts (reconcileRetiredRenderings — archive-first rename/copy-verify-remove per skill × layout × machine; durable content-hash-keyed blocked entry, 24 h retry)',
+  modelsPath: 'src/monitoring/skillLearning/Retirer.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeRetireReconcilePressure(f, sink),
+  },
+  boundK: RETIRE_RECONCILE_SKILLS * RETIRE_RECONCILE_LAYOUTS.length,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the reconciler's 10-minute tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeRetireReconcilePressure,
+};
+
+/**
+ * skill-learning-retire-judgment — the holder's retire judgment
+ * (docs/specs/skill-learning-sentinel.md §3.8; src/monitoring/skillLearning/
+ * Retirer.ts `judge` → `retire`, the sentinel's lease-gated `retire` phase).
+ * The emit is ONE retire of a skill at a version (reviewer verdict inside the
+ * evidence floor, or the static defaults when the reviewer is unavailable).
+ *
+ * Convergence argument: every judgment is memoised durably per (skill,
+ * version) — `retire-judgments.<machineId>.json` — so the same version is never
+ * judged twice; a retire that LANDS moves the canonical out of the layout (no
+ * candidate next tick); a retire the protocol REFUSES (the pinned pressure:
+ * `targetAlwaysRejects` — the fence aborts) is memoised with a 1-day re-ask,
+ * outside the 40 × 10-min horizon. One retire per skill per version,
+ * horizon-independent; the memo is read back after a restart.
+ */
+const RETIRE_JUDGMENT_SKILLS = 3;
+function makeRetireJudgmentPressure(f: PressureFixture, sink: ActionSink): { tick(): void } {
+  const memo = (f.durableState.get('skill-learning-retire-judgment:memo') as Map<string, { version: number; reaskAtMs: number | null }> | undefined) ?? new Map<string, { version: number; reaskAtMs: number | null }>();
+  f.durableState.set('skill-learning-retire-judgment:memo', memo);
+  const DAY = 86_400_000;
+  return {
+    tick() {
+      sink.considered += 1;
+      for (let i = 0; i < RETIRE_JUDGMENT_SKILLS; i++) {
+        const name = `learned-skill-${i}`;
+        const version = 1;                                      // the canonical does not change under the pinned pressure
+        const m = memo.get(name);
+        if (m && m.version === version && (m.reaskAtMs === null || f.clock.nowMs() < m.reaskAtMs)) continue; // judged at this version
+        sink.emit({ verb: 'converge-retire', target: name });
+        if (f.targetAlwaysRejects()) memo.set(name, { version, reaskAtMs: f.clock.nowMs() + DAY }); // refused apply → re-asked after a day
+        else memo.set(name, { version, reaskAtMs: null });                                        // landed → never again at this version
+      }
+    },
+  };
+}
+const skillLearningRetireJudgment: SelfActionController = {
+  id: 'skill-learning-retire-judgment',
+  actionVerb: 'converge-retire',
+  models: 'src/monitoring/skillLearning/Retirer.ts (judge — floor → reviewer/defaults → retire, memoised per (skill, version); refused apply re-asked after 1 day)',
+  modelsPath: 'src/monitoring/skillLearning/Retirer.ts',
+  restartPosture: {
+    pressureSurvives: true,
+    restartUnderPressure: (f, sink) => makeRetireJudgmentPressure(f, sink),
+  },
+  boundK: RETIRE_JUDGMENT_SKILLS,
+  perTargetBoundK: 1,
+  ticks: 40,
+  tickMs: 10 * 60_000, // the sentinel's tick
+  eternalSentinel: undefined,
+  makeUnderPressure: makeRetireJudgmentPressure,
+};
+
+
+/** One unresolved occurrence survives process reconstruction unchanged. The
+ * production admission decision persists its attempt before any model spawn;
+ * progress/context writes never reset it and no timer re-arms the breaker. */
+const failureCalloutInvestigation: SelfActionController = {
+  id: 'failure-callout-investigation',
+  actionVerb: 'investigation-spawn',
+  models: 'src/server/routes.ts claim endpoint and FailureInvestigationAdmission.ts durable three-attempt brake',
+  modelsPath: 'src/server/routes.ts',
+  boundK: FAILURE_INVESTIGATION_MAX_ATTEMPTS,
+  perTargetBoundK: FAILURE_INVESTIGATION_MAX_ATTEMPTS,
+  ticks: 48,
+  tickMs: 30 * 60_000,
+  restartPosture: { pressureSurvives: true, restartUnderPressure: (f, sink) => failureCalloutInvestigation.makeUnderPressure(f, sink) },
+  makeUnderPressure(f, sink) {
+    return { tick() {
+      sink.considered += 1;
+      if (!f.targetAlwaysRejects()) return;
+      const key = 'failure-callout-investigation:unchanged-occurrence';
+      const state = f.durableState.get(key) as { attempts: number; nextAt: number | null } | undefined;
+      const decision = decideFailureInvestigationAttempt(state?.attempts ?? 0, state?.nextAt ?? null, f.clock.nowMs());
+      if (!decision.admitted) return;
+      f.durableState.set(key, { attempts: decision.attempts, nextAt: decision.nextAt });
+      sink.emit({ verb: 'investigation-spawn', target: 'failure:unchanged-occurrence' });
+    } };
+  },
+};
+
+/**
+ * app-pool-enforcer — keeps older machines out of app conversations in the pool
+ * (docs/specs/app-conversations-in-the-pool.md §2.5, §2.6). Runs the REAL enforcer under the pinned
+ * worst case: an unflagged machine online forever, and an owner that refuses every drain home. The
+ * force-claim happens once (the record then names this machine), one notice is latched per episode, and
+ * each refused drain waits BRING_HOME_RETRY_MS, so one hour is at most 13 drains per conversation. The
+ * close-on-loss rule retries a local, refusable close each reconcile; it sends nothing and starts nothing.
+ */
+const appPoolEnforcer: SelfActionController = {
+  id: 'app-pool-enforcer',
+  actionVerb: 'restart-drain-home',
+  models: 'src/core/appConversationPool.ts (AppPoolEnforcer: homeDrains in-flight latch + BRING_HOME_RETRY_MS per conversation; noticeRaised latch per episode)',
+  modelsPath: 'src/core/appConversationPool.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The retry times and notice latch are in memory. A restart allows one more drain per conversation and one more notice; each drain is refused or moves the conversation home, and the attention item is keyed by its condition.' },
+  boundK: 16,
+  perTargetBoundK: 14,
+  ticks: 720,
+  tickMs: 5_000,
+  makeUnderPressure(f, sink) {
+    const self = 'm_self';
+    const rec = (sessionKey: string, owner: string): SessionOwnershipRecord => ({ sessionKey, ownerMachineId: owner, ownershipEpoch: 3, status: 'active', nonce: 'n', timestamp: 0, updatedAt: '' });
+    const records = [rec('app:drain-refused', 'm_flagged'), rec('app:on-the-old-machine', 'm_old')];
+    let reports = 0;
+    const capacities = (): MachineCapacity[] => {
+      reports += 1;
+      const at = new Date(f.clock.nowMs() + reports).toISOString();
+      return [
+        { machineId: 'm_old', online: true, seamlessnessFlags: {}, seamlessnessFlagsReceivedAt: at } as MachineCapacity,
+        { machineId: 'm_flagged', online: true, seamlessnessFlags: { appConversationsPool: true }, seamlessnessFlagsReceivedAt: at } as MachineCapacity,
+      ];
+    };
+    const enforcer = new AppPoolEnforcer({
+      selfId: () => self, active: () => true, selfFlagged: () => true, holdsLease: () => true, leaseHolderId: () => self,
+      capacities, records: () => records,
+      cas: (k, a) => {
+        if (a.type !== 'force-claim') return { ok: false };
+        sink.emit({ verb: 'restart-drain-home', target: k });
+        const r = records.find((x) => x.sessionKey === k);
+        if (r) { r.ownerMachineId = 'gone'; r.status = 'released'; }
+        return { ok: true };
+      },
+      drainRunning: () => false, moveInFlight: () => false, restoreDeliveryLedger: () => undefined,
+      sendDrain: async (_o, k) => { sink.emit({ verb: 'restart-drain-home', target: k }); return { ok: false, status: 'refused-close-failed' }; },
+      raiseAttention: (i) => { sink.emit({ verb: 'restart-drain-home', target: i.conditionKey }); },
+      clearAttention: () => undefined, nicknameOf: () => null, now: () => f.clock.nowMs(), transferDeadlineMs: 45_000,
+      flags: new AppFlagTracker({ now: () => f.clock.nowMs(), holdsLease: () => true, selfId: () => self }),
+    });
+    return {
+      tick() {
+        sink.considered += 1;
+        enforcer.tick();
+      },
+    };
+  },
+};
+
+
+/**
+ * read-marker-emit-coalesce — the read-marker outbox (mobile-unread-messages §3.3). A key whose
+ * position is past what was shared is emitted at most once per EMIT_THROTTLE_MS; a refused emit (the
+ * journal's rate bucket) leaves the key due, so under a journal that refuses forever the loop is a
+ * constant-cost eternal sentinel: one append attempt per key per 10 s, never more, never accelerating.
+ * The real brake is `markerEmitDue` (one decision, one window), modelled with one always-refused key.
+ */
+const readMarkerEmitCoalesce: SelfActionController = {
+  id: 'read-marker-emit-coalesce',
+  actionVerb: 'retry',
+  models: 'src/core/ConversationReadMarkers.ts (ConversationReadMarkerStore.flushEmits — markerEmitDue, one attempt per key per EMIT_THROTTLE_MS)',
+  modelsPath: 'src/core/ConversationReadMarkers.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart re-reads the state file (the outbox) and emits each due key once at boot, then the same window applies; the last-attempt map is in memory only, so at worst one extra attempt per key per restart.' },
+  boundK: 100,
+  perTargetBoundK: 100,
+  ticks: 100,
+  tickMs: EMIT_THROTTLE_MS,
+  eternalSentinel: { reason: 'The state file is the outbox: a refused key must be offered again, at a floor of one attempt per key per 10 s, until the journal accepts it.', rateFloorMs: EMIT_THROTTLE_MS },
+  delegatedGiveUp: 'The coherence journal\'s per-kind rate bucket (CoherenceJournal rateCap) refuses the append; the store never spawns, kills or notifies, it only holds the key due',
+  makeUnderPressure(f, sink) {
+    let lastEmitAt: number | undefined;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!markerEmitDue(lastEmitAt, now)) return;
+        sink.emit({ verb: 'retry', target: 'read-marker:owner:telegram:1' });
+        lastEmitAt = now;
+        // f.targetAlwaysRejects(): the journal refuses, the key stays due, the window is the only pacing.
+      },
+    };
+  },
+};
+
+/**
+ * read-marker-catch-up-retry — the boot catch-up of read markers from a peer (mobile-unread-messages
+ * §3.3). A peer whose pages fail is asked again every CATCH_UP_RETRY_MS, and after CATCH_UP_MAX_FAILURES
+ * consecutive failures not at all until it comes back online (onPeerOnline resets the count) or the
+ * next boot. Under a peer that fails forever the total settles at 12, horizon-independent.
+ */
+const readMarkerCatchUpRetry: SelfActionController = {
+  id: 'read-marker-catch-up-retry',
+  actionVerb: 'retry',
+  models: 'src/core/ConversationUnreadService.ts (ConversationUnreadService.catchUp — catchUpAttemptDue, CATCH_UP_MAX_FAILURES then wait for onPeerOnline)',
+  modelsPath: 'src/core/ConversationUnreadService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The per-peer cursor, last attempt and failure count are in the state file; a restart resumes the same schedule and the same brake.' },
+  boundK: CATCH_UP_MAX_FAILURES,
+  perTargetBoundK: CATCH_UP_MAX_FAILURES,
+  ticks: 48,
+  tickMs: CATCH_UP_RETRY_MS,
+  makeUnderPressure(f, sink) {
+    const state = { cursor: null as string | null, done: false, lastAttemptAt: null as number | null, failures: 0 };
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (!catchUpAttemptDue(state, now)) return;
+        sink.emit({ verb: 'retry', target: 'peer:m2' });
+        state.lastAttemptAt = now;
+        if (f.targetAlwaysRejects()) state.failures += 1;
+        else state.done = true;
+      },
+    };
+  },
+};
+
+/**
+ * browser-activation-effect-retry — a browser device's activation effects (the owner notice,
+ * retiring a replaced browser; docs/specs/dashboard-conversations-browser-device.md §4.2 step 10)
+ * are retried until they complete and never dropped: 30 s doubling to a 1 h ceiling, one attempt in
+ * flight per record, one report after 24 attempts, one local fallback notice. Under a target that
+ * always rejects, the steady state is one attempt an hour per record.
+ */
+const browserActivationEffectRetry: SelfActionController = {
+  id: 'browser-activation-effect-retry',
+  actionVerb: 'retry',
+  models: 'src/server/mobileBrowserDevices.ts (BrowserDeviceController.runEffects — nextEffectAttemptAt, 1 h ceiling)',
+  modelsPath: 'src/server/mobileBrowserDevices.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'Each effect\'s attempts and next attempt time are on the device record in mobile-devices.json, so a restart resumes the same schedule.' },
+  boundK: 24 * 30 + 8,
+  perTargetBoundK: 24 * 30 + 8,
+  ticks: 24 * 30 * 12,
+  tickMs: 5 * 60_000,
+  eternalSentinel: { reason: 'An identity effect is never abandoned (a dropped notice hides a new signing identity from the owner); it settles to one attempt an hour after a short ramp; no two attempts are ever closer than the first 30 s backoff.', rateFloorMs: EFFECT_FIRST_BACKOFF_MS },
+  delegatedGiveUp: 'The owner removing the browser in People > Phones ends its notice; the 24-attempt DegradationReporter report surfaces it',
+  makeUnderPressure(f, sink) {
+    let attempts = 0;
+    let nextAt = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (now < nextAt || !f.targetAlwaysRejects()) return;
+        sink.emit({ verb: 'retry', target: 'browser-activation-notice' });
+        sink.emitTimesMs.push(now);
+        attempts += 1;
+        nextAt = nextEffectAttemptAt(attempts, now);
+      },
+    };
+  },
+};
+
+/**
+ * peer-place-session-tick — memory-privacy-agent-places §4. The 60-second tick ends
+ * another agent's place session when it is idle past the limit or no longer admitted.
+ * Modeled on the REAL PlaceSessionRegistry. A kill removes the record, and the tick
+ * never starts a session (only a peer's message does, through admission), so under
+ * sustained "everything is idle" pressure it ends each recorded place once and then
+ * has nothing left: the count settles at the place cap, horizon-independent.
+ */
+const peerPlaceSessionTick: SelfActionController = {
+  id: 'peer-place-session-tick',
+  actionVerb: 'kill-idle-place-session',
+  models: 'src/commands/server.ts (placeTick: idle end + live re-admission over PlaceSessionRegistry)',
+  modelsPath: 'src/commands/server.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The registry is in memory; boot ends every place session once and starts the registry empty, so a restart cannot re-arm a kill.' },
+  boundK: 3,
+  perTargetBoundK: 1,
+  ticks: 30,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const reg = new PlaceSessionRegistry({ globalCap: () => 3, idleMs: () => 600_000, now: () => f.clock.nowMs() });
+    for (const fp of ['peer-a', 'peer-b', 'peer-c']) {
+      const r = reg.reserve(fp);
+      if (r.kind === 'reserved') r.markRunning(`place-${fp}`);
+    }
+    return {
+      tick() {
+        sink.considered += 1;
+        for (const rec of reg.idle()) {
+          if (!rec.sessionName) continue;
+          sink.emit({ verb: 'kill-idle-place-session', target: rec.sessionName });
+          reg.forgetSession(rec.sessionName);
+        }
+      },
+    };
+  },
+};
+
+/**
+ * email-fallback-retry — backup-email-sending, the falling-back row. An email that did not go is carried to its
+ * topic; when Telegram and the relay queue both refuse, the holder retries the topic copy. Under the pinned
+ * fixture every send is refused, forever. The REAL brake is `fallbackRetryDelayMs` (1, 2, 4, 8, 15 minutes, then
+ * every 15, and after 24 hours in falling-back the timer stops until a resume event: Telegram's reconnect, the
+ * relay sentinel's recovery, or a handoff; the hourly sweep does not resume it). Over three days that is 100
+ * attempts for the one row, then nothing. Relay copies are capped at RELAY_MAX_TRIES per row inside the same
+ * attempts, so they add no sends of their own.
+ */
+const emailFallbackRetry: SelfActionController = {
+  id: 'email-fallback-retry',
+  actionVerb: 'fallback-retry-sendToTopic',
+  models: 'src/email/EmailService.ts (fallbackRetryDelayMs: 1, 2, 4, 8, 15 min then 15, timer stops 24h after the row first fell back)',
+  modelsPath: 'src/email/EmailService.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'fallingBackSince and fallbackTries are on the replicated row, so a restart keeps the 24-hour clock; recovery re-arms one attempt per restart, and a restart is never caused by this controller.' },
+  boundK: 100,
+  perTargetBoundK: 100,
+  ticks: 3 * 1440,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'falling-back-row';
+    const sinceMs = 0;
+    let nowMs = 0;
+    let tries = 0;
+    let nextAt: number | null = 0;
+    return {
+      tick() {
+        sink.considered += 1;
+        if (nextAt !== null && nowMs >= nextAt) {
+          tries += 1;
+          sink.emit({ verb: 'fallback-retry-sendToTopic', target: TARGET });
+          nextAt = f.targetAlwaysRejects() ? (() => { const d = fallbackRetryDelayMs(tries, sinceMs, nowMs); return d === null ? null : nowMs + d; })() : null;
+        }
+        nowMs += 60_000;
+      },
+    };
+  },
+};
+
+
+/** relogin-approval-reminder (CMT-1541): a sign-in repair waits for the operator's tap forever. The
+ * reminder fires ONCE per waiting spell (the spell key is held), then stays quiet however long it waits. */
+const reloginApprovalReminder: SelfActionController = {
+  id: 'relogin-approval-reminder',
+  actionVerb: 'notify',
+  models: 'src/core/SubscriptionReloginApprovalReminder.ts (SubscriptionReloginApprovalReminder.tick — dueApprovalReminders, held by spell key)',
+  modelsPath: 'src/core/SubscriptionReloginApprovalReminder.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'A restart forgets the held spell keys, but the reminder text is fixed for one waiting spell (it names the absolute wait start), so the re-raised observation lands on the same attention row unchanged and is absorbed without a repost.' },
+  boundK: 1,
+  perTargetBoundK: 1,
+  ticks: 4 * 24 * 7,
+  tickMs: 15 * 60_000,
+  makeUnderPressure(f, sink) {
+    const sent = new Set<string>();
+    const waiting = { id: 'ep-1', state: 'suggested', mode: 'approval', updatedAt: new Date(0).toISOString() } as unknown as SubscriptionReloginEpisode;
+    return {
+      tick() {
+        sink.considered += 1;
+        for (const due of dueApprovalReminders([waiting], { nowMs: f.clock.nowMs(), thresholdMs: 4 * 3_600_000, waitingSince: () => 0, sent })) {
+          sink.emit({ verb: 'notify', target: `relogin:${due.episode.id}` });
+          sent.add(due.key);
+        }
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
+  graphSourceSweepCheckpointRetry,
+  graphSourceStatusPollRetry,
+  reloginApprovalReminder,
+  peerPlaceSessionTick,
+  skillLearningHealRevertFirst,
+  skillLearningHealIndexRetire,
+  skillLearningDrafterFamilySwap,
+  skillLearningClassifierFailureSwap,
+  skillLearningAttentionNotify,
+  skillLearningTick,
+  skillLearningLiveWrite,
+  skillLearningCommitRecovery,
+  learnedSkillRetireReconcile,
+  skillLearningRetireJudgment,
+  skillLearningRevert,
+  skillLearningReviewRetry,
+  learnedSkillReconciler,
+  failureCalloutInvestigation,
   attributionAuditRetry,
+  reachSecondPersonNotice,
   presenceUsageNotice,
+
   jobPortableTransferPoll,
   jobCoverageAlertRetry,
   profileReconciliationNotice,
   linuxBrowserInstallRetry,
+  sessionMonitorDeadRecovery,
   codex429ExitNotice,
   claudeKeySessionRefresh,
+  slackRefusedHoldRetry,
+  usageLimitSessionRefresh,
   desktopRelockGuardReplacement,
   desktopLockedHelperRespawn,
   sessionPoolStagePromotion,
@@ -4127,6 +5407,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   localVerifyStatusPost,
   localVerifyStatusPassBackoff,
   systemTopicAdoption,
+  diskStewardNotice,
   lifelineIngressRestartSignal,
   lifelineSecretRefusalRedrive,
   overloadAdmissionSelfHelp,
@@ -4139,6 +5420,10 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   jobScriptTriageBackup,
   feedbackTriageActionList,
   feedbackTriageSelfHealProbe,
+  contextBudgetQuarantineReconcile,
+  contextBudgetAdapterSuite,
+  contextBudgetOrphanCarrierClear,
+  contextBudgetLayerRebuildRequest,
   passkeyRevokeOutbox,
   telegramOriginSourcePoller,
   originStoreWorkerRestart,
@@ -4180,6 +5465,7 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   feedbackGeneratedDefaultsHeal,
   feedbackExecute,
   mutualSshRepairSweep,
+  serverDownRecoveryRepair,
   followMeEnrollmentConsumer,
   agentIdentityAdoption,
   agentIdentityCoherenceDetector,
@@ -4193,4 +5479,9 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   machineWedgeNotice,
   requiredAckPendingRetry,
   recommendedServiceSetupRestart,
+  appPoolEnforcer,
+  readMarkerEmitCoalesce,
+  readMarkerCatchUpRetry,
+  browserActivationEffectRetry,
+  emailFallbackRetry,
 ];

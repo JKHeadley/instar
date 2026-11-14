@@ -1,0 +1,26 @@
+{
+  "ts": "2026-11-11T04:07:05.303Z",
+  "slug": "cb-chunks",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 8,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/monitoring/contextLayers/chunkBuilder.ts"
+    ],
+    "addedLines": 4,
+    "deletedLines": 4
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "CI ratchet/registry follow-up, no behaviour change"
+  },
+  "verdict": "pass"
+}

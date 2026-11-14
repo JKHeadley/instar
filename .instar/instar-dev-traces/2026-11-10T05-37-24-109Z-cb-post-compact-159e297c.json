@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "cb-post-compact",
+  "sessionId": "8678c84d-037f-4b82-a432-297906c6bdba",
+  "timestamp": "2026-11-10T05:37:24.109Z",
+  "artifactPath": "upgrades/side-effects/cb-post-compact.md",
+  "artifactSha256": "08c01776d7cb3cdea02533c7abe0741d6a34b049675ca447a3d7310990c3ad1c",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/init.ts",
+    "src/core/PostUpdateMigrator.ts",
+    "src/core/WriteDomainRegistry.ts",
+    "src/monitoring/PostCompactStore.ts",
+    "src/server/AgentServer.ts",
+    "src/server/fileRoutes.ts",
+    "src/server/routes.ts",
+    "src/templates/hooks/settings-template.json",
+    "tests/e2e/post-compact-lifecycle.test.ts",
+    "tests/integration/post-compact-route.test.ts",
+    "tests/unit/post-compact-store.test.ts",
+    "upgrades/next/cb-post-compact.md",
+    "upgrades/side-effects/cb-post-compact.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Fleet-wide hook and settings migration plus a new authenticated route storing conversation content; converged and approved spec",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

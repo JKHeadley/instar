@@ -1,0 +1,29 @@
+{
+  "version": 2,
+  "slug": "local-verify-performance-cores",
+  "sessionId": "7b94e0ef-44cd-400d-9bb3-977c21954026",
+  "timestamp": "2026-11-12T22:48:53.690Z",
+  "artifactPath": "upgrades/side-effects/local-verify-performance-cores.md",
+  "artifactSha256": "0ff8781ea801715db555064aa06ac9f8a184cf0553dddb7e2adf463e5ab5e89b",
+  "coveredFiles": [
+    "docs/specs/local-verify-performance-cores.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/launchdSpawn.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/peer.ts",
+    "src/localVerify/serviceSeams.ts",
+    "src/scaffold/templates.ts",
+    "tests/integration/localVerify-launchdSpawn.test.ts",
+    "tests/unit/localVerify-launchdSpawn.test.ts",
+    "tests/unit/localVerify/peerVerifier.test.ts",
+    "upgrades/next/local-verify-performance-cores.md",
+    "upgrades/side-effects/local-verify-performance-cores.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "macOS-only spawn path for the verify run (launchd Interactive) with a fallback to the existing spawn; no verdict change; peer adoption removed after review.",
+  "eli16Path": "docs/specs/local-verify-performance-cores.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-performance-cores.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

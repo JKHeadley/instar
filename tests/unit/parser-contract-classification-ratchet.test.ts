@@ -75,6 +75,7 @@ const PENDING_BASELINE = [
   'StallTriageNurse',
   'CommitmentSentinel',
   'PresenceProxy',
+  'ChiefOfStaffLoop', // chief-of-staff-topic.md §2.5: closed project verdict, parsed fail-closed to unknown
   'ProjectDriftChecker',
   'TemporalCoherenceChecker',
   'SessionWatchdog',
@@ -120,6 +121,7 @@ const ARGUED_FALSE_BASELINE = [
   'Usher',
   'TopicIntentExtractor',
   'PreCompactionFlush',
+  'ContextLayerChunk',
   'TreeSynthesis',
   'LLMConflictResolver',
   'openConversationBrief',

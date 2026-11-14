@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "slug": "chief-of-staff-live",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-10T01:13:49.142Z",
+  "artifactPath": "upgrades/side-effects/chief-of-staff-live.md",
+  "artifactSha256": "7339a84b60cbfb65cd541dc17a64101c96634ed0a9ed37f850532b53704b0ba0",
+  "specPath": "docs/specs/chief-of-staff-topic.md",
+  "coveredFiles": [
+    "upgrades/next/chief-of-staff-live.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Documentation of the live proof result in the artifact and upgrade notes; no code change.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

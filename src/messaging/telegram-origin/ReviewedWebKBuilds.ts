@@ -6,11 +6,31 @@ import type { WebKBuildEnrollment } from './TelegramWebKDriver.js';
  * The trusted enrollment entrypoint admits ONLY a build listed here, and only
  * when the authenticated read-only canary observes exactly these asset names
  * and digests. Adding a build is a reviewed code change, never a runtime input.
- * Newest first. Build 684 is backed by the adjacent dated review report.
+ * Newest first. Builds 684, 686 and 687 are backed by the adjacent dated review reports.
  */
 export interface ReviewedWebKBuild extends WebKBuildEnrollment { evidence: string; }
 
 export const REVIEWED_WEB_K_BUILDS: readonly ReviewedWebKBuild[] = Object.freeze<ReviewedWebKBuild[]>([
+  {
+    buildId: 'web-k-2.3-687',
+    evidence: 'docs/specs/reports/telegram-message-origin-evidence/web-k-2.3-687-review.md',
+    criticalAssets: ['apiManagerProxy-xL1OSBOW.js', 'app-B3AbKbVS.js', 'index-Dthh6gB6.js'],
+    assetDigests: {
+      'apiManagerProxy-xL1OSBOW.js': '58a81d3e1a235bd1e171fa972b24342f64b1ba5076831c5b7e4bee4b87f7d75f',
+      'app-B3AbKbVS.js': 'ad4146645016e21cc1621fffba19d211320616d197880eedeb7ba727d8e4e160',
+      'index-Dthh6gB6.js': 'b0a0d838ea117b4b1b15a15e39862f86cc60db03ec6db19d8a4140b4db9423eb',
+    },
+  },
+  {
+    buildId: 'web-k-2.3-686',
+    evidence: 'docs/specs/reports/telegram-message-origin-evidence/web-k-2.3-686-review.md',
+    criticalAssets: ['apiManagerProxy-DnfIRNVs.js', 'app-Bzzv1JNw.js', 'index-C47pEAow.js'],
+    assetDigests: {
+      'apiManagerProxy-DnfIRNVs.js': 'bec087196ed2e34b819ec9c5a5b93901e7c7661e696848f2753ccd0750b0f6f7',
+      'app-Bzzv1JNw.js': 'b0dce6918e3d0b32adb1915cd0487921788b2bf72ea67e6c57f510c14bc82acc',
+      'index-C47pEAow.js': 'e0eeb1d6ba579d85cae568f3831f072d59d7cfcd1b86ab05e5d60ba27a203dc3',
+    },
+  },
   {
     buildId: 'web-k-2.2-684',
     evidence: 'docs/specs/reports/telegram-message-origin-evidence/web-k-2.2-684-review.md',

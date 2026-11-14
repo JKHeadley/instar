@@ -18,6 +18,7 @@ import { MAX_FILE_BYTES, isInlineSafe, safeFileName } from '../core/appMediaType
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
 import { isPeerUrlAllowedForCredentials, type PeerEndpointKind } from './peerUrlGuard.js';
 import { poolPeerFetch, PoolPeerAdmissionError, type PoolPeerTarget, type RopeResultRecorder } from './poolPeerFetch.js';
+import { mediaOffBody } from './mobileMediaOff.js';
 
 /** The holder's mark that it answered as a hop; an older holder refuses a bearer download outright. */
 export const HOLDER_MEDIA_HEADER = 'x-instar-holder-media';
@@ -152,7 +153,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia & { c
     let token: string | undefined;
     try {
       peer = deps.peers().find((p) => p.machineId === q.machine);
-      if (!peer) { res.status(409).json({ error: 'wrong-machine', servedBy: deps.selfMachineId(), detail: 'This file belongs to a machine this one does not know.' }); return; }
+      if (!peer) { res.status(409).json({ error: 'wrong-machine', servedBy: deps.selfMachineId(), detail: 'This file belongs to a machine the agent does not know.' }); return; }
       if (!isPeerUrlAllowedForCredentials({ url: peer.url, kind: (peer.kind ?? 'last-known-url') as PeerEndpointKind }, deps.allowlist?.()).ok) { failed(res, 502, 'holder-untrusted'); return; }
       token = deps.token();
     } catch { failed(res, 503, 'holder-unavailable'); return; } // @silent-fallback-ok — reported by failed(); the phone is told to retry
@@ -237,7 +238,7 @@ export function buildMediaHolderStream(deps: HolderMediaDeps): HolderMedia & { c
         } else if (r.status === 404 && code === 'media-unavailable') res.status(404).json({ error: code, detail: 'This file is not on the machine that holds it.' });
         else if (r.status === 404) res.status(404).json({ error: 'not-found' });
         else if (r.status === 410) res.status(410).json({ error: 'media-unavailable', detail: 'This file was damaged on the machine that holds it.' });
-        else if (r.status === 503 && code === 'media-off') res.status(503).json({ error: 'media-off', detail: 'Files are turned off on the machine that holds this one.' });
+        else if (r.status === 503 && code === 'media-off') res.status(503).json(mediaOffBody('Files are turned off on the machine that holds this one.'));
         else if (r.status === 403 && code === 'operator-device-required') failed(res, 502, 'holder-outdated', 'The machine that holds this file needs updating before the phone can open it.');
         else failed(res, 502, 'holder-failed');
         return;

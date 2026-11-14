@@ -9,6 +9,7 @@
  * blocked filenames, never-editable enforcement.
  */
 
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import { Router, type Request, type Response } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -115,6 +116,12 @@ export const NEVER_SERVED_PREFIXES = [
   // path — it stays only as a legacy-layout regression pin.
   'state/judgment-provenance/',
   '.instar/state/judgment-provenance/',
+  // context-budget-layered-summaries §9.7: per-topic conversation layers and
+  // PostCompact summaries, and the transcript archive. Never served.
+  'state/context-layers/',
+  '.instar/state/context-layers/',
+  'state/context-archive/',
+  '.instar/state/context-archive/',
   // Chrome profiles and the Linux driver's cookie, bindings and page reads (normal-chrome-linux).
   // The trailing slash keeps state/playwright-profiles.json served.
   'state/playwright-profiles/',
@@ -921,7 +928,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
             size: contentSize,
             success: false,
           });
-          res.status(500).json({ error: 'Failed to save file' });
+          res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
         }
         return;
       }
@@ -932,7 +939,7 @@ export function createFileRoutes(options: { config: InstarConfig; liveConfig?: {
         size: contentSize,
         success: false,
       });
-      res.status(500).json({ error: 'Failed to save file' });
+      res.status(500).json(storageErrorResponse({ error: 'Failed to save file' }, options.config.stateDir));
     }
   });
 

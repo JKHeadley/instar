@@ -28,6 +28,17 @@ describe('exact serving-session usage-limit evidence', () => {
     expect(SessionManager.prototype.confirmSessionUsageLimit.call(manager as any, 'parent')).toBe('parent-id');
     expect(SessionManager.prototype.confirmSessionUsageLimit.call(manager as any, 'helper')).toBe(false);
   });
+  it('usageWallFromTranscript reads the same exact transcript and tells the wall from the throttle', () => {
+    const { home } = fixture([ownError]);
+    const manager = { listRunningSessions: () => [{ tmuxSession: 'parent', claudeSessionId: 'parent-id', cwd: '/project', framework: 'claude-code' }],
+      configHomeForSession: () => home, config: { projectDir: '/wrong-project' } };
+    expect(SessionManager.prototype.usageWallFromTranscript.call(manager as any, 'parent')).toContain('weekly limit');
+    expect(SessionManager.prototype.usageWallFromTranscript.call(manager as any, 'helper')).toBeNull();
+    const throttle = fixture([{ ...ownError, message: { content: [{ type: 'text', text: 'API Error: Server is temporarily limiting requests (not your usage limit) · Rate limited' }] } }]);
+    const m2 = { ...manager, configHomeForSession: () => throttle.home };
+    expect(SessionManager.prototype.usageWallFromTranscript.call(m2 as any, 'parent')).toBeNull();
+    expect(SessionManager.prototype.confirmSessionUsageLimit.call(m2 as any, 'parent')).toBe('parent-id');
+  });
   it.each([
     [{ ...ownError, isSidechain: true }],
     [{ ...ownError, agentId: 'builder' }],

@@ -28,6 +28,8 @@
  * OBSERVES reactive swaps (dwell clock-start, hop alerts, failed-row streaks).
  */
 
+import path from 'node:path';
+import { storageMachineName } from './storageMachineName.js';
 import type { SubscriptionAccount } from './SubscriptionPool.js';
 import { bindingUtilization, scoreAccount } from './QuotaAwareScheduler.js';
 import { isLocallyExecutable } from './SubscriptionPool.js';
@@ -703,6 +705,8 @@ export class SwapAntiThrashEngine {
     sourceWasUntagged?: boolean;
     dryRun?: boolean;
     sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
+    /** A busy deferral escalated at the wall-imminent threshold. */
+    wallEscalated?: boolean;
   }): void {
     const k = this.getKnobs();
     const row: SwapLedgerRow = {
@@ -721,6 +725,7 @@ export class SwapAntiThrashEngine {
       ...(args.defaultAccountChanged ? { defaultAccountChanged: true } : {}),
       ...(args.sourceWasUntagged ? { sourceWasUntagged: true } : {}),
       ...(args.sourceTrigger ? { sourceTrigger: args.sourceTrigger } : {}),
+      ...(args.wallEscalated ? { wallEscalated: true } : {}),
       ...(args.dryRun ? { dryRun: true } : {}),
     };
 
@@ -1361,7 +1366,7 @@ export class SwapAntiThrashEngine {
     this.raiseAttention(
       'swap-antithrash-ledger-lost',
       'Swap ledger unwritable — proactive optimization paused',
-      'The swap-decision ledger cannot be written (disk error?). Every anti-thrash brake depends on it, so proactive account swapping is PAUSED until writes recover (level-triggered — no restart needed). Reactive rescue is unaffected.',
+      `The swap-decision ledger on ${storageMachineName(path.dirname(path.dirname(this.ledger.path)))} cannot be written (disk error?). Every anti-thrash brake depends on it, so proactive account swapping is PAUSED until writes recover (level-triggered — no restart needed). Reactive rescue is unaffected.`,
     );
   }
 }

@@ -1,0 +1,58 @@
+{
+  "ts": "2026-11-06T04:53:03.686Z",
+  "slug": "failure-callout-process",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)",
+    "new capability: new route (router.<verb>() added",
+    "new capability: new config key added"
+  ],
+  "belowFloor": false,
+  "files": 24,
+  "loc": 1280,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "scripts/replay-failure-callout.mjs",
+      "src/commands/server.ts",
+      "src/core/CoherenceJournal.ts",
+      "src/core/FailureCalloutReplicatedStore.ts",
+      "src/core/JournalSyncApplier.ts",
+      "src/core/PostUpdateMigrator.ts",
+      "src/core/ReplicatedStoreReconcilerWiring.ts",
+      "src/core/WriteDomainRegistry.ts",
+      "src/core/correctionLearningMode.ts",
+      "src/core/failureCalloutAwareness.ts",
+      "src/core/types.ts",
+      "src/monitoring/CorrectionCaptureLoop.ts",
+      "src/monitoring/CorrectionClassReview.ts",
+      "src/monitoring/CorrectionLedger.ts",
+      "src/monitoring/FailureCallout.ts",
+      "src/monitoring/FailureInvestigationAdmission.ts",
+      "src/scaffold/templates.ts",
+      "src/scaffold/templates/jobs/instar/failure-callout-investigator.md",
+      "src/scaffold/templates/jobs/instar/scripts/failure-callout-admission.mjs",
+      "src/scheduler/JobGateReceipt.ts",
+      "src/scheduler/JobScheduler.ts",
+      "src/server/AgentServer.ts",
+      "src/server/routes.ts",
+      "src/testing/selfActionRegistry.ts"
+    ],
+    "addedLines": 1217,
+    "deletedLines": 63
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "The failure-callout-investigation registry uses the production decision and durable state: at most three pre-model admissions per occurrence across any pressure horizon and restart, with 30-minute/one-hour backoff and a hard pause. Only new occurrences or previously-unused recorded evidence explicitly rearm it. Real SQLite reconstruction tests and scheduler handoff tests prove no repeated session can reuse a consumed reservation."
+    }
+  },
+  "verdict": "blocked"
+}

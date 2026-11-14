@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-07T23:10:56.840Z",
+  "slug": "recommended-services-bitwarden-recipe",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 26,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/recommended/bitwardenVault.ts",
+      "src/recommended/catalog.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 20,
+    "deletedLines": 6
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "blocked"
+}

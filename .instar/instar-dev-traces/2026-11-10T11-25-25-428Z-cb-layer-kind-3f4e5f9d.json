@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "cb-layer-kind",
+  "sessionId": "985461a5-eba2-47c0-8b7e-995dad7e3ada",
+  "timestamp": "2026-11-10T11:25:25.428Z",
+  "artifactPath": "upgrades/side-effects/cb-layer-kind.md",
+  "artifactSha256": "ee578813cc02a1c93c5a216d03778c1db28f9950799b42683341ddf39720e314",
+  "specPath": "docs/specs/context-budget-layered-summaries.md",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/CoherenceJournal.ts",
+    "src/core/JournalSyncApplier.ts",
+    "src/core/ReplicatedStoreReconcilerWiring.ts",
+    "src/monitoring/contextLayerKind.ts",
+    "src/monitoring/foldCoordinatorBoot.ts",
+    "tests/e2e/context-layer-kind-alive.test.ts",
+    "tests/integration/context-layer-replication.test.ts",
+    "tests/unit/CoherenceJournal.test.ts",
+    "tests/unit/context-layer-kind.test.ts",
+    "upgrades/next/cb-layer-kind.md",
+    "upgrades/side-effects/cb-layer-kind.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Adds a replicated journal kind (a cross-machine wire contract) and wires the fold skew precondition; inert until Phase 1",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

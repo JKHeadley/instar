@@ -36,6 +36,7 @@ export function isComponentCategory(v: unknown): v is ComponentCategory {
 export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   // ── Sentinels (background watchers that make small judgment calls) ──
   InputDetector: 'sentinel',
+  ChiefOfStaffLoop: 'sentinel', // Chief of Staff check-in judge (docs/specs/chief-of-staff-topic.md §2.5)
   InputGuard: 'sentinel',
   SessionActivitySentinel: 'sentinel',
   StallTriageNurse: 'sentinel',
@@ -135,6 +136,7 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   GoalPriorityExtractor: 'reflector',    // extract verified operator priorities at intake
   AlignmentReviewer: 'reflector',        // compare active run focus with the durable priority digest
   PreCompactionFlush: 'reflector',       // extract durable facts before compaction
+  ContextLayerChunk: 'reflector',        // context-budget chunk / range summaries from an archived transcript span
   TreeSynthesis: 'reflector',            // synthesize knowledge fragments → answer
   LLMConflictResolver: 'reflector',      // resolve divergent multi-machine state
   openConversationBrief: 'reflector',    // generate an A2A conversation brief
@@ -144,6 +146,9 @@ export const COMPONENT_CATEGORY: Readonly<Record<string, ComponentCategory>> = {
   'completion-claim-verify': 'reflector', // observe-only completion evidence assessment
   'telegram-origin-recovery': 'reflector', // diagnose unknown acceptance; never authorizes retries
   'mentor-stage-b': 'reflector',         // classify mentor signals → forensic findings
+  'skillLearning.drafter': 'sentinel',   // skill-learning arbiter + drafter (capable tier; docs/specs/skill-learning-sentinel.md §3.3-3.5)
+  'skillLearning.reviewer': 'sentinel',  // skill-learning cross-family v1 reviewer (§3.5 table)
+  'skillLearning.classifier': 'reflector', // skill-learning sentinel: key operator requests + outcomeOfPrevRun (§3.1/§3.6)
 };
 
 /**

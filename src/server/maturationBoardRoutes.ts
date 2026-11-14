@@ -16,6 +16,7 @@
  * production path is covered by tests/e2e/maturation-board-alive.test.ts.
  */
 
+import { operatorError } from '../core/storageMachineName.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -50,6 +51,7 @@ import type { RouteContext } from './routes.js';
 import { readMeasurementDetail, validMeasurementRead } from './measurementDetailRead.js';
 import { COMMITMENT_INVENTORY_SOURCE, measurementOrigin, readMeasurementCoverage } from './measurementCoverageRead.js';
 import { validMeasurementCoverage, type MeasurementCoverage } from '../monitoring/MeasurementCoverage.js';
+import { readQualityGlance, type QualityGlance } from './measurementQualityGlance.js';
 
 export const DEFAULT_REVIEWS_DIR = 'docs/research/feature-maturation/reviews';
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
@@ -446,6 +448,21 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
     return true;
   };
   const responseCache = new Map<string, { at: number; body: unknown }>();
+  const QUALITY_CACHE_MS = 60_000;
+  let qualityCache: { at: number; body: QualityGlance } | null = null;
+  let qualityInFlight: Promise<QualityGlance> | null = null;
+  /** One whole-census read at a time; a fresh answer is reused for a minute. A failed read is not cached. */
+  async function cachedQualityGlance(now: number): Promise<QualityGlance> {
+    if (qualityCache && now - qualityCache.at < QUALITY_CACHE_MS) return qualityCache.body;
+    if (!qualityInFlight) {
+      const read = readQualityGlance(ctx, now);
+      qualityInFlight = read;
+      void read.then(() => undefined, () => undefined).then(() => { if (qualityInFlight === read) qualityInFlight = null; });
+    }
+    const body = await qualityInFlight;
+    qualityCache = { at: now, body };
+    return body;
+  }
   /** Last review assessment fetched from another machine (in-memory only; offline rule). */
   let lastRemoteReview: { machine: string; machineId: string; fetchedAt: number; reviews: ParsedReview[] } | null = null;
 
@@ -527,6 +544,14 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
         if(!validMeasurementRead(body,machine,subject,windowDays,now)) throw Error('unsupported-or-invalid');
         res.json(body);
       } catch { res.status(503).json({error:'measurement-origin-unavailable-or-unsupported'}); }
+      return;
+    }
+    if (part === 'quality') {
+      // Quality history at a glance (docs/specs/quality-history-glance.md): this
+      // machine's recorded series, same owner as part=measurement. Cached briefly and
+      // single-flight so repeated page loads never stack whole-census reads.
+      try { res.json(await cachedQualityGlance(now)); }
+      catch { res.status(503).json({ error: 'quality-history-unavailable' }); }
       return;
     }
     if (part === 'coverage') {
@@ -728,7 +753,7 @@ export function createMaturationBoardRoutes(ctx: BoardCtx, timings: MaturationBo
       res.json(body);
     } catch (err) { // @silent-fallback-ok — logged and answered as an explicit 500, never an empty board
       console.warn('[maturation-board] build failed:', err);
-      res.status(500).json({ error: 'maturation board build failed', detail: err instanceof Error ? err.message.slice(0, 200) : 'unknown' });
+      res.status(500).json({ error: 'maturation board build failed', detail: err instanceof Error ? operatorError(err, res.app?.locals?.stateDir).slice(0, 200) : 'unknown' });
     }
   });
 

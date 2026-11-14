@@ -614,6 +614,7 @@ describe('test-runner-bound meta-verification (spec §5)', () => {
     let probeMinsafe = '';
     let probePinned = '';
     let probeCli = '';
+    let probeOwn = '';
 
     beforeAll(async () => {
       const scenario = makeScenarioDir('nested-clamp');
@@ -622,7 +623,8 @@ describe('test-runner-bound meta-verification (spec §5)', () => {
       probeMinsafe = path.join(scenario, 'probes-minsafe');
       probePinned = path.join(scenario, 'probes-pinned');
       probeCli = path.join(scenario, 'probes-cli');
-      for (const d of [probeMinsafe, probePinned, probeCli]) fs.mkdirSync(d, { recursive: true });
+      probeOwn = path.join(scenario, 'probes-own-suite');
+      for (const d of [probeMinsafe, probePinned, probeCli, probeOwn]) fs.mkdirSync(d, { recursive: true });
       const nestedOut = path.join(scenario, 'nested-results.json');
       const plan = [
         {
@@ -642,6 +644,13 @@ describe('test-runner-bound meta-verification (spec §5)', () => {
           config: FIXTURE_MINSAFE_CONFIG,
           args: [...PROBES, '--maxWorkers=32'],
           env: { FIXTURE_PROBE_DIR: probeCli, FIXTURE_PROBE_EXPECT: '5' },
+        },
+        {
+          // Local Verify (2026-11-12): the slot holder declares this child as its own suite.
+          key: 'ownSuite',
+          config: FIXTURE_MINSAFE_CONFIG,
+          args: PROBES,
+          env: { FIXTURE_PROBE_DIR: probeOwn, FIXTURE_PROBE_EXPECT: '5', INSTAR_HOST_TEST_OWN_SUITE_HOLDER: '$HOLDER_PID' },
         },
       ];
 
@@ -685,6 +694,22 @@ describe('test-runner-bound meta-verification (spec §5)', () => {
         overlap,
         `nested child's ACTUAL concurrent workers = ${overlap} > 4 — the unconditional nested clamp is not real (§2.5)`,
       ).toBeLessThanOrEqual(4);
+    });
+
+    it('(d2) own suite: a child the holder declared as its own suite is NOT clamped, and raises no pool-override warning', () => {
+      const child = results['ownSuite'];
+      expect(child, 'no result for the own-suite child').toBeTruthy();
+      expect(child.code, `own-suite child stderr tail:\n${child.stderrTail}`).toBe(0);
+      expect(ledger.some((e) => e.kind === 'own-suite-unclamped' && e.pid === child.pid), 'no own-suite-unclamped ledger event').toBe(true);
+      expect(ledger.some((e) => (e.kind === 'clamp' || e.kind === 'would-clamp') && e.pid === child.pid)).toBe(false);
+      const skip = ledger.find((e) => e.kind === 'nested-skip' && e.pid === child.pid);
+      expect(skip, 'no nested-skip ledger event for the own-suite child').toBeTruthy();
+      expect(skip!.poolOverride, 'own-suite child raised the pool-override warning').toBeUndefined();
+      expect(skip!.clampStash).toBe('own-suite');
+      expect(child.stderrTail).not.toMatch(/novel pool flag/);
+      const intervals = readIntervals(probeOwn, 'start-', 'end-');
+      expect(intervals.length).toBe(5);
+      expect(maxOverlap(intervals), `own-suite child still capped at 4 workers; windows ${JSON.stringify(intervals.map((i) => [i.name, i.end - i.start]))}; stderr tail: ${child.stderrTail}`).toBeGreaterThan(4);
     });
 
     it('(d) SHIP GATE [KNOWN-FAILING until clampConfigPool clamps MIN bounds]: nested clamp on the PINNED config shape runs green and measures ≤ 4', () => {

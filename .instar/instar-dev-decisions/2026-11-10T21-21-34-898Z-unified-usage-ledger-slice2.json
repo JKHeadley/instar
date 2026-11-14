@@ -1,0 +1,28 @@
+{
+  "ts": "2026-11-10T21:21:34.898Z",
+  "slug": "unified-usage-ledger-slice2",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 7,
+  "loc": 630,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/CircuitBreakingIntelligenceProvider.ts",
+      "src/core/ClaudeCliIntelligenceProvider.ts",
+      "src/core/CodexCliIntelligenceProvider.ts",
+      "src/core/types.ts",
+      "src/monitoring/UsageLedger.ts",
+      "src/providers/adapters/openai-codex/transport/codexUsageParser.ts",
+      "src/server/AgentServer.ts"
+    ],
+    "addedLines": 611,
+    "deletedLines": 19
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

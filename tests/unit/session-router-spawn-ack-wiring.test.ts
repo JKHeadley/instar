@@ -12,7 +12,7 @@ import path from 'node:path';
 const src = fs.readFileSync(path.join(process.cwd(), 'src/commands/server.ts'), 'utf-8');
 
 describe('SessionRouter spawn hop — server.ts wiring', () => {
-  const at = src.indexOf('spawnOnMachine: async (machineId, msg, ownershipEpoch) => {');
+  const at = src.indexOf('spawnOnMachine: async (machineId, msg, ownershipEpoch, row) => {');
 
   it('sends the CAS-landed epoch and the sender frame, and returns the receiver ACK', () => {
     expect(at).toBeGreaterThan(-1);

@@ -106,7 +106,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     expect(fs.existsSync(path.join(path.dirname(DIST_ENTRY), 'runFailedFileDiagnosisMain.js'))).toBe(true);
     const r = await request(serve(ctx(stateDir, built.service))).get('/local-verify');
     expect(r.status).toBe(200);
-    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0 });
+    expect(r.body).toMatchObject({ queue: [], inFlight: null, blocked: false, verifierHold: null, records: 0, waiting: [] });
     expect(r.body.preflight).toMatchObject({ mode: 'off', replayStoreReady: true, replays: [] });
     expect(r.body.diagnosis).toMatchObject({ mode: 'off', storeReady: true, pending: 0, completed: 0 });
     built.service!.shutdown();
@@ -423,6 +423,7 @@ describe('local-verify lifecycle (production wiring)', () => {
     const gh: GhRunner = async (args) => {
       if (args.includes('POST')) { posted.push(args); return { ok: true, stdout: '{}' }; }
       if (args[0] === 'pr') return { ok: true, stdout: '[]' };
+      if (args[0] === 'api' && args[1] === 'graphql') return { ok: true, stdout: JSON.stringify([{ data: { repository: { pullRequests: { nodes: [] } } } }]) };
       // The main head read fails here on purpose: a readable head would start a REAL verify child.
       return { ok: false, status: 404, stderr: 'HTTP 404' }; // settings unreadable ⇒ check treated as required, floor actions
     };

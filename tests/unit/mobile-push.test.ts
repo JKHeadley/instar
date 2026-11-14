@@ -49,6 +49,20 @@ describe('MobilePushService', () => {
     expect(agg.aps.alert.body).toBe('2 more things need you');
   });
 
+  it('a pairing notice says what is waiting and tells the app to open the approval; no device name ever', () => {
+    // Operator 2026-11-09: "the description detail and the notifications is terrible".
+    const b = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'browser-approval', count: 1 }) as any;
+    expect(b.aps.alert).toEqual({ title: 'Echo', body: 'A new browser wants to use your conversations. Tap to approve with Face ID.' });
+    expect(b.instar).toMatchObject({ kind: 'notice', subject: 'browser-approval' });
+    const p = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'phone-approval', count: 1 }) as any;
+    expect(p.aps.alert.body).toBe('A new phone wants to pair. Tap to approve with Face ID.');
+    const plain = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', count: 1 }) as any;
+    expect(plain.aps.alert.body).toBe('Something needs you');
+    expect(plain.instar.subject).toBeUndefined();
+    const bogus = buildPayload('Echo', 'echo', 'd1', { kind: 'notice', subject: 'x' as never, count: 1 }) as any;
+    expect(bogus.aps.alert.body).toBe('Something needs you');
+  });
+
   it('JWT is ES256 with kid and iss, and verifies', () => {
     const jwt = signApnsJwt({ keyPem: KEY, keyId: 'KEY1', teamId: 'TEAM' }, 1000);
     const [h, c, sig] = jwt.split('.');
@@ -229,6 +243,48 @@ describe('MobilePushService — app conversation replies', () => {
     await mk(false).receive({ kind: 'item', itemId: 'ATT-1', dedupeKey: 'item:ATT-1', sourceMachine: 'm1' }, false);
     expect(c.sent).toHaveLength(1);
     expect(asked).toHaveLength(1);
+  });
+
+  it('team access: an attention notice skips a phone that does not receive notices, and a reply still reaches it', async () => {
+    const c = setup();
+    const mk = (receives: boolean) => new MobilePushService({
+      stateDir: c.dir, registry: c.reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+      enabled: () => true, credentials: () => ({ keyPem: KEY, keyId: 'KEY1', teamId: 'T' }),
+      transport: async (_e, _t, headers, body) => { c.sent.push({ headers, body: JSON.parse(body) }); return { status: 200 }; },
+      now: () => c.clock.t, mayNotify: () => true, receivesNotices: () => receives,
+    });
+    await mk(false).receive({ kind: 'item', itemId: 'ATT-9', dedupeKey: 'item:ATT-9', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(0);
+    await mk(false).receive({ kind: 'reply', conversationKey: KEY_A, messageId: 'm-y', dedupeKey: 'app-reply:m-y', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(1);
+    c.clock.t += 3_600_000;
+    await mk(true).receive({ kind: 'item', itemId: 'ATT-10', dedupeKey: 'item:ATT-10', sourceMachine: 'm1' }, false);
+    expect(c.sent).toHaveLength(2);
+  });
+
+  it('team access: a held aggregate is dropped for a phone whose person has gone, and sent otherwise', async () => {
+    const c = setup();
+    const mk = (counts: boolean) => new MobilePushService({
+      stateDir: c.dir, registry: c.reg, agentId: 'echo', agentName: 'Echo', machineId: 'm1',
+      enabled: () => true, credentials: () => ({ keyPem: KEY, keyId: 'KEY1', teamId: 'T' }),
+      transport: async (_e, _t, headers, body) => { c.sent.push({ headers, body: JSON.parse(body) }); return { status: 200 }; },
+      now: () => c.clock.t, phoneStillCounts: () => counts,
+    });
+    const hold = async (svc: MobilePushService, n: number) => {
+      await svc.receive(trig(n), false);
+      await svc.receive(trig(n + 1), false);
+      c.clock.t += 3_600_000;
+    };
+    const gone = mk(false);
+    await hold(gone, 20);
+    const before = c.sent.length;
+    await gone.tick();
+    expect(c.sent.length).toBe(before);
+    const here = mk(true);
+    await hold(here, 30);
+    const mid = c.sent.length;
+    await here.tick();
+    expect(c.sent.length).toBeGreaterThan(mid);
   });
 
   it('onAppReply sends one push per reply, fans out, and a repeat of the same message is deduped', async () => {

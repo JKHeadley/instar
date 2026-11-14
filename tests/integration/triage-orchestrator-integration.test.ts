@@ -96,7 +96,7 @@ describe('TriageOrchestrator Integration', () => {
       expect(result.followUpScheduled).toBe(false);
 
       // Verify actions taken
-      expect(deps.sendToTopic).toHaveBeenCalledWith(100, expect.stringContaining('🔍'));
+      expect(deps.sendToTopic).not.toHaveBeenCalled();
       expect(deps.respawnSession).toHaveBeenCalledWith('my-session', 100, { silent: true });
 
       // Verify events

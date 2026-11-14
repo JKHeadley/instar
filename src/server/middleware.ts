@@ -2,6 +2,7 @@
  * Express middleware — JSON parsing, CORS, auth, error handling.
  */
 
+import { isStorageFailure, storageMachineName, operatorError } from '../core/storageMachineName.js';
 import { memoryReplyChannel, memorySessionAllows } from './memorySessionGuard.js';
 import { featureEvidence } from '../monitoring/FeatureEvidenceLog.js';
 import type { SessionTokenRecord } from '../users/MemoryPrivacy.js';
@@ -270,6 +271,13 @@ export function authMiddleware(
     // no token. Reading shows only public catalog text, and a yes needs the single-use token and
     // the operator's PIN, both checked in the handler. Exact path shape and methods only.
     if ((req.method === 'GET' || req.method === 'POST') && /^\/recommended-services\/[a-z][a-z0-9-]{0,63}\/confirm$/.test(req.path)) {
+      next();
+      return;
+    }
+
+    // The same page takes the email proof's code (docs/specs/backup-email-sending.md): the PIN is the auth, checked
+    // in the handler with the unlock route's limits, plus the code's own five-attempt cap. Exact path and method.
+    if (req.method === 'POST' && req.path === '/recommended-services/email/code') {
       next();
       return;
     }
@@ -805,6 +813,10 @@ export function buildRequestTimeoutOverrides(opts?: {
     // gate and must not 408 mid-add either.
     '/subscription-pool/follow-me/enroll': followMe.enrollStartRouteMs,
     '/subscription-pool/matrix/start-cell': followMe.startCellRouteMs,
+    // The owner phone's Face ID entry to the same start-cell core (account-sign-in-face-id).
+    '/mobile/accounts/sign-in/start': followMe.startCellRouteMs,
+    // Adding an account drives a local enroll start (account-add-face-id).
+    '/mobile/accounts/add': followMe.enrollStartRouteMs,
     '/subscription-pool/follow-me/submit-code': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
     '/subscription-pool/follow-me/cancel': FOLLOWME_SIMPLE_RELAY_ROUTE_MS,
     // Threadline long waits (docs/specs/threadline-mcp-local-http.md "Bounds",
@@ -882,10 +894,25 @@ function verifyViewSignature(viewPath: string, sig: string, authToken: string): 
  * Security headers for dashboard paths — prevents clickjacking, MIME-sniffing,
  * and restricts resource loading to trusted sources.
  */
+/**
+ * The policy every /view response carries (dashboard-conversations-browser-device §4.12): an opaque
+ * origin with no script, no forms and no same-origin access, so agent-written markup (`marked` passes
+ * raw HTML through) can never reach the console's stored browser key, BroadcastChannel or tokens.
+ * Popups and downloads keep links and file downloads working.
+ */
+export const VIEW_SANDBOX_CSP = 'sandbox allow-popups allow-popups-to-escape-sandbox allow-downloads';
+
 export function dashboardSecurityHeaders(req: Request, res: Response, next: NextFunction): void {
   // Express routes match case-insensitively (`/Dashboard/legacy` reaches the legacy page), so the
   // headers must too (dashboard-console-default-and-pair-page round 2).
   const p = req.path.toLowerCase();
+  // Every response under /view — the PIN page, the rendered view, the ?sig= tunnel link, a view
+  // relayed from the machine that holds it, and every refusal — is sandboxed by the machine that
+  // answers the browser, whatever the holder sent (§4.12). Set before any route runs.
+  if (p === '/view' || p.startsWith('/view/')) {
+    res.header('Content-Security-Policy', VIEW_SANDBOX_CSP);
+    res.header('X-Content-Type-Options', 'nosniff');
+  }
   if (p === '/dashboard' || p.startsWith('/dashboard/')) {
     res.header('X-Frame-Options', 'DENY');
     res.header('X-Content-Type-Options', 'nosniff');
@@ -895,7 +922,10 @@ export function dashboardSecurityHeaders(req: Request, res: Response, next: Next
     res.header('Content-Security-Policy',
       p === '/dashboard/desktop.html' || p === '/dashboard/desktop.js'
         ? `default-src 'none'; script-src 'self'; style-src 'self'; img-src blob: 'self'; ${desktopConnect}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
-        : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
+        : p.startsWith('/dashboard/console/')
+          // The console shows media it downloaded itself as blob: URLs (§4.11); data: stays blocked.
+          ? "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'; img-src 'self' blob:; media-src 'self' blob:"
+          : "default-src 'self'; script-src 'self' 'unsafe-inline' cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' cdn.jsdelivr.net; connect-src 'self'");
     res.header('Referrer-Policy', 'no-referrer');
   }
   next();
@@ -944,7 +974,7 @@ export const DASHBOARD_STATIC_OPTIONS = {
 } as const;
 
 export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction): void {
-  const message = err instanceof Error ? err.message : String(err);
+  const message = operatorError(err, res.app?.locals?.stateDir);
   const stack = err instanceof Error ? err.stack : undefined;
   if (responseAlreadyCommitted(res)) {
     console.warn(
@@ -956,7 +986,7 @@ export function errorHandler(err: unknown, req: Request, res: Response, _next: N
   console.error(`[server] Error: ${message}` + (stack ? `\n${stack}` : ''));
   // Never leak internal error details to clients
   res.status(500).json({
-    error: 'Internal server error',
+    error: isStorageFailure(err) ? `Storage error on ${storageMachineName(req.app?.locals?.stateDir)}. Please check available space and storage permissions.` : 'Internal server error',
     timestamp: new Date().toISOString(),
   });
 }

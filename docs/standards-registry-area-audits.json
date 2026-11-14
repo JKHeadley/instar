@@ -2,10 +2,10 @@
   "schemaVersion": 2,
   "areas": {
     "Building": {
-      "lastAuditedAt": "2026-11-06T10:30:05.000Z",
-      "auditRef": "docs/audits/amendment6-owned-custody-building-2026-11-06.json",
-      "auditSha256": "8bd314784ae84d883a2f71abcd4b2ba31091aa440d856e3fdafde927c4f3d688",
-      "areaSha256": "7c0d39dc287468565d87fef193034b7f1f6f5abadb8dff5ad25a74923df2a50a",
+      "lastAuditedAt": "2026-11-14T00:43:20.000Z",
+      "auditRef": "docs/audits/standards-backreference-completion-building-family-2026-11-13.json",
+      "auditSha256": "aaf7aa6ba2a5500c01c2f5b6467cf858026a0331c6399d699a2da9829d2059aa",
+      "areaSha256": "64edd8878c3d67257177b1850c7abd21dd94676d18ab3e096de0e1dc21045723",
       "refResolutionFloor": {
         "enforced": 34,
         "total": 40

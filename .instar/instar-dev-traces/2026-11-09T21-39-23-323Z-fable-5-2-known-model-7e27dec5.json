@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "fable-5-2-known-model",
+  "sessionId": "6ee7a372-3ad7-4f0a-8c4a-49e4374f03ff",
+  "timestamp": "2026-11-09T21:39:23.323Z",
+  "artifactPath": "upgrades/side-effects/fable-5-2-known-model.md",
+  "artifactSha256": "15b5bd75aa9c81e836539a4fae11b480a8d0323fdd8d3484b876ddf6f4bd6a81",
+  "coveredFiles": [
+    "docs/specs/fable-5-2-known-model.eli16.md",
+    "scripts/model-registry-freshness.manifest.json",
+    "src/core/ModelTierEscalation.ts",
+    "upgrades/next/fable-5-2-known-model.md",
+    "upgrades/side-effects/fable-5-2-known-model.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One allowlist entry + one recognized-not-promoted manifest row for a live-verified model id; nothing is repointed; a revert fully undoes it.",
+  "eli16Path": "docs/specs/fable-5-2-known-model.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/fable-5-2-known-model.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

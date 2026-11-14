@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-06T18:54:17.735Z",
+  "slug": "conversation-public-metadata-pages",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 81,
+  "scope": {
+    "basis": "staged-in-scope-additions-plus-deletions",
+    "files": [
+      "src/core/GraphPublicMetadataPages.ts"
+    ],
+    "addedLines": 81,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

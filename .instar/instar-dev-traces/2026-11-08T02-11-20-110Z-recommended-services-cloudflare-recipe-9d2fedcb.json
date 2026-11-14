@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "slug": "recommended-services-cloudflare-recipe",
+  "sessionId": "71bb647f-1ddd-492f-b70b-b44e859aec50",
+  "timestamp": "2026-11-08T02:11:20.110Z",
+  "artifactPath": "upgrades/side-effects/recommended-services-cloudflare-recipe.md",
+  "artifactSha256": "4d0a9e2ba6d6a0a83e48c9baa0b31e5dfa00f1e6089a205e26115d073c7fa983",
+  "specPath": "docs/specs/recommended-services.md",
+  "coveredFiles": [
+    "docs/specs/recommended-services-cloudflare-recipe.eli16.md",
+    "src/recommended/cloudflareDomain.ts",
+    "src/recommended/recipes.ts",
+    "src/recommended/setupState.ts",
+    "src/server/recommendedServiceRoutes.ts",
+    "src/server/routes.ts",
+    "tests/e2e/recommended-services-alive.test.ts",
+    "tests/integration/recommended-services-cloudflare.test.ts",
+    "tests/unit/recommended-services-cloudflare-recipe.test.ts",
+    "tests/unit/recommended-services-wiring.test.ts",
+    "upgrades/next/recommended-services-cloudflare-recipe.md",
+    "upgrades/side-effects/recommended-services-cloudflare-recipe.md"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "An API token in the vault, DNS and tunnel objects created in a Cloudflare account, this agent's tunnel block rewritten, a planned restart, and a possible purchase gated on the person's yes; dark until its live proof; second-pass concerns resolved.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

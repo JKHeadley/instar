@@ -112,7 +112,20 @@ export interface SwapContinuityKnobs {
   deferralCeilingMs: number;
   reactiveGraceMs: number;
   recheckMs: number;
+  /**
+   * Busy-deferral escalation threshold (measured binding-window %, default
+   * 95). When a session's busy episode has already been deferred for a full
+   * `deferralCeilingMs` and its source account is at or over this, the
+   * proactive intent is no longer dropped: it executes through the
+   * reactive-swap class (bounded grace, then the swap proceeds with the
+   * mitigation payload) — the same treatment the session gets at the wall
+   * itself, one step before the wall. Above 100 disables escalation.
+   */
+  wallEscalationPct?: number;
 }
+
+/** Default for SwapContinuityKnobs.wallEscalationPct. */
+export const DEFAULT_WALL_ESCALATION_PCT = 95;
 
 export interface ProactiveSwapMonitorConfig {
   /** Current pool accounts (e.g. () => pool.list()). */
@@ -131,7 +144,9 @@ export interface ProactiveSwapMonitorConfig {
     exhaustedAccountId: string;
     nowMs: number;
     targetAccountId?: string;
-    callerClass?: 'proactive-swap';
+    /** 'reactive-swap' only for a wall-imminent escalation of a busy
+     *  deferral (the explicit target still runs proactive revalidation). */
+    callerClass?: 'proactive-swap' | 'reactive-swap';
     sourceWasUntagged?: boolean;
     sourceTrigger?: 'quota-pressure' | 'login-loss' | 'degradation';
   }) => Promise<ProactiveSwapOutcome>;
@@ -236,6 +251,21 @@ interface DeferralEntry {
   to: string;
 }
 
+/**
+ * A session's busy episode on one source account. Unlike a DeferralEntry it
+ * SURVIVES the ceiling drop: a session whose turn reads busy for hours (a
+ * long-running background shell keeps the turn leg "working") used to cycle
+ * defer → 30 min → drop → re-intent backoff → defer at age 0, all night, and
+ * walled without ever moving (2026-11-10, fb-f8b946ae-597). The episode keeps
+ * the accumulated age so the escalation can see it.
+ */
+interface BusyEpisode {
+  from: string;
+  startMs: number;
+  /** Escalations already attempted in this episode (bounded to one). */
+  escalations: number;
+}
+
 export class ProactiveSwapMonitor {
   private readonly cfg: ProactiveSwapMonitorConfig;
   private readonly thresholdPct: number;
@@ -249,6 +279,8 @@ export class ProactiveSwapMonitor {
   private readonly lastSwapAt = new Map<string, number>();
   /** Pending deferred proactive intents (Piece 2 — monitor-owned lifecycle). */
   private readonly deferrals = new Map<string, DeferralEntry>();
+  /** Busy episodes per session (accumulate across ceiling drops). */
+  private readonly busyEpisodes = new Map<string, BusyEpisode>();
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
   private lastResult: ProactiveSwapTickResult | null = null;
@@ -532,6 +564,17 @@ export class ProactiveSwapMonitor {
       }
     }
 
+    // Busy-episode sweep: an episode ends when its session is gone, moved to
+    // another account, or its source pressure measurably subsided. Leaving
+    // candidacy alone (a stale reading flickering eligibility) does NOT end
+    // it — that flicker is exactly how the age used to reset.
+    for (const [session, ep] of [...this.busyEpisodes]) {
+      const currentAcct = currentAccountBySession.get(session);
+      const acct = byId.get(ep.from);
+      const subsided = acct?.lastQuota != null && bindingUtilization(acct.lastQuota) < this.thresholdPct;
+      if (currentAcct === undefined || currentAcct !== ep.from || subsided) this.busyEpisodes.delete(session);
+    }
+
     const targetsUsedThisTick = new Set<string>();
     const swapped: string[] = [];
     let considered = 0;
@@ -557,6 +600,10 @@ export class ProactiveSwapMonitor {
       });
       if (verdict.action !== 'execute') continue; // refusal rows already written by the engine
 
+      // Set when a busy deferral escalates (wall imminent): the swap runs
+      // through the reactive-swap class instead of being dropped.
+      let wallEscalation: { episodeAgeMs: number; sourcePct: number; episode: BusyEpisode } | null = null;
+
       // Piece 2: the work gate (proactive arm — defer, ceiling-drop).
       if (this.cfg.workGate && continuity?.enabled) {
         let probe: WorkProbeResult | null = null;
@@ -569,6 +616,9 @@ export class ProactiveSwapMonitor {
           probe = null;
         }
         const busy = probe ? probe.busy : true;
+        // An affirmatively idle probe ends the busy episode: the age that
+        // escalation reads is busy-at-every-probe time, never idle time.
+        if (!busy) this.busyEpisodes.delete(c.sessionName);
         if (busy) {
           const reason = probe?.reason ?? 'busy-indeterminate';
           const inFlight = { turn: probe?.turnInFlight ?? false, subagents: probe?.subagents?.length ?? 0 };
@@ -600,7 +650,36 @@ export class ProactiveSwapMonitor {
             d.to = verdict.targetAccountId; // ceiling clock carries across target re-selection (§4.2)
             this.deferrals.set(c.sessionName, d);
             const age = nowMs - d.firstAtMs;
-            if (age >= continuity.deferralCeilingMs) {
+            let ep = this.busyEpisodes.get(c.sessionName);
+            if (!ep || ep.from !== c.accountId) {
+              // A brand-new deferral starts the episode at its own first
+              // sighting; an older deferral that outlived an idle probe (which
+              // ended the previous episode) starts a fresh one now.
+              ep = { from: c.accountId, startMs: d.count === 1 ? d.firstAtMs : nowMs, escalations: 0 };
+              this.busyEpisodes.set(c.sessionName, ep);
+            }
+            const episodeAgeMs = nowMs - ep.startMs;
+            const sourcePct = bindingUtilization(byId.get(c.accountId)?.lastQuota);
+            const escalationPct = continuity.wallEscalationPct ?? DEFAULT_WALL_ESCALATION_PCT;
+            if (
+              c.sourceTrigger === 'quota-pressure' &&
+              ep.escalations === 0 &&
+              episodeAgeMs >= continuity.deferralCeilingMs &&
+              sourcePct >= escalationPct
+            ) {
+              // Bounded escalation: the session has been busy for a full
+              // ceiling and its account is about to wall. Dropping again only
+              // hands it to the wall; instead execute now through the
+              // reactive-swap class — bounded grace for the work to land,
+              // then the swap proceeds with the mitigation payload. Once per
+              // episode (counted when the swap is attempted): a failed
+              // escalation falls back to the drop path.
+              wallEscalation = { episodeAgeMs, sourcePct, episode: ep };
+              this.logger.log(
+                `[ProactiveSwap] ${c.sessionName}: busy for ${Math.round(episodeAgeMs / 60_000)} min on ${c.accountId} ` +
+                  `at ${sourcePct}% (≥${escalationPct}%) — escalating the deferred swap (bounded grace, then mitigations)`,
+              );
+            } else if (age >= continuity.deferralCeilingMs) {
               // At the ceiling: the wall wins — DROP the intent; the session
               // keeps working and the reactive floor absorbs a genuine wall.
               engine.recordDropped({
@@ -630,7 +709,7 @@ export class ProactiveSwapMonitor {
                 rowKind: 'first',
               });
             }
-            continue;
+            if (!wallEscalation) continue;
           }
         }
       }
@@ -675,12 +754,13 @@ export class ProactiveSwapMonitor {
         if (swapAdmission.outcome !== 'allow') continue;
         const swapSink = consumeAdmissionToken(swapAdmission.token, 'proactive-swap-monitor', { targetKey: swapTarget.key });
         if (!swapSink.proceed) continue;
+        if (wallEscalation) wallEscalation.episode.escalations += 1;
         const outcome = await this.cfg.swap({
           sessionName: c.sessionName,
           exhaustedAccountId: c.accountId,
           nowMs,
           targetAccountId: verdict.targetAccountId,
-          callerClass: 'proactive-swap',
+          callerClass: wallEscalation ? 'reactive-swap' : 'proactive-swap',
           ...(c.untagged ? { sourceWasUntagged: true } : {}),
           sourceTrigger: c.sourceTrigger,
         });
@@ -694,10 +774,13 @@ export class ProactiveSwapMonitor {
             toUtilPct: verdict.toUtilPct,
             ...(c.untagged ? { sourceWasUntagged: true } : {}),
             sourceTrigger: c.sourceTrigger,
-            ...(deferral ? { deferralAgeMs: nowMs - deferral.firstAtMs, deferCount: deferral.count } : {}),
+            ...(wallEscalation
+              ? { deferralAgeMs: wallEscalation.episodeAgeMs, deferCount: this.deferrals.get(c.sessionName)?.count ?? 1, wallEscalated: true }
+              : deferral ? { deferralAgeMs: nowMs - deferral.firstAtMs, deferCount: deferral.count } : {}),
           });
           this.lastSwapAt.set(c.sessionName, nowMs);
           this.deferrals.delete(c.sessionName);
+          this.busyEpisodes.delete(c.sessionName);
           targetsUsedThisTick.add(verdict.targetAccountId);
           swapped.push(c.sessionName);
           this.logger.log(

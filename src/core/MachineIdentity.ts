@@ -17,7 +17,8 @@ import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT } from './keyMaterialPaths.js';
 import type { MachineIdentity, MachineRegistry, MachineRegistryEntry, MachineRole, MachineCapability, MachineHardware } from './types.js';
 import { SafeFsExecutor } from './SafeFsExecutor.js';
-import { assignNickname, isValidNickname } from './NicknameAssigner.js';
+import { assignNickname, deriveBaseNickname, isValidNickname } from './NicknameAssigner.js';
+import { detectFriendlyMachineName } from './friendlyMachineName.js';
 import { IdentityStore, type IdentityMutationActor, type IdentityMutationPath } from './IdentityStore.js';
 
 // ── Constants ────────────────────────────────────────────────────────
@@ -151,9 +152,12 @@ export function isRegistryEntryActive(entry: { status?: string; revokedAt?: stri
 
 export class MachineIdentityManager {
   private instarDir: string;
+  /** This machine's own friendly name (macOS ComputerName / Linux pretty hostname). Injectable for tests. */
+  private detectFriendlyName: () => string | null;
 
-  constructor(instarDir: string) {
+  constructor(instarDir: string, options: { detectFriendlyName?: () => string | null } = {}) {
     this.instarDir = instarDir;
+    this.detectFriendlyName = options.detectFriendlyName ?? (() => detectFriendlyMachineName());
   }
 
   /** The state dir this manager is rooted at (for co-located stores, e.g. pairing sessions). */
@@ -563,14 +567,21 @@ export class MachineIdentityManager {
       .filter(([id]) => id !== identity.machineId)
       .map(([, e]) => e.nickname)
       .filter((n): n is string => typeof n === 'string' && n.length > 0);
-    const nickname =
-      existing?.nickname ??
-      assignNickname({ identityName: identity.name, platform: identity.platform, existingNicknames });
+    // This machine registering itself uses the name its owner already gave the computer;
+    // another machine (a peer at pairing) is named from its hostname until it boots and upgrades it.
+    const self = this.isLocalMachine(identity.machineId);
+    const keep = existing?.nickname && isValidNickname(existing.nickname) ? existing.nickname : null;
+    const friendly = !keep && self ? this.detectFriendlyName() : null;
+    const nickname = keep ?? assignNickname({
+      identityName: friendly ?? identity.name, platform: identity.platform, existingNicknames, keepCase: !!friendly,
+    });
+    const nicknameSource = keep ? existing?.nicknameSource : self ? 'auto-self' as const : 'auto-derived' as const;
 
     registry.machines[identity.machineId] = {
       ...(existing ?? {}),
       name: identity.name,
       nickname,
+      ...(nicknameSource ? { nicknameSource } : {}),
       status: 'active',
       role,
       pairedAt: existing?.pairedAt ?? now,
@@ -606,8 +617,67 @@ export class MachineIdentityManager {
     }
 
     entry.nickname = trimmed;
+    entry.nicknameSource = 'user';
     entry.lastSeen = new Date().toISOString();
     this.saveRegistry(registry);
+  }
+
+  /** True when `machineId` is this machine's own identity. Never throws. */
+  private isLocalMachine(machineId: string): boolean {
+    try { return this.hasIdentity() && this.loadIdentity().machineId === machineId; }
+    catch { /* @silent-fallback-ok — an unreadable identity is treated as a peer (hostname naming) */ return false; }
+  }
+
+  /**
+   * Make sure every machine in the registry carries a human name, so no surface ever has to
+   * print a raw `m_…` id. Idempotent; never replaces a name a person chose.
+   *   - This machine: a missing or unusable nickname, or one another machine derived from our
+   *     hostname (`auto-derived`), becomes this computer's own friendly name. Bumps `lastSeen`
+   *     so the registry merge carries it to peers.
+   *   - Peers without a nickname: named from their hostname (`auto-derived`), without touching
+   *     their `lastSeen`, so the peer's own (fresher) entry still wins the merge.
+   * Returns the machine ids it named.
+   */
+  ensureNicknames(selfMachineId?: string | null): string[] {
+    const registry = this.loadRegistry();
+    let self: string | null = selfMachineId ?? null;
+    if (!self && this.hasIdentity()) {
+      try { self = this.loadIdentity().machineId; }
+      catch { /* @silent-fallback-ok — an unreadable identity names no machine as "self": peers are still named from their hostnames, and this machine is named on the next boot that can read it */ self = null; }
+    }
+    const named: string[] = [];
+    const taken = (exceptId: string): string[] => Object.entries(registry.machines)
+      .filter(([id]) => id !== exceptId).map(([, e]) => e.nickname)
+      .filter((n): n is string => typeof n === 'string' && n.trim().length > 0);
+    const usable = (n: string | undefined): boolean => typeof n === 'string' && isValidNickname(n) && !/^m_[0-9a-f]{6,}$/i.test(n.trim())
+      && !/^Machine [0-9a-f]{6,}$/i.test(n.trim());
+    for (const [id, entry] of Object.entries(registry.machines)) {
+      if (entry.status === 'revoked' || entry.revokedAt) continue;
+      const isSelf = id === self;
+      const has = usable(entry.nickname);
+      if (isSelf) {
+        // A legacy nickname (no recorded source) that is exactly the automatic derivation of the
+        // identity name was assigned by code, not typed by a person: e.g. "Groky" on an agent whose
+        // init named the machine after the agent. Treat it as derived so it upgrades too.
+        const legacyAuto = has && !entry.nicknameSource && entry.nickname!.trim() === deriveBaseNickname(entry.name, entry.hardware?.platform);
+        if (has && entry.nicknameSource !== 'auto-derived' && !legacyAuto) continue;
+        const friendly = this.detectFriendlyName();
+        const next = friendly
+          ? assignNickname({ identityName: friendly, platform: entry.hardware?.platform, existingNicknames: taken(id), keepCase: true })
+          : has ? null : assignNickname({ identityName: entry.name, platform: entry.hardware?.platform, existingNicknames: taken(id) });
+        if (!next || (has && next === entry.nickname && entry.nicknameSource === 'auto-self')) continue;
+        entry.nickname = next;
+        entry.nicknameSource = 'auto-self';
+        entry.lastSeen = new Date().toISOString();
+        named.push(id);
+      } else if (!has) {
+        entry.nickname = assignNickname({ identityName: entry.name, platform: entry.hardware?.platform, existingNicknames: taken(id) });
+        entry.nicknameSource = 'auto-derived';
+        named.push(id);
+      }
+    }
+    if (named.length) this.saveRegistry(registry);
+    return named;
   }
 
   /**
@@ -930,6 +1000,10 @@ const GITIGNORE_ENTRIES = [
   '# Hook telemetry (per-session, machine-local — never commit)',
   '.instar/hook-events/',
   '.instar/subagent-tracking/',
+  '# Skill-learning derived cache + legacy flat skill telemetry (machine-local — never commit)',
+  '.instar/state/skill-learning.db*',
+  '.instar/skill-telemetry.jsonl*',
+  '.instar/skill-telemetry/unknown.jsonl',
 ];
 
 // ── PEM Reconstruction ──────────────────────────────────────────────

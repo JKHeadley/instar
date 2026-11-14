@@ -14,6 +14,7 @@ import { telegramFetch } from '../../src/messaging/telegram-egress.js';
 import { OriginAuthorCall, deterministicAutomationAuthor } from '../../src/messaging/telegram-origin/OriginAutomationAuthor.js';
 import { createA2ACheckInScheduler } from '../../src/threadline/A2ACheckInScheduler.js';
 import { compileOriginWorker, temporaryState } from '../helpers/telegramOriginStore.js';
+import { wireDigest } from '../../src/messaging/telegram-origin/CanonicalOrigin.js';
 import { PendingRelayStore } from '../../src/messaging/pending-relay-store.js';
 import { OriginBrowserExecutor } from '../../src/messaging/telegram-origin/OriginBrowserExecutor.js';
 import { generateIdentityKeyPair } from '../../src/threadline/ThreadlineCrypto.js';
@@ -136,7 +137,9 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
         const row = await getOperation(id);
         if (!row) return row;
         const envelope = JSON.parse(row.record.envelopeJson);
-        return { ...row, record: { ...row.record, envelopeJson: JSON.stringify({ ...envelope, executionOwnerMachineId: 'mini' }) },
+        // A consistent envelope (its digest recomputed): the owner-read resolver ignores an envelope whose digest does not match.
+        const envelopeJson = JSON.stringify({ ...envelope, executionOwnerMachineId: 'mini' });
+        return { ...row, record: { ...row.record, envelopeJson, envelopeDigest: wireDigest(envelopeJson) },
           operation: { ...row.operation!, state: 'known-failed' }, children: row.children.map(c => ({ ...c, state: 'known-failed' })),
           attempts: row.attempts.map(a => ({ ...a, outcome: 'known-failed', receiptJson: null })) };
       });
@@ -445,7 +448,15 @@ describe('Telegram origin through the complete reply HTTP pipeline', () => {
     expect(h.network).not.toHaveBeenCalled();
     expect(await h.runtime.store.reserveRecoveryAttempt({ operationId: rows[0].operation!.operationId, now: retryAt - 1 })).toBe(false);
     await new Promise(resolve => setTimeout(resolve, Math.max(0, retryAt - Date.now()) + 10));
-    expect((await h.runtime.recoverHeld()).recovered).toBe(1); expect(h.network).toHaveBeenCalledOnce();
+    // A busy SQLite writer can legitimately defer one recovery pass. Wait for
+    // recovery without relaxing the original deadline or transport budget.
+    const recoveryUntil = Math.min(Date.now() + 5_000, rows[0].operation!.deadlineAt);
+    let recoveredCount = 0;
+    while (recoveredCount === 0 && Date.now() < recoveryUntil) {
+      recoveredCount = (await h.runtime.recoverHeld()).recovered;
+      if (recoveredCount === 0) await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    expect(recoveredCount).toBe(1); expect(h.network).toHaveBeenCalledOnce();
     const recovered = (await h.runtime.store.listOrigins()).records;
     expect(recovered).toHaveLength(1);
     expect(recovered[0].operation?.operationId).toBe(rows[0].operation!.operationId);

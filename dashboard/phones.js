@@ -30,11 +30,36 @@ export function phonesGlanceSpec({ waiting = null, paired = null, locked = false
     : 'No phone is waiting to pair.';
   return { headline, tiles: [
     { key: 'waiting', label: 'Waiting to pair', value: waiting === null ? 'Unknown' : String(waiting), tone: waiting > 0 ? 'warn' : undefined, onActivate: activate.waiting },
-    { key: 'paired', label: 'Paired phones', value: paired === null ? 'Unknown' : String(paired), onActivate: activate.paired },
+    { key: 'paired', label: 'Paired devices', value: paired === null ? 'Unknown' : String(paired), onActivate: activate.paired },
   ] };
 }
 
-const STATUS = { pending: 'Waiting to confirm', active: 'Paired', revoked: 'Removed', declined: 'Declined', expired: 'Expired' };
+/**
+ * The paired devices, split for display (a copy of dashboard-pair/pair-model.js pairedGroups;
+ * this folder is served separately) (docs/specs/dashboard-ui-quality-standard.md): phones and
+ * browsers are separate groups, so neither heading lists the other kind and no row repeats its kind.
+ * Each row is a name line and one short detail line. Only active and pending devices are shown.
+ * `personText` (optional) adds whose device it is to the name.
+ */
+export function pairedGroups(devices, { browserOff = false, personText = () => '' } = {}) {
+  const phones = [], browsers = [];
+  for (const d of Array.isArray(devices) ? devices : []) {
+    if (!d || (d.status !== 'active' && d.status !== 'pending')) continue;
+    const isBrowser = d.client === 'browser';
+    const name = `${d.deviceName || (isBrowser ? 'Unnamed browser' : 'Unnamed phone')}${personText(d)}`;
+    let detail;
+    if (d.status === 'pending') detail = 'Waiting to confirm';
+    else if (isBrowser) {
+      const t = Date.parse(d.lastSeenAt || '');
+      detail = browserOff ? 'Switched off on this agent' : Number.isFinite(t) ? `Last used on this machine ${new Date(t).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}` : 'Not used yet';
+    } else {
+      const t = Date.parse(d.approvedAt || '');
+      detail = Number.isFinite(t) ? `Paired since ${new Date(t).toLocaleDateString(undefined, { dateStyle: 'medium' })}` : 'Paired';
+    }
+    (isBrowser ? browsers : phones).push({ id: d.id, name, detail, removable: d.status === 'active', what: isBrowser ? 'browser' : 'phone' });
+  }
+  return { phones, browsers };
+}
 
 /** "123 456" — easier to read off a screen. A word code ("KITE-4172") is shown as the server sent it. */
 export function prettyCode(code) {
@@ -67,7 +92,7 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
   const unlockButton = make('button', 'Unlock with PIN to see pairing codes'); unlockButton.hidden = true; unlockButton.onclick = unlock;
   const glance = make('section'); glance.className = 'glance-root';
   const approvals = make('section'); approvals.setAttribute('aria-label', 'Phones waiting to pair');
-  const devices = make('section'); devices.setAttribute('aria-label', 'Paired phones');
+  const devices = make('section'); devices.setAttribute('aria-label', 'Paired devices');
   // Detail sections live behind the glance tiles; they are refreshed in place.
   approvals.remove(); devices.remove();
   let timer = null, stopped = false, busy = false;
@@ -114,28 +139,36 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
     }
   };
 
-  const renderDevices = (list) => {
+  const renderDevices = (list, opts = {}) => {
     devices.replaceChildren();
     make('h3', 'Paired phones', devices);
-    const shown = list.filter((d) => d.status === 'active' || d.status === 'pending');
-    counts.paired = list.filter((d) => d.status === 'active').length;
-    if (!shown.length) { make('p', 'No phones are paired with this machine.', devices); return; }
-    for (const d of shown) {
-      const row = make('div', undefined, devices); row.className = 'phone-row';
-      make('p', `${d.deviceName || 'Unnamed phone'}${personText(d)} · ${STATUS[d.status] || d.status}${d.approvedAt ? ` since ${new Date(d.approvedAt).toLocaleDateString()}` : ''}`, row);
-      if (d.status === 'active') {
-        const revoke = make('button', 'Remove this phone', row);
-        revoke.onclick = async () => {
-          if (!doc.defaultView?.confirm?.('Remove this phone? It will stop reaching this agent at once.')) return;
-          revoke.disabled = true;
-          try {
-            const r = await request(`/mobile/devices/${encodeURIComponent(d.id)}/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
-            notice.textContent = r.ok ? 'Removed.' : 'Could not remove that phone. Try again.';
-          } catch { notice.textContent = 'Could not reach the agent.'; }
-          await refresh();
-        };
-      }
-    }
+    const { phones, browsers } = pairedGroups(list, { ...opts, personText });
+    counts.paired = list.filter((d) => d && d.status === 'active').length;
+    if (!phones.length) make('p', 'No phones are paired with this machine.', devices);
+    for (const r of phones) deviceRow(r);
+    if (!browsers.length) return;
+    make('h3', 'Paired browsers', devices);
+    for (const r of browsers) deviceRow(r);
+  };
+
+  /** One device: its name, one short detail line, and a Remove button that never wraps. */
+  const deviceRow = (r) => {
+    const row = make('div', undefined, devices); row.className = 'phone-row';
+    const words = make('div', undefined, row); words.className = 'phone-row-words';
+    make('span', r.name, words).className = 'phone-row-name';
+    make('span', r.detail, words).className = 'phone-row-detail';
+    if (!r.removable) return;
+    const revoke = make('button', 'Remove', row);
+    revoke.setAttribute('aria-label', `Remove ${r.name}`);
+    revoke.onclick = async () => {
+      if (!doc.defaultView?.confirm?.(`Remove this ${r.what}? It will stop reaching this agent at once.`)) return;
+      revoke.disabled = true;
+      try {
+        const res = await request(`/mobile/devices/${encodeURIComponent(r.id)}/revoke`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+        notice.textContent = res.ok ? 'Removed.' : `Could not remove that ${r.what}. Try again.`;
+      } catch { notice.textContent = 'Could not reach the agent.'; }
+      await refresh();
+    };
   };
 
   async function refresh() {
@@ -156,7 +189,16 @@ export function mountPhonesPanel(root, { request, unlock, now = () => Date.now()
         renderApprovals(Array.isArray(body.approvals) ? body.approvals : []);
       } else { notice.textContent = 'Pairing codes are unavailable right now.'; }
       const d = await request('/mobile/devices');
-      if (d.ok) { const body = await d.json(); renderDevices(Array.isArray(body.devices) ? body.devices : []); }
+      if (d.ok) {
+        const body = await d.json();
+        const list = Array.isArray(body.devices) ? body.devices : [];
+        // Browser rows say when browsers are switched off on this agent (§4.9).
+        let browserOff = false;
+        if (list.some((x) => x && x.client === 'browser')) {
+          try { const s = await request('/mobile/browser-devices/status'); browserOff = s.status === 503; } catch { browserOff = false; }
+        }
+        renderDevices(list, { browserOff });
+      }
     } catch { notice.textContent = 'Could not reach the agent.'; }
     finally { busy = false; renderSummary(); }
   }

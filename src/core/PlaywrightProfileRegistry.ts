@@ -228,7 +228,10 @@ export const MAX_IDENTITY_CHARS = 128;
 export const MAX_NOTE_CHARS = 256;
 const PROFILE_ID_RE = /^[a-z0-9-]{1,64}$/;
 const MUTATE_CAS_MAX_RETRIES = 5;
-export const DEFAULT_BLOCK_MAX_BYTES = 800;
+// 2400 (was 800): at 800 a machine with a dozen profiles showed only the first 3 at session
+// start, hiding the operator accounts an agent most needs to know it can act through
+// (Echo Bugs topic 10000002506). Still a hard cap; `full` bypasses it.
+export const DEFAULT_BLOCK_MAX_BYTES = 2400;
 
 const LOGIN_METHODS: readonly PlaywrightLoginMethod[] = [
   'session-cookie',
@@ -911,6 +914,8 @@ export class PlaywrightProfileRegistry {
       'Profiles live on THIS machine only. Login state is LAST-ASSERTED, never a guarantee —',
       're-verify in-browser before any privileged action, especially operator-owned accounts.',
       'Full detail + vault key names: GET /playwright-profiles · pick one: GET /playwright-profiles/resolve',
+      'Before asking the operator to look at or check something: if an account below or your own server',
+      'key reaches it, look yourself. Mark anything you send as the operator: [Sent by <agent> on <operator>\'s behalf].',
       '',
     ];
     const footer = [

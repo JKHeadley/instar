@@ -30,6 +30,9 @@ const PENDING_BASELINE = [
   'AttributionJudge', 'AlignmentReviewer', 'CartographerSweep', 'ContextualEvaluator', 'DiscoveryEvaluator',
   'JobReflector', 'LLMConflictResolver', 'PipeSessionSpawner',
   'PreCompactionFlush', 'RelationshipManager',
+  // context-budget-layered-summaries §6.5 (Phase 1 S8, 2026-11-10): chunk/C2 summaries over an archived span;
+  // graded by the Phase 2 fold probes until a bench task lands.
+  'ContextLayerChunk',
   'SelfKnowledgeTree', 'GoalPriorityExtractor',
   'StandardsConformanceReviewer',
   'TopicSummarizer', 'TreeSynthesis', 'TreeTriage', 'a2a-checkin',
@@ -45,6 +48,10 @@ const PENDING_BASELINE = [
   // job-cost-reduction §5.6.5 (2026-10-26): the daily script-job review; graded by its must-flag canary until a bench task lands.
   'ScriptJobSupervisor',
   'JobTriageBackupCheck', // outage-only sampled classifier pending a dedicated bench task
+  'ChiefOfStaffLoop', // chief-of-staff-topic.md §2.5 verdict judge; graded by its decision-quality seam until a bench battery lands
+  // skill-learning-sentinel slice 1 (2026-11-06): shadow-only arbiter/drafter + cross-family reviewer; graded by the
+  // rung-1 operator sample (agree/disagree taps on proposals) until a bench task lands.
+  'skillLearning.drafter', 'skillLearning.reviewer',
 ].sort();
 
 const EXEMPT_BASELINE = [

@@ -50,6 +50,8 @@ export interface SenderEnvelope {
   via?: 'mobile-device';
   deviceId?: string;
   eventId?: string;
+  /** A team phone's person, so the machine that delivers can judge them itself (team-roles-and-access §3.6). */
+  personKey?: string;
 }
 
 export interface PendingInboundRow {
@@ -77,6 +79,16 @@ export interface PendingInboundRow {
   last_error: string | null;
   delivered_unconfirmed: 0 | 1;
   status_history: string;
+  /**
+   * context-budget-layered-summaries §9.3 "Held inbound": non-null ⇔ the row is
+   * held by that fold (`hold: fold`). Its TTL is frozen while the fold record is
+   * non-terminal; only the fold's terminal transition releases it.
+   */
+  fold_id: string | null;
+  /** When the current fold hold began (null when not fold-held). */
+  fold_since: string | null;
+  /** Cumulative fold-held time, credited to the row's TTL (never to the pause cap). */
+  fold_frozen_ms: number;
 }
 
 export interface EnqueueInput {
@@ -93,6 +105,8 @@ export interface EnqueueInput {
   bootSessionId: string | null;
   /** When a pause is durably in effect, new rows are frozen at enqueue (§3.6 round-10). */
   frozenAtEnqueue?: boolean;
+  /** When a fold holds this session, the row is held by that fold from enqueue (§9.3). */
+  foldHeldBy?: string | null;
 }
 
 export interface InboundQueueBounds {
@@ -273,6 +287,23 @@ export class PendingInboundStore {
     if (secureDelete) db.pragma('secure_delete = ON');
 
     for (const ddl of SCHEMA) db.exec(ddl);
+    // Additive columns (context-budget-layered-summaries §9.3 "Held inbound"):
+    // added once to an existing queue, idempotent on every open.
+    const cols = new Set((db.prepare(`PRAGMA table_info(entries)`).all() as Array<{ name: string }>).map((c) => c.name));
+    const addColumn = (name: string, ddl: string) => {
+      if (cols.has(name)) return;
+      try { db.exec(`ALTER TABLE entries ADD COLUMN ${name} ${ddl}`); } catch (err) {
+        // A concurrent opener (a duplicate server at first boot after update) may
+        // have added it between our check and our ALTER; anything else is real.
+        if (!/duplicate column name/i.test(err instanceof Error ? err.message : String(err))) throw err;
+      }
+    };
+    addColumn('fold_id', 'TEXT');
+    addColumn('fold_since', 'TEXT');
+    addColumn('fold_frozen_ms', 'INTEGER NOT NULL DEFAULT 0');
+    // The session-level hold (a fold usually begins with nothing queued, so a
+    // row-level mark alone would miss the next arrival).
+    db.exec(`CREATE TABLE IF NOT EXISTS fold_holds (session_key TEXT PRIMARY KEY, fold_id TEXT NOT NULL, since TEXT NOT NULL)`);
 
     return new PendingInboundStore(db, dbPath);
   }
@@ -342,19 +373,22 @@ export class PendingInboundStore {
 
       let evicted: EvictedRowInfo | null = null;
       if (sessRow.n >= bounds.maxPerSession) {
-        // Evict this session's oldest QUEUED row (never claimed).
+        // Evict this session's oldest QUEUED row (never claimed, never fold-held:
+        // a held session at its cap refuses the arrival, reported, instead).
         const victim = this.#db
           .prepare(
             `SELECT enqueue_seq, session_key, message_id, enqueued_at, payload_bytes, sender_display
-               FROM entries WHERE session_key = ? AND state = 'queued'
+               FROM entries WHERE session_key = ? AND state = 'queued' AND fold_id IS NULL
                ORDER BY enqueue_seq ASC LIMIT 1`,
           )
           .get(input.sessionKey) as
           | { enqueue_seq: number; session_key: string; message_id: string; enqueued_at: string; payload_bytes: number; sender_display: string | null }
           | undefined;
         if (!victim) {
-          // Every row claimed (all in flight) — nothing evictable.
-          return { result: 'refused', reason: 'max-per-session-all-claimed' };
+          // Every row claimed (all in flight), or every queued row is held by a
+          // fold (§9.3: a held row is never an eviction victim) — nothing evictable.
+          const held = this.#db.prepare(`SELECT 1 FROM fold_holds WHERE session_key = ?`).get(input.sessionKey);
+          return { result: 'refused', reason: held ? 'max-per-session-fold-held' : 'max-per-session-all-claimed' };
         }
         this.#terminalizeInTx(victim.enqueue_seq, 'queued', 'dropped-overflow', 'overflow-evicted', input.nowIso);
         evicted = {
@@ -367,6 +401,8 @@ export class PendingInboundStore {
         };
       }
 
+      // §9.3: a message arriving while a fold holds its session is held by that fold.
+      const heldBy = input.foldHeldBy ?? ((this.#db.prepare(`SELECT fold_id FROM fold_holds WHERE session_key = ?`).get(input.sessionKey) as { fold_id: string } | undefined)?.fold_id ?? null);
       const senderDisplay = input.senderEnvelope
         ? (input.senderEnvelope.firstName || input.senderEnvelope.username || (input.senderEnvelope.userId != null ? String(input.senderEnvelope.userId) : null))
         : null;
@@ -379,12 +415,12 @@ export class PendingInboundStore {
              session_key, message_id, payload, payload_bytes, sender_envelope,
              sender_display, topic_metadata, reason, state, enqueued_at,
              enqueued_mono, boot_session_id, lease_epoch, status_history,
-             first_frozen_at, frozen_since
+             first_frozen_at, frozen_since, fold_id, fold_since
            ) VALUES (
              @session_key, @message_id, @payload, @payload_bytes, @sender_envelope,
              @sender_display, @topic_metadata, @reason, 'queued', @enqueued_at,
              @enqueued_mono, @boot_session_id, @lease_epoch, @status_history,
-             @first_frozen_at, @frozen_since
+             @first_frozen_at, @frozen_since, @fold_id, @fold_since
            )`,
         )
         .run({
@@ -403,8 +439,10 @@ export class PendingInboundStore {
           status_history: initialHistory,
           // Rows enqueued while a pause is durably in effect are frozen at
           // enqueue — same rule as freeze-at-release (§3.6 round-10).
-          first_frozen_at: input.frozenAtEnqueue ? input.nowIso : null,
-          frozen_since: input.frozenAtEnqueue ? input.nowIso : null,
+          first_frozen_at: input.frozenAtEnqueue || heldBy ? input.nowIso : null,
+          frozen_since: input.frozenAtEnqueue || heldBy ? input.nowIso : null,
+          fold_id: heldBy,
+          fold_since: heldBy ? input.nowIso : null,
         });
       return { result: 'queued', seq: Number(res.lastInsertRowid), evicted };
     });
@@ -599,9 +637,17 @@ export class PendingInboundStore {
       const fields = ['state = \'queued\'', 'attempts = @attempts', 'next_attempt_at = @next'];
       const params: Record<string, unknown> = { seq, attempts: opts.attempts, next: opts.nextAttemptAt };
       if (opts.lastError !== undefined) { fields.push('last_error = @err'); params.err = sanitizeError(opts.lastError); }
-      if (opts.freeze) {
-        fields.push('frozen_since = @now', 'first_frozen_at = COALESCE(first_frozen_at, @now)');
+      // §9.3: a claimed row that returns to the queue while a fold holds its
+      // session is held by that fold (the record, not dispatch timing, gates it).
+      const row = this.#db.prepare(`SELECT session_key FROM entries WHERE enqueue_seq = ?`).get(seq) as { session_key: string } | undefined;
+      const heldBy = row ? ((this.#db.prepare(`SELECT fold_id FROM fold_holds WHERE session_key = ?`).get(row.session_key) as { fold_id: string } | undefined)?.fold_id ?? null) : null;
+      if (opts.freeze || heldBy) {
+        fields.push('frozen_since = COALESCE(frozen_since, @now)', 'first_frozen_at = COALESCE(first_frozen_at, @now)');
         params.now = opts.nowIso;
+      }
+      if (heldBy) {
+        fields.push('fold_id = @fold', 'fold_since = @now');
+        params.fold = heldBy;
       }
       const res = this.#db
         .prepare(`UPDATE entries SET ${fields.join(', ')} WHERE enqueue_seq = @seq AND state = 'claimed'`)
@@ -856,7 +902,8 @@ export class PendingInboundStore {
   resumeFrozenRows(nowIso: string, pauseMaxMs: number): { resumed: number; overCap: PendingInboundRow[] } {
     const tx = this.#db.transaction((): { resumed: number; overCap: PendingInboundRow[] } => {
       const frozen = this.#db
-        .prepare(`SELECT * FROM entries WHERE frozen_since IS NOT NULL AND state IN ('queued','claimed')`)
+        // A fold-held row is the fold's (§9.3): an operator resume never releases it.
+        .prepare(`SELECT * FROM entries WHERE frozen_since IS NOT NULL AND fold_id IS NULL AND state IN ('queued','claimed')`)
         .all() as PendingInboundRow[];
       const nowMs = Date.parse(nowIso);
       const overCap: PendingInboundRow[] = [];
@@ -904,13 +951,83 @@ export class PendingInboundStore {
   /** Rows whose TTL has expired (frozen rows excluded — TTL accounting pauses
    *  while frozen, §3.6). Caller terminals + loss-reports them. */
   listTtlExpired(nowIso: string, entryTtlMs: number): PendingInboundRow[] {
-    const cutoff = new Date(Date.parse(nowIso) - entryTtlMs).toISOString();
-    return this.#db
+    const nowMs = Date.parse(nowIso);
+    const cutoff = new Date(nowMs - entryTtlMs).toISOString();
+    const rows = this.#db
       .prepare(
         `SELECT * FROM entries
-          WHERE state = 'queued' AND frozen_since IS NULL AND enqueued_at < @cutoff`,
+          WHERE state = 'queued' AND frozen_since IS NULL AND fold_id IS NULL AND enqueued_at < @cutoff`,
       )
       .all({ cutoff }) as PendingInboundRow[];
+    // Time a fold held the row is credited back to its TTL (§9.3: the clock is
+    // frozen while the fold record is non-terminal).
+    return rows.filter((r) => Date.parse(r.enqueued_at) + (r.fold_frozen_ms ?? 0) < nowMs - entryTtlMs);
+  }
+
+  // ── Fold hold (context-budget-layered-summaries §9.3 "Held inbound") ──
+
+  /** Hold a session's queued rows for a fold. Returns how many rows it now holds. */
+  holdForFold(sessionKey: string, foldId: string, nowIso: string): number {
+    return this.#db.transaction((): number => this.holdForFoldTx(sessionKey, foldId, nowIso))() as number;
+  }
+
+  private holdForFoldTx(sessionKey: string, foldId: string, nowIso: string): number {
+    this.#db
+      .prepare(`INSERT INTO fold_holds (session_key, fold_id, since) VALUES (@k, @f, @now)
+                ON CONFLICT(session_key) DO UPDATE SET fold_id = @f, since = @now`)
+      .run({ k: sessionKey, f: foldId, now: nowIso });
+    const res = this.#db
+      .prepare(
+        `UPDATE entries SET fold_id = @f, fold_since = @now,
+           frozen_since = COALESCE(frozen_since, @now),
+           first_frozen_at = COALESCE(first_frozen_at, @now)
+         WHERE session_key = @k AND state = 'queued' AND fold_id IS NULL`,
+      )
+      .run({ f: foldId, now: nowIso, k: sessionKey });
+    return res.changes ?? 0;
+  }
+
+  /** Sessions currently held by a fold (for hold-at-enqueue and the carrier listing). */
+  foldHeldSessions(): Array<{ sessionKey: string; foldId: string }> {
+    return (this.#db
+      .prepare(`SELECT session_key AS sessionKey, fold_id AS foldId FROM fold_holds
+                UNION
+                SELECT DISTINCT session_key, fold_id FROM entries WHERE fold_id IS NOT NULL AND state IN ('queued','claimed')`)
+      .all() as Array<{ sessionKey: string; foldId: string }>);
+  }
+
+  /**
+   * Release a fold's rows (its terminal transition). The fold-held span is
+   * credited to each row's TTL and next-attempt time, never to the pause cap;
+   * a row that is still under an operator pause stays frozen (its pause span
+   * restarts now). Returns how many rows were released.
+   */
+  releaseFold(foldId: string, nowIso: string): number {
+    const paused = this.isPaused();
+    const tx = this.#db.transaction((): number => {
+      this.#db.prepare(`DELETE FROM fold_holds WHERE fold_id = @f`).run({ f: foldId });
+      const rows = this.#db.prepare(`SELECT * FROM entries WHERE fold_id = @f`).all({ f: foldId }) as PendingInboundRow[];
+      const nowMs = Date.parse(nowIso);
+      for (const row of rows) {
+        const since = row.fold_since ? Date.parse(row.fold_since) : NaN;
+        const span = Number.isFinite(since) ? Math.max(0, nowMs - since) : 0;
+        let next = row.next_attempt_at;
+        if (next) {
+          const t = Date.parse(next);
+          if (Number.isFinite(t)) next = new Date(t + span).toISOString();
+        }
+        this.#db
+          .prepare(
+            `UPDATE entries SET fold_id = NULL, fold_since = NULL,
+               fold_frozen_ms = fold_frozen_ms + @span,
+               frozen_since = @frozen, next_attempt_at = @next
+             WHERE enqueue_seq = @seq`,
+          )
+          .run({ span, frozen: paused ? nowIso : null, next, seq: row.enqueue_seq });
+      }
+      return rows.length;
+    });
+    return tx() as number;
   }
 
   /** Prune terminal rows past retention (payload already nulled at terminal). */

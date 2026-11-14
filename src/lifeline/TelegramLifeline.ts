@@ -142,12 +142,14 @@ interface TelegramUpdate {
   message?: {
     message_id: number;
     from: { id: number; first_name: string; username?: string };
-    chat: { id: number };
+    chat: { id: number; type?: string };
     message_thread_id?: number;
     text?: string;
     caption?: string;
     forum_topic_created?: { name?: string };
     forum_topic_edited?: { name?: string };
+    /** A service message: someone pinned this message (conversation-pinned-messages). */
+    pinned_message?: { message_id?: number };
     reply_to_message?: { message_id?: number; forum_topic_created?: { name?: string } };
     photo?: Array<{ file_id: string; file_size?: number; width: number; height: number }>;
     document?: {
@@ -165,6 +167,25 @@ interface TelegramUpdate {
     data?: string;
     message?: { message_id: number; chat: { id: number } };
   };
+}
+
+
+/** What the server said about a forward it accepted: `refused` = its inbound gate turned the message away. */
+interface ForwardAck { refused?: boolean }
+
+/**
+ * Read `refused` from an accepted forward's body. An older server sends no such field, and an
+ * unreadable body reads as not refused (the acknowledgement stays as it was before this field).
+ */
+export async function readForwardRefused(response: { json?: () => Promise<unknown> }): Promise<boolean> {
+  try {
+    if (typeof response.json !== 'function') return false;
+    const body = await response.json();
+    return !!body && typeof body === 'object' && (body as { refused?: unknown }).refused === true;
+  } catch {
+    // @silent-fallback-ok: no readable body means no refusal claim; the server's gate already acted
+    return false;
+  }
 }
 
 export class TelegramLifeline {
@@ -1350,6 +1371,13 @@ export class TelegramLifeline {
       return;
     }
 
+    // A pin made in Telegram is a service message with no text: pass it on, or the server never
+    // learns it (conversation-pinned-messages). The server checks who pinned.
+    if (msg.pinned_message && typeof msg.pinned_message.message_id === 'number' && !msg.text) {
+      await this.forwardPin(msg.message_thread_id ?? 1, msg.pinned_message.message_id, msg.message_id, msg.from.id, msg.from.first_name);
+      return;
+    }
+
     // Handle photo messages
     if (msg.photo && msg.photo.length > 0 && !msg.text) {
       await this.handlePhotoMessage(msg);
@@ -1384,10 +1412,12 @@ export class TelegramLifeline {
 
     // Forward to server if healthy
     if (this.supervisor.healthy) {
-      const forwarded = await this.forwardToServer(topicId, text, msg);
+      const fwd: ForwardAck = {};
+      const forwarded = await this.forwardToServer(topicId, text, msg, fwd);
       if (forwarded) {
-        // Delivery confirmation — user knows message reached the server
-        await this.sendFixedNotice(topicId, '✓ Delivered');
+        // Delivery confirmation — user knows message reached the server. Never for a message the
+        // server's inbound gate refused (it already told the sender it was not delivered).
+        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1466,9 +1496,10 @@ export class TelegramLifeline {
 
     const serverWasHealthy = this.supervisor.healthy;
     if (serverWasHealthy) {
-      const forwarded = await this.forwardToServer(topicId, content, msg);
+      const fwd: ForwardAck = {};
+      const forwarded = await this.forwardToServer(topicId, content, msg, fwd);
       if (forwarded) {
-        await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1573,9 +1604,10 @@ export class TelegramLifeline {
 
     const serverWasHealthy = this.supervisor.healthy;
     if (serverWasHealthy) {
-      const forwarded = await this.forwardToServer(topicId, content, msg);
+      const fwd: ForwardAck = {};
+      const forwarded = await this.forwardToServer(topicId, content, msg, fwd);
       if (forwarded) {
-        await this.sendFixedNotice(topicId, '✓ Delivered');
+        if (!fwd.refused) await this.sendFixedNotice(topicId, '✓ Delivered');
         return;
       }
     }
@@ -1781,6 +1813,19 @@ export class TelegramLifeline {
     } catch { /* @silent-fallback-ok: a later message in the topic carries its name again */ }
   }
 
+  private async forwardPin(topicId: number, pinnedMessageId: number, serviceMessageId: number, fromUserId: number, byName: string): Promise<void> {
+    if (!this.supervisor.healthy) return; // a pin seen while the server is down is not replayed
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (this.projectConfig.authToken) headers['Authorization'] = `Bearer ${this.projectConfig.authToken}`;
+    this.addIngressSecretHeader(headers);
+    try {
+      await fetch(`http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`, {
+        method: 'POST', headers, signal: AbortSignal.timeout(5000),
+        body: JSON.stringify({ topicId, text: '', pinOnly: true, pinnedMessageId, pinServiceMessageId: serviceMessageId, fromUserId, fromFirstName: byName, lifelineVersion: this.lifelineVersion }),
+      });
+    } catch { /* @silent-fallback-ok: a missed pin can be made again from the app */ }
+  }
+
   private addIngressSecretHeader(headers: Record<string, string>): void {
     const secret = this.ingressSecret.get();
     if (secret) headers[LIFELINE_SECRET_HEADER] = secret;
@@ -1850,8 +1895,9 @@ export class TelegramLifeline {
     topicId: number,
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
+    ack?: ForwardAck,
   ): Promise<boolean> {
-    return (await this.forwardToServerClassified(topicId, text, rawMsg)) === 'ok';
+    return (await this.forwardToServerClassified(topicId, text, rawMsg, ack)) === 'ok';
   }
 
   /**
@@ -1864,6 +1910,7 @@ export class TelegramLifeline {
     topicId: number,
     text: string,
     rawMsg: NonNullable<TelegramUpdate['message']>,
+    ack?: ForwardAck,
   ): Promise<ForwardOutcome> {
     // a2a spoof-defense fields (MENTOR-LIVE-READINESS-SPEC §Recipient side). The
     // server's /internal/telegram-forward handler passes these to
@@ -1899,6 +1946,10 @@ export class TelegramLifeline {
         topicId,
         text,
         fromUserId: rawMsg.from.id,
+        // Destination identity for neutral Conversations replies. The server
+        // accepts this only with verified lifeline proof, never plain bearer.
+        sourceChatId: rawMsg.chat.id,
+        sourceChatType: rawMsg.chat.type,
         fromUsername: rawMsg.from.username,
         fromFirstName: rawMsg.from.first_name,
         messageId: rawMsg.message_id,
@@ -1938,6 +1989,7 @@ export class TelegramLifeline {
         if (response.ok) {
           this.observeForwardResponseDriftHeader(response);
           this.observeStaleSecretHint(response);
+          if (ack) ack.refused = await readForwardRefused(response);
           return true;
         }
         if (response.status === 426) {
@@ -1977,7 +2029,7 @@ export class TelegramLifeline {
               `http://127.0.0.1:${this.projectConfig.port}/internal/telegram-forward`,
               { method: 'POST', headers: fwdHeaders, body: buildBody(false) }
             );
-            if (r2.ok) return true;
+            if (r2.ok) { if (ack) ack.refused = await readForwardRefused(r2); return true; }
             if (r2.status === 400) throw new ForwardBadRequestError(await r2.json().catch(() => ({})));
             throw new ForwardTransientError(r2.status);
           }
@@ -2352,6 +2404,7 @@ export class TelegramLifeline {
       // 2026-05-20 b2lead-insights silent-drop failure mode).
       if (this.versionSkewActive) break;
 
+      const replayAck: ForwardAck = {};
       const outcome = await this.forwardToServerClassified(msg.topicId, msg.text, {
         message_id: parseInt(msg.id.replace('tg-', ''), 10) || 0,
         from: {
@@ -2363,7 +2416,7 @@ export class TelegramLifeline {
         message_thread_id: msg.topicId,
         text: msg.text,
         date: Math.floor(new Date(msg.timestamp).getTime() / 1000),
-      });
+      }, replayAck);
 
       const decision = decideReplay(outcome, {
         poisonFailures: msg.replayFailures ?? 0,
@@ -2378,12 +2431,16 @@ export class TelegramLifeline {
 
       if (decision.action === 'delivered') {
         this.queue.markDelivered(msg.id); // remember id so a redelivery can't re-queue it
-        replayed++;
-        const counts = deliveredByTopic.get(msg.topicId) ?? { outage: 0, delayedHandoff: 0, legacyUnknown: 0 };
-        if (msg.queueReason === 'server-unhealthy') counts.outage++;
-        else if (msg.queueReason === 'healthy-forward-failed') counts.delayedHandoff++;
-        else if (msg.queueReason === undefined) counts.legacyUnknown++;
-        deliveredByTopic.set(msg.topicId, counts);
+        // Handled, but refused by the server's inbound gate: it is not counted in the
+        // "has now been delivered" notice (the sender was told it was not delivered).
+        if (!replayAck.refused) {
+          replayed++;
+          const counts = deliveredByTopic.get(msg.topicId) ?? { outage: 0, delayedHandoff: 0, legacyUnknown: 0 };
+          if (msg.queueReason === 'server-unhealthy') counts.outage++;
+          else if (msg.queueReason === 'healthy-forward-failed') counts.delayedHandoff++;
+          else if (msg.queueReason === undefined) counts.legacyUnknown++;
+          deliveredByTopic.set(msg.topicId, counts);
+        }
       } else if (decision.action === 'drop') {
         dropped++;
         // Before the drop becomes silent: persist the record, report a
@@ -3089,7 +3146,7 @@ export class TelegramLifeline {
       const { ensureStableNodeSymlink } = await import('../commands/setup.js');
       ensureStableNodeSymlink(this.projectConfig.projectDir);
     } catch (err) {
-      console.warn(`[Lifeline] Node symlink update failed (non-critical): ${err}`);
+      console.warn(`[Lifeline] Approved node binding could not be preserved; recovery may be degraded: ${err}`);
     }
 
     // Also make sure the boot wrapper exists. launchd will refuse to spawn

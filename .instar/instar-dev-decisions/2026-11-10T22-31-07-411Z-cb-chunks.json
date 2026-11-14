@@ -1,0 +1,40 @@
+{
+  "ts": "2026-11-10T22:31:07.411Z",
+  "slug": "cb-chunks",
+  "suggestedTier": 2,
+  "declaredTier": 2,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "new capability: new route (router.<verb>() added",
+    "new capability: new exported class / subsystem added"
+  ],
+  "belowFloor": false,
+  "files": 12,
+  "loc": 1184,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/componentCategories.ts",
+      "src/data/llmBenchCoverage.ts",
+      "src/data/provenanceCoverage.ts",
+      "src/monitoring/contextLayers/LayerStore.ts",
+      "src/monitoring/contextLayers/chunkBuilder.ts",
+      "src/monitoring/contextLayers/chunkLookup.ts",
+      "src/monitoring/contextLayers/spanSampler.ts",
+      "src/monitoring/diskSteward/pruneContextArchive.ts",
+      "src/server/AgentServer.ts",
+      "src/server/CapabilityIndex.ts",
+      "src/server/routes.ts"
+    ],
+    "addedLines": 1174,
+    "deletedLines": 10
+  },
+  "causalAutopsy": null,
+  "classClosure": {
+    "defectClass": "n/a",
+    "closure": "n/a",
+    "reason": "Not a defect fix: a new Phase 1 capability (chunk and range summaries, the span sampler, lookup routes) from an approved spec"
+  },
+  "verdict": "pass"
+}

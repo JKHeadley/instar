@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { JSDOM } from 'jsdom';
-import { buildMachinesPage, stateOf, loadVerdict, ropesFor, healthOf, usageOf } from '../../dashboard/console/machines-model.js';
+import { buildMachinesPage, stateOf, loadVerdict, ropesFor, healthOf, usageOf, poolUsageOf } from '../../dashboard/console/machines-model.js';
 
 const NOW = Date.parse('2026-10-25T23:30:00Z');
 const ok = (data: unknown) => ({ ok: true, data });
@@ -20,7 +20,27 @@ describe('machines page model', () => {
   it('all answering', () => {
     const p = buildMachinesPage(ok({ selfMachineId: 'm1', machines: [mach({}), mach({ machineId: 'm2', nickname: 'Mac Mini' })] }), null, NOW);
     expect(p.headline).toBe('Both machines are answering.');
-    expect(p.machines[0].isSelf).toBe(true);
+    expect(p.machines.find((m) => m.isSelf)!.name).toBe('Mac Studio');
+  });
+  it('order never depends on which machine served the page: trouble first, then the leading machine', () => {
+    const pool = (self: string) => ok({ selfMachineId: self, router: { holder: 'm2' }, machines: [mach({}), mach({ machineId: 'm2', nickname: 'Mac Mini' }), mach({ machineId: 'm3', nickname: 'Laptop' })] });
+    const a = buildMachinesPage(pool('m1'), null, NOW).machines.map((m) => m.name);
+    const b = buildMachinesPage(pool('m3'), null, NOW).machines.map((m) => m.name);
+    expect(a).toEqual(['Mac Mini', 'Laptop', 'Mac Studio']);
+    expect(b).toEqual(a);
+  });
+  it('poolUsageOf reads every machine from the pooled resources answer, and an older single-machine answer', () => {
+    const u = poolUsageOf(ok({ machine: 'Mac Studio', headline: 'x', combined: { headline: '2 of 3 machines · 8.1 GB of memory', busiest: 'Busiest: Mac Studio, 43% CPU', notAnswering: ['Mama PC'] }, machines: [
+      { name: 'Mama PC', state: 'not-answering', line: 'Not answering', sessions: [] },
+      { name: 'Mac Studio', state: 'answering', line: '43% CPU · 6.1 GB', server: { name: 'The agent server', cpuPercent: 4, memoryBytes: 1e9 }, sessions: [{ name: 'build', cpuPercent: 20, memoryBytes: 5e8 }] },
+    ] }));
+    expect(u).toMatchObject({ ok: true, pooled: true, summary: '2 of 3 machines · 8.1 GB of memory', notAnswering: ['Mama PC'] });
+    expect(u.byName['Mama PC']).toEqual({ line: 'Not answering', state: 'not-answering', rows: [] });
+    expect(u.byName['Mac Studio'].rows.map((r: { main: string }) => r.main)).toEqual(['The agent server', 'build']);
+    const old = poolUsageOf(ok({ machine: 'Mac Studio', enabled: true, headline: 'Instar is using 4% CPU', sessions: [] }));
+    expect(old).toMatchObject({ ok: true, pooled: false, summary: 'Instar is using 4% CPU' });
+    expect(Object.keys(old.byName)).toEqual(['Mac Studio']);
+    expect(poolUsageOf({ ok: false, reason: 'timed out' })).toEqual({ ok: false, reason: 'timed out' });
   });
   it('names a struggling machine, and one that is not answering, never "offline"', () => {
     const p = buildMachinesPage(ok({ machines: [mach({}), mach({ machineId: 'm2', nickname: 'Mama PC', loadAvg: 64 })] }), null, NOW);
@@ -78,7 +98,10 @@ describe('machines page in a DOM', () => {
       '/guards': { summary: { offDeviant: 0, loadBearingGapKeys: [] }, guards: [] },
       '/sessions?scope=pool': { sessions: [{ id: 's1', name: 'Fix it', status: 'running', machineId: 'm1' }], pool: { failed: [] } },
       '/systems/status': { activeCapabilities: [{ label: 'Session Recovery', status: 'active' }], issues: [] },
-      '/resources/summary?sinceHours=1': { sources: [] },
+      '/mobile/resources': { machine: 'Mac Studio', enabled: true, headline: 'x', scope: 'pool', combined: { headline: 'All 2 machines · 3.0 GB of memory · 1 session', busiest: 'Busiest: Mac Mini, 30% CPU' }, machines: [
+        { name: 'Mac Studio', state: 'answering', line: '12% CPU · 1.0 GB', sessions: [{ name: 'Fix it', cpuPercent: 8, memoryBytes: 5e8 }] },
+        { name: 'Mac Mini', state: 'answering', line: '30% CPU · 2.0 GB', sessions: [] },
+      ] },
     };
     g.fetch = async (url: string) => { const b = table[url]; return b === undefined ? { ok: false, status: 404, json: async () => ({}) } : { ok: true, status: 200, json: async () => JSON.parse(JSON.stringify(b)) }; };
     vi.resetModules();
@@ -88,10 +111,22 @@ describe('machines page in a DOM', () => {
     expect(doc.querySelector('.page-title')!.textContent).toBe('Both machines are answering.');
     expect(doc.querySelector('#main')!.textContent).not.toContain('null');
     expect(doc.querySelectorAll('.machine-card')).toHaveLength(2);
-    (doc.querySelector('.machine-card') as HTMLButtonElement).click();
+    const main = doc.querySelector('#main')!.textContent!;
+    expect(main).not.toMatch(/this one|this machine/i);
+    expect(main).toContain('All 2 machines · 3.0 GB of memory · 1 session');
+    const card = (name: string) => [...doc.querySelectorAll('.machine-card')].find((c) => c.querySelector('.mc-name')!.textContent === name) as HTMLButtonElement;
+    expect(card('Mac Mini').textContent).toContain('Using 30% CPU · 2.0 GB');
+    card('Mac Studio').click();
     for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 20));
     expect(doc.querySelector('.sheet-title')!.textContent).toBe('Mac Studio');
     expect(doc.querySelector('.sheet-body')!.textContent).toContain('All 1 parts working.');
+    expect(doc.querySelector('.sheet-body')!.textContent).toContain('Fix it');
+    // A machine other than the one serving the page shows its resources and a Remote desktop link too.
+    card('Mac Mini').click();
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 20));
+    const sheetBody = [...doc.querySelectorAll('.sheet-body')].pop()!;
+    expect(sheetBody.textContent).toContain('30% CPU · 2.0 GB');
+    expect(sheetBody.querySelector('a[href="/dashboard/desktop.html?machineId=m2"]')!.textContent).toBe('Open Mac Mini');
   });
 });
 
@@ -111,7 +146,7 @@ describe('machineCarePool (CMT-1199)', () => {
     expect(v.byMachine.m_self).toBe('Up 2 days · no practice run yet');
     expect(v.byMachine.m_mini).toBe('Up 9 days · practice run: would have waited a night · holding: A person using the machine now');
     expect(v.selfLine).toBe('Up 2 days · no practice run yet');
-    expect(v.missing).toEqual(['Mama PC: can’t tell, on an older version', 'a machine with no name yet: can’t tell, did not answer']);
+    expect(v.missing).toEqual(['Mama PC: can’t tell, on an older version', 'a machine with no name yet: can’t tell, not answering (for how long is not known); not known whether anything is fixing it']);
   });
 
   it('treats an older server that ignores scope=pool as this machine only', async () => {

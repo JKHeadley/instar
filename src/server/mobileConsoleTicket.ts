@@ -10,6 +10,7 @@
  * Challenges and tickets live only in this process's memory, bound to the device and the Host
  * the request was signed for (machine-local by design: spec, Multi-machine posture).
  */
+import { storageErrorResponse } from '../core/storageMachineName.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -19,6 +20,7 @@ import { arrivedOverLocalTls } from '../core/desktopTransport.js';
 import { normalizeRequestHost } from '../core/MobileOwnNames.js';
 import { isStrictLowSDer, parseDevicePublicKey } from '../core/MobileDeviceKeys.js';
 import type { InstarConfig } from '../core/types.js';
+import { resolveDevAgentGate } from '../core/devAgentGate.js';
 import { maybeRotateJsonl } from '../utils/jsonl-rotation.js';
 import type { MobilePairingService } from './mobilePairingRoutes.js';
 
@@ -40,6 +42,12 @@ const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 export function isConsoleTicketEnabled(config: InstarConfig): boolean {
   const mp = config.mobilePairing as { consoleTicket?: { enabled?: boolean } } | undefined;
   return mp?.consoleTicket?.enabled !== false;
+}
+
+/** Whether Remote Desktop with Face ID is on (mirrors isOwnerPresenceEnabled without an import cycle). */
+function isOwnerPresenceOn(config: InstarConfig): boolean {
+  const mp = config.mobilePairing as { ownerPresence?: { enabled?: boolean } } | undefined;
+  return resolveDevAgentGate(mp?.ownerPresence?.enabled, config);
 }
 
 const sha256 = (s: string): string => crypto.createHash('sha256').update(s).digest('hex');
@@ -151,8 +159,8 @@ export class ConsoleTicketAudit {
   private pendingUnknown = 0;
   private lastFlush = 0;
   constructor(stateDir: string, private readonly now: () => number = Date.now,
-    private readonly report: (err: unknown) => void = () => {}) {
-    this.file = path.join(stateDir, 'state', 'mobile-console-tickets.jsonl');
+    private readonly report: (err: unknown) => void = () => {}, fileName = 'mobile-console-tickets.jsonl') {
+    this.file = path.join(stateDir, 'state', fileName);
   }
 
   record(row: Omit<ConsoleAuditRow, 'at'>): void {
@@ -213,7 +221,9 @@ export function consoleState(svc: MobilePairingService, now: () => number = Date
 export function activeOwnerPhone(svc: MobilePairingService, deviceId: string): boolean {
   if (!svc.enabled()) return false;
   const d = svc.devices.get(deviceId);
-  if (!d || d.status !== 'active' || !d.publicKey) return false;
+  // Fails closed for a browser on purpose (dashboard-conversations-browser-device §4.1): it reads
+  // `publicKey`, which a browser record never has, and refuses `client: 'browser'` explicitly.
+  if (!d || d.status !== 'active' || !d.publicKey || d.client === 'browser') return false;
   if (svc.keyLedger && svc.keyLedger.isRevoked(deviceKeyHashOf(d.publicKey), d.id)) return false;
   const p = svc.personOfDevice(d);
   return p.ok && p.role === 'owner';
@@ -239,9 +249,12 @@ export function signedHost(req: Request, svc: MobilePairingService, deviceId: st
  * whose person is the owner. Mounted on the authed mobile-pairing router.
  */
 export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairingService): void {
-  const gate = (req: Request, res: Response): string | null => {
+  /** `enrolment`: the presence-key route also serves Remote Desktop and the PIN page (mobile-owner-presence-pin §2.4 step 6). */
+  const gate = (req: Request, res: Response, enrolment = false): string | null => {
     res.setHeader('Cache-Control', 'no-store');
-    if (!svc.enabled() || !isConsoleTicketEnabled(svc.deps.config) || !svc.deps.config.authToken) {
+    // Team access's Face ID controls need the key too, on any agent with native conversations.
+    const on = isConsoleTicketEnabled(svc.deps.config) || (enrolment && (isOwnerPresenceOn(svc.deps.config) || svc.nativeOn));
+    if (!svc.enabled() || !on || !svc.deps.config.authToken) {
       res.status(503).json({ error: 'console-ticket-off', detail: 'Opening the console from the app without the PIN is turned off on this agent.' });
       return null;
     }
@@ -257,7 +270,7 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
   const st = () => consoleState(svc);
 
   router.post(PRESENCE_KEY_PATH, (req: Request, res: Response) => {
-    const deviceId = gate(req, res);
+    const deviceId = gate(req, res, true);
     if (!deviceId) return;
     const body = (req.body ?? {}) as Record<string, unknown>;
     const key = body.publicKey;
@@ -276,7 +289,7 @@ export function mountConsoleTicketDeviceRoutes(router: Router, svc: MobilePairin
     let r: ReturnType<typeof svc.devices.setPresenceKey>;
     try { r = svc.devices.setPresenceKey(deviceId, stored); } catch (err) {
       svc.deps.reportDegradation?.('MobileConsoleTicket.presenceKey', err);
-      res.status(500).json({ error: 'Could not record the key. Try again.' });
+      res.status(500).json(storageErrorResponse({ error: 'Could not record the key. Try again.' }, svc.deps.stateDir));
       return;
     }
     if (r === 'conflict') { res.status(409).json({ error: 'presence-key-set', detail: 'This phone already has a sign-in key. Remove and pair the phone again to replace it.' }); return; }
