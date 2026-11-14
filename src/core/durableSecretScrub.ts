@@ -195,6 +195,25 @@ interface RawSpan {
 }
 
 /**
+ * Every value any pattern matches, BEFORE overlap resolution: a span the scrub would drop as
+ * overlapping another still counts here. For comparing two texts in memory; never store the result.
+ * A pattern failure throws, so the caller can refuse to vouch for the text.
+ */
+export function rawSecretMatches(input: string): string[] {
+  const found: string[] = [];
+  for (const { regex, group } of DURABLE_SECRET_PATTERNS) {
+    regex.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = regex.exec(input)) !== null) {
+      const value = m[group ?? 0];
+      if (value) found.push(value);
+      if (m[0].length === 0) regex.lastIndex++;
+    }
+  }
+  return found;
+}
+
+/**
  * scrubForStore — the metadata-returning safety-floor scrub (spec §2).
  *
  * Replaces every matched credential span with a typed `[REDACTED:<kind>]` marker

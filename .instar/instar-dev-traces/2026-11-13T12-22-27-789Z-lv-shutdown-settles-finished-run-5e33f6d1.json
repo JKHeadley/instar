@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "slug": "lv-shutdown-settles-finished-run",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T12:22:27.789Z",
+  "artifactPath": "upgrades/side-effects/lv-shutdown-settles-finished-run.md",
+  "artifactSha256": "eb487c5437ff9319f42dc4140a77803a1771f4f549f6dfe585979f8a9f8ef31e",
+  "coveredFiles": [
+    "docs/specs/lv-shutdown-settles-finished-run.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/lv-shutdown-settles-finished-run.md",
+    "upgrades/side-effects/lv-shutdown-settles-finished-run.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One branch in LocalVerifyService.shutdown() and an exactly-once latch in onExit; no stored data or config changes; a revert undoes it. The file is part of the verification harness, so it had an independent second-pass review (two reads, concur both times) that examined the false-green question specifically.",
+  "eli16Path": "docs/specs/lv-shutdown-settles-finished-run.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-shutdown-settles-finished-run.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}

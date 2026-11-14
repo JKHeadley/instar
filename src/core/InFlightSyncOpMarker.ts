@@ -43,6 +43,16 @@ const state: MarkerState = {
 };
 let nowFn: () => number = () => Date.now();
 let mirrorStateDir: string | null = null; // set once at boot; null ⇒ no file mirror
+/**
+ * What the mirror FILE currently says (the writer's own record of its last write). The file is
+ * written on a depth transition only when the reader's answer would change, not on every op:
+ * on 2026-11-13 a CPU profile of a busy server put ~11% of its wall time in this mirror's
+ * writeFile+rename (two per tmux call) against ~2% in the tmux spawns it brackets.
+ */
+const disk = { inFlight: false, setAtMs: null as number | null, dirReady: null as string | null };
+let idleFlushScheduled = false;
+/** A burst of sync ops keeps one on-disk stamp; it is re-stamped once it is this fraction of the TTL old. */
+export const MIRROR_RESTAMP_TTL_FRACTION = 4;
 
 // test-only
 export function __setSyncOpClock(fn: () => number): void {
@@ -55,13 +65,22 @@ export function __resetSyncOpMarker(): void {
   state.ttlMs = DEFAULT_SYNC_OP_TIMEOUT_MS * STALE_TTL_FACTOR;
   nowFn = () => Date.now();
   mirrorStateDir = null;
+  disk.inFlight = false;
+  disk.setAtMs = null;
+  disk.dirReady = null;
+  idleFlushScheduled = false;
 }
 
 export function configureSyncOpMarker(opts: { callTimeoutMs?: number; stateDir?: string | null }): void {
   if (opts.callTimeoutMs && Number.isFinite(opts.callTimeoutMs) && opts.callTimeoutMs > 0) {
     state.ttlMs = opts.callTimeoutMs * STALE_TTL_FACTOR;
   }
-  if (opts.stateDir !== undefined) mirrorStateDir = opts.stateDir;
+  if (opts.stateDir !== undefined) {
+    mirrorStateDir = opts.stateDir;
+    disk.inFlight = false; // a new mirror location has no file yet: the next enter writes it
+    disk.setAtMs = null;
+    disk.dirReady = null;
+  }
 }
 
 /** Best-effort atomic file mirror for the cross-process reader; NEVER throws. */
@@ -70,7 +89,10 @@ function mirror(): void {
   try {
     const dir = path.join(mirrorStateDir, 'state');
     const file = path.join(dir, MARKER_FILENAME);
-    fs.mkdirSync(dir, { recursive: true });
+    if (disk.dirReady !== dir) {
+      fs.mkdirSync(dir, { recursive: true });
+      disk.dirReady = dir;
+    }
     const payload = JSON.stringify({
       depth: state.depth,
       setAtMs: state.setAtMs,
@@ -79,7 +101,10 @@ function mirror(): void {
     const tmp = `${file}.tmp`;
     fs.writeFileSync(tmp, payload);
     fs.renameSync(tmp, file); // atomic
+    disk.inFlight = state.depth > 0;
+    disk.setAtMs = state.setAtMs;
   } catch {
+    disk.dirReady = null; // the directory may have gone: the next write re-creates it
     // @silent-fallback-ok: the mirror is best-effort — an unwritable mirror (full disk,
     // permissions) must NEVER break a tmux call; the cross-process amplifier degrades to
     // its fail-open (reader sees no file ⇒ supervisor restarts a dead server) — the safe direction.
@@ -93,14 +118,45 @@ function enter(): void {
     state.depth = 0;
     state.setAtMs = null;
   }
-  if (state.depth === 0) state.setAtMs = nowFn(); // stamp the EARLIEST open op (no advance on the 2nd enter)
+  const opening = state.depth === 0;
+  if (opening) state.setAtMs = nowFn(); // stamp the EARLIEST open op (no advance on the 2nd enter)
   state.depth += 1;
-  mirror();
+  // The file must say "in flight" BEFORE the op blocks the loop, so this write stays synchronous.
+  // It is skipped when the file already says so with a recent stamp: a nested op (the reader only
+  // tests depth > 0), or the next op of a burst whose idle flush has not run yet. An older stamp
+  // on disk only makes the reader call the marker stale sooner, which is its fail-open side.
+  if (!opening) return;
+  // A negative age (the clock stepped back) is never fresh: a future-dated stamp is rewritten.
+  const diskAgeMs = disk.setAtMs === null ? -1 : state.setAtMs! - disk.setAtMs;
+  const fresh = disk.inFlight && diskAgeMs >= 0 && diskAgeMs <= state.ttlMs / MIRROR_RESTAMP_TTL_FRACTION;
+  if (!fresh) mirror();
 }
 function leave(): void {
   state.depth = Math.max(0, state.depth - 1);
-  if (state.depth === 0) state.setAtMs = null;
-  mirror();
+  if (state.depth > 0) return;
+  state.setAtMs = null;
+  // "Not in flight" is written once the loop is free again, not after every op: a turn that makes
+  // N sync calls costs one write here, not N.
+  // MEANING OF THE FILE (changed 2026-11-13): it says in-flight for the rest of the loop turn in
+  // which a marked op ran, not only while the op itself runs. Two consequences for the reader:
+  //  - a loop that hangs on something unmarked right after an op reads in-flight until the stamp
+  //    passes the TTL, then stale;
+  //  - a turn that never yields but keeps starting marked ops (each re-stamp keeps it fresh) reads
+  //    in-flight for as long as that lasts, so the supervisor defers on every check up to its own
+  //    hard cap (starvationRestartThreshold, about 5 minutes) where it used to defer only on the
+  //    checks that landed inside an op. The turn is still starting subprocess ops (most of its
+  //    time may be unmarked JS); close to the class the deferral exists for, and accepted
+  //    deliberately. The hard cap is unchanged.
+  if (!disk.inFlight || idleFlushScheduled) return;
+  idleFlushScheduled = true;
+  setImmediate(flushSyncOpMirror);
+}
+/** Write the idle state now if the file still says in-flight and no op is open. Normally run from
+ *  the setImmediate that leave() queues; exported for an in-process reader of the file (the
+ *  server's wake handler settles the mirror before reading it) and for tests. */
+export function flushSyncOpMirror(): void {
+  idleFlushScheduled = false;
+  if (state.depth === 0 && disk.inFlight) mirror();
 }
 
 /** The SOLE funnel: wrap every synchronous subprocess/blocking call. depth is a COUNTER (overlap-safe). */

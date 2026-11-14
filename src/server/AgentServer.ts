@@ -1,3 +1,6 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Live-User-Channel Proof Before Done*
+
 import {GraphSourceInventoryBinding} from './GraphSourceInventoryBinding.js';
 import { activeSlackRefusedHold } from '../core/SlackRefusedHold.js';
 import { notificationStamper, withNotificationEnvelope } from '../messaging/notificationStampers.js';
@@ -107,6 +110,8 @@ import { runFeedbackFactoryDefaultsSelfHeal } from '../feedback-factory/drain/Fe
 import { FeedbackConsumerPromotionStore } from '../feedback-factory/drain/FeedbackConsumerPromotionStore.js';
 import { resolveFeedbackDrainPosture, type FeedbackDrainPosture } from '../feedback-factory/drain/FeedbackDrainPosture.js';
 import { FeedbackDrainBackupCadence } from '../feedback-factory/drain/FeedbackDrainBackupCadence.js';
+import { createBackupSnapshotInWorker } from '../core/backupSnapshotJob.js';
+import { createUsageLedgerTick } from '../monitoring/usageLedgerTick.js';
 import { buildFeedbackTriage } from '../feedback-factory/triage/buildFeedbackTriage.js';
 import { buildEcosystemIdeas } from '../ecosystem/buildEcosystemIdeas.js';
 import { buildFeedbackExecutor, disarmExecutorPrsWithoutExecutor, executorUpdatePending, isInstarSourceCheckout } from '../feedback-factory/execute/buildFeedbackExecutor.js';
@@ -2646,22 +2651,28 @@ export class AgentServer {
           fromPeer: (machineId, route) => peerGet(machineId, route),
           bearerOk: () => true,
         } as import('./usageRoutes.js').UsageRouteDeps;
-        let ticks = 0;
-        this.usageLedgerTimer = setInterval(() => {
-          try {
-            const rep = this.usageLedger?.scanTick();
-            // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
-            if (rep) featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending } });
-            if (++ticks % 60 === 0) {
-              this.usageLedger?.prune();
-              this.usageLedger?.dropMissingCheckpoints();
-              this.usageLedger?.writeSnapshot(snapshotPath);
-            }
-          } catch (err) { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
+        // The listing of every transcript file runs off the event loop (scanTickAsync):
+        // done synchronously here it held the main thread for over a minute on a
+        // contended disk and the supervisor killed the server (2026-11-13). The tick's
+        // rules (one at a time, a stuck listing is reported) are in usageLedgerTick.ts.
+        const usageTick = createUsageLedgerTick({
+          getLedger: () => this.usageLedger,
+          snapshotPath,
+          // Ladder evidence (feature-ladders.json → usage.ledger): one "fired" an hour while ingest runs.
+          onTick: (rep, tickMs) => {
+            if (tickMs > 60_000) console.warn(`[instar] usage-ledger tick took ${Math.round(tickMs / 1000)} s (files read ${rep.filesRead}, pending ${rep.pending})`);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick', 60 * 60 * 1000, { kind: 'fired', reason: 'ingest-tick', context: { filesRead: rep.filesRead, rowsCounted: rep.rowsCounted, pending: rep.pending, tickMs } });
+          },
+          onError: (err) => { /* @silent-fallback-ok: usage recording is observational; the next tick retries from the same checkpoints. */
             console.warn('[instar] usage-ledger tick failed (non-fatal):', err);
             featureEvidence.recordAtMostEvery('usage.ledger', 'tick-error', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-failed', context: { errorName: err instanceof Error ? err.name : 'unknown' } });
-          }
-        }, 60_000);
+          },
+          onStuck: (skipped, runningMs) => {
+            console.warn(`[instar] usage-ledger tick has been running ${Math.round(runningMs / 60000)} min; ${skipped} ticks skipped behind it`);
+            featureEvidence.recordAtMostEvery('usage.ledger', 'tick-stuck', 60 * 60 * 1000, { kind: 'error', reason: 'ingest-tick-stuck', context: { skipped, runningMs } });
+          },
+        });
+        this.usageLedgerTimer = setInterval(() => { void usageTick(); }, 60_000);
         if (typeof this.usageLedgerTimer.unref === 'function') this.usageLedgerTimer.unref();
       }
     } catch (err) { /* @silent-fallback-ok: a dev-gated observational store; the server runs fully without it. */
@@ -4290,7 +4301,19 @@ export class AgentServer {
         if (options.config.developmentAgent === true && sourceCheckout) {
           const backupTick = () => {
             if (!isCanonicalOwner()) return;
-            backupCadence.maybeHourly(() => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch));
+            // The bulk copy runs in a worker thread: on a disk busy with a test run the
+            // synchronous copy held the event loop for over a minute and the supervisor
+            // killed the server (2026-11-13). The checkpoint and the staging of the
+            // database files stay here, back to back, on this thread.
+            const tick = backupCadence.maybeHourlyOffThread(
+              (trigger) => createBackupSnapshotInWorker({ stateDir: options.config.stateDir, config: options.config.backup, trigger }),
+              () => store.checkpointForBackup(options.coordinator?.enabled ? options.coordinator.getLeaseEpoch() : localOwnerEpoch),
+            );
+            if (tick.started) {
+              tick.done.catch((error) => { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); });
+            } else if (tick.reason === 'in-flight' && tick.runningMs >= 30 * 60 * 1000) {
+              console.warn(`[feedback-factory] hourly checkpoint has been copying for ${Math.round(tick.runningMs / 60000)} minutes; no new one starts until it ends`);
+            }
           };
           setImmediate(() => { try { backupTick(); } catch (error) { /* @silent-fallback-ok: loud checkpoint warning; the next bounded cadence retries */ console.warn('[feedback-factory] hourly checkpoint failed:', error); } });
           this.feedbackDrainBackupTimer = setInterval(() => {
@@ -6442,6 +6465,23 @@ export class AgentServer {
         const run = this.feedbackDrain?.service.stats().lastRun;
         if (!run) return null;
         return { value: run.state === 'succeeded' || run.state === 'no-op' ? 1 : 0, samples: 1 };
+      });
+      // The fleet bar for the drain: the share of finished drain runs in the last 7 days that
+      // succeeded, read from the durable run table so it survives restarts (CMT-1613).
+      // `ran` is the count of finished runs; the share is a quality bar, so a real 0% reads as a
+      // hold rather than as no data.
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.finished-runs-7d', () => {
+        const store = this.feedbackDrain?.store;
+        if (!store) return null;
+        const { finished } = store.runOutcomes(Date.now() - 7 * 86_400_000);
+        return { value: finished, samples: finished };
+      });
+      this.blockerLifecycleService.registerMaturationProjection('feedback-factory.run-success-share-7d', () => {
+        const store = this.feedbackDrain?.store;
+        if (!store) return null;
+        const { succeeded, finished } = store.runOutcomes(Date.now() - 7 * 86_400_000);
+        if (finished === 0) return null;
+        return { value: succeeded / finished, samples: finished };
       });
       this.blockerLifecycleService.registerMaturationProjection('autonomous-throughput.observed-runs', () => {
         const runs = routeCtx.autonomousThroughputFloor?.status().runs.length ?? 0;
