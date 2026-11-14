@@ -244,3 +244,19 @@ export function failuresAllPreexisting(head: Set<string>, base: Set<string>): bo
   for (const k of head) if (!base.has(k)) return false;
   return true;
 }
+
+/**
+ * The listed test files whose text contains the named test (the whole name, or its last `>`
+ * segment, as Vitest prints a nested name). A file whose text is unknown counts as naming it, so
+ * nothing is dropped on missing evidence. When no file names it, all listed files are returned.
+ */
+export function filesNamingTest(files: readonly string[], testName: string, read: (file: string) => string | null): string[] {
+  const name = testName.trim();
+  const leaf = name.split(/\s+>\s+/).pop()?.trim() ?? name;
+  if (!leaf) return [...files];
+  const kept = files.filter((f) => {
+    const text = read(f);
+    return text === null || text.includes(name) || text.includes(leaf);
+  });
+  return kept.length > 0 ? kept : [...files];
+}

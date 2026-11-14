@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "slug": "feedback-attempt-resilience",
+  "sessionId": "c7ebcf37-5ca7-419f-a005-cf4c9107a40b",
+  "timestamp": "2026-11-13T10:35:06.694Z",
+  "artifactPath": "upgrades/side-effects/feedback-attempt-resilience.md",
+  "artifactSha256": "bbcf6c33f66e9a4823b78aef6891de794bdc690f7b0c599221b2a91558a79f4c",
+  "coveredFiles": [
+    "docs/specs/feedback-triage-and-execution.eli16.md",
+    "docs/specs/feedback-triage-and-execution.md",
+    "src/feedback-factory/execute/FeedbackExecutorService.ts",
+    "tests/unit/feedback-factory/execute-service.test.ts",
+    "upgrades/next/feedback-attempt-resilience.md",
+    "upgrades/side-effects/feedback-attempt-resilience.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Narrow executor fixes that only stop discarding or skipping attempts; no new authority; revert fully undoes.",
+  "eli16Path": "docs/specs/feedback-triage-and-execution.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/feedback-attempt-resilience.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
