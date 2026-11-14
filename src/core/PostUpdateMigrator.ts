@@ -1515,6 +1515,19 @@ ${PAIRING_APPROVE_DASHBOARD_BULLET}
 `;
 }
 
+/**
+ * Slack person mentions (default on for people in the conversation). Shown in every Slack
+ * session's spawn context and in CLAUDE.md, so an agent knows how to tag someone.
+ */
+export const SLACK_MENTIONS_SESSION_LINE = 'To tag a person in Slack, write <@USERID> (for example <@U1234567890>). Anyone who is in this channel, DM or thread gets tagged automatically; any other ID, @channel/@here/@everyone, and anything inside code stays plain text. To tag someone outside the conversation or link a channel on purpose, add --native-reference ID to the relay command for each one.';
+export const SLACK_MENTIONS_CLAUDEMD_MARKER = '### Slack person mentions';
+export function SLACK_MENTIONS_CLAUDEMD_SECTION(): string {
+  return `\n${SLACK_MENTIONS_CLAUDEMD_MARKER}
+
+- Write a Slack mention as \`<@USERID>\`, never a plain \`@Name\` (that never tags anyone). People in the conversation (members of the channel or DM, or people who posted in the thread) get tagged automatically, with no flag. Any other ID, bots, \`@channel\`/\`@here\`/\`@everyone\` and anything inside code stay plain text. To tag someone outside the conversation, or link a channel (\`<#C…>\`), on purpose: \`slack-reply.sh --native-reference ID\` for each one. If Slack cannot confirm who is in the conversation, the mention goes out as plain text and the message still sends.
+- **When to use** (PROACTIVE): you want a person in the Slack conversation to see your reply (you are answering them, or passing on something for them) → put \`<@THEIR_ID>\` in the reply. The sender's ID is in the inbound line (\`uid:U…\`).
+`;
+}
 export const SLACK_FROM_APP_CLAUDEMD_MARKER = '### Slack conversations from the Instar app';
 export const SLACK_OWNER_READ_AUTHORITY_LINE = '- **Owner-phone remote Slack history:** the server rechecks the signed phone\'s current key, person, owner role, revocation record and live pairing/native gates before every holder dial and before returning private history. Removing access while a read waits prevents that history from being returned. If revocation state cannot be checked, the read is refused. This does not proxy sends or remote file downloads.';
 /**
@@ -10782,6 +10795,12 @@ setTimeout(() => process.exit(0), 2000);
       content += SLACK_FROM_APP_CLAUDEMD_SECTION(port);
       patched = true;
       result.upgraded.push('CLAUDE.md: added Slack conversations from the Instar app section');
+    }
+    // Slack person mentions: default on for people in the conversation (2026-11-12).
+    if (!content.includes(SLACK_MENTIONS_CLAUDEMD_MARKER)) {
+      content += SLACK_MENTIONS_CLAUDEMD_SECTION();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Slack person mentions section');
     }
     if (!content.includes(SLACK_OWNER_READ_AUTHORITY_LINE)) {
       content = content.replace(SLACK_FROM_APP_CLAUDEMD_MARKER,
