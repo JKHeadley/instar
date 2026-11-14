@@ -444,6 +444,21 @@ describe('GraphProjection (filter first)', () => {
     expect(hidden.item(E)?.metadata).toEqual({});
   });
 
+  it('an untitled conversation shows its topic number, not a bare "Conversation", and search finds it', () => {
+    const p = new GraphProjection({ graph, conversations: [...conversations, conv(tg(141868), '', null)], effortTitle: titles, mayView: () => true });
+    expect(p.item(tg(141868))?.title).toBe('Topic 141868 (name unresolved)');
+    expect(p.list('all', 'topic 141868').map(nodeKey)).toEqual([nodeKey(tg(141868))]);
+    expect(p.item(tg(100))?.title).toBe('Front door');
+  });
+  it('an untitled Telegram conversation shows the verified registry name when there is one', async () => {
+    const { setTopicNameResolver } = await import('../../src/messaging/shared/topicRef.js');
+    setTopicNameResolver((id) => (Number(id) === 141869 ? 'Chief of Staff' : null));
+    try {
+      const p = new GraphProjection({ graph, conversations: [...conversations, conv(tg(141869), '', null)], effortTitle: titles, mayView: () => true });
+      expect(p.item(tg(141869))?.title).toBe('Chief of Staff');
+    } finally { setTopicNameResolver(null); }
+  });
+
   it('All lists every authorized node, assigned workers included (defect 4)', () => {
     const all = make(() => true).list('all', null).map(nodeKey);
     for (const r of [E, S, tg(100), tg(101), tg(102), tg(200), tg(300)]) expect(all).toContain(nodeKey(r));

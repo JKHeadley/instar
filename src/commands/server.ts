@@ -112,6 +112,7 @@ import { TopicReachabilityVerifier } from '../monitoring/TopicReachabilityVerifi
 import { probeTranscript } from '../monitoring/transcriptProber.js';
 import { SingleInstanceLock, installReleaseHandlers } from '../core/SingleInstanceLock.js';
 import { resolveDevAgentGate, resolveStateSyncStores } from '../core/devAgentGate.js';
+import { resolveWriteAdmissionGate } from '../core/writeAdmissionGate.js';
 import { chiefOfStaffInboundVerdict, chiefOfStaffRefusalLine, chiefOfStaffRefusesInbound, makeChiefOfStaffGate, CHIEF_OF_STAFF_NO_OWNER_NOTICE } from '../core/chiefOfStaffOwner.js';
 import { chiefOfStaffStoreEnabled } from '../core/ChiefOfStaffStore.js';
 import { JOB_LEASE_POOL_AUTHORITY_READY } from '../scheduler/JobLeaseClaimStore.js';
@@ -33460,7 +33461,10 @@ export async function startServer(options: StartOptions): Promise<void> {
     // is constructed just after), so no HTTP mutating route can ever observe a
     // half-attached state (§3.2 pre-construction window).
     let writeAdmission: import('../core/WriteAdmission.js').WriteAdmission | null = null;
-    if (resolveDevAgentGate(config.multiMachine?.writeAdmission?.enabled, config)) {
+    // Conversations needs this layer on every machine of a multi-machine agent
+    // (src/core/writeAdmissionGate.ts); its mode still follows `dryRun`.
+    const writeAdmissionGate = resolveWriteAdmissionGate(config);
+    if (writeAdmissionGate.enabled) {
       try {
         const waMod = await import('../core/WriteAdmission.js');
         const regMod = await import('../core/WriteDomainRegistry.js');
@@ -33533,7 +33537,7 @@ export async function startServer(options: StartOptions): Promise<void> {
           /* @silent-fallback-ok — the legacy key is inert and self-draining (6h max age);
              a failed cleanup only delays its disappearance and retries at the next boot. */
         }
-        console.log(pc.dim(`  Write-admission: live (${writeAdmission.mode()}) — machine ${waMachineId ?? 'local'}, legacy guard ${writeAdmission.isLive ? 'subsumed' : 'still enforcing'}`));
+        console.log(pc.dim(`  Write-admission: live (${writeAdmission.mode()}) — machine ${waMachineId ?? 'local'}, legacy guard ${writeAdmission.isLive ? 'subsumed' : 'still enforcing'}, on by ${writeAdmissionGate.reason}`));
       } catch (err) {
         // @silent-fallback-ok — reported via console.warn; init failure leaves the
         // layer null → route 503s + the legacy blanket guard keeps enforcing

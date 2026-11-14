@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "slug": "conversations-write-admission",
+  "sessionId": "b24900f6-f24c-4085-b443-9271fd27b5e8",
+  "timestamp": "2026-11-11T22:56:03.846Z",
+  "artifactPath": "upgrades/side-effects/conversations-write-admission.md",
+  "artifactSha256": "081018a082ac14d69765a8e67f916bcc820846149d0e621f616f305adc2755bd",
+  "coveredFiles": [
+    "src/commands/server.ts",
+    "src/core/conversationGraph.ts",
+    "src/core/writeAdmissionGate.ts",
+    "tests/e2e/write-admission-lifecycle.test.ts",
+    "tests/unit/conversation-graph.test.ts",
+    "tests/unit/writeAdmissionGate.test.ts",
+    "upgrades/conversations-write-admission.eli16.md",
+    "upgrades/next/conversations-write-admission.md",
+    "upgrades/side-effects/conversations-write-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Small, revert-reversible: a gate funnel that builds an existing layer in dry-run when Conversations needs it, plus a title fallback. No new authority; dry-run observes only.",
+  "eli16Path": "upgrades/conversations-write-admission.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversations-write-admission.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
