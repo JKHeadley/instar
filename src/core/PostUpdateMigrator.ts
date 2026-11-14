@@ -1339,8 +1339,10 @@ export const DASHBOARD_CONVERSATIONS_LINE = '- A browser device (dashboard Work 
 
 /** Pinned messages (docs/specs/conversation-pinned-messages.md): the bullet after the dashboard conversations line. */
 export const APP_CONVERSATIONS_PINS_LINE = '- Conversations have pinned messages, any number, newest pin first, like Telegram: a pin bar at the top of the conversation in the app and the dashboard. Pins are the same on every machine (kept in the conversation store). Read them: `GET /mobile/chat/app/KEY/pins`, `GET /mobile/chat/TOPIC_ID/pins` (Telegram topic), `GET /mobile/chat/slack/ID/pins?machine=` (my Bearer token works for reads), or the `pins` field on any history read; only a person\'s phone or dashboard browser pins or unpins (`POST …/pins {messageId, pinned, requestId}`). A pin in a Telegram topic is also pinned in Telegram (it needs the bot\'s pin right), and a pin someone makes in Telegram shows up here; an unpin made inside Telegram is NOT seen (Telegram tells a bot nothing), and pins made inside Slack are not read back. When the operator asks "what is pinned here?", read the pins, never guess. Off switch: `mobilePairing.native.pins.enabled: false`.';
-/** Keyword search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line. Sniff: "conversations/search". */
-export const APP_CONVERSATIONS_SEARCH_LINE = '- Search conversations by keyword: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switch: `mobilePairing.native.search.enabled: false` (503 `search-off`). Meaning search comes later; for now `mode=keyword` only.';
+/** Keyword and meaning search over conversations (docs/specs/conversation-search.md): the bullet after the pinned messages line. Sniff: "conversations/search", then "mode=meaning". */
+/** The keyword-only wording of the search line (PR 3162), replaced in place by the migration below. */
+export const APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY = '- Search conversations by keyword: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switch: `mobilePairing.native.search.enabled: false` (503 `search-off`). Meaning search comes later; for now `mode=keyword` only.';
+export const APP_CONVERSATIONS_SEARCH_LINE = '- Search conversations by keyword or by meaning: `curl -H "Authorization: Bearer $AUTH" "http://localhost:PORT/mobile/conversations/search?q=WORDS"` finds the words in every conversation the caller can list (app, Telegram, Slack), best match first; add `mode=meaning` to find messages that mean the same thing in other words (a local model on this machine, no AI calls; `coverage` says what fraction of this machine\'s messages it has learned so far, and 503 `meaning-unavailable` means search by words instead); add `ref=app:<uuid>` / `telegram:<topicId>` / `slack:<machine>:<id>` to search inside one, `scope=pool` to ask my other machines too (a machine that did not answer is named in `failedMachines` and the answer says `partial: true`). Each hit gives the conversation `ref`, the history `messageId` to scroll to, and a short `snippet` with `marks`. Off switches: `mobilePairing.native.search.enabled: false` (503 `search-off`), `mobilePairing.native.search.meaning.enabled: false` (meaning only).';
 export const APP_CONVERSATIONS_NATIVE_SESSION_LINE = '- The app\'s native session screen (owner phones only) reads `GET /sessions/<name>/output` and types with `POST /sessions/<name>/input`, phone-signed, on servers that support it (an older server answers 403 `device-not-allowed` and the app offers the dashboard instead). Only sessions running on this machine; plain text only, no keys; my token, the dashboard PIN and view signatures are redacted from what the phone sees. Each typed message is logged without its text in `logs/mobile-session-input.jsonl`. When the operator asks "did I type that from my phone?", read that log.';
 
 /**
@@ -10972,6 +10974,18 @@ setTimeout(() => process.exit(0), 2000);
         content = lines.join('\n');
         patched = true;
         result.upgraded.push('CLAUDE.md: added the conversation search line');
+      }
+    }
+
+    // Meaning search (conversation-search §4): the keyword-only search line becomes the keyword-and-meaning line.
+    if (content.includes('/mobile/conversations/search') && !content.includes('mode=meaning')) {
+      const lines = content.split('\n');
+      const at = lines.findIndex((l) => l === APP_CONVERSATIONS_SEARCH_LINE_KEYWORD_ONLY.replace('PORT', String(port)));
+      if (at >= 0) {
+        lines[at] = APP_CONVERSATIONS_SEARCH_LINE.replace('PORT', String(port));
+        content = lines.join('\n');
+        patched = true;
+        result.upgraded.push('CLAUDE.md: the conversation search line now mentions meaning search');
       }
     }
 

@@ -1,5 +1,5 @@
 ---
-title: Searching conversations (keyword now, meaning next)
+title: Searching conversations (keyword and meaning)
 slug: conversation-search
 eli16-overview: conversation-search.eli16.md
 status: draft
@@ -15,9 +15,9 @@ operator-request: "Justin, Telegram topic 134088, 2026-11-14 01:29 PST: search c
 ## Why this exists
 
 The operator asked to search conversations in the Instar iPhone app and the dashboard, by keyword and
-by meaning, across every conversation and inside one. This spec covers both halves. The keyword half
-is built in this PR (server route only). The meaning half is the next PR <!-- tracked: CMT-1758 -->;
-the route is shaped so it adds a `mode` value and nothing else changes.
+by meaning, across every conversation and inside one. This spec covers both halves (server route only):
+keyword search (§1-§3, PR 3162) and meaning search (§4, stacked on it). Meaning search adds a `mode`
+value, a background index and one response field; the keyword answer does not change.
 
 > **CMT-1758** — "Building in four PRs: filter/sort by app, pin conversations (agent-stored), keyword search across app/Telegram/Slack in app+dashboard, meaning search with the local engine"
 
@@ -34,7 +34,7 @@ the route is shaped so it adds a `mode` value and nothing else changes.
   ref of the unread markers). Malformed ⇒ 400 `bad-ref`. A conversation the caller cannot list ⇒ 404
   `unknown-conversation`, the same answer a missing one gets. Without `scope=pool`, a conversation this
   machine does not hold is also 404.
-- **`mode`:** `keyword` (the default). Any other value ⇒ 400 `mode-unsupported` until the meaning half ships.
+- **`mode`:** `keyword` (the default) or `meaning` (§4). Any other value ⇒ 400 `mode-unsupported`.
 - **`scope`:** absent ⇒ this machine. `pool` ⇒ every peer is asked for its own search with the agent's
   token (5 s each, at most 16 peers, 512 KB per answer), the answers merged. A team phone's pool read
   is answered from this machine only, as the list does.
@@ -90,18 +90,101 @@ Response 200:
   the snippet) and then judged on THIS machine with the same check; an app conversation not replicated
   here fails closed for a phone that needs its owner record.
 
-## 4. Meaning search (next PR) <!-- tracked: CMT-1758 -->
+## 4. Meaning search
 
-`mode=meaning` returns the same result shape, ranked by meaning instead of word overlap, with the same
-visibility and pool rules. Its index, model and cost bounds are designed in that PR; until then the route
-answers 400 `mode-unsupported` for it.
+`GET /mobile/conversations/search?q=<text>&mode=meaning[&ref=…][&limit=…][&scope=pool]` answers in the
+keyword shape, ranked by how close a message's meaning is to the query, with the same callers, rate
+bucket, visibility, `ref=` rules and pool fan-out as keyword. It finds a message that says the same
+thing in other words ("spaceship liftoff" for "rocket launch").
+
+### 4.1 Contract additions
+
+- `mode: "meaning"` in the answer, and **`coverage`**: the fraction (0-1, three decimals) of the messages
+  this machine holds that its index has looked at so far (embedded, or ruled too short), or `null` when a
+  store cannot count its messages. Below 1 the phone can say "still learning older messages". It is
+  machine-wide (not narrowed by `ref=`) and it does not set `partial`. A pool answer gives the lowest
+  coverage of the machines that answered.
+- Each hit: `rank` is the cosine similarity (0-1, higher first), comparable across machines (same model),
+  so pool merging and dedupe work as for keyword. `snippet` is ~160 characters around the first literal
+  query word when one occurs (and `marks` mark those words), else the start of the message (`marks: []`).
+- Hits below similarity 0.3 are dropped (the model puts unrelated text near 0-0.2), so a query about
+  nothing in the conversations answers no results rather than the nearest noise.
+- **503 `meaning-unavailable`** with `reason`: `off` (the switch below), `no-index` (no model on this
+  machine, or the index file could not be opened), `model-failed` (embedding the query threw),
+  `index-failed` (the vector query threw). The app then searches by words. A peer answering 503 is named
+  in `failedMachines` (as any refusal is). `mode=keyword` is unchanged byte for byte: no `coverage` field.
+- **Off switch:** `mobilePairing.native.search.meaning.enabled: false` (omitted ⇒ on wherever search is
+  on; read live): meaning answers 503 `meaning-unavailable` (`reason: off`) and the background embedder
+  does no work. `search.enabled: false` turns both modes off (503 `search-off`).
+
+### 4.2 The index
+
+`src/memory/ConversationEmbeddingIndex.ts`, one SQLite file per machine at
+`<stateDir>/state/conversation-embeddings.db` (mode 0600, WAL; registry category
+`derived-conversation-embeddings`). One row per message: `(ref, key)` primary key (app: event id;
+Telegram: the Telegram message id; Slack: the message ts), `platform`, `at`, `from_user`, a 24-hex sha-256
+of the embedded text, and the vector (384 float32, the shared local all-MiniLM-L6-v2 model that
+SemanticMemory loads at boot; no new model, no network, no LLM). A row with no vector marks a message
+under 3 words (looked at, not embedded). **The index holds no message text**: a search re-reads each
+candidate from its own store, so snippets are current and a message that is gone is dropped and its row
+forgotten. A different model or dimension stamp in `meta` empties the index; a corrupt file is set aside
+and refilled. At most 200,000 rows (the newest kept).
+
+Each message is embedded as the phone sees it (`deviceTextForRow` / `slackDeviceText`), its first 1200
+characters (the model reads ~256 tokens; the start carries the topic). Known limit: the meaning of a long
+message is judged from its beginning.
+
+### 4.3 Feeding it (background, throttled)
+
+A feeder fills the index from the same sources keyword search reads: TopicMemory rows (Telegram), the app
+conversation store (live native conversations only), and the Slack rows the history read serves. Every
+10 s (first tick 60 s after boot; unref'd timer; stopped on server stop) it:
+
+1. skips the tick when meaning or search is off, native conversations are off, the model is absent, or the
+   machine is busy: host CPU at least 85% busy since the last tick (idle under 15%, the line the
+   heavy-work admission hook uses) or the 1-minute load above 1.0 per core;
+2. checks the newest 100 messages of every source (a new message is searchable within a tick or two);
+3. continues one sweep page (400) per source, newest first through the older messages; when a sweep
+   reaches the oldest message it starts again from the newest, which picks up late-replicated messages
+   and edited text (the hash differs). App events never change, so a present app row is never re-read;
+4. stops embedding at 48 messages or 600 ms of embedding time in the tick, whichever comes first,
+   yielding to the event loop between embeds; the sweep resumes after the last message it handled.
+
+Cost, measured on the Mac Studio (2026-11-14, 200 real Telegram messages cut to 1200 characters, one ONNX
+thread, the existing `ONNX_SESSION_OPTIONS`): 9.3 ms of one core per message; a tick is at most ~450 ms
+of one core per 10 s, about 4.5% of ONE core while backfilling and nothing once caught up. Echo's 40.8k
+Telegram messages backfill in about 2.5 hours. The model is already resident at boot (SemanticMemory),
+so the added memory is the index file (~1.6 KB per message: ~65 MB for 40k).
+
+### 4.4 Searching it
+
+The route embeds the query (one ~10 ms model call), then asks the index for the nearest
+`min(150, 3 × limit)` rows **among the refs the caller can list only** (the keyword path's own
+`deviceMayUse` checks; the ref list goes into SQL, so a hidden conversation never takes a place in the
+top k). Distance is `vec_distance_cosine` from sqlite-vec when it loads into this connection, else an
+equivalent JS cosine registered on the connection (a full scan either way; bounded by the 200,000-row
+cap). Each candidate is re-read: an app message must pass `mayReadStored` (a held message is skipped,
+never forgotten), Telegram's history id is mapped as keyword does, Slack is read from the history rows.
+A vector or model failure answers 503 and never affects keyword search.
+
+### 4.5 Tier
+
+Tier 1, recorded: the index is a derived cache (deleting the file loses nothing; it refills), the route
+only returns what the existing checks allow, the live off switch stops both the route and the feeder, and
+a revert removes it. It does add a background process on every agent with native conversations; its cost
+is bounded per tick and measured above, and it skips under load.
 
 ## Multi-machine posture
 
 Proxied-on-read: each machine searches what it holds; `scope=pool` merges every machine's answer through
-the agent-token fan-out, naming a machine that did not answer. No durable state, no notices, no URLs.
+the agent-token fan-out, naming a machine that did not answer. Keyword search keeps no durable state.
+The meaning index is **machine-local by design**: each machine embeds the messages it holds (a replicated
+app conversation is embedded on every machine that holds it, a Telegram topic where TopicMemory has it,
+Slack only where it is held), and the pool read merges answers; replicating vectors would ship a second
+copy of every conversation for nothing a local re-embed cannot rebuild. No notices, no URLs.
 
 ## Decision points touched
 
 None that gate or block: the route filters results with the existing access checks (`deviceMayUse`,
-`mayReadStored`) and adds no new authority.
+`mayReadStored`) and adds no new authority. The feeder's load check only decides whether background
+indexing runs this tick (its own work), never anything else.

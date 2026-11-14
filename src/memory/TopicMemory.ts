@@ -874,6 +874,36 @@ export class TopicMemory {
     }));
   }
 
+  /**
+   * Meaning search (docs/specs/conversation-search.md §4): one page of rows for the embedding
+   * index, newest first by row id, older than `beforeId` (null ⇒ the newest). Null when the
+   * database is not open.
+   */
+  indexPage(beforeId: number | null, limit: number): Array<{ id: number; messageId: number; topicId: number; text: string; fromUser: boolean; timestamp: string }> | null {
+    if (!this.db) return null;
+    const n = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const rows = (beforeId === null
+      ? this.db.prepare('SELECT id, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser, timestamp FROM messages ORDER BY id DESC LIMIT ?').all(n)
+      : this.db.prepare('SELECT id, message_id AS messageId, topic_id AS topicId, text, from_user AS fromUser, timestamp FROM messages WHERE id < ? ORDER BY id DESC LIMIT ?').all(beforeId, n)) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: Number(r.id), messageId: Number(r.messageId), topicId: Number(r.topicId), text: String(r.text ?? ''),
+      fromUser: !!r.fromUser, timestamp: String(r.timestamp ?? ''),
+    }));
+  }
+
+  /** One row by topic and Telegram message id (meaning search re-reads each candidate), or null. */
+  messageByKey(topicId: number, messageId: number): { text: string; fromUser: boolean; timestamp: string } | null {
+    if (!this.db) return null;
+    const r = this.db.prepare('SELECT text, from_user AS fromUser, timestamp FROM messages WHERE topic_id = ? AND message_id = ?').get(topicId, messageId) as Record<string, unknown> | undefined;
+    return r ? { text: String(r.text ?? ''), fromUser: !!r.fromUser, timestamp: String(r.timestamp ?? '') } : null;
+  }
+
+  /** How many rows the index holds (meaning search coverage), or null when not open. */
+  totalMessages(): number | null {
+    if (!this.db) return null;
+    return (this.db.prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n;
+  }
+
   // ── Summaries ───────────────────────────────────────────────
 
   /**

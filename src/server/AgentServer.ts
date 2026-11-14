@@ -223,7 +223,9 @@ import type { ConversationReadMarkerStore } from '../core/ConversationReadMarker
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
-import { createConversationSearchRouter } from './mobileConversationSearchRoutes.js';
+import { createConversationSearchRouter, isMeaningSearchEnabled, type ConversationSearchRouteDeps } from './mobileConversationSearchRoutes.js';
+import { conversationIndexSources } from './conversationMeaningSearch.js';
+import { ConversationEmbeddingFeeder, ConversationEmbeddingIndex, type Embedder } from '../memory/ConversationEmbeddingIndex.js';
 import { telegramRowId } from '../core/ConversationReadMarkers.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
@@ -513,6 +515,8 @@ export class AgentServer {
   appConversations: AppConversationService | null = null;
   /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
   conversationUnread: ConversationUnreadService | null = null;
+  /** Meaning search over conversations (conversation-search §4): the index and its background feeder, when the model is here. */
+  conversationEmbeddings: { index: ConversationEmbeddingIndex; feeder: ConversationEmbeddingFeeder } | null = null;
   private attribution: AttributionRuntime | null = null;
   private readonly dashboardOperatorSessions = new DashboardOperatorSessionStore();
   private readonly desktopDelegatedSessions = new DesktopDelegatedSessionStore();
@@ -1323,6 +1327,8 @@ export class AgentServer {
     accountFollowMeRevocation?: import('../core/AccountFollowMeRevocation.js').AccountFollowMeRevocation;
     credentialRepointing?: import('./routes.js').RouteContext['credentialRepointing'];
     semanticMemory?: import('../memory/SemanticMemory.js').SemanticMemory;
+    /** Meaning search over conversations: the embedding model (default: SemanticMemory's shared provider). Tests inject a fake. */
+    conversationEmbedder?: Embedder;
     activitySentinel?: import('../monitoring/SessionActivitySentinel.js').SessionActivitySentinel;
     rateLimitSentinel?: import('../monitoring/RateLimitSentinel.js').RateLimitSentinel;
     releaseReadinessSentinel?: import('../monitoring/ReleaseReadinessSentinel.js').ReleaseReadinessSentinel;
@@ -7235,8 +7241,8 @@ export class AgentServer {
         }) : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
-      // Keyword search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
-      this.app.use(createConversationSearchRouter({
+      // Keyword and meaning search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
+      const searchDeps: ConversationSearchRouteDeps = {
         config: options.config, pairing: this.mobilePairing, service: this.appConversations,
         machineId: conversationFlatDeps.machineId,
         topicMemory: () => options.topicMemory ?? null,
@@ -7250,7 +7256,36 @@ export class AgentServer {
           history: (id, limit) => { const conv = slackBridge.resolve(id); return conv ? slackBridge.history(conv, limit) : []; },
         } : null) : undefined,
         pool: routeCtx,
-      }));
+      };
+      // Meaning search (§4): a machine-local message embedding index fed in the background with the
+      // shared local model (the one SemanticMemory loads at boot); off with search.meaning.enabled: false.
+      const embedder = options.conversationEmbedder ?? options.semanticMemory?.getEmbeddingProvider() ?? null;
+      if (this.appConversations && embedder) {
+        const index = new ConversationEmbeddingIndex({ dbPath: path.join(options.config.stateDir, 'state', 'conversation-embeddings.db'), dimensions: embedder.dimensions });
+        try {
+          index.open(embedder);
+          const feeder = new ConversationEmbeddingFeeder({
+            index, embedder: () => embedder, sources: () => conversationIndexSources(searchDeps),
+            enabled: () => !!this.mobilePairing?.enabled() && isMeaningSearchEnabled(options.config),
+            report: (what, detail) => DegradationReporter.getInstance().report({
+              feature: what, primary: 'meaning search over conversations (background message embedding)',
+              fallback: 'the next tick tries again; keyword search is unaffected', reason: detail, impact: 'Newer messages may not be found by meaning yet.',
+            }),
+          });
+          this.conversationEmbeddings = { index, feeder };
+          searchDeps.meaning = () => ({ index, embedder, coverage: () => feeder.coverage() });
+          feeder.start();
+        } catch (err) {
+          // @silent-fallback-ok — reported; meaning answers 503 meaning-unavailable and keyword search is unaffected
+          index.close();
+          DegradationReporter.getInstance().report({
+            feature: 'ConversationEmbeddings.open', primary: 'meaning search over conversations',
+            fallback: 'meaning search answers 503 meaning-unavailable; keyword search works', reason: err instanceof Error ? err.message : String(err),
+            impact: 'Searching by meaning is unavailable on this machine.',
+          });
+        }
+      }
+      this.app.use(createConversationSearchRouter(searchDeps));
       if(routeCtx.conversationRegistry){
         startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
           // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
@@ -9451,6 +9486,8 @@ export class AgentServer {
     this.mobilePairing?.push?.stop();
     this.mobilePairing?.stop();
     this.conversationUnread?.stop();
+    this.conversationEmbeddings?.feeder.stop();
+    this.conversationEmbeddings?.index.close();
     this.appConversations?.stop();
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();

@@ -17,9 +17,11 @@
  * reliably (app rows are only written with `contextBudget.enabled`; Slack rows are filed per
  * channel without the thread). A scan that stopped at its bound says so (`capped`).
  *
- * `mode` is `keyword` (the default). Meaning search is the next increment; until then any other
- * mode answers 400 `mode-unsupported`. Off switch: `mobilePairing.native.search.enabled`
- * (omitted ⇒ on wherever native conversations are on; `false` ⇒ 503 `search-off`). No LLM calls.
+ * `mode` is `keyword` (the default) or `meaning` (§4: the local embedding index, see
+ * `conversationMeaningSearch.ts`); any other value answers 400 `mode-unsupported`. Off switches:
+ * `mobilePairing.native.search.enabled` (omitted ⇒ on wherever native conversations are on;
+ * `false` ⇒ 503 `search-off`) and `mobilePairing.native.search.meaning.enabled` (omitted ⇒ on;
+ * `false` ⇒ meaning answers 503 `meaning-unavailable`, keyword is untouched). No LLM calls.
  */
 import { Router, type Request, type Response } from 'express';
 import type { InstarConfig } from '../core/types.js';
@@ -32,6 +34,7 @@ import { isPeerUrlAllowedForCredentials } from './peerUrlGuard.js';
 import { poolPeerFetch } from './poolPeerFetch.js';
 import { deviceTextForRow, slackDeviceText } from '../core/appPlatformMedia.js';
 import { accessRefOf, canonicalConversationRef, POSITION_ID_RE } from '../core/ConversationReadMarkers.js';
+import { searchMeaningLocal, type MeaningSearchDeps } from './conversationMeaningSearch.js';
 import {
   buildSnippet, ftsMatchExpression, HIGHLIGHT_CLOSE, HIGHLIGHT_OPEN, hitScore, marksFromHighlight, MAX_QUERY_CHARS,
   searchTerms, termMarks, type TextMark,
@@ -40,6 +43,11 @@ import {
 /** `mobilePairing.native.search.enabled`: omitted ⇒ on wherever native conversations are on. Read live. */
 export function isConversationSearchEnabled(config: InstarConfig): boolean {
   return isMobileNativeEnabled(config) && config.mobilePairing?.native?.search?.enabled !== false;
+}
+
+/** `mobilePairing.native.search.meaning.enabled`: omitted ⇒ on wherever search is on. Read live (the indexer reads it every tick). */
+export function isMeaningSearchEnabled(config: InstarConfig): boolean {
+  return isConversationSearchEnabled(config) && config.mobilePairing?.native?.search?.meaning?.enabled !== false;
 }
 
 export type SearchPlatform = 'app' | 'telegram' | 'slack';
@@ -80,6 +88,8 @@ export interface ConversationSearchRouteDeps {
   /** This machine's Slack conversations and their history rows; null when Slack is off or its owner id is unset. */
   slack?: () => { conversations(): Array<{ id: number; title: string | null }>; history(id: number, limit: number): SlackSearchRow[] } | null;
   pool?: PoolReadCtx | null;
+  /** Meaning search (§4): the embedding index and model; null ⇒ meaning answers 503 `meaning-unavailable`. */
+  meaning?: () => MeaningSearchDeps | null;
 }
 
 export const DEFAULT_LIMIT = 30;
@@ -317,7 +327,7 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     const kind = principalOf(req).kind;
     if (kind !== 'device' && kind !== 'token') { res.status(403).json({ error: 'operator-device-required' }); return; }
     const mode = req.query.mode === undefined ? 'keyword' : req.query.mode;
-    if (mode !== 'keyword') { res.status(400).json({ error: 'mode-unsupported', detail: 'Only keyword search is available on this agent.' }); return; }
+    if (mode !== 'keyword' && mode !== 'meaning') { res.status(400).json({ error: 'mode-unsupported', detail: 'mode must be keyword or meaning.' }); return; }
     if (req.query.scope !== undefined && req.query.scope !== 'pool') { res.status(400).json({ error: 'invalid-scope' }); return; }
     const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
     if (query.length < 1 || query.length > MAX_QUERY_CHARS) { res.status(400).json({ error: 'bad-query', detail: 'Type 1-200 characters to search for.' }); return; }
@@ -337,6 +347,7 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
       if (!pool && !heldHere(deps, only)) { res.status(404).json({ error: 'unknown-conversation' }); return; }
     }
     const terms = searchTerms(query);
+    if (mode === 'meaning') { await meaningSearch(deps, req, res, { query, terms, limit, only, pool, person, may }); return; }
     let local: LocalSearchResult;
     try {
       local = searchLocal(deps, { terms, limit, only }, { may, mayReadApp: (key, m) => deps.pairing.mayReadStored(person, key, m) });
@@ -372,6 +383,65 @@ export function createConversationSearchRouter(deps: ConversationSearchRouteDeps
     res.json({ ...base, results, partial: failedMachines.length > 0 || capped || unsearched.size > 0, failedMachines, capped, unsearched: [...unsearched] });
   });
   return router;
+}
+
+const meaningUnavailable = (res: Response, reason: 'off' | 'no-index' | 'model-failed' | 'index-failed') => {
+  res.status(503).json({ error: 'meaning-unavailable', reason, detail: 'Searching by meaning is not available on this agent right now. Search by words instead.' });
+};
+
+/** `mode=meaning` (§4): the same visibility, shape and pool rules as keyword, ranked by meaning. */
+async function meaningSearch(
+  deps: ConversationSearchRouteDeps, req: Request, res: Response,
+  q: { query: string; terms: string[]; limit: number; only: string | null; pool: boolean; person: ReturnType<typeof devicePersonOf>; may: (accessKey: string) => boolean },
+): Promise<void> {
+  if (!isMeaningSearchEnabled(deps.config)) { meaningUnavailable(res, 'off'); return; }
+  const meaning = deps.meaning?.() ?? null;
+  if (!meaning || !meaning.index.isOpen) { meaningUnavailable(res, 'no-index'); return; }
+  let queryVec: Float32Array;
+  try {
+    queryVec = await meaning.embedder.embed(q.query);
+  } catch (err) {
+    deps.service?.deps.reportDegradation?.('AppConversations.meaningSearch', `the embedding model failed: ${err instanceof Error ? err.message : String(err)}`);
+    meaningUnavailable(res, 'model-failed');
+    return;
+  }
+  let local: LocalSearchResult;
+  try {
+    local = searchMeaningLocal(deps, meaning, { queryVec, terms: q.terms, limit: q.limit, only: q.only }, {
+      may: q.may, mayReadApp: (key, m) => deps.pairing.mayReadStored(q.person, key, m),
+    });
+  } catch (err) {
+    deps.service?.deps.reportDegradation?.('AppConversations.meaningSearch', err instanceof Error ? err.message : String(err));
+    meaningUnavailable(res, 'index-failed');
+    return;
+  }
+  const base = { query: q.query, mode: 'meaning' as const, ref: q.only };
+  const ownCoverage = meaning.coverage();
+  if (!q.pool || q.person?.role === 'team' || !deps.pool) {
+    res.json({ ...base, results: local.results, partial: local.capped || local.unsearched.length > 0, failedMachines: [], capped: local.capped, unsearched: local.unsearched, coverage: ownCoverage });
+    return;
+  }
+  const path = `/mobile/conversations/search?mode=meaning&limit=${q.limit}&q=${encodeURIComponent(q.query)}${q.only ? `&ref=${encodeURIComponent(q.only)}` : ''}`;
+  const peers = await searchPeers(deps.pool, path);
+  let capped = local.capped;
+  let coverage = ownCoverage;
+  const unsearched = new Set<SearchPlatform>(local.unsearched);
+  const all: ConversationSearchHit[] = [...local.results];
+  for (const p of peers.results) {
+    if (p.body.capped === true) capped = true;
+    // The pool's coverage is the lowest of the machines that answered (the most "still learning").
+    const c = p.body.coverage;
+    if (typeof c === 'number' && Number.isFinite(c) && c >= 0 && c <= 1) coverage = coverage === null ? c : Math.min(coverage, c);
+    for (const u of Array.isArray(p.body.unsearched) ? p.body.unsearched : []) if (u === 'app' || u === 'telegram' || u === 'slack') unsearched.add(u);
+    for (const raw of Array.isArray(p.body.results) ? p.body.results.slice(0, MAX_LIMIT) : []) {
+      const h = sanitizePeerHit(raw, p.machineId);
+      if (h && q.may(accessKeyOf(h.ref))) all.push(h);
+    }
+  }
+  const ordered = all.map((h, i) => ({ h, i })).sort((a, b) => compareHits(a.h, b.h) || a.i - b.i).map((x) => x.h);
+  const results = dedupeHits(ordered).slice(0, q.limit);
+  const failedMachines = [...new Set(peers.failed)].sort();
+  res.json({ ...base, results, partial: failedMachines.length > 0 || capped || unsearched.size > 0, failedMachines, capped, unsearched: [...unsearched], coverage });
 }
 
 /** Does this machine hold the conversation a ref names? */

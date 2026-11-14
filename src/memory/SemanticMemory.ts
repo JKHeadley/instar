@@ -589,6 +589,11 @@ export class SemanticMemory {
     return this._vectorAvailable;
   }
 
+  /** The attached embedding provider (shared with conversation meaning search), or null. */
+  getEmbeddingProvider(): EmbeddingProvider | null {
+    return this.embeddingProvider;
+  }
+
   /**
    * Attach an EmbeddingProvider to enable hybrid search.
    * Must be called BEFORE open() for full effect, but can be called after

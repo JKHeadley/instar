@@ -1012,6 +1012,24 @@ export class AppConversationStore {
     return out;
   }
 
+  /**
+   * Meaning search (docs/specs/conversation-search.md §4): one page of message identities in live
+   * NATIVE app conversations for the embedding index, newest stored first (row order), older than
+   * `beforeRow` (null ⇒ the newest). No text: the indexer reads an event only when it lacks it.
+   */
+  messageIndexPage(beforeRow: number | null, limit: number): Array<{ row: number; canonicalKey: string; eventId: string; at: string }> {
+    const n = Math.max(1, Math.min(1000, Math.floor(limit)));
+    const live = `canonicalKey IN (SELECT canonicalKey FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%')`;
+    return (beforeRow === null
+      ? this.db.prepare(`SELECT rowid AS row, canonicalKey, eventId, at FROM messages WHERE ${live} ORDER BY rowid DESC LIMIT ?`).all(n)
+      : this.db.prepare(`SELECT rowid AS row, canonicalKey, eventId, at FROM messages WHERE rowid < ? AND ${live} ORDER BY rowid DESC LIMIT ?`).all(beforeRow, n)) as Array<{ row: number; canonicalKey: string; eventId: string; at: string }>;
+  }
+
+  /** How many messages live native app conversations hold (meaning search coverage). */
+  liveMessageCount(): number {
+    return (this.db.prepare(`SELECT COUNT(*) AS n FROM messages WHERE canonicalKey IN (SELECT canonicalKey FROM conversations WHERE tombstoned = 0 AND canonicalKey LIKE 'app:%')`).get() as { n: number }).n;
+  }
+
   /** Every live conversation key (boot alias re-derivation and lease-acquisition binds). */
   liveConversationKeys(): string[] {
     return (this.db.prepare('SELECT conversationKey FROM conversations WHERE tombstoned = 0').all() as Array<{ conversationKey: string }>).map((r) => r.conversationKey);
