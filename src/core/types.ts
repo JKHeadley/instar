@@ -4155,6 +4155,11 @@ export interface InstarConfig {
        * omitted ⇒ true wherever native conversations are on; `false` turns pins off alone. Read live.
        */
       pins?: { enabled?: boolean };
+      /**
+       * Keyword search over conversations (docs/specs/conversation-search.md). `enabled` omitted ⇒
+       * true wherever native conversations are on; `false` ⇒ the search route answers 503 `search-off`. Read live.
+       */
+      search?: { enabled?: boolean };
     };
     /**
      * Dashboard browsers as signed devices (docs/specs/dashboard-conversations-browser-device.md).

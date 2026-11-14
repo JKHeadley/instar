@@ -223,6 +223,8 @@ import type { ConversationReadMarkerStore } from '../core/ConversationReadMarker
 import { isAppConversationKey } from '../core/appConversationText.js';
 import { createMobileConversationRouter, appOwnerName } from './mobileConversationRoutes.js';
 import { createMobilePinRouter, recordTelegramPin } from './mobilePinRoutes.js';
+import { createConversationSearchRouter } from './mobileConversationSearchRoutes.js';
+import { telegramRowId } from '../core/ConversationReadMarkers.js';
 import { confinedEntryFor, createTeamRouter } from './teamRoutes.js';
 import { TEAM_ACCESS_DIR } from '../core/TeamAccessLog.js';
 import { PULL_INTERVAL_MS, PeerHasNoLog, ROWS_PER_CALL, TEAM_ENFORCEMENT_VERSION, TeamAccessPuller, type PeerRows } from '../core/TeamAccessSync.js';
@@ -7237,6 +7239,22 @@ export class AgentServer {
         }) : undefined,
       };
       this.app.use(createMobileConversationRouter(conversationFlatDeps));
+      // Keyword search over conversations (docs/specs/conversation-search.md): the same callers and visibility as the list.
+      this.app.use(createConversationSearchRouter({
+        config: options.config, pairing: this.mobilePairing, service: this.appConversations,
+        machineId: conversationFlatDeps.machineId,
+        topicMemory: () => options.topicMemory ?? null,
+        telegramTopics: options.telegram ? () => options.telegram!.getAllTopicMappings().map((m) => ({ topicId: m.topicId, topicName: m.topicName })) : undefined,
+        telegramHistoryId: options.telegram ? (topicId, nativeId, fromUser) => {
+          const row = options.telegram!.getTopicHistory(topicId, 500).find((r) => r.messageId === nativeId && !!r.fromUser === fromUser);
+          return row ? telegramRowId(row) : null;
+        } : undefined,
+        slack: slackBridge ? () => (slackOwnerUserId(options.config) ? {
+          conversations: () => slackListRows(slackBridge).map((c) => ({ id: c.id, title: c.title })),
+          history: (id, limit) => { const conv = slackBridge.resolve(id); return conv ? slackBridge.history(conv, limit) : []; },
+        } : null) : undefined,
+        pool: routeCtx,
+      }));
       if(routeCtx.conversationRegistry){
         startOwnedGraphInventory=(runtime,identity)=>{this.graphSourceInventory.use(runtime,async active=>{const {ConversationGraphSourceInventoryRuntime}=await import('./ConversationGraphSourceInventoryRuntime.js');
           // Without a paired phone the flat layer still calls this machine 'local'; the producer check compares real ids, so name it here. A different real id stays refused.
