@@ -15159,6 +15159,8 @@ export async function startServer(options: StartOptions): Promise<void> {
     const operatorLinkOrigin = createOperatorLinkOriginResolver({
       port: config.port, tunnelConfigured: () => !!tunnel, tunnelUrl: () => tunnel?.url,
     });
+    // Scheduler warnings link to the job's page; they wait for the public link like other notices.
+    scheduler?.setOperatorLinkOrigin(() => { const o = operatorLinkOrigin(); return o.kind === 'pending' ? null : o.origin; });
     if (tunnelEnabled) {
       // Persist tunnel config if it wasn't in config.json yet (existing agents)
       if (!config.tunnel) {
