@@ -138,6 +138,10 @@ export function buildDefaultServiceSeams(opts: DefaultServiceSeamOpts): Omit<Loc
     isGroupAlive(pgid: number): boolean {
       try { process.kill(-pgid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code === 'EPERM'; }
     },
+    isPidAlive(pid: number): boolean {
+      // Dead only on ESRCH (no such process). Anything else, EPERM included, means it exists.
+      try { process.kill(pid, 0); return true; } catch (e) { return (e as NodeJS.ErrnoException).code !== 'ESRCH'; }
+    },
     killGroup(pgid: number, signal: 'SIGTERM' | 'SIGKILL'): void {
       try { process.kill(-pgid, signal); } catch { /* @silent-fallback-ok: already gone */ }
     },

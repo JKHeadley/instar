@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "slug": "lv-adopt-running-verify",
+  "sessionId": "373885a0-dcfc-46c1-b89b-fe14eaf3da51",
+  "timestamp": "2026-11-13T13:03:08.907Z",
+  "artifactPath": "upgrades/side-effects/lv-adopt-running-verify.md",
+  "artifactSha256": "49d2c16c0ce67e052a22331fe4dc770fb416ca0680fca6e5f22f1309359c091c",
+  "coveredFiles": [
+    ".instar/instar-dev-decisions/2026-11-13T12-59-22-371Z-lv-adopt-running-verify.json",
+    ".instar/instar-dev-decisions/2026-11-13T13-02-25-359Z-lv-adopt-running-verify.json",
+    ".instar/instar-dev-decisions/2026-11-13T13-02-54-007Z-lv-adopt-running-verify.json",
+    ".instar/instar-dev-traces/2026-11-13T12-59-05-039Z-lv-adopt-running-verify-8d4477c2.json",
+    ".instar/instar-dev-traces/2026-11-13T13-02-38-589Z-lv-adopt-running-verify-e47c0412.json",
+    "docs/specs/lv-adopt-running-verify.eli16.md",
+    "src/localVerify/LocalVerifyService.ts",
+    "src/localVerify/localVerifyWiring.ts",
+    "src/localVerify/serviceSeams.ts",
+    "tests/unit/localVerify/LocalVerifyService.test.ts",
+    "upgrades/next/lv-adopt-running-verify.md",
+    "upgrades/side-effects/lv-adopt-running-verify.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "A third outcome for the boot-time orphan reap in LocalVerifyService, behind a live switch (on); no stored data changes shape; the switch or a revert undoes it. The file is the merge gate's coordinator, so it had an independent second-pass review (two reads, concur on the second; a blocker from the first is fixed and held by tests) that examined the false-green question specifically.",
+  "eli16Path": "docs/specs/lv-adopt-running-verify.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/lv-adopt-running-verify.md",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "classClosure": {
+    "defectClass": "unbounded-self-action",
+    "closure": "guard",
+    "guardEvidence": {
+      "enforcementType": "ratchet",
+      "citation": "tests/unit/self-action-convergence.test.ts",
+      "howCaught": "No new controller. An adopted run that ends without a result (crash, past its ceiling, record mismatch) re-drives through the existing handleErrorRetry and decideVerifyRetry, the registered local-verify retry controller: bounded error retries, then an error record with no re-run. The past-ceiling stop fires at most once per run (the settled latch in onExit). stopUnadopted is the existing boot-time kill of a live orphan, once per boot; the tick-time reap repeats it only while the group is still alive and never adopts."
+    }
+  }
+}
