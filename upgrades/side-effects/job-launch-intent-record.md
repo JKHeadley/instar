@@ -128,3 +128,11 @@ Left as is: `LaunchThinkingMode` mirrors `ThinkingMode` (documented at its defin
 
 - Frozen tests: `tests/unit/job-launch-*.test.ts`, `tests/unit/JobRunHistory-launch-cap.test.ts`, `tests/unit/framework-id-ratchet.test.ts`, `tests/unit/console-history-reader-unknown-keys.test.ts`, `tests/integration/job-launch-*.test.ts`, `tests/e2e/job-launch-lifecycle.test.ts` (snapshot sha256 c39426f4…), all green.
 - Ratchet: `node scripts/lint-framework-name-ratchet.mjs` → 1130 literals across 148 files, equal to frozen main.
+
+## Second-pass review of post-review commits (2026-11-14)
+
+**Reviewer:** Opus 5.5 subagent (fresh context, given the diffs and the worktree, not the builder's conclusion), read-only.
+
+**Scope:** the three commits after the 11-12 review: merges 713004a782 and 2fee22bbff (read as --remerge-diff) and 7bd33a8be (FROZEN_MAIN re-capture in tests/unit/framework-id-ratchet.test.ts).
+
+**Verdict: concur.** Both merge resolutions keep both sides: the release note restored to upgrades/next/ after main's release moved the folder, and the PostUpdateMigrator imports keep main's conversations-suggestions pair and this PR's thinking-mode pair, all used. The re-capture is legitimate: an independent AST counter over `git archive` copies gives 1130 at the old capture (3ae8208a6), 1135 at 9a8f921ca, current main and the merge base, and 1135 at PR HEAD with zero growth in any file; the baseline file equals FROZEN_MAIN; the 5 new literals came from main. The PR's net package.json change is only adding the ratchet lint step; tests/vitest-setup.ts and the vitest configs carry no PR change. framework-id-ratchet test: 19/19.
