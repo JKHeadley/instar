@@ -328,7 +328,10 @@ export function historyRow(m: BrowsedMessage, verify: (m: BrowsedMessage) => Ori
     // People and roles §3.3: who sent an operator message, as recorded when it was accepted.
     ...(m.senderName ? { senderName: m.senderName } : {}), ...(m.senderRole ? { senderRole: m.senderRole } : {}),
     ...(m.attachments && svc ? { attachments: attachmentRows(m.attachments, svc) } : {}),
-    ...(m.role === 'agent' && originCtx ? { origin: agentOriginRow(m, originCtx) } : {}),
+    // Work Board §2: a line the work board wrote is reported as the work board's, never as the agent's
+    // own words, and carries no "which model wrote this" row (no model did).
+    ...(m.systemSource ? { systemSource: m.systemSource } : {}),
+    ...(m.role === 'agent' && originCtx && !m.systemSource ? { origin: agentOriginRow(m, originCtx) } : {}),
   };
 }
 

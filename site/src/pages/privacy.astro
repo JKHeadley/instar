@@ -1,0 +1,83 @@
+---
+// Privacy policy for the Instar Agents iPhone app (App Store listing link).
+// Keep this accurate to what the app does: apps/instar-ios (Info.plist usage strings,
+// network calls go only to agents the person pairs).
+const updated = 'November 14, 2026';
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Privacy Policy · Instar Agents</title>
+    <meta name="description" content="Privacy policy for the Instar Agents iPhone app." />
+    <link rel="icon" href="/favicon.ico" />
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; background: #0a0e17; color: #e2e8f0; font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      main { max-width: 720px; margin: 0 auto; padding: 40px 16px 64px; }
+      a { color: #2dd4bf; }
+      h1 { font-size: 30px; margin: 0 0 4px; }
+      h2 { font-size: 20px; margin: 32px 0 8px; }
+      p.meta { color: #94a3b8; margin: 0 0 24px; }
+      li { margin: 6px 0; }
+      header a { text-decoration: none; color: #e2e8f0; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; margin-bottom: 24px; }
+      header img { width: 28px; height: 28px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header><a href="/"><img src="/logo.png" alt="" />Instar</a></header>
+      <h1>Privacy Policy</h1>
+      <p class="meta">Instar Agents for iPhone · Last updated {updated}</p>
+
+      <p>Instar Agents is an app for talking to AI agents that you run yourself, on your own computers or servers, with the open-source Instar software. This policy explains what the app does with your information. The short version: the app talks only to the agents you pair it with. We, the developer, do not run a service that receives your messages, and the app contains no advertising, analytics or tracking.</p>
+
+      <h2>Who we are</h2>
+      <p>The app is published by Justin Headley (SageMind AI). Contact: <a href="mailto:echo@sagemindai.io">echo@sagemindai.io</a>.</p>
+
+      <h2>What the app sends, and where</h2>
+      <ul>
+        <li><strong>To your own agents only.</strong> When you pair an agent, the app connects to that agent's address. It sends the agent what you write and choose to send: messages, photos, files and voice notes, plus the name of your phone and a public key that identifies your phone to that agent. Your agent stores these on the machine where you run it. We do not receive them.</li>
+        <li><strong>Notifications.</strong> If you allow notifications, the app gives your agent the push token Apple assigns to your phone, so your agent can notify you through Apple's push service. The notification itself carries no message text; the app fetches the preview from your agent.</li>
+        <li><strong>AI providers you choose.</strong> Your agent may send your messages to AI services you have set up on it (for example Anthropic or OpenAI) under your own accounts. That happens on your agent, under those providers' terms, not in this app.</li>
+      </ul>
+
+      <h2>What stays on your phone</h2>
+      <ul>
+        <li>The list of agents you paired, their addresses, and recent conversations so the app opens quickly.</li>
+        <li>A private key created in your phone's Secure Enclave. It never leaves the phone; it signs your requests so your agent knows they came from you.</li>
+        <li>Your app settings.</li>
+      </ul>
+
+      <h2>Permissions</h2>
+      <ul>
+        <li><strong>Camera</strong>: to scan an agent's pairing code and to take photos you send to your agent.</li>
+        <li><strong>Microphone</strong>: to record voice notes you send to your agent.</li>
+        <li><strong>Speech recognition</strong>: to turn your voice notes into text. Where your phone supports it, this runs on the phone. Otherwise Apple's speech service processes the audio under Apple's privacy policy.</li>
+        <li><strong>Face ID</strong>: to unlock the app and approve actions. Face ID is handled by iOS; the app never sees your face data.</li>
+      </ul>
+
+      <h2>What we do not do</h2>
+      <ul>
+        <li>No accounts with us, no advertising, no analytics, no tracking across apps or websites.</li>
+        <li>No selling or sharing of your information. We never receive it.</li>
+      </ul>
+      <p>If you choose to send feedback or crash reports through TestFlight or the App Store, Apple shares those reports with us under Apple's terms; we use them only to fix problems.</p>
+
+      <h2>Pairing links</h2>
+      <p>A pairing link from your agent opens instar.sh/pair. The secret part of the link stays in your browser and is never sent to the instar.sh website.</p>
+
+      <h2>Deleting your information</h2>
+      <p>Remove an agent in the app, or delete the app, to erase what the app stores on your phone. Messages kept by your agent live on your own machine, where you control and can delete them.</p>
+
+      <h2>Children</h2>
+      <p>The app is not directed at children under 13, and we do not knowingly collect information from them.</p>
+
+      <h2>Changes</h2>
+      <p>If this policy changes, we will update this page and the date above.</p>
+
+      <p>Questions: <a href="mailto:echo@sagemindai.io">echo@sagemindai.io</a> · <a href="/support">Support</a></p>
+    </main>
+  </body>
+</html>

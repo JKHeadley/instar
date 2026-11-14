@@ -1,3 +1,4 @@
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamSwitchLine } from '../core/TeamSwitches.js';
@@ -1856,7 +1857,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
     recent.push(t); chatRate.set(p.deviceId, recent);
-    if (!tg.getAllTopicMappings().some((m) => m.topicId === topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
+    if (!telegramTopicKnown(tg, topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
     if (!requestIdAgeOk(requestId, t)) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     svc.scanInbound(text); // may cancel a pending pairing; never refuses the message
     // With native conversations on (mobile-native-conversations §4.2, §4.9) no content check
@@ -2225,6 +2226,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  // Work Board: a guest sees only the cards whose conversation they may read (the handler filters).
+  ['GET', /^\/mobile\/work-board$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
@@ -2421,6 +2424,11 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'GET', re: /^\/mobile\/permissions\/slips$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'GET', re: /^\/mobile\/permissions\/features$/, statuses: active, body: 'none', ownerOnly: true, ownBucket: 20, bucket: 'permissions-reads' },
     { method: 'POST', re: /^\/mobile\/permissions\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'permission-actions' },
+    // Work Board (work-board-asks §7): any active phone reads the cards its person may see (the handler
+    // checks each card's conversation with the shared `mayUse`); only the owner's phone taps. Taps have their
+    // own bucket, so a run of card taps never uses up the allowance for approvals and switches.
+    { method: 'GET', re: /^\/mobile\/work-board$/, statuses: active, body: 'none', ownBucket: 30, bucket: 'work-board-reads' },
+    { method: 'POST', re: /^\/mobile\/work-board\/cards\/wc_[0-9a-f]{16}\/tap$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 30, bucket: 'work-card-taps' },
     // Remote Desktop with Face ID and the PIN page (mobile-owner-presence-pin §2.1–2.4): owner phone only,
     // their own bucket so retries can't use up the approvals' allowance.
     { method: 'POST', re: /^\/mobile\/desktop-unlock\/challenge$/, statuses: active, body: 'json', ownerOnly: true, ownBucket: 12, bucket: 'owner-presence' },
