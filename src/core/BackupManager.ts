@@ -277,6 +277,19 @@ const DEFAULT_CONFIG: BackupConfig = {
  * 'shared-state.jsonl*' → ['shared-state.jsonl', 'shared-state.jsonl.123'] and
  * 'state/skill-learning.db*' → ['state/skill-learning.db', 'state/skill-learning.db-wal'].
  */
+/** This machine's own `work-card-record` journal files (live + archives), relative to the state dir. Peers' replicas are not backed up: a restored machine is brought current by its peers' streams. */
+export function workCardJournalFiles(stateDir: string): string[] {
+  const dir = 'state/coherence-journal';
+  try {
+    return fs.readdirSync(path.join(stateDir, dir))
+      .filter((n) => /^[\w-]+\.work-card-record(\.\d+)?\.jsonl$/.test(n))
+      .sort()
+      .map((n) => `${dir}/${n}`);
+  } catch { // @silent-fallback-ok: no journal directory means there are no cards to back up
+    return [];
+  }
+}
+
 function expandGlob(stateDir: string, entry: string): string[] {
   if (!entry.includes('*')) return [entry];
   const starIdx = entry.indexOf('*');
@@ -429,6 +442,10 @@ export class BackupManager {
         expanded.push(entry);
       }
     }
+    // Work Board (docs/specs/work-board-asks.md §3 "Backup"): this machine's own work-card journal,
+    // the live file and every archive. Journal files are named `<machine>.<kind>[.<stamp>].jsonl`, which
+    // a single-wildcard entry cannot select, so they are listed here. No files ⇒ nothing added.
+    for (const f of workCardJournalFiles(this.stateDir)) if (!expanded.includes(f)) expanded.push(f);
     return expanded;
   }
 

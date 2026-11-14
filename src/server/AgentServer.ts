@@ -1774,6 +1774,9 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
+    workBoard?: () => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null;
+    workBoardLate?: { ledgerNote: ((cardId: string, causeId: string) => void) | null; ownerPersonKey: (() => string | null) | null; displayName: ((personKey: string) => string) | null };
     /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel (CMT-1901). Powers
      *  GET /external-hog + the PIN-gated arm/disarm routes. */
     externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel;
@@ -6319,6 +6322,8 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      workBoard: options.workBoard ?? null,
+      workBoardLate: options.workBoardLate ?? null,
       externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,

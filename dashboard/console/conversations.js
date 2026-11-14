@@ -103,7 +103,7 @@ function messageRow(message) {
   const time = Date.parse(message.at);
   return el('article', { class: `conversation-message${message.fromUser ? ' from-user' : ''}` },
     el('div', { class: 'need-sub' },
-      el('span', { text: message.fromUser ? (message.senderName || 'You') : 'Agent' }),
+      el('span', { text: message.fromUser ? (message.senderName || 'You') : message.fromWorkBoard ? 'Work board' : 'Agent' }),
       Number.isFinite(time) ? el('time', { datetime: message.at, text: new Date(time).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }) }) : null),
     el('p', { class: 'conversation-message-text', text: message.text }),
     message.attachmentCount ? el('p', { class: 'need-sub', text: `${message.attachmentCount} attachment${message.attachmentCount === 1 ? '' : 's'} · Open the original conversation to view.` }) : null);

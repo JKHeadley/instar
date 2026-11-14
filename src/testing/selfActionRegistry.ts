@@ -76,6 +76,8 @@ import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBr
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
 import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
+import { pickupBudgetLeft } from '../core/WorkBoardPickupController.js';
+import { DEFAULT_WORK_BOARD_SETTINGS } from '../core/WorkBoardService.js';
 
 /** A deterministic virtual clock — no real time, no randomness (a fixed adversary). */
 export interface VirtualClock {
@@ -5355,6 +5357,45 @@ const reloginApprovalReminder: SelfActionController = {
   },
 };
 
+/**
+ * work-board-pickup (docs/specs/work-board-asks.md §6): an approved card is handed to its
+ * conversation's session; the hand-over that spends (a session spawn or inject) is refused for
+ * ever. The real brake: spending attempts are counted from replicated `dispatching` records and
+ * park at the cap (a settling state); a failure park re-arms ONCE on an ownership change; nothing
+ * else but a person's tap adds an attempt. Waiting for capacity is a free read and emits nothing.
+ */
+const workBoardPickup: SelfActionController = {
+  id: 'work-board-pickup',
+  actionVerb: 'pickup-spawn',
+  models: 'src/core/WorkBoardPickupController.ts (pickupBudgetLeft: cap from replicated dispatching records, park, one ownership re-arm per park)',
+  modelsPath: 'src/core/WorkBoardPickupController.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'The attempt count and the park are replicated records (dispatching / dispatched), so a restart or a new owner folds the same count and mints no new budget; only the next free-check time is in memory.' },
+  boundK: DEFAULT_WORK_BOARD_SETTINGS.pickup.maxSpendingAttempts + 1,
+  perTargetBoundK: DEFAULT_WORK_BOARD_SETTINGS.pickup.maxSpendingAttempts + 1,
+  ticks: 3 * 1440,
+  tickMs: 60_000,
+  makeUnderPressure(f, sink) {
+    const TARGET = 'card-pickup';
+    const cap = DEFAULT_WORK_BOARD_SETTINGS.pickup.maxSpendingAttempts;
+    let attempts = 0;
+    let park: { retriesGranted: number; rearmed: boolean; attemptsSincePark: number } | null = null;
+    let tick = 0;
+    return {
+      tick() {
+        tick += 1;
+        sink.considered += 1;
+        // An ownership change every 100 ticks: it may re-arm a failure park once, and only once.
+        if (park && tick % 100 === 0 && !park.rearmed) park.rearmed = true;
+        if (pickupBudgetLeft(cap, attempts, park) <= 0) { if (!park) park = { retriesGranted: 0, rearmed: false, attemptsSincePark: 0 }; return; }
+        attempts += 1;
+        if (park) park.attemptsSincePark += 1;
+        sink.emit({ verb: 'pickup-spawn', target: TARGET });
+        if (!f.targetAlwaysRejects()) attempts = cap + 99; // (never under the pinned fixture)
+      },
+    };
+  },
+};
+
 export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   graphSourceSweepCheckpointRetry,
   graphSourceStatusPollRetry,
@@ -5484,4 +5525,5 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   readMarkerCatchUpRetry,
   browserActivationEffectRetry,
   emailFallbackRetry,
+  workBoardPickup,
 ];
