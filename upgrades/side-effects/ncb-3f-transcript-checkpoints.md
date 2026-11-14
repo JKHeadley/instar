@@ -170,3 +170,15 @@ Held: the applier and the store each check the forging rule (`JournalSyncApplier
 ## Class-Closure Declaration (display-only mirror)
 
 No agent-authored-artifact defect — not applicable.
+
+## Addendum (2026-11-13): ratchet fixes after merging main and slice 3d
+
+After merging current main and the slice 3d branch (which already qualified its own routes), two
+ratchets still counted slice 3f code:
+- The copied-record read route's `RangeError` answer now passes the error through `operatorError`
+  like the other caught-exception answers. For a `RangeError` that returns the same message, so the
+  400 body is unchanged.
+- The per-session copy catch in `TranscriptCheckpointSource.tick` carries `@silent-fallback-ok`: it
+  is not silent (it records `copy-failed` evidence and returns `error` for that session, and the next
+  tick retries).
+No behaviour change. Rollback: revert the commit.

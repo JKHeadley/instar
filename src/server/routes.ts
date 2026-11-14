@@ -12512,7 +12512,7 @@ export function createRoutes(ctx: RouteContext): Router {
         const page = readTranscriptAnswer(store.committedCopyFile(m), { ...q, clean: (t: string) => redactForDevice(t, secrets), maxBytes: q.row || q.full ? SESSION_TRANSCRIPT_PULL_MAX_BYTES : Number.MAX_SAFE_INTEGER });
         res.json({ ok: true, ...page, conversations: m.conversations, via: 'copy', machineId: m.sourceMachineId, copy: store.coverage(m, origin ? false : null), ...machine });
       } catch (err) {
-        if (err instanceof RangeError) res.status(400).json({ error: `That page cannot be read: ${err.message}`, reason: err.message });
+        if (err instanceof RangeError) { const reason = operatorError(err, ctx.config.stateDir); res.status(400).json({ error: `That page cannot be read: ${reason}`, reason }); }
         else res.status(500).json(storageErrorResponse({ error: `Could not read the copied record: ${operatorError(err, res.app?.locals?.stateDir)}` }, ctx.config.stateDir));
       }
       return true;

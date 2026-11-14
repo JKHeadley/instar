@@ -357,6 +357,7 @@ export class TranscriptCheckpointSource {
         try {
           out[s.sessionId] = await this.copySession(s, opts.final?.has(s.sessionId) === true);
         } catch (err) {
+          // @silent-fallback-ok — not silent: recorded as 'copy-failed' evidence and returned as 'error'; the next tick retries this session.
           out[s.sessionId] = 'error';
           this.deps.onEvidence?.('error', 'copy-failed', { error: err instanceof Error ? err.name : 'unknown' });
         }
