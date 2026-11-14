@@ -69,6 +69,7 @@ import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE
 import { signedPoolReadsAwareness, SIGNED_POOL_READS_AWARENESS_MARKER } from './poolSignedReads.js';
 import { transcriptCopiesAwareness, TRANSCRIPT_COPIES_AWARENESS_MARKER } from './transcriptCheckpoints.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
+import { dashboardInputAwareness, DASHBOARD_INPUT_AWARENESS_MARKER } from '../server/dashboardInputAwareness.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
 import os from 'node:os';
@@ -1933,7 +1934,7 @@ export function DISK_STEWARD_CLAUDEMD_SECTION(port: number | string): string {
 ## Disk Steward
 
 Every machine watches its own free space (every 15 minutes, inside the agent server, standbys included) and posts in the "Disk space (all machines)" topic when it gets low: under 15% or 100 GiB free (capped at 30% of small disks), more often under 10% or 60 GiB or when it is on track to fill within 3 days, and always when it reaches the 5% line where uploads are refused. Before warning it clears two tool caches if its cleanup is on (npm cache over 5 GiB, Xcode build files older than a day) and stays quiet if that fixed it. Only the awake machine posts, for every machine; each post names the machine. Cleanup is off by default and on for development agents; it never touches worktrees, agent state or the operator's files.
-- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders, and \`wholeDisk\`: once a day, which agents and home folders use the whole disk, with what was not opened) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
 - **When to use** (PROACTIVE): someone asks how full a machine is, why an upload was refused, or what is taking the space → read \`/disk-steward?scope=pool\` and answer from it in plain words.
 - Someone replies "clear disk on <machine>" in the Disk space topic → find that machine's id in \`/disk-steward?scope=pool\`, then \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/disk-steward/prune -d '{"machineId":"<id>","requestedBy":{"topicId":<topic>}}'\` (202 with a run id; \`GET /disk-steward/prune/<runId>\` for the result). It clears only the two caches, on that machine, and posts what it freed.
 - Someone asks to turn on the worktree cleaner on a machine → set \`monitoring.agentWorktreeReaper\` to \`{ "enabled": true, "dryRun": false }\` in that machine's config, restart it, and report its first pass (\`GET /worktrees/agent-reaper\`). It keeps any worktree that is in use, linked to by another checkout, or holds anything it cannot prove is rebuildable.
@@ -10031,6 +10032,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    // native-conversation-any-machine-access §3e — the dashboard reply box and its session line.
+    if (!content.includes(DASHBOARD_INPUT_AWARENESS_MARKER)) {
+      content += '\n' + dashboardInputAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard reply box awareness');
+    }
+
     // native-conversation-base §3b — the outcome route gives the execution owner's verdict.
     if (!content.includes(OWNER_READ_AWARENESS_MARKER)) {
       content += '\n' + telegramOriginOwnerReadAwareness();
@@ -17236,6 +17244,7 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
         [SIGNED_POOL_READS_AWARENESS_MARKER, () => signedPoolReadsAwareness(this.config.port ?? 4040)],
         [TRANSCRIPT_COPIES_AWARENESS_MARKER, () => transcriptCopiesAwareness(this.config.port ?? 4040)],
+        [DASHBOARD_INPUT_AWARENESS_MARKER, dashboardInputAwareness],
         [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
@@ -18419,6 +18428,30 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       let added = false;
       for (const [k, v] of Object.entries(defaults)) { if (cos[k] === undefined) { cos[k] = v; added = true; } }
       if (added) { config.chiefOfStaff = cos; patched = true; result.upgraded.push('config.json: Chief of Staff defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+    }
+
+    // Work Board (docs/specs/work-board-asks.md, Migration and rollout): the owner-tunable defaults,
+    // each added only when missing. `enabled` is deliberately NOT written: omitted follows the
+    // dev-agent gate (live on a development agent, dark on the fleet).
+    {
+      const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      const defaults: Record<string, unknown> = {
+        softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+      };
+      let added = false;
+      for (const [k, v] of Object.entries(defaults)) {
+        if (wb[k] === undefined) { wb[k] = v; added = true; continue; }
+        if (v && typeof v === 'object' && wb[k] && typeof wb[k] === 'object' && !Array.isArray(wb[k])) {
+          const cur = wb[k] as Record<string, unknown>;
+          for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) { if (cur[k2] === undefined) { cur[k2] = v2; added = true; } }
+        }
+      }
+      if (added) { config.workBoard = wb; patched = true; result.upgraded.push('config.json: Work Board defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+      // `multiMachine.stateSync.workBoard` is NOT written here: the runtime forces the store on with the
+      // feature (server.ts, as for the Chief of Staff), so no flag in the file turns replication on, and
+      // a migration that touched `multiMachine` would not be a no-op on its second run.
     }
 
     // An already-configured verifier gets the explicit dark diagnosis default;

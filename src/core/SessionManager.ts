@@ -4394,6 +4394,25 @@ rm()  { "${shimRunner}" rm  "$@"; }
     if (!decision.allowed) throw new AdmissionRefusedError(decision.reason ?? 'overloaded', decision.detail ?? 'machine overloaded');
   }
 
+  /**
+   * A PURE read of whether `spawnInteractiveSession` would start an AUTOMATIC session right now
+   * (Work Board §6, the free pre-check): the absolute session cap it enforces, then the overload
+   * admission's non-counting `check`. It writes no audit row, takes no slot and starts nothing.
+   * `admissionCheck` is the work-admission read (`getActiveWorkAdmission()?.check()`), passed in so
+   * this stays a read of what the spawn itself would decide.
+   */
+  interactiveSpawnCapacity(admissionCheck?: () => { allowed: boolean; detail?: string } | null | undefined): { ok: true } | { ok: false; reason: string } {
+    const running = this.listRunningSessions();
+    const absoluteLimit = this.config.maxSessions * 3;
+    const countable = running.filter((s) => !this.longIndeterminateSessions.has(s.id));
+    if (countable.length >= absoluteLimit) return { ok: false, reason: `every session slot is in use (${countable.length} of ${absoluteLimit})` };
+    try {
+      const d = admissionCheck?.();
+      if (d && !d.allowed) return { ok: false, reason: d.detail ?? 'this machine is overloaded' };
+    } catch { /* @silent-fallback-ok: an unreadable admission gate is treated as room, exactly as checkAdmission fails toward starting */ }
+    return { ok: true };
+  }
+
   async spawnSession(options: Parameters<SessionManager['spawnSessionInternal']>[0]): Promise<Session> {
     const running = this.listRunningSessions();
     const effectiveCount = running.length + this.pendingHeadlessSpawns;

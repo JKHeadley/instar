@@ -86,6 +86,19 @@ export const CAPABILITY_INDEX: readonly CapabilityEntry[] = [
     },
   },
   {
+    key: 'workBoard',
+    prefixes: ['/work-board'],
+    description: 'The Work Board (docs/specs/work-board-asks.md): a card for each decision, answer or sign-off the agent needs from a person on a piece of work. Each card says what is needed, what done means, who carries it and who acts next, and its chat is a real app conversation. Read it before answering "what is waiting on my person?" or "what cards are open?". The agent proposes cards, asks questions, adds evidence and claims done; only a person approves, answers, confirms done, holds, reopens or archives (a tap needs the dashboard PIN or the owner phone\'s Face ID). Text in a card\'s chat is never an approval.',
+    build: ({ ctx }) => {
+      const rt = (ctx as { workBoard?: (() => { svc: { cardIds: () => string[]; policy: () => string; waitingOnOwnerCount: () => number }; controller: { status: () => unknown } } | null) | null }).workBoard?.() ?? null;
+      if (!rt) return { enabled: false };
+      return {
+        enabled: true, cards: rt.svc.cardIds().length, waitingOnOwner: rt.svc.waitingOnOwnerCount(), policy: rt.svc.policy(), pickups: rt.controller.status(),
+        endpoints: ['GET /work-board', 'GET /work-board/cards/:id', 'POST /work-board/cards', 'POST /work-board/cards/:id/records', 'POST /work-board/cards/:id/tap (person, PIN)', 'POST /work-board/settings (person, PIN)', 'GET /mobile/work-board', 'POST /mobile/work-board/cards/:id/tap (owner phone, Face ID)'],
+      };
+    },
+  },
+  {
     key: 'contextBudget',
     prefixes: ['/context-budget'],
     description: 'The Context Budget sentinel (docs/specs/context-budget-layered-summaries.md §7.8): whether it is live, any stuck (quarantined) or unreadable context folds, the standing compaction canary — per machine, engine and version, whether every compaction got its recovery (healthy, accruing, diverged, uninitialized, n/a, or counted for an engine such as Codex whose compactions are detected from its rollout and counted, with recovery not yet verifiable and never healed by injection) — and the recorded results of the adapter verification suite (which engine capabilities the engine version on this machine really supports). Check this before saying compaction recovery works. GET /context-budget/layers shows the per-topic summary store and transcript archive on this machine (roots and modes, topics, bytes, replication outcomes; 503 while contextBudget.enabled is off). GET /context-budget/metrics (optional ?topic=, ?sinceHours=) is the measurement backend: cost-weighted tokens per request per session and topic, live context size, rework (pending while the ledger lags), extractor calls and tokens per day by trigger, LayerUpdate spend against its reserve, U size, archive and layer bytes, G/C growth; Anchors read unavailable until built (503 while contextBudget.enabled is off). GET /topic/:id/chunks lists a conversation\'s chunk (C) and range (C2) summaries with their sizes, status and each archived span\'s state (present, raw-evicted, unknown); GET /topic/:id/chunks/:k returns one. A pending chunk is an unsummarized gap that is retried on the next compaction. GET /context-budget/delta-shadow is the per-prompt delta hook\'s shadow comparison (§7.7): prompts measured, median and p95 of full vs delta characters, items the delta would omit, candidate re-fetches (unknown with a reason whenever anything was omitted), and whether reduction is allowed here (contextBudget.deltaHook.enabled, refused unless the compaction canary reads healthy). GET /topic/:id/prompt-context is the per-prompt hook\'s single request (full output in shadow).',

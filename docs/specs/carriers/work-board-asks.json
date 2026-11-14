@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-11-12T20:59:05.132Z",
+  "slug": "work-board-asks",
+  "carriers": {
+    "CMT-1420": {
+      "status": "pending",
+      "owner": "agent",
+      "blockedOn": "none",
+      "excerpt": "Write and converge the specs for Work Board phases 2 to 6 (loop: leases, cadence, blocker cards; boards, groups and member approval; agent-to-agent handoff; client audience with preview; folding in Chief of Staff and initiatives), each after the phase before it is live on the development agent. Tracked here so the later phases cannot rot."
+    }
+  }
+}

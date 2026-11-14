@@ -1,0 +1,24 @@
+{
+  "ts": "2026-11-11T22:56:55.928Z",
+  "slug": "conversations-write-admission",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 3,
+  "loc": 57,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/commands/server.ts",
+      "src/core/conversationGraph.ts",
+      "src/core/writeAdmissionGate.ts"
+    ],
+    "addedLines": 54,
+    "deletedLines": 3
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}
