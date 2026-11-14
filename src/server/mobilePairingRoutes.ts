@@ -2178,6 +2178,8 @@ const BROWSER_ROUTES: ReadonlyArray<[string, string]> = [
   ['POST', /^\/mobile\/device\/confirm$/.source],
   ['POST', /^\/mobile\/devices\/[^/]+\/revoke$/.source],
   ['GET', /^\/mobile\/conversations$/.source],
+  // Keyword search over conversations (conversation-search): the same visibility as the list.
+  ['GET', /^\/mobile\/conversations\/search$/.source],
   // Reading in the dashboard clears the count the phone sees (dashboard-read-markers): the same per-person marker.
   ['POST', /^\/mobile\/conversations\/read$/.source],
   ['POST', /^\/mobile\/conversations$/.source],
@@ -2225,6 +2227,8 @@ const TEAM_ROUTE_TIERS: ReadonlyArray<[string, RegExp, Tier]> = [
   ['GET', /^\/attention$/, 'admin'],
   ['GET', /^\/sessions$/, 'admin'],
   ['GET', /^\/mobile\/conversations$/, 'guest'],
+  // Searching is reading (conversation-search): only conversations and messages this person may read.
+  ['GET', /^\/mobile\/conversations\/search$/, 'guest'],
   // Reading is guest (mobile-unread-messages §3.5): a read report names what this person has seen.
   ['POST', /^\/mobile\/conversations\/read$/, 'guest'],
   ['GET', /^\/mobile\/team\/people$/, 'guest'],
@@ -2299,6 +2303,8 @@ export const DEVICE_ALLOWLIST: DeviceRule[] = (() => {
     { method: 'POST', re: /^\/mobile\/chat\/\d+$/, statuses: active, sendRoute: true },
     // Native app conversations (mobile-native-conversations §4.10), strict lowercase UUIDs.
     { method: 'GET', re: /^\/mobile\/conversations$/, statuses: active, conversationRef: true },
+    // Keyword search over conversations (conversation-search): `ref=` names one; its own bucket, so typing never uses up the read allowance.
+    { method: 'GET', re: /^\/mobile\/conversations\/search$/, statuses: active, body: 'none', conversationRef: true, ownBucket: 30, bucket: 'conversation-search' },
     { method: 'POST', re: /^\/mobile\/conversations$/, statuses: active },
     // Read reports (mobile-unread-messages §3.5): their own bucket, so they never draw on the shared
     // read allowance the emergency stop relies on. GET /mobile/conversations/read-markers is Bearer only.
