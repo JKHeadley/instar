@@ -240,6 +240,19 @@ instar wakeup [machine]         # Wake a paired machine (where supported)
 instar leave                    # Remove this machine from the multi-machine cluster
 ```
 
+## Mobile pairing
+
+Agents whose owner phones may add this agent with one Face ID tap. Edits `mobilePairing.ownerIntroducers` in the agent's own `.instar/config.json`; restart the agent after a change.
+
+```bash
+instar mobile introducer show [--json]               # Print this agent's own introducer entry, to add to an agent it creates
+instar mobile introducer add --name <n> --key <key>  # Trust an introducer's owner phones on this agent
+instar mobile introducer remove --key <key>          # Stop trusting an introducer
+instar mobile introducer list                        # List the introducers this agent trusts
+```
+
+All four take `--dir <path>` for an agent directory other than the detected one.
+
 ## Workspace and worktrees
 
 ```bash
