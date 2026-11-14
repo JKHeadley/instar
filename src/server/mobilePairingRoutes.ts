@@ -82,6 +82,7 @@ import {
   type ConversationOwner, type DevicePerson, type OwnerIdentity, type PeopleLookup, type PersonProfile, type ResolvedPerson, type TeamStanding,
 } from '../core/MobilePeople.js';
 import { parseReaderKey } from '../core/ConversationReadMarkers.js';
+import { MEDIA_OFF_ACTION } from './mobileMediaOff.js';
 
 export const MOBILE_REDEEM_PATH = '/mobile/pairing-codes/redeem';
 export const MOBILE_PING_PATH = '/mobile/pairing-codes/ping';
@@ -1819,7 +1820,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     // `telegram:<topicId>`. With media off, a body with files is refused as before: a message is
     // never stored without its files. An exact emergency stop never waits on its files.
     const mediaOn = svc.nativeOn && isMobileMediaEnabled(deps.config) && !!poolCtx?.appConversations;
-    if (body.attachments !== undefined && !mediaOn) { res.status(400).json({ error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into a Telegram topic is not available yet.' }); return; }
+    if (body.attachments !== undefined && !mediaOn) { res.status(400).json(isMobileMediaEnabled(deps.config) ? { error: 'media-target-unsupported', detail: 'Files can be sent in app conversations. Sending them into a Telegram topic is not available yet.' } : { error: 'media-target-unsupported', detail: 'Files are turned off on this agent.', action: MEDIA_OFF_ACTION }); return; }
     let signedFiles: SignedAttachment[] | null = null;
     if (body.attachments !== undefined && !isExactStopMessage(text)) {
       const checked = checkSignedFiles(body.attachments);

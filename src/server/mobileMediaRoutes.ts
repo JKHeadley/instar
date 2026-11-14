@@ -28,6 +28,7 @@ import { canonicalConversationKey, isAppConversationKey, parseAppCanonicalKey } 
 import type { UploadRow } from '../core/AppMediaStore.js';
 import { PLATFORM_CONVERSATION_KEY_RE } from '../core/AppConversationStore.js';
 import { slackMediaKeys } from '../core/appPlatformMedia.js';
+import { mediaOffBody } from './mobileMediaOff.js';
 import { HOLDER_MEDIA_HEADER, type HolderMedia, HOLDER_MEDIA_HOP_SOCKET_MS } from './mobileMediaHolderProxy.js';
 
 export interface MobileMediaRouteDeps {
@@ -69,7 +70,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
   const gate = (req: Request, res: Response, opts: { evenWhenOff?: boolean } = {}): string | null => {
     res.setHeader('Cache-Control', 'no-store');
     if (!deps.pairing.enabled() || !svc?.media || (!deps.mediaEnabled && !opts.evenWhenOff)) {
-      res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' });
+      res.status(503).json(mediaOffBody());
       return null;
     }
     const p = principalOf(req);
@@ -185,7 +186,7 @@ export function createMobileMediaRouter(deps: MobileMediaRouteDeps): Router {
       && self !== undefined && req.query.machine === self && typeof req.query.ref === 'string' && req.query.ref.startsWith('slack:');
     if (hop) {
       res.setHeader('Cache-Control', 'no-store');
-      if (!deps.pairing.enabled() || !svc?.media || !deps.mediaEnabled) { res.status(503).json({ error: 'media-off', detail: 'Files in app conversations are turned off on this agent.' }); return; }
+      if (!deps.pairing.enabled() || !svc?.media || !deps.mediaEnabled) { res.status(503).json(mediaOffBody()); return; }
       if (req.headers.range !== undefined) { res.status(416).json({ error: 'range-unsupported' }); return; }
     } else if (!gate(req, res)) return;
     const media = svc!.media!;
