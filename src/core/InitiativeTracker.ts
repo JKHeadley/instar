@@ -508,6 +508,24 @@ export class InitiativeTracker {
   // ── TaskFlow Phase 4 wiring ────────────────────────────────────
   private taskFlowRegistry: TaskFlowRegistry | null = null;
   private taskFlowControllerInstanceId: string | null = null;
+  /** Per-initiative write chain. Serializes read-check-persist for one id so
+   *  the ifMatch check and the durable write are atomic with respect to other
+   *  in-process writers (TaskFlow writes are awaited multi-step). */
+  private writeChains = new Map<string, Promise<unknown>>();
+
+  private withInitiativeLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    // The legacy JSON path is fully synchronous (check + write in one tick),
+    // so it is already atomic; keep its synchronous semantics untouched.
+    if (!this.isTaskFlowEnabled()) return fn();
+    const prev = this.writeChains.get(id) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    const tail = run.then(() => undefined, () => undefined);
+    this.writeChains.set(id, tail);
+    void tail.then(() => {
+      if (this.writeChains.get(id) === tail) this.writeChains.delete(id);
+    });
+    return run;
+  }
 
   // ── Digest cache invalidator hook (Phase 1.1) ──────────────────
   // PR 3 wires the real invalidator (clears the project-scope digest cache
@@ -716,19 +734,31 @@ export class InitiativeTracker {
       ownerKey,
       idemKey
     );
+    // Last durably persisted shape, used to roll back if a later transition
+    // in the walk fails after stateJson was already written.
+    const previous = existing ? this.initiativeFromFlow(
+      registry.getFlow(existing.flowId, { bypassCache: true }) ?? existing
+    ) : null;
     if (!existing) {
-      const r = await registry.createFlow({
+      try {
+        const r = await registry.createFlow({
         controllerId: INITIATIVE_TASKFLOW_CONTROLLER_ID,
         controllerInstanceId: principal.controllerInstanceId,
         ownerKey,
         idempotencyKey: idemKey,
         goal: init.title.slice(0, 1024),
         currentStep: desired.step,
-        stateJson,
-      });
-      existing = r.flow;
+          stateJson,
+        });
+        existing = r.flow;
+      } catch (err) {
+        this.logTaskFlowError('persist', init.id, err);
+        this.initiatives.delete(init.id);
+        throw err;
+      }
     }
     let cur = registry.getFlow(existing.flowId, { bypassCache: true }) ?? existing;
+    let stateWritten = false;
 
     try {
       // Already terminal? Accept and stop — terminal flows are immutable
@@ -765,7 +795,6 @@ export class InitiativeTracker {
             principal,
             waitInstanceId: cur.waitInstanceId,
             currentStep: desired.step,
-            statePatch: stateJson,
           });
           cur = r.flow;
         }
@@ -786,6 +815,7 @@ export class InitiativeTracker {
           }
           // Always patch stateJson to reflect the latest Initiative shape.
           cur = await this.patchStateJson(cur, stateJson);
+          stateWritten = true;
         } else if (desired.kind === 'waiting') {
           const r = await registry.setFlowWaiting({
             flowId: cur.flowId,
@@ -796,8 +826,10 @@ export class InitiativeTracker {
             statePatch: stateJson,
           });
           cur = r.flow;
+          stateWritten = true;
         } else if (desired.kind === 'succeeded') {
           cur = await this.patchStateJson(cur, stateJson);
+          stateWritten = true;
           const r = await registry.finishFlow({
             flowId: cur.flowId,
             expectedRevision: cur.revision,
@@ -806,6 +838,7 @@ export class InitiativeTracker {
           cur = r.flow;
         } else if (desired.kind === 'failed') {
           cur = await this.patchStateJson(cur, stateJson);
+          stateWritten = true;
           const r = await registry.failFlow({
             flowId: cur.flowId,
             expectedRevision: cur.revision,
@@ -815,6 +848,7 @@ export class InitiativeTracker {
           cur = r.flow;
         } else if (desired.kind === 'cancelled') {
           cur = await this.patchStateJson(cur, stateJson);
+          stateWritten = true;
           const cr = await registry.requestFlowCancel({
             flowId: cur.flowId,
             expectedRevision: cur.revision,
@@ -828,8 +862,34 @@ export class InitiativeTracker {
           cur = r.flow;
         }
       }
+      if (!stateWritten) {
+        throw new Error(
+          `Initiative "${init.id}" could not be persisted: TaskFlow flow ended in unexpected status "${cur.status}"`
+        );
+      }
     } catch (err) {
       this.logTaskFlowError('persist', init.id, err);
+      // A terminal transition may have failed after stateJson was written.
+      // Best-effort roll back so storage doesn't hold a write we're reporting
+      // as failed.
+      if (stateWritten && previous) {
+        try {
+          const latest = registry.getFlow(cur.flowId, { bypassCache: true }) ?? cur;
+          if (latest.status === 'running') {
+            await this.patchStateJson(latest, { initiative: previous });
+          }
+        } catch (rollbackErr) {
+          this.logTaskFlowError('persist-rollback', init.id, rollbackErr);
+        }
+      }
+      // Re-sync the cache with what is actually durable, then surface the
+      // failure — success must mean durable persistence.
+      const latest = registry.getFlow(cur.flowId, { bypassCache: true });
+      const durable = latest ? this.initiativeFromFlow(latest) : null;
+      if (durable) this.initiatives.set(durable.id, durable);
+      else if (previous) this.initiatives.set(previous.id, previous);
+      else this.initiatives.delete(init.id);
+      throw err;
     }
 
     const fresh = registry.getFlow(cur.flowId, { bypassCache: true }) ?? cur;
@@ -854,13 +914,15 @@ export class InitiativeTracker {
     const principal = this.taskFlowPrincipal();
     if (!registry || !principal || principal.scope !== 'controller') return flow;
     if (flow.status !== 'running') return flow;
+    // The new stateJson is written ONLY by the resume step, so a failure
+    // between the two transitions never leaves the new state persisted
+    // while the caller is told the write failed. Errors propagate.
     try {
       const w = await registry.setFlowWaiting({
         flowId: flow.flowId,
         expectedRevision: flow.revision,
         principal,
         waitJson: { kind: 'human-review', question: '__statePatch__' },
-        statePatch: stateJson,
       });
       const r = await registry.resumeFlow({
         flowId: w.flow.flowId,
@@ -872,7 +934,7 @@ export class InitiativeTracker {
       return r.flow;
     } catch (err) {
       this.logTaskFlowError('patchStateJson', flow.flowId, err);
-      return flow;
+      throw err;
     }
   }
 
@@ -1021,6 +1083,10 @@ export class InitiativeTracker {
   }
 
   async create(input: InitiativeCreateInput): Promise<Initiative> {
+    return this.withInitiativeLock(input.id, () => this.createLocked(input));
+  }
+
+  private async createLocked(input: InitiativeCreateInput): Promise<Initiative> {
     if (!/^[a-z0-9][a-z0-9-]{0,62}$/.test(input.id)) {
       throw new Error('Initiative id must be lowercase kebab-case, 1–63 chars');
     }
@@ -1113,6 +1179,10 @@ export class InitiativeTracker {
   }
 
   async update(id: string, input: InitiativeUpdateInput): Promise<Initiative> {
+    return this.withInitiativeLock(id, () => this.updateLocked(id, input));
+  }
+
+  private async updateLocked(id: string, input: InitiativeUpdateInput): Promise<Initiative> {
     const existing = this.get(id);
     if (!existing) throw new Error(`Initiative "${id}" not found`);
 
@@ -1275,6 +1345,14 @@ export class InitiativeTracker {
     phaseId: string,
     status: InitiativePhaseStatus
   ): Promise<Initiative> {
+    return this.withInitiativeLock(id, () => this.setPhaseStatusLocked(id, phaseId, status));
+  }
+
+  private async setPhaseStatusLocked(
+    id: string,
+    phaseId: string,
+    status: InitiativePhaseStatus
+  ): Promise<Initiative> {
     const existing = this.get(id);
     if (!existing) throw new Error(`Initiative "${id}" not found`);
     const phases = existing.phases.map((p) => ({ ...p }));
@@ -1308,6 +1386,10 @@ export class InitiativeTracker {
   }
 
   async remove(id: string): Promise<boolean> {
+    return this.withInitiativeLock(id, () => this.removeLocked(id));
+  }
+
+  private async removeLocked(id: string): Promise<boolean> {
     if (this.isTaskFlowEnabled()) {
       const fid = this.findFlowIdForInitiative(id);
       if (!fid) {
