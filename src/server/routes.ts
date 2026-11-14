@@ -1,3 +1,7 @@
+// Governed by (docs/STANDARDS-REGISTRY.md cites this file as enforcement of):
+//   *Recall Over Our Own Material Is by Meaning, Not by Word-Match*
+//   *Live-User-Channel Proof Before Done*
+
 import { recoveryPoolHealth } from '../recovery/RecoveryPoolHealth.js';
 import { normalizeForwardedInbound, telegramDownloadDirs } from './forwardedInboundMedia.js';
 import { historyTextFor } from '../core/inboundMedia.js';

@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "slug": "local-verify-performance-cores",
+  "sessionId": "91fb4d7c-9289-4da1-a0d2-102b7f850a9b",
+  "timestamp": "2026-11-11T06:34:02.322Z",
+  "artifactPath": "upgrades/side-effects/local-verify-performance-cores.md",
+  "artifactSha256": "e270c97fa3898d0ea7382295298ee00f3307c8a0b364f228b3b559ebda967845",
+  "coveredFiles": [
+    "docs/specs/local-verify-performance-cores.eli16.md",
+    "src/scaffold/templates.ts",
+    "upgrades/next/local-verify-performance-cores.md",
+    "upgrades/side-effects/local-verify-performance-cores.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "eli16Path": "docs/specs/local-verify-performance-cores.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/local-verify-performance-cores.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

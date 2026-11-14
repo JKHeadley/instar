@@ -48,6 +48,10 @@ export const STAGE_B_CERTIFIED_SET = {
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },
     {
+      "file": "src/core/friendlyMachineName.ts",
+      "reason": "Reached through MachineIdentity (nickname assignment). It reads this computer's own name for the machine nickname; identity metadata only, no inbound-delivery or lifecycle logic, not code the Stage-B canary exercises."
+    },
+    {
       "file": "src/core/NicknameAssigner.ts",
       "reason": "Reached through team access on the mobile pairing service (team-roles-and-access step 2a). It is identity, phone or access-record code that runs only when a phone connects, not code the Stage-B canary exercises."
     },
