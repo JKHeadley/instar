@@ -1715,12 +1715,24 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const revision = b.revision;
     if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) { res.status(400).json({ error: 'bad-revision' }); return; }
     let reg: Parameters<typeof svc.devices.setPush>[1];
+    // A clear is handled before any provider, token or environment check (mobile-android-app §2.3).
     if (b.token === null) reg = { token: null, revision };
     else {
-      if (typeof b.token !== 'string' || !/^[0-9a-f]{64,200}$/.test(b.token)) { res.status(400).json({ error: 'bad-token' }); return; }
-      if (b.environment !== 'sandbox' && b.environment !== 'production') { res.status(400).json({ error: 'bad-environment' }); return; }
+      // `provider` absent ⇒ apns, so every existing iPhone request reads exactly as before.
+      if (b.provider !== undefined && b.provider !== 'apns' && b.provider !== 'fcm') { res.status(400).json({ error: 'bad-provider' }); return; }
+      const provider: 'apns' | 'fcm' = b.provider === 'fcm' ? 'fcm' : 'apns';
+      if (provider === 'fcm') {
+        // FCM tokens are opaque: a local size and storage floor, not a provider rule.
+        if (typeof b.token !== 'string' || !/^[\x21-\x7e]{32,4096}$/.test(b.token)) { res.status(400).json({ error: 'bad-token' }); return; }
+        if (b.environment !== undefined) { res.status(400).json({ error: 'bad-environment' }); return; }
+      } else {
+        if (typeof b.token !== 'string' || !/^[0-9a-f]{64,200}$/.test(b.token)) { res.status(400).json({ error: 'bad-token' }); return; }
+        if (b.environment !== 'sandbox' && b.environment !== 'production') { res.status(400).json({ error: 'bad-environment' }); return; }
+      }
       if (typeof b.notifyTokenHash !== 'string' || !/^[0-9a-f]{64}$/.test(b.notifyTokenHash)) { res.status(400).json({ error: 'bad-notify-token-hash' }); return; }
-      reg = { token: b.token, environment: b.environment, notifyTokenHash: b.notifyTokenHash, revision };
+      reg = provider === 'fcm'
+        ? { token: b.token, provider, notifyTokenHash: b.notifyTokenHash, revision }
+        : { token: b.token, provider, environment: b.environment as 'sandbox' | 'production', notifyTokenHash: b.notifyTokenHash, revision };
     }
     let r: ReturnType<typeof svc.devices.setPush>;
     try { r = svc.devices.setPush(p.deviceId, reg); } catch (err) {
@@ -1729,7 +1741,11 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
       return;
     }
     if (!r.ok) { res.status(r.reason === 'not-active' ? 403 : 409).json({ error: r.reason }); return; }
-    res.json({ ok: true, revision: r.revision });
+    if (reg.token === null) { res.json({ ok: true, revision: r.revision }); return; }
+    // `ready`: can this machine send to this kind of phone right now (a reading, not a promise).
+    let ready = false;
+    try { ready = isMobilePushEnabled(deps.config) && !!svc.push?.readyFor(reg.provider ?? 'apns'); } catch { ready = false; } // @silent-fallback-ok — an unanswerable reading is not ready
+    res.json({ ok: true, revision: r.revision, ready });
   });
 
   router.get('/mobile/attention/:id', async (req: Request, res: Response) => {
@@ -1789,6 +1805,46 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     };
     res.status(202).json({ accepted: true });
     void svc.push.receive(trig, true).catch((err) => deps.reportDegradation?.('MobilePush.receive', err)); // @silent-fallback-ok — reported through DegradationReporter
+  });
+
+  // Re-check after a recovery (mobile-android-app §2.3): re-arm FCM trials here and on every peer.
+  const recheckTimes: number[] = [];
+  router.post('/mobile/push/recheck', async (req: Request, res: Response) => {
+    if (!svc.enabled() || !svc.push || !isMobilePushEnabled(deps.config)) { json503(res); return; }
+    if (principalOf(req).kind !== 'token') { res.status(403).json({ error: 'token-required' }); return; }
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const keys = Object.keys(b);
+    if (b.provider !== 'fcm' || keys.some((k) => k !== 'provider' && k !== 'forwarded') || (b.forwarded !== undefined && b.forwarded !== true)) {
+      res.status(400).json({ error: 'bad-recheck', detail: 'Body must be { provider: "fcm", forwarded?: true }.' });
+      return;
+    }
+    const t = Date.now();
+    while (recheckTimes.length && t - recheckTimes[0]! > 60 * 60_000) recheckTimes.shift();
+    if (recheckTimes.length >= 6) { res.status(429).json({ error: 'too-many-requests' }); return; }
+    recheckTimes.push(t);
+    const self = deps.selfMachineId ?? 'local';
+    const machines: Array<{ machine: string; armed: boolean; reason?: string }> = [{ machine: self, ...svc.push.recheckFcm() }];
+    const unreachable: string[] = [];
+    // A forwarded request is applied here and never sent on, so each machine applies one recheck once.
+    if (b.forwarded !== true && poolCtx) {
+      const allow = (deps.config.multiMachine as { peerUrlAllowlist?: string[] } | undefined)?.peerUrlAllowlist;
+      await Promise.all((poolCtx.resolvePeerUrls?.() ?? []).slice(0, 16).map(async (p) => {
+        if (!isPeerUrlAllowedForCredentials({ url: p.url, kind: p.kind }, allow).ok) { unreachable.push(p.machineId); return; }
+        try {
+          const r = await poolPeerFetch(poolCtx.recordRopeResult ?? undefined, p, '/mobile/push/recheck', {
+            method: 'POST', headers: { Authorization: `Bearer ${deps.config.authToken}`, 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider: 'fcm', forwarded: true }), signal: AbortSignal.timeout(PEER_TIMEOUT_MS),
+          });
+          // A peer at its own limit is reachable, just rate-limited; say so instead of "unreachable".
+          if (r.status === 429) { machines.push({ machine: p.machineId, armed: false, reason: 'rate-limited' }); return; }
+          const text = r.ok ? await r.text() : '';
+          const row = r.ok && Buffer.byteLength(text) <= MAX_PEER_BYTES ? (JSON.parse(text) as { machines?: Array<{ armed?: unknown; reason?: unknown }> }).machines?.[0] : undefined;
+          if (!row || typeof row.armed !== 'boolean') { unreachable.push(p.machineId); return; }
+          machines.push({ machine: p.machineId, armed: row.armed, ...(typeof row.reason === 'string' ? { reason: row.reason.slice(0, 40) } : {}) });
+        } catch { unreachable.push(p.machineId); } // @silent-fallback-ok — listed in `unreachable`; that machine still trials on its own clock
+      }));
+    }
+    res.json({ machines, unreachable });
   });
 
   router.get('/mobile/push', (_req: Request, res: Response) => {

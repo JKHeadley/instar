@@ -73,6 +73,7 @@ import { RECONCILER_LIMITS, admitStatusPost, nextPostRetry, orderSubmissions, pa
 import { decideFailureInvestigationAttempt, FAILURE_INVESTIGATION_MAX_ATTEMPTS } from '../monitoring/FailureInvestigationAdmission.js';
 import { repeatDue as diskRepeatDue, sendRetryDelay as diskSendRetryDelay } from '../monitoring/diskSteward/levels.js';
 import { nextEffectAttemptAt, EFFECT_FIRST_BACKOFF_MS } from '../server/mobileBrowserDevices.js';
+import { nextFcmTrialAt, FCM_MAX_TRIALS, FCM_TRIAL_BASE_MS } from '../core/MobilePush.js';
 import { fallbackRetryDelayMs } from '../email/EmailService.js';
 import { dueApprovalReminders } from '../core/SubscriptionReloginApprovalReminder.js';
 import type { SubscriptionReloginEpisode } from '../core/SubscriptionReloginStore.js';
@@ -5252,6 +5253,41 @@ const browserActivationEffectRetry: SelfActionController = {
 };
 
 /**
+ * fcm-pause-trial-retry — mobile-android-app §2.3. While Android push is paused (Google refused the
+ * key, permission or project), the 15-second tick arms one trial send at a time: 30 minutes after the
+ * pause, then doubling (1, 2, 4, 8, 16 h), and none after 6 refused trials. Under a cause that never
+ * clears the loop settles at 6 trials, horizon-independent; only the agent's own recheck after a fix
+ * re-arms it (rate-limited to 6 an hour, not a self-triggered path). Modeled on the REAL schedule
+ * function the service uses.
+ */
+const fcmPauseTrialRetry: SelfActionController = {
+  id: 'fcm-pause-trial-retry',
+  actionVerb: 'retry',
+  models: 'src/core/MobilePush.ts (MobilePushService.fcmPauseTick + sendFcm trial — nextFcmTrialAt, stops after FCM_MAX_TRIALS)',
+  modelsPath: 'src/core/MobilePush.ts',
+  restartPosture: { pressureSurvives: false, resetSafeReason: 'refusedTrials and nextTrialAt are persisted in mobile-push-state.json (pausedFcm), so a restart resumes the same schedule; only the in-memory arm flag is lost, which only delays a trial.' },
+  boundK: FCM_MAX_TRIALS,
+  perTargetBoundK: FCM_MAX_TRIALS,
+  ticks: 4 * 60 * 24 * 7,
+  tickMs: 15_000,
+  makeUnderPressure(f, sink) {
+    let refused = 0;
+    let nextAt: number | null = f.clock.nowMs() + FCM_TRIAL_BASE_MS;
+    return {
+      tick() {
+        sink.considered += 1;
+        const now = f.clock.nowMs();
+        if (nextAt === null || now < nextAt || !f.targetAlwaysRejects()) return;
+        sink.emit({ verb: 'retry', target: 'fcm-trial' });
+        sink.emitTimesMs.push(now);
+        refused += 1;
+        nextAt = nextFcmTrialAt(refused, now);
+      },
+    };
+  },
+};
+
+/**
  * peer-place-session-tick — memory-privacy-agent-places §4. The 60-second tick ends
  * another agent's place session when it is idle past the limit or no longer admitted.
  * Modeled on the REAL PlaceSessionRegistry. A kill removes the record, and the tick
@@ -5483,5 +5519,6 @@ export const SELF_ACTION_CONTROLLERS: SelfActionController[] = [
   readMarkerEmitCoalesce,
   readMarkerCatchUpRetry,
   browserActivationEffectRetry,
+  fcmPauseTrialRetry,
   emailFallbackRetry,
 ];
