@@ -32,7 +32,7 @@
  * Machine-local BY DESIGN under the single-holder model; the per-entry `author`
  * field is the Phase-3 cross-machine-merge seam (recorded, not yet trusted).
  *
- * canonical-migration-producer: threadline-inbound-canonical-store@3
+ * canonical-migration-producer: threadline-inbound-canonical-store@4
  */
 
 import fs from 'node:fs';
@@ -77,6 +77,12 @@ export interface ThreadLogEntry {
   textRef: ThreadTextRef;
   /** The sender-stamped message `createdAt` (the digest input — distinct from `at`). */
   createdAt: string;
+  /**
+   * Provenance of `createdAt` when it is NOT a sender wire stamp: `receive-time`
+   * means a legacy inbound carried no timestamp and this end's receive time was
+   * used. Absent = the sender's wire stamp. Display/audit only (outside the hash).
+   */
+  createdAtSource?: 'receive-time';
   /** ISO APPEND time (when this end logged it) — distinct from the message createdAt. */
   at: string;
   prevHash: string;
@@ -97,6 +103,8 @@ export interface ThreadLogAppendInput {
   textRef: ThreadTextRef;
   /** The sender-stamped message `createdAt` (the digest input). */
   createdAt: string;
+  /** See ThreadLogEntry.createdAtSource. */
+  createdAtSource?: 'receive-time';
   /** Test/seam injection for the ISO append time. */
   at?: string;
 }
@@ -253,6 +261,7 @@ export class ThreadLog {
       ...(input.subject ? { subject: input.subject } : {}),
       textRef: input.textRef,
       createdAt: input.createdAt,
+      ...(input.createdAtSource ? { createdAtSource: input.createdAtSource } : {}),
       at: input.at ?? new Date(this.now()).toISOString(),
       prevHash: state.headHash,
     };
@@ -297,6 +306,18 @@ export class ThreadLog {
     const fromLog = this.findInLiveLog(threadId, key);
     if (fromLog !== undefined) state.seen.set(key, fromLog); // re-warm the bounded cache
     return fromLog;
+  }
+
+  /**
+   * The logged entry for `(messageId, direction)` when it is in the LIVE segment
+   * (bounded by `maxEntriesPerThread`), else undefined. Only consulted after
+   * `has()` is true — a retry path, never a scan of archived history.
+   */
+  findLiveEntry(threadId: string, messageId: string, direction: ThreadDirection): ThreadLogEntry | undefined {
+    for (const e of this.readLiveEntries(threadId)) {
+      if (e.messageId === messageId && e.direction === direction) return e;
+    }
+    return undefined;
   }
 
   private findInLiveLog(threadId: string, key: string): string | undefined {

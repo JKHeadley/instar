@@ -145,3 +145,9 @@ The reviewer confirmed the over-block, under-block, signal-vs-authority, race, m
 - **defectClass:** `unbounded-self-action`
 - **closure:** `guard` (ratchet) — `src/testing/selfActionRegistry.ts#telegram-origin-forward-ladder`, proven by `tests/unit/self-action-convergence.test.ts`.
 - **How it is caught:** this slice only removes actions from the forward ladder: a row with an advisory verdict is left out of both recovery selections and the due ladder (`ladder.nextAt` null) and `recoverForwardedHold` returns at once for it; a copy-ended verdict on a submit is recorded instead of retried. The only new sends are a session's own answers, each one superseding the held row in one transaction under the original 6 h deadline, so the modeled bound of 31 attempts per reply still holds.
+
+---
+
+## Merge with main after NCB 3a (2026-11-14)
+
+PR 3102 (slice 3a) squash-merged to main. This branch already carried 3a's commits as its base, and 3a's telegram-origin files on main are identical to the 3a head this slice was built on, so the eleven textual conflicts were the same 3a lines seen twice. They were resolved with a three-way merge against this branch's own 3a base (7879443298): main's later changes (stage deadlines, forwarded-delivery history, Work Board, 3b and other main work) are kept, and 3g's net diff over 3a is unchanged. No 3g behaviour had to change. QueuedReplySupersession and reviewQueuedReply stay removed. feature-ladders.json keeps both the `telegramOrigin.forwardedAdvisory` and `workBoard.asks` rows; PostUpdateMigrator keeps 3g's `refreshHeldReplyAdvisoryAwareness` import with main's names. `tsc --noEmit` is clean; the telegram-origin unit suite was re-run in groups of five files.

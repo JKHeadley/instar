@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SafeFsExecutor } from '../../../src/core/SafeFsExecutor.js';
-import { MainHealth, decideMainRearmAfterGreen, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
+import { MainHealth, decideMainRearmAfterGreen, oldestUnverifiedAfterGreen, patchChangesOnlyVersion, releaseCollapsesInto, type CommitInfo, type MainHealthSnapshot } from '../../../src/localVerify/mainHealth.js';
 import { LocalVerifyService, MAIN_FAIR_SHARE_MS, MAIN_VERIFY_LIMITS, decideFlakyEscalation, decideStart, type LocalVerifyServiceSeams, type PrView } from '../../../src/localVerify/LocalVerifyService.js';
 import { LOCAL_VERIFY_LIMITS, computePolicyHash } from '../../../src/localVerify/policy.js';
 import { validateRecord, type LocalVerifyRecord } from '../../../src/localVerify/record.js';
@@ -386,6 +386,79 @@ describe('LocalVerifyService — the main verify', () => {
     expect(s.inputOf(exhausted + 1)).toMatchObject({ kind: 'main', headSha: sha('1') });
   });
 
+  it('sustained merging: green verifies of heads that have already moved on keep main healthy past the 3 h alarm', async () => {
+    // 2026-11-14: a verify takes ~35 min and merges landed every 20-40, so no verify was ever of the
+    // current head; the unverified clock was never cleared and every merge stopped 3 h after a restart.
+    const s = svcSetup();
+    let now = Date.parse('2026-10-21T12:00:00.000Z');
+    const adv = (ms: number) => { s.advance(ms); now += ms; };
+    const heads = ['1', '2', '3', '4', '5', '6', '7', '8', '9'].map(sha);
+    s.svc.noteMainHead(heads[0]);
+    expect(s.spawned).toHaveLength(1);
+    for (let i = 0; i < 8; i++) {
+      const startedAt = now;
+      adv(5 * MIN); s.svc.noteMainHead(heads[i + 1]); // a merge lands 5 minutes into the run
+      adv(30 * MIN); await s.svc.tick();
+      expect(s.inputOf(i)).toMatchObject({ kind: 'main', headSha: heads[i] });
+      await s.finish(i, ok({ ...mainRecord(heads[i], 'success'), startedAt: new Date(startedAt).toISOString(), finishedAt: new Date(now).toISOString() }));
+      s.svc.noteMainHead(heads[i + 1]); // unchanged for 30 minutes: its verify is queued
+      await s.svc.tick();
+      expect(s.spawned).toHaveLength(i + 2);
+      expect(s.svc.mainHealth().state).toBe('healthy');
+    }
+    // 8 runs of 35 minutes = 4 h 40 min of merging with a green verify every 35 minutes.
+    expect(s.signals).not.toContain('local-verify:main-unverified');
+  });
+
+  it('the alarm still fires: the clock moves to the start of the last covering run, and 3 h after that main is suspect', async () => {
+    const s = svcSetup();
+    const t0 = Date.parse('2026-10-21T12:00:00.000Z');
+    let now = t0;
+    const adv = (ms: number) => { s.advance(ms); now += ms; };
+    const iso = (ms: number) => new Date(ms).toISOString();
+    s.svc.noteMainHead(sha('1'));                     // run 0: head 1, starts at t0
+    adv(5 * MIN); s.svc.noteMainHead(sha('2'));       // merge during run 0
+    adv(30 * MIN);
+    await s.finish(0, ok({ ...mainRecord(sha('1'), 'success'), startedAt: iso(t0), finishedAt: iso(now) }));
+    s.svc.noteMainHead(sha('2')); await s.svc.tick(); // run 1: head 2 (current), starts at t0+35
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('2') });
+    const run1Start = now;
+    adv(5 * MIN); s.svc.noteMainHead(sha('3'));       // merge during run 1: nothing will ever cover it
+    adv(30 * MIN);
+    await s.finish(1, ok({ ...mainRecord(sha('2'), 'success'), startedAt: iso(run1Start), finishedAt: iso(now) }));
+    // 3 h after t0 (the old, never-moved clock) main is still healthy: runs 0 and 1 covered everything up to t0+35.
+    adv(t0 + 3 * 60 * MIN + 10 * MIN - now); await s.svc.tick();
+    expect(s.svc.mainHealth().state).toBe('healthy');
+    expect(s.signals).not.toContain('local-verify:main-unverified');
+    // 3 h after run 1 started, the merge of head 3 has gone uncovered too long.
+    adv(run1Start + 3 * 60 * MIN + MIN - now); await s.svc.tick();
+    expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
+    expect(s.signals).toContain('local-verify:main-unverified');
+  });
+
+  it('a green run that STARTED on a head main had already moved past does not move the clock (the re-run after a first failure)', async () => {
+    const s = svcSetup();
+    const t0 = Date.parse('2026-10-21T12:00:00.000Z');
+    let now = t0;
+    const adv = (ms: number) => { s.advance(ms); now += ms; };
+    const iso = (ms: number) => new Date(ms).toISOString();
+    s.svc.noteMainHead(sha('1'));                     // run 0: head 1
+    adv(5 * MIN); s.svc.noteMainHead(sha('2'));       // main moves on during run 0
+    adv(30 * MIN);
+    await s.finish(0, ok({ ...mainRecord(sha('1'), 'failure'), startedAt: iso(t0), finishedAt: iso(now) }));
+    await s.svc.tick();
+    // The re-run is of head 1 again, started at t0+35, AFTER head 2 was observed.
+    expect(s.inputOf(1)).toMatchObject({ kind: 'main', headSha: sha('1') });
+    const rerunStart = now;
+    adv(35 * MIN);
+    await s.finish(1, ok({ ...mainRecord(sha('1'), 'success'), startedAt: iso(rerunStart), finishedAt: iso(now) }));
+    expect(s.svc.mainHealth().state).toBe('healthy');
+    // Head 2 (merged at t0+5) is in no green verify. The clock stayed at t0, so the alarm fires 3 h after t0,
+    // not 3 h after the re-run started.
+    adv(t0 + 3 * 60 * MIN + MIN - now); await s.svc.tick();
+    expect(s.svc.mainHealth()).toMatchObject({ state: 'main-suspect', reason: 'unverified-too-long' });
+  });
+
   it('a main record never enters the PR index or journal', async () => {
     const s = svcSetup();
     s.svc.noteMainHead(sha('1'));
@@ -603,5 +676,21 @@ describe('decideMainRearmAfterGreen', () => {
   it('never for a healthy main (nothing to do) or a red one (the red-main hold owns it)', () => {
     expect(decideMainRearmAfterGreen({ ...base, healthState: 'healthy' })).toBe(false);
     expect(decideMainRearmAfterGreen({ ...base, healthState: 'main-red' })).toBe(false);
+  });
+});
+
+describe('oldestUnverifiedAfterGreen', () => {
+  it('a green verify of the current head clears the clock', () => {
+    expect(oldestUnverifiedAfterGreen(1_000, true, 5_000)).toBeNull();
+    expect(oldestUnverifiedAfterGreen(null, true, 5_000)).toBeNull();
+  });
+  it('a green verify of an older head moves the clock to the run start, never backwards', () => {
+    expect(oldestUnverifiedAfterGreen(1_000, false, 5_000)).toBe(5_000);
+    expect(oldestUnverifiedAfterGreen(9_000, false, 5_000)).toBe(9_000);
+  });
+  it('with nothing unverified there is nothing to move; an unreadable start time leaves the clock alone', () => {
+    expect(oldestUnverifiedAfterGreen(null, false, 5_000)).toBeNull();
+    expect(oldestUnverifiedAfterGreen(1_000, false, null)).toBe(1_000);
+    expect(oldestUnverifiedAfterGreen(1_000, false, Number.NaN)).toBe(1_000);
   });
 });

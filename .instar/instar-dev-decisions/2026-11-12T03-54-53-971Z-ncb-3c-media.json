@@ -1,0 +1,23 @@
+{
+  "ts": "2026-11-12T03:54:53.971Z",
+  "slug": "ncb-3c-media",
+  "suggestedTier": 1,
+  "declaredTier": 2,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 2,
+  "loc": 5,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/messaging/imessage/inlineAttachments.ts",
+      "src/messaging/slack/SlackAdapter.ts"
+    ],
+    "addedLines": 5,
+    "deletedLines": 0
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

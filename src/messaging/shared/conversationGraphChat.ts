@@ -42,3 +42,12 @@ When the user asks where a conversation or effort lives, use Conversations in th
 Telegram /conversations and Slack !conversations return only a neutral app/dashboard pointer. They never read private graph titles, paths, counts, digests, or sources into a shared or unknown-audience session. An owner asking in a forum group is still a shared audience. Use the owner-authenticated Conversations panel for detail; do not copy owner-only reports into an ordinary transcript an MSP might later read. These commands do not move conversations, bind projects, alter platform settings, or send unsolicited worker notices.
 `;
 }
+
+export const CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING = '### Conversations suggestions and the Chief of Staff root';
+/** docs/specs/conversation-graph-suggestions.md: what the agent tells its owner about the suggestion step. */
+export function conversationsSuggestionsAwareness(): string {
+  return `${CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING}
+
+When the owner's Conversations Overview is empty or they ask how to organize their conversations into efforts, point them to "Review suggestions" on the Conversations page: I propose groups of their unassigned conversations, each with Accept and Reject. Suggestions are advice only. Nothing is grouped until the owner taps Accept, which runs the same create, name and move steps as doing it by hand, and a rejected suggestion never comes back. I never accept one for them. The Chief of Staff conversation is always the top of the Overview, with every effort under it, and it cannot be moved under anything. Owner reads: \`GET /conversation-graph/suggestions\` (operator session), \`POST /conversation-graph/suggestions/refresh\`.
+`;
+}

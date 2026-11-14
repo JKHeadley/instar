@@ -5,6 +5,7 @@
 import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
 import { DegradationReporter } from '../../monitoring/DegradationReporter.js';
+import { resolveOriginStoreRequestTimeout } from './OriginStageDeadlines.js';
 import type {
   AdmissionResult, ArchiveResult, ClaimFence, ClaimInput, ClaimResult, DerivedMaterializationInput,
   EvidenceReceipt, NoticeReservation, NoticeReservationInput, OriginAdmission, OriginAuditRecord,
@@ -136,7 +137,7 @@ export class OriginStore {
   private readonly env: NodeJS.ProcessEnv = {};
   private constructor(private readonly options: OriginStoreOptions, private readonly mode?: 'spool', private readonly workerUrl = new URL('./OriginStore.worker.js', import.meta.url),
     carry?: { consecutiveFailures: number; downSince: number | null }) {
-    this.timeoutMs = options.requestTimeoutMs ?? 2000;
+    this.timeoutMs = resolveOriginStoreRequestTimeout(options.requestTimeoutMs);
     this.stallTimeoutMs = options.stallTimeoutMs ?? Math.max(DEFAULT_STALL_TIMEOUT_MS, this.timeoutMs);
     this.restart = { baseDelayMs: options.restart?.baseDelayMs ?? DEFAULT_RESTART.baseDelayMs,
       maxDelayMs: options.restart?.maxDelayMs ?? DEFAULT_RESTART.maxDelayMs, maxAttempts: options.restart?.maxAttempts ?? DEFAULT_RESTART.maxAttempts,

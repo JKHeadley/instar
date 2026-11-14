@@ -65,3 +65,39 @@ export function resolveOriginStageDeadline(stage: keyof OriginStageDeadlines, ow
   const fallback = processDefaults[stage];
   return valid(fallback) ? fallback : ORIGIN_STAGE_DEADLINES_MS[stage];
 }
+
+/** The production deadline for one request to the origin store's worker. */
+export const ORIGIN_STORE_REQUEST_TIMEOUT_MS = 2000;
+/** The largest request deadline a store accepts (OriginStore validates the same bound). */
+export const ORIGIN_STORE_REQUEST_TIMEOUT_MAX_MS = 30_000;
+
+const validStoreTimeout = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isSafeInteger(value) && value >= 1 && value <= ORIGIN_STORE_REQUEST_TIMEOUT_MAX_MS;
+
+let storeRequestTimeoutDefault: number | null = null;
+
+/**
+ * Replace this process's default deadline for a store request (used when a store is opened
+ * without `requestTimeoutMs`). `null`, or an invalid value, restores the production 2 s.
+ *
+ * Same reason as the stage budgets above: beside a full suite a healthy worker can take
+ * longer than 2 s to answer one request, the caller is told the store is unavailable, and a
+ * test that never meant to test timing fails (2026-11-13: recovery-fairness,
+ * recovery-review-budget, forward-on-standby, on three unrelated changes). The stage budgets
+ * could not reach this: it is the layer below them. For test runners; production code does
+ * not call this.
+ */
+export function setOriginStoreRequestTimeoutProcessDefault(next: number | null): void {
+  storeRequestTimeoutDefault = validStoreTimeout(next) ? next : null;
+}
+
+/**
+ * The deadline for a store's requests: the store's own option when one is given (valid or
+ * not: the store validates it and refuses a bad one, as before), else this process's default
+ * when one was set, else the production 2 s.
+ */
+export function resolveOriginStoreRequestTimeout(own?: number): number {
+  if (own !== undefined) return own;
+  return storeRequestTimeoutDefault ?? ORIGIN_STORE_REQUEST_TIMEOUT_MS;
+}
+
