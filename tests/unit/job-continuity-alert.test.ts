@@ -92,6 +92,10 @@ describe('job continuity alerts', () => {
     scheduler.start();
     await vi.waitFor(() => expect(raise).toHaveBeenCalledTimes(1));
     expect(raise.mock.calls[0][1]).toContain('set to run only on another machine');
+    // The notice names where the job is pinned, this machine, and how to fix it.
+    expect(raise.mock.calls[0][1]).toContain('another machine (other-machine)');
+    expect(raise.mock.calls[0][1]).toContain('this machine (This Machine)');
+    expect(raise.mock.calls[0][1]).toContain('"machines" list');
   });
 
   it('does not send a queued alert after demotion', async () => {

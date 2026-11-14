@@ -4299,7 +4299,11 @@ export class JobScheduler {
       // Keep silence alerts focused on jobs that stopped being attempted.
       if (this.state.get(this.failureAlertStateKey(job.slug))) continue;
       if (!this.isJobScopedToThisMachine(job)) {
-        this.raiseContinuityAlert(job, 'it is set to run only on another machine, and this machine is the one running jobs', `job-silence-${job.slug}`);
+        // Say why in plain words, and name both machines and the fix: the bare notice repeated
+        // daily for days without anyone being able to tell where the job was pinned or what to change.
+        const here = this.machineName ?? this.machineId ?? 'this machine';
+        const pinned = (job.machines ?? []).join(', ');
+        this.raiseContinuityAlert(job, `it is set to run only on another machine (${pinned}), and this machine (${here}) is the one running jobs. To fix it, add ${here} to the job's "machines" list in .instar/jobs.json, remove the list so it runs wherever the scheduler is, or disable the job if it is no longer needed`, `job-silence-${job.slug}`);
         continue;
       }
       const state = this.state.getJobState(job.slug);

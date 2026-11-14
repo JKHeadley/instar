@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "conversations-write-admission",
+  "sessionId": "fbc8e152-6aec-4c68-a544-c102e4be354d",
+  "timestamp": "2026-11-13T13:11:41.304Z",
+  "artifactPath": "upgrades/side-effects/conversations-write-admission.md",
+  "artifactSha256": "9099c439f839a92b9c5d850d8cdcb4540552e14f04d0f74f56fee2dc686c35dc",
+  "coveredFiles": [
+    "src/core/conversationGraph.ts",
+    "tests/unit/conversation-graph.test.ts",
+    "upgrades/conversations-write-admission.eli16.md",
+    "upgrades/side-effects/conversations-write-admission.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Untitled-topic label uses the verified topic name or the honest unresolved form; display only, revert-safe",
+  "eli16Path": "upgrades/conversations-write-admission.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/conversations-write-admission.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

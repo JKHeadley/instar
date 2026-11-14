@@ -40,7 +40,7 @@ exactly one reference file.
 Instar developers keep adding feature awareness in the same single place
 (`generateClaudeMd`). The split happens automatically, so a new feature's section lands
 in a reference file and its name appears in the always-loaded list. A test fails if
-CLAUDE.md itself grows past its budget (80,000 characters), so it cannot quietly creep
+CLAUDE.md itself grows past its budget (84,000 characters; 80,000 until 2026-11-14), so it cannot quietly creep
 back up, and another test fails if someone adds a sub-section inside an always-loaded
 section without deciding where it belongs.
 
@@ -86,6 +86,6 @@ which are kept.
 ## What a reader has to decide
 
 Nothing beyond the defaults: the reference layout is on by default, with the off switch
-above. The size budget (80,000 characters, about half of Claude Code's limit) and the
+above. The size budget (84,000 characters, a little over half of Claude Code's limit) and the
 location (`.instar/reference/`, which Claude Code never loads by itself) are chosen so
 Claude Code never warns and the agent keeps every rule it uses on every turn.
