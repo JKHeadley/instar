@@ -137,15 +137,15 @@ describe('Telegram network deadlines after origin preparation', () => {
     expect(line).not.toContain(h.token);
   });
   it('leaves a send alone while its own first pass is still in review, then sends exactly once', async () => {
-    const reviewQueuedReply = vi.fn(async () => 'retire' as const);
-    const h = await harness({ reviewQueuedReply });
+    // native-conversation-base §3a — the queued-reply timestamp review is gone; recovery
+    // has no review of its own to run, and still leaves a first send in progress alone.
+    const h = await harness();
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     h.review.mockImplementationOnce(async () => { await gate; return { ok: true as const }; });
     const sending = h.send({ networkTimeoutMs: 15_000 });
     await vi.waitFor(() => expect(h.review).toHaveBeenCalledOnce());
     expect(await h.runtime.recoverHeld()).toEqual({ processed: 0, recovered: 0 });
-    expect(reviewQueuedReply).not.toHaveBeenCalled();
     const operationId = (await h.runtime.store.listOrigins()).records[0].operation!.operationId;
     expect((await h.runtime.store.getOperation(operationId))?.recovery ?? null).toBeNull();
     release();

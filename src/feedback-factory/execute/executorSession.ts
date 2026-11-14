@@ -32,7 +32,7 @@ export function buildExecutorPrompt(input: ExecutorPromptInput): string {
   const brief = input.brief;
   const task = input.needsSpec
     ? `This item needs a design first. Do NOT change any code. Write ONE new spec draft at ${input.specPath} describing the problem, the evidence and a proposed fix. Do not add review, approval or convergence tags to its frontmatter. Then write the result file with outcome "spec-drafted".`
-    : 'Reproduce the problem with a failing test (vitest, under tests/). Run that test before changing production code and confirm it fails because of the reported defect. For existing behavior, the old-code failure must be a Vitest assertion failure: an uncaught runtime exception or infrastructure error is rejected. If the defect throws, assert the desired behavior (for example, expect(() => operation()).not.toThrow()) instead of letting the error escape the test. The narrow exception is a test of a new source file or export that is missing from the old code. After the fix, run it again with -t set to the exact test name you will put in testName. Check that Vitest reports at least one passed test; an all-skipped run is not proof. If it cannot be reproduced, write the result file with outcome "not-reproducible" and stop. Otherwise leave every change uncommitted in this directory and write the result file with outcome "fixed".';
+    : 'Reproduce the problem with a failing test (vitest, under tests/). Run that test before changing production code and confirm it fails because of the reported defect. For existing behavior, the old-code failure must be a Vitest assertion failure: an uncaught runtime exception or infrastructure error is rejected. If the defect throws, assert the desired behavior (for example, expect(() => operation()).not.toThrow()) instead of letting the error escape the test. The narrow exception is a test of a new source file or export that is missing from the old code. After the fix, run it again with -t set to the exact test name you will put in testName. Check that Vitest reports at least one passed test; an all-skipped run is not proof. If it cannot be reproduced, write the result file with outcome "not-reproducible" and stop. When it cannot be reproduced because an earlier commit in this copy already fixed it, also set "fixedByCommit" to that commit\'s SHA (from git log), so the item is not tried again. Otherwise leave every change uncommitted in this directory and write the result file with outcome "fixed".';
   return [
     'You are working on one feedback item in a sandboxed copy of the repository. You have no network and no credentials.',
     'Do NOT run git commit, git push or gh. Do NOT edit package.json, lockfiles, scripts/, .github/, .husky/, .claude/ or test-runner configs — such changes are never published.',
@@ -55,7 +55,7 @@ export function buildExecutorPrompt(input: ExecutorPromptInput): string {
     task,
     '',
     `Result file: ${path.join(input.workspace, RESULT_FILE)} — JSON exactly of the shape`,
-    '{ "outcome": "fixed" | "spec-drafted" | "not-reproducible" | "gave-up", "testFiles": ["tests/..."], "testName": "<the failing-then-passing test name>", "notes": "<= 1000 chars" }',
+    '{ "outcome": "fixed" | "spec-drafted" | "not-reproducible" | "gave-up", "testFiles": ["tests/..."], "testName": "<the failing-then-passing test name>", "notes": "<= 1000 chars", "fixedByCommit": "<SHA, only for not-reproducible when already fixed>" }',
     'If you cannot finish, write outcome "gave-up" with a short note. Then stop.',
   ].join('\n');
 }
@@ -67,6 +67,8 @@ export interface SessionResult {
   testFiles: string[];
   testName: string;
   notes: string;
+  /** For `not-reproducible`: the commit the session says already fixed the defect (checked by trusted code). */
+  fixedByCommit?: string;
 }
 
 const OUTCOMES: ReadonlySet<string> = new Set(['fixed', 'spec-drafted', 'not-reproducible', 'gave-up']);
@@ -101,7 +103,8 @@ export function parseSessionResult(raw: string): SessionResult | null {
   const testName = typeof v.testName === 'string' ? line(v.testName, 300) : '';
   const notes = typeof v.notes === 'string' ? v.notes.slice(0, RESULT_NOTES_MAX) : '';
   if (v.outcome === 'fixed' && (safeTests.length === 0 || safeTests.length !== testFiles.length || !testName)) return null;
-  return { outcome: v.outcome as ResultOutcome, testFiles: safeTests, testName, notes };
+  const fixedByCommit = v.outcome === 'not-reproducible' && typeof v.fixedByCommit === 'string' && /^[0-9a-f]{7,40}$/.test(v.fixedByCommit.trim().toLowerCase()) ? v.fixedByCommit.trim().toLowerCase() : undefined;
+  return { outcome: v.outcome as ResultOutcome, testFiles: safeTests, testName, notes, ...(fixedByCommit ? { fixedByCommit } : {}) };
 }
 
 /** Escape a test name for a vitest `-t` pattern (a regex), so the session cannot widen the selection. */

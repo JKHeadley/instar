@@ -216,6 +216,7 @@ export class AppConversationService {
    * follow-up of §4.12). Wired where the dispatch is; absent ⇒ the line waits for the next delivery.
    */
   private followUp: ((alias: number, line: string) => boolean) | null = null;
+  private platformFollowUp: ((conversationKey: string, line: string) => boolean) | null = null;
   private lastRefusalSweep = 0;
   private readonly refusedConditions = new Set<string>();
   /* @self-action-controller: app-media-capacity-notice */
@@ -393,6 +394,14 @@ export class AppConversationService {
   // ── Delivering media the owner does not hold yet (§4.12) ─────────────────────────
 
   setFollowUp(fn: ((alias: number, line: string) => boolean) | null): void { this.followUp = fn; }
+
+  /**
+   * The second injector (native-conversation-base §3c item 6): a file of a `telegram:<topicId>`
+   * conversation that lands later is typed to the session serving that topic on this machine.
+   * Returns true only when the line was typed; otherwise the row stays `ready` and the platform
+   * media sweep retries it.
+   */
+  setPlatformFollowUp(fn: ((conversationKey: string, line: string) => boolean) | null): void { this.platformFollowUp = fn; }
 
   /**
    * The session lines for a media message on the machine that delivers it (§4.5, §4.12): a private
@@ -634,8 +643,9 @@ export class AppConversationService {
         }
         const alias = this.deps.registry.appAliasFor(r.conversationKey);
         const title = this.store.getConversation(r.conversationKey)?.title ?? 'Untitled';
-        const sent = alias !== null && this.ownsAlias(alias)
-          && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}${tail}`) === true;
+        const sent = alias !== null
+          ? this.ownsAlias(alias) && this.followUp?.(alias, `${appInjectionTag(alias, title, this.ownerName(), 'none')} ${availableLine(copy, r.caption)}${tail}`) === true
+          : r.conversationKey.startsWith('telegram:') && this.platformFollowUp?.(r.conversationKey, `${availableLine(copy, r.caption)}${tail}`) === true;
         if (sent) {
           this.media.indexDb.prepare('DELETE FROM pending_deliveries WHERE attachmentId = ?').run(r.attachmentId);
           // The transcript rode on this line: a note for it would repeat it (second-pass finding 3).

@@ -62,11 +62,12 @@ import { originToolGuardHook } from '../messaging/telegram-origin/OriginToolGuar
 import fs from 'node:fs';
 import { FEEDBACK_INBOX_TOKEN_SENTENCE, refreshFeedbackInboxTokenAwareness } from '../feedback-factory/inbox/inboxAwareness.js';
 import { JOB_DECLARED_FAILURE_AWARENESS } from '../scheduler/jobDeclaredFailure.js';
-import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
+import { conversationsAwareness, CONVERSATIONS_AWARENESS_HEADING, conversationsSuggestionsAwareness, CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING } from '../messaging/shared/conversationGraphChat.js';
 import { BUILTIN_SCHEDULE_EDIT_AWARENESS } from '../scheduler/InstallBuiltinJobs.js';
 import { applyJobMeshGuide, jobCoverageGuide, jobTransferGuide } from './jobMeshAwareness.js';
-import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness } from '../messaging/telegram-origin/OriginAwareness.js';
+import { refreshHeldNoticeAwareness, messageOriginAllPlatformsAwareness, MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, telegramOriginAwareness, telegramOriginForwardAwareness, telegramOriginNoticeAwareness, telegramOriginCertificationAwareness, telegramOriginLeaseAwareness, telegramOriginDashboardAwareness, telegramOriginDetectorAwareness, telegramOriginRecoveryAwareness, telegramOriginTransportAwareness, telegramOriginCapacityAwareness, telegramOriginWorkerAwareness, telegramDashboardEditAwareness, telegramOriginBrowserDriftAwareness, telegramOriginHeldOutcomeAwareness, telegramOriginOwnerReadAwareness, OWNER_READ_AWARENESS_MARKER, telegramOriginTestGroupsAwareness, refreshOriginTestGroupsAwareness, refreshOriginBrowserAttentionAwareness, refreshOriginCanaryStartupAwareness, refreshOriginCanaryCleanupAwareness, refreshOriginCapacityAwareness, refreshOriginLeaseAwareness, telegramOriginHeldLateAwareness, HELD_REPLY_LATE_AWARENESS_MARKER } from '../messaging/telegram-origin/OriginAwareness.js';
 import { migrateTelegramOriginDisplay } from '../messaging/telegram-origin/OriginConfig.js';
+import { dashboardInputAwareness, DASHBOARD_INPUT_AWARENESS_MARKER } from '../server/dashboardInputAwareness.js';
 import path from 'node:path';
 import { KEY_MATERIAL_GITIGNORE_PROJECT, KEY_MATERIAL_GITIGNORE_STATE } from './keyMaterialPaths.js';
 import os from 'node:os';
@@ -88,6 +89,7 @@ import { decideNativeReporterFromConfig, readNativeHookConfigFile, type NativeRe
 // sharply rather than abolishing it: two symbols that sort adjacently can still touch.
 import {
   AGENT_CONNECT_OWNER_LINE,
+  AGENT_CONNECT_DASHBOARD_LINK_LINE,
   AGENT_CONNECT_HEADING,
   AGENT_CONNECT_HOWTO_BULLET,
   AGENT_CONNECT_HOWTO_MARKER,
@@ -1577,6 +1579,22 @@ ${APP_MEDIA_TO_PLATFORM_LINE}
 }
 
 /**
+ * CLAUDE.md awareness block for Telegram files on any machine (docs/specs/native-conversation-base.md
+ * §3c). Its own section, sniffed by its exact heading.
+ */
+export const TELEGRAM_FILES_CLAUDEMD_MARKER = '### Telegram files on any machine';
+export function TELEGRAM_FILES_CLAUDEMD_SECTION(port: number): string {
+  return `\n${TELEGRAM_FILES_CLAUDEMD_MARKER}
+
+A photo, file, video or voice note sent in a Telegram topic travels by attachment id, never as a path in the text. The machine running my session builds the file line itself: \`[image:<path>]\` or \`[document:<path>] (…)\` when the file is here; \`[file still copying: <name>]\` and later one \`[file now available: <path>]\` line when it arrives; and, if it has not arrived after 5 minutes, one line saying so (the wait goes on, and a late file still gets its line). Where files are not copied between machines, the line says the file is stored on another machine and cannot be opened here.
+- **Text is never a path.** A tag a person types (\`[image:/etc/hostname]\` and the \`document\`, \`video\`, \`voice\` and \`file\` forms) reaches me as \`[typed image:/etc/hostname]\`: it is their text, not a file. This holds on Telegram, Slack and iMessage.
+- **Fetch it myself:** \`curl -H "Authorization: Bearer $AUTH" -H "X-Instar-Bind-Token: $INSTAR_BIND_TOKEN" "http://localhost:${port}/conversation-media/path?conversationKey=telegram:<topicId>&platformMessageId=<id>"\` (or \`&attachmentId=<id>\`) returns \`{path}\`, or 404 \`not-on-this-machine\` with the reason. The id is in the line I was given ("attachment \`<id>\`").
+- \`GET /conversation-media/status\` shows this machine's waiting files and the event lag it observed.
+- **When to use** (PROACTIVE): "did you see my photo?" while I only have a "still copying" or "has not arrived" line → fetch it with the route above before answering; never claim to have seen a file I could not open.
+`;
+}
+
+/**
  * The native Schedule / Promises / Machines reads (docs/specs/mobile-native-ops-screens.md), one bullet
  * in the Mobile app routes block; inserted after the route-list bullet on update. Marker: `GET /mobile/jobs`.
  */
@@ -1914,7 +1932,7 @@ export function DISK_STEWARD_CLAUDEMD_SECTION(port: number | string): string {
 ## Disk Steward
 
 Every machine watches its own free space (every 15 minutes, inside the agent server, standbys included) and posts in the "Disk space (all machines)" topic when it gets low: under 15% or 100 GiB free (capped at 30% of small disks), more often under 10% or 60 GiB or when it is on track to fill within 3 days, and always when it reaches the 5% line where uploads are refused. Before warning it clears two tool caches if its cleanup is on (npm cache over 5 GiB, Xcode build files older than a day) and stays quiet if that fixed it. Only the awake machine posts, for every machine; each post names the machine. Cleanup is off by default and on for development agents; it never touches worktrees, agent state or the operator's files.
-- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
+- Read it, never guess: \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/disk-steward\` (this machine: level, free bytes, forecast, last post, last cleanup, biggest folders, and \`wholeDisk\`: once a day, which agents and home folders use the whole disk, with what was not opened) and \`?scope=pool\` (every machine, read live; an unreachable one is listed with its error).
 - **When to use** (PROACTIVE): someone asks how full a machine is, why an upload was refused, or what is taking the space → read \`/disk-steward?scope=pool\` and answer from it in plain words.
 - Someone replies "clear disk on <machine>" in the Disk space topic → find that machine's id in \`/disk-steward?scope=pool\`, then \`curl -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' http://localhost:${port}/disk-steward/prune -d '{"machineId":"<id>","requestedBy":{"topicId":<topic>}}'\` (202 with a run id; \`GET /disk-steward/prune/<runId>\` for the result). It clears only the two caches, on that machine, and posts what it freed.
 - Someone asks to turn on the worktree cleaner on a machine → set \`monitoring.agentWorktreeReaper\` to \`{ "enabled": true, "dryRun": false }\` in that machine's config, restart it, and report its first pass (\`GET /worktrees/agent-reaper\`). It keeps any worktree that is in use, linked to by another checkout, or holds anything it cannot prove is rebuildable.
@@ -9737,6 +9755,13 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added Conversations privacy and navigation awareness');
     }
 
+    // conversation-graph-suggestions: the suggestion step and the Chief of Staff root.
+    if (!content.includes(CONVERSATIONS_SUGGESTIONS_AWARENESS_HEADING)) {
+      content += '\n' + conversationsSuggestionsAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Conversations suggestions awareness');
+    }
+
     if (!content.includes(MESSAGE_ORIGIN_ALL_PLATFORMS_HEADING)) {
       content += '\n' + messageOriginAllPlatformsAwareness(port);
       patched = true;
@@ -9991,11 +10016,25 @@ setTimeout(() => process.exit(0), 2000);
       result.upgraded.push('CLAUDE.md: added held-reply outcome lookup awareness');
     }
 
+    // native-conversation-any-machine-access §3e — the dashboard reply box and its session line.
+    if (!content.includes(DASHBOARD_INPUT_AWARENESS_MARKER)) {
+      content += '\n' + dashboardInputAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added dashboard reply box awareness');
+    }
+
     // native-conversation-base §3b — the outcome route gives the execution owner's verdict.
     if (!content.includes(OWNER_READ_AWARENESS_MARKER)) {
       content += '\n' + telegramOriginOwnerReadAwareness();
       patched = true;
       result.upgraded.push('CLAUDE.md: added owner-read outcome awareness');
+    }
+
+    // native-conversation-base §3a — held replies are delivered late and marked; the session lines.
+    if (!content.includes(HELD_REPLY_LATE_AWARENESS_MARKER)) {
+      content += '\n' + telegramOriginHeldLateAwareness();
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added held-reply late-delivery awareness');
     }
 
     if (!content.includes('Telegram test groups:')) {
@@ -10775,6 +10814,12 @@ setTimeout(() => process.exit(0), 2000);
       content += APP_MEDIA_CLAUDEMD_SECTION();
       patched = true;
       result.upgraded.push('CLAUDE.md: added App conversation media section');
+    }
+    // native-conversation-base §3c: Telegram files by attachment id, typed tags inert, the fetch route.
+    if (!content.includes(TELEGRAM_FILES_CLAUDEMD_MARKER)) {
+      content += TELEGRAM_FILES_CLAUDEMD_SECTION(port);
+      patched = true;
+      result.upgraded.push('CLAUDE.md: added Telegram files on any machine section');
     }
     // Increment 3 (dashboard pairing and push without Telegram): its own section, by exact heading.
     if (!content.includes(PAIRING_WITHOUT_TELEGRAM_CLAUDEMD_MARKER)) {
@@ -12994,6 +13039,22 @@ Before I send another agent a credential, that peer must be **mutually verified*
       content = content.slice(0, ownerLineAt + 1) + AGENT_CONNECT_OWNER_LINE + '\n' + content.slice(ownerLineAt + 1);
       patched = true;
       result.upgraded.push('CLAUDE.md: pairing invites require owner info');
+    }
+
+    // Dashboard pointers in the pairing flow are direct links (topic 10000002573). Installs that
+    // already carry the section get the one line, where the scaffold puts it: just before step 6,
+    // and only inside this section. Content-sniffed on the line, so a re-run changes nothing.
+    {
+      const secAt = content.indexOf(AGENT_CONNECT_HEADING);
+      const step6At = secAt >= 0 ? content.indexOf('\n6. **Check, then say hello.**', secAt) : -1;
+      const nextHeading = secAt >= 0 ? content.indexOf('\n#', secAt + AGENT_CONNECT_HEADING.length) : -1;
+      if (step6At >= 0 && (nextHeading < 0 || step6At < nextHeading) && !content.includes(AGENT_CONNECT_DASHBOARD_LINK_LINE)) {
+        content = content.slice(0, step6At + 1) + AGENT_CONNECT_DASHBOARD_LINK_LINE + '\n' + content.slice(step6At + 1);
+        patched = true;
+        result.upgraded.push('CLAUDE.md: pairing dashboard pointers are direct links');
+      } else {
+        result.skipped.push('CLAUDE.md: pairing dashboard-link line already present or no step 6');
+      }
     }
 
     // Step 1 of that section as first shipped asked the person to send /lifeline restart after
@@ -17172,7 +17233,9 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
         ['Dashboard edit rejection:', telegramDashboardEditAwareness],
         ['Telegram Web K updates:', telegramOriginBrowserDriftAwareness],
         ['Held reply outcome:', telegramOriginHeldOutcomeAwareness],
+        [DASHBOARD_INPUT_AWARENESS_MARKER, dashboardInputAwareness],
         [OWNER_READ_AWARENESS_MARKER, telegramOriginOwnerReadAwareness],
+        [HELD_REPLY_LATE_AWARENESS_MARKER, telegramOriginHeldLateAwareness],
         ['Telegram test groups:', telegramOriginTestGroupsAwareness],
         ['INSTAR_JOB_FAILURE_FILE', () => JOB_DECLARED_FAILURE_AWARENESS],
         ['shippedSchedule', () => BUILTIN_SCHEDULE_EDIT_AWARENESS],
@@ -18355,6 +18418,30 @@ When a reply I send (Telegram, Slack, app) links an open pull request that my ow
       let added = false;
       for (const [k, v] of Object.entries(defaults)) { if (cos[k] === undefined) { cos[k] = v; added = true; } }
       if (added) { config.chiefOfStaff = cos; patched = true; result.upgraded.push('config.json: Chief of Staff defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+    }
+
+    // Work Board (docs/specs/work-board-asks.md, Migration and rollout): the owner-tunable defaults,
+    // each added only when missing. `enabled` is deliberately NOT written: omitted follows the
+    // dev-agent gate (live on a development agent, dark on the fleet).
+    {
+      const wb = (config.workBoard && typeof config.workBoard === 'object' && !Array.isArray(config.workBoard)) ? config.workBoard as Record<string, unknown> : {};
+      const defaults: Record<string, unknown> = {
+        softOpenCards: 30, maxAgentCardsPerDay: 200, quietAfterHours: 24,
+        limits: { recordBytes: 32768, title: 300, need: 4000, recommendation: 2000, doneItemText: 500, optionText: 200 },
+        pickup: { tickSeconds: 60, freeCheckMinSeconds: 60, freeCheckMaxSeconds: 1800, maxSpendingAttempts: 3, surfaceAfterHours: 24, ownerCatchUpSeconds: 600 },
+      };
+      let added = false;
+      for (const [k, v] of Object.entries(defaults)) {
+        if (wb[k] === undefined) { wb[k] = v; added = true; continue; }
+        if (v && typeof v === 'object' && wb[k] && typeof wb[k] === 'object' && !Array.isArray(wb[k])) {
+          const cur = wb[k] as Record<string, unknown>;
+          for (const [k2, v2] of Object.entries(v as Record<string, unknown>)) { if (cur[k2] === undefined) { cur[k2] = v2; added = true; } }
+        }
+      }
+      if (added) { config.workBoard = wb; patched = true; result.upgraded.push('config.json: Work Board defaults added (owner-tunable; enabled follows the dev-agent gate)'); }
+      // `multiMachine.stateSync.workBoard` is NOT written here: the runtime forces the store on with the
+      // feature (server.ts, as for the Chief of Staff), so no flag in the file turns replication on, and
+      // a migration that touched `multiMachine` would not be a no-op on its second run.
     }
 
     // An already-configured verifier gets the explicit dark diagnosis default;

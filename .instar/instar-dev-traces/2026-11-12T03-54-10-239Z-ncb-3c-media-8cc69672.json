@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "slug": "ncb-3c-media",
+  "sessionId": "ce0645f5-c05d-4eb2-aea1-a6829fd16e20",
+  "timestamp": "2026-11-12T03:54:10.239Z",
+  "artifactPath": "upgrades/side-effects/ncb-3c-media.md",
+  "artifactSha256": "e2f4d74975e9c7f7f52f39564cfcff8096e85d11d0003c6e436b5518c777cb61",
+  "specPath": "docs/specs/native-conversation-base.md",
+  "coveredFiles": [
+    ".instar/instar-dev-traces/orphan-deferral-overrides.jsonl",
+    "src/messaging/imessage/inlineAttachments.ts",
+    "src/messaging/slack/SlackAdapter.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only contract-evidence exemption markers on the slice 3c adapter files, plus the override audit log line.",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}

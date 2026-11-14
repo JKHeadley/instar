@@ -175,7 +175,8 @@ describe('TelegramAdapter inbound media hook', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(seen[0]).toMatchObject({ declaredKind: 'photo', width: 640, height: 480, declaredType: 'image/jpeg' });
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatch(/^\[image:.*\] look$/);
+    // native-conversation-base §3c: the file travels by attachment id; the text is path-free.
+    expect(delivered[0]).toMatch(/^\[The user sent a photo \(attachment `\d+`, `[^`]+`\)\. It is stored on another machine and cannot be opened here\.\]\nlook$/);
     await a.stop();
   });
 
@@ -183,7 +184,7 @@ describe('TelegramAdapter inbound media hook', () => {
     const { a, delivered } = adapter();
     await (a as unknown as { handleDocumentMessage: (m: unknown, t: number) => Promise<void> }).handleDocumentMessage({ ...base, document: { file_id: 'd', file_unique_id: 'u', file_name: 'r.pdf', mime_type: 'application/pdf' } }, 42);
     expect(delivered).toHaveLength(1);
-    expect(delivered[0]).toMatch(/^\[document:.*r\.pdf\]$/);
+    expect(delivered[0]).toMatch(/^\[The user sent a file \(attachment `\d+`, `r\.pdf`\)\. It is stored on another machine and cannot be opened here\.\]$/);
     await a.stop();
   });
 });

@@ -1,7 +1,7 @@
 /** Disk Steward pure logic (spec docs/specs/disk-steward.md §3.2–§3.5). */
 import { describe, it, expect } from 'vitest';
 import {
-  GiB, thresholdsFor, forecast, rawLevel, stepLevel, healCleared, repeatDue, gapAllows, sendRetryDelay, repeatInterval,
+  GiB, thresholdsFor, forecast, rawLevel, stepLevel, healCleared, repeatDue, gapAllows, sendRetryDelay, repeatInterval, nextRepeatBackoff,
   type Sample, type LevelState,
 } from '../../src/monitoring/diskSteward/levels.js';
 
@@ -128,5 +128,31 @@ describe('cadence', () => {
     expect(sendRetryDelay(1)).toBe(15 * 60_000);
     expect(sendRetryDelay(3)).toBe(60 * 60_000);
     expect(sendRetryDelay(99)).toBe(6 * HOUR);
+  });
+});
+
+describe('repeat backoff on every level (§3.5, 2026-11-12)', () => {
+  const T = 926 * GiB;
+  it('critical and escalate repeats double but stop at 24 h', () => {
+    expect(repeatInterval('warn', true, 2)).toBe(4 * HOUR);
+    expect(repeatInterval('warn', true, 12)).toBe(24 * HOUR);
+    expect(repeatInterval('escalate', false, 2)).toBe(12 * HOUR);
+    expect(repeatInterval('escalate', false, 12)).toBe(24 * HOUR);
+  });
+  it('doubles when nothing is clearable and free space held steady', () => {
+    expect(nextRepeatBackoff(1, { lastPostFree: 40 * GiB, free: 39 * GiB, total: T, reclaimable: 0 })).toBe(2);
+    expect(nextRepeatBackoff(8, { lastPostFree: 40 * GiB, free: 45 * GiB, total: T, reclaimable: 0 })).toBe(12);
+  });
+  it('resets when free space dropped by 2% of the disk since the last post', () => {
+    expect(nextRepeatBackoff(8, { lastPostFree: 60 * GiB, free: 40 * GiB, total: T, reclaimable: 0 })).toBe(1);
+  });
+  it('a drop just under 2% does not reset', () => {
+    expect(nextRepeatBackoff(4, { lastPostFree: 60 * GiB, free: 60 * GiB - 0.019 * T, total: T, reclaimable: 0 })).toBe(8);
+  });
+  it('holds when there is something to clear, so the clear offer keeps its cadence', () => {
+    expect(nextRepeatBackoff(4, { lastPostFree: 60 * GiB, free: 59 * GiB, total: T, reclaimable: 20 * GiB })).toBe(4);
+  });
+  it('no previous post: never resets, still backs off', () => {
+    expect(nextRepeatBackoff(1, { lastPostFree: null, free: 30 * GiB, total: T, reclaimable: 0 })).toBe(2);
   });
 });
