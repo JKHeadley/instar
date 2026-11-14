@@ -92,10 +92,16 @@ describe('codex model-swap wiring — both spawn paths consume the helper', () =
     // by either the reroute branch (june15-headless-spawn-reroute: the
     // interactive lane reuses the SAME launchModel) or this headless builder.
     // The reroute branch legitimately sits between resolution and this build,
-    // so widen the look-back window past it — the invariant is "resolved
-    // before, passed as launchModel", not literal proximity.
-    const before = src.slice(Math.max(0, idx - 2500), idx);
+    // so the invariant is "resolved before, inside the same spawnSession,
+    // passed as launchModel", not literal proximity (a fixed character window
+    // broke whenever code was added to that branch).
+    const fnStart = src.lastIndexOf('async spawnSession(', idx);
+    expect(fnStart).toBeGreaterThan(0);
+    const before = src.slice(fnStart, idx);
     expect(before).toContain('this.resolveCodexLaunchModel(headlessFramework');
+    // no other class member starts between the resolution and the headless build
+    const r = before.lastIndexOf('this.resolveCodexLaunchModel(headlessFramework');
+    expect(before.slice(r)).not.toMatch(/\n  (?:private |public |protected )(?:async )?[A-Za-z_]\w*\(/);
     // the builder receives the resolved variable, not the raw options.model
     expect(src.slice(idx, idx + 200)).toMatch(/model:\s*launchModel/);
   });
