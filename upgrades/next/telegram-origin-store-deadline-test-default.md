@@ -1,0 +1,27 @@
+# Telegram-origin store request deadline: a suite-wide test default
+
+<!-- bump: patch -->
+
+## What Changed
+
+`OriginStore` gives every request to its worker a deadline (`requestTimeoutMs`, default 2000 ms). The default now resolves through `resolveOriginStoreRequestTimeout` in `src/messaging/telegram-origin/OriginStageDeadlines.ts`: the store's own option when given, else a process-wide default when one was set (`setOriginStoreRequestTimeoutProcessDefault`), else 2000 ms. `tests/vitest-setup.ts` sets the process default to 20 000 ms for every test file.
+
+Production behaviour is unchanged: nothing under `src/` calls the setter (pinned by a source scan), and the store validates an explicit option exactly as before.
+
+## What to Tell Your User
+
+Nothing changes that you will see. One more family of tests stops failing unrelated changes when the test machine is busy.
+
+## Summary of New Capabilities
+
+| Capability | How to Use |
+|-----------|------------|
+| Process-wide default for the origin store's request deadline (tests only) | `setOriginStoreRequestTimeoutProcessDefault` in a test setup file |
+
+## Evidence
+
+Local Verify, Studio, 2026-11-13/14 UTC, each on a change that does not touch this code: PR 3145 at 21:04 (`recovery-fairness`: `origin request deadline exceeded`), PR 3150 at 20:13 (`telegram-origin-forward-on-standby`), PR 3156 at 00:41 (`recovery-review-budget`). The stage budgets lifted earlier (PRs 3149, 3153) sit above this deadline and cannot reach it. Disk latency was measured and is not the cause: `F_FULLFSYNC` p50 5 ms, p99 26 ms on the Studio during a verify run (M5: 4 ms, 37 ms).
+
+A read-only sweep of every test that constructs a store or boots the origin runtime found 12 call sites with an explicit `requestTimeoutMs` (all worker-stall tests among them) and about 72 without; none of the latter depends on the 2 s default firing.
+
+Tests: new `tests/unit/telegram-origin/origin-store-request-default.test.ts` (7): resolution order; an invalid default is ignored; a store opened without a deadline latches the default (and 2 s with none set) and works at the lifted default; an explicit deadline wins; a later default does not change an open store; a bad explicit deadline is still refused; nothing under `src/` calls the setter. With `origin-stage-deadlines` (which also pins that the module imports nothing) and `store-worker-recovery`: 41 pass.
