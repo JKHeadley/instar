@@ -18,6 +18,7 @@ import { execFileSync } from 'node:child_process';
 import { pruneNpmCache, pruneDerivedData, realPruneSeams, type CategoryResult, type PruneSeams } from './diskSteward/pruneCategories.js';
 import { SafeFsExecutor } from '../core/SafeFsExecutor.js';
 import { pruneContextArchive, CONTEXT_ARCHIVE_DEFAULT_MAX_GIB } from './diskSteward/pruneContextArchive.js';
+import { measureWholeDisk, agentsFromRegistry, type WholeDiskResult } from './diskSteward/wholeDisk.js';
 
 export interface PruneChildInput {
   runId: string;
@@ -32,6 +33,10 @@ export interface PruneChildInput {
   categoryBudgetMs: number;
   /** Measure sizes and the worktree plan (when a post is due and the cache is old). */
   measure: boolean;
+  /** Measure the whole home folder by owner (§3.7a); at most daily. Absent ⇒ false. */
+  wholeDisk?: boolean;
+  /** The server's kill deadline for this run (epoch ms); the whole-disk walk stops 2 min before it. */
+  runDeadlineAt?: number;
   resultPath: string;
   auditPath: string;
 }
@@ -55,6 +60,7 @@ export interface PruneChildResult {
   statfsAfter: number | null;
   sizes?: { at: number; partial: boolean; folders: Array<{ name: string; bytes: number }> };
   worktrees?: WorktreePlan;
+  wholeDisk?: WholeDiskResult;
   verifyKept?: { count: number; bytes: number | null };
   cachesLock: 'held' | 'another-agent-running';
 }
@@ -209,8 +215,30 @@ export async function runPruneChild(input: PruneChildInput, seams: PruneSeams = 
     result.sizes = await measureSizes(seams, input.agentHome, input.categoryBudgetMs);
     result.worktrees = await measureWorktrees(seams, input.agentHome, input.categoryBudgetMs);
   }
+  if (input.wholeDisk) {
+    try {
+      const st = fs.statfsSync(seams.home);
+      const usedBytes = (Number(st.blocks) - Number(st.bavail)) * Number(st.bsize);
+      let raw: string | null = null;
+      try { raw = fs.readFileSync(path.join(seams.home, '.instar', 'registry.json'), 'utf-8'); } catch { /* @silent-fallback-ok — no registry ⇒ folders listed without owners */ }
+      result.wholeDisk = await measureWholeDisk(seams, {
+        home: seams.home, agents: agentsFromRegistry(raw), usedBytes, budgetMs: wholeDiskBudget(input, Date.now()), now: () => Date.now(),
+        // This agent's own folder: the sizes measured above are a floor if its walk does not finish.
+        floors: result.sizes ? new Map([[path.resolve(input.agentHome), result.sizes.folders.reduce((a, f) => a + f.bytes, 0)]]) : undefined,
+      });
+    } catch {
+      /* @silent-fallback-ok — no whole-disk line in the post; the next daily run tries again */
+    }
+  }
   result.finishedAt = Date.now();
   return result;
+}
+
+/** §3.7a: up to 15 min, and always done 2 min before the server's kill deadline. */
+export function wholeDiskBudget(input: Pick<PruneChildInput, 'runDeadlineAt'>, now: number): number {
+  const cap = 15 * 60_000;
+  if (input.runDeadlineAt === undefined) return cap;
+  return Math.max(0, Math.min(cap, input.runDeadlineAt - now - 2 * 60_000));
 }
 
 function writeAtomic(file: string, data: string): void {

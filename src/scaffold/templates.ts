@@ -1379,7 +1379,7 @@ ${jobTransferGuide(port).registry.trimEnd()}
 | Who have I interacted with? | \`curl -H "Authorization: Bearer $AUTH" http://localhost:${port}/relationships\` |
 | Did a machine identity rotate / why is a peer unauthorized? | \`GET /identity-recovery\` + \`GET /identity-changes\` — recovery availability, quarantines, unacknowledged epochs, and the attributable ledger; never infer from a generic network error |
 | Which machine was topic N on / where are a run's artifacts? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/coherence/journal?topic=N"\` (multi-machine placement + artifact history; 503 = journal not enabled) |
-| How full is each machine's disk? / why was an upload refused? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/disk-steward?scope=pool"\` (Disk Steward: each machine's free space, forecast and last cleanup, read live; an unreachable machine is listed with its error) |
+| How full is each machine's disk? / why was an upload refused? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/disk-steward?scope=pool"\` (Disk Steward: each machine's free space, forecast and last cleanup, read live; \`wholeDisk\` says, once a day, which agents and home folders use the space; an unreachable machine is listed with its error) |
 | My configuration? | \`.instar/config.json\` |
 | My identity/principles? | \`.instar/AGENT.md\` |
 | My past learnings about X? | \`curl -H "Authorization: Bearer $AUTH" "http://localhost:${port}/memory/search?q=X"\` |

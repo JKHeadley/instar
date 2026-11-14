@@ -1,0 +1,32 @@
+{
+  "ts": "2026-11-14T05:39:50.364Z",
+  "slug": "disk-steward-whole-disk",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 2,
+  "riskFloorReasons": [
+    "irreversibility: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator",
+    "migration / fleet-rollout surface: src/core/PostUpdateMigrator.ts touches PostUpdateMigrator (fleet migration machinery)"
+  ],
+  "belowFloor": true,
+  "files": 8,
+  "loc": 265,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/PostUpdateMigrator.ts",
+      "src/monitoring/DiskSteward.ts",
+      "src/monitoring/DiskStewardPoster.ts",
+      "src/monitoring/diskSteward/pruneCategories.ts",
+      "src/monitoring/diskSteward/pruneRunner.ts",
+      "src/monitoring/diskSteward/wholeDisk.ts",
+      "src/monitoring/diskStewardMain.ts",
+      "src/scaffold/templates.ts"
+    ],
+    "addedLines": 260,
+    "deletedLines": 5
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

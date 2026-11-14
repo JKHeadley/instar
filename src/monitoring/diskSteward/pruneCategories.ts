@@ -41,6 +41,12 @@ export interface PruneSeams {
   run(cmd: string, args: string[], timeoutMs: number): Promise<{ stdout: string }>;
   /** Size of a folder in bytes (du -sk), null when unreadable. */
   sizeOf(p: string, timeoutMs: number): Promise<number | null>;
+  /**
+   * Size with a lower bound on timeout (§3.7a): `du -k -d 1` prints each child as
+   * it finishes, so a timed-out walk still reports the children it summed.
+   * null when nothing at all was read.
+   */
+  sizeAtLeast?(p: string, timeoutMs: number): Promise<{ bytes: number; complete: boolean } | null>;
   /** Device id of a path's volume, null when unreadable. */
   devOf(p: string): number | null;
   readdir(p: string): string[] | null;
@@ -197,6 +203,18 @@ export function realPruneSeams(): PruneSeams {
         return null; // @silent-fallback-ok — unmeasurable ⇒ not planned
       }
     },
+    sizeAtLeast: async (p, timeoutMs) => {
+      let out = '';
+      let complete = true;
+      try {
+        out = (await execFileP('du', ['-k', '-d', '1', p], { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 })).stdout;
+      } catch (e) {
+        // Timed out or a folder was unreadable: keep what du printed before it stopped.
+        out = String((e as { stdout?: unknown }).stdout ?? '');
+        complete = false;
+      }
+      return parseDuDepth1(out, p, complete);
+    },
     devOf: (p) => { try { return fs.statSync(p).dev; } catch { return null; } }, // @silent-fallback-ok — unknown volume ⇒ other-volume skip
     readdir: (p) => { try { return fs.readdirSync(p); } catch { return null; } }, // @silent-fallback-ok — unreadable ⇒ category skips
     lstat: (p) => { try { return fs.lstatSync(p); } catch { return null; } }, // @silent-fallback-ok — absent ⇒ not a candidate
@@ -206,4 +224,24 @@ export function realPruneSeams(): PruneSeams {
     home: os.homedir(),
     platform: process.platform,
   };
+}
+
+/**
+ * `du -k -d 1 <p>` output → bytes. The line for `p` itself is the total; without
+ * it (the walk was stopped) the children printed so far are summed: a lower bound.
+ */
+export function parseDuDepth1(out: string, p: string, completeRun: boolean): { bytes: number; complete: boolean } | null {
+  let total: number | null = null;
+  let children = 0;
+  let any = false;
+  for (const line of out.split('\n')) {
+    const m = /^(\d+)\t(.+)$/.exec(line);
+    if (!m) continue;
+    any = true;
+    const kb = Number(m[1]);
+    if (m[2].replace(/\/+$/, '') === p.replace(/\/+$/, '')) total = kb;
+    else children += kb;
+  }
+  if (total !== null) return { bytes: total * 1024, complete: completeRun };
+  return any ? { bytes: children * 1024, complete: false } : null;
 }
