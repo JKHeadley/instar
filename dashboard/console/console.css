@@ -1072,6 +1072,12 @@ a.machine-line-link:hover { border-color: var(--accent); color: var(--text); }
 .sess-attachments { display: flex; flex-wrap: wrap; gap: var(--s-2); }
 .sess-file { gap: 8px; max-width: 100%; overflow: hidden; }
 .sess-file span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+/* §3e: a message the dashboard could not confirm stays above the composer, with its words. */
+.sess-drafts { display: flex; flex-direction: column; gap: var(--s-2); }
+.sess-draft { border: 1px dashed var(--attn-line); background: var(--attn-wash); border-radius: var(--r-md); padding: var(--s-2); min-width: 0; }
+.sess-draft-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14.5px; color: var(--text); max-height: 7.5em; overflow: auto; }
+.sess-draft-words { margin: 6px 0; font-size: 13px; color: var(--text-muted); }
+.sess-input.sending { opacity: .7; }
 .sess-composer.dropping { outline: 2px dashed var(--accent); outline-offset: 4px; border-radius: var(--r-md); }
 .keys-tray { display: flex; flex-direction: column; gap: var(--s-3); padding: var(--s-3); border: 1px solid var(--hairline); border-radius: var(--r-md); }
 .keys-row { display: flex; flex-wrap: wrap; gap: var(--s-2); }

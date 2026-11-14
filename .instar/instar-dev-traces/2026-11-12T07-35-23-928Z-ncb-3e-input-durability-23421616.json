@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "slug": "ncb-3e-input-durability",
+  "sessionId": "bb155226-8878-430a-abea-a13d4e60ecc1",
+  "timestamp": "2026-11-12T07:35:23.928Z",
+  "artifactPath": "upgrades/side-effects/ncb-3e-input-durability.md",
+  "artifactSha256": "81f5c95bae443f7501d74e7aaeeac66627979746e6a1ad62648526746ec9f57b",
+  "specPath": "docs/specs/native-conversation-any-machine-access.md",
+  "coveredFiles": [
+    "src/server/PeerStreamProxy.ts",
+    "src/server/WebSocketManager.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Comment-only follow-up to slice 3e: marks two reported (not silent) catch blocks for the no-silent-fallbacks check.",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
