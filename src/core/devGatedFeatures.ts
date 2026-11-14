@@ -1178,6 +1178,11 @@ export const DARK_GATE_EXCLUSIONS: DarkGateExclusion[] = [
     reason: 'A2A check-in summarizer — sends UNBOUNDED user-facing Telegram summaries on a heartbeat while a conversation is active; live-on-dev would flood the operator. Opt-in to keep the operator un-flooded.',
   },
   {
+    configPath: 'multiMachine.stateSync.sessionTranscripts.enabled',
+    category: 'action-bearing',
+    reason: 'native-conversation-any-machine-access §3f (FD-11) — copies every session transcript, as checkpoints of whole redacted rows, to every machine of the agent. A copy on another machine cannot be recalled once it lands, so it ships hard-dark on EVERY agent (dev included) until its live date (CMT-047, live 2026-12-02), then dev-agent-live on Echo, then fleet. Owner-only reads; no device or team route reads the store.',
+  },
+  {
     configPath: 'multiMachine.stateSync.threadlinePairing.enabled',
     category: 'action-bearing',
     reason: 'Secure A2A Verified Pairing §3.8 — replicates the verified-IDENTITY RESULT of a pairing across the agent\'s own machines; the inherited record AUTHORIZES the identity half of the credential-share gate on a peer machine (key-pinned). A credential-gating surface, so it ships hard-dark with explicit enabled:false + dryRun:true on EVERY agent (dev included) — the cautious rollout posture the spec mandates, NOT the dev-gate-live posture of the 7 WS2 memory/PII stores. NEVER replicates the SAS, shared secret, or relay token (structurally — they are not fields of the replicated result). Opt-in per agent after soak.',

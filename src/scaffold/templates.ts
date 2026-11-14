@@ -11,6 +11,8 @@ import { failureCalloutAwareness } from '../core/failureCalloutAwareness.js';
  * When augmenting an existing project, only missing files are created.
  */
 
+import { signedPoolReadsAwareness } from "../core/poolSignedReads.js";
+import { transcriptCopiesAwareness } from "../core/transcriptCheckpoints.js";
 import { telegramOriginAwareness, telegramOriginForwardAwareness, telegramDashboardEditAwareness, telegramSystemTopicsAwareness, telegramIssuesGroupAwareness, messageOriginAllPlatformsAwareness } from "../messaging/telegram-origin/OriginAwareness.js";
 import { conversationsAwareness, conversationsSuggestionsAwareness } from '../messaging/shared/conversationGraphChat.js';
 import { poolReadSelectionAwareness } from "../core/poolReadAwareness.js";
@@ -2034,6 +2036,8 @@ The AutonomousLivenessReconciler also covers a second dead-work shape: an autono
   content += '\n' + messageOriginAllPlatformsAwareness(port);
   content += '\n' + conversationsAwareness();
   content += '\n' + conversationsSuggestionsAwareness();
+  content += '\n' + signedPoolReadsAwareness(port);
+  content += '\n' + transcriptCopiesAwareness(port);
 
   if (hasTelegram) {
     content += telegramOriginAwareness(port);

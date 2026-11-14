@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "slug": "ncb-3d-transcript-reads",
+  "sessionId": "d0d07253-aa83-4f1b-88f0-065c49ba64c4",
+  "timestamp": "2026-11-12T04:08:47.182Z",
+  "artifactPath": "upgrades/side-effects/ncb-3d-transcript-reads.md",
+  "artifactSha256": "96ec0960a0a4af6260699c7acd6ccab448e1a9389b70be56325fc997a0e68090",
+  "specPath": "docs/specs/native-conversation-any-machine-access.md",
+  "coveredFiles": [
+    "tests/e2e/session-transcript-pull-alive.test.ts",
+    "tests/integration/pool-reads-signed.test.ts"
+  ],
+  "phase": "complete",
+  "tier": 2,
+  "tierReasoning": "Test corrections for the slice 3d build (same spec)",
+  "secondPass": "true",
+  "reviewerConcurred": true,
+  "toolchain": {
+    "buildSkill": {
+      "name": "instar-dev",
+      "version": "9a75c36ba521",
+      "verified": true
+    }
+  }
+}

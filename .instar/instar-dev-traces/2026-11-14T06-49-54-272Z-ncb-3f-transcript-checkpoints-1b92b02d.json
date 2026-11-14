@@ -1,0 +1,21 @@
+{
+  "version": 2,
+  "slug": "ncb-3f-transcript-checkpoints",
+  "sessionId": "22076f81-05b7-44f8-8299-69f97812fe8b",
+  "timestamp": "2026-11-14T06:49:54.272Z",
+  "artifactPath": "upgrades/side-effects/ncb-3f-transcript-checkpoints.md",
+  "artifactSha256": "9b5f10ec8c7203c8db2e897083a5dd871e698b47c414872f99a76f79ffc25540",
+  "coveredFiles": [
+    "docs/specs/ncb-3f-ratchet-fixes.eli16.md",
+    "src/core/transcriptCheckpoints.ts",
+    "src/server/routes.ts",
+    "upgrades/side-effects/ncb-3f-transcript-checkpoints.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "One wrapper call that returns the same text for RangeError plus one exemption comment on an observable catch; a revert fully undoes it.",
+  "eli16Path": "docs/specs/ncb-3f-ratchet-fixes.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/ncb-3f-transcript-checkpoints.md",
+  "secondPass": "not-required",
+  "reviewerConcurred": null
+}
