@@ -13,3 +13,5 @@ The answer now goes through the wrapper. For this kind of error the wrapper retu
 ## The safeguards
 
 No behaviour, interface or limit changes. Reverting the commit undoes it completely.
+
+**Update (2026-11-14):** two more lists needed the new transcript copies: the list of stores only the server writes to, and the list of internal addresses that agents learn about from their instructions rather than the capability list. Nothing behaves differently.

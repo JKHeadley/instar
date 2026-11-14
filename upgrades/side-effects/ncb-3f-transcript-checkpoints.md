@@ -182,3 +182,7 @@ ratchets still counted slice 3f code:
   is not silent (it records `copy-failed` evidence and returns `error` for that session, and the next
   tick retries).
 No behaviour change. Rollback: revert the commit.
+
+## Registration fix after Local Verify (2026-11-14)
+
+Local Verify (Studio, 22:14Z, head 73d9e98b2) failed two registration ratchets: the `sessionTranscripts` replicated store was in the server registry but neither seamed nor allow-listed in `ReplicatedStoreReconcilerWiring.ts`, and the `/transcript-copies` route prefix was unclassified in `CapabilityIndex.ts`. Added an allow-list entry (server-only writer: the checkpoint tick and peer ingest; no CLI path) and an INTERNAL_PREFIXES entry (owner-only, dark, learned through the CLAUDE.md awareness card). No behaviour change; both are declarations the ratchets require.
