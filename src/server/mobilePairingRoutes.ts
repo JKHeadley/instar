@@ -1,3 +1,4 @@
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { AccessStamp } from '../core/TeamAccessMerge.js';
 import type { TeamAccessPuller } from '../core/TeamAccessSync.js';
 import type { TeamSwitchLine } from '../core/TeamSwitches.js';
@@ -1856,7 +1857,7 @@ export function createMobilePairingRouter(svc: MobilePairingService, deps: Mobil
     const recent = (chatRate.get(p.deviceId) ?? []).filter((x) => t - x < 60_000);
     if (recent.length >= 20) { chatRate.set(p.deviceId, recent); res.status(429).json({ error: 'too-many-requests' }); return; }
     recent.push(t); chatRate.set(p.deviceId, recent);
-    if (!tg.getAllTopicMappings().some((m) => m.topicId === topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
+    if (!telegramTopicKnown(tg, topicId)) { res.status(404).json({ error: 'unknown-topic' }); return; }
     if (!requestIdAgeOk(requestId, t)) { res.status(400).json({ error: 'request-id-too-old' }); return; }
     svc.scanInbound(text); // may cancel a pending pairing; never refuses the message
     // With native conversations on (mobile-native-conversations §4.2, §4.9) no content check
