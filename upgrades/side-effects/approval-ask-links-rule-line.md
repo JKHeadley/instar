@@ -130,3 +130,11 @@ No agent-authored-artifact defect — not applicable. This adds a new rule line;
 ## Release note
 
 The release-note fragment for this change is `upgrades/next/every-ask-carries-its-links.md`. It was added after this review, so it is recorded here to tie it to this review.
+
+## Second-pass review of the merges with main (2026-11-14)
+
+**Reviewer:** Opus 5.5 subagent (fresh context, given the remerge diffs and the worktree, not the builder's conclusion), read-only.
+
+**Scope:** merges c3e99d6b3d and 5220996460 of origin/main onto the operator-approved head 8f1e281237.
+
+**Verdict: concur.** The only conflict (templates.ts import lines) kept main's two new names and this PR's ASK_LINKS_CLAUDEMD_SECTION import. The second merge was clean. The PR's own changes against main are identical to the approved head's for every file (14 files); the standards clause in docs/STANDARDS-REGISTRY.md is byte-identical (cmp) to 8f1e281237. tsc clean; PostUpdateMigrator-askLinks and claude-md-reference-layout pass (44/44). No content change: this push exists only to bring the approved text up to date with main.
