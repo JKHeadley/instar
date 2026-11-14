@@ -146,6 +146,17 @@ export interface EnrollmentWizardConfig {
   ) => Promise<string | null> | string | null;
 }
 
+/**
+ * Passed by the reissue sweep and restart recovery so a Claude follow-me login
+ * whose account is already working is closed instead of being re-driven
+ * forever. `accountIsHealthy` must answer from local state only (no network):
+ * true only when this machine's pool holds the login's account ACTIVE, as the
+ * login's expected email, with no identity drift.
+ */
+export interface AlreadySignedInDeps {
+  accountIsHealthy: (login: PendingLogin) => boolean;
+}
+
 export interface StartEnrollmentInput {
   id: string;
   label: string;
@@ -301,9 +312,13 @@ export class EnrollmentWizard {
    * refresh the stored code/URL + TTL. Returns the reissued logins. Driver
    * failures are skipped (logged, left expired) so one bad re-drive doesn't
    * abort the sweep.
+   *
+   * `alreadySignedIn` (optional): see {@link AlreadySignedInDeps}. When given,
+   * a follow-me login whose slot already answers a live identity read as the
+   * expected account is completed instead of re-driven.
    */
-  async reissueExpired(): Promise<PendingLogin[]> {
-    return this.reissueLogins(this.store.expired(), 'expired');
+  async reissueExpired(alreadySignedIn?: AlreadySignedInDeps): Promise<PendingLogin[]> {
+    return this.reissueLogins(this.store.expired(), 'expired', alreadySignedIn);
   }
 
   /**
@@ -312,10 +327,10 @@ export class EnrollmentWizard {
    * boot so the durable flow regains a live backing process and fresh public
    * URL/code before the dashboard can submit to it.
    */
-  async recoverAfterRestart(): Promise<PendingLogin[]> {
+  async recoverAfterRestart(alreadySignedIn?: AlreadySignedInDeps): Promise<PendingLogin[]> {
     const incomplete = this.store.list().filter((login) =>
       login.status === 'pending' || login.status === 'expired');
-    return this.reissueLogins(incomplete, 'restart');
+    return this.reissueLogins(incomplete, 'restart', alreadySignedIn);
   }
 
   /** Refresh one known incomplete flow after its backing pane is found dead. */
@@ -329,10 +344,18 @@ export class EnrollmentWizard {
   private async reissueLogins(
     logins: PendingLogin[],
     reason: 'expired' | 'restart' | 'dead-pane',
+    alreadySignedIn?: AlreadySignedInDeps,
   ): Promise<PendingLogin[]> {
     const reissued: PendingLogin[] = [];
     for (const login of logins) {
       try {
+        // A follow-me sign-in whose slot ALREADY works as the expected account
+        // needs no new code. Without this check the login is re-driven on every
+        // expiry forever (Mama PC, 2026-11-13: 1113 reissues over 11 days for an
+        // account that was active and reading quota the whole time).
+        if (alreadySignedIn && await this.completeIfAlreadySignedIn(login, alreadySignedIn, reason)) {
+          continue;
+        }
         // A device-code login can succeed without telling instar, and every
         // re-drive KILLS the pane it would have succeeded in. Ask the witness
         // BEFORE destroying anything: an already-succeeded flow is completed,
@@ -377,6 +400,71 @@ export class EnrollmentWizard {
       }
     }
     return reissued;
+  }
+
+  /**
+   * Before a follow-me login is re-driven, ask whether it is still needed.
+   * Returns true only when the login was completed here; every other case
+   * returns false and the caller re-drives exactly as before.
+   *
+   * Scope: Claude (`claude-code`) logins only. A Codex slot's identity is read
+   * from the id_token on disk, which still names the account after its refresh
+   * token died, so it is not proof that the sign-in works; Codex keeps its own
+   * device-code witness (`completedWithoutTelling`).
+   *
+   * Two proofs, both required:
+   *  1. The caller's pool already holds this account ACTIVE as the expected
+   *     email with no identity drift (`deps.accountIsHealthy`, no network).
+   *     A signed-out, rate-limited or drifted account is never probed and
+   *     keeps its re-drive, so a real repair is never cut short.
+   *  2. The slot answers a live identity read (`oracle.resolveSlotTenant`, the
+   *     read `completeLanded` accepts as `live-identity` proof) as exactly the
+   *     expected email (trimmed, case-insensitive).
+   *
+   * On success only the stale LOGIN is closed. The pool is not written: the
+   * account is already active, so no status moves and no ledger/bench side
+   * effects run.
+   *
+   * Call sites: the expiry sweep and the restart recovery, where the old code
+   * has expired or its pane died with the server, so nobody can still paste
+   * into it. `refresh()` (the repair runtime's dead-pane path) does not use it.
+   */
+  private async completeIfAlreadySignedIn(
+    login: PendingLogin,
+    deps: AlreadySignedInDeps,
+    reason: 'expired' | 'restart' | 'dead-pane',
+  ): Promise<boolean> {
+    if (login.framework !== 'claude-code') return false;
+    if (!login.expectedEmail || !login.configHome || !this.oracle) return false;
+    if (this.completionSweepInFlight.has(login.id)) return false;
+    let healthy = false;
+    try { healthy = deps.accountIsHealthy(login) === true; } catch { healthy = false; }
+    if (!healthy) return false;
+    this.completionSweepInFlight.add(login.id);
+    try {
+      const email = await this.probeSlotEmail(login);
+      const expected = login.expectedEmail.trim().toLowerCase();
+      if (!email || email.trim().toLowerCase() !== expected) return false;
+      // No await between this re-read and the completion: a login that changed
+      // while the probe ran (completed, cancelled, reissued), or an account that
+      // stopped being healthy meanwhile, is left as it is.
+      const current = this.store.get(login.id);
+      if (!current || current.version !== login.version
+        || (current.status !== 'pending' && current.status !== 'expired')) return false;
+      if (deps.accountIsHealthy(current) !== true) return false;
+      const completed = this.complete(login.id);
+      if (!completed || completed.status !== 'completed') return false;
+      this.logger.log(
+        `[EnrollmentWizard] ${login.id} already signed in as the expected account — closing the stale ${reason} login instead of re-driving it`,
+      );
+      return true;
+    } catch (err) {
+      // @silent-fallback-ok: a failed check re-drives as before.
+      this.logger.warn(`[EnrollmentWizard] already-signed-in check for ${login.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    } finally {
+      this.completionSweepInFlight.delete(login.id);
+    }
   }
 
   /**

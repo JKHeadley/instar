@@ -17597,7 +17597,20 @@ export async function startServer(options: StartOptions): Promise<void> {
     // flow before serving dashboard traffic so a persisted code is never backed
     // by a dead pane. Renewal suppresses browser launch and stores only the fresh
     // public URL/code, preserving the existing credential boundary.
-    const recoveredLogins = await enrollmentWizard.recoverAfterRestart();
+    // A Claude follow-me login whose account this pool already holds active, as
+    // the expected email with no identity drift, and whose slot answers a live
+    // identity read as that email, is closed instead of re-driven (account
+    // compliance loop G10: Mama PC re-drove one such login 1113 times over 11
+    // days). Local state only here; the wizard does the live read.
+    const alreadySignedIn = {
+      accountIsHealthy: (login: import('../core/PendingLoginStore.js').PendingLogin): boolean => {
+        const account = subscriptionPool.get(login.id);
+        if (!account || account.status !== 'active' || account.identityDrifted === true) return false;
+        const want = (login.expectedEmail ?? '').trim().toLowerCase();
+        return want.length > 0 && (account.email ?? '').trim().toLowerCase() === want;
+      },
+    };
+    const recoveredLogins = await enrollmentWizard.recoverAfterRestart(alreadySignedIn);
     if (recoveredLogins.length > 0) {
       console.log(pc.green(`  Restored ${recoveredLogins.length} pending login flow(s) after restart`));
     }
@@ -17614,7 +17627,7 @@ export async function startServer(options: StartOptions): Promise<void> {
     // it" contract true.
     const enrollReissueTimer = setInterval(() => {
       enrollmentWizard
-        .reissueExpired()
+        .reissueExpired(alreadySignedIn)
         .catch(() => { /* @silent-fallback-ok — one bad sweep is retried next tick */ });
       enrollmentWizard
         .sweepFollowMeCompletions({
