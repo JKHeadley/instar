@@ -1,7 +1,7 @@
 import type { ListenerSessionManager } from './ListenerSessionManager.js';
 import type { ThreadLog } from './ThreadLog.js';
 
-// canonical-migration-consumer: threadline-inbound-canonical-store@3
+// canonical-migration-consumer: threadline-inbound-canonical-store@4
 
 export interface ThreadlineReplyValidationSources {
   listenerManager?: Pick<ListenerSessionManager, 'readCanonicalInboxEntry'> | null;

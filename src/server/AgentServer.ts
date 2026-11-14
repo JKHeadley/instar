@@ -132,6 +132,7 @@ import type { SessionManager, SessionTerminateAuthority } from '../core/SessionM
 import type { StateManager } from '../core/StateManager.js';
 import type { JobScheduler } from '../scheduler/JobScheduler.js';
 import type { TelegramAdapter } from '../messaging/TelegramAdapter.js';
+import { telegramTopicKnown } from '../messaging/telegramTopicKnown.js';
 import type { MessageRouter } from '../messaging/MessageRouter.js';
 import type { InstarConfig } from '../core/types.js';
 import type { RelationshipManager } from '../core/RelationshipManager.js';
@@ -397,6 +398,8 @@ import { BurnThrottleRunbook, type BurnThrottleConfig } from '../monitoring/Burn
 import { BurnVerifier } from '../monitoring/BurnVerifier.js';
 import { LlmRateGate } from '../monitoring/LlmRateGate.js';
 import { DegradationReporter } from '../monitoring/DegradationReporter.js';
+import { PlatformMediaForSession, getPlatformMediaForSession, setPlatformMediaForSession } from '../core/platformMediaForSession.js';
+import { telegramDownloadDirs } from './forwardedInboundMedia.js';
 import { CapabilityRegistryReceiver } from '../core/CapabilityRegistry.js';
 import { sendMentorVisibleEcho, type MentorVisibleEchoOptions } from '../core/MentorVisibleEcho.js';
 import { registerBurnDetectionSubscriber } from '../monitoring/BurnDetectionSubscriber.js';
@@ -510,6 +513,8 @@ export class AgentServer {
   mobilePairing: MobilePairingService | null = null;
   /** Native app conversations (docs/specs/mobile-native-conversations.md); null when off at boot. */
   appConversations: AppConversationService | null = null;
+  /** native-conversation-base §3c: Telegram files resolved on the serving machine. */
+  platformMedia: PlatformMediaForSession | null = null;
   /** Unread counts and read markers (docs/specs/mobile-unread-messages.md); null when native chat or unread is off. */
   conversationUnread: ConversationUnreadService | null = null;
   private attribution: AttributionRuntime | null = null;
@@ -1777,6 +1782,9 @@ export class AgentServer {
      *  GET /worktrees/agent-reaper. */
     agentWorktreeReaper?: import('../monitoring/AgentWorktreeReaper.js').AgentWorktreeReaper;
     diskSteward?: () => import('./diskStewardRoutes.js').DiskStewardRouteDeps | null;
+    /** Work Board (docs/specs/work-board-asks.md): the runtime (null while off) and the seams it reads late. */
+    workBoard?: () => import('../core/WorkBoardRuntime.js').WorkBoardRuntime | null;
+    workBoardLate?: { ledgerNote: ((cardId: string, causeId: string) => void) | null; ownerPersonKey: (() => string | null) | null; displayName: ((personKey: string) => string) | null };
     /** ExternalHogSentinel — the external-hog zombie auto-kill sentinel (CMT-1901). Powers
      *  GET /external-hog + the PIN-gated arm/disarm routes. */
     externalHogSentinel?: import('../monitoring/ExternalHogSentinel.js').ExternalHogSentinel;
@@ -6322,6 +6330,8 @@ export class AgentServer {
       sessionReaper: options.sessionReaper ?? null,
       agentWorktreeReaper: options.agentWorktreeReaper ?? null,
       diskSteward: options.diskSteward ?? null,
+      workBoard: options.workBoard ?? null,
+      workBoardLate: options.workBoardLate ?? null,
       externalHogSentinel: options.externalHogSentinel ?? null,
       orphanedWorkSentinel: options.orphanedWorkSentinel ?? null,
       mcpProcessReaper: options.mcpProcessReaper ?? null,
@@ -7175,7 +7185,7 @@ export class AgentServer {
         telegram: telegram ? {
           history: (topicId, limit) => telegram.getTopicHistory(topicId, limit) as unknown as TelegramRowLike[],
           version: (topicId) => telegram.getTopicContentVersion(topicId),
-          exists: (topicId) => telegram.getAllTopicMappings().some((m) => m.topicId === topicId),
+          exists: (topicId) => telegramTopicKnown(telegram, topicId),
         } : null,
         slack: slackBridge ? slackUnreadSource(() => slackBridge) : null,
         ownerIdentity: () => mp.ownerIdentity(),
@@ -7250,7 +7260,7 @@ export class AgentServer {
       // Pinned messages (docs/specs/conversation-pinned-messages.md): pins live in the app conversation
       // store; Telegram pins are also made in Telegram by the machine serving it, Slack pins in Slack.
       const pinTelegram = options.telegram ? {
-        exists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId),
+        exists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId),
         serving: () => this.mobilePairing!.holdsLease(),
         textOf: (topicId: number, messageId: string) => {
           const row = options.telegram!.getTopicHistory(topicId, 500).find((m) => String(m.messageId) === messageId);
@@ -7289,7 +7299,7 @@ export class AgentServer {
         // Same gate as the Slack history route: nothing is served until the owner's Slack id is set.
         ...(slackRegistry ? { slackHeld: (key: string) => slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, key) } : {}),
         // Files sent from the app into a Telegram topic upload under `telegram:<topicId>` (§4.9).
-        ...(options.telegram ? { telegramTopicExists: (topicId: number) => options.telegram!.getAllTopicMappings().some((m) => m.topicId === topicId) } : {}),
+        ...(options.telegram ? { telegramTopicExists: (topicId: number) => telegramTopicKnown(options.telegram!, topicId) } : {}),
       }));
       // "Open session" (GET /mobile/conversations/session): the session driving a conversation on
       // this machine and a dashboard link focused on it. The same "held here" checks as media.
@@ -7300,7 +7310,7 @@ export class AgentServer {
         pairing: this.mobilePairing,
         conversationKnown: (ref) => {
           if (ref.kind === 'app') return !!appSvcForSession?.liveConversation(ref.key);
-          if (ref.kind === 'telegram') return !!options.telegram && options.telegram.getAllTopicMappings().some((m) => m.topicId === ref.topicId);
+          if (ref.kind === 'telegram') return !!options.telegram && telegramTopicKnown(options.telegram, ref.topicId);
           return !!slackRegistry && slackOwnerUserId(options.config) !== null && slackConversationHeldLocally(slackRegistry, ref.ref);
         },
         sessionNameFor: (ref) => {
@@ -7349,9 +7359,36 @@ export class AgentServer {
             durationMs: info.durationMs, width: info.width, height: info.height,
           });
           if (!r.recorded && r.reason !== 'duplicate') {
-            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. The session still received it.`);
+            appSvc.deps.reportDegradation?.('AppMedia.telegramInbound', `a Telegram file (${topicRef(info.topicId)}, message ${info.platformMessageId}) was not kept for the app: ${r.reason}${'detail' in r ? ` (${r.detail})` : ''}. A session on this machine can still read it; a session on another machine is told it has not arrived there.`);
           }
         });
+      }
+      // native-conversation-base §3c items 4 to 7: a Telegram file is readable on the machine that runs
+      // the session. File lines are built from `media[]` on the serving machine; a file that has not
+      // arrived yet gets a durable waiter that the append listener, the start-up sweep and the
+      // periodic sweep reconcile. With native media off here, sessions are told the file is on another
+      // machine (or given this machine's own download).
+      if (options.telegram) {
+        const tg = options.telegram;
+        const sm = options.sessionManager;
+        const pm = new PlatformMediaForSession({
+          service: () => (isMobileMediaEnabled(options.config) ? this.appConversations ?? null : null),
+          downloadDirs: () => telegramDownloadDirs(options.config.stateDir),
+          injectToTopic: (topicId, line) => {
+            const name = tg.getSessionForTopic(topicId);
+            if (!name || !sm.isSessionAlive(name)) return false;
+            return sm.injectMessage(name, `[telegram:${topicId}] ${line}`, { firstParty: { source: 'platform-media' } }) !== false;
+          },
+          report: (what, err) => DegradationReporter.getInstance().report({
+            feature: 'PlatformMediaForSession', primary: 'give the session a Telegram file on its own machine',
+            fallback: 'the session is told the file is still copying or on another machine',
+            reason: `${what}: ${err instanceof Error ? err.message : String(err)}`, impact: 'A file line may arrive late.',
+          }),
+        });
+        setPlatformMediaForSession(pm);
+        this.platformMedia = pm;
+        routeCtx.platformMedia = pm;
+        pm.start();
       }
       // Slack media in the app's history (media spec §4.9, the Slack half): each file the Slack
       // adapter downloads for an inbound message is also copied in, under the conversation's
@@ -9439,6 +9476,10 @@ export class AgentServer {
     this.mobilePairing?.stop();
     this.conversationUnread?.stop();
     this.appConversations?.stop();
+    if (this.platformMedia) {
+      this.platformMedia.stop();
+      if (getPlatformMediaForSession() === this.platformMedia) setPlatformMediaForSession(null);
+    }
     this.desktopMeshBroker?.close();
     this.directDesktopAccess?.killSwitch();
     if (this.directDesktopAccess) this.telegramAdapter?.setDesktopApprovalHandler?.(null);

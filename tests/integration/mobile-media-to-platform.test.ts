@@ -36,6 +36,8 @@ import { TelegramAdapter } from '../../src/messaging/TelegramAdapter.js';
 import type { Message } from '../../src/core/types.js';
 import { makeDevice } from '../helpers/mobileDevice.js';
 import { SafeFsExecutor } from '../../src/core/SafeFsExecutor.js';
+import { PlatformMediaForSession } from '../../src/core/platformMediaForSession.js';
+import { parseInboundMediaField } from '../../src/core/inboundMedia.js';
 
 const HOST = 'echo.example.dev';
 const OWNER = 'U0OWNER1';
@@ -178,6 +180,12 @@ async function setup(opts: { mediaEnabled?: boolean; owner?: string | null; enfo
 }
 type Env = Awaited<ReturnType<typeof setup>>;
 
+/** The session text the serving machine builds from what the inbound core received (§3c). */
+async function sessionTextOf(e: Pick<Env, 'svc'>, row: Record<string, unknown>): Promise<string> {
+  const pm = new PlatformMediaForSession({ service: () => e.svc, downloadDirs: () => [], injectToTopic: () => false });
+  return pm.buildInboundSessionText({ conversationKey: `telegram:${TOPIC}`, text: String(row.text ?? ''), media: parseInboundMediaField(row.media) });
+}
+
 let tick = 0;
 function signed(e: Pick<Env, 'app' | 'dev' | 'deviceId'>, method: 'GET' | 'POST' | 'PUT', p: string, body?: unknown, raw?: Buffer) {
   const payload = raw ?? (body === undefined ? undefined : Buffer.from(JSON.stringify(body)));
@@ -242,8 +250,12 @@ describe('app → Telegram topic with files', () => {
     expect(ev).toMatchObject({ kind: 'media-message', role: 'operator', text: 'Look at this' });
     expect((ev as { attachments: Array<{ sha256: string; kind: string }> }).attachments[0]).toMatchObject({ sha256: sha(bytes), kind: 'photo' });
 
-    // The session got a §4.5 line with a server-chosen path to a private copy, then the caption.
-    const text = String(e.ingested[0]!.text);
+    // native-conversation-base §3c: the file travels by attachment id, never as a line in the text.
+    // The machine serving the session builds the §4.5 line with a server-chosen path to a private
+    // copy, then the caption.
+    expect(e.ingested[0]!.text).toBe('Look at this');
+    expect(e.ingested[0]!.media).toEqual([{ kind: 'photo', attachmentId: (ev as { attachments: Array<{ attachmentId: string }> }).attachments[0]!.attachmentId, filename: 'holiday.png' }]);
+    const text = await sessionTextOf(e, e.ingested[0]!);
     const m = /^\[image:(.+)\]\nLook at this$/.exec(text);
     expect(m).not.toBeNull();
     expect(fs.readFileSync(m![1]!)).toEqual(bytes);
@@ -297,7 +309,7 @@ describe('app → Telegram topic with files', () => {
     expect(seen).toHaveLength(0);
     expect(e.mediaMirrors).toHaveLength(0);
     expect(e.textMirrors).toEqual(['📱 Justin (from the app): big one', '📱 Justin sent big.bin (too large for Telegram; open it in the app)']);
-    expect(String(e.ingested[0]!.text)).toMatch(/^\[(image|document):/);
+    expect(await sessionTextOf(e, e.ingested[0]!)).toMatch(/^\[(image|document):/);
   }, 120_000);
 
   it('a retry of the same request answers the recorded result: one dispatch, one mirror', async () => {
@@ -334,7 +346,7 @@ describe('app → Telegram topic with files', () => {
     expect(again.status).toBe(200);
     expect(again.body).toMatchObject({ outcome: 'delivered', mirror: 'sent' });
     expect(e.ingested).toHaveLength(1);
-    expect(String(e.ingested[0]!.text)).toMatch(/^\[image:.+\]\nafter boot$/);
+    expect(await sessionTextOf(e, e.ingested[0]!)).toMatch(/^\[image:.+\]\nafter boot$/);
   });
 
   it('a failed mirror never fails or repeats the dispatch', async () => {

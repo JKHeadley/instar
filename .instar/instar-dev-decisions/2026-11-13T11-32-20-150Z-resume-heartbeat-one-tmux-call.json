@@ -1,0 +1,22 @@
+{
+  "ts": "2026-11-13T11:32:20.150Z",
+  "slug": "resume-heartbeat-one-tmux-call",
+  "suggestedTier": 2,
+  "declaredTier": 1,
+  "riskFloor": 1,
+  "riskFloorReasons": [],
+  "belowFloor": false,
+  "files": 1,
+  "loc": 73,
+  "scope": {
+    "basis": "staged-in-scope-paths-including-deleted",
+    "files": [
+      "src/core/TopicResumeMap.ts"
+    ],
+    "addedLines": 61,
+    "deletedLines": 12
+  },
+  "causalAutopsy": null,
+  "classClosure": null,
+  "verdict": "pass"
+}

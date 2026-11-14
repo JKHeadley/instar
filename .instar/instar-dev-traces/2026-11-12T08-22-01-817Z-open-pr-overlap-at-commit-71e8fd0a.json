@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "slug": "open-pr-overlap-at-commit",
+  "sessionId": "313442a4-da58-4250-a958-12394ad2a001",
+  "timestamp": "2026-11-12T08:22:01.817Z",
+  "artifactPath": "upgrades/side-effects/open-pr-overlap-at-commit.md",
+  "artifactSha256": "bd4376d9aa770e80f39d0aacf799ced6a02b26a33df7156d2d80e7023317b346",
+  "coveredFiles": [
+    "docs/specs/open-pr-overlap-at-commit.eli16.md",
+    "scripts/instar-dev-precommit.js",
+    "scripts/lib/open-pr-overlap.mjs",
+    "tests/e2e/converging-audit-precommit-report-backing.test.ts",
+    "tests/unit/open-pr-overlap.test.ts",
+    "upgrades/next/open-pr-overlap-at-commit.md",
+    "upgrades/side-effects/open-pr-overlap-at-commit.md"
+  ],
+  "phase": "complete",
+  "tier": 1,
+  "tierReasoning": "Signal-only addition to the instar repo commit hook (prints, never blocks, fails open); no agent runtime change; a revert fully undoes it.",
+  "eli16Path": "docs/specs/open-pr-overlap-at-commit.eli16.md",
+  "sideEffectsPath": "upgrades/side-effects/open-pr-overlap-at-commit.md",
+  "secondPass": "true",
+  "reviewerConcurred": true
+}
